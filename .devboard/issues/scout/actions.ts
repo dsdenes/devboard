@@ -132,6 +132,23 @@ const bunExec: Exec = async (commandName, args, options) => {
   };
 };
 
+/**
+ * One signal for the whole Gitea filing: the settle signal, bounded by what is
+ * left of the deadline. An elapsed deadline is already aborted, so no request
+ * is sent at all.
+ */
+function filingSignal(options: FileIssueOptions): AbortSignal | undefined {
+  const deadlineSignal =
+    options.deadline === undefined
+      ? undefined
+      : options.deadline <= Date.now()
+        ? AbortSignal.abort(new DOMException("the filing deadline elapsed", "TimeoutError"))
+        : AbortSignal.timeout(options.deadline - Date.now());
+  if (options.signal === undefined) return deadlineSignal;
+  if (deadlineSignal === undefined) return options.signal;
+  return AbortSignal.any([options.signal, deadlineSignal]);
+}
+
 async function fileGiteaIssue(
   options: FileIssueOptions,
   environment: Record<string, string | undefined>,
@@ -144,12 +161,15 @@ async function fileGiteaIssue(
   const token = configuredGiteaToken(environment);
   if (token === undefined) throw new Error("filing a Gitea issue needs GITEA_TOKEN");
   const target = { baseUrl, project: options.repository, token };
+  const signal = filingSignal(options);
+  const callOptions = signal === undefined ? {} : { signal };
   const label = await giteaEnsureLabel(
     target,
     SCOUT_LABEL,
     "0e8a16",
     LABEL_DESCRIPTION,
     options.giteaFetch,
+    callOptions,
   );
   const issue = await giteaCreateIssue(
     target,
@@ -159,6 +179,7 @@ async function fileGiteaIssue(
       labels: [label],
     },
     options.giteaFetch,
+    callOptions,
   );
   return { url: issue.url, number: issue.number };
 }

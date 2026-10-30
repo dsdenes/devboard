@@ -22,6 +22,17 @@ import {
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** How long one API call waits when the caller supplies no signal. */
+const GITEA_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Cancellation for one API call. Aborting cancels it, and an already-aborted
+ * signal sends no request at all.
+ */
+export interface GiteaCallOptions {
+  signal?: AbortSignal;
+}
+
 export interface GiteaTarget {
   /** HTTP origin, without a trailing slash. */
   baseUrl: string;
@@ -166,7 +177,7 @@ function requestInit(target: GiteaTarget, init: RequestInit | undefined, accept?
     ...init,
     method,
     headers,
-    signal: init?.signal ?? AbortSignal.timeout(30_000),
+    signal: init?.signal ?? AbortSignal.timeout(GITEA_REQUEST_TIMEOUT_MS),
   };
 }
 
@@ -188,6 +199,29 @@ function messageFromBody(body: string): string {
   return first.length > 300 ? `${first.slice(0, 300)}…` : first;
 }
 
+/** The reason an aborted signal carries, so the failure names the abort. */
+function abortReason(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error
+    ? reason
+    : new DOMException("This operation was aborted", "AbortError");
+}
+
+/**
+ * Settles with `work`, but rejects as soon as `signal` aborts. An injected
+ * transport may ignore the signal, so the race is what ends the call.
+ */
+async function racedWith<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  const aborted = Promise.withResolvers<never>();
+  const onAbort = (): void => aborted.reject(abortReason(signal));
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([work, aborted.promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 /** One API call; a non-2xx status becomes a GiteaError with the server message. */
 export async function giteaRequest(
   target: GiteaTarget,
@@ -195,8 +229,17 @@ export async function giteaRequest(
   init?: RequestInit,
   fetchImpl: FetchLike = fetch,
   accept?: string,
+  options: GiteaCallOptions = {},
 ): Promise<Response> {
-  const response = await fetchImpl(apiUrl(target, path), requestInit(target, init, accept));
+  const signal = options.signal ?? init?.signal ?? undefined;
+  if (signal?.aborted) throw abortReason(signal);
+  const request = requestInit(
+    target,
+    options.signal === undefined ? init : { ...init, signal: options.signal },
+    accept,
+  );
+  const pending = fetchImpl(apiUrl(target, path), request);
+  const response = signal === undefined ? await pending : await racedWith(pending, signal);
   if (response.ok) return response;
   const body = await response.text().catch(() => "");
   throw new GiteaError(
@@ -211,8 +254,9 @@ export async function giteaJson<T>(
   path: string,
   init?: RequestInit,
   fetchImpl: FetchLike = fetch,
+  options: GiteaCallOptions = {},
 ): Promise<T> {
-  const response = await giteaRequest(target, path, init, fetchImpl);
+  const response = await giteaRequest(target, path, init, fetchImpl, undefined, options);
   const text = await response.text();
   try {
     return JSON.parse(text) as T;
@@ -522,12 +566,14 @@ export async function giteaCreateIssue(
   target: GiteaTarget,
   input: CreateIssueInput,
   fetchImpl: FetchLike = fetch,
+  options: GiteaCallOptions = {},
 ): Promise<GiteaIssueDocument> {
   const document = await giteaJson<unknown>(
     target,
     `${repoPath(target)}/issues`,
     { method: "POST", body: JSON.stringify(input) },
     fetchImpl,
+    options,
   );
   const issue = issueFromDocument(document);
   if (issue === undefined) throw new GiteaError("the created issue has no number or URL");
@@ -725,6 +771,7 @@ export interface GiteaLabel {
 export async function giteaLabels(
   target: GiteaTarget,
   fetchImpl: FetchLike = fetch,
+  options: GiteaCallOptions = {},
 ): Promise<GiteaLabel[]> {
   const labels: GiteaLabel[] = [];
   const seen = new Set<number>();
@@ -734,6 +781,7 @@ export async function giteaLabels(
       `${repoPath(target)}/labels?limit=${GITEA_PAGE_SIZE}&page=${page}`,
       undefined,
       fetchImpl,
+      options,
     );
     if (!Array.isArray(document) || document.length === 0) break;
     let added = 0;
@@ -757,12 +805,14 @@ export async function giteaCreateLabel(
   color: string,
   description: string,
   fetchImpl: FetchLike = fetch,
+  options: GiteaCallOptions = {},
 ): Promise<GiteaLabel> {
   const document = await giteaJson<unknown>(
     target,
     `${repoPath(target)}/labels`,
     { method: "POST", body: JSON.stringify({ name, color, description }) },
     fetchImpl,
+    options,
   );
   if (typeof document !== "object" || document === null) {
     throw new GiteaError("the created label has no id");
@@ -781,10 +831,13 @@ export async function giteaEnsureLabel(
   color: string,
   description: string,
   fetchImpl: FetchLike = fetch,
+  options: GiteaCallOptions = {},
 ): Promise<number> {
-  const existing = (await giteaLabels(target, fetchImpl)).find((label) => label.name === name);
+  const existing = (await giteaLabels(target, fetchImpl, options)).find(
+    (label) => label.name === name,
+  );
   if (existing !== undefined) return existing.id;
-  return (await giteaCreateLabel(target, name, color, description, fetchImpl)).id;
+  return (await giteaCreateLabel(target, name, color, description, fetchImpl, options)).id;
 }
 
 /** Gitea marks a draft by the `WIP:` title prefix. */
