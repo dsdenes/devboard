@@ -11,6 +11,7 @@
   import AdrTable from "./AdrTable.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
+  import SaveFeedback from "./SaveFeedback.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
@@ -534,6 +535,7 @@
           >
             Save goal
           </Button>
+          <SaveFeedback scope="goal.document" />
         {/snippet}
       </PageHeader>
 

@@ -1960,6 +1960,31 @@ try {
     `document.querySelectorAll('[data-testid="provider-row"]').length === 4`,
     "the added provider row",
   );
+  const providerConfirmation = await page.eval<{
+    scope: string;
+    parent: string;
+    position: string;
+    insideDialog: boolean;
+    text: string;
+  }>(`(() => {
+    const node = document.querySelector('[data-testid="save-feedback"]');
+    return {
+      scope: node?.getAttribute("data-scope") ?? "",
+      parent: node?.parentElement?.className ?? "",
+      position: node === null ? "" : getComputedStyle(node).position,
+      insideDialog: node?.closest('[data-testid="providers-dialog"]') !== null,
+      text: node?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    providerConfirmation.scope === "providers.form" &&
+      providerConfirmation.parent.includes("providers-form-actions") &&
+      providerConfirmation.position === "static" &&
+      providerConfirmation.insideDialog &&
+      providerConfirmation.text.includes("Provider saved."),
+    "the provider save confirmation is not beside its Save control",
+    providerConfirmation,
+  );
   const added = await page.eval<{ statuses: string[]; text: string; inputs: string[]; html: string }>(`(() => ({
     statuses: [...document.querySelectorAll('[data-testid="provider-status"]')].map((node) => node.textContent?.trim() ?? ""),
     text: document.querySelector('[data-testid="providers-dialog"]')?.textContent ?? "",
@@ -3164,6 +3189,28 @@ try {
   check(dirty === "true", "the Goal editor does not mark unsaved changes", dirty);
   await page.key("s", 2);
   await page.wait(`document.querySelector('[data-testid="goal-text"]').getAttribute("data-dirty") === "false"`, "the Goal save");
+  const goalConfirmation = await page.eval<{
+    scope: string;
+    parent: string;
+    position: string;
+    insideHeader: boolean;
+  }>(`(() => {
+    const node = document.querySelector('[data-testid="save-feedback"]');
+    return {
+      scope: node?.getAttribute("data-scope") ?? "",
+      parent: node?.parentElement?.className ?? "",
+      position: node === null ? "" : getComputedStyle(node).position,
+      insideHeader: node?.closest('[data-testid="document-header"]') !== null,
+    };
+  })()`);
+  check(
+    goalConfirmation.scope === "goal.document" &&
+      goalConfirmation.parent.includes("page-header__actions") &&
+      goalConfirmation.position === "static" &&
+      goalConfirmation.insideHeader,
+    "the goal save confirmation is not beside its Save control",
+    goalConfirmation,
+  );
   const savedGoal = await readFile(join(host, "GOAL.md"), "utf8");
   const editorGoal = await page.eval<string>(`window.__devboardEditors.get("goal-text").getValue()`);
   check(savedGoal === editorGoal, "the Goal save did not write the exact editor text", { savedTail: savedGoal.slice(-30), editorTail: editorGoal.slice(-30) });

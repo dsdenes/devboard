@@ -8,6 +8,7 @@
   import type { FlowFile, FlowWidget, RunQuestion } from "./lib/types";
   import DetailSplit from "./lib/components/DetailSplit.svelte";
   import MonacoEditor from "./lib/components/MonacoEditor.svelte";
+  import SaveFeedback from "./lib/components/SaveFeedback.svelte";
   import Terminal from "./lib/components/Terminal.svelte";
   import Button from "./lib/components/ui/button.svelte";
 
@@ -404,6 +405,7 @@
         >
           Save
         </Button>
+        <SaveFeedback scope="flow.goal" />
       </div>
     </div>
     {#if flow.goalCreation === null}
@@ -713,6 +715,7 @@
             >
               Save
             </Button>
+            <SaveFeedback scope="flow.decisions" />
           </div>
         </div>
         <div class="panel__body" style="height: 420px;">

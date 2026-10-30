@@ -4278,8 +4278,3 @@ a.code-chip--link:focus-visible {
   white-space: pre-wrap;
 }
 
-.discover-agent__notice {
-  color: var(--success, var(--accent));
-  font-size: 11px;
-  margin: 0;
-}

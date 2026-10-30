@@ -9,6 +9,7 @@
   import AgentDocumentationPanel from "./AgentDocumentationPanel.svelte";
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
   import AgentPromptSection from "./AgentPromptSection.svelte";
+  import SaveFeedback from "./SaveFeedback.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
   import PageHeader from "./ui/page-header.svelte";
@@ -83,7 +84,7 @@
     return Number.isInteger(parsed) && parsed >= 1 && parsed <= 100 ? parsed : undefined;
   }
 
-  function saveSettings(): void {
+  function saveSettings(scope: string): void {
     const trimmed = cadenceText.trim();
     const minutes = Number(trimmed);
     if (
@@ -102,7 +103,7 @@
       return;
     }
     settingsError = null;
-    agents.saveSettings(agentId, minutes, perHour, pending);
+    agents.saveSettings(agentId, minutes, perHour, pending, scope);
   }
 </script>
 
@@ -195,10 +196,11 @@
               variant="secondary"
               data-testid="agent-save-cadence"
               data-command={`issues.${agentId}.settings.cadence`}
-              onclick={saveSettings}
+              onclick={() => saveSettings(`agent.cadence.${agentId}`)}
             >
               Save cadence
             </Button>
+            <SaveFeedback scope={`agent.cadence.${agentId}`} />
           </div>
           <div class="agent-settings__group" role="group" aria-label="Filing limits">
             <span class="agent-settings__title">Filing limits</span>
@@ -236,10 +238,11 @@
               variant="secondary"
               data-testid="agent-save-limits"
               data-command={`issues.${agentId}.settings.limits`}
-              onclick={saveSettings}
+              onclick={() => saveSettings(`agent.limits.${agentId}`)}
             >
               Save limits
             </Button>
+            <SaveFeedback scope={`agent.limits.${agentId}`} />
           </div>
         </div>
       {/snippet}

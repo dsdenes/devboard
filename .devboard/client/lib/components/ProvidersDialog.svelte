@@ -3,6 +3,7 @@
   import { providers, percentText, statusText } from "../providers.svelte";
   import { PROVIDERS } from "../../../server/providers/catalog";
   import type { ProviderId, ProviderSubscription } from "../types";
+  import SaveFeedback from "./SaveFeedback.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -159,6 +160,7 @@
             >
               {editing === null ? "Add key" : "Save changes"}
             </Button>
+            <SaveFeedback scope="providers.form" />
           </div>
         </form>
 

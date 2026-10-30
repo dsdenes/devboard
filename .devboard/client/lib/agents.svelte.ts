@@ -88,12 +88,14 @@ export class AgentsStore {
   promptProposal = $state<Record<string, PromptProposal | null>>({});
   promptError = $state<Record<string, string | null>>({});
   promptChatError = $state<Record<string, string | null>>({});
-  promptNotice = $state<Record<string, string | null>>({});
   private readonly seen = new Set<string>();
   private readonly lastError = new Map<string, string | null>();
   private readonly lastNotice = new Map<string, string | null>();
   /** Settings sent per agent, kept until a snapshot echoes them. */
-  private readonly pendingSettings = new Map<string, string>();
+  private readonly pendingSettings = new Map<
+    string,
+    { signature: string; scope: string }
+  >();
 
   get descriptors(): readonly AgentDescriptor[] {
     return agentRegistry.descriptors;
@@ -136,11 +138,15 @@ export class AgentsStore {
     minutes: number,
     maxPerHour: number | null,
     maxPending: number | null,
+    scope: string,
   ): void {
     if (
       connection.send({ type: "setAgentSettings", id, minutes, maxPerHour, maxPending })
     ) {
-      this.pendingSettings.set(id, settingsSignature(minutes, maxPerHour, maxPending));
+      this.pendingSettings.set(id, {
+        signature: settingsSignature(minutes, maxPerHour, maxPending),
+        scope,
+      });
     }
   }
 
@@ -151,13 +157,11 @@ export class AgentsStore {
   /** Sends the editor's exact text; the server writes only this command. */
   savePrompt(id: string, text: string): void {
     this.promptError[id] = null;
-    this.promptNotice[id] = null;
     connection.send({ type: "saveAgentPrompt", id, text });
   }
 
   sendPromptChat(id: string, message: string, text: string): void {
     this.promptChatError[id] = null;
-    this.promptNotice[id] = null;
     const entries = this.promptChat[id] ?? [];
     entries.push({ turnId: "pending", role: "user", text: message });
     this.promptChat[id] = entries;
@@ -171,20 +175,20 @@ export class AgentsStore {
       return;
     }
     if (message.type === "agentPromptSaved" && typeof message.id === "string") {
-      this.promptNotice[message.id] =
-        typeof message.notice === "string" ? message.notice : "Prompt saved.";
+      saveFeedback.saved(
+        `agent.prompt.${message.id}`,
+        typeof message.notice === "string" ? message.notice : "Prompt saved.",
+      );
       this.promptError[message.id] = null;
       const prompt = this.prompts[message.id];
       if (prompt !== undefined && typeof message.text === "string") {
         this.prompts[message.id] = { ...prompt, text: message.text };
       }
-      saveFeedback.saved("Prompt saved.");
       return;
     }
     if (message.type === "agentPromptError" && typeof message.id === "string") {
       this.promptError[message.id] =
         typeof message.message === "string" ? message.message : "The prompt command failed.";
-      this.promptNotice[message.id] = null;
       return;
     }
     if (message.type === "agentPromptChatError" && typeof message.id === "string") {
@@ -276,10 +280,10 @@ export class AgentsStore {
         value.cadence.minutes,
         value.limits.maxPerHour,
         value.limits.maxPending,
-      ) === pending
+      ) === pending.signature
     ) {
       this.pendingSettings.delete(value.id);
-      saveFeedback.saved(`${value.label} settings saved.`);
+      saveFeedback.saved(pending.scope, `${value.label} settings saved.`);
     }
     const previousNotice = this.lastNotice.get(value.id) ?? null;
     if (value.notice !== previousNotice) {

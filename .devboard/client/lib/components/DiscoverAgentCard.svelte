@@ -2,6 +2,7 @@
   import { discoverAgent } from "../../../server/agents/registry";
   import { discover } from "../discover.svelte";
   import { relativeTime } from "../discover-format";
+  import SaveFeedback from "./SaveFeedback.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -23,7 +24,6 @@
   const chat = $derived(discover.promptChat[agent] ?? []);
   const proposal = $derived(discover.promptProposal[agent] ?? null);
   const promptError = $derived(discover.promptError[agent] ?? (prompt?.error ?? null));
-  const promptNotice = $derived(discover.promptNotice[agent] ?? null);
   const chatError = $derived(discover.promptChatError[agent] ?? null);
   const status = $derived(card?.state ?? "idle");
   const startedAt = $derived(card?.startedAt ?? null);
@@ -213,11 +213,6 @@
             {promptError}
           </p>
         {/if}
-        {#if promptNotice !== null}
-          <p class="discover-agent__notice" data-testid="discover-agent-prompt-notice" role="status">
-            {promptNotice}
-          </p>
-        {/if}
         {#if editable}
           <div class="discover-agent__prompt-editor">
             <textarea
@@ -245,6 +240,7 @@
               >
                 Reset
               </Button>
+              <SaveFeedback scope={`discover.prompt.${agent}`} />
             </div>
           </div>
 

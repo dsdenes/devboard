@@ -272,7 +272,7 @@ export class ProviderStore {
     }
     if (message.type === "providerChanged") {
       const kind = this.#settle(numberOrNull(message.requestId), true);
-      if (kind === "save") saveFeedback.saved("Provider saved.");
+      if (kind === "save") saveFeedback.saved("providers.form", "Provider saved.");
       return kind !== null;
     }
     if (message.type === "providerError") {

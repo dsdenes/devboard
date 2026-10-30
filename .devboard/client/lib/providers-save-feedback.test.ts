@@ -110,6 +110,7 @@ test("a stale state frame neither confirms a save nor clears its wait", () => {
 
   expect(store.handleEvent({ type: "providerChanged", requestId })).toBe(true);
   expect(saveFeedback.text).toBe("Provider saved.");
+  expect(saveFeedback.scope).toBe("providers.form");
   expect(store.saveResult).toEqual({ requestId, ok: true });
   expect(store.busy).toBe(false);
 

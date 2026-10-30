@@ -2,12 +2,20 @@
   import Check from "lucide-svelte/icons/check";
   import X from "lucide-svelte/icons/x";
   import { saveFeedback } from "../save-feedback.svelte";
+
+  interface Props {
+    /** Names the Save control this confirmation belongs beside. */
+    scope: string;
+  }
+
+  let { scope }: Props = $props();
 </script>
 
-{#if saveFeedback.text !== null}
+{#if saveFeedback.text !== null && saveFeedback.scope === scope}
   <div
     class="save-feedback"
     data-testid="save-feedback"
+    data-scope={scope}
     role="status"
     aria-live="polite"
     aria-atomic="true"
@@ -29,35 +37,30 @@
 {/if}
 
 <style>
-  /* Bottom center, above the fixed notification region, and never in the way
-     of the Save control itself. */
+  /* Inline beside the Save control that produced it, inside that control's
+     header or footer. It never leaves the owning surface. */
   .save-feedback {
-    align-items: flex-start;
+    align-items: center;
     animation: save-feedback-in 120ms ease-out;
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
     border-left: 3px solid var(--success);
     border-radius: 6px;
-    bottom: 40px;
     color: var(--text);
-    display: flex;
-    gap: 8px;
-    left: 50%;
-    max-width: min(420px, calc(100vw - 32px));
-    padding: 8px 10px;
-    position: fixed;
-    transform: translateX(-50%);
-    z-index: 85;
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    max-width: min(320px, 100%);
+    padding: 3px 8px;
   }
 
   .save-feedback__icon {
     color: var(--success);
     display: flex;
-    margin-top: 1px;
   }
 
   .save-feedback__text {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     margin: 0;
     overflow-wrap: anywhere;
@@ -70,7 +73,7 @@
     color: var(--muted);
     cursor: pointer;
     display: flex;
-    padding: 2px;
+    padding: 1px;
   }
 
   .save-feedback__close:hover {
@@ -80,11 +83,11 @@
   @keyframes save-feedback-in {
     from {
       opacity: 0;
-      transform: translate(-50%, 6px);
+      transform: translateY(2px);
     }
     to {
       opacity: 1;
-      transform: translate(-50%, 0);
+      transform: translateY(0);
     }
   }
 

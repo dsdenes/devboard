@@ -151,7 +151,7 @@ export class FlowStore {
         this.goalDirty = false;
         this.goalDraft = message.goal;
         this.pendingGoalSave = null;
-        saveFeedback.saved("Flow goal saved.");
+        saveFeedback.saved("flow.goal", "Flow goal saved.");
       }
     } else if (!this.goalDirty) {
       this.goalDraft = message.goal;
@@ -161,7 +161,7 @@ export class FlowStore {
         this.decisionsDirty = false;
         this.decisionsDraft = message.decisions;
         this.pendingDecisionsSave = null;
-        saveFeedback.saved("Decision board saved.");
+        saveFeedback.saved("flow.decisions", "Decision board saved.");
       }
     } else if (!this.decisionsDirty) {
       this.decisionsDraft = message.decisions;
@@ -409,7 +409,7 @@ export class FlowStore {
         this.decisionsDirty = false;
         this.decisionsDraft = message.text;
         this.pendingDecisionsSave = null;
-        saveFeedback.saved("Decision board saved.");
+        saveFeedback.saved("flow.decisions", "Decision board saved.");
       } else if (!this.decisionsDirty) {
         this.decisionsDraft = message.text;
       }

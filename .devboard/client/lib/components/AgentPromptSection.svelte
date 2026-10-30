@@ -1,6 +1,7 @@
 <script lang="ts">
   import { agentRegistry } from "../../../server/agents/registry";
   import { agents } from "../agents.svelte";
+  import SaveFeedback from "./SaveFeedback.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -13,7 +14,6 @@
   const descriptor = $derived(agentRegistry.get(agentId));
   const prompt = $derived(agents.prompts[agentId] ?? null);
   const chat = $derived(agents.promptChat[agentId] ?? []);
-  const notice = $derived(agents.promptNotice[agentId] ?? null);
   const error = $derived(
     agents.promptError[agentId] ?? (prompt?.error ?? null),
   );
@@ -71,11 +71,6 @@
       {#if error !== null}
         <p class="issues-error" data-testid="agent-prompt-error" role="alert">{error}</p>
       {/if}
-      {#if notice !== null}
-        <p class="agent-prompt__notice" data-testid="agent-prompt-notice" role="status">
-          {notice}
-        </p>
-      {/if}
 
       {#if prompt.editable}
         <div class="agent-prompt__editor">
@@ -91,6 +86,7 @@
             <Button variant="secondary" data-testid="agent-prompt-save" onclick={() => agents.savePrompt(agentId, editor)}>
               Save prompt
             </Button>
+            <SaveFeedback scope={`agent.prompt.${agentId}`} />
           </div>
         </div>
 
@@ -203,6 +199,10 @@
     gap: 8px;
   }
 
+  .agent-prompt__actions {
+    flex-wrap: wrap;
+  }
+
   .agent-prompt__chat-log {
     background: var(--background);
     border: 1px solid var(--border);
@@ -236,9 +236,4 @@
     white-space: pre-wrap;
   }
 
-  .agent-prompt__notice {
-    color: var(--success, var(--accent));
-    font-size: 11px;
-    margin: 0;
-  }
 </style>

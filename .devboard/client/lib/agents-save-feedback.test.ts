@@ -111,7 +111,7 @@ test("settings feedback waits for the snapshot that echoes the saved values", ()
   socket.open();
 
   socket.deliver({ type: "agentState", agent: scout(30, 10, 5) });
-  store.saveSettings("scout", 60, 2, 1);
+  store.saveSettings("scout", 60, 2, 1, "agent.cadence.scout");
   expect(socket.sent).toContain(
     JSON.stringify({
       type: "setAgentSettings",
@@ -129,6 +129,26 @@ test("settings feedback waits for the snapshot that echoes the saved values", ()
 
   socket.deliver({ type: "agentState", agent: scout(60, 2, 1) });
   expect(saveFeedback.text).toBe("Auto Scout settings saved.");
+  expect(saveFeedback.scope).toBe("agent.cadence.scout");
+});
+
+test("a prompt save confirmation is scoped to that agent's prompt control", () => {
+  installGlobals();
+  const store = new AgentsStore();
+  connection.onMessage((message) => store.handleEvent(message as Record<string, unknown>));
+  connection.connect();
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+  socket.open();
+
+  socket.deliver({
+    type: "agentPromptSaved",
+    id: "scout",
+    text: "edited prompt",
+    notice: "Prompt saved. The next scan reads this file.",
+  });
+  expect(saveFeedback.scope).toBe("agent.prompt.scout");
+  expect(saveFeedback.text).toBe("Prompt saved. The next scan reads this file.");
 });
 
 function filed(filedCount: number, pending: number): AgentSnapshot {

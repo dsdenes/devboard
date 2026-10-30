@@ -490,7 +490,7 @@ export class GoalStore {
           this.goalDirty = false;
           this.goalDraft = message.text;
           this.pendingGoalSave = null;
-          saveFeedback.saved("Goal saved.");
+          saveFeedback.saved("goal.document", "Goal saved.");
         }
       } else if (!this.goalDirty) {
         this.goalDraft = message.text;

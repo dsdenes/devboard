@@ -131,7 +131,6 @@ export class DiscoverStore {
   promptProposal = $state<Record<string, DiscoverPromptProposal | null>>({});
   promptError = $state<Record<string, string | null>>({});
   promptChatError = $state<Record<string, string | null>>({});
-  promptNotice = $state<Record<string, string | null>>({});
   /** A Reset click asks for a fresh read of the file into the editor. */
   resetTokens = $state<Record<string, number>>({});
   error = $state<string | null>(null);
@@ -162,7 +161,6 @@ export class DiscoverStore {
 
   private agentPromptErrorClear(id: string): void {
     this.promptError[id] = null;
-    this.promptNotice[id] = null;
     this.promptChatError[id] = null;
   }
 
@@ -407,13 +405,11 @@ export class DiscoverStore {
   /** Sends the editor's exact bytes for this one agent's prompt. */
   savePrompt(id: string, text: string): void {
     this.promptError[id] = null;
-    this.promptNotice[id] = null;
     this.socket.send({ type: "saveDiscoverPrompt", agent: id, text });
   }
 
   sendPromptChat(id: string, message: string, text: string): void {
     this.promptChatError[id] = null;
-    this.promptNotice[id] = null;
     const entries = [...(this.promptChat[id] ?? []), {
       turnId: "pending",
       role: "user" as const,
@@ -603,7 +599,7 @@ export class DiscoverStore {
     const saved = skills.find((skill) => skill?.name === pending.name);
     if ((saved?.live ?? saved?.baseline) !== pending.text) return;
     this.pendingSkillSave = null;
-    saveFeedback.saved(`${pending.name}/SKILL.md saved.`);
+    saveFeedback.saved(`discover.skill.${pending.name}`, `${pending.name}/SKILL.md saved.`);
   }
 
   handleEvent(message: Message): void {
@@ -679,16 +675,16 @@ export class DiscoverStore {
       return;
     }
     if (type === "discoverPromptSaved" && typeof message.agent === "string") {
-      this.promptNotice[message.agent] =
-        typeof message.notice === "string" ? message.notice : "Prompt saved.";
+      saveFeedback.saved(
+        `discover.prompt.${message.agent}`,
+        typeof message.notice === "string" ? message.notice : "Prompt saved.",
+      );
       this.promptError[message.agent] = null;
-      saveFeedback.saved("Prompt saved.");
       return;
     }
     if (type === "discoverPromptError" && typeof message.agent === "string") {
       this.promptError[message.agent] =
         typeof message.message === "string" ? message.message : "The prompt command failed.";
-      this.promptNotice[message.agent] = null;
       return;
     }
     if (type === "discoverPromptChatError" && typeof message.agent === "string") {

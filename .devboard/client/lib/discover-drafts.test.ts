@@ -151,6 +151,29 @@ function assertDraftScope(store: DiscoverStore, socket: FakeSocket): void {
   expect(store.skillDirty(SKILL)).toBe(false);
 }
 
+test("a prompt save confirmation is scoped to that agent's prompt control", () => {
+  FakeSocket.instances = [];
+  installGlobals();
+  const sockets = new ConnectionStore();
+  const store = new DiscoverStore(sockets);
+  sockets.onMessage((message) => store.handleEvent(message as Record<string, unknown>));
+  sockets.connect();
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+  socket.open();
+  try {
+    socket.deliver({
+      type: "discoverPromptSaved",
+      agent: "sheet",
+      notice: "Prompt saved. The next run reads this file.",
+    });
+    expect(saveFeedback.scope).toBe("discover.prompt.sheet");
+    expect(saveFeedback.text).toBe("Prompt saved. The next run reads this file.");
+  } finally {
+    sockets.dispose();
+  }
+});
+
 test("a skill draft and its save stay with the target they were edited against", () => {
   FakeSocket.instances = [];
   installGlobals();

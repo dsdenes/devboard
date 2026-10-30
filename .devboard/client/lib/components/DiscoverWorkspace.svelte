@@ -15,6 +15,7 @@
   import DataTable from "./DataTable.svelte";
   import DiscoverOverview from "./DiscoverOverview.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
+  import SaveFeedback from "./SaveFeedback.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -347,6 +348,7 @@
               >
                 Save
               </Button>
+              <SaveFeedback scope={`discover.skill.${activeSkill}`} />
               {#if skillState !== "generated"}
                 <Button
                   variant={skillState === "missing" ? "default" : "outline"}
