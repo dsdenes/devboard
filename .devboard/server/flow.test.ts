@@ -1966,6 +1966,80 @@ describe("Flow checkpoints, verification, questions, and blockers", () => {
     expect((session.blockers as { dismissed: boolean }[]).some((entry) => entry.dismissed)).toBe(true);
     client.close();
   }, 60_000);
+
+  test("a second blocker marker leaves a dismissed blocker dismissed", async () => {
+    const fixture = createFixture("blocker-tombstone");
+    const waitFile = join(fixture.root, "release-second-blocker");
+    const testServer = startServer(fixture, {
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-blocker-line=first",
+        "--flow-blocker-line=second",
+        `--flow-blocker-wait-file=${waitFile}`,
+      ],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+
+    type Blocker = { id: string; text: string; dismissed: boolean };
+    const first = await client.waitFor(
+      (event) => event.type === "flowBlockers" && (event.blockers as unknown[]).length > 0,
+    );
+    const initial = (first.blockers as Blocker[])[0] as Blocker;
+    expect(initial.text).toBe("first");
+    expect(initial.dismissed).toBe(false);
+    client.send({ type: "dismissFlowBlocker", id: initial.id });
+    await waitUntil(
+      () => {
+        const current = latest(client, "flowBlockers")?.blockers as Blocker[] | undefined;
+        return current?.some((entry) => entry.id === initial.id && entry.dismissed) ?? false;
+      },
+      "the first blocker dismissal",
+    );
+
+    // The stub streams its second marker only after this file exists, so the
+    // dismissal lands while the implementation turn is still running.
+    writeFileSync(waitFile, "next\n");
+    const second = await client.waitFor(
+      (event) => event.type === "flowBlockers" && (event.blockers as unknown[]).length === 2,
+    );
+    const entries = second.blockers as Blocker[];
+    expect(entries.map((entry) => entry.text)).toEqual(["first", "second"]);
+    const tombstone = entries.find((entry) => entry.text === "first") as Blocker;
+    expect(tombstone.id).toBe(initial.id);
+    expect(tombstone.dismissed).toBe(true);
+    expect(entries.find((entry) => entry.text === "second")?.dismissed).toBe(false);
+
+    const sessionId = sessionIds(fixture)[0] as string;
+    const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), sessionId);
+    const recorded = readFileSync(join(directory, "blockers.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { id: string; text: string });
+    expect(recorded.map((entry) => entry.text)).toEqual(["first", "second"]);
+    expect(recorded.filter((entry) => entry.text === "first")).toHaveLength(1);
+
+    client.close();
+    testServer.server.stop(true);
+
+    const replacement = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement", "--flow-change"],
+    });
+    const restored = await connect(replacement);
+    const snapshot = await restored.waitFor(
+      (event) => event.type === "flowSnapshot" && event.sessionId === sessionId,
+    );
+    const restoredBlockers = snapshot.blockers as Blocker[];
+    expect(restoredBlockers.map((entry) => entry.text)).toEqual(["first", "second"]);
+    const restoredTombstone = restoredBlockers.find((entry) => entry.text === "first") as Blocker;
+    expect(restoredTombstone.id).toBe(initial.id);
+    expect(restoredTombstone.dismissed).toBe(true);
+    restored.close();
+  }, 90_000);
 });
 
 describe("Flow session lifecycle", () => {

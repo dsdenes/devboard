@@ -120,6 +120,10 @@ const flowGoalDraft = argument("flow-goal-draft") ?? "# Flow goal\n\nAn unfinish
 const flowCheckpoints = Math.max(1, Number(argument("flow-checkpoints") ?? 1));
 const flowStepDelay = Number(argument("flow-step-delay") ?? 0);
 const flowBlocked = process.argv.includes("--flow-blocked");
+/** Successive `DEVBOARD-BLOCKED:` marker texts streamed by the implementation turn. */
+const flowBlockerLines = argumentAll("flow-blocker-line");
+/** Between successive markers the stub holds until this file exists. */
+const flowBlockerWaitFile = argument("flow-blocker-wait-file");
 const flowQuestion = process.argv.includes("--flow-question");
 const flowVerification = argument("flow-verification") ?? "passed";
 const flowAnalystPartial = process.argv.includes("--flow-analyst-partial");
@@ -899,6 +903,18 @@ async function runFlowImplementation(directory: string) {
       join(directory, "blockers.jsonl"),
       `${JSON.stringify({ id: "blocker-fixture", timestamp: new Date().toISOString(), text: message.slice("DEVBOARD-BLOCKED: ".length) })}\n`,
     );
+  }
+
+  // The server alone records these markers; the stub only streams them, so a
+  // dismissal between two markers observes exactly what the real peer emits.
+  for (const [index, text] of flowBlockerLines.entries()) {
+    if (index > 0 && flowBlockerWaitFile !== undefined) {
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(flowBlockerWaitFile) && Date.now() < deadline) await Bun.sleep(25);
+      log(`flow-blocker-wait-done ${existsSync(flowBlockerWaitFile) ? "yes" : "timeout"}`);
+    }
+    log(`flow-blocker ${index + 1} ${text}`);
+    stream(`DEVBOARD-BLOCKED: ${text}`);
   }
 }
 
