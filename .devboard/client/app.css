@@ -892,6 +892,9 @@ kbd {
 .notification__meta {
   color: var(--muted-foreground);
   font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
   text-transform: uppercase;
 }
 
@@ -2161,7 +2164,9 @@ a.code-chip--link:focus-visible {
 .discover-stat__label {
   color: var(--muted-foreground);
   font-size: 10px;
-  letter-spacing: 0.03em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
   text-transform: uppercase;
 }
 
@@ -3169,10 +3174,12 @@ a.code-chip--link:focus-visible {
 }
 
 .issues-facts dt {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 .issues-facts dd {
@@ -4115,8 +4122,9 @@ a.code-chip--link:focus-visible {
 .scout-limits__title {
   color: var(--muted);
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
   text-transform: uppercase;
 }
 
@@ -4125,8 +4133,10 @@ a.code-chip--link:focus-visible {
   color: var(--muted);
   display: flex;
   font-size: 10px;
+  font-weight: 700;
   gap: 4px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
   text-transform: uppercase;
 }
 

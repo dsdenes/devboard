@@ -377,7 +377,10 @@
   }
 
   .provider-row__status {
-    font-size: 11px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
     text-transform: uppercase;
   }
 
