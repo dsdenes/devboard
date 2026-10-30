@@ -74,16 +74,19 @@ that package root as the working directory — `cd .devboard && bun install --fr
 `bun install --frozen-lockfile` exits nonzero with "Bun could not find a package.json file to
 install from", and a root-level `bun run build` fails with `error: Script not found "build"`.
 
-- Run the install only from the package root: `cd .devboard && bun install --frozen-lockfile` in the
-  repo root, or the same command from the worktree root. Never run `bun install` from the repository
-  root itself.
+- Run `bun install --frozen-lockfile` only from the package root that owns the lockfile: the tool's
+  `cwd` is `.devboard/` in the canonical checkout, or `<worktree>/.devboard/` in a task worktree.
+  Never run it from the repository root, and never prefix it with `cd <path> &&` because the
+  working directory was not already correct — set `cwd` instead.
 - Skip the install when the package root (`.devboard/`) already has `node_modules` and `bun.lock`
   has not changed since that install. Run it at most once per session: installing is a precondition,
   never a verification step, and it never repeats before each build, typecheck, or test.
-- Never pipe the install into `tail` and never chain it with `bun run build`, `bunx tsc --noEmit`,
-  or `bun test` in one shell line. It prints one summary line on success and the full error on
-  failure; truncation hides lockfile errors. Run it once, check its exit status, then run the build,
-  typecheck, and tests as separate commands.
+- Let the install's output through whole: never pipe it to `tail`, `head`, or any other consumer,
+  and never append an `echo "EXIT:$?"` or `echo "..._EXIT:$?"` status probe. It prints one summary
+  line on success and the full error on failure, and a nonzero exit already reports the failure.
+- Chain it with `&&` only into a step that must run after a successful install, such as
+  `bun run build`; never chain it to an unrelated command, and never re-run it to re-inspect output
+  a consumer truncated. Run it once, then run build, typecheck, and tests as separate commands.
 - `verification_run` runs an allowlisted check from the `.devboard/` that `devboard_status` reports
   as `harnessDirectory`. Use it for `bun run verify:interface`, as *Interface verification* below
   requires. When it resolves the canonical package root while you work in a worktree, run that
