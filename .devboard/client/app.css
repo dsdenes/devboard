@@ -214,6 +214,7 @@ kbd {
 
 .activity-tab:hover {
   background: var(--secondary);
+  border-color: var(--border-strong);
   color: var(--foreground);
 }
 
