@@ -57,18 +57,22 @@ context, but you never edit, comment on, close, or reopen another issue.
   or credential state: both report presence and resolution without exposing a value, so an
   environment sweep answers nothing they do not. Forge and registry configuration MUST be
   resolved through `bun .devboard/scripts/forge-auth.ts check` and MUST NOT be discovered with
-  an `env | grep` probe, `cat .env`, `cat ~/.npmrc`, or any other environment or credential-file
-  sweep: never enumerate the process environment or hunt for credential files, and
-  `.devboard/prompts/forge-auth.md` holds that rule in full. `DEVBOARD_GITEA_URL` is supplied by
-  the host at run time, so never hardcode it or fall back to a guessed base such as
-  `http://localhost:2223`: the check reads the real value, and a wrong guess only costs a round
-  trip. Never pipe `env` or `printenv` into `grep` (an `env | grep` probe) for `gitea`, `forge`,
-  `github`, `gitlab`, or `token`, and never treat `sed`-based masking as redaction: the tool
-  shell carries an exported `MATCH` variable holding a token-bearing grep match
-  (`MATCH='GITEA_TOKEN=…'`), so an echoed `MATCH=` line re-leaks the value, and whole-value
-  filters miss differently named variables such as `GITHUB_APM_PAT`. Emit a credential only as
-  `<set>` or `<redacted>`, never as a value or a prefix of one; when a variable must be checked,
-  print only a boolean, `[ -n "$GITEA_TOKEN" ] && echo set`.
+  an `env | grep` probe, `cat .env`, `cat ~/.npmrc`, `git config --get-regexp 'url\..*'`, or any
+  other environment or credential-file sweep: never enumerate the process environment or hunt
+  for credential files, and `.devboard/prompts/forge-auth.md` holds that rule in full. Never
+  read or grep `.devboard/scripts/forge-auth.ts` to rediscover its resolution order; read that
+  file only when the run changes it. `DEVBOARD_GITEA_URL` is supplied by the host at run time,
+  so never hardcode it or fall back to a guessed base such as `http://localhost:2223`: the
+  check reads the real value, and a wrong guess only costs a round trip. Never pipe `env` or
+  `printenv` into `grep` (an `env | grep` probe) for `gitea`, `forge`, `github`, `gitlab`, or
+  `token`: the tool shell carries an exported `MATCH` variable holding a token-bearing grep
+  match (`MATCH='GITEA_TOKEN=…'`), so an echoed `MATCH=` line re-leaks the value. Emit a
+  credential only as `<set>` or `<redacted>`, never as a value or a prefix of one; when a
+  variable must be checked, print only a boolean, `[ -n "$GITEA_TOKEN" ] && echo set`. A
+  diagnostic line that must name a variable rather than discover configuration strips every
+  value on every line with `sed -E 's/=.*/=<set>/'`; never mask only a name list with
+  `sed -E 's/(TOKEN|SECRET|PASSWORD)=.*/\1=<redacted>/'` or a variant, because that leaves a
+  differently named value such as `GITHUB_APM_PAT` in the transcript.
 - Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
   resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
   roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,
