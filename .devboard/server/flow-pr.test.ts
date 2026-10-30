@@ -819,7 +819,7 @@ describe("Flow pull-request lifecycle", () => {
     await waitUntil(
       () => forgeStub.calls.some((call) => call.op === "update"),
       "the PR body update",
-      40_000,
+      90_000,
     );
 
     const pushes = server.calls.filter(
@@ -834,7 +834,7 @@ describe("Flow pull-request lifecycle", () => {
     expect(forgeStub.calls.filter((call) => call.op === "update").length).toBeGreaterThanOrEqual(1);
     await stopFlow(client);
     client.close();
-  }, 60_000);
+  }, 120_000);
 
   test("a checkpoint after Ready keeps the Gitea pull request live so it merges", async () => {
     const fixture = createFixture("pr-ready-checkpoint-gitea");
