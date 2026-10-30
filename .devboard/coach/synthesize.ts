@@ -347,6 +347,15 @@ export function readSynthesisStub(
   };
 }
 
+/**
+ * A peer run whose own ACP error frame or stderr names a credential rejection.
+ * Only this failure rotates to the next subscription; the assistant text of a
+ * completed turn never does, because it may legitimately quote a journal 401.
+ */
+class SynthesisCredentialError extends Error {}
+
+const CREDENTIAL_REJECTION = /invalid credential|invalid api key|unauthorized|\b401\b/i;
+
 /** Runs one family's synthesis peer. */
 export async function synthesizeFamily(options: SynthesizeOptions): Promise<SynthesisResult> {
   const started = Date.now();
@@ -386,23 +395,13 @@ export async function synthesizeFamily(options: SynthesizeOptions): Promise<Synt
         prompt: options.prompt,
         timeoutMs: options.timeoutMs ?? SYNTHESIS_TIMEOUT_MS,
       });
-      if (/invalid credential|invalid api key|unauthorized|\b401\b/i.test(answer)) {
-        const detail = answer
-          .split("\n")
-          .map((line) => line.trim())
-          .find((line) => line.length > 0);
-        lastError = new Error(`the synthesizer key was rejected: ${detail ?? "no diagnostic"}`);
-        if (index < peers.value.length - 1) continue;
-        throw lastError;
-      }
       text = answer;
       break;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      const rotate = /invalid credential|invalid api key|unauthorized|\b401\b/i.test(
-        lastError.message,
-      );
-      if (!rotate || index === peers.value.length - 1) throw lastError;
+      if (!(error instanceof SynthesisCredentialError) || index === peers.value.length - 1) {
+        throw lastError;
+      }
     }
   }
   if (text === undefined) {
@@ -466,7 +465,18 @@ async function runSynthesisPeer(run: SynthesisPeerRun): Promise<string> {
       .filter((line) => line.length > 0)
       .slice(-1)[0];
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(detail === undefined ? message : `${message} (${detail})`, { cause: error });
+    const diagnostic = detail === undefined ? message : `${message} (${detail})`;
+    if (CREDENTIAL_REJECTION.test(diagnostic)) {
+      const first =
+        diagnostic
+          .split("\n")
+          .map((line) => line.trim())
+          .find((line) => line.length > 0) ?? "no diagnostic";
+      throw new SynthesisCredentialError(`the synthesizer key was rejected: ${first}`, {
+        cause: error,
+      });
+    }
+    throw new Error(diagnostic, { cause: error });
   } finally {
     clearTimeout(timer);
     connection.close();

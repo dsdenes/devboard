@@ -1852,12 +1852,14 @@ OpenCode Go subscription, led by the dashboard's published selection when it sti
 key and otherwise by the operator's list order, pinned to
 `opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The coach
 does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes, so it
-follows `selection.json` instead. A rejected
-credential rotates to the next enabled Go subscription and, when none is left, fails closed. The
+follows `selection.json` instead. A credential rejection the peer reports in its ACP error frame or
+stderr rotates to the next enabled Go subscription and, when none is left, fails closed; a 401 or
+"unauthorized" quoted inside the assistant's proposal text never rotates. The
 prompt carries the family summary, every fragment with its count, at most five excerpts, the MCP
 catalog as name/title pairs plus every `covers` entry, every open Coach issue as number/title/URL,
-and the configured allowlist; it stays under 24 KiB. A cycle whose synthesis calls fail records the
-failure and files nothing; successful calls are still reported.
+and the configured allowlist; it stays under 24 KiB. A cycle whose synthesis calls all fail records
+the failure and files nothing. A failed call among successful ones is recorded for its family and
+does not discard the proposals the other calls returned.
 
 The peer answers with one JSON object and nothing else:
 `{family, action, tool?, prompt?, rationale, acceptance}`. `action` is `tool`, `prompt`, or `none`;

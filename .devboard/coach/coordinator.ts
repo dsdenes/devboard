@@ -48,10 +48,12 @@ import { validateProposal } from "./validate";
  * recurrence each get exactly one ACP synthesis call, a deterministic validator
  * decides what the answer is worth, and filing stops at the configured caps.
  *
- * Fail-closed: a failed synthesis call files nothing that cycle, a failed open
- * issue read files nothing, and every outcome is recorded in the ledger and the
- * report. The cycle writes only `<STATE_DIR>/coach/` and the generated provider
- * agent directory the synthesizer peer needs.
+ * Fail-closed: a cycle whose synthesis calls all fail files nothing that cycle,
+ * a failed open issue read files nothing, and every outcome is recorded in the
+ * ledger and the report. A single failed synthesis call is recorded for its
+ * family while the proposals that did parse still file. The cycle writes only
+ * `<STATE_DIR>/coach/` and the generated provider agent directory the
+ * synthesizer peer needs.
  */
 
 export interface CoachFamilySummary {
@@ -555,13 +557,18 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     }
     const failedCalls = calls.filter((call) => !call.result.ok);
     if (failedCalls.length > 0) {
-      failure =
-        `synthesis failed for ${failedCalls.map((call) => call.family.key).join(", ")}: ` +
-        `${failedCalls[0]?.result.reason ?? "no diagnostic"}`;
       for (const call of failedCalls) {
         markFamily(ledger, call.family.key, "failed", { at: now });
       }
-      return finish(failure);
+      // A partial failure is recorded per family and must not discard the
+      // proposals the peer calls that did succeed returned. Only a cycle in
+      // which every synthesis call failed is a cycle failure.
+      if (failedCalls.length === calls.length) {
+        return finish(
+          `synthesis failed for ${failedCalls.map((call) => call.family.key).join(", ")}: ` +
+            `${failedCalls[0]?.result.reason ?? "no diagnostic"}`,
+        );
+      }
     }
 
     interface Candidate {

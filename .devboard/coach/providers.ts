@@ -9,8 +9,9 @@ export type { Resolved };
  * uses the same generated binding every other agent gets, pinned to OpenCode
  * Go, and never probes the usage endpoint. That endpoint is shared with the
  * dashboard's rotation, can be unreachable or transiently rejecting, and a
- * quota probe must not decide whether a cycle can finish. The peer fails on a
- * bad key and the cycle then fails closed.
+ * quota probe must not decide whether a cycle can finish. The peer reports a
+ * bad key in its own error frame or stderr, the synthesizer rotates to the next
+ * subscription, and only a cycle whose calls all fail fails closed.
  */
 
 /**
