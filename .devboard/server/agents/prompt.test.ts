@@ -197,6 +197,26 @@ describe("prompt save", () => {
     expect(readFileSync(`${promptFile}.aside`, "utf8")).toBe(PROMPT);
   });
 
+  test("a failure after the staged write keeps both prompts' previous bytes", async () => {
+    const root = await sourceRoot("staged-failure");
+    writeFileSync(
+      join(root, ".devboard", "prompts", "discover-naming-conventions.md"),
+      "---\ndescription: discover fixture\n---\n\n# Naming prompt\n",
+    );
+    const fixture = join(HARNESS_ROOT, "tests", "fixtures", "prompt-save-rename-failure.ts");
+    const child = Bun.spawn({
+      cmd: [process.execPath, fixture, root],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ exitCode, stdout, stderr }).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+  });
+
   test("Watchdog refuses every prompt command", async () => {
     const root = await sourceRoot();
     const frames: Array<Record<string, unknown>> = [];

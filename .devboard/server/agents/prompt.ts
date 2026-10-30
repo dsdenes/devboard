@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { writeStateFile } from "../state";
 import { isHarnessSourceCheckout } from "../version";
 import {
   AcpConnection,
@@ -227,7 +228,7 @@ export class AgentPromptController {
       return;
     }
     try {
-      writeFileSync(resolved.path, text, "utf8");
+      writeStateFile(resolved.path, text);
     } catch (cause) {
       this.sendTo(target, {
         type: "agentPromptError",
@@ -519,7 +520,7 @@ export class DiscoverPromptController {
       return;
     }
     try {
-      writeFileSync(this.promptPath(resolved.descriptor), text, "utf8");
+      writeStateFile(this.promptPath(resolved.descriptor), text);
     } catch (cause) {
       this.sendTo(target, {
         type: "discoverPromptError",
