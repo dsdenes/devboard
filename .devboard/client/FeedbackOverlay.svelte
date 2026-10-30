@@ -867,7 +867,7 @@
   }
 
   .feedback-result__text {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     margin: 0;
     overflow-wrap: anywhere;

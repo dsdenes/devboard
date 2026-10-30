@@ -18,7 +18,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { dependencyName, normalizeRepositoryUrl } from "../lib/dependencies.ts";
 import {
   type DiscoverAgentDescriptor,
@@ -2684,8 +2684,66 @@ export interface Manifest {
   };
 }
 
-function isManifest(value: unknown): value is Manifest {
-  return isRecord(value) && value.schemaVersion === DISCOVER_SCHEMA_VERSION;
+/**
+ * A manifest path is attacker-controlled state read from a cloned host, so it
+ * may only name a file below this repository's `.omp/`. The repository root and
+ * the `.omp/` root are resolved rather than compared as strings, which rejects
+ * absolute paths, `..` segments, and sibling directories such as `.omp-backup`.
+ */
+function validatedManifestPath(repoDir: string, value: unknown, field: string): string {
+  if (typeof value !== "string") invalid(field, "must be a string");
+  if (value.length === 0) invalid(field, "must not be empty");
+  if (ABSOLUTE_PATH_PATTERN.test(value)) invalid(field, "must be a repository-relative path");
+  if (value.split(/[\\/]/).includes("..")) invalid(field, "must not carry a .. segment");
+  const root = resolve(repoDir);
+  const target = resolve(root, value);
+  const inside = relative(resolve(root, ".omp"), target);
+  if (inside === "" || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+    invalid(field, "must stay under .omp/");
+  }
+  return value;
+}
+
+function validatedManifestPathRecord(
+  repoDir: string,
+  value: unknown,
+  field: string,
+): Record<string, string> {
+  if (!isRecord(value)) invalid(field, "must be an object of repository paths");
+  return Object.fromEntries(
+    Object.entries(value).map(([name, entry]) => [
+      name,
+      validatedManifestPath(repoDir, entry, `${field}.${name}`),
+    ]),
+  );
+}
+
+function validatedManifestPaths(
+  repoDir: string,
+  value: unknown,
+  field: string,
+): Manifest["paths"] {
+  if (!isRecord(value)) invalid(field, "must be an object");
+  const validated: Manifest["paths"] = {
+    manifest: validatedManifestPath(repoDir, value.manifest, `${field}.manifest`),
+    sheet: validatedManifestPath(repoDir, value.sheet, `${field}.sheet`),
+    decisions: validatedManifestPath(repoDir, value.decisions, `${field}.decisions`),
+    glossaries: Array.isArray(value.glossaries)
+      ? value.glossaries.map((entry, index) =>
+          validatedManifestPath(repoDir, entry, `${field}.glossaries[${index}]`),
+        )
+      : invalid(`${field}.glossaries`, "must be a list of repository paths"),
+    baselines: validatedManifestPathRecord(repoDir, value.baselines, `${field}.baselines`),
+    live: validatedManifestPathRecord(repoDir, value.live, `${field}.live`),
+  };
+  if (value.significance !== undefined) {
+    validated.significance = validatedManifestPath(
+      repoDir,
+      value.significance,
+      `${field}.significance`,
+    );
+  }
+  return validated;
 }
 
 function readManifest(repoDir: string): Manifest | undefined {
@@ -2699,8 +2757,13 @@ function readManifest(repoDir: string): Manifest | undefined {
       `manifest.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  if (!isManifest(parsed)) throw new DiscoverValidationError("manifest.json has an unsupported version");
-  return parsed;
+  if (!isRecord(parsed) || parsed.schemaVersion !== DISCOVER_SCHEMA_VERSION) {
+    throw new DiscoverValidationError("manifest.json has an unsupported version");
+  }
+  return {
+    ...(parsed as unknown as Manifest),
+    paths: validatedManifestPaths(repoDir, parsed.paths, "manifest.json.paths"),
+  };
 }
 
 function hashText(text: string): string {
@@ -2968,6 +3031,12 @@ export function publishAgentStaged(input: PublishInput): PublishResult {
   }
 
   const previousManifest = readManifest(repoDir);
+  // A legacy manifest is reused for the slices a publication does not own, so
+  // its paths are revalidated here instead of being trusted from disk.
+  const previousPaths =
+    previousManifest === undefined
+      ? undefined
+      : validatedManifestPaths(repoDir, previousManifest.paths, "manifest.json.paths");
   const previousSkills = new Map<string, ManifestSkill>(
     (previousManifest?.skills ?? []).map((skill) => [skill.name, skill] as const),
   );
@@ -3102,7 +3171,7 @@ export function publishAgentStaged(input: PublishInput): PublishResult {
       decisions: ".omp/discover/decisions.json",
       glossaries:
         mergedGlossaries === null
-          ? (previousManifest?.paths.glossaries ?? [])
+          ? (previousPaths?.glossaries ?? [])
           : mergedGlossaries.map(
               (glossary) => `.omp/discover/glossary/${glossary.boundedContext}.glossary.yaml`,
             ),
@@ -3113,9 +3182,9 @@ export function publishAgentStaged(input: PublishInput): PublishResult {
         orderedSkills.map((entry) => [entry.name, `.omp/skills/${entry.name}/SKILL.md`]),
       ),
       significance:
-        ownership.glossary || previousManifest === undefined
+        ownership.glossary || previousPaths === undefined
           ? ".omp/discover/significance.json"
-          : previousManifest.paths.significance,
+          : previousPaths.significance,
     },
   };
   if (!ownership.glossary && previousManifest === undefined) {
