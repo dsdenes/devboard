@@ -130,8 +130,8 @@ export function statusText(status: ProviderKeyStatus): string {
 }
 
 /**
- * The Providers dialog. The server owns the credentials, selection, and usage;
- * this store only mirrors the masked view.
+ * The Providers dialog and status-bar control. The server owns the
+ * credentials, selection, and usage; this store only mirrors the masked view.
  */
 export class ProviderStore {
   subscriptions = $state<ProviderSubscription[]>([]);
@@ -144,6 +144,22 @@ export class ProviderStore {
   loaded = $state(false);
   /** A save awaiting the state frame that confirms it. */
   private pendingSave = false;
+
+  get indicatorLabel(): string {
+    const selection = this.selection;
+    if (selection === null) return "No provider";
+    return `${selection.providerName} · ${percentText(selection.remainingFraction)}`;
+  }
+
+  get indicatorTitle(): string {
+    const selection = this.selection;
+    if (selection === null) {
+      return this.refusal ?? "No provider subscription is configured. Open the Providers dialog.";
+    }
+    return `${selection.providerName} (${selection.label}) serves peers on ${selection.model}; ${percentText(
+      selection.remainingFraction,
+    )} remaining. ${this.rule}.`;
+  }
 
   request(): void {
     connection.send({ type: "getProviders" });

@@ -1733,33 +1733,36 @@ try {
   // 4b. Providers: dialog, exactly two providers, masked keys,
   // usage rows, validation, edit, enable, delete, refresh, palette entry,
   // and focus trapping.
-  const statusLeft = await page.eval<{ items: string[]; indicator: boolean }>(`(() => {
+  const statusLeft = await page.eval<{ items: string[]; indicator: string; title: string }>(`(() => {
     const group = document.querySelectorAll('[data-testid="status-bar"] .status-group')[0];
+    const indicator = document.querySelector('[data-testid="providers-indicator"]');
     return {
       items: group === undefined ? [] : [...group.querySelectorAll(".status-item")].map((item) => item.textContent?.replace(/\\s+/g, " ").trim() ?? ""),
-      indicator: document.querySelector('[data-testid="providers-indicator"]') !== null,
+      indicator: indicator?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      title: indicator?.getAttribute("title") ?? "",
     };
   })()`);
   check(
-    statusLeft.items.length === 2 &&
+    statusLeft.items.length === 3 &&
       statusLeft.items[0]?.includes("Connected") &&
-      statusLeft.items[1]?.includes("host"),
-    "the status bar left group holds more than the connection and the project",
+      statusLeft.items[1]?.includes("host") &&
+      statusLeft.items[2]?.includes("OpenCode Go"),
+    "the status bar left group does not hold the connection, the project, and the provider",
     statusLeft,
   );
-  check(!statusLeft.indicator, "the status bar still renders a providers indicator", statusLeft);
+  check(
+    statusLeft.indicator.includes("OpenCode Go") && statusLeft.indicator.includes("70%"),
+    "the provider indicator does not show the selection and lowest remaining percentage",
+    statusLeft,
+  );
+  check(
+    statusLeft.title.includes("opencode-go/deepseek-v4.1-flash") &&
+      statusLeft.title.includes("70%"),
+    "the provider indicator tooltip does not name the selected model and headroom",
+    statusLeft,
+  );
 
-  await page.key("k", 2);
-  await page.wait(
-    `document.querySelector('[data-testid="command-palette"]') !== null`,
-    "the palette for Providers",
-  );
-  await page.fill('[data-testid="command-palette-input"]', "Providers");
-  await page.wait(
-    `[...document.querySelectorAll('[data-testid="command-item"]')].some((item) => item.getAttribute("data-command") === "settings.providers")`,
-    "the Providers palette entry",
-  );
-  await page.key("Enter");
+  await page.click('[data-testid="providers-indicator"]');
   await page.wait(
     `document.querySelector('[data-testid="providers-dialog"]') !== null`,
     "the providers dialog",
@@ -1772,6 +1775,8 @@ try {
   const providers = await page.eval<{
     options: Array<{ value: string; label: string }>;
     rule: string;
+    model: string;
+    rowModels: string[];
     rows: number;
     masks: string[];
     statuses: string[];
@@ -1786,6 +1791,8 @@ try {
     return {
       options: select === null ? [] : [...select.options].map((option) => ({ value: option.value, label: option.textContent?.trim() ?? "" })),
       rule: document.querySelector('[data-testid="provider-rule"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      model: document.querySelector('[data-testid="provider-model"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      rowModels: [...document.querySelectorAll('[data-testid="provider-row-model"]')].map((node) => node.textContent?.trim() ?? ""),
       rows: document.querySelectorAll('[data-testid="provider-row"]').length,
       masks: [...document.querySelectorAll('[data-testid="provider-mask"]')].map((node) => node.textContent?.trim() ?? ""),
       statuses: [...document.querySelectorAll('[data-testid="provider-status"]')].map((node) => node.textContent?.trim() ?? ""),
@@ -1806,6 +1813,18 @@ try {
     providers.options,
   );
   check(providers.rule.includes("rotates at 1% remaining"), "the dialog omits the 1% rule", providers.rule);
+  check(
+    providers.model.includes("opencode-go/deepseek-v4.1-flash"),
+    "the provider control does not name the selected provider's model",
+    providers.model,
+  );
+  check(
+    providers.rowModels.length === 3 &&
+      providers.rowModels.filter((model) => model === "opencode-go/deepseek-v4.1-flash").length === 2 &&
+      providers.rowModels.includes("openrouter/deepseek/deepseek-v4.1-flash-1017"),
+    "a provider row does not name its model",
+    providers.rowModels,
+  );
   check(providers.rows === 3, "the dialog does not list every saved subscription", providers.rows);
   check(
     providers.masks.some((mask) => mask.endsWith(PROVIDER_GO_KEY.slice(-4))) &&

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Dialog } from "bits-ui";
   import { providers, percentText, statusText } from "../providers.svelte";
+  import { PROVIDERS } from "../../../server/providers/catalog";
   import type { ProviderId, ProviderSubscription } from "../types";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
@@ -115,6 +116,9 @@
               <option value="opencode-go">OpenCode Go</option>
               <option value="openrouter">OpenRouter</option>
             </select>
+            <span class="providers-model" data-testid="provider-model">
+              model <span class="mono">{PROVIDERS[provider].model}</span>
+            </span>
           </label>
           <label class="providers-field">
             <span>Label</span>
@@ -189,6 +193,9 @@
                     {/if}
                   </span>
                 {/each}
+                <span class="mono provider-row__model" data-testid="provider-row-model">
+                  {PROVIDERS[subscription.provider].model}
+                </span>
                 <span class="provider-row__checked" data-testid="provider-last-checked">
                   checked {checkedAt(subscription.lastCheckedAt)}
                 </span>
@@ -310,6 +317,14 @@
     font-size: 12px;
     height: 28px;
     padding: 0 6px;
+  }
+
+  .providers-model {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .providers-list {

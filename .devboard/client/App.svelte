@@ -372,6 +372,7 @@
       goal.resetActiveOperations();
       discover.resetActiveOperations();
       devboard.request();
+      providers.request();
     });
     connection.onMessage((message) => {
       const record = message as Record<string, unknown>;

@@ -187,8 +187,10 @@ context as a UI issue through `/api/feedback` at once, then replaces itself with
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context.
 
-The 26px status bar is two groups. The left group states the WebSocket connection and the
-project's own name (the last path segment, with a folder mark and the full path in its tooltip).
+The 26px status bar is two groups. The left group states the WebSocket connection, the
+project's own name (the last path segment, with a folder mark and the full path in its tooltip),
+and the Providers control: the selected provider with its lowest remaining percentage, or
+`No provider`, whose tooltip names the provider's model and which opens the Providers dialog.
 The right group states the running lane count, the issues worker state with a state dot, the
 watchdog's last action and age, and the running and installed versions; each metric carries a
 10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
@@ -303,11 +305,14 @@ Provider authentication is a harness capability, not host settings. Exactly two 
 |OpenCode Go|`OPENCODE_API_KEY`|`opencode-go/deepseek-v4.1-flash`|
 |OpenRouter|`OPENROUTER_API_KEY`|`openrouter/deepseek/deepseek-v4.1-flash-1017`|
 
-The operator registers keys in the **Providers** dialog, reachable from the `settings.providers`
-palette command. The dialog supports add, edit, enable/disable, delete with confirmation, refresh,
-and save. It shows each key's masked value, status (`ok`, `near limit`, `exhausted`, `invalid`,
-`unknown`), every quota window's remaining fraction, and the last check time. A running peer keeps
-the key it started with; the next peer resolves the selection again.
+The operator registers keys in the **Providers** dialog, reachable from the status bar's
+`providers-indicator` control and the `settings.providers` palette command. The dialog supports
+add, edit, enable/disable, delete with confirmation, refresh, and save. The provider control names
+the model that provider pins, every saved subscription row names its model, and choosing a
+provider therefore chooses its model. It shows each key's masked value, status (`ok`, `near
+limit`, `exhausted`, `invalid`, `unknown`), every quota window's remaining fraction, and the last
+check time. A running peer keeps the key it started with; the next peer resolves the selection
+again.
 
 Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
 atomic replacement). A file whose envelope is unusable is moved aside, and a file with only some
