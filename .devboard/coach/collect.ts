@@ -107,6 +107,7 @@ export function collectEvidence(options: CollectOptions): CoachCollection {
   const selection = selectSessions({
     stateDir: options.stateDir,
     repoDir: options.repoDir,
+    mtimeSince: options.window.start.getTime(),
     ...(options.maxFiles === undefined ? {} : { maxFiles: options.maxFiles }),
   });
   const journal =
