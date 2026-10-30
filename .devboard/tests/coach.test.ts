@@ -9,7 +9,7 @@ import { saveSubscriptions, writeSelectionSnapshot } from "../server/providers";
 import { OPENCODE_GO_MODEL } from "../server/providers/catalog";
 import { openCodePeers } from "../coach/providers";
 import { CoachActivity, preflightCoach } from "../server/coach";
-import { coachDirectory, controlDirectory, workerStatePath } from "../coach/paths";
+import { coachDirectory, controlDirectory } from "../coach/paths";
 import { writeCoachCommand } from "../coach/control";
 import {
   DEFAULT_COACH_SETTINGS,
