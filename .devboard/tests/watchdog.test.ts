@@ -1287,6 +1287,50 @@ function dedupAnswer(
 }
 
 describe("deduplication gate", () => {
+  function promptRequest(lines: string[]): DedupRequest {
+    return {
+      repository: "acme/fixture",
+      window: { start: window.start.toISOString(), end: window.end.toISOString() },
+      candidates: lines.map((line, index) => ({
+        fingerprint: `fingerprint-${index}`,
+        category: "server-error",
+        line,
+        firstSeen: fixedNow.toISOString(),
+        lastSeen: fixedNow.toISOString(),
+        count: 1,
+        instances: [],
+        window: { start: window.start.toISOString(), end: window.end.toISOString() },
+      })),
+    };
+  }
+
+  /** The candidate JSON the prompt carries, between the two fixed markers. */
+  function candidatesBlock(prompt: string): string {
+    const start = prompt.indexOf("The complete candidate set, as JSON:");
+    const end = prompt.indexOf("Answer with one JSON object");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    return prompt.slice(prompt.indexOf("\n\n", start) + 2, end).trim();
+  }
+
+  test("a candidate line containing $' reaches the prompt verbatim", () => {
+    const line = "bash: $'\\r': command not found";
+    const prompt = dedupPrompt(promptRequest([line]));
+    const candidates = JSON.parse(candidatesBlock(prompt)) as { line: string }[];
+    expect(candidates.map((candidate) => candidate.line)).toEqual([line]);
+    expect(prompt.split("Answer with one JSON object")).toHaveLength(2);
+  });
+
+  test("$& and $` in a candidate line stay literal instead of splicing the prompt", () => {
+    const lines = ["literal $& and $` sequences"];
+    const prompt = dedupPrompt(promptRequest(lines));
+    const block = candidatesBlock(prompt);
+    expect(block).toContain("$&");
+    expect(block).toContain("$`");
+    expect(block).not.toContain("{{candidates}}");
+    expect(JSON.parse(block)).toEqual(promptRequest(lines).candidates);
+  });
+
   test("one request carries the whole candidate set before any create", async () => {
     const { root } = await fixtureRepository();
     const events = [
