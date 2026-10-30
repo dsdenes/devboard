@@ -11,6 +11,7 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl, parseForgeRemote } from "../lib/forge";
+import { releaseVersionAt } from "../lib/commit-gate";
 import {
   giteaReleaseByTag,
   giteaWorkflowRuns,
@@ -230,11 +231,7 @@ for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) {
   if (!existsSync(asset)) fail(`dist/index.html references a missing asset: ${asset}`);
 }
 
-const count = git(["rev-list", "--count", "HEAD"]);
-if (count.code !== 0) fail("could not count commits");
-const version = `0.1.${Number(count.stdout)}`;
-const tag = `v${version}`;
-console.log(`publish: waiting for the release workflow of ${published.slice(0, 7)} (${tag})`);
+console.log(`publish: waiting for the release workflow of ${published.slice(0, 7)}`);
 
 const deadline = Date.now() + waitTimeoutMs;
 let workflow: { id: number; status: string; conclusion: string | null } | undefined;
@@ -264,6 +261,32 @@ if (concluded !== "success") {
   fail(`the release workflow concluded ${concluded === "" ? "no conclusion" : concluded}`);
 }
 console.log(`publish: release workflow ${workflow.id} succeeded`);
+
+// The workflow's release step tags the published commit. Read the tag it
+// created instead of recomputing a count locally: no release for this commit
+// means the release did not happen and publish must fail.
+let version: string | undefined;
+let tagProblem: string | undefined;
+const tagDeadline = Date.now() + waitTimeoutMs;
+while (Date.now() < tagDeadline) {
+  const fetchedTags = git(["fetch", "--tags", remote]);
+  if (fetchedTags.code !== 0) {
+    tagProblem = `could not fetch ${remote} tags: ${fetchedTags.stderr || fetchedTags.stdout}`;
+  } else {
+    tagProblem = undefined;
+    version = releaseVersionAt(repoRoot, published);
+    if (version !== undefined) break;
+  }
+  await Bun.sleep(5000);
+}
+if (version === undefined) {
+  fail(
+    tagProblem ??
+      `no release for ${published.slice(0, 7)} exists; the workflow published none`,
+  );
+}
+const tag = `v${version}`;
+console.log(`publish: release ${tag} names ${published.slice(0, 7)}`);
 
 let releaseOk = false;
 let packageOk = false;

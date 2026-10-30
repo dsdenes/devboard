@@ -1,0 +1,37 @@
+#!/bin/sh
+# Devboard's pre-push gate: reject a push that would make a commit with a
+# non-Conventional subject reachable. Installed by
+# `bun .devboard/hooks/install.ts` into the repository's shared hooks
+# directory, so every worktree is gated without a per-worktree step.
+#
+# The checked-in checker decides which commits are new; this hook only locates
+# it. A worktree created from an older commit still uses the repository's gate.
+# Never bypass it with `git push --no-verify`: reword the commits instead.
+set -eu
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+gate="$root/.devboard/scripts/commit-gate.ts"
+if [ ! -f "$gate" ]; then
+  gate=
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*)
+        candidate="${line#worktree }/.devboard/scripts/commit-gate.ts"
+        if [ -f "$candidate" ]; then
+          gate="$candidate"
+          break
+        fi
+        ;;
+    esac
+  done <<EOF
+$(git worktree list --porcelain)
+EOF
+fi
+[ -n "$gate" ] || exit 0
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pre-push: bun is required to check commit messages" >&2
+  exit 1
+fi
+
+exec bun "$gate" hook

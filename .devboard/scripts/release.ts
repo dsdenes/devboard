@@ -2,12 +2,16 @@
 /**
  * Publishes one Devboard release from a `main` commit.
  *
- * The version is `0.1.<commit-count>` over the full history, so every commit
- * has its own immutable version. One public npm package carries the launcher,
- * server, client sources, built bundle, prompts, wrappers, extensions,
- * templates, and installer. The canonical Gitea release records the same tag
- * with notes plus the npm tarball and its `.sha256`, kept as a fallback when
- * npm cannot serve the artifact. Re-running the same commit is a no-op.
+ * The version is semver derived from the newest release tag reachable from
+ * `HEAD` and the Conventional Commits after it: `1.0.0` while no release has
+ * reached that baseline, then the highest bump the range carries. The release
+ * step checks the same grammar before it packs anything, so a malformed commit
+ * that reached `main` through `--no-verify` cannot release. One public npm
+ * package carries the launcher, server, client sources, built bundle, prompts,
+ * wrappers, extensions, templates, and installer. The canonical Gitea release
+ * records the same tag with notes plus the npm tarball and its `.sha256`, kept
+ * as a fallback when npm cannot serve the artifact. Re-running the same commit
+ * is a no-op.
  */
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -26,6 +30,7 @@ import {
   type GiteaTarget,
 } from "../lib/gitea";
 import { acquireLock } from "../issues/lock";
+import { deriveReleaseVersion, type ReleaseDerivation } from "../lib/commit-gate";
 import { highestReleaseVersion, publishTagFor } from "../lib/release";
 import { createReleaseDirectory, harnessRoot, repoRoot } from "./harness-package";
 
@@ -178,10 +183,32 @@ async function withReleaseLock<T>(work: () => Promise<T>): Promise<T> {
 const head = run("git", ["rev-parse", "HEAD"], repoRoot);
 if (head.code !== 0) fail("could not read HEAD");
 
-const count = run("git", ["rev-list", "--count", "HEAD"], repoRoot);
-if (count.code !== 0) fail("could not count commits; fetch the full history");
-const version = `0.1.${Number(count.stdout)}`;
-if (!/^0\.1\.[0-9]+$/.test(version)) fail(`computed an invalid version: ${version}`);
+let derivation: ReleaseDerivation;
+try {
+  derivation = deriveReleaseVersion(repoRoot, head.stdout);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+
+// The gate runs over exactly the range this release would publish, before the
+// tarball is packed and before anything reaches npm or Gitea. A push made with
+// --no-verify therefore cannot release.
+const gate = run("bun", ["scripts/commit-gate.ts", "check", derivation.range], harnessRoot);
+if (gate.code !== 0) {
+  if (gate.stdout.length > 0) console.error(gate.stdout);
+  if (gate.stderr.length > 0) console.error(gate.stderr);
+  fail(`the commits in ${derivation.range} are not Conventional Commits`);
+}
+
+const version = derivation.version;
+if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(version)) fail(`computed an invalid version: ${version}`);
+if (derivation.previous !== undefined && version === derivation.previous.version) {
+  console.log(
+    `release: nothing to release; ${derivation.previous.tag} already covers ` +
+      head.stdout.slice(0, 7),
+  );
+  process.exit(0);
+}
 const tag = `v${version}`;
 
 const token = configuredGiteaToken(process.env);

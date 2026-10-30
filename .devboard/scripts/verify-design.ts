@@ -818,12 +818,14 @@ try {
   );
   await waitFor(
     async () =>
-      (await text(devtools!, "design-activity")).includes("released 0.1.") ? true : undefined,
+      /released \d+\.\d+\.\d+:/.test(await text(devtools!, "design-activity"))
+        ? true
+        : undefined,
     "the documented standard to release",
     90_000,
   );
   const activity = await text(devtools, "design-activity");
-  const released = /released (0\.1\.\d+): (\S+)/.exec(activity);
+  const released = /released (\d+\.\d+\.\d+): (\S+)/.exec(activity);
   check(released !== null, "the activity does not name the release", activity);
   const version = released![1]!;
   const releaseUrl = released![2]!;
@@ -859,7 +861,7 @@ try {
     "the stub publisher was not invoked for the released version",
     publishLines,
   );
-  check(version.startsWith("0.1."), "the recorded version is not a release version", version);
+  check(/^\d+\.\d+\.\d+$/.test(version), "the recorded version is not a release version", version);
   check(releaseUrl.includes(`v${version}`), "the release URL does not name the version", releaseUrl);
   const releasedDocumentation = await documentationLayout(devtools);
   check(
@@ -1067,7 +1069,9 @@ try {
   );
   await waitFor(
     async () =>
-      (await text(devtools!, "design-activity")).includes("released 0.1.") ? true : undefined,
+      /released \d+\.\d+\.\d+:/.test(await text(devtools!, "design-activity"))
+        ? true
+        : undefined,
     "the retried push to release",
     90_000,
   );

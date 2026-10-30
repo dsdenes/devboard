@@ -187,6 +187,12 @@ the prerequisite in another agent's place.
 
 ## Landing
 
+A pre-push hook may reject a push whose added commits do not follow the repository's
+commit-message convention, naming each offending subject and the rule it broke. Reword those
+commits before landing — `git commit --amend` for the tip, an interactive rebase for earlier
+commits — and retry the push. Never pass `--no-verify` and never edit or remove an installed
+hook.
+
 Commit in the worktree on the run's own task branch. When `main` has moved since the branch was
 cut, rebase the task branch onto `origin/main` inside the worktree and rerun the checks the rebase
 invalidates before landing; a rebase that reports the branch is up to date is the normal case.

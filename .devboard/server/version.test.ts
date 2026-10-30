@@ -103,28 +103,38 @@ describe("serverVersion", () => {
     });
   });
 
-  test("derives an unpacked source version from the commit count", async () => {
+  test("derives an unpacked source version from the newest reachable release tag", async () => {
     const host = await temporaryDirectory();
     git(host, ["init", "-q"]);
     await writePackage(join(host, ".devboard"), "@dsdenes/devboard", "0.1.0");
-    await commit(host, "first");
+    await commit(host, "feat: first");
 
-    expect(readHarnessVersion(join(host, ".devboard"))).toBe("0.1.1");
+    expect(readHarnessVersion(join(host, ".devboard"))).toBe("0.1.0");
 
-    await commit(host, "second");
-    expect(readHarnessVersion(join(host, ".devboard"))).toBe("0.1.2");
-    expect(serverVersion(host, "0.1.2", "0.1.2")).toEqual({
-      running: "0.1.2",
-      installed: "0.1.2",
-      latest: "0.1.2",
+    git(host, ["tag", "v1.0.0"]);
+    expect(readHarnessVersion(join(host, ".devboard"))).toBe("1.0.0");
+
+    await commit(host, "fix: second");
+    expect(readHarnessVersion(join(host, ".devboard"))).toBe("1.0.0");
+
+    git(host, ["tag", "v1.0.1"]);
+    expect(readHarnessVersion(join(host, ".devboard"))).toBe("1.0.1");
+    expect(serverVersion(host, "1.0.1", "1.0.1")).toEqual({
+      running: "1.0.1",
+      installed: "1.0.1",
+      latest: "1.0.1",
       stale: false,
     });
+
+    await commit(host, "chore: unreleased change");
+    expect(readHarnessVersion(join(host, ".devboard"))).toBe("1.0.1");
   });
 
-  test("never reads a host commit count into an installed package version", async () => {
+  test("never reads a host release tag into an installed package version", async () => {
     const host = await temporaryDirectory();
     git(host, ["init", "-q"]);
-    await commit(host, "first");
+    await commit(host, "feat: first");
+    git(host, ["tag", "v9.9.9"]);
     const installed = installedPackageDir(join(host, ".devboard"));
     await writePackage(installed, "@dsdenes/devboard", "0.1.0");
 

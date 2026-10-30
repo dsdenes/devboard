@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { highestReleaseVersion } from "../lib/release";
 
 export interface ServerVersion {
   /** The harness package version this process loaded at startup. */
@@ -72,11 +73,12 @@ function git(directory: string, args: string[]): string | null {
 const gitRoots = new Map<string, string | null>();
 
 /**
- * The release version an unpacked source tree represents: `0.1.<commit-count>`,
- * the same value the release script writes into the packed manifest. Only the
+ * The release version an unpacked source tree represents: the newest release
+ * tag reachable from its `HEAD`, the same tag a release created for that
+ * history. Unreleased commits on top never change the number, and only the
  * canonical `<repo>/.devboard` source tree derives it; an npm prefix under a
- * host's `node_modules` keeps the packed version, so the host's own commit
- * count can never leak into a dashboard version.
+ * host's `node_modules` keeps the packed version, so the host's own release
+ * tags can never leak into a dashboard version.
  */
 function sourceVersion(directory: string): string | null {
   const harness = resolve(directory);
@@ -87,10 +89,14 @@ function sourceVersion(directory: string): string | null {
     gitRoots.set(harness, root);
   }
   if (root === null || resolve(root, ".devboard") !== harness) return null;
-  const count = git(harness, ["rev-list", "--count", "HEAD"]);
-  if (count === null || !/^[0-9]+$/.test(count)) return null;
-  const commits = Number(count);
-  return Number.isSafeInteger(commits) && commits > 0 ? `0.1.${commits}` : null;
+  const tags = git(harness, ["tag", "--merged", "HEAD", "--list", "v*"]);
+  if (tags === null) return null;
+  const versions: string[] = [];
+  for (const line of tags.split("\n")) {
+    const match = /^v(\d+\.\d+\.\d+)$/.exec(line.trim());
+    if (match?.[1] !== undefined) versions.push(match[1]);
+  }
+  return highestReleaseVersion(versions) ?? null;
 }
 
 export function readHarnessVersion(directory: string): string | null {

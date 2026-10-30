@@ -1289,9 +1289,9 @@ describe("design release planner", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.version).toBe("0.1.2");
+    expect(result.version).toBe("1.0.0");
     expect(published).toHaveLength(1);
-    expect(published[0]?.version).toBe("0.1.2");
+    expect(published[0]?.version).toBe("1.0.0");
     const bareHead = run("git", ["--git-dir", bare, "rev-parse", "main"]);
     expect(bareHead).toBe(result.sha);
     const bareFiles = run("git", ["--git-dir", bare, "show", "--name-only", "--format=", "main"]);
@@ -1369,7 +1369,7 @@ describe("design release planner", () => {
       now: () => new Date(),
       run: hookRun(repo, bare, (argv) => {
         if (advanced) return;
-        if (argv.includes("commit") && argv.some((value) => value.startsWith("design:"))) {
+        if (argv.includes("commit") && argv.some((value) => value.startsWith("docs(design):"))) {
           advanced = true;
           const temporary = join(repo, ".worktree", "concurrent");
           run("git", ["worktree", "add", "-q", "--detach", temporary, "main"], repo);
@@ -1421,7 +1421,7 @@ describe("design release planner", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.detail).toContain("concluded failure");
     expect(published).toBe(0);
-    expect(run("git", ["--git-dir", bare, "log", "-1", "--format=%s", "main"])).toContain("design:");
+    expect(run("git", ["--git-dir", bare, "log", "-1", "--format=%s", "main"])).toContain("docs(design):");
   });
 
   test("a failed publish keeps the pushed commit and reports it", async () => {
@@ -1449,7 +1449,7 @@ describe("design release planner", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.detail).toContain("bun run publish exited 1");
-    expect(run("git", ["--git-dir", bare, "log", "-1", "--format=%s", "main"])).toContain("design:");
+    expect(run("git", ["--git-dir", bare, "log", "-1", "--format=%s", "main"])).toContain("docs(design):");
   });
 
   test("a dirty integration checkout names its blocking paths and discards nothing", async () => {

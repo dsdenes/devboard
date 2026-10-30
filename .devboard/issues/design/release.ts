@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { giteaBaseUrl, configuredGiteaToken, type Forge } from "../../lib/forge";
+import { deriveReleaseVersion } from "../../lib/commit-gate";
 import { giteaWorkflowRuns } from "../../lib/gitea";
 import { originForge } from "../repository";
 import { findOnPath } from "../repository";
@@ -346,7 +347,7 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
     const committed = await git(worktree.directory, [
       "commit",
       "-m",
-      `design: ${input.summary}`.slice(0, 72),
+      `docs(design): ${input.summary.trim()}`.slice(0, 72).trimEnd(),
     ]);
     must(committed, "could not commit the documentation change");
     input.activity(`documentation committed on ${worktree.branch}`);
@@ -442,6 +443,8 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
 
     const fetchedIntegration = await git(input.repoDir, ["fetch", "origin", "main"]);
     must(fetchedIntegration, "could not fetch origin/main in the integration checkout");
+    const fetchedTags = await git(input.repoDir, ["fetch", "--tags", "origin"]);
+    must(fetchedTags, "could not fetch origin release tags");
     const incoming = await git(input.repoDir, ["diff", "--name-only", "HEAD", "origin/main"]);
     const incomingPaths = incoming.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
     const dirty = await git(input.repoDir, ["status", "--porcelain", "--untracked-files=no"]);
@@ -470,8 +473,7 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
       throw new Error("the integration checkout does not contain the pushed commit");
     }
 
-    const count = must(await git(input.repoDir, ["rev-list", "--count", "HEAD"]), "could not count commits");
-    const version = `0.1.${Number(count)}`;
+    const version = deriveReleaseVersion(input.repoDir, sha).version;
     const tag = `v${version}`;
     input.activity(`publishing ${version} from the integration checkout`);
     const published = await publish({

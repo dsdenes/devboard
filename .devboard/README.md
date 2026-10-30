@@ -1315,9 +1315,26 @@ Merging into `main` and pushing to the canonical Gitea remote triggers
 `act_runner` — never a hosted runner, and never a fallback — and builds the client, runs the
 harness suite and typecheck, packs the complete public package, publishes
 `@dsdenes/devboard@<version>` to npmjs, and creates the Gitea release `v<version>` with notes and
-the same tarball plus its `.sha256` as a fallback. The version is `0.1.<commit-count>` over the
-full history; a rerun on the same commit leaves the existing npm version and release assets
-untouched. Nothing is published under `@dsdenes/devboard-harness`.
+the same tarball plus its `.sha256` as a fallback. A rerun on the same commit leaves the existing
+npm version and release assets untouched. Nothing is published under
+`@dsdenes/devboard-harness`.
+
+The release version is semver derived from Conventional Commits. The first release of this line
+is `1.0.0` while the highest published release is still below it. Every later release takes the
+newest release tag reachable from `HEAD` and advances it by the highest level in the non-merge
+commits after that tag: a `!` before the colon or a `BREAKING CHANGE:`/`BREAKING-CHANGE:` footer
+raises the major, otherwise a `feat` raises the minor, otherwise the patch is raised. A range with
+no non-merge commit releases nothing. The release step refuses a range that contains a commit
+whose subject is not `<type>[(<scope>)][!]: <description>`, with `<type>` one of
+`feat fix docs style refactor perf test build ci chore revert` in lowercase, so a push made with
+`--no-verify` cannot release.
+
+The same grammar gates every push. `bun .devboard/hooks/install.ts` writes an executable
+`pre-push` into the repository's shared hooks directory, so every worktree is gated without a
+per-worktree step; the installer is idempotent, needs `--force` to replace a differing hook, and
+refuses anything that is not the source harness at `<checkout>/.devboard`. A rejected push names
+each offending `<sha> <subject>` and the rule it broke. Reword the commits with
+`git commit --amend` or an interactive rebase and push again; never pass `--no-verify`.
 
 A release takes the `latest` dist-tag only when its version is newer than every version already
 published; otherwise it publishes under the `next` tag. npm refuses to move `latest` backwards,
@@ -1337,7 +1354,9 @@ bun run publish
 `bun run publish` refuses a worktree, a branch other than `main`, or a checkout ahead of or
 diverged from its canonical remote; fetches and fast-forwards `main` without discarding
 uncommitted work; installs dependencies and rebuilds `dist/`; waits for the release workflow of
-`HEAD`; verifies the Gitea release assets and `npm view @dsdenes/devboard@<version> version`;
+`HEAD`; reads the release tag the workflow created for that commit and fails when none exists, so
+the reported version is the one that workflow published and never a locally counted value;
+verifies the Gitea release assets and `npm view @dsdenes/devboard@<version> version`;
 pushes the `github` mirror remote's `main` and the release tags, then proves `main` is the
 published commit or a descendant that still contains it (another agent may merge while the
 release workflow runs); and reports every running dashboard's running and installed version. It never
@@ -1360,8 +1379,10 @@ that staging directory, and the dashboard starts from the host root rather than 
 package directory, so replacing the package never leaves a child with a deleted working
 directory. `versionState` reports `running`, `installed`, `latest`, and `stale`; the reload
 control appears while `stale` is true and restarts the server from the installed package. A
-dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
-version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder.
+dashboard serving the canonical source checkout reads neither side from the checked-in manifest:
+it reports the newest release tag reachable from its `HEAD` on both sides, so an unreleased commit
+on top never changes the number and an unpacked checkout never claims `0.1.0`. After
+`bun run publish` the source checkout's `running` is the version that tag just published.
 
 A check that cannot use the feed — an offline host, an unreachable Gitea API, a DNS or proxy
 failure, a refused or reset connection, a timeout, an API rate limit, or an answer that is not a
@@ -2751,8 +2772,9 @@ The client sends:
   backend loaded, `installed` is the version its prefix holds now, `latest` is the newest
   release an update check has seen, and `stale` is true only when `running` and `installed` are
   readable and differ. A dashboard that serves the canonical source checkout reads neither side
-  from the checked-in manifest: it reports `0.1.<commit-count>` over the full history, the same
-  version a release packs, so an unpacked checkout never claims `0.1.0`. A client that connects,
+  from the checked-in manifest: it reports the newest release tag reachable from its `HEAD`, the
+  same version a release created for that history, so an unpacked checkout never claims `0.1.0`
+  and an unreleased commit on top never changes the number. A client that connects,
   and the page every few seconds, asks for it; a stale answer makes the reload control appear
   with both versions in its title.
 - `getProviders` answers with `providersState`: every subscription with its masked key, status,

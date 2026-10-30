@@ -40,6 +40,39 @@ and restart it so the page reflects the new code:
 
 For an installed host, the reload control is the only restart path.
 
+## Commit messages
+
+Every commit on the canonical line is a Conventional Commit:
+
+```
+<type>[(<scope>)][!]: <description>
+```
+
+`<type>` is one of `feat fix docs style refactor perf test build ci chore revert`, in lowercase.
+`<scope>` is optional and matches `[a-z0-9._-]+`; `!` marks a breaking change; `<description>` is
+non-empty with no leading or trailing whitespace. Body and footers are unrestricted. A merge
+commit — two or more parents, or Git's generated `Merge …` subject — is exempt.
+
+The release version comes from those messages. The first release of this line is `1.0.0` while
+the highest published release is below it. Later releases advance the newest release tag reachable
+from `HEAD` by the highest level in the non-merge commits after it: a `!` before the colon or a
+`BREAKING CHANGE:`/`BREAKING-CHANGE:` footer raises the major, otherwise a `feat` raises the
+minor, otherwise the patch. A range with no non-merge commit releases nothing. `bun run release`
+checks the same grammar over the range it is about to release, so a malformed commit cannot
+publish even when it reached `main` through `--no-verify`.
+
+Install the gate once per checkout; it lives in the repository's shared hooks directory and covers
+every existing and future worktree:
+
+```bash
+bun .devboard/hooks/install.ts           # idempotent
+bun .devboard/hooks/install.ts --force   # replace a differing hook
+```
+
+A rejected push names each offending `<sha> <subject>` and the rule it broke, and adds no ref.
+Reword those commits with `git commit --amend` or an interactive rebase, then retry the push.
+Never use `--no-verify` and never edit or remove the installed hook.
+
 ## Verify and release
 
 Before a commit that changes the harness:

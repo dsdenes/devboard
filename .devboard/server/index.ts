@@ -9,7 +9,12 @@ import { sourceCheckoutGiteaUrl } from "./local-gitea";
 import { relaunch } from "./relaunch";
 import { snapshotStaticDir } from "./static-snapshot";
 import { startUpdater, type Updater } from "./updates";
-import { readHarnessVersion, runningHarnessDir } from "./version";
+import {
+  isHarnessSourceCheckout,
+  readHarnessVersion,
+  runningHarnessDir,
+  serverVersion,
+} from "./version";
 
 const hostname = process.env.HOST ?? "127.0.0.1";
 const allowedHosts = (process.env.DEVBOARD_ALLOWED_HOSTS ?? "")
@@ -117,6 +122,18 @@ for (let attempt = 0; ; attempt += 1) {
       port,
       journal,
       runningVersion,
+      versionState: () =>
+        serverVersion(
+          repoDir,
+          // A source checkout's version is a property of the tree, so a release
+          // created while this process runs is what `running` reports. An
+          // installed prefix keeps reporting the version it loaded until a
+          // restart, which is what makes the reload control appear.
+          isHarnessSourceCheckout(repoDir)
+            ? readHarnessVersion(runningHarnessDir())
+            : runningVersion,
+          updater?.latest() ?? null,
+        ),
       latestVersion: () => updater?.latest() ?? null,
       ...(injectedFlow === undefined ? {} : { flow: injectedFlow }),
       ...(injectedFeedback === undefined ? {} : { feedback: injectedFeedback }),
