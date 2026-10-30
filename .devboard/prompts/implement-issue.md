@@ -98,22 +98,35 @@ git merge --ff-only <task-branch>
 git push origin main
 local_commit=$(git rev-parse HEAD)
 remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
+printf 'local %s remote %s\n' "$local_commit" "$remote_tip"
 if [ "$local_commit" != "$remote_tip" ]; then
   printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
   exit 1
 fi
+upstream=$(git status --short --branch | sed -n '1p')
+printf '%s\n' "$upstream"
+case "$upstream" in
+  *"[ahead "*) printf 'push not verified: %s\n' "$upstream" >&2; exit 1 ;;
+esac
 ```
 
-`git ls-remote` must name the same commit as the new local HEAD; equal tips prove the landing
-commit reached the canonical line, and ancestry follows. The check prints both commits and exits
-nonzero when they differ. State integration only from a `git merge-base --is-ancestor` exit status
-or the `git ls-remote` ref value; never use `git log`, `git status`, or `head`/`tail`-trimmed merge
-output as the push proof. Use at most one `git merge-base --is-ancestor` per composite check, as
+`git rev-parse HEAD` and `git ls-remote origin refs/heads/main` must print the same SHA: the new
+local HEAD equals the SHA `ls-remote` names for `refs/heads/main`, and that equality proves the
+landing commit reached the canonical line, so ancestry follows. The block prints both commits and
+exits nonzero when they differ. The trailing check reads `git status --short --branch` and exits
+nonzero when it reports commits ahead of upstream, so the block proves both the matching SHAs and
+no unlanded local commit. Run this block once per landing attempt, and never push again after one
+succeeds: never issue another `git push origin main` and never repeat its verification, and add no
+`tail` pipe, extra `rev-parse`, `fetch`, or `PIPESTATUS` probe around it. State integration only
+from a `git merge-base --is-ancestor` exit status or the `git ls-remote` ref value; never use
+`git log`, `git status`, or `head`/`tail`-trimmed merge output as the push proof (the ahead check
+above is not one either). Use at most one `git merge-base --is-ancestor` per composite check, as
 above; never chain per-commit probes, and never re-verify a commit already proven to be the remote
 tip. If an older commit genuinely needs checking, run exactly one such probe and report its exit
 status. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory
-`git merge origin/main` on `main`. If `main` moved before landing, rebase the task branch onto
-`origin/main` inside the worktree, rerun the invalidated checks, and repeat the sequence.
+`git merge origin/main` on `main`. If the push is rejected or `main` moved before landing, fetch
+the new tip, rebase the task branch onto `origin/main` inside the worktree, rerun the invalidated
+checks, and push again through this same block.
 
 After the proof, release from the integration checkout with the single Publish invocation below.
 
