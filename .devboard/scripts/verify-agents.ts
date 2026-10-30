@@ -744,7 +744,7 @@ try {
     const record = entry as Record<string, unknown> | null;
     assertTrue(record?.label === label, `${id} entry label is ${String(record?.label)}`);
     assertTrue(record?.state === "stopped", `${id} starts ${String(record?.state)}`);
-    assertTrue(record?.count === "0", `${id} pending count starts at ${String(record?.count)}`);
+    assertTrue(record?.count === "0", `${id} filed count starts at ${String(record?.count)}`);
   }
   console.log("PASS sidebar-background-agents");
 
@@ -1253,6 +1253,10 @@ try {
     (await text(devtools, "agent-issues-count")).startsWith("2 filed"),
     "the filed count did not refresh",
   );
+  assertTrue(
+    (await text(devtools, "agent-count-watchdog")) === "2",
+    "the Watchdog sidebar count does not match its filed rows",
+  );
   const scoutState = emptyState({ repo: "acme/fixture", root: host.directory });
   scoutState.issues = [
     {
@@ -1295,6 +1299,10 @@ try {
   assertTrue(
     (await text(devtools, "agent-issues-count")).startsWith("2 filed"),
     "the Auto Scout count did not refresh",
+  );
+  assertTrue(
+    (await text(devtools, "agent-count-scout")) === "2",
+    "the Auto Scout sidebar count does not match its filed rows",
   );
   assertTrue(
     JSON.stringify(await columns(devtools)) ===
@@ -1346,6 +1354,10 @@ try {
   assertTrue(
     coachRows[0]?.title === "[coach] bun run publish",
     `the Coach title is wrong: ${JSON.stringify(coachRows)}`,
+  );
+  assertTrue(
+    (await text(devtools, "agent-count-coach")) === "1",
+    "the Coach sidebar count does not match its filed rows",
   );
   await waitFor(
     async () => ((await present(devtools!, "watchdog-cycle")) ? true : undefined),

@@ -1486,7 +1486,9 @@ sends one settings command. The Devboard sidebar has two groups in order: `Backg
 `open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`, then
 `open-devboard-coach`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
 `Devboard sections` (the `devboard-tab` MCP tools entry). The Issues sidebar carries no
-Background agents group.
+Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
+table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
+queue.
 
 ### Transport
 
