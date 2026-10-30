@@ -81,7 +81,7 @@
   {#if discover.active}
     <div class="discover-run-tag" data-testid="discover-run-tag" role="status" aria-live="polite">
       <span class="discover-run__dot" aria-hidden="true"></span>
-      <strong>Discover run in progress</strong>
+      <strong>Run in progress</strong>
       {#if discover.startedAt !== null}
         <span class="muted" title={discover.startedAt}>started {startedLabel}</span>
       {/if}

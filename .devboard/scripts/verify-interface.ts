@@ -4357,6 +4357,14 @@ try {
     "the running label on the Discover overview",
     15_000,
   );
+  const discoverRunTag = await page.eval<string>(
+    `document.querySelector('[data-testid="discover-run-tag"] strong')?.textContent?.trim() ?? ""`,
+  );
+  check(
+    discoverRunTag === "Run in progress",
+    "the Discover run tag does not read as the documented run state",
+    discoverRunTag,
+  );
   await page.wait(
     `document.querySelector('[data-testid="sidebar"] [data-testid="discover-running"]') === null`,
     "the Discover running label to clear",
