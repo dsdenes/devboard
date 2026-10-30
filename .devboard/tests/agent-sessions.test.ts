@@ -194,6 +194,62 @@ describe("ACP session reader", () => {
     expect(capped.sessions).toHaveLength(3);
   });
 
+  test("applies start-time filters before the newest-file cap", async () => {
+    const { repoDir, stateDir } = await fixture();
+    const maxFiles = 3;
+    await seed(stateDir, {
+      id: "oldest",
+      cwd: repoDir,
+      startedAt: "2025-12-01T10:00:00.000Z",
+      messages: 1,
+    });
+    for (let index = 0; index < maxFiles; index += 1) {
+      await seed(stateDir, {
+        id: `recent-${index}`,
+        cwd: repoDir,
+        startedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        messages: 1,
+      });
+    }
+    const page = listSessions({
+      stateDir,
+      repoDir,
+      maxFiles,
+      since: "2025-12-01T00:00:00.000Z",
+      until: "2025-12-01T23:59:59.999Z",
+    });
+    expect(page.sessions.map((session) => session.id)).toEqual(["oldest"]);
+    expect(page.total).toBe(1);
+    expect(page.truncated).toBe(false);
+    expect(page.nextOffset).toBeNull();
+  });
+
+  test("reports the newest-file cap as truncation and pages past it", async () => {
+    const { repoDir, stateDir } = await fixture();
+    await seed(stateDir, {
+      id: "older",
+      cwd: repoDir,
+      startedAt: "2026-01-01T10:00:00.000Z",
+      messages: 1,
+    });
+    await seed(stateDir, {
+      id: "newer",
+      cwd: repoDir,
+      startedAt: "2026-01-02T10:00:00.000Z",
+      messages: 1,
+    });
+    const first = listSessions({ stateDir, repoDir, maxFiles: 1 });
+    expect(first.sessions.map((session) => session.id)).toEqual(["newer"]);
+    expect(first.total).toBe(2);
+    expect(first.truncated).toBe(true);
+    expect(first.nextOffset).toBe(1);
+    const second = listSessions({ stateDir, repoDir, maxFiles: 1, offset: 1 });
+    expect(second.sessions.map((session) => session.id)).toEqual(["older"]);
+    expect(second.total).toBe(2);
+    expect(second.truncated).toBe(false);
+    expect(second.nextOffset).toBeNull();
+  });
+
   test("reads messages in order with row and byte bounds", async () => {
     const { repoDir, stateDir } = await fixture();
     await seed(stateDir, {
@@ -274,6 +330,39 @@ describe("ACP session reader", () => {
     expect(found.matches[0]?.sessionId).toBe("search");
     expect(found.matches[0]?.snippet.length).toBeLessThanOrEqual(200);
     expect(found.matches[0]?.snippet.toLowerCase()).toContain("needle");
+  });
+
+  test("searches transcripts older than the newest-file cap", async () => {
+    const { repoDir, stateDir } = await fixture();
+    await writeFile(
+      join(stateDir, "providers", "agents", "fixture", "sessions", "bucket", "old-match.jsonl"),
+      [
+        JSON.stringify({
+          type: "session",
+          id: "old-match",
+          timestamp: "2025-12-01T10:00:00.000Z",
+          cwd: repoDir,
+        }),
+        JSON.stringify({
+          type: "message",
+          timestamp: "2025-12-01T10:00:00.000Z",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "the archived needle lives here" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    for (let index = 0; index < 4; index += 1) {
+      await seed(stateDir, {
+        id: `recent-${index}`,
+        cwd: repoDir,
+        startedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        messages: 1,
+      });
+    }
+    const found = searchSessions({ stateDir, repoDir, query: "needle", maxFiles: 2 });
+    expect(found.matches.map((match) => match.sessionId)).toEqual(["old-match"]);
   });
 
   test("normalization and a tool-error fingerprint are stable", () => {
