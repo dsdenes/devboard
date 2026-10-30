@@ -169,10 +169,10 @@ the prerequisite in another agent's place.
 - Land through the one sequence below. Never create a pull request or merge request, never
   force-push, and never rewrite published history.
 - When a push is rejected, fetch the new tip, rebase the task branch onto it inside the worktree,
-  rerun the invalidated checks, and repeat the landing sequence once per rejection. Never bypass
-  the rejection.
-- Close the issue only after the landing sequence below proves the push and the required checks
-  pass. Use `issue_close` with `{"number": <number>, "reason": "completed"}`; it is the only forge
+  rerun the invalidated checks, and repeat the landing sequence and push block once per rejection.
+  Never bypass the rejection.
+- Close the issue only after the push block below proves the push and the required checks pass.
+  Use `issue_close` with `{"number": <number>, "reason": "completed"}`; it is the only forge
   mutation in this run. Do not post a tracker comment — no comment tool is exposed — and put the
   revision and the verification evidence in the final response instead.
 - A proven duplicate, invalid, or already-fixed issue is closed with `issue_close` and the
@@ -215,57 +215,35 @@ Then land it with this one canonical sequence from the canonical checkout, on `m
 git fetch origin main
 git merge --ff-only origin/main
 git merge --ff-only <task-branch>
-git push origin main
 ```
 
-The fetch names the tip, the first merge fast-forwards `main` to it, the second adds the task
-branch, and the push publishes both. Run the sequence once per landing attempt: no `&&` chain
-between its lines, no `tail` pipe, and no `PIPESTATUS` probe. Never create a pull request or merge
-request.
+The fetch names the tip, the first merge fast-forwards `main` to it, and the second adds the task
+branch. Run the sequence once per landing attempt: no `&&` chain between its lines, no `tail`
+pipe, and no `PIPESTATUS` probe. Never create a pull request or merge request.
 
-Prove the push with this one verification block, run once in the canonical checkout and read
-as-is:
+Push and prove the push with this one block, run verbatim once after the sequence, in the
+canonical checkout and read as-is:
 
 ```sh
-git fetch origin main
-git rev-parse --verify HEAD
-git rev-parse --verify origin/main
-local_commit=$(git rev-parse HEAD)
-remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
-printf 'local %s remote %s\n' "$local_commit" "$remote_tip"
-if [ "$local_commit" != "$remote_tip" ]; then
-  printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
-  exit 1
-fi
-git status --short --branch
+git fetch origin -q && git status --short --branch && git push origin main; echo "PUSH_EXIT:$?"; printf 'local  %s\nremote %s\n' "$(git rev-parse HEAD)" "$(git ls-remote origin refs/heads/main | cut -f1)"
 ```
 
-Equal tips prove the landing commit is the canonical tip, and `git status --short --branch` must
-report no commits ahead of or behind the upstream. The gate prints both commits and exits nonzero
-when they differ, so a difference is a failed push: fetch the new tip, rebase the task branch onto
-`origin/main` inside the worktree, rerun the invalidated checks, and push again. Never use
-`git log` or a `head`/`tail`-trimmed merge output as the push proof. Run the block once per
-verification point and never repeat it to reconfirm output it already printed; it is the only
-post-push readback, and this prompt excludes any other `git ls-remote`, `git log`, and a second
-`git status` readback.
+It is one push invocation, its exit status on the `PUSH_EXIT:` line, and the local and remote
+commits printed by the same command. The push is verified only when `PUSH_EXIT:0` prints and the
+two SHAs are identical; `git status --short --branch` must show no ahead/behind marker. Never pipe
+`git push` into `tail`, `head`, or any other consumer: the `tail -3`, `tail -4`, `tail -5`,
+`tail -8`, and `tail -10` variants discard the rejection text and the exit status. Never use
+`git log` or a trimmed merge output as the push proof, and run the block once per landing
+attempt: it is the only post-push readback, and this prompt excludes any other `git ls-remote`,
+`git log`, and a second `git status` readback.
 
-The post-push block proves the remote tip with `git ls-remote <remote> refs/heads/main` (`origin`
-here) instead of re-deriving sync state: equal local and remote commits prove the landing commit
-is the canonical tip, so never repeat `git rev-list --left-right --count` or
+Equal tips prove the landing commit is the canonical tip, so the `ls-remote` in the block replaces
+every post-push sync probe: never repeat `git rev-list --left-right --count` or
 `git merge-base --is-ancestor` after the push and never confirm the remote tip with rev-list. The
-combined probe above is the task's only ancestry check while preparing, landing, and publishing.
-Never wrap it in a loop over candidate commits or SHAs, and never repeat it for a second ref or a
-commit the remote-tip read already proved.
-
-Never chain these ref probes with `&&`: when a ref is absent the chain stops at the failing probe
-and hides the rest, and a nonzero exit from the block is evidence to read, not a reason to rerun
-it. `--verify` and `--short` each accept exactly one revision, so probe `HEAD` and `origin/main`
-separately and never pass both to one `--short` call; that misuse prints
-`fatal: Needed a single revision` even when every ref resolves. The same message from
-`git rev-parse --verify origin/main` means the local `origin/main` ref is unresolved, not a merge
-conflict or a code failure: run `git fetch origin main` and rerun the block once. Fetch at most
-twice in a session, and fetch again only after a push, merge, or rebase happened since the
-previous fetch.
+block's `&&` chain is deliberate — the status read must succeed before the push runs — so never
+split it into separate commands, drop the leading fetch, reorder it, or rerun it to reconfirm
+output it already printed; a nonzero exit from it is evidence to read. Fetch at most twice in a
+session, and fetch again only after a push, merge, or rebase happened since the previous fetch.
 
 `Diverging branches can't be fast-forwarded` or "Not possible to fast-forward" is a diagnosis,
 not an instruction to repeat the merge. Never rerun the same `--ff-only` command, and never fall
@@ -273,18 +251,19 @@ back to `--no-ff` silently. Name which side is ahead with exactly one
 `git rev-list --left-right --count HEAD...origin/main` after the refused merge: the left count is
 the commits only `HEAD` has and the right count is the commits only `origin/main` has. Never
 chain that probe with `&&`. Integrate `origin/main` into the task branch — rebase it inside the
-worktree onto `origin/main` and rerun the checks the rebase invalidates — then rerun the sequence
-from its first line.
+worktree onto `origin/main` and rerun the checks the rebase invalidates — then repeat the sequence
+and the push block from the start.
 
 A `CONFLICT (content)` is resolved in the merge that raised it: edit the conflicted files, stage
 them, commit the result, and rerun the checks the conflict invalidates. `git merge --abort`
 followed by an unchanged retry is not acceptable; only an integration that removes the conflict
 may follow an abort.
 
-A rejected push is ground truth: fetch the new tip, rebase the task branch onto `origin/main`
-inside the worktree, rerun the invalidated checks, and retry the same push unchanged. The landing
-merge is fast-forward only: never `--no-ff`, `--no-edit`, or a non-fast-forward
-`git merge origin/main` on `main`. Push before publish, never after.
+A nonzero `PUSH_EXIT` or differing local and remote commits is a rejected or unproven push: fetch
+the new tip, rebase the task branch onto `origin/main` inside the worktree, rerun the invalidated
+checks, and repeat the same block unchanged. Never re-push blind and never report done from a bare
+`git push` line. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a
+non-fast-forward `git merge origin/main` on `main`. Push before publish, never after.
 
 After that block, release from the integration checkout with the single Publish invocation below.
 
@@ -335,7 +314,7 @@ cd .devboard && bun run publish > .tmp/publish-issue-<number>.log 2>&1; echo "EX
   `/home/...`, no `tail`/`head`/`tee` pipe or any other output consumer, no `--wait-timeout`
   override, and no second log file. The redirected log is the full output and its final line is
   the exit code. Publish already verifies `main`, the release workflow, the npm package, the
-  release assets, and the mirror; the landing readback already owns the push proof, so add no
+  release assets, and the mirror; the push block already owns the push proof, so add no
   `git ls-remote` or `git status` probe around the publish run. Read no release or workflow state
   through `curl`, `gh`, or `glab`; publish prints the verification result.
 - Publish is long-running. While it runs, do other work or end the turn and wait for its
