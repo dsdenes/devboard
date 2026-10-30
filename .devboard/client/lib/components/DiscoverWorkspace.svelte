@@ -335,7 +335,7 @@
                 </span>
               {/if}
               <Button
-                variant={skillDirty ? "default" : "secondary"}
+                variant={skillDirty && skillState !== "missing" ? "default" : "secondary"}
                 data-command={`discover.skill.save.${activeSkill}`}
                 data-testid="discover-skill-save"
                 disabled={!skillDirty || skillState === "missing"}

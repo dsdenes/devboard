@@ -4787,6 +4787,43 @@ try {
     "the missing skill header does not give the recovery control the only primary",
     missingHeader,
   );
+  // An unsaved draft against a missing file keeps Save quiet; the recovery stays the only primary.
+  const missingDraft = await page.eval<string>(
+    `window.__devboardEditors.get("discover-skill-text").getValue()`,
+  );
+  await page.eval(
+    `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(
+      `${missingDraft}\nUnsaved against a missing file.`,
+    )})`,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="discover-skill-dirty"]') !== null`,
+    "the dirty marker against the missing skill file",
+  );
+  const missingDirtyHeader = await page.eval<{
+    state: string;
+    saveDisabled: boolean;
+    saveSecondary: boolean;
+    primaries: string[];
+  }>(`(() => {
+    const actions = document.querySelector('.discover-skill__actions');
+    const save = actions?.querySelector('[data-testid="discover-skill-save"]');
+    return {
+      state: actions?.querySelector('[data-testid="discover-skill-dirty"]')?.textContent?.trim() ?? "",
+      saveDisabled: save === null || save.disabled,
+      saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
+      primaries: [...(actions?.querySelectorAll("button") ?? [])]
+        .filter((button) => button.classList.contains("bg-[var(--primary)]"))
+        .map((button) => button.getAttribute("data-testid") ?? ""),
+    };
+  })()`);
+  check(
+    missingDirtyHeader.state === "Unsaved changes" && missingDirtyHeader.saveDisabled &&
+      missingDirtyHeader.saveSecondary && missingDirtyHeader.primaries.length === 1 &&
+      missingDirtyHeader.primaries[0] === "discover-skill-restore",
+    "the missing skill header promotes Save for an unsaved draft",
+    missingDirtyHeader,
+  );
   await page.click('[data-testid="discover-skill-restore"]');
   await waitFor(
     async () => {
