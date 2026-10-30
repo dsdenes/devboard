@@ -177,6 +177,8 @@ export type AgentPromptDescriptor =
       kind: "file";
       /** The file under `.devboard/prompts` that the section reads and saves. */
       file: string;
+      /** The file under `.devboard/prompts` whose instructions steer this prompt's chat turn. */
+      chat: string;
       /** The Save confirmation, naming the run that reads the file next. */
       notice: string;
     }
@@ -285,6 +287,11 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     if (typeof prompt.file !== "string" || !/^[a-z0-9][a-z0-9-]*\.md$/.test(prompt.file)) {
       throw new AgentRegistryError(
         `${id}: prompt file must be one prompts directory Markdown file`,
+      );
+    }
+    if (typeof prompt.chat !== "string" || !/^[a-z0-9][a-z0-9-]*\.md$/.test(prompt.chat)) {
+      throw new AgentRegistryError(
+        `${id}: prompt chat must be one prompts directory Markdown file`,
       );
     }
     if (typeof prompt.notice !== "string" || prompt.notice.trim().length === 0) {
@@ -574,6 +581,7 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     prompt: {
       kind: "file",
       file: "scout-recommendations.md",
+      chat: "agent-prompt-chat.md",
       notice: "Prompt saved. The next scan reads this file.",
     },
     lifecycle: AGENT_LIFECYCLES,
@@ -630,6 +638,7 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     prompt: {
       kind: "file",
       file: "design-system.md",
+      chat: "design-prompt-chat.md",
       notice: "Prompt saved. The next cycle reads this file.",
     },
     lifecycle: AGENT_LIFECYCLES,

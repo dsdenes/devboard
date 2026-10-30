@@ -1577,9 +1577,11 @@ the next scan for Auto Scout and the next cycle for Design System. Only that cli
 A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
 proposed complete prompt in the editor without any copy; it writes no file, creates no scan, files
 no issue, and changes no agent state. A failed turn shows `agent-prompt-chat-error` and leaves the
-editor and file untouched. The chat agent reads `prompts/agent-prompt-chat.md` and returns the
-replacement between the line-anchored `<prompt-file>` and `</prompt-file>` markers, so Markdown
-fences inside the prompt survive intact.
+editor and file untouched. The chat agent reads the descriptor's chat instructions:
+`prompts/agent-prompt-chat.md` for Auto Scout and `prompts/design-prompt-chat.md` for Design
+System, each naming its own target file and contract, and returns the replacement between the
+line-anchored `<prompt-file>` and `</prompt-file>` markers, so Markdown fences inside the prompt
+survive intact.
 
 ### Cadence and limits
 

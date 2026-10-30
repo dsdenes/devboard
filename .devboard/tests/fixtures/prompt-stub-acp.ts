@@ -2,12 +2,16 @@
 /**
  * The deterministic ACP peer for the prompt chat. It answers one session per
  * process, streams a short prose reply, and proposes a complete replacement
- * prompt in the fenced block the controller parses. It writes no file.
+ * prompt in the fenced block the controller parses. It writes no file except
+ * the prompt it received, when PROMPT_STUB_CAPTURE names a capture path.
  */
+
+import { writeFileSync } from "node:fs";
 
 const sessionId = "stub-prompt-session";
 const proposal = process.env.PROMPT_STUB_PROPOSAL ?? "# Revised prompt\n\nFollow it.\n";
 const fail = process.env.PROMPT_STUB_FAIL === "1";
+const capture = process.env.PROMPT_STUB_CAPTURE;
 
 function write(message: unknown): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -44,6 +48,13 @@ async function handle(line: string): Promise<void> {
     return;
   }
   if (message.method === "session/prompt") {
+    const params = message.params as
+      | { prompt?: Array<{ type?: string; text?: string }> }
+      | undefined;
+    const received = params?.prompt?.find((part) => part.type === "text")?.text;
+    if (capture !== undefined && received !== undefined) {
+      writeFileSync(capture, received, "utf8");
+    }
     if (fail) {
       write({
         jsonrpc: "2.0",

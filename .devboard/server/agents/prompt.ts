@@ -23,7 +23,6 @@ import {
  * refused without touching a file.
  */
 
-export const PROMPT_CHAT_FILE = "agent-prompt-chat.md";
 const CHAT_TIMEOUT_MS = 5 * 60_000;
 
 /** One agent's prompt section, as the browser renders it. */
@@ -125,8 +124,11 @@ export class AgentPromptController {
     return join(this.repoDir, ".devboard", "prompts", descriptor.prompt.file);
   }
 
-  private chatInstructionsPath(): string {
-    return join(this.harnessDir, "prompts", PROMPT_CHAT_FILE);
+  private chatInstructionsPath(descriptor: AgentDescriptor): string {
+    if (descriptor.prompt.kind !== "file") {
+      throw new Error(`${descriptor.label} has no prompt chat instructions.`);
+    }
+    return join(this.harnessDir, "prompts", descriptor.prompt.chat);
   }
 
   snapshot(id: string): AgentPromptState | null {
@@ -189,7 +191,7 @@ export class AgentPromptController {
    * that stops it. Absent prompts and installed hosts are refused here.
    */
   private target(id: string):
-    | { ok: true; label: string; notice: string; path: string }
+    | { ok: true; label: string; notice: string; path: string; descriptor: AgentDescriptor }
     | { ok: false; message: string } {
     const descriptor = this.registry.get(id);
     if (descriptor === undefined) {
@@ -209,6 +211,7 @@ export class AgentPromptController {
       label: descriptor.label,
       notice: descriptor.prompt.notice,
       path: this.promptPath(descriptor),
+      descriptor,
     };
   }
 
@@ -282,7 +285,7 @@ export class AgentPromptController {
     let instructions: string;
     let base: string;
     try {
-      instructions = readFileSync(this.chatInstructionsPath(), "utf8");
+      instructions = readFileSync(this.chatInstructionsPath(resolved.descriptor), "utf8");
       base = typeof text === "string" ? text : readFileSync(resolved.path, "utf8");
     } catch (cause) {
       this.sendTo(target, {

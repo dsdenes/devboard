@@ -265,6 +265,57 @@ describe("prompt chat", () => {
     expect(frames.some((frame) => frame.type === "agentPromptError")).toBe(false);
   });
 
+  test("Design System chat reads its own instructions and target, never Scout's", async () => {
+    const root = await sourceRoot();
+    seededState(root);
+    const capture = join(root, "design-chat-prompt.txt");
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = controller(root, {
+      agentCommand: `env PROMPT_STUB_CAPTURE=${capture} bun ${CHAT_STUB}`,
+    });
+    await prompts.chat(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "design",
+      "Clarify the evidence rule.",
+      DESIGN_PROMPT,
+    );
+    prompts.dispose();
+    const received = readFileSync(capture, "utf8");
+    expect(received).toContain(".devboard/prompts/design-system.md");
+    expect(received).toContain("audit.json");
+    expect(received).toContain("DESIGN.md");
+    expect(received).not.toContain("scout-recommendations.md");
+    expect(received).not.toContain("Auto Scout");
+    expect(received).toContain(DESIGN_PROMPT);
+    expect(frames.find((frame) => frame.type === "agentPromptChatDone")?.proposal).toBe(
+      "# Revised prompt\n\nFollow it.\n",
+    );
+    expect(frames.some((frame) => frame.type === "agentPromptChatError")).toBe(false);
+  });
+
+  test("Auto Scout chat still reads the Scout instructions and target", async () => {
+    const root = await sourceRoot();
+    seededState(root);
+    const capture = join(root, "scout-chat-prompt.txt");
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = controller(root, {
+      agentCommand: `env PROMPT_STUB_CAPTURE=${capture} bun ${CHAT_STUB}`,
+    });
+    await prompts.chat(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "scout",
+      "Tighten the evidence rule.",
+      PROMPT,
+    );
+    prompts.dispose();
+    const received = readFileSync(capture, "utf8");
+    expect(received).toContain(".devboard/prompts/scout-recommendations.md");
+    expect(received).not.toContain(".devboard/prompts/design-system.md");
+    expect(received).not.toContain("design-prompt-chat.md");
+    expect(received).toContain(PROMPT);
+    expect(frames.some((frame) => frame.type === "agentPromptChatError")).toBe(false);
+  });
+
   test("a failed turn reports a chat error and leaves the editor base alone", async () => {
     const root = await sourceRoot();
     const promptFile = join(root, ".devboard", "prompts", "scout-recommendations.md");
