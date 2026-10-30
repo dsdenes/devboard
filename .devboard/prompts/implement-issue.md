@@ -223,8 +223,10 @@ The same rule covers commit-status and list-runs reads.
 
 ## Publish
 
-Publishing is part of the task. Run it exactly once per change, from the integration checkout, as
-a background job that keeps the whole log and the exit code:
+Publishing is part of the task. Invoke `bun run publish` at most once per task, only from the
+integration checkout, and only after the change is merged to `main` and pushed — never from a
+worktree and never before the push. Run it as a background job that keeps the whole log and the
+exit code:
 
 ```bash
 cd .devboard && bun run publish --wait-timeout 1800 \
@@ -232,21 +234,27 @@ cd .devboard && bun run publish --wait-timeout 1800 \
 ```
 
 - Start this command in the background and keep its job handle, so the run survives the turn and
-  the harness reports its completion. Use this invocation verbatim: no absolute `cd` path, no
-  `tail`/`head` pipe, no other `--wait-timeout` value, and no second log file. The redirected log
-  is the full output and its final line is the exit code. Publish already verifies `main`, the
-  release workflow, the npm package, the release assets, and the mirror; the landing readback
-  already owns the push proof, so add no `git ls-remote` or `git status` probe around the publish
-  run. Read no release or workflow state through `curl`, `gh`, or `glab`; publish prints the
-  verification result.
+  the harness reports its completion. Let it run to completion. Use this invocation verbatim: no
+  absolute `cd` path, no `tail`/`head`/`tee` pipe or any other output consumer, no other
+  `--wait-timeout` value, and no second log file. The redirected log is the full output and its
+  final line is the exit code. Publish already verifies `main`, the release workflow, the npm
+  package, the release assets, and the mirror; the landing readback already owns the push proof, so
+  add no `git ls-remote` or `git status` probe around the publish run. Read no release or workflow
+  state through `curl`, `gh`, or `glab`; publish prints the verification result.
 - Publish is long-running. While it runs, do other work or end the turn and wait for its
   completion follow-up. Never abort, kill, or re-invoke it while a run is pending, and never poll
   for it.
 - An aborted, timed-out, or truncated publish call is inspected through the still-running job and
-  its recorded log, never re-issued. When the exit code is nonzero, read the log and fix the
-  reported failure before the next single invocation.
+  its recorded log, never re-issued.
+- When the log reports `the release workflow concluded failure`, publish is never re-invoked as a
+  retry. Open that workflow run for the named commit, read its failing step, and fix the cause in a
+  new commit; when the run's log is not reachable through the exposed tools, reproduce the
+  workflow's own steps locally (`bun install --frozen-lockfile`, `bun run build`, `bun test`,
+  `bunx tsc --noEmit`) and fix the step that fails. Land the fix and report the failing step, the
+  fix commit, and the recorded exit code. Publishing the fixed revision belongs to the next task,
+  never to this one.
 - Never re-run publish in the same session to see its output, to confirm success, or with a
-  different `tail` width or `--wait-timeout`.
+  different log file or `--wait-timeout`.
 - Report the recorded exit code as the publish result. Close the issue with `issue_close` only
   after that value is `0` and the pushed revision is verified on the canonical integration line.
 
