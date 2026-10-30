@@ -834,7 +834,9 @@ export class IssuesWorker {
       if (this.active.has(issue.number)) continue;
       if (this.cooldownRemaining(issue.number)) continue;
       await this.begin(issue);
-      if (this.stopping) break;
+      // A pause or stop consumed while `begin` was awaiting must end the pass
+      // without closing the run it just started; the next issue stays queued.
+      if (this.stopping || this.state.paused || !this.state.enabled) break;
     }
     this.state.lifecycle = this.settledLifecycle();
     this.publish();

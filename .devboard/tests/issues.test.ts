@@ -828,6 +828,44 @@ describe("ledger persistence failure", () => {
 });
 
 describe("lifecycle", () => {
+  test("a pause applied while a begin is pending starts no peer for the rest of the queue", async () => {
+    const firstHeld = Promise.withResolvers<void>();
+    let providerCalls = 0;
+    const f = await fixture({
+      issues: [issue(1), issue(2), issue(3), issue(4)],
+      providerEnvironment: async () => {
+        providerCalls += 1;
+        if (providerCalls === 1) await firstHeld.promise;
+        return { SELECTION: String(providerCalls) };
+      },
+    });
+    try {
+      const polling = f.worker.poll();
+      await waitFor(() => (providerCalls === 1 ? true : undefined), "the first begin");
+      writeCommand(controlDirectory(f.stateDir, f.root), { type: "pause" });
+      // Consume the command the way the ticker does while the poll is in flight.
+      const tick = Reflect.get(f.worker, "tick") as () => Promise<void>;
+      await tick.call(f.worker);
+      expect(f.state().paused).toBe(true);
+      firstHeld.resolve();
+      await polling;
+      expect(f.peers).toHaveLength(1);
+      expect(providerCalls).toBe(1);
+      expect(f.state().runs).toHaveLength(1);
+      expect(f.state().agents).toHaveLength(1);
+      expect(
+        f.state().queue.filter((entry) => entry.agentRunId === null).map((entry) => entry.number),
+      ).toEqual([2, 3, 4]);
+      // The next entry into maybeTrigger still refuses while paused.
+      const maybeTrigger = Reflect.get(f.worker, "maybeTrigger") as () => Promise<void>;
+      await maybeTrigger.call(f.worker);
+      expect(f.peers).toHaveLength(1);
+      expect(f.state().runs).toHaveLength(1);
+    } finally {
+      await stop(f);
+    }
+  });
+
   test("pause drains every peer before reporting paused", async () => {
     const f = await fixture({ issues: [issue(1), issue(2), goalIssue(3)] });
     try {
