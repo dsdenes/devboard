@@ -271,20 +271,6 @@ export class DiscoverStore {
     return this.agentStartTitle(id) !== undefined;
   }
 
-  /** The Run all control's disabled reason; a single run disables it too. */
-  get runAllTitle(): string | undefined {
-    if (!this.socket.open) return "Not connected";
-    if (this.runningAll) return "Run all is running";
-    if (this.active) {
-      return `${this.agent(this.activeAgent ?? "")?.label ?? "A discovery agent"} is running`;
-    }
-    return this.busy ?? undefined;
-  }
-
-  get runAllDisabled(): boolean {
-    return this.runAllTitle !== undefined;
-  }
-
   get busy(): string | null {
     return this.state?.busy ?? null;
   }
@@ -373,12 +359,18 @@ export class DiscoverStore {
     return commandAlias(this.state?.commandAliases, command);
   }
 
-  get startDisabled(): boolean {
-    return this.runAllDisabled;
+  /** The Overview run control's disabled reason; a single run disables it too. */
+  get startTitle(): string | undefined {
+    if (!this.socket.open) return "Not connected";
+    if (this.runningAll) return "Run all is running";
+    if (this.active) {
+      return `${this.agent(this.activeAgent ?? "")?.label ?? "A discovery agent"} is running`;
+    }
+    return this.busy ?? undefined;
   }
 
-  get startTitle(): string | undefined {
-    return this.runAllTitle;
+  get startDisabled(): boolean {
+    return this.startTitle !== undefined;
   }
 
   get skills(): DiscoverSkill[] {
@@ -400,14 +392,10 @@ export class DiscoverStore {
     return this.dirty[name] === true;
   }
 
-  /** Runs the six agents in their fixed order. */
-  runAll(): void {
-    if (this.runAllTitle !== undefined) return;
-    this.socket.send({ type: "discoverProject" });
-  }
-
+  /** Runs the six agents in their fixed order from the Overview page. */
   start(): void {
-    this.runAll();
+    if (this.startDisabled) return;
+    this.socket.send({ type: "discoverProject" });
   }
 
   /** Starts exactly one agent; another live run refuses it at the server too. */
