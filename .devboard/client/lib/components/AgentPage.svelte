@@ -132,12 +132,6 @@
             {/if}
           </span>
         </span>
-        <span class="agent-settings__run">
-          Last run
-          <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
-            {stamp(snapshot?.cadence.lastRunAt ?? null)}
-          </span>
-        </span>
       {/snippet}
       {#snippet actions()}
         {#if showStop}
@@ -167,66 +161,86 @@
         {/if}
       {/snippet}
       {#snippet footer()}
-        <div class="agent-settings" role="group" aria-label="Agent settings">
-          <label class="agent-settings__field">
-            <span>Every</span>
-            <Input
-              type="number"
-              min="1"
-              max="1440"
-              step="1"
-              inputmode="numeric"
-              class="w-16 text-center"
-              data-testid="agent-cadence"
-              value={cadenceText}
-              oninput={(event) => (cadenceText = event.currentTarget.value)}
-            />
-            <span class="agent-settings__unit">min</span>
-          </label>
-          <span class="agent-settings__run">
-            Next run
-            <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
-              {stamp(snapshot?.cadence.nextRunAt ?? null)}
+        <div class="agent-settings" role="group" aria-label="Cadence and filing limits">
+          <div class="agent-settings__group" role="group" aria-label="Cadence">
+            <span class="agent-settings__title">Cadence</span>
+            <label class="agent-settings__field">
+              <span>Every</span>
+              <Input
+                type="number"
+                min="1"
+                max="1440"
+                step="1"
+                inputmode="numeric"
+                class="w-16 text-center"
+                data-testid="agent-cadence"
+                value={cadenceText}
+                oninput={(event) => (cadenceText = event.currentTarget.value)}
+              />
+              <span class="agent-settings__unit">min</span>
+            </label>
+            <span class="agent-settings__run">
+              Last run
+              <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
+                {stamp(snapshot?.cadence.lastRunAt ?? null)}
+              </span>
             </span>
-          </span>
-          <label class="agent-settings__field">
-            <span>Per hour</span>
-            <Input
-              type="number"
-              min="1"
-              max="100"
-              step="1"
-              inputmode="numeric"
-              placeholder="unlimited"
-              class="w-20 text-center"
-              data-testid="agent-limit-hour"
-              value={maxPerHourText}
-              oninput={(event) => (maxPerHourText = event.currentTarget.value)}
-            />
-          </label>
-          <label class="agent-settings__field">
-            <span>Open issues</span>
-            <Input
-              type="number"
-              min="1"
-              max="100"
-              step="1"
-              inputmode="numeric"
-              placeholder="unlimited"
-              class="w-20 text-center"
-              data-testid="agent-limit-pending"
-              value={maxPendingText}
-              oninput={(event) => (maxPendingText = event.currentTarget.value)}
-            />
-          </label>
-          <Button
-            variant="secondary"
-            data-testid="agent-save-settings"
-            data-command={`issues.${agentId}.settings`}
-            onclick={saveSettings}
-          >
-            Save
-          </Button>
+            <span class="agent-settings__run">
+              Next run
+              <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
+                {stamp(snapshot?.cadence.nextRunAt ?? null)}
+              </span>
+            </span>
+            <Button
+              variant="secondary"
+              data-testid="agent-save-cadence"
+              data-command={`issues.${agentId}.settings.cadence`}
+              onclick={saveSettings}
+            >
+              Save cadence
+            </Button>
+          </div>
+          <div class="agent-settings__group" role="group" aria-label="Filing limits">
+            <span class="agent-settings__title">Filing limits</span>
+            <label class="agent-settings__field">
+              <span>Per hour</span>
+              <Input
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                inputmode="numeric"
+                placeholder="unlimited"
+                class="w-20 text-center"
+                data-testid="agent-limit-hour"
+                value={maxPerHourText}
+                oninput={(event) => (maxPerHourText = event.currentTarget.value)}
+              />
+            </label>
+            <label class="agent-settings__field">
+              <span>Open issues</span>
+              <Input
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                inputmode="numeric"
+                placeholder="unlimited"
+                class="w-20 text-center"
+                data-testid="agent-limit-pending"
+                value={maxPendingText}
+                oninput={(event) => (maxPendingText = event.currentTarget.value)}
+              />
+            </label>
+            <Button
+              variant="secondary"
+              data-testid="agent-save-limits"
+              data-command={`issues.${agentId}.settings.limits`}
+              onclick={saveSettings}
+            >
+              Save limits
+            </Button>
+          </div>
         </div>
       {/snippet}
     </PageHeader>
@@ -332,13 +346,30 @@
     margin: 0;
   }
 
-  /* One unlabeled row of fields under one Save control. */
+  /* Two overline groups, each ending in its own save control. */
   .agent-settings {
     align-items: center;
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 14px;
+    gap: 24px;
     width: 100%;
+  }
+
+  .agent-settings__group {
+    align-items: center;
+    column-gap: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .agent-settings__title {
+    color: var(--muted-foreground);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+    text-transform: uppercase;
   }
 
   .agent-settings__field {
@@ -355,6 +386,12 @@
     color: var(--muted-foreground);
     font-size: 11px;
     white-space: nowrap;
+  }
+
+  .agent-settings__run {
+    align-items: center;
+    display: inline-flex;
+    gap: 4px;
   }
 
   .agent-settings__run .mono {

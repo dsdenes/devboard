@@ -1464,18 +1464,22 @@ dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cann
 Start is a no-op with a notice.
 
 All four pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
-lifecycle badge `agent-lifecycle`, `agent-sync-at`, `agent-last-run`, `agent-next-run`, exactly
-one of `agent-start`/`agent-stop`, `agent-cadence`, `agent-limit-hour`, `agent-limit-pending`,
-`agent-save-settings`, `agent-issues-count`, `agent-issues`, and `agent-detail`. Alerts use one
-position: `agent-error`, `agent-sync-error`, and `agent-settings-error`, each with `role="alert"`.
-Start/Stop is the only filled primary control. The header row carries the page identity, the
-lifecycle badge, the last-read clock, the last-run clock, and Start/Stop. Its settings footer is
-one unlabeled row: the Every field, the next-run clock, Per hour, Open issues, and one Save
-control. Save validates all three fields and sends one settings command. The sidebar has three
-groups in order: `Issues surfaces` (Overview), `Background agents`
-(`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
-`open-issues-scout`, `open-issues-watchdog`, `open-issues-design`, then `open-issues-coach`,
-badges `agent-state-<id>`, counts `agent-count-<id>`), and `Issues work` (Issues, Draft goals).
+lifecycle badge `agent-lifecycle`, `agent-sync-at`, exactly one of `agent-start`/`agent-stop`,
+`agent-cadence`, `agent-last-run`, `agent-next-run`, `agent-save-cadence`, `agent-limit-hour`,
+`agent-limit-pending`, `agent-save-limits`, `agent-issues-count`, `agent-issues`, and
+`agent-detail`. Alerts use one position: `agent-error`, `agent-sync-error`, and
+`agent-settings-error`, each with `role="alert"`. Start/Stop is the only filled primary control.
+The header row carries the page identity, the lifecycle badge, the last-read clock, and
+Start/Stop. Its settings footer is one band `role="group"` named `Cadence and filing limits` with
+two visible `overline` groups 24px apart, each with 10px column and 6px row gaps: `Cadence` holds
+the Every field, the last-run and next-run clocks, and the secondary `Save cadence`; `Filing
+limits` holds Per hour, Open issues, and the secondary `Save limits`. Each group wraps as a unit,
+so a field never separates from its save control. Either save validates all three fields and
+sends one settings command. The sidebar has three groups in order: `Issues surfaces` (Overview),
+`Background agents` (`data-testid="sidebar-background-agents"`, heading `Background agents`,
+entries `open-issues-scout`, `open-issues-watchdog`, `open-issues-design`, then
+`open-issues-coach`, badges `agent-state-<id>`, counts `agent-count-<id>`), and `Issues work`
+(Issues, Draft goals).
 
 ### Transport
 
@@ -1530,13 +1534,13 @@ fences inside the prompt survive intact.
 
 `agent-cadence` accepts an integer from 1 through 1440 minutes. `agent-limit-hour` and
 `agent-limit-pending` are empty (unlimited) or an integer from 1 through 100; an empty field never
-renders as `0`. One `agent-save-settings` click validates all three fields and persists them in one
-atomic settings write; a running worker applies the whole change without restart. Auto Scout
-defaults to 1 minute and never starts a scan sooner than the interval after the previous scan
-start; Watchdog defaults to 10 minutes, starts its first cycle immediately on Start, and uses the
-interval as its evidence window; Design System defaults to 60 minutes and never starts a cycle
-sooner than that interval after the previous cycle start. `agent-last-run` and `agent-next-run`
-show both.
+renders as `0`. One `agent-save-cadence` or `agent-save-limits` click validates all three fields
+and persists them in one atomic settings write; a running worker applies the whole change without
+restart. Auto Scout defaults to 1 minute and never starts a scan sooner than the interval after
+the previous scan start; Watchdog defaults to 10 minutes, starts its first cycle immediately on
+Start, and uses the interval as its evidence window; Design System defaults to 60 minutes and
+never starts a cycle sooner than that interval after the previous cycle start. `agent-last-run`
+and `agent-next-run` show both.
 
 Auto Scout and Design System default to 10 per rolling hour and 5 open; Watchdog defaults to both
 empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
