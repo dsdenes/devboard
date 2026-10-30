@@ -135,49 +135,19 @@ Land it with this one sequence in the canonical checkout, on `main`:
 ```sh
 git merge --ff-only <task-branch>
 git push origin main
-local_commit=$(git rev-parse HEAD)
-remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
-printf 'local %s remote %s\n' "$local_commit" "$remote_tip"
-if [ "$local_commit" != "$remote_tip" ]; then
-  printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
-  exit 1
-fi
-upstream=$(git status --short --branch | sed -n '1p')
-printf '%s\n' "$upstream"
-case "$upstream" in
-  *"[ahead "*) printf 'push not verified: %s\n' "$upstream" >&2; exit 1 ;;
-esac
-```
-
-The block prints both commits and exits nonzero when they differ or when the branch line reports
-commits ahead of upstream. Run it once per landing attempt and never push again after one succeeds;
-add no `tail` pipe, extra `rev-parse`, `fetch`, or `PIPESTATUS` probe around it. The landing merge
-is fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on
-`main`. If the push is rejected or `main` moved before landing, fetch the new tip, rebase the task
-branch onto `origin/main` inside the worktree, rerun the invalidated checks, and push again through
-this same block.
-
-### Done check
-
-After the push, run this one block as a unit from the canonical checkout and report it as run:
-
-```sh
-git fetch origin main
 git status --short --branch
-git rev-list --left-right --count HEAD...origin/main
-git ls-remote origin refs/heads/main
 ```
 
-Both counts must be `0 0` after the push, and the `ls-remote` tip must equal `HEAD` before done is
-reported. `0 0` means `HEAD` and the fetched `origin/main` name the same commit, so the tip equality
-is read directly from the same block; the `git status --short --branch` line must not report commits
-ahead of or behind its upstream. The `ls-remote` equality is the authoritative push proof; never use
-`git log` or `head`/`tail`-trimmed merge output as that proof. Never replace this block with
-separate `git rev-parse`, `git merge-base`, or `git rev-list --count <sha>` probes, never chain
-per-commit ancestry probes, and never re-verify a commit already proven to be the remote tip. Run it
-once per landing attempt; a later fetch, merge, or rebase invalidates the previous result.
+`git status --short --branch` is the only post-push readback—the push is verified when its
+`## main...origin/main` line carries no `ahead` marker—and this prompt excludes
+`git ls-remote origin refs/heads/main`, `git rev-parse HEAD`, and a second `git status` readback
+after the push; never chain them. A rejected push is ground truth: fetch the new tip, rebase the
+task branch onto `origin/main` inside the worktree, rerun the invalidated checks, and retry the
+same push unchanged. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a
+preparatory `git merge origin/main` on `main`. Run the sequence once per landing attempt and add no
+`tail` pipe, `fetch`, or `PIPESTATUS` probe around it. Push before publish, never after.
 
-After that proof, release from the integration checkout with the single Publish invocation below.
+After that readback, release from the integration checkout with the single Publish invocation below.
 
 Untracked scratch entries already present under `.devboard/` are expected status noise: they never
 justify another fetch, merge, or commit. Create no new scratch file outside `.devboard/`. Replace
@@ -212,9 +182,9 @@ cd .devboard && bun run publish --wait-timeout 1800 \
   the harness reports its completion. Use this invocation verbatim: no absolute `cd` path, no
   `tail`/`head` pipe, no other `--wait-timeout` value, and no second log file. The redirected log
   is the full output and its final line is the exit code. Publish already verifies `main`, the
-  release workflow, the npm package, the release assets, and the mirror; the landing proof already
-  owns the push proof, so add no `git ls-remote` or `git status` probe around the publish run.
-  Read no release or workflow state through `curl`, `gh`, or `glab`; publish prints the
+  release workflow, the npm package, the release assets, and the mirror; the landing readback
+  already owns the push proof, so add no `git ls-remote` or `git status` probe around the publish
+  run. Read no release or workflow state through `curl`, `gh`, or `glab`; publish prints the
   verification result.
 - Publish is long-running. While it runs, do other work or end the turn and wait for its
   completion follow-up. Never abort, kill, or re-invoke it while a run is pending, and never poll
