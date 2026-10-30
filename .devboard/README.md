@@ -722,9 +722,8 @@ keeps no freshness group and no recent-notice list.
 
 ## Discovery agent cards
 
-One card per agent carries the agent's complete prompt
-(`data-testid="discover-agent-prompt-text"`, the file's bytes with no truncation or reformatting),
-its command and staging argument (`data-testid="discover-agent-prompt-command"`, for example
+One card per agent carries its command and staging argument
+(`data-testid="discover-agent-prompt-command"`, for example
 `/discover-sheet <staging-dir>`), its run state (`data-testid="discover-agent-status"` with
 `data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
@@ -748,7 +747,7 @@ prompt file, and each staged turn writes only its own slice; a prompt may name
 `.omp/discover/sheet.json` and `.omp/discover/glossary/` as optional reference, but no agent needs
 another agent's artifact to succeed.
 
-When the dashboard serves a harness source checkout, every card also renders an editor initialized
+When the dashboard serves a harness source checkout, every card renders an editor initialized
 to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
 (`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
 `discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
@@ -756,8 +755,8 @@ to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a pro
 reply; a turn that revises the prompt replaces the editor text with a complete replacement. Chat
 never writes a file and never starts an agent. Save writes exactly the editor's UTF-8 bytes to that
 one agent's prompt file and no other file, and the next trigger of that agent reads those bytes;
-Reset restores the editor to the current file bytes without writing. An installed host shows each
-prompt read-only and renders no editor, chat, save, or reset; `saveDiscoverPrompt` and
+Reset restores the editor to the current file bytes without writing. An installed host has no
+prompt view and renders no editor, chat, save, or reset; `saveDiscoverPrompt` and
 `chatDiscoverPrompt` are refused there with an error naming the harness source checkout.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
@@ -1255,9 +1254,9 @@ failure rewrites a published artifact. `server/agents/prompt.test.ts` proves the
 snapshots, the chat proposal that changes the editor without writing, a save that writes exactly
 one prompt file, the reset read, and the installed-host refusal. `verify:discover` builds the
 client, seeds source and installed fixture hosts, and drives headless Chrome through the Discovery
-group, each card's complete prompt and command, all six independent triggers with a byte-level
+group, each card's command and editor bytes, all six independent triggers with a byte-level
 check of the fixture `.omp` tree, the one-at-a-time refusal, Run all order and stop at the first
-seeded failure, prompt chat/save/reset, and the installed read-only prompt.
+seeded failure, prompt chat/save/reset, and the installed host's refused save.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased

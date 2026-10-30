@@ -222,7 +222,6 @@
             {promptNotice}
           </p>
         {/if}
-        <pre class="discover-agent__prompt-text mono" data-testid="discover-agent-prompt-text">{prompt?.text ?? ""}</pre>
         {#if editable}
           <div class="discover-agent__prompt-editor">
             <textarea
