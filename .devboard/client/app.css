@@ -4156,7 +4156,7 @@ a.code-chip--link:focus-visible {
 }
 
 .discover-agent__state[data-state="failed"] {
-  color: var(--destructive, var(--error));
+  color: var(--error);
 }
 
 .discover-agent__state[data-state="succeeded"] {
