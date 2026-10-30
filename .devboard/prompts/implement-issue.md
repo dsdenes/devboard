@@ -45,13 +45,20 @@ context, but you never edit, comment on, close, or reopen another issue.
   the check in the same session. That JSON line, plus the resolution fields `devboard_status`
   returns, is the only supported way to learn the forge host, project, or credential state: both
   report presence and resolution without exposing a value, so an environment sweep answers
-  nothing they do not. Never enumerate the process environment or hunt for credential files:
-  `.devboard/prompts/forge-auth.md` holds that rule in full. In particular, never pipe `env` or
-  `printenv` into `grep` (an `env | grep` probe) for `gitea`, `forge`, `github`, `gitlab`, or
-  `token`, and never treat `sed`-based masking as redaction: the tool shell carries an exported
-  `MATCH` variable holding a token-bearing grep match (`MATCH='GITEA_TOKEN=…'`), so a later sweep
-  reprints the token on a line no substitution rewrote. When a variable must be checked, print
-  only a boolean, `[ -n "$GITEA_TOKEN" ] && echo set`, and never its value or a prefix of it.
+  nothing they do not. Forge and registry configuration MUST be resolved through
+  `bun .devboard/scripts/forge-auth.ts check` and MUST NOT be discovered with an `env | grep`
+  probe, `cat .env`, `cat ~/.npmrc`, or any other environment or credential-file sweep: never
+  enumerate the process environment or hunt for credential files, and
+  `.devboard/prompts/forge-auth.md` holds that rule in full. `DEVBOARD_GITEA_URL` is supplied by
+  the host at run time, so never hardcode it or fall back to a guessed base such as
+  `http://localhost:2223`: the check reads the real value, and a wrong guess only costs a round
+  trip. Never pipe `env` or `printenv` into `grep` (an `env | grep` probe) for `gitea`, `forge`,
+  `github`, `gitlab`, or `token`, and never treat `sed`-based masking as redaction: the tool
+  shell carries an exported `MATCH` variable holding a token-bearing grep match
+  (`MATCH='GITEA_TOKEN=…'`), so an echoed `MATCH=` line re-leaks the value, and whole-value
+  filters miss differently named variables such as `GITHUB_APM_PAT`. Emit a credential only as
+  `<set>` or `<redacted>`, never as a value or a prefix of one; when a variable must be checked,
+  print only a boolean, `[ -n "$GITEA_TOKEN" ] && echo set`.
 - Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
   resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
   roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,
