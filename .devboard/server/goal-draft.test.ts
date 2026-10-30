@@ -105,6 +105,11 @@ function startPids(log: string): number[] {
     .map((line) => Number(line.slice("goal-draft-start ".length)));
 }
 
+/** The prompt reads the stub logs after its own start line, so a start is not a prompt. */
+function promptsFor(log: string, path: string): string[] {
+  return logLines(log).filter((line) => line === `goal-draft ${path}`);
+}
+
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -327,8 +332,16 @@ describe("elaboration", () => {
     expect((await manager.start(first.path)).ok).toBe(true);
     expect((await manager.start(second.path)).ok).toBe(true);
     await waitFor(() => (startPids(log).length === 2 ? true : undefined), "both created peers");
-    expect(logLines(log).filter((line) => line === `goal-draft ${first.path}`)).toHaveLength(1);
-    expect(logLines(log).filter((line) => line === `goal-draft ${second.path}`)).toHaveLength(1);
+    // One prompt line per draft proves neither started twice.
+    await waitFor(
+      () =>
+        promptsFor(log, first.path).length === 1 && promptsFor(log, second.path).length === 1
+          ? true
+          : undefined,
+      "both draft prompts",
+    );
+    expect(promptsFor(log, first.path)).toHaveLength(1);
+    expect(promptsFor(log, second.path)).toHaveLength(1);
     expect(listGoalDrafts(root).map((draft) => draft.path)).toEqual([first.path, second.path].sort());
   });
 
@@ -587,7 +600,11 @@ describe("elaboration", () => {
 
     expect((await manager.start(path)).ok).toBe(true);
     await waitFor(() => (startPids(log).length === 2 ? true : undefined), "the retry peer");
-    expect(logLines(log).filter((line) => line === `goal-draft ${path}`)).toHaveLength(2);
+    await waitFor(
+      () => (promptsFor(log, path).length === 2 ? true : undefined),
+      "both draft prompts",
+    );
+    expect(promptsFor(log, path)).toHaveLength(2);
   });
 });
 
