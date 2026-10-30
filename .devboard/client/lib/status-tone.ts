@@ -31,3 +31,23 @@ export function statusTone(status: string): BadgeTone | undefined {
       return undefined;
   }
 }
+
+/**
+ * The tone one verification status earns. The server reports three values for
+ * a checkpoint or a file: `passed`, `failed`, and `not-run`. A missing record
+ * is the ordinary state of a commit nobody verified, so `not-run` carries the
+ * pending warning tone rather than the success color; any status outside the
+ * vocabulary keeps the neutral badge.
+ */
+export function verificationTone(status: string): BadgeTone | undefined {
+  switch (status.trim().toLowerCase()) {
+    case "passed":
+      return "success";
+    case "failed":
+      return "error";
+    case "not-run":
+      return "warning";
+    default:
+      return undefined;
+  }
+}

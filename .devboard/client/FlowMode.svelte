@@ -4,7 +4,7 @@
   import { flow } from "./lib/flow.svelte";
   import { layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
-  import { statusTone } from "./lib/status-tone";
+  import { statusTone, verificationTone } from "./lib/status-tone";
   import type { FlowFile, FlowWidget, RunQuestion } from "./lib/types";
   import DetailSplit from "./lib/components/DetailSplit.svelte";
   import MonacoEditor from "./lib/components/MonacoEditor.svelte";
@@ -564,7 +564,7 @@
       <section class="panel" data-testid="flow-verification" data-status={flow.verification.status}>
         <div class="panel__header">
           <h2 class="panel__title">Verification</h2>
-          <span class="badge" data-tone={flow.verification.status === "failed" ? "error" : "success"}>
+          <span class="badge" data-tone={verificationTone(flow.verification.status)}>
             {flow.verification.status}
           </span>
         </div>
@@ -875,7 +875,7 @@
               {#if flow.verification !== null}
                 <p class="muted" style="margin-top: 8px;">
                   Last verification
-                  <span class="badge" data-tone={flow.verification.status === "failed" ? "error" : "success"}>
+                  <span class="badge" data-testid="flow-file-verification" data-tone={verificationTone(flow.verification.status)}>
                     {flow.verification.status}
                   </span>
                 </p>
@@ -893,7 +893,7 @@
         <section class="panel" data-testid="flow-checkpoints">
           <div class="panel__header">
             <h2 class="panel__title">Checkpoint</h2>
-            <span class="badge" data-tone={checkpoint.verification === "failed" ? "error" : "success"}>
+            <span class="badge" data-tone={verificationTone(checkpoint.verification)}>
               {checkpoint.verification}
             </span>
           </div>

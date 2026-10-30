@@ -545,14 +545,14 @@ async function seedFlow(stateDir: string, host: string): Promise<void> {
         summary: "Seeded checkpoint",
         files: 1,
         commit: "abcdef1",
-        verification: "passed",
+        verification: "not-run",
       },
     ],
     verification: {
       command: "bun test",
-      status: "passed",
+      status: "not-run",
       timestamp: now,
-      output: "1 pass",
+      output: "",
     },
     blockers: [
       {
@@ -3130,6 +3130,20 @@ try {
   }))()`);
   check(flowData.status === "stopped" && flowData.branch.length > 0 && flowData.pr === "draft", "the Flow session is not restored", flowData);
   check(flowData.widgets === 1 && flowData.files === 1 && flowData.blockers === 1 && flowData.readyEnabled, "Flow data surfaces are incomplete", flowData);
+  const flowVerification = await page.eval<{ status: string; text: string; tone: string }>(`(() => {
+    const panel = document.querySelector('[data-testid="flow-verification"]');
+    const badge = panel?.querySelector(".badge");
+    return {
+      status: panel?.getAttribute("data-status") ?? "",
+      text: badge?.textContent?.trim() ?? "",
+      tone: badge?.getAttribute("data-tone") ?? "",
+    };
+  })()`);
+  check(
+    flowVerification.status === "not-run" && flowVerification.text === "not-run" && flowVerification.tone === "warning",
+    "the Verification badge does not read an unrun check as pending",
+    flowVerification,
+  );
 
   await runPalette("flow.widget.open.widget-1");
   await page.wait(`document.querySelector('[data-testid="flow-widget-detail"]') !== null`, "the Flow widget tab");
@@ -3182,6 +3196,15 @@ try {
   await page.wait(`document.querySelector('[data-testid="flow-diff"]') !== null`, "the Flow file diff");
   const fileDiff = await page.eval<boolean>(`document.querySelector('[data-testid="flow-diff"] .d2h-wrapper') !== null`);
   check(fileDiff, "the changed-file tab has no rendered diff");
+  const fileVerification = await page.eval<{ text: string; tone: string }>(`(() => {
+    const badge = document.querySelector('[data-testid="flow-file-verification"]');
+    return { text: badge?.textContent?.trim() ?? "", tone: badge?.getAttribute("data-tone") ?? "" };
+  })()`);
+  check(
+    fileVerification.text === "not-run" && fileVerification.tone === "warning",
+    "the focused-file badge does not read an unrun check as pending",
+    fileVerification,
+  );
   await page.click('[data-testid="close-flow-diff"]');
   await page.wait(
     `document.querySelector('[data-testid="flow-diff"]') === null`,
@@ -3192,6 +3215,15 @@ try {
   await page.wait(`document.querySelector('[data-testid="flow-checkpoint"]') !== null`, "the Flow checkpoint tab");
   const checkpoint = await page.eval<string>(`document.querySelector('[data-testid="flow-checkpoint"]')?.textContent ?? ""`);
   check(checkpoint.includes("abcdef1"), "the checkpoint lost its commit", checkpoint);
+  const checkpointVerification = await page.eval<{ text: string; tone: string }>(`(() => {
+    const badge = document.querySelector('[data-testid="flow-checkpoints"] .badge');
+    return { text: badge?.textContent?.trim() ?? "", tone: badge?.getAttribute("data-tone") ?? "" };
+  })()`);
+  check(
+    checkpointVerification.text === "not-run" && checkpointVerification.tone === "warning",
+    "the Checkpoint badge does not read an unrun check as pending",
+    checkpointVerification,
+  );
   await runPalette("open.flow.steering");
   await page.wait(`document.querySelector('[data-testid="flow-steering-note"]') !== null`, "the Flow steering note");
 
