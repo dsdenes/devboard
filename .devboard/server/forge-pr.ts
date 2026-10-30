@@ -122,6 +122,33 @@ const GIT_ENV = {
   GH_NO_UPDATE_NOTIFIER: "1",
 } as const;
 
+/** How long one resolved credential is reused before it is resolved again. */
+export const AUTH_CACHE_TTL_MS = 60_000;
+
+/**
+ * A credential the forge rejected after the command ran. The cached entry is
+ * dropped so the next operation probes again instead of re-sending dead token.
+ */
+const AUTH_DIAGNOSTIC =
+  /\b401\b|\b403\b|unauthori[sz]ed|forbidden|bad credentials|invalid (?:token|credentials)|authentication (?:failed|required)/i;
+
+function isAuthDiagnostic(result: CommandResult): boolean {
+  if (result.code === 0) return false;
+  return AUTH_DIAGNOSTIC.test(`${result.stderr}\n${result.stdout}`);
+}
+
+function authKey(target: ForgeTarget): string {
+  return `${target.forge}:${target.host}:${target.project}`;
+}
+
+interface AuthCacheEntry {
+  pending: Promise<ResolvedAuth>;
+  /** Set once resolution succeeds; absent while it is pending. */
+  auth?: ResolvedAuth;
+  /** Epoch milliseconds when the credential is resolved again. */
+  expires?: number;
+}
+
 /** Construction seams for tests and the Flow controller's bounded command. */
 export interface CommandFlowForgeOptions {
   env?: Record<string, string>;
@@ -130,6 +157,10 @@ export interface CommandFlowForgeOptions {
   giteaFetch?: FetchLike;
   /** Bound on one forge command and on the whole credential resolution. */
   timeoutMs?: number;
+  /** How long a resolved credential is reused; 60 seconds by default. */
+  authTtlMs?: number;
+  /** Clock seam for cache expiry; production uses `Date.now`. */
+  now?: () => number;
 }
 
 /**
@@ -140,9 +171,11 @@ export class CommandFlowForge implements FlowPrAdapter {
   readonly #exec: Exec;
   readonly #env: Record<string, string>;
   readonly #resolver: (exec: Exec, options: ResolveOptions) => Promise<AuthOutcome>;
-  readonly #auth = new Map<string, Promise<ResolvedAuth>>();
+  readonly #auth = new Map<string, AuthCacheEntry>();
   readonly #giteaFetch: FetchLike | undefined;
   readonly #timeoutMs: number;
+  readonly #authTtlMs: number;
+  readonly #now: () => number;
 
   constructor(exec: Exec, options: CommandFlowForgeOptions = {}) {
     this.#exec = exec;
@@ -150,34 +183,53 @@ export class CommandFlowForge implements FlowPrAdapter {
     this.#resolver = options.resolve ?? resolveForgeAuth;
     this.#giteaFetch = options.giteaFetch;
     this.#timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
+    this.#authTtlMs = Math.max(0, options.authTtlMs ?? AUTH_CACHE_TTL_MS);
+    this.#now = options.now ?? Date.now;
   }
 
+  /**
+   * One resolution per credential key. Concurrent callers join the in-flight
+   * probe, and a resolved entry is reused only until its TTL expires.
+   */
   async #resolve(target: ForgeTarget, cwd: string): Promise<ResolvedAuth> {
-    const key = `${target.forge}:${target.host}:${target.project}`;
+    const key = authKey(target);
     const cached = this.#auth.get(key);
-    if (cached !== undefined) return await cached;
-    const pending = (async () => {
-      const outcome = await this.#resolver(this.#exec, {
-        forge: target.forge,
-        host: target.host,
-        project: target.project,
-        cwd,
-        required: "write",
-        env: { ...process.env, ...this.#env },
-        deadline: Date.now() + this.#timeoutMs,
-        ...(target.baseUrl === undefined ? {} : { baseUrl: target.baseUrl }),
-        ...(this.#giteaFetch === undefined ? {} : { giteaFetch: this.#giteaFetch }),
-      });
-      if (isAuthFailure(outcome)) throw new Error(outcome.error);
-      return outcome;
-    })();
-    this.#auth.set(key, pending);
+    if (cached !== undefined && (cached.expires === undefined || cached.expires > this.#now())) {
+      return await cached.pending;
+    }
+    const entry: AuthCacheEntry = {
+      pending: (async () => {
+        const outcome = await this.#resolver(this.#exec, {
+          forge: target.forge,
+          host: target.host,
+          project: target.project,
+          cwd,
+          required: "write",
+          env: { ...process.env, ...this.#env },
+          deadline: Date.now() + this.#timeoutMs,
+          ...(target.baseUrl === undefined ? {} : { baseUrl: target.baseUrl }),
+          ...(this.#giteaFetch === undefined ? {} : { giteaFetch: this.#giteaFetch }),
+        });
+        if (isAuthFailure(outcome)) throw new Error(outcome.error);
+        return outcome;
+      })(),
+    };
+    this.#auth.set(key, entry);
     try {
-      return await pending;
+      const auth = await entry.pending;
+      entry.auth = auth;
+      entry.expires = this.#now() + this.#authTtlMs;
+      return auth;
     } catch (error) {
-      this.#auth.delete(key);
+      if (this.#auth.get(key) === entry) this.#auth.delete(key);
       throw error;
     }
+  }
+
+  /** Drops the entry only while it still holds the credential the forge rejected. */
+  #forget(target: ForgeTarget, auth: ResolvedAuth): void {
+    const key = authKey(target);
+    if (this.#auth.get(key)?.auth === auth) this.#auth.delete(key);
   }
 
   async #run(
@@ -201,6 +253,7 @@ export class CommandFlowForge implements FlowPrAdapter {
         code: -1,
       };
     }
+    if (isAuthDiagnostic(result)) this.#forget(target, auth);
     return result;
   }
 

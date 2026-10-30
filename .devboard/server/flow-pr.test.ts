@@ -362,6 +362,83 @@ describe("Flow forge command shapes", () => {
     expect(remaining).toBeGreaterThan(0);
     expect(remaining).toBeLessThanOrEqual(1234);
   });
+
+  test("the cached credential expires after its TTL and the next operation carries the fresh token", async () => {
+    const { exec, calls } = recordingExecutor((command) => {
+      if (command !== "gh") return undefined;
+      return {
+        stdout: JSON.stringify({
+          number: 4,
+          url: "https://github.com/acme/project/pull/4",
+          state: "OPEN",
+          isDraft: false,
+        }),
+        stderr: "",
+        code: 0,
+      };
+    });
+    const tokens = ["token-a", "token-b"];
+    let resolutions = 0;
+    let clock = 0;
+    const adapter = new CommandFlowForge(exec, {
+      authTtlMs: 1000,
+      now: () => clock,
+      resolve: async () => {
+        const token = tokens[resolutions] ?? "token-c";
+        resolutions += 1;
+        return { ...AUTH, token };
+      },
+    });
+
+    await adapter.view(TEST_ROOT, TARGET, 4);
+    expect(resolutions).toBe(1);
+    expect(calls.at(-1)?.env?.GH_TOKEN).toBe("token-a");
+
+    clock += 1001;
+    await adapter.view(TEST_ROOT, TARGET, 4);
+    expect(resolutions).toBe(2);
+    expect(calls.at(-1)?.env?.GH_TOKEN).toBe("token-b");
+  });
+
+  test.each([
+    ["401", "HTTP 401: Bad credentials (https://api.github.com/graphql)"],
+    ["403", "HTTP 403: Resource not accessible by integration"],
+  ])("a %s diagnostic evicts the cached credential for the next operation", async (_label, diagnostic) => {
+    let ghCalls = 0;
+    const { exec, calls } = recordingExecutor((command) => {
+      if (command !== "gh") return undefined;
+      ghCalls += 1;
+      if (ghCalls === 1) return { stdout: "", stderr: `${diagnostic}\n`, code: 1 };
+      return {
+        stdout: JSON.stringify({
+          number: 5,
+          url: "https://github.com/acme/project/pull/5",
+          state: "OPEN",
+          isDraft: false,
+        }),
+        stderr: "",
+        code: 0,
+      };
+    });
+    let resolutions = 0;
+    const adapter = new CommandFlowForge(exec, {
+      resolve: async () => {
+        const token = resolutions === 0 ? "token-a" : "token-b";
+        resolutions += 1;
+        return { ...AUTH, token };
+      },
+    });
+
+    await expect(adapter.view(TEST_ROOT, TARGET, 5)).rejects.toThrow(
+      /Bad credentials|Resource not accessible/,
+    );
+    expect(resolutions).toBe(1);
+    expect(calls[0]?.env?.GH_TOKEN).toBe("token-a");
+
+    await expect(adapter.view(TEST_ROOT, TARGET, 5)).resolves.toMatchObject({ number: 5 });
+    expect(resolutions).toBe(2);
+    expect(calls[1]?.env?.GH_TOKEN).toBe("token-b");
+  });
 });
 
 interface Fixture {
