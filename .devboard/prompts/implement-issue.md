@@ -120,15 +120,17 @@ working directory, kills the check's whole process group at its 900-second bound
 - Never background `verify:interface`, never kill or restart it, and never pipe it through `tail`,
   `head`, `grep`, or another consumer. A backgrounded job ends the turn without its verdict, a
   killed job loses the assertion, and a pipe keeps only the lines the filter matched.
-- Never redirect the check into a log (`> .tmp/verify-interface.log 2>&1`, `2>&1 | tee`) and never
-  take a verdict from a log an earlier run wrote. The verdict belongs to the turn that started it.
+- Never redirect verification output to `.tmp/verify-interface-*.log` or `.verify-interface.log` and
+  then `tail` it, never pipe it through `2>&1 | tee`, and never take a verdict from a log an earlier
+  run wrote. The verdict belongs to the turn that started the check.
 - `truncated: true` means the 16 KiB capture bound cut the run and `output` holds only its
   beginning: `exitCode` is still the verdict, and a truncated result is never a pass. A result
   ending `[timed out after 900000 ms]` is a failed verification, not a reason to background the
   check.
 - On failure, read the complete `verify:interface: <assertion>: <evidence>` line before editing:
   the assertion names the control, and the evidence object carries the measured and expected
-  values it compared. A partial read hides which side mismatched.
+  values it compared. A partial read hides which side mismatched. Report that exact line and the
+  result's `exitCode` in the final response instead of re-running the check or paraphrasing it.
 
 ## Prerequisites
 
