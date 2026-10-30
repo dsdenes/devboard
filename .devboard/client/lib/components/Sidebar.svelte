@@ -337,10 +337,6 @@
             {issues.lifecycle}
           </span>
         </button>
-      </section>
-
-      <section class="sidebar-group" aria-label="Issues work">
-        <div class="sidebar-group__title">Issues work</div>
         <button
           type="button"
           class="sidebar-item"

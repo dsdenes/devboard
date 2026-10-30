@@ -693,6 +693,28 @@ try {
     !(await present(devtools!, "sidebar-background-agents")),
     "the Issues sidebar still carries the Background agents section",
   );
+  const issuesSurfaces = await devtools.evaluate(`(() => {
+    const section = document.querySelector(
+      '[data-testid="sidebar"] section[aria-label="Issues surfaces"]',
+    );
+    const groups = [...document.querySelectorAll('[data-testid="sidebar"] .sidebar-group')]
+      .map((group) => group.getAttribute('aria-label') ?? '');
+    if (section === null) return { groups };
+    return {
+      heading: section.querySelector('.sidebar-group__title')?.textContent?.trim() ?? '',
+      ids: [...section.querySelectorAll('[data-testid^="open-issues-"]')]
+        .map((button) => button.getAttribute('data-testid') ?? ''),
+      groups,
+    };
+  })()`);
+  assertTrue(
+    (issuesSurfaces as Record<string, unknown> | null)?.heading === "Issues surfaces" &&
+      JSON.stringify((issuesSurfaces as { ids: string[] } | null)?.ids) ===
+        JSON.stringify(["open-issues-overview", "open-issues-queue", "open-issues-drafts"]) &&
+      JSON.stringify((issuesSurfaces as { groups: string[] } | null)?.groups) ===
+        JSON.stringify(["Issues surfaces"]),
+    `the Issues entries are not below Overview in one section: ${JSON.stringify(issuesSurfaces)}`,
+  );
   await click(devtools, "mode-devboard");
   await waitFor(
     async () => ((await present(devtools!, "sidebar-background-agents")) ? true : undefined),
