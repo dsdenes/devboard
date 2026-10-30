@@ -1,3 +1,4 @@
+import { syncHostCopies } from "../lib/host-sync.mjs";
 import {
   installRelease,
   installedHarnessVersion,
@@ -5,6 +6,7 @@ import {
   isReleaseRateLimited,
   isReleaseUnreachable,
   latestRelease,
+  packageDir,
   releaseSource,
   ReleaseFeedError,
   ReleaseNotServedError,
@@ -85,16 +87,34 @@ export function startUpdater(options: UpdateOptions): Updater {
     positiveNumber(env.DEVBOARD_UPDATE_BACKOFF_MAX_MS, DEFAULT_MAX_BACKOFF_MS);
   const source = options.source ?? releaseSource(env, options.stateDir);
   const fetchRelease = options.fetchRelease ?? (() => latestRelease(source));
+  // True while the package under the prefix is newer than the host copies of
+  // its wrappers and prompts. A sync that failed is retried on the next check
+  // instead of being lost behind an "already current" answer.
+  let pendingSync = false;
+
+  async function syncInstalledCopies(): Promise<void> {
+    await syncHostCopies(options.repoDir, packageDir(options.prefixDir));
+    pendingSync = false;
+  }
+
   const install =
     options.install ??
-    ((release: ReleaseInfo) =>
-      installRelease({
+    (async (release: ReleaseInfo) => {
+      const installed = await installRelease({
         source,
         release,
         prefix: options.prefixDir,
         stateDir: options.stateDir,
         env,
-      }));
+      });
+      // The installed package is the authority for `.omp/commands`,
+      // `.omp/extensions`, and the harness trees under `.devboard`; copy them
+      // before this check reports the install, so doctor never compares host
+      // copies against a package they were not synced to.
+      pendingSync = true;
+      await syncInstalledCopies();
+      return installed;
+    });
 
   let latestVersion: string | null = null;
   let failures = 0;
@@ -151,6 +171,19 @@ export function startUpdater(options: UpdateOptions): Updater {
       // The canonical source checkout has no npm prefix; never install into it.
       if (installed === null) return "not-installed";
       if (!isNewerVersion(release.version, installed)) {
+        if (pendingSync) {
+          try {
+            await syncInstalledCopies();
+            options.journal.write("activity", `synced host copies for ${installed}`);
+          } catch (error) {
+            failures += 1;
+            options.journal.write(
+              "update-error",
+              `could not sync host copies for ${installed}: ${detailOf(error)}`,
+            );
+            return "failed";
+          }
+        }
         failures = 0;
         return "current";
       }

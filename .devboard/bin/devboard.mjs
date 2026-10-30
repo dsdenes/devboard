@@ -39,8 +39,13 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { syncHarnessTrees, syncWrappers } from "../lib/host-sync.mjs";
+
+// The sync helpers moved to lib/host-sync.mjs so the dashboard updater runs the
+// same code; they stay re-exported here for the launcher's tests.
+export { HOST_HARNESS_PATHS, syncHarnessTrees, syncTree } from "../lib/host-sync.mjs";
 
 const PACKAGE_NAME = "@dsdenes/devboard";
 const PACKAGE_SCOPE = "@dsdenes";
@@ -813,93 +818,6 @@ function trackedPaths(host, paths) {
   );
 }
 
-/** True when a tracked path lies strictly inside `path`. */
-function holdsTrackedPath(skip, path) {
-  if (skip === undefined) return false;
-  const prefix = `${path}${sep}`;
-  for (const tracked of skip) {
-    if (tracked.startsWith(prefix)) return true;
-  }
-  return false;
-}
-
-export async function syncTree(source, destination, skip) {
-  await ensureFixedDirectory(destination);
-  const present = new Set();
-  for (const entry of await readdir(source, { withFileTypes: true })) {
-    present.add(entry.name);
-    const from = join(source, entry.name);
-    const to = join(destination, entry.name);
-    if (skip?.has(to) ?? false) continue;
-    if (entry.isDirectory()) {
-      // A directory that holds tracked content still receives the package
-      // entries inside it; only replacing the directory itself would destroy
-      // that content.
-      if (holdsTrackedPath(skip, to) && !(lstatOrUndefined(to)?.isDirectory() ?? false)) {
-        continue;
-      }
-      await syncTree(from, to, skip);
-      continue;
-    }
-    if (holdsTrackedPath(skip, to)) continue;
-    const target = lstatOrUndefined(to);
-    if (target?.isDirectory()) await rm(to, { recursive: true, force: true });
-    else if (target?.isSymbolicLink()) await unlink(to);
-    await cp(from, to);
-  }
-  for (const name of await readdir(destination)) {
-    const to = join(destination, name);
-    if (present.has(name)) continue;
-    // `trackedPaths` names files, so a directory between here and a tracked
-    // file must be kept even though the package does not ship that name.
-    if (skip?.has(to) ?? false) continue;
-    if (holdsTrackedPath(skip, to)) continue;
-    await rm(to, { recursive: true, force: true });
-  }
-}
-
-/**
- * Paths the host-side wrappers open by repo-root-relative path. A copied
- * command reads `.devboard/prompts/<name>.md`, a copied omp extension
- * re-exports `.devboard/extensions/<name>.ts`, those extensions import
- * `../lib/*.ts`, and the shipped tracker prompts invoke
- * `.devboard/scripts/forge-auth.ts`. The package itself lives under
- * `.devboard/node_modules`, so each entry is copied into the host prefix on
- * install and every update. An entry is a directory or a single file.
- */
-export const HOST_HARNESS_PATHS = ["prompts", "extensions", "lib", "scripts/forge-auth.ts"];
-
-export async function syncHarnessTrees(host, harness) {
-  for (const name of HOST_HARNESS_PATHS) {
-    const source = join(harness, name);
-    if (!existsSync(source)) continue;
-    const target = join(host, ".devboard", name);
-    if (lstatOrUndefined(source)?.isDirectory() ?? false) {
-      await syncTree(source, target);
-      continue;
-    }
-    await ensureFixedDirectory(dirname(target));
-    const current = lstatOrUndefined(target);
-    if (current?.isDirectory()) await rm(target, { recursive: true, force: true });
-    else if (current?.isSymbolicLink()) await unlink(target);
-    await cp(source, target);
-  }
-}
-
-async function syncWrappers(host, harness, skip) {
-  for (const name of ["commands", "extensions"]) {
-    await syncTree(join(harness, "omp", name), join(host, ".omp", name), skip);
-  }
-  const mcpSource = join(harness, "omp", "mcp.json");
-  const mcpTarget = join(host, ".omp", "mcp.json");
-  if (existsSync(mcpSource) && !(skip?.has(mcpTarget) ?? false)) {
-    await ensureFixedDirectory(join(host, ".omp"));
-    const current = lstatOrUndefined(mcpTarget);
-    if (current?.isSymbolicLink()) await unlink(mcpTarget);
-    await cp(mcpSource, mcpTarget);
-  }
-}
-
 async function syncAgents(host, harness, skip) {
   const source = join(harness, "templates", "host-AGENTS.md");
   const target = join(host, "AGENTS.md");
@@ -1216,6 +1134,20 @@ async function installCommand(options) {
   );
 }
 
+/**
+ * Copies the installed package's wrappers and harness trees into the host,
+ * preserving git-tracked wrapper files. `update` runs it after a reinstall and
+ * also when the prefix already holds the target version: an automatic update
+ * may have replaced the package while this code was not running, and returning
+ * early would leave the host on the previous release's copies.
+ */
+async function syncInstalledCopies(host, prefix) {
+  const harness = packageDir(prefix);
+  const skip = trackedPaths(host, [".omp/commands", ".omp/extensions"]);
+  await syncWrappers(host, harness, skip);
+  await syncHarnessTrees(host, harness);
+}
+
 async function updateCommand(options) {
   const host = resolveHost(options.host);
   const prefix = join(host, ".devboard");
@@ -1252,7 +1184,10 @@ async function updateCommand(options) {
       return;
     }
     if (targetVersion === before) {
-      console.log(`devboard: ${PACKAGE_NAME}@${before} is already installed`);
+      await syncInstalledCopies(host, prefix);
+      console.log(
+        `devboard: ${PACKAGE_NAME}@${before} is already installed; synced wrappers and harness files`,
+      );
       return;
     }
   }
