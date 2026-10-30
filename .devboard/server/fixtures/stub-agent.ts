@@ -738,7 +738,14 @@ function writeJsonFile(path: string, value: unknown) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function flowGit(repo: string, args: string[]) {
+/** The exit status and piped output of one fixture git command. */
+interface FlowGitOutput {
+  exitCode: number | null;
+  stdout: Buffer;
+  stderr: Buffer;
+}
+
+function flowGit(repo: string, args: string[]): FlowGitOutput {
   return Bun.spawnSync({
     cmd: [
       "git",
@@ -853,14 +860,28 @@ async function runFlowImplementation(directory: string) {
     );
     if (index > 1) writeFileSync(join(process.cwd(), "src", `extra-${index}.txt`), `extra ${index}\n`);
 
-    flowGit(process.cwd(), ["add", "-A"]);
-    const committed = flowGit(process.cwd(), [
-      "commit",
-      "-m",
-      `checkpoint ${index}: fixture change`,
-    ]);
-    if ((committed.exitCode ?? 1) !== 0) {
-      log(`flow-commit-failed ${committed.stderr.toString().trim()}`);
+    // The server runs its own git commands on this worktree while the peer
+    // commits, so an occasional index.lock makes the pair fail. Retry instead
+    // of ending the peer and stranding the checkpoint the tests wait for.
+    let added: FlowGitOutput | undefined;
+    let committed: FlowGitOutput | undefined;
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      added = flowGit(process.cwd(), ["add", "-A"]);
+      if ((added.exitCode ?? 1) === 0) {
+        committed = flowGit(process.cwd(), [
+          "commit",
+          "-m",
+          `checkpoint ${index}: fixture change`,
+        ]);
+        if ((committed.exitCode ?? 1) === 0) break;
+      }
+      await Bun.sleep(50 * attempt);
+    }
+    if (committed === undefined || (committed.exitCode ?? 1) !== 0) {
+      log(
+        `flow-commit-failed ${committed?.stderr.toString().trim() ?? ""} ` +
+          `add=${JSON.stringify(added?.stderr.toString().trim() ?? "")}`,
+      );
       return;
     }
     const revision = flowGit(process.cwd(), ["rev-parse", "--short=7", "HEAD"]);
