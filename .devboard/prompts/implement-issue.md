@@ -165,11 +165,17 @@ the prerequisite in another agent's place.
 
 ## Shell calls
 
-- Never emit a bare `true`, a `cd <repo> && true` prefix, or an `&& true`/`; true` suffix. Each call
-  must answer the question it was made for, and its output must be read; an exit-status placeholder
-  is not a diagnostic.
-- `|| true` is permitted only where an absent match is the expected result, such as a `grep` or `ls`
-  probe whose empty output you then read; never use it to hide a failure whose exit status matters.
+- Every shell call must carry a substantive command. A bare `true`, a `cd <root> && true` prefix, or
+  an `&& true`/`; true` suffix with no other effect is never a valid call: it burns a round trip,
+  records no evidence, and hides whether the step it stood for ran. Each call must answer the
+  question it was made for, and its output must be read; an exit-status placeholder is not a
+  diagnostic.
+- To confirm the working directory, run `pwd` or `git rev-parse --show-toplevel`; to confirm a path
+  exists, run `ls <path>`. Never stand in for either with `cd <root> && true`.
+- `|| true` and `; true` are permitted only when the exit status is genuinely irrelevant and you
+  state the reason. When the failure itself is the answer, run the probe bare and read its nonzero
+  status instead of masking it with `|| true`. An absent match on a `grep` or `ls` probe is the
+  expected result, so its empty output needs no suffix.
 - Keep a worktree, branch, stash, or remote-tip probe in one command and accept its nonzero exit as
   the answer. Do not pad it with a guard tail.
 
