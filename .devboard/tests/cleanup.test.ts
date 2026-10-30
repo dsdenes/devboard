@@ -16,6 +16,13 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { acquireLock } from "../issues/lock";
 import {
+  designRoot as designStateRoot,
+  repoStateDirectory as designRepoStateDirectory,
+  settingsPath as designSettingsPath,
+  statePath as designStatePath,
+} from "../issues/design/paths";
+import { emptyState as emptyDesignState } from "../issues/design/state";
+import {
   repoStateDirectory,
   scoutRoot,
   settingsPath,
@@ -23,6 +30,8 @@ import {
 } from "../issues/scout/paths";
 import { emptyState } from "../issues/scout/state";
 import { ScoutWorker } from "../issues/scout/worker";
+import { DesignBridge } from "../server/design";
+import { agentRegistry } from "../server/agents/registry";
 import {
   CLEANUP_RETENTION_MS,
   coveredStateDirs,
@@ -434,6 +443,72 @@ describe("sweepStateDir", () => {
       expect(worker.currentState.intervalMinutes).toBe(saved.intervalMinutes);
     } finally {
       await worker.stop();
+    }
+  });
+
+  test("keeps a stopped design worker's saved settings and state while sweeping cycle scratch", async () => {
+    const base = await temporaryDirectory();
+    const repoDir = join(base, "repo");
+    const stateDir = join(repoDir, ".devboard", ".tmp");
+    const saved = { maxPerHour: 2, maxPending: 1, intervalMinutes: 30 };
+    const settings = designSettingsPath(stateDir, repoDir);
+    const state = designStatePath(stateDir, repoDir);
+    await mkdir(repoDir, { recursive: true });
+    writeAt(settings, JSON.stringify(saved), old);
+    writeAt(
+      state,
+      JSON.stringify(
+        emptyDesignState({
+          repo: "acme/fixture",
+          root: repoDir,
+          lifecycle: "stopped",
+          limit: { maxPerHour: saved.maxPerHour, maxPending: saved.maxPending },
+          intervalMinutes: saved.intervalMinutes,
+          now: old,
+        }),
+      ),
+      old,
+    );
+    utimesSync(designRepoStateDirectory(stateDir, repoDir), old, old);
+    utimesSync(designStateRoot(stateDir), old, old);
+    const cycleDir = join(designStateRoot(stateDir), "cycles", "2026-10-01T00-00-00-000Z");
+    const staleCycle = join(cycleDir, "audit.json");
+    writeAt(staleCycle, "{}", old);
+    utimesSync(cycleDir, old, old);
+    utimesSync(join(designStateRoot(stateDir), "cycles"), old, old);
+
+    const report = sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
+    const removed = report.removed.map((candidate) => candidate.path);
+
+    expect(existsSync(settings)).toBe(true);
+    expect(existsSync(state)).toBe(true);
+    expect(removed).not.toContain(settings);
+    expect(removed).not.toContain(state);
+    expect(existsSync(staleCycle)).toBe(false);
+    expect(removed).toContain(staleCycle);
+
+    const bridge = new DesignBridge({
+      descriptor: agentRegistry.require("design"),
+      repoDir,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: null,
+      harnessDir: harnessRoot,
+      send: () => undefined,
+      pollMs: 60_000,
+      preflight: async () => ({ ok: true, repository: "acme/fixture" }),
+      spawnWorker: () => undefined,
+    });
+    try {
+      const shown = bridge.snapshot();
+      expect(shown.cadence.minutes).toBe(saved.intervalMinutes);
+      expect(shown.limits).toEqual({
+        maxPerHour: saved.maxPerHour,
+        maxPending: saved.maxPending,
+      });
+    } finally {
+      bridge.dispose();
     }
   });
 

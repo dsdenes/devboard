@@ -7,6 +7,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { designRoot } from "../issues/design/paths";
 import { liveLockOwner } from "../issues/lock";
 import { ISSUES_DIRECTORY } from "../issues/paths";
 import { isRepoStateDirectoryName, scoutRoot } from "../issues/scout/paths";
@@ -169,6 +170,7 @@ export function sweepStateDir(
   }
   const directory = info;
   const scoutDirectory = scoutRoot(directory);
+  const designDirectory = designRoot(directory);
   const protectedPrefixes = [
     join(directory, "state"),
     join(directory, "journal"),
@@ -226,6 +228,15 @@ export function sweepStateDir(
     // and a dead worker's lock beside that directory stay sweepable.
     if (path.startsWith(`${scoutDirectory}${sep}`)) {
       const [key] = relative(scoutDirectory, path).split(sep);
+      if (key !== undefined && isRepoStateDirectoryName(key)) return true;
+    }
+    // Design System persists one repository's saved cadence, caps, control
+    // files, and last cycle in `<stateDir>/design/<24-hex>`. Settings are
+    // written only by an operator save and state only by a running cycle, so a
+    // stopped worker's files are operator input, not scratch. Cycle scratch
+    // below `design/cycles` and a dead worker's lock stay sweepable.
+    if (path.startsWith(`${designDirectory}${sep}`)) {
+      const [key] = relative(designDirectory, path).split(sep);
       if (key !== undefined && isRepoStateDirectoryName(key)) return true;
     }
     // A provider store may live below a state directory that is itself nested
