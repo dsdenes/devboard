@@ -86,9 +86,6 @@
     <header class="discover-page__header discover-agent__header">
       <div class="discover-page__heading">
         <h1 class="discover-page__title">{descriptorLabel}</h1>
-        <p class="discover-page__subtitle">
-          One ACP peer, one staged slice, and only this agent's artifacts are published.
-        </p>
         <code
           class="code-chip"
           data-testid="discover-agent-prompt-command"

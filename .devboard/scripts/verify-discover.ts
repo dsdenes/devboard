@@ -553,6 +553,22 @@ try {
     "the existing Discover section entries changed",
     sectionsBefore,
   );
+  // The published pages lead the sidebar; the agent triggers follow them.
+  const leadingGroup = await devtools.evaluate(`(() => {
+    const group = document.querySelector('[data-testid="sidebar"] .sidebar-group');
+    if (group === null) return null;
+    return {
+      label: group.getAttribute('aria-label') ?? '',
+      tabs: [...group.querySelectorAll('[data-testid="discover-tab"]')]
+        .map((button) => button.getAttribute('data-tab') ?? ''),
+    };
+  })()`);
+  check(
+    JSON.stringify(leadingGroup) ===
+      JSON.stringify({ label: "Discover sections", tabs: ["overview", "glossary"] }),
+    "Overview and Glossary are not the first sidebar entries",
+    leadingGroup,
+  );
   console.log("PASS discovery-group");
 
   /* 2. Each card shows its own complete prompt and its command. */

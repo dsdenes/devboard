@@ -16,7 +16,7 @@ the client types. Journey numbers refer to `brief.md`.
 | C8 | Question and answer | `discover.question`, `answerDraft` | 7 | Unblock the crawl | yes | Blocks the run when present |
 | C9 | Error | `discover.displayError` | 1, 3, 6, 8 | Understand and recover from a refusal | yes | Recovery route |
 | C10 | Interrupted-run notice | `discover.interrupted` | 1 | Know the last run did not publish | yes | Prevents assuming fresh data |
-| C11 | Transition notice | `discover.transition` | 1 | Know a run was replaced | yes | Short-lived status; P2 |
+| C11 | Transition notice | `discover.transition` | 1 | Know a run was replaced | no | Removed; the run tag already reports a live run and the notice only restated its end |
 | C12 | Warnings count and entry | `discover.displayedWarnings` | 2, 3 | Recognise partial or suspicious artifacts | yes | One entry, not repeated text |
 | C13 | Commands: task and exact command | `sheet.commands` | 2 | Run and test the project | yes | Primary actionable content |
 | C14 | Testing: total tests, levels, suite command | `sheet.testing`, `discover.testCommand` | 2, 6 | Choose the test level and command | yes | Required by Journey 2 and the testing skill |
@@ -72,6 +72,7 @@ the client types. Journey numbers refer to `brief.md`.
 
 ## Removed candidates
 
+- C11 transition notice: restated a run's end after the run tag had already reported it.
 - C37 concept id, C38 grounding count, C44 origin: internal or non-decisional.
 - C39 recent notices: duplicate surface; the bell remains in the status bar.
 - C40 warning banner, C41 busy repeat, C42 skill count: redundant copies.

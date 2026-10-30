@@ -45,9 +45,9 @@ the prerequisite in another agent's place.
   no login prompt, and no waiting for an operator. Decide from the repository evidence.
 - Complete the work: no stubs, placeholders, disabled checks, or unfinished branches of behavior.
 - Verify the changed surface by running it, then run the checks the change could break.
-- Fetch the canonical integration line (`main` unless the repository names another) before
-  integrating. Integrate concurrent changes, resolve every conflict yourself, and rerun every
-  check the integration invalidates.
+- Establish the canonical integration line (`main` unless the repository names another) with the
+  integration check below before integrating. Integrate concurrent changes, resolve every
+  conflict yourself, and rerun every check the integration invalidates.
 - Publish directly to that canonical integration line. Never create a pull request or merge
   request, never force-push, and never rewrite published history.
 - When a push is rejected, fetch, integrate the new tip, resolve the conflicts, rerun the
@@ -59,9 +59,32 @@ the prerequisite in another agent's place.
 - On success, remove only the worktree and branch you created. On failure or block, leave your
   worktree in place and report its path.
 
+## Integration checks
+
+Verifying integration is one composite command, never a bare fetch. Run it once before the push
+and once after the push:
+
+```sh
+git fetch origin main --quiet &&
+git rev-parse --short HEAD origin/main &&
+git rev-list --left-right --count HEAD...origin/main &&
+git merge-base --is-ancestor <commit> origin/main
+```
+
+Read `git status --short --branch` once alongside the check. Fetch at most twice in a session and
+at most once per turn, and fetch again only after a push, merge, or rebase happened since the
+previous fetch. Untracked `.devboard/.issue-*.json` entries in `git status` are expected status
+noise: they never justify another fetch, a merge, or a commit.
+
+State integration only from a `git merge-base --is-ancestor` exit status or the
+`git ls-remote <remote> refs/heads/main` ref value. Never claim a commit is integrated from
+`git log --oneline origin/main` alone. Replace the last two terms of the composite command with
+`git ls-remote origin refs/heads/main` when the remote tip itself is the claim.
+
 ## Completion gate
 
-Prove the push once, as the last step, and run no other ancestry probe. `git ls-remote <remote>
+The post-push integration check is the last ancestry check. Run it once, then prove the push once
+with `git ls-remote`, and run no other fetch or ancestry probe afterward. `git ls-remote <remote>
 refs/heads/main` must name `git rev-parse HEAD`; equal tips prove the integration commit landed,
 and ancestry follows. This gate prints both commits and exits nonzero when they differ:
 
@@ -75,10 +98,11 @@ if [ "$local_commit" != "$remote_tip" ]; then
 fi
 ```
 
-Replace `origin` and `main` when the repository names another canonical remote or branch. Never
-chain per-commit `git merge-base --is-ancestor <sha> origin/main` probes, and never re-verify a
-commit already proven to be the remote tip. If an older commit genuinely needs checking, run
-exactly one `git merge-base --is-ancestor <sha> origin/main` and report its exit status.
+Replace `origin` and `main` when the repository names another canonical remote or branch. Use at
+most one `git merge-base --is-ancestor` per check, as the composite check above shows, and never
+re-verify a commit already proven to be the remote tip. If an older commit genuinely needs
+checking, run exactly one `git merge-base --is-ancestor <sha> origin/main` and report its exit
+status.
 
 ## Publish
 
