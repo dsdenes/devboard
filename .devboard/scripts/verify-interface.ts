@@ -2204,7 +2204,7 @@ try {
   const sidebarAfterShortcut = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"]') !== null`);
   check(sidebarAfterShortcut, "Ctrl+B still hides the sidebar");
 
-  // 5b. Devboard mode: fifth tab, one sidebar entry, read-only MCP tool list.
+  // 5b. Devboard mode: fifth tab, the background agents with the MCP entry, read-only tool list.
   const catalog = toolListPayload().tools.map(({ name, title, description }) => ({
     name,
     title,
@@ -2334,24 +2334,42 @@ try {
     items: number;
     label: string;
     command: string;
+    agentLabels: string[];
+    agentCommands: string[];
     toolNames: string[];
   }>(`(() => {
     const sidebar = document.querySelector('[data-testid="sidebar"]');
     const entries = [...(sidebar?.querySelectorAll('[data-testid="devboard-tab"]') ?? [])];
+    const agents = [...(sidebar?.querySelectorAll('[data-testid^="open-devboard-"]') ?? [])];
     const text = sidebar?.textContent ?? "";
     return {
       entries: entries.length,
       items: sidebar?.querySelectorAll('.sidebar-item').length ?? 0,
       label: entries[0]?.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
       command: entries[0]?.getAttribute("data-command") ?? "",
+      agentLabels: agents.map(
+        (button) =>
+          button.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
+      ),
+      agentCommands: agents.map((button) => button.getAttribute("data-command") ?? ""),
       toolNames: ${JSON.stringify(catalog.map((tool) => tool.name))}.filter((name) =>
         text.includes(name),
       ),
     };
   })()`);
   check(
-    devboardSidebar.entries === 1 && devboardSidebar.items === 1,
-    "the Devboard sidebar does not carry exactly one entry",
+    devboardSidebar.entries === 1 &&
+      devboardSidebar.items === 5 &&
+      JSON.stringify(devboardSidebar.agentLabels) ===
+        JSON.stringify(["Auto Scout", "Watchdog", "Design System", "Coach"]) &&
+      JSON.stringify(devboardSidebar.agentCommands) ===
+        JSON.stringify([
+          "open.devboard.scout",
+          "open.devboard.watchdog",
+          "open.devboard.design",
+          "open.devboard.coach",
+        ]),
+    "the Devboard sidebar does not carry the background agents beside the MCP tools entry",
     devboardSidebar,
   );
   check(

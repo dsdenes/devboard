@@ -1,4 +1,5 @@
 import type { Mode, Theme } from "./types";
+import { agentRegistry } from "../../server/agents/registry";
 
 export interface WorkspaceTab {
   id: string;
@@ -77,6 +78,9 @@ function validTab(value: unknown): value is WorkspaceTab {
 /** A tab a previous revision could persist but this one no longer renders. */
 function normalizeTab(mode: Mode, tab: WorkspaceTab): WorkspaceTab {
   if (mode === "flow" && tab.id === "flow-goal") return defaultTab("flow");
+  if (mode === "issues" && agentRegistry.get(tab.kind) !== undefined) {
+    return defaultTab("issues");
+  }
   if (mode === "issues" && tab.kind === "issues") {
     return { ...tab, kind: "queue", id: "issues" };
   }

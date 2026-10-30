@@ -55,9 +55,10 @@ The width survives a reload.
 - **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
   session and PR state, widgets, changed files, checkpoints, and blockers. The overview entry
   carries the goal's `unsaved` marker. Blockers open the overview at the blocker they name.
-- **Devboard** carries exactly one entry, `data-testid="devboard-tab"` labeled `MCP tools` with
-  `data-command="devboard.tab.tools"`. It opens the read-only MCP tool list; no tool name appears
-  in the sidebar.
+- **Devboard** carries the **Background agents** group — Auto Scout, Watchdog, Design System,
+  and Coach — and one `data-testid="devboard-tab"` entry labeled `MCP tools` with
+  `data-command="devboard.tab.tools"`. Each agent entry opens its page; the last entry opens the
+  read-only MCP tool list. No tool name appears in the sidebar.
 - **Discover** lists the overview and glossary sections, the five skills under their own group,
   and warnings only while at least one exists. The glossary entry carries the published term
   count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
@@ -1457,7 +1458,7 @@ Auto Scout, Watchdog, Design System, and Coach are the four instances of one bac
 contract. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
 description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
 start/stop commands, issue projection, detail panel, and prompt source. The shared page, the
-shared filed-issues table, and the Issues sidebar are built from that registry; adding a further
+shared filed-issues table, and the Devboard sidebar are built from that registry; adding a further
 continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
 sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
 validates unchanged.
@@ -1481,11 +1482,12 @@ two visible `overline` groups 24px apart, each with 10px column and 6px row gaps
 the Every field, the last-run and next-run clocks, and the secondary `Save cadence`; `Filing
 limits` holds Per hour, Open issues, and the secondary `Save limits`. Each group wraps as a unit,
 so a field never separates from its save control. Either save validates all three fields and
-sends one settings command. The sidebar has three groups in order: `Issues surfaces` (Overview),
-`Background agents` (`data-testid="sidebar-background-agents"`, heading `Background agents`,
-entries `open-issues-scout`, `open-issues-watchdog`, `open-issues-design`, then
-`open-issues-coach`, badges `agent-state-<id>`, counts `agent-count-<id>`), and `Issues work`
-(Issues, Draft goals).
+sends one settings command. The Devboard sidebar has two groups in order: `Background agents`
+(`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
+`open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`, then
+`open-devboard-coach`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
+`Devboard sections` (the `devboard-tab` MCP tools entry). The Issues sidebar carries no
+Background agents group.
 
 ### Transport
 
@@ -1580,7 +1582,7 @@ newest 100 run directories.
 
 ### Design System
 
-Design System is the `design` descriptor. Its sidebar entry `open-issues-design` opens the shared
+Design System is the `design` descriptor. Its sidebar entry `open-devboard-design` opens the shared
 `agent-page` with `data-agent="design"` and `design-activity`. Its prompt section shows
 `.devboard/prompts/design-system.md`, the file the `/design-system-audit` command reads; in a
 harness source checkout it is editable and chat-backed exactly like the Auto Scout prompt. While
@@ -2432,8 +2434,8 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-Auto Scout is the `scout` descriptor in the shared background-agent contract. The Issues sidebar
-entry `open-issues-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
+Auto Scout is the `scout` descriptor in the shared background-agent contract. The Devboard sidebar
+entry `open-devboard-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
 selecting, restoring, or reloading a tab starts nothing. The page shows the shared lifecycle,
 last-read clock, cadence, limits, filed-issues table, and detail panel described above, plus
 `scout-activity` for the current or newest scan. The page also shows `agent-error` for the last
@@ -3101,16 +3103,16 @@ a release published later fills its blank version, a failed read shows `error` w
 and the last success time while keeping the rows, no review widget or command remains, and Stop
 leaves the table and a released lock. It writes only under `.devboard/.tmp`.
 `bun run verify:agents` builds the client, seeds all four agents, and drives headless Chrome
-through the Background agents sidebar section, the identical core test ids on every page, Start ->
-starting -> running and Stop -> stopping -> stopped, cadence and limit validation and
-persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
-command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
-the footer indicator with no console error. It also proves Coach's shared cycle detail and
-persisted settings, and the prompt section: every page renders `agent-prompt` directly after
-`agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach show
-`agent-prompt-absent`; an installed host is read-only and refuses a save with an error while its
-prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save for
-both file-backed agents, one chat turn streams a reply and changes the editor with the file
+through the Background agents section of the Devboard sidebar, the identical core test ids on every
+page, Start -> starting -> running and Stop -> stopping -> stopped, cadence and limit validation
+and persistence, the Watchdog cap, the shared table columns, freshness without a reload, no
+mutating command on reload, the timer-blocked state and one-click disable against a stub
+`systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
+detail and persisted settings, and the prompt section: every page renders `agent-prompt` directly
+after `agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach
+show `agent-prompt-absent`; an installed host is read-only and refuses a save with an error while
+its prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save
+for both file-backed agents, one chat turn streams a reply and changes the editor with the file
 untouched, Save makes each file byte-equal to its editor and a reload puts those bytes back in the
 editor.
 
