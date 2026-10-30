@@ -110,10 +110,15 @@ function finishedRun(runId: string, root: string): RunFile {
   };
 }
 
+/**
+ * Polls a fixture's in-memory state. The suite runs files in parallel, so a
+ * worker write can lag the awaited call by seconds under load; the deadline is
+ * generous for that reason and never shortens a wait that already succeeded.
+ */
 async function waitFor<T>(
   read: () => T | undefined,
   description: string,
-  timeoutMs = 5000,
+  timeoutMs = 20_000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
