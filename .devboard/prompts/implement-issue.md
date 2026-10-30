@@ -60,6 +60,24 @@ the prerequisite in another agent's place.
 - On success, remove only the worktree and branch you created. On failure or block, leave your
   worktree in place and report its path.
 
+## Publish
+
+Publishing is part of the task. Run it exactly once per change, from the integration checkout, in
+this one form:
+
+```bash
+cd .devboard && bun run publish --wait-timeout 1800 2>&1 | tail -60; echo "EXIT:${PIPESTATUS[0]}"
+```
+
+- Use this invocation verbatim: no absolute `cd` path, no other `tail -N` size, no
+  `git ls-remote` or `git status` pre-check, and no `.tmp/*.log` redirection. Publish already
+  verifies `main`, the release workflow, the npm package, the release assets, and the mirror.
+- Publish is long-running. If the command is backgrounded, do other work or end the turn and wait
+  for its completion follow-up. Never abort, kill, or re-invoke it while a run is pending, and
+  never poll for it.
+- Report the printed `EXIT:` value as the publish result. Close the issue only after that value is
+  `0` and the pushed revision is verified on the canonical integration line.
+
 ## Reporting
 
 The first stderr line is the failure reason the dashboard shows. On a block it is exactly
