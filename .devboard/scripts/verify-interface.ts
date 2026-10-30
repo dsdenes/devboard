@@ -1022,6 +1022,26 @@ async function seedRetainedProject(
   return directory;
 }
 
+/**
+ * Stages a retained project's external boundaries. The crawl's own sheet
+ * records the systems the card bands, so one retained copy carries the observed
+ * empty list the card renders as its own line.
+ */
+async function stageRetainedBoundaries(directory: string, systems: string[]): Promise<void> {
+  const path = join(directory, ".omp", "discover", "sheet.json");
+  const sheet = JSON.parse(await readFile(path, "utf8")) as {
+    architecture?: { externalBoundaries?: { value?: unknown } };
+  };
+  const leaf = sheet.architecture?.externalBoundaries;
+  check(
+    typeof leaf === "object" && leaf !== null,
+    "the retained sheet carries no external boundaries leaf",
+    path,
+  );
+  leaf.value = systems;
+  await writeFile(path, `${JSON.stringify(sheet, null, 2)}\n`);
+}
+
 /** Writes the active remote target into the stopped dashboard's durable state. */
 async function seedRemoteTarget(
   stateDir: string,
@@ -3661,7 +3681,9 @@ try {
     sharedKernelTitle: string;
     sharedKernelRows: number;
     sharedKernelTexts: string[];
-    externalBoundaries: string | null;
+    externalBoundaryTitle: string;
+    externalBoundaryRows: number;
+    externalBoundaryTexts: string[];
     stackedSections: number;
     staticText: number;
     sidebarTitle: string;
@@ -3746,10 +3768,10 @@ try {
       sharedKernelRows: document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] .discover-context').length,
       sharedKernelTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] .discover-context')]
         .map((row) => row.textContent.replace(/\\s+/g, " ").trim()),
-      externalBoundaries: (() => {
-        const block = document.querySelector('#workspace-discover [data-field="external-boundaries"] [data-role="externalBoundaries"]');
-        return block === null ? null : block.textContent.replace(/\s+/g, " ").trim();
-      })(),
+      externalBoundaryTitle: document.querySelector('#workspace-discover [data-field="external-boundaries"] .panel__title')?.textContent?.trim() ?? "",
+      externalBoundaryRows: document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] .discover-context').length,
+      externalBoundaryTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] .discover-context')]
+        .map((row) => row.textContent.replace(/\\s+/g, " ").trim()),
       stackedSections: document.querySelectorAll('#workspace-discover [data-field="unknowns"], #workspace-discover [data-field="dependencyMap"]').length,
       staticText: document.querySelectorAll('#workspace-discover [data-tab="overview"] .discover-lead, #workspace-discover [data-tab="overview"] .discover-note').length,
       sidebarTitle: document.querySelector('[data-testid="sidebar"] .sidebar__title')?.textContent?.trim() ?? "",
@@ -3893,8 +3915,16 @@ try {
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
   check(discoverTables.contextRows > 0, "the bounded-context list is empty", discoverTables);
   check(discoverTables.contextRoles.includes("Dependency direction"), "the boundary map does not label the dependency direction", discoverTables.contextRoles);
-  check(discoverTables.externalBoundaries === "None detected.", "the External boundaries block does not render the observed empty list", discoverTables.externalBoundaries);
-  check(!(discoverTables.externalBoundaries ?? "").includes("node:"), "the External boundaries block names a runtime built-in", discoverTables.externalBoundaries);
+  check(discoverTables.externalBoundaryTitle === "External boundaries", "external boundaries is not a separate Discover widget", discoverTables.externalBoundaryTitle);
+  check(!discoverTables.contextRoles.includes("External boundaries"), "the boundary map still lists external boundaries", discoverTables.contextRoles);
+  check(discoverTables.externalBoundaryRows === 2, "the External boundaries widget does not render one band per system", discoverTables.externalBoundaryRows);
+  check(
+    JSON.stringify(discoverTables.externalBoundaryTexts) ===
+      JSON.stringify(["PostgreSQL", "api.stripe.com"]),
+    "the External boundaries widget does not render the recorded systems",
+    discoverTables.externalBoundaryTexts,
+  );
+  check(!(discoverTables.externalBoundaryTexts.join("")).includes("node:"), "the External boundaries block names a runtime built-in", discoverTables.externalBoundaryTexts);
   check(discoverTables.sharedKernelTitle === "Shared kernels", "shared kernels is not a separate Discover widget", discoverTables.sharedKernelTitle);
   check(!discoverTables.contextRoles.includes("Shared kernels"), "the boundary map still lists shared kernels", discoverTables.contextRoles);
   check(discoverTables.sharedKernelRows === 1, "the Shared kernels widget does not render one band per kernel", discoverTables.sharedKernelRows);
@@ -4727,6 +4757,7 @@ try {
     "Hello-World",
     "2026-01-02T00:00:00.000Z",
   );
+  await stageRetainedBoundaries(helloRetained, []);
   const secondRetained = await seedRetainedProject(
     stateDir,
     host,
@@ -4853,6 +4884,18 @@ try {
     retainedTitle === "octocat/Hello-World",
     "the Discover head does not name the restored repository",
     retainedTitle,
+  );
+  const retainedBoundaries = await page.eval<{ text: string; bands: number }>(`(() => {
+    const block = document.querySelector('#workspace-discover [data-testid="discover-external-boundaries"]');
+    return {
+      text: block === null ? "" : block.textContent.replace(/\\s+/g, " ").trim(),
+      bands: document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] .discover-context').length,
+    };
+  })()`);
+  check(
+    retainedBoundaries.text === "None detected." && retainedBoundaries.bands === 0,
+    "the retained External boundaries card does not render the observed empty list",
+    retainedBoundaries,
   );
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the retained glossary");

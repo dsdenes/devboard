@@ -1193,7 +1193,7 @@ function discoverSheet(): Record<string, unknown> {
           )
         : discoverUnknown("No source directory was found in the crawled files."),
       externalBoundaries: paths.hasSource
-        ? discoverLeaf([], ["src"], "observed")
+        ? discoverLeaf(["PostgreSQL", "api.stripe.com"], ["src"], "observed")
         : discoverUnknown("No source directory was found in the crawled files."),
       sharedKernels: paths.hasSource
         ? discoverLeaf(["src/shared"], ["src"], "observed")

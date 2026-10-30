@@ -939,14 +939,16 @@ second level while its table holds none. Every listed level states an exact test
 table (`data-testid="discover-quality-gates"`): each row names a required CI gate, and the gates
 are not repeated among the Delivery facts. Runtime, deployment, CI, and branching use compact
 `dt`/`dd` facts whose list values are comma-separated.
-Architecture renders as two cards. `Bounded contexts` shows context rows with the name,
-responsibility, and entry points, followed by shared-kernel chips, the dependency direction, and a
-rendered Mermaid dependency graph. `External boundaries` is its own card
-(`data-field="external-boundaries"`) carrying the external-system chips; a leaf recorded `unknown`
-states its reason there, and a missing leaf says no external boundary was recorded. The repository
-path of a bounded context is not rendered. The graph draws one node per bounded context and one
-arrow for every `architecture.dependencies` edge, pointing from the context that depends to the
-context it reaches; it is drawn with `flowchart LR`
+Architecture renders as separate cards. `Bounded contexts` shows context rows with the name,
+responsibility, and entry points, the dependency direction, and a rendered Mermaid dependency
+graph. `External boundaries` (`data-field="external-boundaries"`) and `Shared kernels`
+(`data-field="shared-kernels"`) are cards of their own whose banded rows match the context list:
+one band per external system (`data-testid="discover-external-boundaries"`) and one per kernel.
+An external boundary leaf recorded `unknown` states its reason there, a missing leaf says no
+external boundary was recorded, and the observed empty list renders `None detected.` as the card's
+only line. The repository path of a bounded context is not rendered. The graph draws one node per
+bounded context and one arrow for every `architecture.dependencies` edge, pointing from the context
+that depends to the context it reaches; it is drawn with `flowchart LR`
 through Mermaid at render time, and a sheet without recorded edges draws no graph.
 External boundaries name only external systems — a remote API or service, a message broker, a
 database, or an identity provider the host integrates with across its own process and artifact.

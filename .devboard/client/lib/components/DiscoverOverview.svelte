@@ -203,11 +203,15 @@
   const externalBoundariesLeaf = $derived(
     sectionLeaf(architectureSection, "externalBoundaries"),
   );
-  const externalBoundaryValues = $derived(
-    externalBoundariesLeaf === undefined || externalBoundariesLeaf.confidence === "unknown"
-      ? []
-      : boundaryValues(externalBoundariesLeaf, "chips"),
-  );
+  /** One band per external system; the observed empty list keeps its own line. */
+  const externalBoundarySystems: string[] = $derived.by(() => {
+    const leaf = externalBoundariesLeaf;
+    if (leaf === undefined || leaf.confidence === "unknown" || !Array.isArray(leaf.value)) {
+      return [];
+    }
+    const values = leaf.value.map((value) => scalarText(value).trim()).filter(Boolean);
+    return [...new Set(values)].filter((value) => value.toLowerCase() !== "none detected");
+  });
   const unknownBoundaryGroups = $derived.by(() => {
     const labels: string[] = [];
     const reasons = new Set<string>();
@@ -851,14 +855,20 @@
                 <p class="empty">No external boundary was recorded.</p>
               {:else if externalBoundariesLeaf.confidence === "unknown"}
                 <p class="empty">{unknownText(externalBoundariesLeaf)}</p>
+              {:else if externalBoundarySystems.length > 0}
+                <ul class="discover-contexts" data-testid="discover-external-boundaries">
+                  {#each externalBoundarySystems as system (system)}
+                    <li class="discover-context" data-system={system}>
+                      <div class="discover-context__head">
+                        <code class="code-chip">{system}</code>
+                      </div>
+                    </li>
+                  {/each}
+                </ul>
               {:else}
-                <div
-                  class="discover-boundary-systems"
-                  data-role="externalBoundaries"
-                  data-testid="discover-external-boundaries"
-                >
-                  {@render plainChips(externalBoundaryValues)}
-                </div>
+                <p class="empty" data-testid="discover-external-boundaries">
+                  None detected.
+                </p>
               {/if}
             </div>
           </section>
