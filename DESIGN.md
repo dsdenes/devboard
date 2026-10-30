@@ -351,8 +351,8 @@ System stacks only; the interface requests no webfont.
 | `mono` | 12px / 400 | 0 / 1.45 | Code, paths, terminal text |
 | `mono-small` | 11.5px / 400 | 0 / 1.4 | Dense table identifiers and counts |
 
-Do not introduce a size between scale steps. Uppercase micro-labels always use `overline`; never
-apply tracking to sentence-case prose.
+Do not introduce a size between scale steps. Uppercase micro-labels use `overline`, and table heads
+use `label`; never apply tracking to sentence-case prose.
 
 ## Layout
 
