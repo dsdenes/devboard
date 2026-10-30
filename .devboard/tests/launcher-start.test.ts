@@ -158,7 +158,20 @@ const answeringServer = [
   "Bun.serve({",
   '  hostname: process.env.HOST ?? "127.0.0.1",',
   "  port: Number(process.env.PORT),",
-  '  fetch: () => new Response("ok"),',
+  "  fetch: (request) =>",
+  '    new URL(request.url).pathname === "/api/ready"',
+  "      ? Response.json({ pid: process.pid })",
+  '      : new Response("ok"),',
+  "});",
+  "",
+].join("\n");
+
+/** Answers HTTP, but never as the pid the launcher spawned. */
+const foreignServer = [
+  "Bun.serve({",
+  '  hostname: process.env.HOST ?? "127.0.0.1",',
+  "  port: Number(process.env.PORT),",
+  "  fetch: () => Response.json({ pid: process.pid + 1 }),",
   "});",
   "",
 ].join("\n");
@@ -190,6 +203,25 @@ describe("dashboard start", () => {
       );
       expect(pid).toBeGreaterThan(0);
       expect(processRunning(pid)).toBe(false);
+      expect(dashboardsFor(host)).toEqual([]);
+    },
+    60_000,
+  );
+
+  test(
+    "refuses a server that answers for another pid",
+    async () => {
+      const host = await makeHost("foreign");
+      startedHosts.push(host);
+      const release = await releaseWithServer("0.1.997", foreignServer);
+      const result = await install(host, {
+        PATH: `${await recordingBun()}:${process.env.PATH ?? ""}`,
+        DEVBOARD_RELEASE_DIR: release,
+        DEVBOARD_NPM: await failingNpm(),
+      });
+
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("did not answer on port");
       expect(dashboardsFor(host)).toEqual([]);
     },
     60_000,

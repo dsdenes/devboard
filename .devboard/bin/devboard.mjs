@@ -120,6 +120,9 @@ function firstLine(text) {
 
 class LauncherError extends Error {}
 
+/** The spawned dashboard died before it answered; another port may still work. */
+class DashboardExitError extends LauncherError {}
+
 function safeCwd(cwd) {
   if (cwd !== undefined) return cwd;
   try {
@@ -311,22 +314,37 @@ async function choosePort(preferred) {
   throw new LauncherError("no free port between 8080 and 8279");
 }
 
-async function httpOk(port) {
+/**
+ * The pid the dashboard on `port` reports for itself, or undefined when
+ * nothing answers there. Another server on the port — a concurrent install
+ * or a leftover process — reports a different pid, so install never mistakes
+ * it for the dashboard it spawned.
+ */
+async function readyPid(port) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/`, {
-      method: "HEAD",
+    const response = await fetch(`http://127.0.0.1:${port}/api/ready`, {
+      method: "GET",
       signal: AbortSignal.timeout(2000),
     });
-    return response.ok;
+    if (!response.ok) return undefined;
+    const body = await response.json();
+    return typeof body === "object" && body !== null && Number.isInteger(body.pid)
+      ? body.pid
+      : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-async function waitForHttp(port, timeoutMs = START_TIMEOUT_MS) {
+async function httpOk(port, expectedPid) {
+  const pid = await readyPid(port);
+  return pid !== undefined && (expectedPid === undefined || pid === expectedPid);
+}
+
+async function waitForHttp(port, expectedPid, timeoutMs = START_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await httpOk(port)) return true;
+    if (await httpOk(port, expectedPid)) return true;
     await sleep(200);
   }
   return false;
@@ -927,7 +945,8 @@ async function startDashboard(host, harness, port, stateDir) {
   });
   closeSync(fd);
   child.unref();
-  if (!(await waitForHttp(port))) {
+  if (!(await waitForHttp(port, child.pid))) {
+    const exited = child.exitCode !== null || !processRunning(child.pid);
     await stopSpawnedDashboard(child.pid, harness);
     let tail = "";
     try {
@@ -935,8 +954,9 @@ async function startDashboard(host, harness, port, stateDir) {
     } catch {
       tail = "";
     }
-    throw new LauncherError(
-      `the dashboard did not answer on port ${port}${tail.length > 0 ? `: ${firstLine(tail)}` : ""}`,
+    throw new (exited ? DashboardExitError : LauncherError)(
+      `the dashboard ${exited ? "exited before answering" : "did not answer"} on port ${port}` +
+        `${tail.length > 0 ? `: ${firstLine(tail)}` : ""}`,
     );
   }
   return child.pid;
@@ -1019,7 +1039,7 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
       kept.length === 1 &&
       state.version === version &&
       kept[0].port !== undefined &&
-      (await httpOk(kept[0].port))
+      (await httpOk(kept[0].port, kept[0].pid))
     ) {
       await writeInstallState(prefix, {
         ...state,
@@ -1040,8 +1060,19 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
     : Number.isInteger(state.port)
       ? state.port
       : undefined;
-  const port = await choosePort(preferred);
-  const pid = await startDashboard(host, harness, port, stateDir);
+  let port = await choosePort(preferred);
+  let pid = 0;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      pid = await startDashboard(host, harness, port, stateDir);
+      break;
+    } catch (error) {
+      // A concurrent install may claim the port between the free check and
+      // the bind. That is not a broken dashboard: start again on a free port.
+      if (!(error instanceof DashboardExitError) || attempt >= 5) throw error;
+      port = await choosePort(undefined);
+    }
+  }
   await writeInstallState(prefix, {
     version,
     host,
@@ -1544,8 +1575,10 @@ const CHECKS = [
       if (!isDashboardFrom(dashboard.pid, harness)) {
         throw new LauncherError(`pid ${dashboard.pid} does not run the installed package`);
       }
-      if (dashboard.port === undefined || !(await httpOk(dashboard.port))) {
-        throw new LauncherError("the dashboard does not answer HTTP 200");
+      if (dashboard.port === undefined || !(await httpOk(dashboard.port, dashboard.pid))) {
+        throw new LauncherError(
+          `the dashboard does not answer on port ${dashboard.port ?? "?"} for pid ${dashboard.pid}`,
+        );
       }
       return `pid ${dashboard.pid} on http://127.0.0.1:${dashboard.port}/`;
     },

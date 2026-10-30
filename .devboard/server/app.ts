@@ -6928,6 +6928,12 @@ export function createApp(options: AppOptions) {
         return handleFeedbackRequest(request, url);
       }
 
+      // Readiness for the launcher that owns this process: the pid proves that
+      // this dashboard, and not another server on the port, answered.
+      if (url.pathname === "/api/ready") {
+        return Response.json({ pid: process.pid });
+      }
+
       if (url.pathname === "/api/goal-proposals") {
         return handleGoalProposalRequest(request, url);
       }
