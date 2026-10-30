@@ -185,9 +185,11 @@
     white-space: nowrap;
   }
 
-  /* The state pill fits the 17px line box, so it cannot grow the 27px row. */
+  /* The pill keeps the overline 12px line height and its 2px padding, so its 18px
+     box is 1px taller than the cell's 17px line box. The negative bottom margin
+     removes that 1px from the line box, so the 27px row still comes from the cell. */
   .agent-issues-table .badge {
-    line-height: 1.1;
+    margin-bottom: -1px;
     vertical-align: top;
   }
 
