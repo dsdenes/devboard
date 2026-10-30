@@ -206,27 +206,28 @@ Commit in the worktree on the run's own task branch. When `main` has moved since
 cut, rebase the task branch onto `origin/main` inside the worktree and rerun the checks the rebase
 invalidates before landing; a rebase that reports the branch is up to date is the normal case.
 
-Read the worktree's sync state with the task branch's `HEAD` in one combined probe, run in the
-worktree after the fetch required before landing:
+Read the worktree's sync state with one `git status --short --branch` call, run in the worktree
+after the fetch required before landing. That call reports the branch, its upstream, and the
+ahead/behind counts in that order, and those counts are the divergence proof. Add
+`git log --oneline -3` only when commit subjects are needed, and `git rev-parse --short HEAD
+origin/main` only when hashes are needed, in the same call:
 
 ```sh
-git rev-parse --verify HEAD
-git rev-parse --verify origin/main
-git rev-parse --short HEAD
-git rev-parse --short origin/main
-git rev-list --left-right --count HEAD...origin/main
-git merge-base --is-ancestor HEAD origin/main; echo "ancestor=$?"
+git status --short --branch
 ```
 
-`git rev-list --left-right --count A...B` prints `<A-only> <B-only>` in ref order: the left number
-counts the commits only `HEAD` has and the right number counts the commits only `origin/main`
-has. `git merge-base --is-ancestor A B` exits 0 when A is an ancestor of B and 1 when it is not;
-any other exit status, such as 128 with `fatal: Not a valid object name`, means a ref is missing or
-the command itself failed, never that the commit is unrelated. A missing ref also makes
-`git rev-parse --verify <ref>` print `fatal: Needed a single revision`; when either appears,
-verify each ref on its own with `git rev-parse --verify HEAD` or
-`git rev-parse --verify origin/main`, fetch `origin main`, and read the probe again before
-concluding anything.
+An unpublished task branch has no upstream, so its status line carries no counts: add exactly one
+`git rev-list --left-right --count HEAD...origin/main` to that same call, which prints
+`<HEAD-only> <origin/main-only>` in ref order, and read it as the divergence proof. Never chain a
+bare `git rev-parse --short <branch>` with a following `git rev-list --left-right --count` for the
+same question. Guard any optional branch that may not exist yet with
+`git rev-parse --verify --quiet <branch>`, which prints nothing instead of exiting 128 with
+`fatal: Needed a single revision`; never use a bare `git rev-parse --short <branch>` for such a
+ref. Use `git merge-base --is-ancestor <sha> origin/main` only to confirm one named commit landed:
+exit 0 means it is an ancestor, 1 means it is not, and any other status, such as 128 with
+`fatal: Not a valid object name`, means a ref is missing or the command itself failed, never that
+the commit is unrelated. When a ref looks missing, fetch `origin main` and read the same sync call
+again before concluding anything.
 
 Then land it with this one canonical sequence from the canonical checkout, on `main`:
 
@@ -264,7 +265,8 @@ move on: never follow it with a per-commit re-check, a `git log` dump, or a Gite
 actions-endpoint query in the same breath, and never re-verify an integrated commit with
 `git merge-base --is-ancestor <full-sha> …` — the count already answers whether the work landed.
 When a different ancestry question genuinely arises, answer it with one `git branch --contains
-<sha>` or one `git merge-base --is-ancestor HEAD origin/main` and stop. The
+<sha>` or one `git merge-base --is-ancestor <sha> origin/main` to confirm that one commit landed,
+and stop. The
 block's `&&` chain is deliberate — the status read must succeed before the push runs — so never
 split it into separate commands, drop the leading fetch, reorder it, or rerun it to reconfirm
 output it already printed; a nonzero exit from it is evidence to read. Fetch at most twice in a
