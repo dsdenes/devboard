@@ -268,6 +268,7 @@ export class GoalDraftManager {
   private readonly log: (line: string) => void;
   private readonly ownerScript: string;
   private readonly spawnOwner: NonNullable<GoalDraftManagerOptions["spawnOwner"]>;
+  private readonly pollMs: number;
 
   /** Runs that still matter: every live run plus finished runs whose draft is listed. */
   private readonly runs = new Map<string, GoalDraftRun>();
@@ -281,6 +282,8 @@ export class GoalDraftManager {
   private readonly instanceId = randomUUID();
   /** True when this dashboard supervises the owners, not merely observes them. */
   private supervises = false;
+  /** True once `begin` attached to the state directory; construction touches nothing. */
+  private begun = false;
   private timer: Timer | undefined;
   private lastLeaseAt = 0;
   /** The poll failure already logged, so one stuck state directory logs once. */
@@ -295,6 +298,7 @@ export class GoalDraftManager {
     this.clock = options.now ?? (() => new Date());
     this.log = options.log ?? (() => undefined);
     this.ownerScript = options.ownerScript ?? join(import.meta.dir, "goal-draft-owner.ts");
+    this.pollMs = Math.max(20, options.pollMs ?? DEFAULT_POLL_MS);
     this.spawnOwner =
       options.spawnOwner ??
       ((argv, env) => {
@@ -316,11 +320,19 @@ export class GoalDraftManager {
           return undefined;
         }
       });
+  }
+
+  /**
+   * Attaches to the durable runs and starts polling. A dashboard that has not
+   * bound its port must never call this: attaching adopts a pending reload
+   * handoff, writes the lease, and deletes the handoff, so an abandoned bind
+   * attempt would take the lease from the manager that finally serves.
+   */
+  begin(): void {
+    if (this.begun) return;
+    this.begun = true;
     this.attach();
-    this.timer = setInterval(
-      () => this.poll(),
-      Math.max(20, options.pollMs ?? DEFAULT_POLL_MS),
-    );
+    this.timer = setInterval(() => this.poll(), this.pollMs);
     this.timer.unref?.();
   }
 

@@ -622,6 +622,7 @@ export class FlowController {
   #ticking = false;
   #tickQueued = false;
   #disposed = false;
+  #begun = false;
   #restoring = false;
   #replayWaiters: { send(data: string): unknown }[] = [];
   /** True until Start: a restored session never spawns an analyst by itself. */
@@ -653,6 +654,17 @@ export class FlowController {
     this.#goalTimeoutMs = Math.max(10, options.goalTimeoutMs ?? DEFAULT_GOAL_TIMEOUT_MS);
     this.#goalWorkActive = options.goalWorkActive ?? (() => undefined);
     this.#startedAt = nowIso(this.#now);
+  }
+
+  /**
+   * Restores the persisted session. A dashboard that has not bound its port
+   * must never call this: the restore writes state, broadcasts, and starts the
+   * worktree watcher, so an abandoned bind attempt would leak a timer and act
+   * on a session no client can reach.
+   */
+  begin(): void {
+    if (this.#begun) return;
+    this.#begun = true;
     // Restore after the host has finished wiring its own state: a restored
     // session may broadcast before the caller's declarations are initialized.
     queueMicrotask(() => {

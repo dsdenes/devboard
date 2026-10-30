@@ -21,6 +21,7 @@ import {
   readGoalDraftHandoff,
   readGoalDraftLease,
   readGoalDraftOwnerState,
+  writeGoalDraftHandoff,
   writeGoalDraftLease,
   writeGoalDraftOwnerState,
 } from "../server/goal-draft-owner";
@@ -84,6 +85,7 @@ function managerFor(
     pollMs: 30,
     send: (event) => events.push(event),
   });
+  manager.begin();
   managers.push(manager);
   return { manager, events };
 }
@@ -467,6 +469,62 @@ describe("elaboration", () => {
       expect(state.run.status).toBe("failed");
       expect(state.run.error).toContain("server exit interrupted the elaboration");
       expect(existsSync(join(root, path))).toBe(true);
+    }
+  });
+
+  test("construction adopts nothing until begin, so a failed bind leaves the handoff", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "pending.md"), draftText("Pending", "STUB-HANG body"));
+    const path = draftPath("pending.md");
+    const argv = [process.execPath, "-e", "await new Promise(() => {})"];
+    const owner = Bun.spawn({ cmd: argv, cwd: root, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    try {
+      const now = new Date().toISOString();
+      writeGoalDraftOwnerState(stateDir, root, path, {
+        version: GOAL_DRAFT_OWNER_VERSION,
+        run: {
+          status: "running",
+          path,
+          startedAt: now,
+          finishedAt: null,
+          error: null,
+          activity: ["the live owner"],
+          question: null,
+        },
+        owner: { pid: owner.pid, argv, cwd: root },
+        peer: null,
+        launcherPid: process.pid,
+        supervisorPid: process.pid,
+        updatedAt: now,
+      });
+      writeGoalDraftHandoff(stateDir, root, { at: Date.now(), pid: process.pid });
+
+      const events: unknown[] = [];
+      const manager = new GoalDraftManager({
+        repoDir: root,
+        stateDir,
+        command: `bun ${stubAgent} --log=${log} --goal-draft`,
+        environment: async () => ({}),
+        pollMs: 20,
+        send: (event) => events.push(event),
+      });
+      managers.push(manager);
+      // Attaching under the constructor would have written the lease and
+      // removed the handoff synchronously, before any timer could tick.
+      expect(readGoalDraftHandoff(stateDir, root)).not.toBeNull();
+      expect(readGoalDraftLease(stateDir, root)).toBeNull();
+      expect(events).toEqual([]);
+
+      manager.begin();
+      const lease = await waitFor(
+        () => readGoalDraftLease(stateDir, root) ?? undefined,
+        "the adopted lease",
+      );
+      expect(lease.instance).toBeDefined();
+      expect(readGoalDraftHandoff(stateDir, root)).toBeNull();
+    } finally {
+      owner.kill();
+      await owner.exited;
     }
   });
 

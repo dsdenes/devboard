@@ -2417,7 +2417,6 @@ export function createApp(options: AppOptions) {
     }, providersRefreshMs);
     providerRefreshTimer.unref?.();
   }
-  startProviderRefresh();
 
   /**
    * The Open issues view refreshes from the forge on its own cadence, so a
@@ -2457,7 +2456,6 @@ export function createApp(options: AppOptions) {
     ...(options.issues?.spawnWorker === undefined ? {} : { spawnWorker: options.issues.spawnWorker }),
     ...(options.issues?.closeIssue === undefined ? {} : { closeIssue: options.issues.closeIssue }),
   });
-  issues.begin();
 
   /**
    * The Drafts view's elaboration peers. A detached owner process holds each
@@ -2586,7 +2584,6 @@ export function createApp(options: AppOptions) {
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });
-  agents.begin();
 
   /**
    * The prompt half of each agent page. It reads the effective prompt file;
@@ -2956,40 +2953,47 @@ export function createApp(options: AppOptions) {
     }
   }
 
-  if (loadedState.kind === "damaged") {
-    if (remoteAvailable) cleanupRemoteScratch(remoteRoot);
-    const message = `The saved dashboard state could not be restored: ${loadedState.reason}. Starting from an empty dashboard.`;
-    process.stderr.write(`${message}\n`);
-    startupNotices.push({ type: "error", message });
-  } else if (loadedState.kind === "loaded") {
-    const stored = parseStoredState(loadedState.value);
-    if (stored === undefined) {
+  /**
+   * Applies the saved dashboard state and resumes its work. A bind attempt
+   * that throws must never reach this: resuming ends the predecessor's peers
+   * and starts background work, so it runs only after `Bun.serve` succeeds.
+   */
+  function startRestoredState(): void {
+    if (loadedState.kind === "damaged") {
       if (remoteAvailable) cleanupRemoteScratch(remoteRoot);
-      preserveStateFile(statePath);
-      const message =
-        "The saved dashboard state could not be restored: its contents are not a dashboard state. Starting from an empty dashboard.";
+      const message = `The saved dashboard state could not be restored: ${loadedState.reason}. Starting from an empty dashboard.`;
       process.stderr.write(`${message}\n`);
       startupNotices.push({ type: "error", message });
-    } else {
-      applyRestoredState(stored);
-      if (discoverTargetNotice !== null) {
-        const message = discoverTargetNotice;
-        discoverTargetNotice = null;
-        // The fallback is handled: the durable target is gone and the notice is
-        // sent once. It is not a server failure the watchdog should file.
-        journal.write("lifecycle", "discover-remote-missing");
-        startupNotices.push({ type: "discoverError", message });
+    } else if (loadedState.kind === "loaded") {
+      const stored = parseStoredState(loadedState.value);
+      if (stored === undefined) {
+        if (remoteAvailable) cleanupRemoteScratch(remoteRoot);
+        preserveStateFile(statePath);
+        const message =
+          "The saved dashboard state could not be restored: its contents are not a dashboard state. Starting from an empty dashboard.";
+        process.stderr.write(`${message}\n`);
+        startupNotices.push({ type: "error", message });
+      } else {
+        applyRestoredState(stored);
+        if (discoverTargetNotice !== null) {
+          const message = discoverTargetNotice;
+          discoverTargetNotice = null;
+          // The fallback is handled: the durable target is gone and the notice is
+          // sent once. It is not a server failure the watchdog should file.
+          journal.write("lifecycle", "discover-remote-missing");
+          startupNotices.push({ type: "discoverError", message });
+        }
+        // Ends the killed process's peers and continues its work; a restore
+        // failure is reported, never thrown.
+        void resumeRestoredWork(stored.children).catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          journal.write("server-error", `state: could not resume: ${detail}`);
+          process.stderr.write(`state: could not resume: ${detail}\n`);
+        });
       }
-      // Ends the killed process's peers and continues its work once the
-      // listener is bound; a restore failure is reported, never thrown.
-      void resumeRestoredWork(stored.children).catch((error: unknown) => {
-        const detail = error instanceof Error ? error.message : String(error);
-        journal.write("server-error", `state: could not resume: ${detail}`);
-        process.stderr.write(`state: could not resume: ${detail}\n`);
-      });
+    } else if (remoteAvailable) {
+      cleanupRemoteScratch(remoteRoot);
     }
-  } else if (remoteAvailable) {
-    cleanupRemoteScratch(remoteRoot);
   }
 
   function sendVersion(ws: { send(data: string): unknown }) {
@@ -7431,6 +7435,28 @@ export function createApp(options: AppOptions) {
       },
     },
   });
+
+  /**
+   * Every background loop starts only after `Bun.serve` succeeded. A bind
+   * attempt that throws EADDRINUSE is discarded whole: it must not adopt a
+   * reload handoff, write the lease, poll, or resume the predecessor's work,
+   * because the manager of the attempt that finally binds serves instead.
+   * A failure here happens with the listener bound, so it stops the listener
+   * before rethrowing; a partially started dashboard never stays reachable.
+   */
+  try {
+    startProviderRefresh();
+    flow.begin();
+    issues.begin();
+    goalDrafts.begin();
+    agents.begin();
+    // Restored state starts last: it may resume work through the bridges and
+    // controllers those calls just began.
+    startRestoredState();
+  } catch (error) {
+    server.stop(true);
+    throw error;
+  }
 
   const stop = server.stop.bind(server);
   const shutdown = (): void => {

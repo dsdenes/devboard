@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { projectLabel } from "./app";
 import { saveSubscriptions } from "./providers";
-import { readGoalDraftOwnerState } from "./goal-draft-owner";
+import { readGoalDraftLease, readGoalDraftOwnerState } from "./goal-draft-owner";
 
 /**
  * The detached elaboration owners against a real dashboard process: the reload
@@ -665,6 +665,95 @@ describe("graceful reload handoff", () => {
         for (const entry of dashboards(fixture.repo)) {
           try {
             process.kill(entry.pid, "SIGKILL");
+          } catch {
+            // Already gone.
+          }
+        }
+      }
+    },
+    120_000,
+  );
+  test(
+    "two reloads in a row adopt one running elaboration without interrupting it",
+    async () => {
+      const fixture = await createFixture();
+      const path = ".devboard/goal-proposals/twice.md";
+      await writeFile(
+        join(fixture.drafts, "twice.md"),
+        "# Twice draft\n\n> Unprocessed draft. STUB-HANG\n",
+      );
+      const dashboard = await startServer(fixture);
+      let client = await connect(fixture.url);
+      try {
+        client.send({ type: "startGoalDraft", path });
+        const running = await waitForRun(
+          fixture,
+          path,
+          (run) => run.status === "running" && stringList(run.activity).length > 0,
+          "the running elaboration before the first reload",
+        );
+        const startedAt = running.startedAt;
+        const state = await waitFor(
+          () => readGoalDraftOwnerState(fixture.stateDir, fixture.repo, path),
+          "the owner state before the first reload",
+        );
+        const peer = state.peer?.pid ?? 0;
+        expect(peer).toBeGreaterThan(0);
+        expect(alive(peer)).toBe(true);
+        const firstLease = await waitFor(
+          () => readGoalDraftLease(fixture.stateDir, fixture.repo) ?? undefined,
+          "the first dashboard's lease",
+        );
+
+        // The documented restart path starts the replacement before the old
+        // listener stops, so the replacement's first bind fails and the
+        // manager of the attempt that finally binds must be the supervisor.
+        let previous = dashboard.pid;
+        for (const index of [1, 2]) {
+          client.send({ type: "restartServer" });
+          await client.waitClosed();
+          client.close();
+          const replacement = await waitForReplacement(fixture, previous);
+          expect(replacement.port).toBe(fixture.port);
+          previous = replacement.pid;
+          client = await connect(fixture.url);
+          const adopted = await waitForRun(
+            fixture,
+            path,
+            (run) =>
+              run.status === "running" &&
+              run.startedAt === startedAt &&
+              run.error === null &&
+              stringList(run.activity).length > 0,
+            `the elaboration adopted by reload ${index}`,
+            20_000,
+          );
+          expect(adopted.startedAt).toBe(startedAt);
+          expect(alive(peer)).toBe(true);
+          const lease = await waitFor(
+            () => readGoalDraftLease(fixture.stateDir, fixture.repo) ?? undefined,
+            `the lease after reload ${index}`,
+          );
+          expect(lease.instance).toBeDefined();
+          expect(lease.instance).not.toBe(firstLease.instance);
+        }
+
+        expect(startPids(fixture.log)).toHaveLength(1);
+        expect(ownerPids(fixture.repo)).toHaveLength(1);
+        client.send({ type: "stopGoalDraft", path });
+        await waitForRun(fixture, path, (run) => run.status === "stopped", "the stopped elaboration");
+      } finally {
+        client.close();
+        for (const entry of dashboards(fixture.repo)) {
+          try {
+            process.kill(entry.pid, "SIGKILL");
+          } catch {
+            // Already gone.
+          }
+        }
+        for (const pid of ownerPids(fixture.repo)) {
+          try {
+            process.kill(pid, "SIGKILL");
           } catch {
             // Already gone.
           }

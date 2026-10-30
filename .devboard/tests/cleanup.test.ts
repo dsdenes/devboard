@@ -429,6 +429,7 @@ describe("sweepStateDir", () => {
       send: () => undefined,
     });
     try {
+      manager.begin();
       const run = manager.snapshot(finished);
       expect(run.status).toBe("succeeded");
       expect(run.activity).toEqual(["wrote the spec", "opened the issue"]);
@@ -739,8 +740,9 @@ describe("sweepStateDir", () => {
       broadcast: () => undefined,
     });
     try {
-      // #restore is queued as a microtask from the constructor and completes
-      // synchronously for a merged-only history.
+      // `begin` queues #restore as a microtask; it completes synchronously for
+      // a merged-only history.
+      flow.begin();
       await Promise.resolve();
       expect(flow.snapshot().history.map((entry) => entry.sessionId)).toEqual([sessionId]);
     } finally {
