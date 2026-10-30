@@ -94,6 +94,8 @@ export interface IssuesBridgeOptions {
   syncMs?: number;
   /** Test seam: replaces the dashboard's origin read. */
   syncRead?: TrackerRead;
+  /** Test seam: the clock behind the dashboard's read freshness. */
+  now?: () => Date;
   /** Test seam: false while no client is watching, so no read runs. */
   hasClients?: () => boolean;
   /** Wall-clock bound for the start preflight; defaults to 20 seconds. */
@@ -175,6 +177,7 @@ export class IssuesBridge {
       environment: this.environment,
       ...(options.syncMs === undefined ? {} : { intervalMs: options.syncMs }),
       ...(options.syncRead === undefined ? {} : { read: options.syncRead }),
+      ...(options.now === undefined ? {} : { now: options.now }),
     });
   }
 
@@ -218,9 +221,12 @@ export class IssuesBridge {
    * Ends every run the dashboard's fresh read no longer lists. A closed issue
    * is a decision, so its peer stops instead of finishing unseen. A run that
    * started after the read began was never in its answer and is left alone.
-   * Only a live worker attached to this state directory receives the command.
-   * The fingerprint is recorded only after the command is written, so a
-   * transient write failure is retried by the next fresh read.
+   * A live worker whose own read started no earlier than this one owns the
+   * decision: its list may already show the issue open again, so the abandon
+   * belongs to the worker's own newer read. Only a live worker attached to
+   * this state directory receives the command. The fingerprint is recorded
+   * only after the command is written, so a transient write failure is retried
+   * by the next fresh read.
    */
   private stopClosedRuns(open: Set<number>, readStartedAt: number): void {
     const state = this.currentState();
@@ -228,6 +234,14 @@ export class IssuesBridge {
     if (state === undefined || owner === undefined) return;
     if (resolve(owner.stateDir) !== this.stateDir) return;
     if (!state.enabled || state.lifecycle === "stopped") return;
+    const workerPollAt = state.poll.lastPollAt === null ? NaN : Date.parse(state.poll.lastPollAt);
+    if (
+      (state.poll.error ?? null) === null &&
+      Number.isFinite(workerPollAt) &&
+      workerPollAt >= readStartedAt
+    ) {
+      return;
+    }
 
     const eligible = state.agents.filter((agent) => {
       if (open.has(agent.issueNumber)) return false;
@@ -353,23 +367,23 @@ export class IssuesBridge {
   }
 
   /**
-   * The Open issues list. A live worker whose own read succeeded more recently
-   * than the dashboard's is authoritative; otherwise the dashboard's read is
-   * used, with the worker's handled and running markers merged in. Before the
-   * first dashboard read the worker's queue is the only list there is.
+   * The Open issues list. A live worker whose own read started no earlier than
+   * the dashboard's is authoritative; otherwise the dashboard's read is used,
+   * with the worker's handled and running markers merged in. Before the first
+   * dashboard read the worker's queue is the only list there is.
    */
   private queueFor(state: IssuesState | undefined, attached: boolean): IssuesState["queue"] {
     const workerQueue = state?.queue ?? [];
     const open = this.tracker.openIssues;
     if (open === null) return workerQueue;
     const workerPollAt = state?.poll.lastPollAt ?? null;
-    const syncedAt = this.tracker.view.lastSyncAt;
+    const readStartedAt = this.tracker.freshStartedAt;
     const workerIsNewer =
       attached &&
       (state?.poll.error ?? null) === null &&
       workerPollAt !== null &&
-      syncedAt !== null &&
-      Date.parse(workerPollAt) >= Date.parse(syncedAt);
+      readStartedAt !== null &&
+      Date.parse(workerPollAt) >= Date.parse(readStartedAt);
     if (workerIsNewer) return workerQueue;
     const markers = new Map(workerQueue.map((issue) => [issue.number, issue]));
     const listed = new Set(open.map((issue) => issue.number));
@@ -384,7 +398,6 @@ export class IssuesBridge {
     });
     // A run younger than the read was never part of its answer: its issue is
     // kept visible until a read that started after the run reports on it.
-    const readStartedAt = this.tracker.freshStartedAt;
     const cutoff = readStartedAt === null ? null : Date.parse(readStartedAt);
     if (attached && cutoff !== null && Number.isFinite(cutoff)) {
       for (const agent of state?.agents ?? []) {

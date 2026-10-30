@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { IssuesBridge } from "./issues";
 import { acquireLock } from "../issues/lock";
 import { controlDirectory, lockPath, statePath } from "../issues/paths";
-import { emptyState, writeState, type IssuesAgent, type IssuesIssue } from "../issues/state";
+import { emptyState, readState, writeState, type IssuesAgent, type IssuesIssue } from "../issues/state";
 import { createdDirectories, temporaryDirectory } from "../tests/fixtures/scout-helpers";
 
 afterAll(async () => {
@@ -430,6 +430,25 @@ async function controlCommands(stateDir: string, root: string): Promise<unknown[
   }
 }
 
+/**
+ * Records a worker poll at `at`. Called from a dashboard read, a time between
+ * the read's start and its completion proves the worker's read is newer.
+ */
+function recordWorkerPoll(stateDir: string, root: string, at: string): void {
+  const state = readState(statePath(stateDir, root));
+  if (state === undefined) throw new Error("worker state vanished");
+  writeState(statePath(stateDir, root), {
+    ...state,
+    poll: { ...state.poll, lastPollAt: at, error: null },
+  });
+}
+
+/** A read clock: `start` for the read's begin, `finished` for its completion. */
+function readClock(start: string, finished: string): () => Date {
+  let calls = 0;
+  return () => new Date(calls++ === 0 ? start : finished);
+}
+
 describe("dashboard tracker sync", () => {
   test("a stopped worker's stale queue is replaced by the live open list", async () => {
     const root = await temporaryDirectory("issues-sync-stopped");
@@ -603,6 +622,93 @@ describe("dashboard tracker sync", () => {
       await subject.syncNow();
       expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([5, 6]);
       expect(await controlCommands(stateDir, root)).toEqual([]);
+    } finally {
+      subject.dispose();
+      lock.release();
+    }
+  });
+
+  test("a worker poll that started after the dashboard read keeps its running issue", async () => {
+    const root = await temporaryDirectory("issues-sync-worker-newer");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" }),
+      enabled: true,
+      agents: [runningAgent(5, "run-5")],
+      queue: [{ ...issue(5), handled: false, runId: null, agentRunId: "run-5" }],
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => {
+        // The issue is reopened while this read is in flight: the worker's own
+        // poll ran after the read began and still lists #5 open.
+        recordWorkerPoll(stateDir, root, "2026-10-30T12:00:00.500Z");
+        return { kind: "issues", issues: [issue(6)], etag: null };
+      },
+      now: readClock("2026-10-30T12:00:00.000Z", "2026-10-30T12:00:01.000Z"),
+    });
+    try {
+      await subject.syncNow();
+      expect(await controlCommands(stateDir, root)).toEqual([]);
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([5]);
+    } finally {
+      subject.dispose();
+      lock.release();
+    }
+  });
+
+  test("a worker poll that started after the read keeps the worker queue", async () => {
+    const root = await temporaryDirectory("issues-sync-worker-queue");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" }),
+      enabled: true,
+      queue: [{ ...issue(7), handled: false, runId: null, agentRunId: null }],
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => {
+        recordWorkerPoll(stateDir, root, "2026-10-30T12:00:00.500Z");
+        return { kind: "issues", issues: [issue(6)], etag: null };
+      },
+      now: readClock("2026-10-30T12:00:00.000Z", "2026-10-30T12:00:01.000Z"),
+    });
+    try {
+      await subject.syncNow();
+      expect(subject.snapshot().sync.lastSyncAt).not.toBeNull();
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([7]);
     } finally {
       subject.dispose();
       lock.release();
