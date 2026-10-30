@@ -152,7 +152,8 @@
   }
 
   table {
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     font-size: 12px;
     table-layout: fixed;
     width: 100%;
@@ -174,14 +175,20 @@
   }
 
   td {
-    border-bottom: 1px solid var(--border-subtle);
-    height: 28px;
-    line-height: 26px;
+    box-shadow: inset 0 -1px 0 var(--border-subtle);
+    height: 27px;
+    line-height: 17px;
     max-width: 0;
     overflow: hidden;
-    padding: 0 8px;
+    padding: 5px 8px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* The state pill fits the 17px line box, so it cannot grow the 27px row. */
+  .agent-issues-table .badge {
+    line-height: 1.1;
+    vertical-align: top;
   }
 
   /* Fixed tracks for category, filed, state, and version; the title takes the rest.
