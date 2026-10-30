@@ -482,18 +482,18 @@ exit 0
     /* 1. The sidebar entry and an empty page                            */
     /* ---------------------------------------------------------------- */
     await waitFor(
-      async () => ((await present(devtools, "mode-issues")) ? true : undefined),
-      "the Issues mode control",
+      async () => ((await present(devtools, "mode-devboard")) ? true : undefined),
+      "the Devboard mode control",
       30_000,
     );
-    await click(devtools, "mode-issues");
+    await click(devtools, "mode-devboard");
     await waitFor(
-      async () => ((await present(devtools, "open-issues-watchdog")) ? true : undefined),
+      async () => ((await present(devtools, "open-devboard-watchdog")) ? true : undefined),
       "the Watchdog sidebar entry",
       15_000,
     );
     const entry = await devtools.evaluate(`(() => {
-      const button = document.querySelector('[data-testid="open-issues-watchdog"]');
+      const button = document.querySelector('[data-testid="open-devboard-watchdog"]');
       if (button === null) return null;
       const previous = button.previousElementSibling;
       return {
@@ -504,7 +504,7 @@ exit 0
     })()`);
     const entryRecord = entry as Record<string, unknown> | null;
     assertTrue(
-      entryRecord?.command === "open.issues.watchdog",
+      entryRecord?.command === "open.devboard.watchdog",
       `the Watchdog entry has no command: ${JSON.stringify(entryRecord)}`,
     );
     assertTrue(
@@ -512,12 +512,12 @@ exit 0
       `the Watchdog entry label is ${String(entryRecord?.label)}`,
     );
     assertTrue(
-      entryRecord?.previous === "open-issues-scout",
+      entryRecord?.previous === "open-devboard-scout",
       `the Watchdog entry does not follow Auto Scout: ${String(entryRecord?.previous)}`,
     );
-    console.log("PASS open-issues-watchdog");
+    console.log("PASS open-devboard-watchdog");
 
-    await click(devtools, "open-issues-watchdog");
+    await click(devtools, "open-devboard-watchdog");
     await waitFor(
       async () => ((await present(devtools, "agent-page")) ? true : undefined),
       "the Watchdog page",
@@ -542,7 +542,7 @@ exit 0
       "the newest-cycle summary is still rendered",
     );
     const current = await devtools.evaluate(
-      `document.querySelector('[data-testid="open-issues-watchdog"]')?.getAttribute('aria-current') ?? ''`,
+      `document.querySelector('[data-testid="open-devboard-watchdog"]')?.getAttribute('aria-current') ?? ''`,
     );
     assertTrue(current === "true", "the Watchdog entry is not the active tab");
     console.log("PASS agent-page-empty");

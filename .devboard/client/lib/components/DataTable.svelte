@@ -200,11 +200,11 @@
   tbody tr:hover,
   tbody tr:focus-visible {
     background: var(--row-hover);
-    outline: none;
   }
 
   tbody tr:focus-visible {
-    box-shadow: inset 0 0 0 1px var(--ring);
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
   }
 
   .compact td {

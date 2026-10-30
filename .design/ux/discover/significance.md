@@ -15,7 +15,7 @@ Scores follow the skill formula:
 | C8 | Question and answer | 5 | 5 | 1 | 5 | 4 | 86 | P0 | Keep immediately below the run region |
 | C9 | Error | 5 | 5 | 2 | 5 | 5 | 91 | P0 | Keep at the top of the page body |
 | C10 | Interrupted-run notice | 4 | 4 | 1 | 5 | 4 | 74 | P1 | Keep as a single line under the header |
-| C11 | Transition notice | 2 | 2 | 2 | 4 | 1 | 44 | P2 | Keep as a transient line, low emphasis |
+| C11 | Transition notice | 2 | 2 | 2 | 4 | 1 | 44 | P2 | Removed; the run tag already reports a live run |
 | C12 | Warnings count and entry | 4 | 3 | 3 | 5 | 4 | 75 | P1 | Sidebar entry only, with count |
 | C13 | Commands table | 5 | 5 | 5 | 5 | 3 | 96 | P0 | First card in the main column |
 | C14 | Testing summary, levels, suite command | 5 | 4 | 4 | 5 | 3 | 88 | P0 | Second card in the main column |

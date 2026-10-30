@@ -433,6 +433,23 @@ async function openCard(devtools: Devtools, agent: string): Promise<void> {
   );
 }
 
+/** Opens the Overview page, which owns the single Run all control. */
+async function openOverview(devtools: Devtools): Promise<void> {
+  const clicked = await devtools.evaluate(`(() => {
+    const button = document.querySelector('[data-testid="discover-tab"][data-tab="overview"]');
+    if (button === null) return false;
+    button.click();
+    return true;
+  })()`);
+  assertTrue(clicked === true, "the Overview sidebar entry is missing");
+  await waitFor(
+    async () =>
+      (await attribute(devtools, "discover-panel", "data-tab")) === "overview" ? true : undefined,
+    "the Overview panel",
+    15_000,
+  );
+}
+
 /** Selects Discover on a freshly loaded dashboard. */
 async function openDiscoverMode(devtools: Devtools, description: string): Promise<void> {
   await waitFor(
@@ -553,9 +570,25 @@ try {
     "the existing Discover section entries changed",
     sectionsBefore,
   );
+  // The published pages lead the sidebar; the agent triggers follow them.
+  const leadingGroup = await devtools.evaluate(`(() => {
+    const group = document.querySelector('[data-testid="sidebar"] .sidebar-group');
+    if (group === null) return null;
+    return {
+      label: group.getAttribute('aria-label') ?? '',
+      tabs: [...group.querySelectorAll('[data-testid="discover-tab"]')]
+        .map((button) => button.getAttribute('data-tab') ?? ''),
+    };
+  })()`);
+  check(
+    JSON.stringify(leadingGroup) ===
+      JSON.stringify({ label: "Discover sections", tabs: ["overview", "glossary"] }),
+    "Overview and Glossary are not the first sidebar entries",
+    leadingGroup,
+  );
   console.log("PASS discovery-group");
 
-  /* 2. Each card shows its own complete prompt and its command. */
+  /* 2. Each card shows its own command and, in a source checkout, its prompt. */
   const expectedPrompts = new Map(
     AGENTS.map((agent) => {
       const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
@@ -564,12 +597,6 @@ try {
   );
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    const promptText = await text(devtools, "discover-agent-prompt-text");
-    check(
-      promptText === expectedPrompts.get(agent.id),
-      `the ${agent.id} card does not show its own complete prompt`,
-      { got: promptText.length, want: (expectedPrompts.get(agent.id) ?? "").length },
-    );
     const command = await text(devtools, "discover-agent-prompt-command");
     check(
       command === `${agent.command} <staging-dir>`,
@@ -593,17 +620,26 @@ try {
       );
     }
   }
-  // No card shows another agent's prompt.
+  // No card's editor holds another agent's prompt.
   const shown = new Set<string>();
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    shown.add(await text(devtools, "discover-agent-prompt-text"));
+    shown.add(await valueOf(devtools, "discover-agent-prompt-editor"));
   }
   check(shown.size === 6, "two cards share one prompt text");
   console.log("PASS per-agent-prompts");
 
   /* 3. Run all runs the six in the fixed order and publishes each slice. */
-  await click(devtools, "discover-run-all");
+  check(
+    (await countOf(devtools, "discover-run-all")) === 0,
+    "the sidebar still carries a Run all control",
+  );
+  await openOverview(devtools);
+  check(
+    (await countOf(devtools, "discover-start")) === 1,
+    "the Overview page does not carry the Run all control",
+  );
+  await click(devtools, "discover-start");
   await waitFor(
     async () =>
       (await devtools.evaluate(`(() => {
@@ -748,8 +784,9 @@ try {
     "a second trigger while one runs was not refused",
     refused,
   );
+  await openOverview(devtools);
   const runAllDisabled = await devtools.evaluate(
-    `document.querySelector('[data-testid="discover-run-all"]')?.disabled === true`,
+    `document.querySelector('[data-testid="discover-start"]')?.disabled === true`,
   );
   check(runAllDisabled === true, "Run all is enabled while an agent runs");
   console.log("PASS one-at-a-time");
@@ -766,7 +803,8 @@ try {
   pids.push(halt.process.pid ?? 0);
   await devtools.send("Page.navigate", { url: `http://127.0.0.1:${halt.port}/` });
   await openDiscoverMode(devtools, "the halt dashboard");
-  await click(devtools, "discover-run-all");
+  await openOverview(devtools);
+  await click(devtools, "discover-start");
   await waitStatus(devtools, "discover-naming-conventions", "failed");
   const haltedPrompts = logPrompts(haltLog).map((prompt) => prompt.split(" ")[0]);
   check(
@@ -881,10 +919,13 @@ try {
   );
   console.log("PASS prompt-reset");
 
-  /* 8. An installed host shows every prompt read-only and refuses a save. */
+  /* 8. An installed host renders no prompt editor and refuses a save. */
   const installed = await makeInstalledHost(root, "installed-host");
   const installedPrompts = new Map(
-    PROMPT_FILES.map((file) => [file, readFileSync(join(installed, ".devboard", "prompts", file), "utf8")]),
+    PROMPT_FILES.map((file) => [
+      file,
+      readFileSync(join(installed, ".devboard", "prompts", file), "utf8"),
+    ]),
   );
   const installedDashboard = await startDashboard({
     repoDir: installed,
@@ -896,14 +937,6 @@ try {
   await openDiscoverMode(devtools, "the installed dashboard");
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
-    const want = installedPrompts.get(file) ?? "";
-    await waitFor(
-      async () =>
-        (await text(devtools!, "discover-agent-prompt-text")) === want ? true : undefined,
-      `the installed ${agent.id} prompt bytes`,
-      20_000,
-    );
     for (const testid of [
       "discover-agent-prompt-editor",
       "discover-agent-prompt-chat-log",
@@ -942,7 +975,7 @@ try {
   console.log(
     "verify:discover: the six-entry Discovery group, per-agent prompts and publication, the " +
       "one-at-a-time rule, Run all order and stop-at-first-failure, prompt chat/save/reset, and " +
-      "the installed read-only prompt all hold",
+      "the installed save refusal all hold",
   );
 } finally {
   for (const pid of [...pids, chromePid]) {

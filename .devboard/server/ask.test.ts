@@ -43,6 +43,8 @@ interface ServerOptions {
   agentArguments?: string[];
   /** Replaces the deterministic provider service, to defer peer preparation. */
   providers?: (stateDir: string) => ProviderService;
+  /** Wall-clock bound for one Ask turn; defaults to two minutes. */
+  askTurnTimeoutMs?: number;
 }
 
 async function startServer(options: ServerOptions = {}): Promise<TestServer> {
@@ -71,6 +73,7 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
     providers:
       options.providers?.(join(root, "state")) ?? testProviderService(join(root, "state")),
     agentCommand: command,
+    askTurnTimeoutMs: options.askTurnTimeoutMs,
     tracker: async () => undefined,
     trackerSettle: { attempts: 1 },
   });
@@ -325,6 +328,106 @@ describe("ask conversations", () => {
     } finally {
       client.close();
       testServer.server.stop(true);
+    }
+  });
+
+  test("times out a stalled turn and accepts the next ask on a fresh peer", async () => {
+    const turnTimeoutMs = 500;
+    const testServer = await startServer({
+      agentArguments: ["--ask-stall"],
+      askTurnTimeoutMs: turnTimeoutMs,
+    });
+    const client = await connect(testServer.url);
+    try {
+      client.ask("conversation-timeout", "What does the issues label mean?");
+      // The peer accepted the prompt and produced no answer.
+      await eventually(() => logLines(testServer.logPath).includes("ask-stall"));
+
+      const timedOut = await client.waitFor(
+        (message) =>
+          message.type === "askError" && message.conversationId === "conversation-timeout",
+      );
+      expect(String(timedOut.message)).toContain(`did not answer within ${turnTimeoutMs}ms`);
+
+      // The deadline kills the peer, so its pending turn cannot complete; one
+      // socket delivers in order, so the reply to this command proves every
+      // frame produced before the peer died has already arrived.
+      const mark = client.events.length;
+      await eventually(() => askLog(testServer.logPath).exits === 1);
+      client.send({ type: "getProject" });
+      await client.waitFor((message) => message.type === "project");
+      expect(
+        client.events
+          .slice(mark)
+          .filter((event) => event.conversationId === "conversation-timeout"),
+      ).toEqual([]);
+
+      // The conversation is idle and its peer gone: the next ask is accepted
+      // and reaches a freshly constructed peer rather than the wedged one.
+      client.ask("conversation-timeout", "Which file renders it?");
+      await client.waitFor(
+        (message) =>
+          message.type === "askDone" && message.conversationId === "conversation-timeout",
+      );
+      const refusal = client.events.find(
+        (event) =>
+          event.type === "askError" &&
+          event.conversationId === "conversation-timeout" &&
+          String(event.message).includes("still answering"),
+      );
+      expect(refusal).toBeUndefined();
+      const logged = askLog(testServer.logPath);
+      expect(logged.spawns).toBe(2);
+      expect(logged.prompts).toHaveLength(2);
+      expect(logged.texts[1]).toContain("Earlier in this conversation:");
+      expect(logged.texts[1]).toContain("Question: Which file renders it?");
+      expect(chunks(client, "conversation-timeout").includes("The issues indicator shows")).toBe(
+        true,
+      );
+    } finally {
+      client.close();
+      testServer.server.stop(true);
+    }
+  });
+
+  test("clears the turn deadline when the ask settles", async () => {
+    const turnTimeoutMs = 424_242;
+    const outstanding = new Set<Timer>();
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    globalThis.setTimeout = ((
+      handler: Parameters<typeof setTimeout>[0],
+      timeout?: number,
+      ...args: unknown[]
+    ) => {
+      const handle = realSetTimeout(handler, timeout, ...args);
+      if (timeout === turnTimeoutMs) outstanding.add(handle);
+      return handle;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle?: Timer) => {
+      if (handle !== undefined) outstanding.delete(handle);
+      return realClearTimeout(handle);
+    }) as typeof clearTimeout;
+    try {
+      for (const command of [undefined, "devboard-ask-missing-agent"]) {
+        const testServer = await startServer({ command, askTurnTimeoutMs: turnTimeoutMs });
+        const client = await connect(testServer.url);
+        try {
+          client.ask("conversation-deadline", "What does the issues label mean?");
+          await client.waitFor(
+            (message) =>
+              (message.type === "askDone" || message.type === "askError") &&
+              message.conversationId === "conversation-deadline",
+          );
+          expect(outstanding.size).toBe(0);
+        } finally {
+          client.close();
+          testServer.server.stop(true);
+        }
+      }
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
     }
   });
 

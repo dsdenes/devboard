@@ -135,7 +135,7 @@
 {/snippet}
 
 {#snippet notices()}
-  {#if discover.displayError !== null || discover.interrupted || discover.transition !== null}
+  {#if discover.displayError !== null || discover.interrupted}
     <div class="discover-notices">
       {#if discover.displayError !== null}
         <p class="message" data-severity="error" data-testid="discover-error" role="alert">
@@ -146,11 +146,6 @@
         <p class="message" data-severity="warning" data-testid="discover-interrupted">
           The last Discover run was interrupted. Nothing was published; the previous artifacts are
           unchanged.
-        </p>
-      {/if}
-      {#if discover.transition !== null && !discover.active}
-        <p class="message" data-severity="notice" data-testid="discover-transition" role="status">
-          {discover.transition}
         </p>
       {/if}
     </div>

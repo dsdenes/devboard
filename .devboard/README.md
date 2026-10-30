@@ -55,9 +55,10 @@ The width survives a reload.
 - **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
   session and PR state, widgets, changed files, checkpoints, and blockers. The overview entry
   carries the goal's `unsaved` marker. Blockers open the overview at the blocker they name.
-- **Devboard** carries exactly one entry, `data-testid="devboard-tab"` labeled `MCP tools` with
-  `data-command="devboard.tab.tools"`. It opens the read-only MCP tool list; no tool name appears
-  in the sidebar.
+- **Devboard** carries the **Background agents** group — Auto Scout, Watchdog, Design System,
+  and Coach — and one `data-testid="devboard-tab"` entry labeled `MCP tools` with
+  `data-command="devboard.tab.tools"`. Each agent entry opens its page; the last entry opens the
+  read-only MCP tool list. No tool name appears in the sidebar.
 - **Discover** lists the overview and glossary sections, the five skills under their own group,
   and warnings only while at least one exists. The glossary entry carries the published term
   count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
@@ -83,11 +84,14 @@ the draft.
 The Devboard page is `data-testid="devboard-workspace"` and holds
 `data-testid="mcp-tools-list"`: one compact `data-testid="mcp-tool"` row per tool the Devboard MCP
 server answers `tools/list` with, carrying `data-tool="<tool name>"` and rendering the tool's name,
-its title, and its description verbatim in catalog order. The page reads server-provided data only:
-it renders no button, input, copy control, or link, issues no `tools/call`, writes no clipboard,
-and adds no roster of its own, so adding or reordering a catalog entry changes the page on the
-next server start with no client-source edit. The catalog arrives through the dashboard's existing
-read-only `getMcpTools` command; no HTTP route or second socket is involved.
+its title, its description verbatim in catalog order, and a `data-testid="mcp-tool-invocations"`
+count with `data-invocations="<count>"` and an `N invocation` or `N invocations` label. The page
+reads server-provided data only: it renders no button, input, copy control, or link, issues no
+`tools/call`, writes no clipboard, and adds no roster of its own, so adding or reordering a
+catalog entry changes the page on the next server start with no client-source edit. The catalog
+and its counts arrive through the dashboard's existing read-only `getMcpTools` command; no HTTP
+route or second socket is involved. While the socket is open the page asks for that frame every
+five seconds, so counts follow calls a peer makes without a reload.
 
 A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
@@ -705,8 +709,9 @@ The Discover sidebar opens a **Discovery** group with exactly six entries
 `discover-architecture-boundaries`, and `discover-glossary`), labelled `Data Sheet`,
 `Testing Strategy`, `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and
 `Glossary Agent`. Selecting one opens its card (`data-testid="discover-agent"` with the same
-`data-agent`). The group header carries the Run all control
-(`data-testid="discover-run-all"`), and each entry shows its own `running` badge or `failed` badge.
+`data-agent`). Each entry shows its own `running` badge or `failed` badge. The Discovery group
+carries no run control: the Overview page owns Run all, and no other page or sidebar entry starts
+it.
 The same sidebar opens the established pages for `Overview` and `Glossary` without a group
 heading. Once Discover artifacts are published it also lists the five skills `Testing Strategy`,
 `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and `Glossary` under
@@ -722,9 +727,8 @@ keeps no freshness group and no recent-notice list.
 
 ## Discovery agent cards
 
-One card per agent carries the agent's complete prompt
-(`data-testid="discover-agent-prompt-text"`, the file's bytes with no truncation or reformatting),
-its command and staging argument (`data-testid="discover-agent-prompt-command"`, for example
+One card per agent carries its command and staging argument
+(`data-testid="discover-agent-prompt-command"`, for example
 `/discover-sheet <staging-dir>`), its run state (`data-testid="discover-agent-status"` with
 `data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
@@ -748,7 +752,7 @@ prompt file, and each staged turn writes only its own slice; a prompt may name
 `.omp/discover/sheet.json` and `.omp/discover/glossary/` as optional reference, but no agent needs
 another agent's artifact to succeed.
 
-When the dashboard serves a harness source checkout, every card also renders an editor initialized
+When the dashboard serves a harness source checkout, every card renders an editor initialized
 to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
 (`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
 `discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
@@ -756,8 +760,8 @@ to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a pro
 reply; a turn that revises the prompt replaces the editor text with a complete replacement. Chat
 never writes a file and never starts an agent. Save writes exactly the editor's UTF-8 bytes to that
 one agent's prompt file and no other file, and the next trigger of that agent reads those bytes;
-Reset restores the editor to the current file bytes without writing. An installed host shows each
-prompt read-only and renders no editor, chat, save, or reset; `saveDiscoverPrompt` and
+Reset restores the editor to the current file bytes without writing. An installed host has no
+prompt view and renders no editor, chat, save, or reset; `saveDiscoverPrompt` and
 `chatDiscoverPrompt` are refused there with an error naming the harness source checkout.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
@@ -779,11 +783,11 @@ Glossary page.
 
 With no published artifacts the Overview page shows the header's first-run explanation and a
 `Discover project` button (`data-testid="discover-start"`); with artifacts it shows `Re-discover`.
-The button runs all six agents, exactly like `discover-run-all`. Both are disabled when the socket
-is not open, while any discovery agent or Run all is active, or while Goal or Flow work is active,
-and the title names the reason. A start never happens on page load, reconnect, mode switch, or page
-switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge account; it is
-accepted on a host with a dirty tree and no goal document.
+The button is the only Run all control in the interface and runs all six agents. It is disabled
+when the socket is not open, while any discovery agent or Run all is active, or while Goal or Flow
+work is active, and the title names the reason. A start never happens on page load, reconnect, mode
+switch, or page switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge
+account; it is accepted on a host with a dirty tree and no goal document.
 
 **One at a time.** A card's Start sends `discoverAgent { agent }`. The server starts exactly one ACP
 peer whose working directory is the active target root, whose prompt is exactly
@@ -1255,9 +1259,9 @@ failure rewrites a published artifact. `server/agents/prompt.test.ts` proves the
 snapshots, the chat proposal that changes the editor without writing, a save that writes exactly
 one prompt file, the reset read, and the installed-host refusal. `verify:discover` builds the
 client, seeds source and installed fixture hosts, and drives headless Chrome through the Discovery
-group, each card's complete prompt and command, all six independent triggers with a byte-level
+group, each card's command and editor bytes, all six independent triggers with a byte-level
 check of the fixture `.omp` tree, the one-at-a-time refusal, Run all order and stop at the first
-seeded failure, prompt chat/save/reset, and the installed read-only prompt.
+seeded failure, prompt chat/save/reset, and the installed host's refused save.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
@@ -1457,7 +1461,7 @@ Auto Scout, Watchdog, Design System, and Coach are the four instances of one bac
 contract. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
 description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
 start/stop commands, issue projection, detail panel, and prompt source. The shared page, the
-shared filed-issues table, and the Issues sidebar are built from that registry; adding a further
+shared filed-issues table, and the Devboard sidebar are built from that registry; adding a further
 continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
 sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
 validates unchanged.
@@ -1481,11 +1485,14 @@ two visible `overline` groups 24px apart, each with 10px column and 6px row gaps
 the Every field, the last-run and next-run clocks, and the secondary `Save cadence`; `Filing
 limits` holds Per hour, Open issues, and the secondary `Save limits`. Each group wraps as a unit,
 so a field never separates from its save control. Either save validates all three fields and
-sends one settings command. The sidebar has three groups in order: `Issues surfaces` (Overview),
-`Background agents` (`data-testid="sidebar-background-agents"`, heading `Background agents`,
-entries `open-issues-scout`, `open-issues-watchdog`, `open-issues-design`, then
-`open-issues-coach`, badges `agent-state-<id>`, counts `agent-count-<id>`), and `Issues work`
-(Issues, Draft goals).
+sends one settings command. The Devboard sidebar has two groups in order: `Background agents`
+(`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
+`open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`, then
+`open-devboard-coach`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
+`Devboard sections` (the `devboard-tab` MCP tools entry). The Issues sidebar carries no
+Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
+table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
+queue.
 
 ### Transport
 
@@ -1580,7 +1587,7 @@ newest 100 run directories.
 
 ### Design System
 
-Design System is the `design` descriptor. Its sidebar entry `open-issues-design` opens the shared
+Design System is the `design` descriptor. Its sidebar entry `open-devboard-design` opens the shared
 `agent-page` with `data-agent="design"` and `design-activity`. Its prompt section shows
 `.devboard/prompts/design-system.md`, the file the `/design-system-audit` command reads; in a
 harness source checkout it is editable and chat-backed exactly like the Auto Scout prompt. While
@@ -1963,6 +1970,14 @@ sorted by name, and answers `tools/call`. An unknown method returns JSON-RPC err
 unknown tool returns an error result without a side effect. It exits cleanly on stdin EOF and
 starts no HTTP listener.
 
+Every `tools/call` naming a catalog tool increments that tool's count in
+`<stateDir>/mcp/tool-invocations/<repository key>.db`, a SQLite table with one bounded row per
+tool name. The key is the 24-hex SHA-256 prefix of the resolved `REPO_DIR`, the same key the
+journal and dashboard state use, so peers and the dashboard of one repository share counts while
+two repositories that share a harness never mix them. The write happens when the request arrives,
+the update is atomic across peer processes, and a failed or damaged counter never fails the tool
+call; `getMcpTools` reports the table as the `invocations` map and a missing file as no counts.
+
 ### Read tools
 
 |Tool|Inputs|Bounds|
@@ -2130,8 +2145,8 @@ non-interactive: no `question` tool, no confirmation, no interactive editor, no 
 fetches the canonical integration line, integrates concurrent changes, resolves every conflict
 itself, reruns every check the integration invalidates, and publishes directly to that line with
 bounded retry when a push is rejected; it never creates a pull request or merge request and never
-force-pushes. It proves the push once, as the last step, with a single completion gate: the
-`git ls-remote <remote> refs/heads/main` tip must equal `git rev-parse HEAD`, the gate exits
+force-pushes. It lands with one fast-forward sequence that proves the push: the
+`git ls-remote <remote> refs/heads/main` tip must equal `git rev-parse HEAD`, the check exits
 nonzero and prints both commits when they differ, and it forbids chained per-commit
 `git merge-base --is-ancestor` probes. It closes the issue only after that gate passes and the
 required checks pass, and comments on that issue with the revision and the verification evidence.
@@ -2432,8 +2447,8 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-Auto Scout is the `scout` descriptor in the shared background-agent contract. The Issues sidebar
-entry `open-issues-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
+Auto Scout is the `scout` descriptor in the shared background-agent contract. The Devboard sidebar
+entry `open-devboard-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
 selecting, restoring, or reloading a tab starts nothing. The page shows the shared lifecycle,
 last-read clock, cadence, limits, filed-issues table, and detail panel described above, plus
 `scout-activity` for the current or newest scan. The page also shows `agent-error` for the last
@@ -2638,6 +2653,7 @@ The client sends:
 { "type": "getGoal" }
 { "type": "getProject" }
 { "type": "getVersion" }
+{ "type": "getMcpTools" }
 { "type": "getIssues" }
 { "type": "getIssuesRun", "runId": "2026-10-27T10-00-00-000Z" }
 { "type": "startIssues" }
@@ -2687,6 +2703,9 @@ The client sends:
 - `getGoal` reads the goal document from disk and answers with its complete contents; an
   absent document answers with empty text, which shows `Create goal` and keeps the lifecycle
   start disabled.
+- `getMcpTools` answers `mcpTools` with `tools`, the exact `tools/list` payload, and
+  `invocations`, a map from tool name to how many `tools/call` requests named it for this
+  repository. A tool that was never called is absent from the map and the page renders zero.
 - `getProject` answers with the page heading label. `path` is `REPO_DIR` relative to the user's
   home directory when the repository lies inside it, and the absolute path otherwise.
 - `getVersion` answers with `versionState`: `running` is the harness package version the
@@ -3101,16 +3120,16 @@ a release published later fills its blank version, a failed read shows `error` w
 and the last success time while keeping the rows, no review widget or command remains, and Stop
 leaves the table and a released lock. It writes only under `.devboard/.tmp`.
 `bun run verify:agents` builds the client, seeds all four agents, and drives headless Chrome
-through the Background agents sidebar section, the identical core test ids on every page, Start ->
-starting -> running and Stop -> stopping -> stopped, cadence and limit validation and
-persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
-command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
-the footer indicator with no console error. It also proves Coach's shared cycle detail and
-persisted settings, and the prompt section: every page renders `agent-prompt` directly after
-`agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach show
-`agent-prompt-absent`; an installed host is read-only and refuses a save with an error while its
-prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save for
-both file-backed agents, one chat turn streams a reply and changes the editor with the file
+through the Background agents section of the Devboard sidebar, the identical core test ids on every
+page, Start -> starting -> running and Stop -> stopping -> stopped, cadence and limit validation
+and persistence, the Watchdog cap, the shared table columns, freshness without a reload, no
+mutating command on reload, the timer-blocked state and one-click disable against a stub
+`systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
+detail and persisted settings, and the prompt section: every page renders `agent-prompt` directly
+after `agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach
+show `agent-prompt-absent`; an installed host is read-only and refuses a save with an error while
+its prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save
+for both file-backed agents, one chat turn streams a reply and changes the editor with the file
 untouched, Save makes each file byte-equal to its editor and a reload puts those bytes back in the
 editor.
 

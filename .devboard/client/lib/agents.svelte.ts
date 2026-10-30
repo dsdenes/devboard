@@ -109,8 +109,9 @@ export class AgentsStore {
       .filter((snapshot): snapshot is AgentSnapshot => snapshot !== undefined);
   }
 
+  /** The sidebar count: the issues this agent has filed, matching its table. */
   count(id: string): number {
-    return this.snapshots[id]?.pending ?? 0;
+    return this.snapshots[id]?.issues.length ?? 0;
   }
 
   lifecycle(id: string): string {

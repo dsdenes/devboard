@@ -604,32 +604,32 @@ try {
   await devtools.send("Page.enable");
 
   await waitFor(
-    async () => ((await present(devtools!, "mode-issues")) ? true : undefined),
-    "the Issues mode control",
+    async () => ((await present(devtools!, "mode-devboard")) ? true : undefined),
+    "the Devboard mode control",
     30_000,
   );
-  await click(devtools, "mode-issues");
+  await click(devtools, "mode-devboard");
   await waitFor(
-    async () => ((await present(devtools!, "open-issues-design")) ? true : undefined),
+    async () => ((await present(devtools!, "open-devboard-design")) ? true : undefined),
     "the Design System sidebar entry",
     15_000,
   );
   const sidebar = await devtools.evaluate(`(() => [
-    ...document.querySelectorAll('[data-testid="sidebar-background-agents"] [data-testid^="open-issues-"]')
+    ...document.querySelectorAll('[data-testid="sidebar-background-agents"] [data-testid^="open-devboard-"]')
   ].map((button) => button.getAttribute('data-testid') ?? ''))()`);
   check(
     JSON.stringify(sidebar) ===
       JSON.stringify([
-        "open-issues-scout",
-        "open-issues-watchdog",
-        "open-issues-design",
-        "open-issues-coach",
+        "open-devboard-scout",
+        "open-devboard-watchdog",
+        "open-devboard-design",
+        "open-devboard-coach",
       ]),
     "the Background agents order is wrong",
     sidebar,
   );
   const entry = await devtools.evaluate(`(() => {
-    const button = document.querySelector('[data-testid="open-issues-design"]');
+    const button = document.querySelector('[data-testid="open-devboard-design"]');
     return {
       label: button?.querySelector('.sidebar-item__label')?.textContent?.trim() ?? '',
       state: button?.querySelector('[data-testid="agent-state-design"]')?.dataset.state ?? '',
@@ -645,7 +645,7 @@ try {
   );
   console.log("PASS sidebar-entry");
 
-  await click(devtools, "open-issues-design");
+  await click(devtools, "open-devboard-design");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
     "the Design System page",
