@@ -156,8 +156,10 @@
   }
 
   .agent-prompt__title {
-    font-size: 12px;
+    font-size: 10px;
     font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
     margin: 0;
     text-transform: uppercase;
   }
