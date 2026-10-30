@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { closingCommitFromComments, isSha } from "./commit";
 import {
   configuredGiteaToken,
   giteaBaseUrl,
@@ -556,6 +557,60 @@ export async function giteaCommentIssue(
     { method: "POST", body: JSON.stringify({ body }) },
     fetchImpl,
   );
+}
+
+/**
+ * The commit a Gitea timeline closed the issue with. Only a `close` entry
+ * names it: `commit_ref`, review, reopen, comment, and every other entry can
+ * carry a `commit_id` too, and accepting one reports the wrong shipped
+ * version. The newest closing entry wins, because a reopened and re-closed
+ * issue has several. A timeline without a closing entry yields null, never a
+ * commit that another entry happens to carry.
+ */
+export function closingCommitFromGiteaTimeline(timeline: unknown): string | null {
+  if (!Array.isArray(timeline)) return null;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const entry = timeline[index];
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (record.type !== "close") continue;
+    if (isSha(record.commit_id)) return record.commit_id;
+  }
+  return null;
+}
+
+/**
+ * The commit that closed a Gitea issue. The timeline's closing entry wins;
+ * comments are the fallback only when no close entry carries a commit, and a
+ * commit named by any other timeline entry is never used.
+ */
+export async function giteaClosingCommit(
+  target: GiteaTarget,
+  number: number,
+  fetchImpl: FetchLike = fetch,
+): Promise<string | null> {
+  const timeline = await giteaJson<unknown>(
+    target,
+    `${repoPath(target)}/issues/${number}/timeline`,
+    undefined,
+    fetchImpl,
+  );
+  const closing = closingCommitFromGiteaTimeline(timeline);
+  if (closing !== null) return closing;
+  const comments = await giteaJson<unknown>(
+    target,
+    `${repoPath(target)}/issues/${number}/comments`,
+    undefined,
+    fetchImpl,
+  );
+  if (!Array.isArray(comments)) return null;
+  const bodies: string[] = [];
+  for (const entry of comments) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const body = (entry as Record<string, unknown>).body;
+    if (typeof body === "string") bodies.push(body);
+  }
+  return closingCommitFromComments(bodies);
 }
 
 /** The trailing issue number of an issue URL, or undefined. */

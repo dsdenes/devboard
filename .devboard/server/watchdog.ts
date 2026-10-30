@@ -5,6 +5,7 @@ import { ghCommand } from "../issues/scout/preflight";
 import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
 import {
+  giteaClosingCommit,
   giteaJson,
   giteaListReleases,
   giteaOrigin,
@@ -182,22 +183,7 @@ function createWatchdogGiteaReader(
         }
         const client = {
           async closingCommit(issueNumber: number): Promise<string | null> {
-            const timeline = await giteaJson<unknown>(
-              target,
-              `${repoPath(target)}/issues/${issueNumber}/timeline`,
-              undefined,
-              options.fetchImpl,
-            );
-            if (!Array.isArray(timeline)) return null;
-            for (let index = timeline.length - 1; index >= 0; index -= 1) {
-              const entry = timeline[index];
-              if (typeof entry !== "object" || entry === null) continue;
-              const record = entry as Record<string, unknown>;
-              if (typeof record.commit_id === "string" && /^[0-9a-f]{7,40}$/.test(record.commit_id)) {
-                return record.commit_id;
-              }
-            }
-            return null;
+            return await giteaClosingCommit(target, issueNumber, options.fetchImpl);
           },
           async resolveCommit(short: string): Promise<string | null> {
             if (!/^[0-9a-fA-F]{7,40}$/.test(short)) return null;

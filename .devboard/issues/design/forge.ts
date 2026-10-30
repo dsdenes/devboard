@@ -2,11 +2,11 @@ import {
   createRepositoryGitHub,
   isFullSha,
   isSha,
-  shaTokens,
   type GitHubRelease,
 } from "../../lib/github-release";
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
+  giteaClosingCommit,
   giteaJson,
   giteaListIssues,
   giteaListReleases,
@@ -130,31 +130,7 @@ function createDesignGitea(options: DesignForgeOptions): DesignForgeClient {
       return await giteaListReleases(target, options.giteaFetch);
     },
     async closingCommit(issueNumber: number): Promise<string | null> {
-      const timeline = await readJson(`${repoPath(target)}/issues/${issueNumber}/timeline`);
-      const bodies: string[] = [];
-      if (Array.isArray(timeline)) {
-        for (const entry of timeline) {
-          if (typeof entry !== "object" || entry === null) continue;
-          const record = entry as Record<string, unknown>;
-          if (typeof record.commit_id === "string" && isSha(record.commit_id)) {
-            return record.commit_id;
-          }
-          if (typeof record.body === "string") bodies.push(record.body);
-        }
-      }
-      const comments = await readJson(`${repoPath(target)}/issues/${issueNumber}/comments`);
-      if (Array.isArray(comments)) {
-        for (const entry of comments) {
-          if (typeof entry !== "object" || entry === null) continue;
-          const body = (entry as Record<string, unknown>).body;
-          if (typeof body === "string") bodies.push(body);
-        }
-      }
-      for (let index = bodies.length - 1; index >= 0; index -= 1) {
-        const tokens = shaTokens(bodies[index] ?? "");
-        if (tokens.length > 0) return tokens[tokens.length - 1] ?? null;
-      }
-      return null;
+      return await giteaClosingCommit(target, issueNumber, options.giteaFetch);
     },
     async resolveCommit(short: string): Promise<string | null> {
       if (!isSha(short)) return null;

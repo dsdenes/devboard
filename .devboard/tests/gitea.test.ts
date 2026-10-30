@@ -4,9 +4,17 @@ import { join, resolve } from "node:path";
 import { resolveForgeAuth } from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge.ts";
 import { createForgeIssues } from "../lib/forge-issues.ts";
-import { giteaLabels, giteaListIssues, giteaListReleases, type FetchLike } from "../lib/gitea.ts";
+import {
+  giteaClosingCommit,
+  closingCommitFromGiteaTimeline,
+  giteaLabels,
+  giteaListIssues,
+  giteaListReleases,
+  type FetchLike,
+} from "../lib/gitea.ts";
 import { shippedVersion } from "../lib/github-release.ts";
 import { createScoutGitHub } from "../issues/scout/github.ts";
+import { createDesignForge } from "../issues/design/forge.ts";
 import { pollOpenIssues } from "../issues/tracker";
 import { closeIssue } from "../server/issue-close";
 import { listIssues } from "../mcp/issues";
@@ -103,7 +111,10 @@ function fakeReleasePages(tag: string, calls: string[], commit?: string): FetchL
       return json({ number: 5, state: "closed" });
     }
     if (commit !== undefined && url.pathname.endsWith("/issues/5/timeline")) {
-      return json([{ commit_id: commit }]);
+      return json([
+        { type: "commit_ref", commit_id: "f".repeat(40) },
+        { type: "close", commit_id: commit },
+      ]);
     }
     return json({ message: `unexpected ${url}` });
   };
@@ -128,7 +139,10 @@ function fakeClosedIssues(commit: string, calls: string[]): FetchLike {
       return Response.json({ state: "closed" });
     }
     if (/^\/api\/v1\/repos\/[^/]+\/[^/]+\/issues\/\d+\/timeline$/.test(url.pathname)) {
-      return Response.json([{ commit_id: commit }]);
+      return Response.json([
+        { type: "commit_ref", commit_id: "f".repeat(40) },
+        { type: "close", commit_id: commit },
+      ]);
     }
     if (url.pathname.endsWith("/releases")) {
       const page = Number(url.searchParams.get("page") ?? "1");
@@ -829,5 +843,100 @@ describe("Gitea watchdog activity", () => {
     expect(releases.map((release) => release.tag)).toContain("v1.0.0");
     expect(await shippedVersion({ number: 5, state: "closed" }, client, releases)).toBe("v1.0.0");
     expect(requestedReleasePages(calls)).toContain("2");
+  });
+});
+
+describe("Gitea closing commit", () => {
+  const closed = "a".repeat(40);
+
+  test("ignores commit_ref and comment entries around the close event", () => {
+    expect(
+      closingCommitFromGiteaTimeline([
+        { type: "commit_ref", commit_id: "b".repeat(40) },
+        { type: "close", commit_id: closed },
+        { type: "comment", commit_id: "c".repeat(40) },
+      ]),
+    ).toBe(closed);
+  });
+
+  test("the newest close entry wins across a reopen", () => {
+    expect(
+      closingCommitFromGiteaTimeline([
+        { type: "close", commit_id: "d".repeat(40) },
+        { type: "reopen" },
+        { type: "close", commit_id: closed },
+      ]),
+    ).toBe(closed);
+  });
+
+  test("falls back to comments only when no close entry carries a commit", async () => {
+    const commentCommit = "e".repeat(40);
+    const fetchImpl: FetchLike = async (input) => {
+      const path = new URL(input).pathname;
+      if (path.endsWith("/issues/7/timeline")) {
+        return Response.json([
+          { type: "commit_ref", commit_id: "b".repeat(40) },
+          { type: "close", commit_id: null },
+        ]);
+      }
+      if (path.endsWith("/issues/7/comments")) {
+        return Response.json([{ body: "in progress" }, { body: `Shipped in ${commentCommit}.` }]);
+      }
+      return Response.json({ message: `unexpected ${path}` });
+    };
+
+    expect(
+      await giteaClosingCommit(
+        { baseUrl: "http://gitea.test", project: "acme/fixture" },
+        7,
+        fetchImpl,
+      ),
+    ).toBe(commentCommit);
+  });
+
+  test("never returns a commit named only by non-closing entries", async () => {
+    const referenced = "b".repeat(40);
+    const fetchImpl: FetchLike = async (input) => {
+      const path = new URL(input).pathname;
+      if (path.endsWith("/issues/8/timeline")) {
+        return Response.json([
+          { type: "commit_ref", commit_id: referenced },
+          { type: "comment", commit_id: referenced },
+          { type: "review", commit_id: referenced },
+        ]);
+      }
+      return Response.json([]);
+    };
+
+    expect(
+      await giteaClosingCommit(
+        { baseUrl: "http://gitea.test", project: "acme/fixture" },
+        8,
+        fetchImpl,
+      ),
+    ).toBeNull();
+  });
+
+  test("the design reader resolves through the shared helper", async () => {
+    const fetchImpl: FetchLike = async (input) => {
+      const path = new URL(input).pathname;
+      if (path.endsWith("/issues/9/timeline")) {
+        return Response.json([
+          { type: "commit_ref", commit_id: "b".repeat(40) },
+          { type: "close", commit_id: closed },
+        ]);
+      }
+      return Response.json({ message: `unexpected ${path}` });
+    };
+    const client = createDesignForge({
+      forge: "gitea",
+      repository: "acme/fixture",
+      repoDir: repository(),
+      baseUrl: "http://gitea.test",
+      environment: {},
+      giteaFetch: fetchImpl,
+    });
+
+    expect(await client.closingCommit(9)).toBe(closed);
   });
 });
