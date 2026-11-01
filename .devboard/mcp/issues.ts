@@ -1,11 +1,16 @@
-import type { ForgeIssueState } from "../lib/forge-issues";
+import { FORGE_ISSUE_LIST_MAX, type ForgeIssueState } from "../lib/forge-issues";
 import { boundBytes } from "../lib/text-budget";
 import { issuesFor, type McpContext } from "./context";
 
 /** Issue reads and the one close mutation, through the repository's forge. */
 
 export const ISSUE_BODY_MAX_BYTES = 64 * 1024;
-export const ISSUE_LIST_MAX = 200;
+/**
+ * The rows one `issues_list` call reports. It sits one row below the forge's
+ * own ceiling so the `limit + 1` probe that decides `truncated` still reaches
+ * the forge instead of being clamped back to a full page.
+ */
+export const ISSUE_LIST_MAX = FORGE_ISSUE_LIST_MAX - 1;
 
 export interface IssueRow {
   number: number;
