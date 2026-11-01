@@ -209,6 +209,21 @@ pipe, and a log an earlier run wrote are never a verdict.
   from a shell, a retry in another directory, or a redirected log. A tool error is evidence to
   report, not a reason to rerun the same check.
 
+## Discovery verification
+
+`bun run verify:discover` runs in the foreground from the package root, with its output reaching
+the session transcript: never redirect it to `.tmp/verify-discover.log` or any other file, and
+never pipe it through `tail`, `head`, or `grep`. Read its `PASS` lines and, on failure, the
+`verify:discover:` message with its stack frame from the live run, and report them.
+
+- An exit 1 that prints no output after roughly 30 seconds, or a trace that stops at the
+  `while (Date.now() < deadline)` poll in `scripts/verification.ts`, is a scenario timeout, not an
+  unknown failure: the `timed out waiting for <description>` line names the stalled scenario, and
+  the newest `.tmp/verify-discover-*` directory in the harness root holds its log. Read that log,
+  fix or restart the dependency it names, and only then rerun.
+- Never rerun the same failing invocation without an intervening change or that log inspection:
+  the second identical run adds no information and burns another scenario timeout.
+
 ## Prerequisites
 
 If the issue declares an open prerequisite — a `depends on` or `blocked by` line, or a task-list
