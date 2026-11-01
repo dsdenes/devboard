@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { ghCommand } from "../issues/scout/preflight";
 import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
+import { ForgeReadRetry, classifyForgeReadFailure } from "../lib/forge-read-retry";
 import {
   giteaClosingCommit,
   giteaClosingCommits,
@@ -372,6 +373,10 @@ export class WatchdogActivity implements AgentAdapter {
   private lastStarted: number | null = null;
   private lastSuccess: number | null = null;
   private lastFailure: string | null = null;
+  /** When the next projection read is due; null means the normal cadence. */
+  private nextAttemptAt: number | null = null;
+  /** The consecutive transient failures of the projection read. */
+  private readonly retry = new ForgeReadRetry();
   private inFlight: Promise<void> | null = null;
   private timer: Timer | undefined;
   private timerGate: AgentSnapshotInput["timer"] = null;
@@ -456,8 +461,12 @@ export class WatchdogActivity implements AgentAdapter {
   private schedule(): void {
     if (this.inFlight !== null) return;
     const now = this.now();
-    if (this.lastStarted !== null && now - this.lastStarted < this.intervalMs) return;
+    if (this.lastStarted !== null) {
+      const due = this.nextAttemptAt ?? this.lastStarted + this.intervalMs;
+      if (now < due) return;
+    }
     this.lastStarted = now;
+    this.nextAttemptAt = null;
     this.inFlight = this.refresh().finally(() => {
       this.inFlight = null;
     });
@@ -481,9 +490,21 @@ export class WatchdogActivity implements AgentAdapter {
       for (const [url, value] of next) this.facts.set(url, value);
       this.lastSuccess = this.now();
       this.lastFailure = null;
+      this.nextAttemptAt = null;
+      this.retry.succeed();
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      this.lastFailure = firstLineOf(reason);
+      const reason = firstLineOf(error instanceof Error ? error.message : String(error));
+      const kind = classifyForgeReadFailure(reason);
+      const delay = this.retry.record(kind);
+      if (kind === "transient" && delay !== null) {
+        // The retry window is not an alert: the last known rows and read time
+        // stay, and the sync reads `stale` with no reason.
+        this.lastFailure = null;
+        this.nextAttemptAt = this.now() + delay;
+      } else {
+        this.lastFailure = reason;
+        this.nextAttemptAt = null;
+      }
     }
     if (this.shouldPersistProjection()) this.persistProjection();
   }
@@ -528,6 +549,7 @@ export class WatchdogActivity implements AgentAdapter {
     if (this.lastFailure !== null) {
       return { state: "error", at, error: this.lastFailure };
     }
+    if (this.retry.failures > 0) return { state: "stale", at, error: null };
     if (this.lastSuccess === null) return { state: "stale", at: null, error: null };
     if (now - this.lastSuccess > this.staleAfterMs) {
       return { state: "stale", at, error: null };

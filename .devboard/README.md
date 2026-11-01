@@ -1555,6 +1555,24 @@ Background agents group. `agent-count-<id>` is the number of rows in that agent'
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
 queue.
 
+### Periodic forge reads
+
+All four periodic reads share one failure policy. A transport failure — a timeout, a refused or
+reset connection, a 5xx answer, or an unclassified error — keeps the last known filed rows, the
+last successful read time in `agent-sync-at`, and the lifecycle. The page reads `stale` with no
+`agent-sync-error`, and the read is retried automatically after 1, 2, 4, and 8 seconds, measured
+from the end of the previous attempt, with at most one read in flight per agent. The initial
+attempt plus those four retries is five attempts; the fifth consecutive transport failure moves
+the page to `error` with that attempt's reason in `agent-sync-error`, and later attempts follow
+the normal 60-second cadence rather than another immediate retry. A successful read at any point
+in the schedule clears the failures and advances the last-read time.
+
+A permanent failure — unusable credentials, a missing repository, an answer that is not the
+expected JSON, or missing forge configuration — and a rate-limited answer (a primary or secondary
+limit, abuse detection, or HTTP 429) surface on the first attempt without a retry. A rate limit
+still never raises `agent-error`. Forge writes, Start and Stop preflights, agent turns, and user
+commands are never retried.
+
 ### Transport
 
 Browser-to-backend state and controls use the WebSocket from
@@ -1594,8 +1612,8 @@ and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming t
 requires a harness source checkout; no file changes.
 
 `agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
-served checkout, adds nothing, strips nothing, and writes no other file; success shows
-`agent-prompt-notice` and leaves the editor on the saved bytes, and failure shows
+served checkout, adds nothing, strips nothing, and writes no other file; success shows the
+`save-feedback` notice and leaves the editor on the saved bytes, and failure shows
 `agent-prompt-error` with the file unchanged. The notice names the run that reads the file next:
 the next scan for Auto Scout and the next cycle for Design System. Only that click writes the file.
 A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
@@ -1674,8 +1692,10 @@ Filing uses the shared `agent-limit-hour` and `agent-limit-pending`: the hourly 
 `design` issue created in the last rolling 60 minutes in any state, the pending cap counts every
 open `design` issue, and one cycle files no more than the smaller room or 100. Zero room files
 nothing and records each skip in activity; clearing a cap resumes filing on the next cycle. A
-failed forge read files nothing and keeps the last known rows. Age alone never blocks filing: a
-read that succeeded before the cycle keeps filing even when the audit outlasts the sync interval.
+transient forge read failure files nothing, keeps the last known rows, and retries on the
+shared schedule; a permanent failure or a rate limit files nothing and shows its reason at once.
+Age alone never blocks filing: a read that succeeded before the cycle keeps filing even when the
+audit outlasts the sync interval.
 Caps never block an audit, a documentation change, or its release.
 
 A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
@@ -2597,22 +2617,28 @@ contains it, and a release published later fills a blank version on the next rea
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
 and immediately on Start; the table, states, and versions reflect a change within one interval. One
 periodic read, including every `gh` child it starts and the release resolution that follows it, is
-bounded to 30 seconds; a read that does not finish records a sync error and releases the worker, so
-the next interval reads again. A closed issue whose version does not resolve is attempted at most
+bounded to 30 seconds; a read that does not finish is a retryable transport failure and releases
+the worker, so the retry schedule reads again (or, once exhausted, the next interval does). A
+closed issue whose version does not resolve is attempted at most
 once every six hours, and a newly published release retries every unresolved row at once. Each
 attempt records its time and, when it fails, the reason on the row; the rows that have waited
 longest are attempted first, and the whole resolution shares the read's deadline, so a stubborn
-issue cannot hold `syncing` and starve the remaining rows or the next scan. A failed
-read keeps the last known rows, shows the reason in `agent-sync-error`, and keeps the last success
-time in `agent-sync-at`; the reason clears on the next successful read. A failed read names the
-forge, never GitHub, so a Gitea failure never claims a GitHub read. Opening the page retries at
+issue cannot hold `syncing` and starve the remaining rows or the next scan. A transient read
+failure keeps the last known rows and the last success time, records no reason, reads as `stale`,
+and retries after 1, 2, 4, and 8 seconds; only the fifth consecutive transport failure writes that
+attempt's reason to `agent-sync-error`, after which the next attempt waits the 60-second cadence. A
+permanent failure (unusable credentials, a missing repository, a malformed answer, or missing forge
+configuration) surfaces on the first attempt. The reason clears on the next successful read, and a
+failed read names the forge, never GitHub, so a Gitea failure never claims a GitHub read. Opening
+the page retries at
 once: each open asks the attached worker for a read, shared across clients inside a five-second
 window, so a recovery no longer waits out the 60-second interval; Start still reads immediately,
 and a stopped worker is never started by a page. Filing stays blocked until a read succeeds. A
 GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse detection, or HTTP
 429) is a failed read like any other: it keeps the rows and blocks filing, and its reason stays in
-the sync banner. Because the operator's credential is shared with every other process on the host
-and the limit clears itself, it never raises the dashboard-wide error notification.
+the sync banner on the first answer without a retry. Because the operator's credential is shared
+with every other process on the host and the limit clears itself, it never raises the
+dashboard-wide error notification.
 
 ## Report, remove, or redesign a UI element
 

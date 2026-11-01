@@ -9,6 +9,7 @@ import { saveSubscriptions, writeSelectionSnapshot } from "../server/providers";
 import { OPENCODE_GO_MODEL } from "../server/providers/catalog";
 import { openCodePeers } from "../coach/providers";
 import { CoachActivity, preflightCoach } from "../server/coach";
+import type { WatchdogReader } from "../server/watchdog";
 import { coachDirectory, controlDirectory } from "../coach/paths";
 import { writeCoachCommand } from "../coach/control";
 import {
@@ -20,7 +21,7 @@ import {
   writeCoachSettings,
 } from "../coach/settings";
 import { readWorkerState, writeWorkerState } from "../coach/worker-state";
-import { loadLedger, saveLedger } from "../coach/ledger";
+import { emptyLedger, loadLedger, saveLedger } from "../coach/ledger";
 import { readCoachStatus } from "../coach/status";
 import { describeCycle, runCycle, type CoachReport } from "../coach/coordinator";
 import {
@@ -80,6 +81,70 @@ async function workspace(): Promise<{ root: string; repoDir: string; stateDir: s
   await mkdir(join(repoDir, ".devboard"), { recursive: true });
   await mkdir(coachDirectory(stateDir), { recursive: true });
   return { root, repoDir, stateDir };
+}
+
+/** One filed family, so the Coach projection has an issue URL to read. */
+function seedCoachIssue(stateDir: string, url: string): void {
+  const ledger = emptyLedger();
+  ledger.families["bun run publish"] = {
+    firstSeen: NOW.toISOString(),
+    lastSeen: NOW.toISOString(),
+    calls: 1,
+    sessions: 1,
+    kind: "command",
+    lastAction: "filed",
+    lastIssueUrl: url,
+    lastTitle: "[coach] bun run publish",
+    lastFiledAt: NOW.toISOString(),
+  };
+  saveLedger(coachDirectory(stateDir), ledger);
+}
+
+interface CoachRetryReader extends WatchdogReader {
+  calls: number;
+  /** One queued failure per attempt, consumed in order. */
+  failures: string[];
+  /** A failure every attempt uses until cleared. */
+  failAll: string | null;
+}
+
+function coachRetryReader(): CoachRetryReader {
+  const reader: CoachRetryReader = {
+    calls: 0,
+    failures: [],
+    failAll: null,
+    async project(urls: string[]): Promise<Array<{ url: string; state: "pending"; version: null }>> {
+      reader.calls += 1;
+      const message = reader.failures.shift() ?? reader.failAll;
+      if (message !== null) throw new Error(message);
+      return urls.map((url) => ({ url, state: "pending" as const, version: null }));
+    },
+  };
+  return reader;
+}
+
+function coachActivity(options: {
+  repoDir: string;
+  stateDir: string;
+  reader: WatchdogReader;
+  now: () => number;
+}): CoachActivity {
+  return new CoachActivity({
+    descriptor: agentRegistry.require("coach"),
+    repoDir: options.repoDir,
+    stateDir: options.stateDir,
+    harnessDir: harnessRoot,
+    send: () => undefined,
+    reader: options.reader,
+    now: options.now,
+    intervalMs: 60_000,
+    staleAfterMs: 120_000,
+  });
+}
+
+async function readCoachOnce(activity: CoachActivity): Promise<void> {
+  activity.snapshot();
+  await activity.settled();
 }
 
 async function waitFor<T>(
@@ -1841,5 +1906,193 @@ describe("Coach synthesizer provider order", () => {
     const peers = openCodePeers(stateDir, {});
     expect(peers.ok).toBe(true);
     if (peers.ok) expect(peers.value[0]?.subscriptionId).toBe("bravo");
+  });
+});
+
+describe("Coach periodic read retries", () => {
+  const ISSUE_URL = "https://github.com/acme/fixture/issues/41";
+
+  async function seededActivity(reader: WatchdogReader, now: () => number) {
+    const { repoDir, stateDir } = await workspace();
+    seedCoachIssue(stateDir, ISSUE_URL);
+    return coachActivity({ repoDir, stateDir, reader, now });
+  }
+
+  test("retries a transient read without an error and keeps the rows and read time", async () => {
+    const reader = coachRetryReader();
+    let clock = 1_000_000;
+    const activity = await seededActivity(reader, () => clock);
+    await readCoachOnce(activity);
+    const successAt = clock;
+    const before = activity.snapshot().issues;
+    expect(before).toHaveLength(1);
+    const reads = reader.calls;
+
+    reader.failures.push("gh: HTTP 503: Service Unavailable");
+    clock += 60_000;
+    await readCoachOnce(activity);
+    const retrying = activity.snapshot();
+    expect(retrying.sync).toEqual({
+      state: "stale",
+      at: new Date(successAt).toISOString(),
+      error: null,
+    });
+    expect(retrying.issues).toEqual(before);
+
+    clock += 999;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(reads + 1);
+
+    clock += 1;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(reads + 2);
+    const recovered = activity.snapshot();
+    expect(recovered.sync).toEqual({
+      state: "ok",
+      at: new Date(clock).toISOString(),
+      error: null,
+    });
+    expect(recovered.issues).toEqual(before);
+  });
+
+  test("retries a transient read four times and surfaces the fifth failure", async () => {
+    const reader = coachRetryReader();
+    reader.failAll = "gh: HTTP 503: Service Unavailable";
+    let clock = 5_000_000;
+    const activity = await seededActivity(reader, () => clock);
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(1);
+    expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
+
+    let now = clock;
+    let attempts = 1;
+    for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+      clock = now + delay - 1;
+      await readCoachOnce(activity);
+      expect(reader.calls).toBe(attempts);
+      expect(activity.snapshot().sync.state).toBe("stale");
+      expect(activity.snapshot().sync.error).toBeNull();
+
+      clock = now + delay;
+      await readCoachOnce(activity);
+      now += delay;
+      attempts += 1;
+      expect(reader.calls).toBe(attempts);
+      if (delay !== 8_000) {
+        expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
+      }
+    }
+    expect(attempts).toBe(5);
+    const failed = activity.snapshot();
+    expect(failed.sync.state).toBe("error");
+    expect(failed.sync.error).toContain("Service Unavailable");
+    expect(failed.error).toBeNull();
+
+    clock = now + 1_000;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(attempts);
+    expect(activity.snapshot().sync.state).toBe("error");
+    clock = now + 60_000;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(attempts + 1);
+    expect(activity.snapshot().sync.state).toBe("error");
+  });
+
+  test("a success during the retry schedule clears the state", async () => {
+    const reader = coachRetryReader();
+    reader.failures.push("gh: HTTP 502: Bad Gateway", "gh: HTTP 502: Bad Gateway");
+    let clock = 7_000_000;
+    const activity = await seededActivity(reader, () => clock);
+    const start = clock;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(1);
+    expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
+    clock = start + 1_000;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(2);
+    expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
+    clock = start + 3_000;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(3);
+    expect(activity.snapshot().sync).toEqual({
+      state: "ok",
+      at: new Date(clock).toISOString(),
+      error: null,
+    });
+  });
+
+  for (const [label, message] of [
+    ["credentials", "gh: HTTP 401: Bad credentials"],
+    ["a missing repository", "gh: HTTP 404: Not Found"],
+    ["a malformed answer", "gh issue list did not print a JSON array"],
+    ["missing configuration", "the coach activity needs DEVBOARD_GITEA_URL for a Gitea origin"],
+  ] as const) {
+    test(`a permanent read failure (${label}) is attempted once and surfaces at once`, async () => {
+      const reader = coachRetryReader();
+      reader.failAll = message;
+      let clock = 9_000_000;
+      const activity = await seededActivity(reader, () => clock);
+      await readCoachOnce(activity);
+      expect(reader.calls).toBe(1);
+      const failed = activity.snapshot();
+      expect(failed.sync).toEqual({ state: "error", at: null, error: message });
+      expect(failed.error).toBeNull();
+
+      clock += 1_000;
+      await readCoachOnce(activity);
+      expect(reader.calls).toBe(1);
+      expect(activity.snapshot().sync.error).toBe(message);
+    });
+  }
+
+  test("a rate-limited read surfaces once, raises no error, and waits a cadence", async () => {
+    const reader = coachRetryReader();
+    reader.failAll = "You have exceeded a secondary rate limit.";
+    let clock = 11_000_000;
+    const activity = await seededActivity(reader, () => clock);
+    const start = clock;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(1);
+    const limited = activity.snapshot();
+    expect(limited.sync.state).toBe("error");
+    expect(limited.sync.error).toContain("secondary rate limit");
+    expect(limited.error).toBeNull();
+
+    clock = start + 1_000;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(1);
+    expect(activity.snapshot().sync.state).toBe("error");
+
+    reader.failAll = null;
+    clock = start + 60_000;
+    await readCoachOnce(activity);
+    expect(reader.calls).toBe(2);
+    expect(activity.snapshot().sync).toEqual({
+      state: "ok",
+      at: new Date(clock).toISOString(),
+      error: null,
+    });
+  });
+
+  test("never runs two projection reads at once", async () => {
+    const gate = Promise.withResolvers<void>();
+    let calls = 0;
+    const reader: WatchdogReader = {
+      async project(urls: string[]) {
+        calls += 1;
+        await gate.promise;
+        return urls.map((url) => ({ url, state: "pending" as const, version: null }));
+      },
+    };
+    let clock = 13_000_000;
+    const activity = await seededActivity(reader, () => clock);
+    activity.snapshot();
+    activity.snapshot();
+    activity.snapshot();
+    expect(calls).toBe(1);
+    gate.resolve();
+    await activity.settled();
+    expect(calls).toBe(1);
+    expect(activity.snapshot().sync.state).toBe("ok");
   });
 });
