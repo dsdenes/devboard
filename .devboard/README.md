@@ -780,12 +780,11 @@ keeps no freshness group and no recent-notice list.
 One card per agent carries its run state (`data-testid="discover-agent-status"` with
 `data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
-while it runs, a Start control (`data-testid="discover-agent-start"`), its own pending question,
-and, below the prompt panel, its own activity log (`data-testid="discover-agent-activity"`) that
-renders only while that agent runs. An error the agent reported stays on its card
-(`data-testid="discover-agent-error"`). `discoverActivity`,
+while it runs, a Start control (`data-testid="discover-agent-start"`), and its own pending
+question. A card carries no activity log: the run tag shows the latest line for the agent that is
+running. An error the agent reported stays on its card (`data-testid="discover-agent-error"`).
 `discoverQuestion`, `discoverStarted`, and `discoverStopped` carry `agent`, so no card shows
-another agent's line or question.
+another agent's question.
 
 | Agent | `data-agent` | Command | Prompt file |
 |---|---|---|---|
@@ -818,7 +817,7 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 the full path stays in the tooltip), the discovery date, and the single
 filled run action, which runs all six agents. Staleness is not repeated on the sheet: the activity
 bar and the status bar report it. While a run exists, the active agent's card carries a run tag
-above its activity: a status dot, the agent label and `run in progress`, the age, the latest
+in its header: a status dot, the agent label and `run in progress`, the age, the latest
 activity line, and Stop. A queued question region follows on that card while a question waits.
 The sheet follows: Platform, Delivery, Stack, External boundaries, and Shared kernels in the facts
 column on the left, and Commands, Testing, Quality gates, and Bounded contexts in the main column

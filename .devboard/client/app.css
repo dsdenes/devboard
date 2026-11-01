@@ -4033,10 +4033,10 @@ a.code-chip--link:focus-visible {
   gap: 12px;
 }
 
-/* The agent page is the workspace, so it uses the whole window: the activity
-   keeps its rows and the prompt editor takes every pixel the other blocks
-   leave. Growing without shrinking keeps a short window scrolling the page
-   instead of clipping the editor or its chat input. */
+/* The agent page is the workspace, so it uses the whole window: the prompt
+   editor takes every pixel the other blocks leave. Growing without shrinking
+   keeps a short window scrolling the page instead of clipping the editor or its
+   chat input. */
 .discover-agent > .discover-agent__prompt {
   flex: 1 0 auto;
   min-height: 0;
@@ -4089,22 +4089,6 @@ a.code-chip--link:focus-visible {
 .discover-agent .discover-run-tag {
   border: 0;
   padding: 0;
-}
-
-.discover-agent__activity-log {
-  display: flex;
-  flex-direction: column;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  gap: 2px;
-  max-height: 180px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-.discover-agent__activity-line {
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
 
 .discover-agent__prompt-editor,

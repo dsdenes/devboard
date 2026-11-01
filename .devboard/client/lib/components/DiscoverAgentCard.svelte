@@ -18,7 +18,6 @@
   const prompt = $derived(discover.agentPrompt(agent));
   const editable = $derived(prompt?.editable === true);
   const running = $derived(discover.active && discover.activeAgent === agent);
-  const activity = $derived(discover.agentActivityOf(agent));
   const question = $derived(discover.agentQuestionOf(agent));
   const chat = $derived(discover.promptChat[agent] ?? []);
   const proposal = $derived(discover.promptProposal[agent] ?? null);
@@ -252,27 +251,5 @@
         {/if}
       </div>
     </section>
-
-    {#if running}
-      <section class="panel discover-agent__activity" aria-label="Agent activity">
-        <div class="panel__header">
-          <h2 class="panel__title">Activity</h2>
-        </div>
-        <div
-          class="panel__body discover-agent__activity-log"
-          data-testid="discover-agent-activity"
-          role="log"
-          aria-live="polite"
-        >
-          {#if activity.length === 0}
-            <p class="empty">No activity yet.</p>
-          {:else}
-            {#each activity as line, index (index)}
-              <div class="discover-agent__activity-line">{line}</div>
-            {/each}
-          {/if}
-        </div>
-      </section>
-    {/if}
   </div>
 {/if}
