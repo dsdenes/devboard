@@ -52,8 +52,11 @@ stored sheet stays unchanged:
 - **Level table columns are Level / Tests / Paths & fixtures.** The command is already shown as the whole
   suite; repeating it per row adds width without information.
 - **Fixed widths come from the table, not section CSS.** `DataTable` accepts `columnWidths` and renders a
-  `colgroup`, so the commands table and every glossary table share one mechanism. The glossary fixes Kind
-  and Term at the same widths in every context card, which puts every definition at the same page position.
+  `colgroup`, so the commands table and every glossary table share one mechanism. The glossary fixes the
+  Term width in every context card, which puts every definition at the same page position.
+- **The glossary table starts at Term.** The operator could not tell `entity` from `value`, so the Kind
+  column and its pills were removed; the concept kind stays in the published glossary and every
+  non-visual consumer.
 - **No card clips or scrolls.** `.discover-page` children are `flex: 0 0 auto`, so a card grows to its
   rows instead of shrinking into the page's scroll area. The operator could see only three of five terms
   before this.
