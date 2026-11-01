@@ -205,8 +205,8 @@ The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` 
 and `<REPO_DIR>/.devboard` in the canonical checkout. Run every harness `bun`/`bunx` command with
 that package root as the working directory: `bun install --frozen-lockfile`, `bun run build`,
 and `bun test`, each as its own invocation. The typecheck is not a bare `bunx tsc --noEmit`
-shell call: run it through `verification_run` with `{"check": "typecheck"}`, as *Typecheck* below
-requires. The repository root has no `package.json`, so a root-level
+shell call: run it through `verification_run` with `{"check": "typecheck"}` once per verification
+pass, as *Typecheck* below requires. The repository root has no `package.json`, so a root-level
 `bun install --frozen-lockfile` exits nonzero with "Bun could not find a package.json file to
 install from", and a root-level `bun run build` fails with `error: Script not found "build"`.
 
@@ -253,9 +253,13 @@ The typecheck has exactly one entry point: the `verification_run` MCP tool with
 captured output, writes the complete output to the returned `log`, and returns `check`, `exitCode`,
 `output`, `truncated`, and `log` in one result.
 
-- Run it once per coherent change set: after the batch of edits that can break types, never after
-  every single edit. The typecheck reads the working tree, so an unchanged tree yields unchanged
-  output and a second run carries no new information.
+- Run it once per verification pass: after the batch of edits that can break types, never after
+  every single edit. One `verification_run` call with `{"check": "typecheck"}` covers the pass;
+  `{"check": "check"}` runs the client's `bun run check` as the pass-level gate, not a second
+  typecheck.
+- Repeat it only after a further type-affecting edit: two identical typecheck runs separated only
+  by non-type edits never happen. The typecheck reads the working tree, so an unchanged tree yields
+  unchanged output and a second run carries no new information.
 - A bare `bunx tsc --noEmit` shell invocation is not the typecheck path, and repeating it after
   unchanged code is never required. One `verification_run` call is the whole typecheck; never rerun
   it to re-read the same empty output.
@@ -452,8 +456,8 @@ the prerequisite in another agent's place.
   no login prompt, and no waiting for an operator. Decide from the repository evidence.
 - Complete the work: no stubs, placeholders, disabled checks, or unfinished branches of behavior.
 - Verify the changed surface by running it, then run the checks the change could break. The
-  typecheck is one `verification_run` call with `{"check": "typecheck"}` per coherent change set,
-  as *Typecheck* above states.
+  typecheck is one `verification_run` call with `{"check": "typecheck"}` per verification pass,
+  repeated only after a further type-affecting edit, as *Typecheck* above states.
 - Before landing, read the worktree's `git status --short --branch` line against the integration
   line the task-start fetch named, never a refetch. When it shows `[behind N]`, rebase the run's
   task branch onto `origin/main`. When it shows `[ahead N, behind M]`, `git merge --ff-only
