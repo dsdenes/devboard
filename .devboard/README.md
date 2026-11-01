@@ -1316,7 +1316,8 @@ one prompt file, and the installed-host refusal. `verify:discover` builds the cl
 and installed fixture hosts, and drives headless Chrome through the Discovery group, each card's
 command and editor bytes, all six independent triggers with a byte-level check of the fixture
 `.omp` tree, the one-at-a-time refusal, Run all order and stop at the first seeded failure, prompt
-chat/save, and the installed host's refused save.
+chat/save, and the installed host's refused save. `DISCOVER_VERIFY_ONLY=<scenario>` narrows a pass
+to the named scenarios and `DISCOVER_VERIFY_KEEP=1` keeps its fixtures under `.devboard/.tmp`.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
