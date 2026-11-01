@@ -47,10 +47,12 @@ context, but you never edit, comment on, close, or reopen another issue.
   worktree there, named for the issue, for example `<REPO_DIR>/.worktree/issue-<number>`. Never
   push from the worktree, because the only push is `main` from the canonical checkout. Never
   work in the canonical checkout, never use another agent's worktree, and write nothing outside
-  `<REPO_DIR>` — no temporary file, log, cache, or build output elsewhere. Scratch output that is
-  genuinely required — issue or comment JSON, command capture, a verifier log — belongs inside
-  `<REPO_DIR>/.devboard`'s `.tmp/`, never directly under the harness root, and is removed after
-  use; never write `/tmp/x` or any other path outside the repository root.
+  `<REPO_DIR>` — no temporary file, log, cache, or build output elsewhere, and never `/tmp/x`.
+- Scratch files and command logs live under `<REPO_DIR>/.devboard/.tmp/` and nowhere else. Create
+  that directory once per session with a standalone `mkdir -p .devboard/.tmp` from the repository
+  root; every log redirect names it, for example `> .devboard/.tmp/verify-interface.log 2>&1`.
+  Never create or use a repo-root `.tmp`: no `mkdir -p .tmp` prefix, no
+  `ls -d .tmp || mkdir -p .tmp` guard, and no `> .tmp/<name>.log 2>&1` redirect.
 - Sync the worktree exactly once per pass, before the first edit: the task-start fetch
   (`git fetch origin`, see *Fetch budget*) already named `origin/main`, and the worktree was cut
   from it, so run one `git rebase origin/main` inside it and never fetch again; a bare
@@ -266,9 +268,8 @@ check's whole process group at its 900-second bound, and returns `check`, `exitC
 
 Every direct invocation of `bun run verify:interface` — the worktree fallback below, and any run
 the tool cannot replace — happens in the foreground, exactly as written. It MUST NOT be redirected
-into `.tmp/*.log` or any other file: the redirect replaces the failing assertion with
-`(no output)` and fails outright in a worktree that has no `.tmp` directory, so read the diagnostic
-from the command output instead.
+into `.devboard/.tmp/*.log` or any other file: the redirect replaces the failing assertion with
+`(no output)`, so read the diagnostic from the command output instead.
 
 - Use `repositoryRoot` and `harnessDirectory` from the `devboard_status` call above, not a second
   call. When `harnessDirectory` is the `.devboard/` you changed,
@@ -289,10 +290,9 @@ from the command output instead.
   `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
 - Interface verification needs no scratch directory: the verifier creates every `.tmp` directory
   it writes to. When some other command's output genuinely has to be captured for later diffing,
-  the log belongs under `.devboard/.tmp/`; create that directory with a standalone
-  `mkdir -p .devboard/.tmp` from the repository root — never a relative `mkdir -p .tmp`, never
-  joined to the command with `&&`, and never re-probed with `ls` — and echo the tail of the log in
-  the same tool result so a failure never arrives as `(no output)`.
+  write the log under `.devboard/.tmp/` as *Inputs and paths* states — never joined to the
+  command with `&&` and never re-probed with `ls` — and echo the tail of the log in the same tool
+  result so a failure never arrives as `(no output)`.
 - The `verification_run` tool writes the complete output of its own run to `.devboard`'s
   `.tmp/verify-interface.log` and returns that path in `log`. Read it whole on failure — never
   `tail`, `head`, `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON
@@ -339,8 +339,11 @@ from the command output instead.
 
 ## Discovery verification
 
-`bun run verify:discover` runs at most once per change, from the package root `.devboard/`, and its
-output is always captured to the one log `.devboard/.tmp/verify-discover.log` (repository-relative):
+`bun run verify:discover` runs at most once per change, with the package root `.devboard/` as its
+working directory, and its output is always captured to the one log
+`.devboard/.tmp/verify-discover.log` (repository-relative). The redirect below is relative to that
+working directory, so it lands in `.devboard/.tmp/`; never run this command from the repository
+root and never create a repo-root `.tmp`:
 
 ```sh
 bun run verify:discover > .tmp/verify-discover.log 2>&1; echo "EXIT:$?"
