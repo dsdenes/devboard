@@ -186,9 +186,10 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
   the pre-change revision; run the changed revision once from `<worktree>/.devboard/` as
   *Typecheck* and *Interface verification* below require.
 - Run the build, the typecheck, the tests, and each verification check as separate invocations,
-  never chained into one command and never behind a shared `mkdir -p` with `> log 2>&1`
-  redirection. When one fails, name the failing stage and quote the last 20 lines of its output in
-  the session transcript; a bare `exit code 1` or an empty `(no output)` is never a report.
+  never chained into one command, never behind a `mkdir -p .tmp` prefix, and never behind a
+  `> .tmp/<name>.log 2>&1` redirect, as *Shell calls* states. When one fails, name the failing
+  stage and quote the last 20 lines of its output in the session transcript; a bare `exit code 1`
+  or an empty `(no output)` is never a report.
 
 ## Typecheck
 
@@ -239,13 +240,12 @@ check's whole process group at its 900-second bound, and returns `check`, `exitC
   stage failed. Its exit status is the verdict, so never append a status echo. Say in the final
   response that the tool's resolved `harnessDirectory` was the canonical root. Every other direct
   invocation is forbidden.
-- When a command's output genuinely has to be captured in a file, create the directory first with
-  a standalone `mkdir -p .devboard/.tmp` from the repository root: a fresh worktree has no
-  `.tmp`, and a redirect into a directory that does not exist fails with
-  `No such file or directory (os error 2)` before the command starts. Never join `mkdir -p` to a
-  build or a check with `&&`, and never probe the directory afterwards with `ls`: a zero-exit
-  `mkdir -p` already guarantees it. Interface verification needs none of this: the verifier
-  creates every `.tmp` directory it writes to.
+- Interface verification needs no scratch directory: the verifier creates every `.tmp` directory
+  it writes to. When some other command's output genuinely has to be captured for later diffing,
+  the log belongs under `.devboard/.tmp/`; create that directory with a standalone
+  `mkdir -p .devboard/.tmp` from the repository root — never a relative `mkdir -p .tmp`, never
+  joined to the command with `&&`, and never re-probed with `ls` — and echo the tail of the log in
+  the same tool result so a failure never arrives as `(no output)`.
 - The `verification_run` tool writes the complete output of its own run to `.devboard`'s
   `.tmp/verify-interface.log` and returns that path in `log`. Read it whole on failure — never
   `tail`, `head`, `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON
@@ -353,6 +353,12 @@ the prerequisite in another agent's place.
   stand in for either with `cd <root> && true`.
 - Keep a worktree, branch, stash, or remote-tip probe in one command and accept its nonzero exit as
   the answer. Do not pad it with a guard tail.
+- Run build, test, and verify commands bare: `bun run build`, `bun test`,
+  `bun run verify:interface`, `bun run verify:discover`, and every `verification_run` check, with
+  no `mkdir -p .tmp` prefix and no `> .tmp/<name>.log 2>&1` redirect. The harness already returns
+  the failing output inline; a redirect replaces it with `(no output)` or a bare `exit code 1` and
+  forces the same command to be re-run instead of read. When a log is genuinely required for later
+  diffing, write it under `.devboard/.tmp/` and still echo the tail of that log in the tool result.
 
 ## Contract
 
