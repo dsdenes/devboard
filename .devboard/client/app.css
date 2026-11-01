@@ -1934,32 +1934,48 @@ kbd {
   min-height: 0;
 }
 
-/* The skill header is the editor's chrome bar: one 34px `surface-raised` band
-   between the page title and the pane, so the 28px controls sit inside the row
-   instead of filling it. The path yields first; the state and controls never
-   shrink. */
+/* The skill header is the editor's chrome bar: one 44px `surface-raised` band
+   between the page title and the pane, so the path chip and the 28px controls
+   share the row with 8px above and below. The path yields first; the state and
+   controls never shrink. */
 .discover-skill__header {
   align-items: center;
   background: var(--surface-raised);
-  flex: 0 0 34px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 44px;
   flex-wrap: nowrap;
   gap: 12px;
-  height: 34px;
-  padding: 0 8px;
+  height: 44px;
+  padding: 0 12px;
 }
 
 .discover-skill__identity {
   align-items: center;
   display: flex;
   flex: 1 1 160px;
-  gap: 8px;
   min-width: 0;
 }
 
 .discover-skill__title {
+  align-items: center;
+  display: flex;
   line-height: 1.2;
   max-width: 100%;
   min-width: 0;
+}
+
+/* The relative path takes the shared inline-code chip, so a file path never
+   draws a second presentation, and ellipsizes inside the band. */
+.discover-skill__path {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discover-skill__name {
+  color: var(--foreground);
 }
 
 .discover-skill__file {
@@ -1967,43 +1983,43 @@ kbd {
   font-weight: 400;
 }
 
-/* The draft state pairs its 6px dot with the word on the baseline of the Save it
-   qualifies: success while the live file matches the draft, warning while the draft
-   differs, error while the live file is missing. The word carries the meaning and
-   the dot only colors it. */
+/* The draft state is one pill beside the Save it qualifies: its 6px dot and
+   word sit on the tinted surface of the state, so success, warning, and error
+   read at a glance while the word still carries the meaning. */
 .discover-skill__state {
   align-items: center;
-  color: var(--muted-foreground);
+  border-radius: 999px;
   display: inline-flex;
   flex: 0 0 auto;
   font-size: 11px;
-  gap: 4px;
+  font-weight: 500;
+  gap: 6px;
   line-height: 1.2;
+  padding: 2px 8px;
   white-space: nowrap;
 }
 
 .discover-skill__state-dot {
-  background: var(--success);
+  background: currentColor;
   border-radius: 999px;
   flex: 0 0 6px;
   height: 6px;
   width: 6px;
 }
 
+.discover-skill__state[data-state="clean"] {
+  background: var(--success-surface);
+  color: var(--success);
+}
+
 .discover-skill__state[data-state="dirty"] {
+  background: var(--warning-surface);
   color: var(--warning);
 }
 
-.discover-skill__state[data-state="dirty"] .discover-skill__state-dot {
-  background: var(--warning);
-}
-
 .discover-skill__state[data-state="missing"] {
+  background: var(--error-surface);
   color: var(--error);
-}
-
-.discover-skill__state[data-state="missing"] .discover-skill__state-dot {
-  background: var(--error);
 }
 
 .discover-skill__actions {

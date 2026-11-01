@@ -4830,6 +4830,10 @@ try {
     dotHeight: number;
     dot: string;
     success: string;
+    chip: boolean;
+    chipRadius: string;
+    pillSurface: string;
+    successSurface: string;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
@@ -4839,6 +4843,8 @@ try {
     const actions = header?.querySelector('.discover-skill__actions');
     const save = document.querySelector('[data-testid="discover-skill-save"]');
     const dot = header?.querySelector('.discover-skill__state-dot');
+    const chip = header?.querySelector('.discover-skill__path');
+    const pill = header?.querySelector('[data-testid="discover-skill-status"]');
     const center = (element) => {
       const box = element?.getBoundingClientRect();
       return box === undefined ? 0 : box.top + box.height / 2;
@@ -4876,6 +4882,10 @@ try {
       dotHeight: dotBox === undefined ? 0 : Math.round(dotBox.height),
       dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
       success: token("--success"),
+      chip: chip !== null && chip !== undefined && chip.classList.contains("code-chip"),
+      chipRadius: chip === null || chip === undefined ? "" : getComputedStyle(chip).borderRadius,
+      pillSurface: pill === null || pill === undefined ? "" : getComputedStyle(pill).backgroundColor,
+      successSurface: token("--success-surface"),
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
@@ -4892,14 +4902,20 @@ try {
     skillLayout,
   );
   check(
-    skillLayout.header === 34 && skillLayout.inline,
-    "the skill header is not one 34px row with the state and actions",
+    skillLayout.header === 44 && skillLayout.inline,
+    "the skill header is not one 44px row with the state and actions",
     skillLayout,
   );
   check(
     skillLayout.headerSurface === skillLayout.raised && skillLayout.dotWidth === 6 &&
       skillLayout.dotHeight === 6 && skillLayout.dot === skillLayout.success,
     "the skill header is not a surface-raised band with a success state dot",
+    skillLayout,
+  );
+  check(
+    skillLayout.chip && skillLayout.chipRadius === "3px" &&
+      skillLayout.pillSurface === skillLayout.successSurface,
+    "the skill header does not read as a path chip beside a success state pill",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);

@@ -286,7 +286,11 @@
                 class="panel__title mono discover-skill__title"
                 title={`${activeSkill}/SKILL.md`}
               >
-                <span>{activeSkill}</span><span class="discover-skill__file">/SKILL.md</span>
+                <span class="code-chip discover-skill__path">
+                  <span class="discover-skill__name">{activeSkill}</span><span
+                    class="discover-skill__file">/SKILL.md</span
+                  >
+                </span>
               </h2>
             </div>
             <div class="row-sm discover-skill__actions">
