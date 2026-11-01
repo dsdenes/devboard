@@ -19,6 +19,7 @@ import {
   statePath,
 } from "../issues/paths";
 import { preflightIssues } from "../issues/preflight";
+import { closedByRun, recordClosedByRun } from "../issues/self-close";
 import {
   appendActivityLine,
   emptyState,
@@ -43,6 +44,7 @@ import {
 import {
   IssuesWorker,
   MAX_CONCURRENT_PEERS,
+  MAX_FOLLOW_UP_TURNS,
   isGoalIssue,
   promptFor,
   type AcpPeer,
@@ -162,30 +164,28 @@ class ControlledPeer implements AcpPeer {
   readonly activity: AcpActivity[] = [];
   readonly questions: AcpQuestion[] = [];
   closed = false;
-  private settled = false;
-  private readonly resolveRun: (value: unknown) => void;
-  private readonly rejectRun: (error: Error) => void;
+  private turn: { resolve: (value: unknown) => void; reject: (error: Error) => void } | undefined;
   private readonly options: IssuesPeerOptions;
   readonly environment: Record<string, string | undefined> | undefined;
 
   constructor(options: IssuesPeerOptions) {
     this.options = options;
     this.environment = options.env;
-    const deferred = Promise.withResolvers<unknown>();
-    this.resolveRun = deferred.resolve;
-    this.rejectRun = deferred.reject;
-    this.promise = deferred.promise;
   }
-
-  private readonly promise: Promise<unknown>;
 
   run(prompt: string): Promise<unknown> {
-    this.prompts.push(prompt);
-    return this.promise;
+    return this.startTurn(prompt);
   }
 
-  prompt(): Promise<unknown> {
-    return Promise.reject(new Error("the stub peer does not answer follow-up prompts"));
+  prompt(prompt: string): Promise<unknown> {
+    return this.startTurn(prompt);
+  }
+
+  private startTurn(prompt: string): Promise<unknown> {
+    this.prompts.push(prompt);
+    const deferred = Promise.withResolvers<unknown>();
+    this.turn = { resolve: deferred.resolve, reject: deferred.reject };
+    return deferred.promise;
   }
 
   answer(id: number | string, value: string): boolean {
@@ -199,10 +199,9 @@ class ControlledPeer implements AcpPeer {
 
   close(): void {
     this.closed = true;
-    if (!this.settled) {
-      this.settled = true;
-      this.rejectRun(new Error("Agent process exited before answering."));
-    }
+    const turn = this.turn;
+    this.turn = undefined;
+    turn?.reject(new Error("Agent process exited before answering."));
   }
 
   emit(text: string, append = false): void {
@@ -214,17 +213,18 @@ class ControlledPeer implements AcpPeer {
     this.options.onQuestion(question);
   }
 
+  /** Ends the current turn cleanly; the worker then verifies the issue. */
   succeed(): void {
-    if (this.settled) return;
-    this.settled = true;
-    this.resolveRun({});
+    const turn = this.turn;
+    this.turn = undefined;
+    turn?.resolve({});
   }
 
   fail(message: string): void {
-    if (this.settled) return;
-    this.settled = true;
+    const turn = this.turn;
+    this.turn = undefined;
     this.options.onStderr(`${message}\n`);
-    this.rejectRun(new Error(message));
+    turn?.reject(new Error(message));
   }
 
   /** Writes to the child's stderr without ending the turn. */
@@ -300,6 +300,21 @@ async function fixture(options: {
 
 async function stop(fixtureUnderTest: Fixture): Promise<void> {
   await fixtureUnderTest.worker.stop();
+}
+
+/**
+ * Ends every turn a peer opens, up to the bound the worker enforces, so a run
+ * whose issue never closes reaches its failure verdict.
+ */
+async function exhaustTurns(peer: ControlledPeer): Promise<void> {
+  for (let turn = 1; turn <= MAX_FOLLOW_UP_TURNS + 1; turn += 1) {
+    peer.succeed();
+    if (turn > MAX_FOLLOW_UP_TURNS) return;
+    await waitFor(
+      () => (peer.prompts.length === turn + 1 ? true : undefined),
+      `follow-up turn ${turn + 1}`,
+    );
+  }
 }
 
 describe("per-issue fleet", () => {
@@ -469,7 +484,7 @@ describe("per-issue fleet", () => {
     }
   });
 
-  test("a turn that leaves its issue open fails without handling it", async () => {
+  test("a turn that leaves its issue open fails after its follow-up turns", async () => {
     const f = await fixture({
       issues: [issue(1)],
       issueState: async () => ({ kind: "state", state: "open" }),
@@ -477,7 +492,7 @@ describe("per-issue fleet", () => {
     try {
       await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
       f.peers[0]!.writeStderr("implement-goal-issue: no write access");
-      f.peers[0]!.succeed();
+      await exhaustTurns(f.peers[0]!);
       const failed = await waitFor(
         () =>
           f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
@@ -485,6 +500,8 @@ describe("per-issue fleet", () => {
             : undefined,
         "the failed run",
       );
+      expect(f.peers[0]!.prompts).toHaveLength(MAX_FOLLOW_UP_TURNS + 1);
+      expect(f.peers[0]!.prompts[1]).toContain("Continue issue #1");
       expect(failed.queue.find((entry) => entry.number === 1)?.handled).toBe(false);
       const run = failed.runs.find((entry) => entry.issueNumbers.includes(1));
       expect(run?.firstStderrLine).toContain("issue #1 is still open");
@@ -500,6 +517,39 @@ describe("per-issue fleet", () => {
     }
   });
 
+  test("a turn that yields before closing its issue gets a follow-up turn", async () => {
+    let reads = 0;
+    const f = await fixture({
+      issues: [issue(1)],
+      issueState: async () => {
+        reads += 1;
+        return { kind: "state", state: reads === 1 ? "open" : "closed" } as IssueStateResult;
+      },
+    });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the peer");
+      peer.succeed();
+      await waitFor(() => (peer.prompts.length === 2 ? true : undefined), "the follow-up turn");
+      expect(peer.closed).toBe(false);
+      expect(peer.prompts[0]).toBe("/implement-issue 1");
+      expect(peer.prompts[1]).toContain("Continue issue #1");
+      expect(peer.prompts[1]).toContain(`Follow-up turn 2 of ${MAX_FOLLOW_UP_TURNS + 1}`);
+      peer.succeed();
+      const handled = await waitFor(
+        () =>
+          f.state().queue.find((entry) => entry.number === 1)?.handled ? f.state() : undefined,
+        "the handled issue",
+      );
+      expect(peer.closed).toBe(true);
+      expect(handled.runs.find((run) => run.issueNumbers.includes(1))?.status).toBe("succeeded");
+      expect(handled.lastError).toBeNull();
+      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+      expect(Object.keys(ledger.handled)).toEqual(["1"]);
+    } finally {
+      await stop(f);
+    }
+  });
+
   test("clears a still-open error when a later poll drops that issue", async () => {
     const f = await fixture({
       issues: [issue(1)],
@@ -507,7 +557,7 @@ describe("per-issue fleet", () => {
     });
     try {
       await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
-      f.peers[0]!.succeed();
+      await exhaustTurns(f.peers[0]!);
       const failed = await waitFor(
         () =>
           f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
@@ -947,6 +997,44 @@ describe("closed issues", () => {
       expect(state.runs.map((run) => run.status).sort()).toEqual(["running", "stopped"]);
       expect(state.cooldowns).toEqual({});
       expect(state.agents.map((agent) => agent.issueNumber)).toEqual([2]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a run that closed its own issue settles instead of being stopped", async () => {
+    let open = [issue(1)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      const runId = f.state().agents[0]!.runId;
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_RUN_ID).toBe(runId);
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_ISSUE_NUMBER).toBe("1");
+      recordClosedByRun(f.stateDir, f.root, 1, runId);
+
+      // The run's own close drops #1 from the open list while its turn runs.
+      open = [];
+      await f.worker.poll();
+      expect(f.peers[0]!.closed).toBe(false);
+      expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([1]);
+      expect(f.state().notice).toBeNull();
+
+      f.peers[0]!.succeed();
+      const settled = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(1))?.status === "succeeded"
+            ? f.state()
+            : undefined,
+        "the succeeded run",
+      );
+      expect(settled.agents).toEqual([]);
+      expect(settled.notice).toBeNull();
+      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+      expect(ledger.handled["1"]?.runId).toBe(runId);
+      expect(closedByRun(f.stateDir, f.root, 1)).toBeNull();
     } finally {
       await stop(f);
     }
@@ -1751,6 +1839,40 @@ describe("tracker", () => {
     );
     expect(state).toEqual({ kind: "state", state: "closed" });
     expect(urls[0]).toBe("http://gitea.test/api/v1/repos/acme/fixture/issues/7");
+  });
+
+  test("never builds a gh argv for a GitLab origin", async () => {
+    const calls: string[][] = [];
+    const run = (argv: string[]) => {
+      calls.push(argv);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const polled = await pollOpenIssues({ repository: "group/project", forge: "gitlab", run });
+    expect(polled.kind).toBe("unsupported");
+    if (polled.kind !== "unsupported") return;
+    expect(polled.detail).toContain("GitLab");
+
+    const state = await fetchIssueState({ repository: "group/project", forge: "gitlab", run }, 7);
+    expect(state.kind).toBe("error");
+    if (state.kind !== "error") return;
+    expect(state.detail).toContain("GitLab");
+    expect(calls).toEqual([]);
+  });
+
+  test("still reads a GitHub origin through gh", async () => {
+    const calls: string[][] = [];
+    const polled = await pollOpenIssues({
+      repository: "acme/fixture",
+      forge: "github",
+      run: (argv) => {
+        calls.push(argv);
+        return { code: 0, stdout: "HTTP/2.0 200 OK\n\n", stderr: "" };
+      },
+    });
+    expect(polled.kind).toBe("issues");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toBe("api");
+    expect(calls[0]?.includes("repos/acme/fixture/issues?state=open&per_page=100")).toBe(true);
   });
 });
 

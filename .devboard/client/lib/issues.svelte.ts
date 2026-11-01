@@ -382,6 +382,17 @@ export class IssuesStore {
     connection.send({ type: "checkIssues" });
   }
 
+  /**
+   * Clears the pending close requests before a reconnect's state requests are
+   * sent. A close frame lost while the socket was down leaves its issue in
+   * `closing` forever, because the replay still lists it as open. The replayed
+   * `issuesState` stays authoritative: a close that landed drops the issue
+   * from the queue.
+   */
+  resetActiveOperations(): void {
+    this.closing = [];
+  }
+
   canClose(number: number): boolean {
     return connection.open && !this.closing.includes(number);
   }

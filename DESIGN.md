@@ -374,6 +374,9 @@ Spacing uses a **2px base unit** with a half-step grid. The approved scale is 2,
   Inside the rail each mode tab is a 64×52px control with an 18px icon over a 10px `overline`
   label, inset 6px vertically and 4px horizontally so the label never touches the tab edge; the
   label never collapses to an icon-only state.
+- **Page padding.** A full-workspace page that owns its own scrolling area — the Agent page and
+  the Issues agent focus — pads its content 16px; the 8px content padding above belongs to the
+  shell's mode body and panel surfaces.
 - **Responsive spacing.** The supported viewport is at least 1024×720. Panes resize rather than
   reflow; when a pane narrows, gaps collapse to the next lower scale step before text wraps.
   Below 1024×720 the workspace is replaced by the viewport guard, so no mobile spacing scale
@@ -618,10 +621,11 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
 - **Status bar** (`.status-bar`) — a 26px two-group strip on `surface-raised` with a 1px `border`
   top edge. The left group states connection (7px dot plus word) and the project (folder icon plus
   the last path segment in mono), divided by a 1px `border` rule. The right group holds the lane
-  count, the issues worker with a 6px state dot, the watchdog, the OS notifications control, and
-  the running and installed versions; every metric pairs a 10px `overline` label with an 11px
-  value, so no meaning rests on color. Items are 20px tall with 5px horizontal padding; a hovered
-  control takes `secondary`.
+  count, the issues worker with a 6px state dot, the watchdog, the OS notifications control, the
+  running and installed versions, and, while the installed version is newer than the running one,
+  the reload control (12px refresh icon plus an 11px `reload` word); every metric pairs a 10px
+  `overline` label with an 11px value, so no meaning rests on color. Items are 20px tall with 5px
+  horizontal padding; a hovered control takes `secondary`.
 - **OS notifications control** (`os-notifications` in `StatusBar.svelte`) — one status-bar button
   beside the watchdog whose accessible name always begins `OS notifications` and ends in `off`,
   `on`, or `blocked`, with a 6px state dot (`border-strong` off, `success` on, `error` blocked).
@@ -658,19 +662,21 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   muted, `Saved` success, `Unsaved changes` warning), and a right-aligned `Save` that is the
   filled primary only while the draft differs from the saved text and a neutral secondary control
   otherwise. The identity and action group are centered on the row, matching the Flow goal header.
-- **Discover skill header** (`.discover-skill__header`) — the skill editor's chrome bar: one 34px
-  `surface-raised` row with 8px horizontal padding and the panel header's `border` rule under it,
-  so the 28px controls sit inside the row instead of filling it and the editor reads as the pane
-  below a distinct band. The relative path `<skill>/SKILL.md` at the `panel-title` size sits on the
-  leading edge, with the skill name in `foreground` and the file name in `muted-foreground`. The
-  trailing group starts with the 11px draft state, which pairs its 6px dot with the word on the
-  baseline of the `Save` it qualifies: `No unsaved changes` on a `success` dot, `Unsaved changes`
-  on `warning`, and `Live file missing` on `error`; the word states the meaning and the dot never
-  carries it alone. `Save` is the filled primary only while the draft differs from the live text
-  and a disabled `secondary` otherwise; it stays disabled while the live file is missing. The
+- **Discover skill header** (`.discover-skill__header`) — the skill editor's chrome bar: one 44px
+  `surface-raised` row with 12px horizontal padding and the panel header's `border` rule under it,
+  so the path chip and the 28px controls share the band with 8px above and below and the editor
+  reads as the pane below a distinct band. The relative path `<skill>/SKILL.md` takes the shared
+  inline-code chip (`.code-chip`) on the leading edge, with the skill name in `foreground` and the
+  file name in `muted-foreground`, so a file path draws no second presentation of its own. The
+  trailing group starts with the 11px draft state as one full-radius pill on the tint of the state
+  it names: `No unsaved changes` on `success-surface` with a `success` dot and word, `Unsaved
+  changes` on `warning-surface` with `warning`, and `Live file missing` on `error-surface` with
+  `error`. The 6px dot pairs with the word, so the word states the meaning and the tint and dot
+  never carry it alone. `Save` is the filled primary only while the draft differs from the live
+  text and a disabled `secondary` otherwise; it stays disabled while the live file is missing. The
   restore control is `outline` while an edit can be discarded and becomes the filled primary as
   `Recreate generated version` when the live file is missing, so the surface always has at most one
-  primary and never a disabled one as its emphasis. The path truncates with a full-path `title`
+  primary and never a disabled one as its emphasis. The chip ellipsizes with a full-path `title`
   while the state and actions never shrink or wrap.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned

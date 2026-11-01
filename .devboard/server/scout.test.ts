@@ -13,6 +13,8 @@ import {
   closingCommitFromTimeline,
   earliestRelease,
   parseJsonLines,
+  releaseAtClose,
+  resolveShippedVersion,
   shippedVersion,
   type ScoutGitHubClient,
   type ScoutRelease,
@@ -422,6 +424,67 @@ describe("shipped version", () => {
         [release("v1.0.0", "2026-01-01T00:00:00Z")],
       ),
     ).toBeNull();
+  });
+
+  test("a closed issue with no commit names the release closest to its close", async () => {
+    const issue = {
+      number: 4,
+      title: "t",
+      url: "u",
+      state: "closed" as const,
+      createdAt: "2026-01-01T00:00:00Z",
+      closedAt: "2026-03-01T00:00:00Z",
+      body: "",
+    };
+    const releases = [
+      release("v1.0.0", "2026-02-01T00:00:00Z"),
+      release("v1.1.0", "2026-02-15T00:00:00Z"),
+      release("v1.2.0", "2026-03-02T00:00:00Z"),
+    ];
+    expect(releaseAtClose(releases, issue)).toBe("v1.1.0");
+    expect(await resolveShippedVersion(issue, fakeGitHub(), releases)).toEqual({
+      version: "v1.1.0",
+      error: null,
+      inferred: true,
+    });
+  });
+
+  test("release inference never names a release published before the issue", () => {
+    const issue = {
+      createdAt: "2026-02-01T00:00:00Z",
+      closedAt: "2026-02-02T00:00:00Z",
+    };
+    expect(
+      releaseAtClose([release("v0.9.0", "2026-01-01T00:00:00Z")], issue),
+    ).toBeNull();
+    expect(
+      releaseAtClose(
+        [release("v1.0.0", "2026-02-03T00:00:00Z")],
+        issue,
+      ),
+    ).toBe("v1.0.0");
+  });
+
+  test("a resolved candidate without a release never falls back to the timeline", async () => {
+    const resolution = await resolveShippedVersion(
+      {
+        number: 4,
+        state: "closed",
+        createdAt: "2026-01-01T00:00:00Z",
+        closedAt: "2026-03-01T00:00:00Z",
+      },
+      fakeGitHub({
+        closingCommit: async () => "abc1234",
+        resolveCommit: async () => "a".repeat(40),
+        containingReleaseTags: async () => [],
+      }),
+      [release("v1.0.0", "2026-02-01T00:00:00Z")],
+    );
+    expect(resolution).toEqual({
+      version: null,
+      error: `no published release contains ${"a".repeat(40)}`,
+      inferred: false,
+    });
   });
 
   test("an open issue never has a shipped version", async () => {

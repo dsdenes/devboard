@@ -1,10 +1,22 @@
-import { cpSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+  type Dirent,
+} from "node:fs";
 import {
   mkdir,
   readFile,
+  readlink,
   readdir,
   rm,
   stat,
+  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -323,6 +335,8 @@ interface SkillFile {
 interface SkillsSnapshot {
   exists: boolean;
   files: Map<string, Buffer>;
+  /** Relative path to its `readlink` target, recreated before the files. */
+  symlinks: Map<string, string>;
 }
 
 interface SkillsPreparation {
@@ -359,6 +373,7 @@ interface LifecycleState {
 interface StoredSnapshot {
   exists: boolean;
   files: [string, string][];
+  symlinks: [string, string][];
 }
 
 interface StoredQuestion {
@@ -1174,11 +1189,14 @@ function findContradictions(skills: SkillFile[]): SkillContradiction[] {
 
 async function snapshotDirectory(root: string): Promise<SkillsSnapshot> {
   const files = new Map<string, Buffer>();
+  const symlinks = new Map<string, string>();
   try {
     const details = await stat(root);
-    if (!details.isDirectory()) return { exists: false, files };
+    if (!details.isDirectory()) return { exists: false, files, symlinks };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false, files };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { exists: false, files, symlinks };
+    }
     throw error;
   }
 
@@ -1186,7 +1204,12 @@ async function snapshotDirectory(root: string): Promise<SkillsSnapshot> {
     const entries = await readdir(join(root, relative), { withFileTypes: true });
     for (const entry of entries) {
       const next = relative.length === 0 ? entry.name : `${relative}/${entry.name}`;
-      if (entry.isDirectory()) {
+      // A link is recorded, never followed: its target belongs to whoever
+      // created it, and descending would snapshot bytes this feature cannot
+      // write back as a link.
+      if (entry.isSymbolicLink()) {
+        symlinks.set(next, await readlink(join(root, next)));
+      } else if (entry.isDirectory()) {
         await walk(next);
       } else if (entry.isFile()) {
         files.set(next, await readFile(join(root, next)));
@@ -1194,12 +1217,35 @@ async function snapshotDirectory(root: string): Promise<SkillsSnapshot> {
     }
   };
   await walk("");
-  return { exists: true, files };
+  return { exists: true, files, symlinks };
+}
+
+/**
+ * The top-level directory names a snapshot holds. A top-level file is not a
+ * skill entry, so it contributes no name; a top-level symlink does.
+ */
+function snapshotSkillDirectories(snapshot: SkillsSnapshot): Set<string> {
+  const names = new Set<string>();
+  for (const relative of snapshot.files.keys()) {
+    const slash = relative.indexOf("/");
+    if (slash >= 0) names.add(relative.slice(0, slash));
+  }
+  for (const relative of snapshot.symlinks.keys()) {
+    const [directory] = relative.split("/");
+    if (directory !== undefined) names.add(directory);
+  }
+  return names;
 }
 
 async function restoreDirectory(root: string, snapshot: SkillsSnapshot): Promise<void> {
   await rm(root, { recursive: true, force: true });
   if (!snapshot.exists) return;
+  await mkdir(root, { recursive: true });
+  for (const [relative, target] of snapshot.symlinks) {
+    const path = join(root, relative);
+    await mkdir(dirname(path), { recursive: true });
+    await symlink(target, path);
+  }
   for (const [relative, bytes] of snapshot.files) {
     const path = join(root, relative);
     await mkdir(dirname(path), { recursive: true });
@@ -1211,6 +1257,12 @@ async function restoreDirectory(root: string, snapshot: SkillsSnapshot): Promise
 function restoreDirectorySync(root: string, snapshot: SkillsSnapshot): void {
   rmSync(root, { recursive: true, force: true });
   if (!snapshot.exists) return;
+  mkdirSync(root, { recursive: true });
+  for (const [relative, target] of snapshot.symlinks) {
+    const path = join(root, relative);
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(target, path);
+  }
   for (const [relative, bytes] of snapshot.files) {
     const path = join(root, relative);
     mkdirSync(dirname(path), { recursive: true });
@@ -1239,13 +1291,28 @@ interface SkillsInspection {
   contradictions: SkillContradiction[];
 }
 
+/**
+ * Whether one skills-root entry is a directory this feature may read a
+ * `SKILL.md` from. A symlink to a directory counts; a link to a file or a
+ * broken link does not.
+ */
+async function skillEntryIsDirectory(root: string, entry: Dirent): Promise<boolean> {
+  if (entry.isDirectory()) return true;
+  if (!entry.isSymbolicLink()) return false;
+  try {
+    return (await stat(join(root, entry.name))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function inspectSkills(root: string): Promise<SkillsInspection> {
   const managed = new Map<string, SkillFile>();
   const prepare = new Map<string, SkillFile>();
   const discover = new Map<string, SkillFile>();
   const unmanaged = new Map<string, SkillFile>();
 
-  let entries: import("node:fs").Dirent[];
+  let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
@@ -1257,10 +1324,12 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
   }
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!(await skillEntryIsDirectory(root, entry))) continue;
     const skill = await readSkillAt(root, entry.name);
     if (skill === undefined) continue;
-    if (skill.managed) {
+    // A link is the operator's entry, whatever marker its target carries:
+    // preparing owns only directories this feature created itself.
+    if (skill.managed && !entry.isSymbolicLink()) {
       managed.set(entry.name, skill);
       if (skill.family === "discover") discover.set(entry.name, skill);
       else prepare.set(entry.name, skill);
@@ -1538,16 +1607,22 @@ function parseStoredActivity(value: unknown): string[] | undefined {
 function parseStoredSnapshot(value: unknown): StoredSnapshot | null {
   const record = asObject(value);
   if (record === undefined) return null;
-  const files: [string, string][] = [];
-  if (Array.isArray(record.files)) {
-    for (const entry of record.files) {
+  const stringPairs = (entries: unknown): [string, string][] => {
+    if (!Array.isArray(entries)) return [];
+    const pairs: [string, string][] = [];
+    for (const entry of entries) {
       if (!Array.isArray(entry)) continue;
       const [relative, content] = entry;
       if (typeof relative !== "string" || typeof content !== "string") continue;
-      files.push([relative, content]);
+      pairs.push([relative, content]);
     }
-  }
-  return { exists: record.exists === true, files };
+    return pairs;
+  };
+  return {
+    exists: record.exists === true,
+    files: stringPairs(record.files),
+    symlinks: stringPairs(record.symlinks),
+  };
 }
 
 function parseStoredLane(value: unknown): StoredLane | undefined {
@@ -1787,6 +1862,7 @@ function captureSnapshot(snapshot: SkillsSnapshot): StoredSnapshot {
   return {
     exists: snapshot.exists,
     files: [...snapshot.files].map(([relative, bytes]) => [relative, bytes.toString("base64")]),
+    symlinks: [...snapshot.symlinks],
   };
 }
 
@@ -1794,6 +1870,7 @@ function restoreSnapshot(stored: StoredSnapshot): SkillsSnapshot {
   return {
     exists: stored.exists,
     files: new Map(stored.files.map(([relative, content]) => [relative, Buffer.from(content, "base64")])),
+    symlinks: new Map(stored.symlinks),
   };
 }
 
@@ -2912,7 +2989,7 @@ export function createApp(options: AppOptions) {
         question: stored.skillsPreparation.question,
         snapshot: stored.skillsPreparation.snapshot
           ? restoreSnapshot(stored.skillsPreparation.snapshot)
-          : { exists: false, files: new Map() },
+          : { exists: false, files: new Map(), symlinks: new Map() },
         unmanagedNames: new Set(stored.skillsPreparation.unmanagedNames ?? []),
       };
     }
@@ -4460,16 +4537,42 @@ export function createApp(options: AppOptions) {
     }
 
     // Unmanaged skills are outside this feature's write scope. Any byte
-    // change or deletion of one fails the run before success is reported.
+    // change, addition, or deletion inside one fails the run before success
+    // is reported, so both snapshots are reconciled in both directions.
     const changed = new Set<string>();
-    for (const relative of preparation.snapshot.files.keys()) {
+    const unmanagedDirectory = (relative: string): string | undefined => {
       const directory = relative.split("/")[0];
-      if (directory === undefined || !preparation.unmanagedNames.has(directory)) continue;
+      return directory !== undefined && preparation.unmanagedNames.has(directory)
+        ? directory
+        : undefined;
+    };
+    const paths = new Set([...preparation.snapshot.files.keys(), ...current.files.keys()]);
+    for (const relative of paths) {
+      const directory = unmanagedDirectory(relative);
+      if (directory === undefined) continue;
       const before = preparation.snapshot.files.get(relative);
       const after = current.files.get(relative);
       if (before === undefined || after === undefined || !before.equals(after)) {
         changed.add(directory);
       }
+    }
+    const links = new Set([
+      ...preparation.snapshot.symlinks.keys(),
+      ...current.symlinks.keys(),
+    ]);
+    for (const relative of links) {
+      const directory = unmanagedDirectory(relative);
+      if (directory === undefined) continue;
+      if (preparation.snapshot.symlinks.get(relative) !== current.symlinks.get(relative)) {
+        changed.add(directory);
+      }
+    }
+    // A top-level entry the run creates must be a prepared family skill; a new
+    // unmanaged skill directory is as far out of scope as an edit to one.
+    const beforeDirectories = snapshotSkillDirectories(preparation.snapshot);
+    for (const name of snapshotSkillDirectories(current)) {
+      if (beforeDirectories.has(name) || inspection.prepare.has(name)) continue;
+      changed.add(name);
     }
     for (const name of [...changed].sort()) {
       errors.push(`unmanaged skill "${name}" must not be changed by skills preparation.`);

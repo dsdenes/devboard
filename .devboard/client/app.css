@@ -9,9 +9,7 @@
   --surface-raised: #1c2128;
   --overlay: rgb(0 0 0 / 0.55);
   --foreground: #e6edf3;
-  --text: var(--foreground);
   --muted-foreground: #8b949e;
-  --muted: var(--muted-foreground);
   --border: #30363d;
   --border-subtle: #21262d;
   --border-strong: #6e7681;
@@ -48,9 +46,7 @@
   --surface-raised: #ffffff;
   --overlay: rgb(0 0 0 / 0.55);
   --foreground: #1f2328;
-  --text: var(--foreground);
   --muted-foreground: #57606a;
-  --muted: var(--muted-foreground);
   --border: #d0d7de;
   --border-subtle: #eaeef2;
   --border-strong: #6e7781;
@@ -97,6 +93,7 @@
   }
 }
 
+:root,
 :root[data-theme="dark"] {
   --flow-contract: #58a6ff;
   --flow-contract-surface: #16233a;
@@ -421,7 +418,7 @@ kbd {
   display: inline-flex;
   font-size: 10px;
   font-weight: 700;
-  gap: 3px;
+  gap: 2px;
   letter-spacing: 0.08em;
   line-height: 1.2;
   padding: 2px 6px;
@@ -750,6 +747,12 @@ kbd {
   color: var(--foreground);
 }
 
+.status-item--button:disabled {
+  cursor: default;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
 .status-divider {
   background: var(--border);
   flex: 0 0 1px;
@@ -868,21 +871,10 @@ kbd {
   align-items: flex-start;
   background: var(--surface-raised);
   border: 1px solid var(--border-strong);
-  border-left: 3px solid var(--accent);
   border-radius: 4px;
   display: flex;
   gap: 8px;
   padding: 6px 8px;
-}
-
-.notification[data-severity="error"] {
-  border-left-color: var(--error);
-}
-.notification[data-severity="warning"] {
-  border-left-color: var(--warning);
-}
-.notification[data-severity="success"] {
-  border-left-color: var(--success);
 }
 
 .notification__body {
@@ -922,7 +914,7 @@ kbd {
 .notification__link {
   color: var(--accent);
   font-size: 11px;
-  padding: 3px 2px;
+  padding: 2px;
   text-decoration: none;
   white-space: nowrap;
 }
@@ -1051,13 +1043,18 @@ kbd {
 
 .palette__item-reason {
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.45;
 }
 
 .palette__shortcut {
   color: var(--muted-foreground);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.4;
 }
 
 .palette__empty {
@@ -1922,32 +1919,48 @@ kbd {
   min-height: 0;
 }
 
-/* The skill header is the editor's chrome bar: one 34px `surface-raised` band
-   between the page title and the pane, so the 28px controls sit inside the row
-   instead of filling it. The path yields first; the state and controls never
-   shrink. */
+/* The skill header is the editor's chrome bar: one 44px `surface-raised` band
+   between the page title and the pane, so the path chip and the 28px controls
+   share the row with 8px above and below. The path yields first; the state and
+   controls never shrink. */
 .discover-skill__header {
   align-items: center;
   background: var(--surface-raised);
-  flex: 0 0 34px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 44px;
   flex-wrap: nowrap;
   gap: 12px;
-  height: 34px;
-  padding: 0 8px;
+  height: 44px;
+  padding: 0 12px;
 }
 
 .discover-skill__identity {
   align-items: center;
   display: flex;
   flex: 1 1 160px;
-  gap: 8px;
   min-width: 0;
 }
 
 .discover-skill__title {
+  align-items: center;
+  display: flex;
   line-height: 1.2;
   max-width: 100%;
   min-width: 0;
+}
+
+/* The relative path takes the shared inline-code chip, so a file path never
+   draws a second presentation, and ellipsizes inside the band. */
+.discover-skill__path {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discover-skill__name {
+  color: var(--foreground);
 }
 
 .discover-skill__file {
@@ -1955,43 +1968,43 @@ kbd {
   font-weight: 400;
 }
 
-/* The draft state pairs its 6px dot with the word on the baseline of the Save it
-   qualifies: success while the live file matches the draft, warning while the draft
-   differs, error while the live file is missing. The word carries the meaning and
-   the dot only colors it. */
+/* The draft state is one pill beside the Save it qualifies: its 6px dot and
+   word sit on the tinted surface of the state, so success, warning, and error
+   read at a glance while the word still carries the meaning. */
 .discover-skill__state {
   align-items: center;
-  color: var(--muted-foreground);
+  border-radius: 999px;
   display: inline-flex;
   flex: 0 0 auto;
   font-size: 11px;
-  gap: 4px;
+  font-weight: 500;
+  gap: 6px;
   line-height: 1.2;
+  padding: 2px 8px;
   white-space: nowrap;
 }
 
 .discover-skill__state-dot {
-  background: var(--success);
+  background: currentColor;
   border-radius: 999px;
   flex: 0 0 6px;
   height: 6px;
   width: 6px;
 }
 
+.discover-skill__state[data-state="clean"] {
+  background: var(--success-surface);
+  color: var(--success);
+}
+
 .discover-skill__state[data-state="dirty"] {
+  background: var(--warning-surface);
   color: var(--warning);
 }
 
-.discover-skill__state[data-state="dirty"] .discover-skill__state-dot {
-  background: var(--warning);
-}
-
 .discover-skill__state[data-state="missing"] {
+  background: var(--error-surface);
   color: var(--error);
-}
-
-.discover-skill__state[data-state="missing"] .discover-skill__state-dot {
-  background: var(--error);
 }
 
 .discover-skill__actions {
@@ -2414,7 +2427,8 @@ a.code-chip--link:focus-visible {
   border: 1px solid var(--border-subtle);
   border-radius: 3px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 11.5px;
+  line-height: 1.4;
   min-width: 46px;
   padding: 2px 6px;
   text-align: center;
@@ -2975,7 +2989,7 @@ a.code-chip--link:focus-visible {
 
 .issues-overview__repo {
   font-size: 11.5px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3053,7 +3067,7 @@ a.code-chip--link:focus-visible {
 }
 
 .issues-facts dt {
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -4025,7 +4039,7 @@ a.code-chip--link:focus-visible {
 }
 
 .scout-limits__title {
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -4035,7 +4049,7 @@ a.code-chip--link:focus-visible {
 
 .scout-limits__field {
   align-items: center;
-  color: var(--muted);
+  color: var(--muted-foreground);
   display: flex;
   font-size: 10px;
   font-weight: 700;

@@ -1,21 +1,15 @@
 import {
   createRepositoryGitHub,
-  isFullSha,
-  isSha,
   type GitHubRelease,
 } from "../../lib/github-release";
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
-  giteaClosingCommit,
-  giteaClosingCommits,
-  giteaJson,
   giteaListIssues,
   giteaListReleases,
-  repoPath,
   type FetchLike,
   type GiteaTarget,
 } from "../../lib/gitea";
-import { git } from "../repository";
+import { createGiteaVersionClient } from "../../lib/gitea-release";
 import { ghCommand } from "../scout/preflight";
 import { DESIGN_LABEL } from "./paths";
 
@@ -31,6 +25,8 @@ export interface DesignForgeIssue {
   url: string;
   state: "open" | "closed";
   createdAt: string;
+  /** When the issue was closed, or null while it is open. */
+  closedAt: string | null;
   body: string;
 }
 
@@ -107,9 +103,7 @@ function createDesignGitea(options: DesignForgeOptions): DesignForgeClient {
     ...(token === undefined ? {} : { token }),
   };
 
-  async function readJson(path: string): Promise<unknown> {
-    return await giteaJson<unknown>(target, path, undefined, options.giteaFetch);
-  }
+  const version = createGiteaVersionClient(target, options.repoDir, options.giteaFetch);
 
   return {
     async listIssues(): Promise<DesignForgeIssue[]> {
@@ -122,6 +116,7 @@ function createDesignGitea(options: DesignForgeOptions): DesignForgeClient {
           url: issue.url,
           state: issue.state,
           createdAt: issue.createdAt,
+          closedAt: issue.closedAt,
           body: issue.body,
         }));
     },
@@ -132,44 +127,11 @@ function createDesignGitea(options: DesignForgeOptions): DesignForgeClient {
     async listReleases(): Promise<DesignRelease[]> {
       return await giteaListReleases(target, options.giteaFetch);
     },
-    async closingCommit(issueNumber: number): Promise<string | null> {
-      return await giteaClosingCommit(target, issueNumber, options.giteaFetch);
-    },
-    async closingCommits(issueNumber: number): Promise<string[]> {
-      return await giteaClosingCommits(target, issueNumber, options.giteaFetch);
-    },
-    async resolveCommit(short: string): Promise<string | null> {
-      if (!isSha(short)) return null;
-      const local = git(options.repoDir, "rev-parse", "--verify", "--quiet", `${short}^{commit}`);
-      if (local.code === 0) {
-        const sha = local.stdout.split(/\s+/)[0] ?? "";
-        if (isFullSha(sha)) return sha;
-      }
-      const value = await readJson(`${repoPath(target)}/git/commits/${short}`);
-      if (typeof value === "object" && value !== null && "sha" in value) {
-        return typeof value.sha === "string" && isFullSha(value.sha) ? value.sha : null;
-      }
-      return null;
-    },
-    async containingReleaseTags(commit: string, releases: DesignRelease[]): Promise<string[]> {
-      const local = git(options.repoDir, "tag", "--contains", commit);
-      if (local.code === 0) {
-        const tags = new Set(local.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
-        const contained = releases
-          .filter((release) => tags.has(release.tag))
-          .map((release) => release.tag);
-        if (contained.length > 0) return contained;
-      }
-      const contained: string[] = [];
-      for (const release of releases) {
-        const value = await readJson(
-          `${repoPath(target)}/compare/${commit}...${encodeURIComponent(release.tag)}`,
-        );
-        if (typeof value !== "object" || value === null || !("status" in value)) continue;
-        if (value.status === "ahead" || value.status === "identical") contained.push(release.tag);
-      }
-      return contained;
-    },
+    closingCommit: (issueNumber) => version.closingCommit(issueNumber),
+    closingCommits: (issueNumber) => version.closingCommits(issueNumber),
+    resolveCommit: (short) => version.resolveCommit(short),
+    containingReleaseTags: (commit, releases) =>
+      version.containingReleaseTags(commit, releases),
   };
 }
 
@@ -214,7 +176,7 @@ export function createDesignForge(options: DesignForgeOptions): DesignForgeClien
         "--limit",
         "1000",
         "--json",
-        "number,title,url,state,createdAt,body",
+        "number,title,url,state,createdAt,closedAt,body",
       ]);
       const entries = parseIssues(text);
       if (entries === undefined) throw new Error("gh issue list did not print a JSON array");
@@ -242,6 +204,10 @@ export function createDesignForge(options: DesignForgeOptions): DesignForgeClien
           url: record.url,
           state: record.state.toLowerCase() === "closed" ? "closed" : "open",
           createdAt: record.createdAt,
+          closedAt:
+            typeof record.closedAt === "string" && record.closedAt.length > 0
+              ? record.closedAt
+              : null,
           body: record.body,
         });
       }

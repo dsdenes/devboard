@@ -23,6 +23,7 @@ import {
 } from "./forge";
 import { ghCommand } from "../scout/preflight";
 import { giteaBaseUrl } from "../../lib/forge";
+import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";
 import {
   CYCLE_ISSUE_LIMIT,
   SYNC_INTERVAL_MS,
@@ -88,6 +89,8 @@ export interface DesignWorkerOptions {
   environment?: Record<string, string | undefined>;
   syncMs?: number;
   cadenceMs?: number;
+  /** Test seam: the ticker interval; production ticks every 100 ms. */
+  tickMs?: number;
   readTimeoutMs?: number;
   timeoutMs?: number;
   now?: () => Date;
@@ -166,6 +169,7 @@ export class DesignWorker {
   readonly readTimeoutMs: number;
   readonly timeoutMs: number;
   private readonly cadenceOverrideMs: number | undefined;
+  private readonly tickMs: number;
   private readonly agentCommand: string;
   private readonly environment: Record<string, string | undefined>;
   private readonly clock: () => Date;
@@ -188,6 +192,8 @@ export class DesignWorker {
   private consuming = false;
   private syncing = false;
   private cycling = false;
+  /** The consecutive transient failures of the periodic read. */
+  private readonly retry = new ForgeReadRetry();
   private openTitles: string[] = [];
   private ticker: Timer | undefined;
   private lock: { release: () => void } | undefined;
@@ -211,6 +217,7 @@ export class DesignWorker {
     this.syncMs = Math.max(1000, options.syncMs ?? SYNC_INTERVAL_MS);
     this.cadenceOverrideMs =
       options.cadenceMs === undefined ? undefined : Math.max(0, options.cadenceMs);
+    this.tickMs = Math.max(1, options.tickMs ?? TICK_MS);
     this.readTimeoutMs = Math.max(1, options.readTimeoutMs ?? READ_TIMEOUT_MS);
     this.timeoutMs = Math.max(1000, options.timeoutMs ?? CYCLE_TIMEOUT_MS);
     this.environment = options.environment ?? process.env;
@@ -325,7 +332,7 @@ export class DesignWorker {
     if (this.ticker !== undefined) return;
     this.ticker = setInterval(() => {
       void this.tick();
-    }, TICK_MS);
+    }, this.tickMs);
   }
 
   private async tick(): Promise<void> {
@@ -339,6 +346,7 @@ export class DesignWorker {
       if (this.stopping || !this.state.enabled) return;
     }
     if (this.active !== undefined || this.starting) return;
+    if (this.state.sync.state !== "ok") return;
     if (this.manualCycles || this.cadenceRemaining()) return;
     await this.beginCycle();
   }
@@ -524,6 +532,7 @@ export class DesignWorker {
         return;
       }
       await this.applyRead(read);
+      this.retry.succeed();
       this.nextSyncAt = this.clock().getTime() + this.syncMs;
       this.publish();
     } finally {
@@ -532,8 +541,23 @@ export class DesignWorker {
   }
 
   private recordSyncFailure(detail: string): void {
+    const kind = classifyForgeReadFailure(detail);
+    if (kind === "transient") {
+      const delay = this.retry.record(kind);
+      if (delay !== null) {
+        // The retry window is not an alert: the last successful rows and
+        // time stay, and the state reads `stale` with no reason.
+        this.state.sync = { state: "stale", at: this.state.sync.at, error: null };
+        this.nextSyncAt = this.clock().getTime() + delay;
+        this.publish();
+        return;
+      }
+    } else {
+      this.retry.record(kind);
+    }
     this.state.sync = { state: "error", at: this.state.sync.at, error: detail };
-    this.state.lastError = isForgeRateLimited(detail) ? null : detail;
+    this.state.lastError =
+      kind === "rate-limit" || isForgeRateLimited(detail) ? null : detail;
     this.state.notice = `Could not read the forge: ${detail}`;
     this.nextSyncAt = this.clock().getTime() + this.syncMs;
     this.publish();
@@ -977,7 +1001,7 @@ export class DesignWorker {
     findings: DesignFinding[],
     record: (line: string) => void,
   ): Promise<string | null> {
-    if (this.state.sync.error !== null) {
+    if (this.state.sync.state !== "ok") {
       record("skipped filing: the last forge read failed; keeping the last known rows");
       return null;
     }

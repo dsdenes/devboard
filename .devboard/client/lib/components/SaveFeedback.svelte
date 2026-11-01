@@ -44,14 +44,13 @@
     animation: save-feedback-in 120ms ease-out;
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
-    border-left: 3px solid var(--success);
     border-radius: 6px;
-    color: var(--text);
+    color: var(--foreground);
     display: inline-flex;
     flex: 0 0 auto;
     gap: 6px;
     max-width: min(320px, 100%);
-    padding: 3px 8px;
+    padding: 2px 8px;
   }
 
   .save-feedback__icon {
@@ -70,14 +69,14 @@
     align-items: center;
     background: none;
     border: 0;
-    color: var(--muted);
+    color: var(--muted-foreground);
     cursor: pointer;
     display: flex;
     padding: 1px;
   }
 
   .save-feedback__close:hover {
-    color: var(--text);
+    color: var(--foreground);
   }
 
   @keyframes save-feedback-in {

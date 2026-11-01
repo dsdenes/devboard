@@ -9,24 +9,20 @@ import {
 } from "../../lib/github-release";
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
-  giteaClosingCommit,
-  giteaClosingCommits,
-  giteaJson,
   giteaListIssues,
   giteaListReleases,
-  repoPath,
   type FetchLike,
   type GiteaTarget,
 } from "../../lib/gitea";
-import { git } from "../repository";
+import { createGiteaVersionClient } from "../../lib/gitea-release";
 
 /**
  * The GitHub facts Auto Scout reads: every `scout` issue in any state, every
  * published release, and the commit that closed an issue. Reads go through the
  * operator's `gh` credential; commit resolution also uses the checkout, and
- * release containment prefers the checkout's tags before asking GitHub. The
- * release resolution itself lives in `lib/github-release.ts`, shared with the
- * watchdog activity page.
+ * release containment prefers the checkout's tags before asking the forge. The
+ * release resolution itself lives in `lib/github-release.ts` and
+ * `lib/gitea-release.ts`, shared with the watchdog activity page.
  */
 
 export {
@@ -36,6 +32,7 @@ export {
   isSha,
   parseJsonArray,
   parseJsonLines,
+  releaseAtClose,
   resolveShippedVersion,
   shaTokens,
   shippedVersion,
@@ -48,6 +45,8 @@ export interface ScoutGitHubIssue {
   url: string;
   state: "open" | "closed";
   createdAt: string;
+  /** When the issue was closed, or null while it is open. */
+  closedAt: string | null;
   body: string;
 }
 
@@ -150,9 +149,7 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
     ...(token === undefined ? {} : { token }),
   };
 
-  async function readJson(path: string): Promise<unknown> {
-    return await giteaJson<unknown>(target, path, undefined, options.giteaFetch);
-  }
+  const version = createGiteaVersionClient(target, options.repoDir, options.giteaFetch);
 
   return {
     async listIssues(): Promise<ScoutGitHubIssue[]> {
@@ -165,6 +162,7 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
           url: issue.url,
           state: issue.state,
           createdAt: issue.createdAt,
+          closedAt: issue.closedAt,
           body: issue.body,
         }));
     },
@@ -178,54 +176,14 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
       return await giteaListReleases(target, options.giteaFetch);
     },
 
-    async closingCommit(issueNumber: number): Promise<string | null> {
-      return await giteaClosingCommit(target, issueNumber, options.giteaFetch);
-    },
+    closingCommit: (issueNumber) => version.closingCommit(issueNumber),
 
-    async closingCommits(issueNumber: number): Promise<string[]> {
-      return await giteaClosingCommits(target, issueNumber, options.giteaFetch);
-    },
+    closingCommits: (issueNumber) => version.closingCommits(issueNumber),
 
-    async resolveCommit(short: string): Promise<string | null> {
-      if (!isSha(short)) return null;
-      const local = git(options.repoDir, "rev-parse", "--verify", "--quiet", `${short}^{commit}`);
-      if (local.code === 0) {
-        const sha = local.stdout.split(/\s+/)[0] ?? "";
-        if (isFullSha(sha)) return sha;
-      }
-      const value = await readJson(`${repoPath(target)}/git/commits/${short}`);
-      if (typeof value === "object" && value !== null && "sha" in value) {
-        return typeof value.sha === "string" && isFullSha(value.sha) ? value.sha : null;
-      }
-      return null;
-    },
+    resolveCommit: (short) => version.resolveCommit(short),
 
-    async containingReleaseTags(
-      commit: string,
-      releases: ScoutRelease[],
-    ): Promise<string[]> {
-      const local = git(options.repoDir, "tag", "--contains", commit);
-      if (local.code === 0) {
-        const tags = new Set(
-          local.stdout.split("\n").map((line) => line.trim()).filter(Boolean),
-        );
-        const contained = releases
-          .filter((release) => tags.has(release.tag))
-          .map((release) => release.tag);
-        if (contained.length > 0) return contained;
-      }
-      const contained: string[] = [];
-      for (const release of releases) {
-        const value = await readJson(
-          `${repoPath(target)}/compare/${commit}...${encodeURIComponent(release.tag)}`,
-        );
-        if (typeof value !== "object" || value === null || !("status" in value)) continue;
-        if (value.status === "ahead" || value.status === "identical") {
-          contained.push(release.tag);
-        }
-      }
-      return contained;
-    },
+    containingReleaseTags: (commit, releases) =>
+      version.containingReleaseTags(commit, releases),
   };
 }
 
@@ -270,7 +228,7 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
         "--limit",
         "1000",
         "--json",
-        "number,title,url,state,createdAt,body",
+        "number,title,url,state,createdAt,closedAt,body",
       ]);
       const entries = parseIssues(text);
       if (entries === undefined) throw new Error("gh issue list did not print a JSON array");
@@ -299,6 +257,10 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
           url: record.url,
           state,
           createdAt: record.createdAt,
+          closedAt:
+            typeof record.closedAt === "string" && record.closedAt.length > 0
+              ? record.closedAt
+              : null,
           body: record.body,
         });
       }

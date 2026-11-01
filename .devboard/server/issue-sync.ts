@@ -87,6 +87,8 @@ export class TrackerSync {
   private freshStart: string | null = null;
   private error: string | null = null;
   private inFlight: Promise<TrackerSyncResult> | undefined;
+  /** A forge this reader cannot read, and the repository it named. */
+  private unsupported: { detail: string; repository: string } | null = null;
 
   constructor(options: TrackerSyncOptions) {
     this.repository = options.repository;
@@ -110,6 +112,15 @@ export class TrackerSync {
   }
 
   /**
+   * The named reason the origin's forge is never read, or null when the origin
+   * is readable. The sync never retries it for the same repository, so a GitLab
+   * origin costs one probe instead of one `gh` read every sync interval.
+   */
+  get unsupportedDetail(): string | null {
+    return this.unsupported?.detail ?? null;
+  }
+
+  /**
    * When the read behind `openIssues` began. A run that started later was not
    * part of its answer, so the caller may neither hide nor stop it on that
    * read alone.
@@ -121,11 +132,26 @@ export class TrackerSync {
   /** Reads the tracker once; a read already in flight is joined. */
   sync(): Promise<TrackerSyncResult> {
     if (this.inFlight !== undefined) return this.inFlight;
+    const terminal = this.terminalResult();
+    if (terminal !== null) return Promise.resolve(terminal);
     const task = this.readOnce().finally(() => {
       if (this.inFlight === task) this.inFlight = undefined;
     });
     this.inFlight = task;
     return task;
+  }
+
+  /**
+   * The settled answer for a forge already proven unreadable. A repository the
+   * origin now names differently is a new question, so it is read again.
+   */
+  private terminalResult(): TrackerSyncResult | null {
+    if (this.unsupported === null) return null;
+    if (this.unsupported.repository !== this.repositoryName()) {
+      this.unsupported = null;
+      return null;
+    }
+    return { fresh: false, issues: this.issues, error: this.unsupported.detail, startedAt: null };
   }
 
   private async readOnce(): Promise<TrackerSyncResult> {
@@ -162,6 +188,10 @@ export class TrackerSync {
         this.lastSyncAt = this.now().toISOString();
         this.error = null;
         return { fresh: false, issues: this.issues, error: null, startedAt };
+      }
+      case "unsupported": {
+        this.unsupported = { detail: result.detail, repository };
+        return this.failed(result.detail, startedAt);
       }
       default:
         return this.failed(result.detail, startedAt);

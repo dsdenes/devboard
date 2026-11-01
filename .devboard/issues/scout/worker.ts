@@ -24,6 +24,7 @@ import {
 import { ghCommand } from "./preflight";
 import { originForge } from "../repository";
 import { giteaBaseUrl } from "../../lib/forge";
+import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";
 import {
   HOUR_MS,
   SCAN_TIMEOUT_MS,
@@ -103,6 +104,8 @@ export interface ScoutWorkerOptions {
   syncMs?: number;
   /** Test seam: replace the persisted cadence with a shorter interval. */
   cadenceMs?: number;
+  /** Test seam: the ticker interval; production ticks every 100 ms. */
+  tickMs?: number;
   /**
    * One periodic read and the release resolution it starts are abandoned
    * after this many milliseconds; the sync records a failure and the next
@@ -232,6 +235,7 @@ export class ScoutWorker {
   readonly syncMs: number;
   readonly readTimeoutMs: number;
   private readonly cadenceOverrideMs: number | undefined;
+  private readonly tickMs: number;
   readonly timeoutMs: number;
   private readonly agentCommand: string;
   private readonly environment: Record<string, string | undefined>;
@@ -253,6 +257,8 @@ export class ScoutWorker {
   private consuming = false;
   /** One GitHub read at a time. */
   private syncing = false;
+  /** The consecutive transient failures of the periodic read. */
+  private readonly retry = new ForgeReadRetry();
   /** A scan is reading and filing; the periodic read waits for it. */
   private filing = false;
   /** The open titles from the last successful read, for deduplication. */
@@ -268,6 +274,7 @@ export class ScoutWorker {
     this.syncMs = Math.max(1000, options.syncMs ?? SYNC_INTERVAL_MS);
     this.cadenceOverrideMs =
       options.cadenceMs === undefined ? undefined : Math.max(0, options.cadenceMs);
+    this.tickMs = Math.max(1, options.tickMs ?? TICK_MS);
     this.readTimeoutMs = Math.max(1, options.readTimeoutMs ?? READ_TIMEOUT_MS);
     this.timeoutMs = Math.max(1000, options.timeoutMs ?? SCAN_TIMEOUT_MS);
     this.agentCommand =
@@ -297,6 +304,11 @@ export class ScoutWorker {
 
   get scanning(): boolean {
     return this.active !== undefined;
+  }
+
+  /** Test seam: a periodic read is applying its outcome. */
+  get readInFlight(): boolean {
+    return this.syncing;
   }
 
   /** Takes the repository lock and publishes a fresh `idle` cycle. */
@@ -414,7 +426,7 @@ export class ScoutWorker {
     if (this.ticker !== undefined) return;
     this.ticker = setInterval(() => {
       void this.tick();
-    }, TICK_MS);
+    }, this.tickMs);
   }
 
   private async tick(): Promise<void> {
@@ -437,6 +449,11 @@ export class ScoutWorker {
       return;
     }
     await this.beginScan();
+  }
+
+  /** Test seam: one tick against the injected clock, without the ticker. */
+  async tickNow(): Promise<void> {
+    await this.tick();
   }
 
   /** A read that has not succeeded for two intervals is no longer trusted. */
@@ -640,6 +657,7 @@ export class ScoutWorker {
         this.recordSyncFailure(detailOf(error));
         return;
       }
+      this.retry.succeed();
       this.nextSyncAt = this.clock().getTime() + this.syncMs;
       this.publish();
       if (this.state.sync.state === "ok" && this.capacity().batch > 0) {
@@ -651,11 +669,26 @@ export class ScoutWorker {
   }
 
   private recordSyncFailure(detail: string): void {
+    const kind = classifyForgeReadFailure(detail);
+    if (kind === "transient") {
+      const delay = this.retry.record(kind);
+      if (delay !== null) {
+        // The retry window is not an alert: the last successful rows and
+        // time stay, and the state reads `stale` with no reason.
+        this.state.sync = { state: "stale", at: this.state.sync.at, error: null };
+        this.nextSyncAt = this.clock().getTime() + delay;
+        this.publish();
+        return;
+      }
+    } else {
+      this.retry.record(kind);
+    }
     this.state.sync = { state: "error", at: this.state.sync.at, error: detail };
     // A spent GitHub request budget is environmental and clears itself. The
     // reason stays in the sync banner, but a rate limit never raises the
     // global error notification the operator can file as a harness issue.
-    this.state.lastError = isGitHubRateLimited(detail) ? null : detail;
+    this.state.lastError =
+      kind === "rate-limit" || isGitHubRateLimited(detail) ? null : detail;
     this.state.notice = `Could not read the forge: ${detail}`;
     this.state.nextAttemptAt = null;
     this.nextSyncAt = this.clock().getTime() + this.syncMs;
@@ -713,6 +746,12 @@ export class ScoutWorker {
         if (resolution.version !== null) {
           row.version = resolution.version;
           row.versionError = null;
+          if (resolution.inferred) {
+            this.log(
+              `#${row.number}: no closing commit; read ${resolution.version} from the release ` +
+                "published closest to the close",
+            );
+          }
         } else {
           this.log(`#${row.number}: no shipped version: ${resolution.error ?? "no reason"}`);
         }
@@ -747,7 +786,7 @@ export class ScoutWorker {
         timedOut.promise,
       ]);
     } catch (error) {
-      return { version: null, error: detailOf(error) };
+      return { version: null, error: detailOf(error), inferred: false };
     } finally {
       clearTimeout(timer);
     }

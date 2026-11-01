@@ -4,9 +4,8 @@ import { join, resolve } from "node:path";
 import { ghCommand } from "../issues/scout/preflight";
 import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
+import { ForgeReadRetry, classifyForgeReadFailure } from "../lib/forge-read-retry";
 import {
-  giteaClosingCommit,
-  giteaClosingCommits,
   giteaJson,
   giteaListReleases,
   giteaOrigin,
@@ -15,7 +14,8 @@ import {
   type FetchLike,
   type GiteaTarget,
 } from "../lib/gitea";
-import { git, originForge } from "../issues/repository";
+import { createGiteaVersionClient } from "../lib/gitea-release";
+import { originForge } from "../issues/repository";
 import {
   createRepositoryGitHub,
   shippedVersion,
@@ -169,11 +169,19 @@ function createWatchdogGiteaReader(
           undefined,
           options.fetchImpl,
         );
-        const state =
-          typeof issue === "object" && issue !== null && "state" in issue
-            ? issue.state
-            : undefined;
-        if (state !== "closed") {
+        const record = (typeof issue === "object" && issue !== null ? issue : {}) as Record<
+          string,
+          unknown
+        >;
+        const createdAt =
+          typeof record.created_at === "string" && record.created_at.length > 0
+            ? record.created_at
+            : null;
+        const closedAt =
+          typeof record.closed_at === "string" && record.closed_at.length > 0
+            ? record.closed_at
+            : null;
+        if (record.state !== "closed") {
           facts.push({ url, state: "pending", version: null });
           continue;
         }
@@ -182,35 +190,9 @@ function createWatchdogGiteaReader(
           published = await giteaListReleases(target, options.fetchImpl);
           releases.set(locator.repository, published);
         }
-        const client = {
-          async closingCommit(issueNumber: number): Promise<string | null> {
-            return await giteaClosingCommit(target, issueNumber, options.fetchImpl);
-          },
-          async closingCommits(issueNumber: number): Promise<string[]> {
-            return await giteaClosingCommits(target, issueNumber, options.fetchImpl);
-          },
-          async resolveCommit(short: string): Promise<string | null> {
-            if (!/^[0-9a-fA-F]{7,40}$/.test(short)) return null;
-            const local = git(options.repoDir, "rev-parse", "--verify", "--quiet", `${short}^{commit}`);
-            if (local.code !== 0) return null;
-            const sha = local.stdout.split(/\s+/)[0] ?? "";
-            return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
-          },
-          async containingReleaseTags(
-            commit: string,
-            published: GitHubRelease[],
-          ): Promise<string[]> {
-            const local = git(options.repoDir, "tag", "--contains", commit);
-            if (local.code !== 0) return [];
-            const tags = new Set(
-              local.stdout.split("\n").map((line) => line.trim()).filter(Boolean),
-            );
-            return published.filter((release) => tags.has(release.tag)).map((release) => release.tag);
-          },
-        };
         const version = await shippedVersion(
-          { number: locator.number, state: "closed" },
-          client,
+          { number: locator.number, state: "closed", createdAt, closedAt },
+          createGiteaVersionClient(target, options.repoDir, options.fetchImpl),
           published,
         );
         facts.push({ url, state: "implemented", version });
@@ -255,7 +237,7 @@ export function createWatchdogGitHubReader(
           throw new Error(`not a GitHub issue URL: ${url}`);
         }
         const github = client(locator.repository);
-        const state = await github.issueState(locator.number);
+        const { state, createdAt, closedAt } = await github.issueTimes(locator.number);
         if (state === "open") {
           facts.push({ url, state: "pending", version: null });
           continue;
@@ -266,7 +248,7 @@ export function createWatchdogGitHubReader(
           releases.set(locator.repository, published);
         }
         const version = await shippedVersion(
-          { number: locator.number, state: "closed" },
+          { number: locator.number, state: "closed", createdAt, closedAt },
           github,
           published,
         );
@@ -372,6 +354,10 @@ export class WatchdogActivity implements AgentAdapter {
   private lastStarted: number | null = null;
   private lastSuccess: number | null = null;
   private lastFailure: string | null = null;
+  /** When the next projection read is due; null means the normal cadence. */
+  private nextAttemptAt: number | null = null;
+  /** The consecutive transient failures of the projection read. */
+  private readonly retry = new ForgeReadRetry();
   private inFlight: Promise<void> | null = null;
   private timer: Timer | undefined;
   private timerGate: AgentSnapshotInput["timer"] = null;
@@ -456,8 +442,12 @@ export class WatchdogActivity implements AgentAdapter {
   private schedule(): void {
     if (this.inFlight !== null) return;
     const now = this.now();
-    if (this.lastStarted !== null && now - this.lastStarted < this.intervalMs) return;
+    if (this.lastStarted !== null) {
+      const due = this.nextAttemptAt ?? this.lastStarted + this.intervalMs;
+      if (now < due) return;
+    }
     this.lastStarted = now;
+    this.nextAttemptAt = null;
     this.inFlight = this.refresh().finally(() => {
       this.inFlight = null;
     });
@@ -481,9 +471,21 @@ export class WatchdogActivity implements AgentAdapter {
       for (const [url, value] of next) this.facts.set(url, value);
       this.lastSuccess = this.now();
       this.lastFailure = null;
+      this.nextAttemptAt = null;
+      this.retry.succeed();
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      this.lastFailure = firstLineOf(reason);
+      const reason = firstLineOf(error instanceof Error ? error.message : String(error));
+      const kind = classifyForgeReadFailure(reason);
+      const delay = this.retry.record(kind);
+      if (kind === "transient" && delay !== null) {
+        // The retry window is not an alert: the last known rows and read time
+        // stay, and the sync reads `stale` with no reason.
+        this.lastFailure = null;
+        this.nextAttemptAt = this.now() + delay;
+      } else {
+        this.lastFailure = reason;
+        this.nextAttemptAt = null;
+      }
     }
     if (this.shouldPersistProjection()) this.persistProjection();
   }
@@ -528,6 +530,7 @@ export class WatchdogActivity implements AgentAdapter {
     if (this.lastFailure !== null) {
       return { state: "error", at, error: this.lastFailure };
     }
+    if (this.retry.failures > 0) return { state: "stale", at, error: null };
     if (this.lastSuccess === null) return { state: "stale", at: null, error: null };
     if (now - this.lastSuccess > this.staleAfterMs) {
       return { state: "stale", at, error: null };

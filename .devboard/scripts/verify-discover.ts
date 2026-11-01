@@ -2,13 +2,17 @@
 /**
  * The deterministic Discover gate. It builds the client, starts source and
  * installed dashboards against fixture hosts with the stub ACP peer, and drives
- * headless Chrome. It proves the seven-entry Discovery group, one complete prompt
+ * headless Chrome. It proves the six-entry Discovery group, one complete prompt
  * per card, independent triggers with per-agent publication, the one-at-a-time
  * rule, the fixed Run all order and its stop-at-first-failure rule, prompt chat
  * and save on a source checkout, and the read-only prompt of an installed host.
  *
  * Every fixture, state directory, browser profile, and log lives under
  * `.devboard/.tmp`. It never contacts a forge, npm, or a real model.
+ *
+ * `DISCOVER_VERIFY_ONLY=<scenario>[,<scenario>]` narrows a pass to the named
+ * scenarios, so a failure is diagnosed by rerunning its scenario instead of the
+ * whole suite; `DISCOVER_VERIFY_KEEP=1` keeps the fixtures for inspection.
  */
 
 import { spawn } from "node:child_process";
@@ -51,6 +55,46 @@ const PROMPT_FILES = AGENTS.map((agent) =>
 );
 
 const BOOKKEEPING = new Set([".omp/discover/manifest.json", ".omp/discover/decisions.json"]);
+
+/**
+ * The scenarios this gate proves, in run order, under the names their `PASS`
+ * lines carry. `DISCOVER_VERIFY_ONLY` narrows a rerun to the named ones, so a
+ * diagnosis never costs the whole suite.
+ */
+const SCENARIOS = [
+  "discovery-group",
+  "per-agent-prompts",
+  "run-all-order",
+  "per-agent-publication",
+  "contribution-page",
+  "contribution-no-forge",
+  "one-at-a-time",
+  "run-all-halt",
+  "prompt-chat",
+  "prompt-save",
+  "installed-read-only",
+] as const;
+
+type Scenario = (typeof SCENARIOS)[number];
+
+/** The scenarios `DISCOVER_VERIFY_ONLY` selects; an empty set means every one. */
+function scenarioSelection(): Set<Scenario> {
+  const requested = (process.env.DISCOVER_VERIFY_ONLY ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  const selected = new Set<Scenario>();
+  for (const name of requested) {
+    if (!(SCENARIOS as readonly string[]).includes(name)) {
+      console.error(
+        `verify:discover: unknown scenario ${name}; choose from ${SCENARIOS.join(", ")}`,
+      );
+      process.exit(1);
+    }
+    selected.add(name as Scenario);
+  }
+  return selected;
+}
 
 function check(condition: boolean, message: string, evidence?: unknown): asserts condition {
   if (!condition) {
@@ -495,6 +539,10 @@ async function waitStatus(devtools: Devtools, agent: string, state: string): Pro
 }
 
 const root = await makeRoot("verify-discover");
+const only = scenarioSelection();
+/** True when this pass runs the scenario: no filter, or the filter names it. */
+const selected = (...names: Scenario[]): boolean =>
+  only.size === 0 || names.some((name) => only.has(name));
 const pids: number[] = [];
 let chromePid = 0;
 let devtools: Devtools | undefined;
@@ -507,7 +555,7 @@ try {
     "verify:discover: the build produced dist/index.html",
   );
 
-  /* --- source checkout: the seven cards and their independent triggers --- */
+  /* --- source checkout: the six cards and their independent triggers --- */
   const source = await makeSourceHost(root, "source-host");
   const sourceState = join(source, ".devboard", ".tmp", "state");
   const sourceLog = join(root, "source-acp.log");
@@ -555,31 +603,32 @@ try {
     15_000,
   );
 
-  /* 1. The Discovery group holds exactly seven entries with the declared ids. */
-  const entries = await devtools.evaluate(`(() => [
+  if (selected("discovery-group")) {
+    /* 1. The Discovery group holds exactly seven entries with the declared ids. */
+    const entries = await devtools.evaluate(`(() => [
     ...document.querySelectorAll('[data-testid="discover-agents"] [data-testid="discover-agent-tab"]')
   ].map((button) => ({
     agent: button.getAttribute('data-agent') ?? '',
     label: button.querySelector('.sidebar-item__label')?.textContent?.trim() ?? '',
   })))()`);
-  check(
-    JSON.stringify(entries) ===
-      JSON.stringify(AGENTS.map((agent) => ({ agent: agent.id, label: agent.label }))),
-    "the Discovery group is not exactly the seven declared entries",
-    entries,
-  );
-  // Before any publication the always-present section entries are the three
-  // established pages; the six skill entries arrive with their artifacts.
-  const sectionsBefore = await devtools.evaluate(`(() => [
+    check(
+      JSON.stringify(entries) ===
+        JSON.stringify(AGENTS.map((agent) => ({ agent: agent.id, label: agent.label }))),
+      "the Discovery group is not exactly the seven declared entries",
+      entries,
+    );
+    // Before any publication the always-present section entries are the three
+    // established pages; the six skill entries arrive with their artifacts.
+    const sectionsBefore = await devtools.evaluate(`(() => [
     ...document.querySelectorAll('[data-testid="discover-tab"]')
   ].map((button) => button.getAttribute('data-tab') ?? ''))()`);
-  check(
-    JSON.stringify(sectionsBefore) === JSON.stringify(["overview", "glossary", "contribution"]),
-    "the existing Discover section entries changed",
-    sectionsBefore,
-  );
-  // The published pages lead the sidebar; the agent triggers follow them.
-  const leadingGroup = await devtools.evaluate(`(() => {
+    check(
+      JSON.stringify(sectionsBefore) === JSON.stringify(["overview", "glossary", "contribution"]),
+      "the existing Discover section entries changed",
+      sectionsBefore,
+    );
+    // The published pages lead the sidebar; the agent triggers follow them.
+    const leadingGroup = await devtools.evaluate(`(() => {
     const group = document.querySelector('[data-testid="sidebar"] .sidebar-group');
     if (group === null) return null;
     return {
@@ -588,605 +637,666 @@ try {
         .map((button) => button.getAttribute('data-tab') ?? ''),
     };
   })()`);
-  check(
-    JSON.stringify(leadingGroup) ===
-      JSON.stringify({
-        label: "Discover sections",
-        tabs: ["overview", "glossary", "contribution"],
-      }),
-    "Overview, Glossary, and Contribution are not the first sidebar entries",
-    leadingGroup,
-  );
-  console.log("PASS discovery-group");
+    check(
+      JSON.stringify(leadingGroup) ===
+        JSON.stringify({
+          label: "Discover sections",
+          tabs: ["overview", "glossary", "contribution"],
+        }),
+      "Overview, Glossary, and Contribution are not the first sidebar entries",
+      leadingGroup,
+    );
+    console.log("PASS discovery-group");
+  }
 
-  /* 2. Each card shows, in a source checkout, its own prompt and no command chip. */
-  const expectedPrompts = new Map(
-    AGENTS.map((agent) => {
-      const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
-      return [agent.id, readFileSync(join(harnessRoot, "prompts", file), "utf8")];
-    }),
-  );
-  for (const agent of AGENTS) {
-    await openCard(devtools, agent.id);
-    check(
-      (await countOf(devtools, "discover-agent-prompt-command")) === 0,
-      `the ${agent.id} card still shows its command chip`,
-      await text(devtools, "discover-agent-prompt-command"),
+  if (selected("per-agent-prompts")) {
+    /* 2. Each card shows, in a source checkout, its own prompt and no command chip. */
+    const expectedPrompts = new Map(
+      AGENTS.map((agent) => {
+        const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
+        return [agent.id, readFileSync(join(harnessRoot, "prompts", file), "utf8")];
+      }),
     );
-    check(
-      (await valueOf(devtools, "discover-agent-prompt-editor")) ===
-        expectedPrompts.get(agent.id),
-      `the ${agent.id} editor does not start at the prompt bytes`,
-    );
-    for (const testid of [
-      "discover-agent-prompt-message",
-      "discover-agent-prompt-send",
-      "discover-agent-prompt-save",
-    ]) {
+    for (const agent of AGENTS) {
+      await openCard(devtools, agent.id);
       check(
-        (await countOf(devtools, testid)) === 1,
-        `${testid} is missing on the ${agent.id} card`,
+        (await countOf(devtools, "discover-agent-prompt-command")) === 0,
+        `the ${agent.id} card still shows its command chip`,
+        await text(devtools, "discover-agent-prompt-command"),
+      );
+      check(
+        (await valueOf(devtools, "discover-agent-prompt-editor")) ===
+          expectedPrompts.get(agent.id),
+        `the ${agent.id} editor does not start at the prompt bytes`,
+      );
+      for (const testid of [
+        "discover-agent-prompt-message",
+        "discover-agent-prompt-send",
+        "discover-agent-prompt-save",
+      ]) {
+        check(
+          (await countOf(devtools, testid)) === 1,
+          `${testid} is missing on the ${agent.id} card`,
+        );
+      }
+      check(
+        (await countOf(devtools, "discover-agent-prompt-reset")) === 0,
+        `the removed Reset control is still rendered on the ${agent.id} card`,
+      );
+      check(
+        (await countOf(devtools, "discover-agent-activity")) === 0,
+        `the ${agent.id} card still renders an activity log`,
       );
     }
-    check(
-      (await countOf(devtools, "discover-agent-prompt-reset")) === 0,
-      `the removed Reset control is still rendered on the ${agent.id} card`,
-    );
-    check(
-      (await countOf(devtools, "discover-agent-activity")) === 0,
-      `the ${agent.id} card still renders an activity log`,
-    );
+    // No card's editor holds another agent's prompt.
+    const shown = new Set<string>();
+    for (const agent of AGENTS) {
+      await openCard(devtools, agent.id);
+      shown.add(await valueOf(devtools, "discover-agent-prompt-editor"));
+    }
+    check(shown.size === 7, "two cards share one prompt text");
+    console.log("PASS per-agent-prompts");
   }
-  // No card's editor holds another agent's prompt.
-  const shown = new Set<string>();
-  for (const agent of AGENTS) {
-    await openCard(devtools, agent.id);
-    shown.add(await valueOf(devtools, "discover-agent-prompt-editor"));
-  }
-  check(shown.size === 7, "two cards share one prompt text");
-  console.log("PASS per-agent-prompts");
 
-  /* 3. Run all runs the seven in the fixed order and publishes each slice. */
-  check(
-    (await countOf(devtools, "discover-run-all")) === 0,
-    "the sidebar still carries a Run all control",
-  );
-  await openOverview(devtools);
-  check(
-    (await countOf(devtools, "discover-start")) === 1,
-    "the Overview page does not carry the Run all control",
-  );
-  await click(devtools, "discover-start");
-  await waitFor(
-    async () =>
-      (await devtools.evaluate(`(() => {
+  if (selected("run-all-order")) {
+    /* 3. Run all runs the seven in the fixed order and publishes each slice. */
+    check(
+      (await countOf(devtools, "discover-run-all")) === 0,
+      "the sidebar still carries a Run all control",
+    );
+    await openOverview(devtools);
+    check(
+      (await countOf(devtools, "discover-start")) === 1,
+      "the Overview page does not carry the Run all control",
+    );
+    await click(devtools, "discover-start");
+    await waitFor(
+      async () =>
+        (await devtools.evaluate(`(() => {
         const tabs = [...document.querySelectorAll('[data-testid="discover-agent-tab"]')];
         return tabs.every((tab) => tab.getAttribute('data-state') === 'succeeded');
       })()`)) === true
-        ? true
-        : undefined,
-    "all seven agents to succeed",
-    120_000,
-  );
-  const orderedPrompts = logPrompts(sourceLog);
-  check(
-    JSON.stringify(orderedPrompts.map((prompt) => prompt.split(" ")[0])) ===
-      JSON.stringify([
-        "/discover-sheet",
-        "/discover-glossary",
-        "/discover-testing-strategy",
-        "/discover-naming-conventions",
-        "/discover-coding-conventions",
-        "/discover-architecture-boundaries",
-        "/discover-contribution",
-      ]),
-    "Run all did not run the seven in the fixed order",
-    orderedPrompts.map((prompt) => prompt.split(" ")[0]),
-  );
-  check(
-    existsSync(join(source, ".omp", "discover", "sheet.json")) &&
-      existsSync(join(source, ".omp", "discover", "glossary", "orders.glossary.yaml")) &&
-      existsSync(join(source, ".omp", "skills", "discover-glossary", "SKILL.md")) &&
-      existsSync(join(source, ".omp", "discover", "contribution.json")) &&
-      existsSync(join(source, ".omp", "skills", "discover-contribution", "SKILL.md")),
-    "Run all did not publish its slices",
-  );
-  // Every established Discover page keeps its entry and its panel.
-  const sections = await devtools.evaluate(`(() => [
+          ? true
+          : undefined,
+      "all seven agents to succeed",
+      120_000,
+    );
+    const orderedPrompts = logPrompts(sourceLog);
+    check(
+      JSON.stringify(orderedPrompts.map((prompt) => prompt.split(" ")[0])) ===
+        JSON.stringify([
+          "/discover-sheet",
+          "/discover-glossary",
+          "/discover-testing-strategy",
+          "/discover-naming-conventions",
+          "/discover-coding-conventions",
+          "/discover-architecture-boundaries",
+          "/discover-contribution",
+        ]),
+      "Run all did not run the seven in the fixed order",
+      orderedPrompts.map((prompt) => prompt.split(" ")[0]),
+    );
+    check(
+      existsSync(join(source, ".omp", "discover", "sheet.json")) &&
+        existsSync(join(source, ".omp", "discover", "glossary", "orders.glossary.yaml")) &&
+        existsSync(join(source, ".omp", "skills", "discover-glossary", "SKILL.md")) &&
+        existsSync(join(source, ".omp", "discover", "contribution.json")) &&
+        existsSync(join(source, ".omp", "skills", "discover-contribution", "SKILL.md")),
+      "Run all did not publish its slices",
+    );
+    // Every established Discover page keeps its entry and its panel.
+    const sections = await devtools.evaluate(`(() => [
     ...document.querySelectorAll('[data-testid="discover-tab"]')
   ].map((button) => button.getAttribute('data-tab') ?? ''))()`);
-  check(
-    JSON.stringify(sections) ===
-      JSON.stringify([
-        "overview",
-        "glossary",
-        "contribution",
-        "testing-strategy",
-        "naming-conventions",
-        "coding-conventions",
-        "architecture-boundaries",
-        "glossary-skill",
-        "contribution-skill",
-      ]),
-    "the existing Discover section entries changed after publication",
-    sections,
-  );
-  for (const tab of [
-    "overview",
-    "glossary",
-    "contribution",
-    "testing-strategy",
-    "naming-conventions",
-    "coding-conventions",
-    "architecture-boundaries",
-    "glossary-skill",
-    "contribution-skill",
-  ]) {
-    const opened = await devtools.evaluate(`(() => {
+    check(
+      JSON.stringify(sections) ===
+        JSON.stringify([
+          "overview",
+          "glossary",
+          "contribution",
+          "testing-strategy",
+          "naming-conventions",
+          "coding-conventions",
+          "architecture-boundaries",
+          "glossary-skill",
+          "contribution-skill",
+        ]),
+      "the existing Discover section entries changed after publication",
+      sections,
+    );
+    for (const tab of [
+      "overview",
+      "glossary",
+      "contribution",
+      "testing-strategy",
+      "naming-conventions",
+      "coding-conventions",
+      "architecture-boundaries",
+      "glossary-skill",
+      "contribution-skill",
+    ]) {
+      const opened = await devtools.evaluate(`(() => {
       const button = document.querySelector('[data-testid="discover-tab"][data-tab="${tab}"]');
       if (button === null) return false;
       button.click();
       return true;
     })()`);
-    check(opened === true, `the ${tab} page entry is missing after publication`);
-    await waitFor(
-      async () =>
-        (await attribute(devtools, "discover-panel", "data-tab")) === tab ? true : undefined,
-      `the ${tab} panel`,
-      15_000,
-    );
+      check(opened === true, `the ${tab} page entry is missing after publication`);
+      await waitFor(
+        async () =>
+          (await attribute(devtools, "discover-panel", "data-tab")) === tab ? true : undefined,
+        `the ${tab} panel`,
+        15_000,
+      );
+    }
+    console.log("PASS run-all-order");
   }
-  console.log("PASS run-all-order");
 
-  /* 4. Each trigger publishes only its own slice. */
-  for (const agent of AGENTS) {
-    await openCard(devtools, agent.id);
-    const before = ompBytes(source);
-    const promptsBefore = logPrompts(sourceLog).length;
-    await click(devtools, "discover-agent-start");
-    // The card still shows the previous success for a moment; the peer's own
-    // prompt line is the first proof this trigger started.
-    await waitFor(
-      async () => (logPrompts(sourceLog).length === promptsBefore + 1 ? true : undefined),
-      `the ${agent.id} peer to receive its prompt`,
-      30_000,
-    );
-    await waitStatus(devtools, agent.id, "succeeded");
-    const after = ompBytes(source);
-    const changed = changedPaths(before, after);
-    check(
-      otherChanges(changed, agent.id).length === 0,
-      `the ${agent.id} trigger changed another agent's artifacts`,
-      otherChanges(changed, agent.id),
-    );
-    const sent = logPrompts(sourceLog).slice(promptsBefore);
-    check(
-      sent.length === 1 && sent[0]?.startsWith(`${agent.command} `),
-      `the ${agent.id} trigger did not send exactly its own prompt`,
-      sent,
-    );
-    const stage = sent[0]?.slice(agent.command.length).trim() ?? "";
-    check(
-      stage.includes(`${join(source, ".omp", "discover", "staging", "")}`),
-      `the ${agent.id} staging directory is not under the target`,
-      stage,
-    );
-    check(
-      !existsSync(stage),
-      `the ${agent.id} staging directory survived its publication`,
-    );
+  if (selected("per-agent-publication")) {
+    /* 4. Each trigger publishes only its own slice. */
+    for (const agent of AGENTS) {
+      await openCard(devtools, agent.id);
+      const before = ompBytes(source);
+      const promptsBefore = logPrompts(sourceLog).length;
+      await click(devtools, "discover-agent-start");
+      // The card still shows the previous success for a moment; the peer's own
+      // prompt line is the first proof this trigger started.
+      await waitFor(
+        async () => (logPrompts(sourceLog).length === promptsBefore + 1 ? true : undefined),
+        `the ${agent.id} peer to receive its prompt`,
+        30_000,
+      );
+      await waitStatus(devtools, agent.id, "succeeded");
+      const after = ompBytes(source);
+      const changed = changedPaths(before, after);
+      check(
+        otherChanges(changed, agent.id).length === 0,
+        `the ${agent.id} trigger changed another agent's artifacts`,
+        otherChanges(changed, agent.id),
+      );
+      const sent = logPrompts(sourceLog).slice(promptsBefore);
+      check(
+        sent.length === 1 && sent[0]?.startsWith(`${agent.command} `),
+        `the ${agent.id} trigger did not send exactly its own prompt`,
+        sent,
+      );
+      const stage = sent[0]?.slice(agent.command.length).trim() ?? "";
+      check(
+        stage.includes(`${join(source, ".omp", "discover", "staging", "")}`),
+        `the ${agent.id} staging directory is not under the target`,
+        stage,
+      );
+      check(
+        !existsSync(stage),
+        `the ${agent.id} staging directory survived its publication`,
+      );
+    }
+    console.log("PASS per-agent-publication");
   }
-  console.log("PASS per-agent-publication");
 
-  /* 4b. The Contribution page, its merged-only evidence, and its skill page. */
-  const openTab = async (tab: string): Promise<void> => {
-    const opened = await devtools.evaluate(`(() => {
+  if (selected("contribution-page")) {
+    /* 4b. The Contribution page, its merged-only evidence, and its skill page. */
+    const openTab = async (tab: string): Promise<void> => {
+      const opened = await devtools.evaluate(`(() => {
       const button = document.querySelector('[data-testid="discover-tab"][data-tab="${tab}"]');
       if (button === null) return false;
       button.click();
       return true;
     })()`);
-    check(opened === true, `the ${tab} sidebar entry is missing`);
-    await waitFor(
-      async () =>
-        (await attribute(devtools, "discover-panel", "data-tab")) === tab ? true : undefined,
-      `the ${tab} panel`,
-      20_000,
-    );
-  };
-
-  await openTab("contribution");
-  check(
-    (await present(devtools, "discover-contribution")) === true,
-    "the Contribution page does not render its body",
-  );
-  const contributionSections = await devtools.evaluate(`(() => [
-    ...document.querySelectorAll('[data-testid="discover-contribution-section"]')
-  ].map((section) => section.getAttribute('data-section') ?? ''))()`);
-  check(
-    JSON.stringify(contributionSections) ===
-      JSON.stringify([
-        "workflow",
-        "testing",
-        "pull-request-style",
-        "pull-request-size",
-        "conventions",
-        "review",
-        "documentation",
-        "hotspots",
-        "evidence",
-      ]),
-    "the Contribution page does not render the nine documented sections",
-    contributionSections,
-  );
-  const sectionText = async (id: string): Promise<string> =>
-    (await devtools.evaluate(`(() => {
+      check(opened === true, `the ${tab} sidebar entry is missing`);
+      await waitFor(
+        async () =>
+          (await attribute(devtools, "discover-panel", "data-tab")) === tab ? true : undefined,
+        `the ${tab} panel`,
+        20_000,
+      );
+    };
+    const sectionText = async (id: string): Promise<string> =>
+      (await devtools.evaluate(`(() => {
       const section = document.querySelector(
         '[data-testid="discover-contribution-section"][data-section="${id}"]'
       );
       return section?.textContent ?? '';
     })()`)) as string;
-  check(
-    (await sectionText("workflow")).includes("bun install"),
-    "the Contribution workflow section does not show the collected install command",
-  );
-  check(
-    (await sectionText("pull-request-size")).includes("median"),
-    "the Contribution size section does not show its median",
-  );
-  check(
-    (await sectionText("evidence")).includes("1"),
-    "the Contribution evidence section does not show the closed-unmerged count",
-  );
-  const contributionBytes = readFileSync(
-    join(source, ".omp", "discover", "contribution.json"),
-    "utf8",
-  );
-  const contributionSkillBytes = readFileSync(
-    join(source, ".omp", "skills", "discover-contribution", "SKILL.md"),
-    "utf8",
-  );
-  check(
-    !contributionBytes.includes("CLOSED-UNMERGED-DESCRIPTION-MUST-NOT-LEAK") &&
-      !contributionSkillBytes.includes("CLOSED-UNMERGED-DESCRIPTION-MUST-NOT-LEAK"),
-    "a closed-unmerged description reached the contribution artifact or skill",
-  );
-  check(
-    contributionSkillBytes.includes("metadata:\n  devboard-managed: \"true\"") &&
-      contributionSkillBytes.includes('devboard-skill: contribution') &&
-      contributionSkillBytes.includes(".omp/discover/contribution.json") &&
-      contributionSkillBytes.includes("> PR #12 —"),
-    "the published contribution skill does not carry its markers and exemplars",
-  );
 
-  await openTab("contribution-skill");
-  check(
-    (await attribute(devtools, "discover-skill", "data-name")) === "discover-contribution",
-    "the Contribution skill page does not open the published skill",
-  );
-  const liveSkillPath = join(source, ".omp", "skills", "discover-contribution", "SKILL.md");
-  const originalSkill = readFileSync(liveSkillPath, "utf8");
-  const editedSkill = `${originalSkill.trimEnd()}\n- Keep the review evidence in the description.\n`;
-  await devtools.evaluate(
-    `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(editedSkill)})`,
-  );
-  await waitFor(
-    async () =>
-      (await attribute(devtools, "discover-skill-text", "data-dirty")) === "true"
-        ? true
-        : undefined,
-    "the edited contribution skill to be dirty",
-    20_000,
-  );
-  await click(devtools, "discover-skill-save");
-  await waitFor(
-    async () =>
-      readFileSync(liveSkillPath, "utf8") === editedSkill ? true : undefined,
-    "the edited contribution skill to be saved",
-    20_000,
-  );
-  // A re-crawl replaces an unedited live skill and preserves an edited one.
-  await openCard(devtools, "discover-contribution");
-  await click(devtools, "discover-agent-start");
-  await waitStatus(devtools, "discover-contribution", "succeeded");
-  check(
-    readFileSync(liveSkillPath, "utf8") === editedSkill,
-    "a contribution re-crawl replaced the edited live skill",
-  );
-  // Deleting the live file leaves it missing until the explicit restore control.
-  rmSync(liveSkillPath, { force: true });
-  await wsCommand(devtools, dashboard.port, { type: "getDiscover" }, "discoverState");
-  await openTab("contribution-skill");
-  await waitFor(
-    async () =>
-      (await text(devtools, "discover-skill-status")).includes("missing") ? true : undefined,
-    "the missing contribution skill state",
-    20_000,
-  );
-  check(
-    !existsSync(liveSkillPath),
-    "the deleted contribution skill was recreated without the restore control",
-  );
-  await click(devtools, "discover-skill-restore");
-  await waitFor(
-    async () =>
-      existsSync(liveSkillPath) &&
-      readFileSync(liveSkillPath, "utf8") ===
-        readFileSync(
-          join(source, ".omp", "discover", "skills", "discover-contribution", "SKILL.md"),
-          "utf8",
-        )
-        ? true
-        : undefined,
-    "the restore control to recreate the contribution skill",
-    20_000,
-  );
-  console.log("PASS contribution-page");
+    await openTab("contribution");
+    check(
+      (await present(devtools, "discover-contribution")) === true,
+      "the Contribution page does not render its body",
+    );
+    const contributionSections = await devtools.evaluate(`(() => [
+    ...document.querySelectorAll('[data-testid="discover-contribution-section"]')
+  ].map((section) => section.getAttribute('data-section') ?? ''))()`);
+    check(
+      JSON.stringify(contributionSections) ===
+        JSON.stringify([
+          "workflow",
+          "testing",
+          "pull-request-style",
+          "pull-request-size",
+          "conventions",
+          "review",
+          "documentation",
+          "hotspots",
+          "evidence",
+        ]),
+      "the Contribution page does not render the nine documented sections",
+      contributionSections,
+    );
+    check(
+      (await sectionText("workflow")).includes("bun install"),
+      "the Contribution workflow section does not show the collected install command",
+    );
+    check(
+      (await sectionText("pull-request-size")).includes("median"),
+      "the Contribution size section does not show its median",
+    );
+    check(
+      (await sectionText("evidence")).includes("1"),
+      "the Contribution evidence section does not show the closed-unmerged count",
+    );
+    const contributionBytes = readFileSync(
+      join(source, ".omp", "discover", "contribution.json"),
+      "utf8",
+    );
+    const contributionSkillBytes = readFileSync(
+      join(source, ".omp", "skills", "discover-contribution", "SKILL.md"),
+      "utf8",
+    );
+    check(
+      !contributionBytes.includes("CLOSED-UNMERGED-DESCRIPTION-MUST-NOT-LEAK") &&
+        !contributionSkillBytes.includes("CLOSED-UNMERGED-DESCRIPTION-MUST-NOT-LEAK"),
+      "a closed-unmerged description reached the contribution artifact or skill",
+    );
+    check(
+      contributionSkillBytes.includes('metadata:\n  devboard-managed: "true"') &&
+        contributionSkillBytes.includes("devboard-skill: contribution") &&
+        contributionSkillBytes.includes(".omp/discover/contribution.json") &&
+        contributionSkillBytes.includes("> PR #12 —"),
+      "the published contribution skill does not carry its markers and exemplars",
+    );
 
-  /* 5. A second trigger while one runs is refused, and Run all is disabled. */
-  const refusalHost = await makeSourceHost(root, "refusal-host");
-  const refusal = await startDashboard({
-    repoDir: refusalHost,
-    stateDir: join(refusalHost, ".devboard", ".tmp", "state"),
-    logPath: join(root, "refusal-acp.log"),
-    extraStub: ["--discover-delay-ms=4000"],
-  });
-  pids.push(refusal.process.pid ?? 0);
-  await devtools.send("Page.navigate", { url: `http://127.0.0.1:${refusal.port}/` });
-  await openDiscoverMode(devtools, "the refusal dashboard");
-  await openCard(devtools, "sheet");
-  await click(devtools, "discover-agent-start");
-  await waitStatus(devtools, "sheet", "running");
-  const runningActivity = await devtools.evaluate(
-    `document.querySelectorAll('[data-testid="discover-agent-activity"]').length`,
-  );
-  check(
-    runningActivity === 0,
-    "a running agent's card still renders an activity log",
-    { runningActivity },
-  );
-  await waitFor(
-    async () => (logPrompts(join(root, "refusal-acp.log")).length === 1 ? true : undefined),
-    "the refusal peer to start",
-    30_000,
-  );
-  const refused = await wsCommand(
-    devtools,
-    refusal.port,
-    { type: "discoverAgent", agent: "discover-glossary" },
-    "discoverError",
-  );
-  check(
-    String(refused.message ?? "").toLowerCase().includes("active"),
-    "a second trigger while one runs was not refused",
-    refused,
-  );
-  await openOverview(devtools);
-  const runAllDisabled = await devtools.evaluate(
-    `document.querySelector('[data-testid="discover-start"]')?.disabled === true`,
-  );
-  check(runAllDisabled === true, "Run all is enabled while an agent runs");
-  console.log("PASS one-at-a-time");
+    await openTab("contribution-skill");
+    check(
+      (await attribute(devtools, "discover-skill", "data-name")) === "discover-contribution",
+      "the Contribution skill page does not open the published skill",
+    );
+    const liveSkillPath = join(source, ".omp", "skills", "discover-contribution", "SKILL.md");
+    const originalSkill = readFileSync(liveSkillPath, "utf8");
+    const editedSkill = `${originalSkill.trimEnd()}\n- Keep the review evidence in the description.\n`;
+    await devtools.evaluate(
+      `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(editedSkill)})`,
+    );
+    await waitFor(
+      async () =>
+        (await attribute(devtools, "discover-skill-text", "data-dirty")) === "true"
+          ? true
+          : undefined,
+      "the edited contribution skill to be dirty",
+      20_000,
+    );
+    await click(devtools, "discover-skill-save");
+    await waitFor(
+      async () =>
+        readFileSync(liveSkillPath, "utf8") === editedSkill ? true : undefined,
+      "the edited contribution skill to be saved",
+      20_000,
+    );
+    // A re-crawl replaces an unedited live skill and preserves an edited one.
+    await openCard(devtools, "discover-contribution");
+    await click(devtools, "discover-agent-start");
+    await waitStatus(devtools, "discover-contribution", "succeeded");
+    check(
+      readFileSync(liveSkillPath, "utf8") === editedSkill,
+      "a contribution re-crawl replaced the edited live skill",
+    );
+    // Deleting the live file leaves it missing until the explicit restore control.
+    rmSync(liveSkillPath, { force: true });
+    await wsCommand(devtools, dashboard.port, { type: "getDiscover" }, "discoverState");
+    await openTab("contribution-skill");
+    await waitFor(
+      async () =>
+        (await text(devtools, "discover-skill-status")).includes("missing") ? true : undefined,
+      "the missing contribution skill state",
+      20_000,
+    );
+    check(
+      !existsSync(liveSkillPath),
+      "the deleted contribution skill was recreated without the restore control",
+    );
+    await click(devtools, "discover-skill-restore");
+    await waitFor(
+      async () =>
+        existsSync(liveSkillPath) &&
+        readFileSync(liveSkillPath, "utf8") ===
+          readFileSync(
+            join(source, ".omp", "discover", "skills", "discover-contribution", "SKILL.md"),
+            "utf8",
+          )
+          ? true
+          : undefined,
+      "the restore control to recreate the contribution skill",
+      20_000,
+    );
+    console.log("PASS contribution-page");
+  }
 
-  /* 6. Run all halts at the first seeded failure and keeps earlier slices. */
-  const haltHost = await makeSourceHost(root, "halt-host");
-  const haltLog = join(root, "halt-acp.log");
-  const halt = await startDashboard({
-    repoDir: haltHost,
-    stateDir: join(haltHost, ".devboard", ".tmp", "state"),
-    logPath: haltLog,
-    extraStub: ["--discover-fail-agent=discover-naming-conventions"],
-  });
-  pids.push(halt.process.pid ?? 0);
-  await devtools.send("Page.navigate", { url: `http://127.0.0.1:${halt.port}/` });
-  await openDiscoverMode(devtools, "the halt dashboard");
-  await openOverview(devtools);
-  await click(devtools, "discover-start");
-  await waitStatus(devtools, "discover-naming-conventions", "failed");
-  const haltedPrompts = logPrompts(haltLog).map((prompt) => prompt.split(" ")[0]);
-  check(
-    JSON.stringify(haltedPrompts) ===
-      JSON.stringify([
-        "/discover-sheet",
-        "/discover-glossary",
-        "/discover-testing-strategy",
-        "/discover-naming-conventions",
-      ]),
-    "Run all did not halt at the first failure",
-    haltedPrompts,
-  );
-  const states = await devtools.evaluate(`(() => Object.fromEntries(
+  if (selected("one-at-a-time")) {
+    /* 5. A second trigger while one runs is refused, and Run all is disabled. */
+    const refusalHost = await makeSourceHost(root, "refusal-host");
+    const refusal = await startDashboard({
+      repoDir: refusalHost,
+      stateDir: join(refusalHost, ".devboard", ".tmp", "state"),
+      logPath: join(root, "refusal-acp.log"),
+      extraStub: ["--discover-delay-ms=4000"],
+    });
+    pids.push(refusal.process.pid ?? 0);
+    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${refusal.port}/` });
+    await openDiscoverMode(devtools, "the refusal dashboard");
+    await openCard(devtools, "sheet");
+    await click(devtools, "discover-agent-start");
+    await waitStatus(devtools, "sheet", "running");
+    const runningActivity = await devtools.evaluate(
+      `document.querySelectorAll('[data-testid="discover-agent-activity"]').length`,
+    );
+    check(
+      runningActivity === 0,
+      "a running agent's card still renders an activity log",
+      { runningActivity },
+    );
+    await waitFor(
+      async () => (logPrompts(join(root, "refusal-acp.log")).length === 1 ? true : undefined),
+      "the refusal peer to start",
+      30_000,
+    );
+    const refused = await wsCommand(
+      devtools,
+      refusal.port,
+      { type: "discoverAgent", agent: "discover-glossary" },
+      "discoverError",
+    );
+    check(
+      String(refused.message ?? "").toLowerCase().includes("active"),
+      "a second trigger while one runs was not refused",
+      refused,
+    );
+    await openOverview(devtools);
+    const runAllDisabled = await devtools.evaluate(
+      `document.querySelector('[data-testid="discover-start"]')?.disabled === true`,
+    );
+    check(runAllDisabled === true, "Run all is enabled while an agent runs");
+    console.log("PASS one-at-a-time");
+  }
+
+  if (selected("run-all-halt")) {
+    /* 6. Run all halts at the first seeded failure and keeps earlier slices. */
+    const haltHost = await makeSourceHost(root, "halt-host");
+    const haltLog = join(root, "halt-acp.log");
+    const halt = await startDashboard({
+      repoDir: haltHost,
+      stateDir: join(haltHost, ".devboard", ".tmp", "state"),
+      logPath: haltLog,
+      extraStub: ["--discover-fail-agent=discover-naming-conventions"],
+    });
+    pids.push(halt.process.pid ?? 0);
+    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${halt.port}/` });
+    await openDiscoverMode(devtools, "the halt dashboard");
+    await openOverview(devtools);
+    await click(devtools, "discover-start");
+    await waitStatus(devtools, "discover-naming-conventions", "failed");
+    const haltedPrompts = logPrompts(haltLog).map((prompt) => prompt.split(" ")[0]);
+    check(
+      JSON.stringify(haltedPrompts) ===
+        JSON.stringify([
+          "/discover-sheet",
+          "/discover-glossary",
+          "/discover-testing-strategy",
+          "/discover-naming-conventions",
+        ]),
+      "Run all did not halt at the first failure",
+      haltedPrompts,
+    );
+    const states = await devtools.evaluate(`(() => Object.fromEntries(
     [...document.querySelectorAll('[data-testid="discover-agent-tab"]')].map((tab) => [
       tab.getAttribute('data-agent') ?? '',
       tab.getAttribute('data-state') ?? '',
     ]),
   ))()`);
-  check(
-    JSON.stringify(states) ===
-      JSON.stringify({
-        sheet: "succeeded",
-        "discover-contribution": "idle",
-        "discover-testing-strategy": "succeeded",
-        "discover-naming-conventions": "failed",
-        "discover-coding-conventions": "idle",
-        "discover-architecture-boundaries": "idle",
-        "discover-glossary": "succeeded",
-      }),
-    "the halted Run all states are wrong",
-    states,
-  );
-  check(
-    existsSync(join(haltHost, ".omp", "skills", "discover-testing-strategy", "SKILL.md")) &&
-      !existsSync(join(haltHost, ".omp", "discover", "skills", "discover-naming-conventions")),
-    "Run all did not keep the published slices and skip the later agents",
-  );
-  console.log("PASS run-all-halt");
-
-  /* 7. Prompt chat and save on the source checkout. */
-  await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
-  await openDiscoverMode(devtools, "the source dashboard");
-  await openCard(devtools, "sheet");
-  const promptFile = join(source, ".devboard", "prompts", "discover-sheet.md");
-  const originalPrompt = readFileSync(promptFile, "utf8");
-  const otherPrompts = new Map(
-    PROMPT_FILES.filter((file) => file !== "discover-sheet.md").map((file) => [
-      file,
-      readFileSync(join(source, ".devboard", "prompts", file), "utf8"),
-    ]),
-  );
-  check(
-    readFileSync(promptFile, "utf8") === originalPrompt,
-    "opening the card wrote the prompt file",
-  );
-  await setInput(devtools, "discover-agent-prompt-message", "Tighten the evidence rule.");
-  await click(devtools, "discover-agent-prompt-send");
-  await waitFor(
-    async () =>
-      (await text(devtools, "discover-agent-prompt-chat-log")).includes("Here is the revision.")
-        ? true
-        : undefined,
-    "the prompt chat reply",
-    45_000,
-  );
-  const proposal = `${originalPrompt.trimEnd()}\n\n<!-- revised by the verification peer -->\n`;
-  await waitFor(
-    async () =>
-      (await valueOf(devtools, "discover-agent-prompt-editor")) === proposal ? true : undefined,
-    "the proposed prompt in the editor",
-    20_000,
-  );
-  check(
-    readFileSync(promptFile, "utf8") === originalPrompt,
-    "the chat wrote the prompt file before Save",
-  );
-  const assistantEntries = await devtools.evaluate(
-    `document.querySelectorAll('[data-testid="discover-agent-prompt-chat-log"] [data-role="assistant"]').length`,
-  );
-  check(assistantEntries === 1, "the chat log does not show one assistant entry per turn");
-  console.log("PASS prompt-chat");
-
-  await click(devtools, "discover-agent-prompt-save");
-  await waitFor(
-    async () =>
-      (await attribute(devtools, "save-feedback", "data-scope")) ===
-      "discover.prompt.sheet"
-        ? true
-        : undefined,
-    "the prompt save notice",
-    20_000,
-  );
-  check(
-    readFileSync(promptFile, "utf8") === proposal,
-    "Save did not write exactly the editor's bytes",
-  );
-  for (const [file, bytes] of otherPrompts) {
     check(
-      readFileSync(join(source, ".devboard", "prompts", file), "utf8") === bytes,
-      `Save changed ${file}`,
+      JSON.stringify(states) ===
+        JSON.stringify({
+          sheet: "succeeded",
+          "discover-contribution": "idle",
+          "discover-testing-strategy": "succeeded",
+          "discover-naming-conventions": "failed",
+          "discover-coding-conventions": "idle",
+          "discover-architecture-boundaries": "idle",
+          "discover-glossary": "succeeded",
+        }),
+      "the halted Run all states are wrong",
+      states,
     );
+    check(
+      existsSync(join(haltHost, ".omp", "skills", "discover-testing-strategy", "SKILL.md")) &&
+        !existsSync(join(haltHost, ".omp", "discover", "skills", "discover-naming-conventions")),
+      "Run all did not keep the published slices and skip the later agents",
+    );
+    console.log("PASS run-all-halt");
   }
-  console.log("PASS prompt-save");
 
-  /* 7b. Without a forge corpus the profile is unknown and the git facts survive. */
-  const noForgeHost = await makeSourceHost(root, "no-forge-host");
-  const noForge = await startDashboard({
-    repoDir: noForgeHost,
-    stateDir: join(noForgeHost, ".devboard", ".tmp", "state"),
-    logPath: join(root, "no-forge-acp.log"),
-    extraStub: ["--discover-contribution-no-forge"],
-  });
-  pids.push(noForge.process.pid ?? 0);
-  await devtools.send("Page.navigate", { url: `http://127.0.0.1:${noForge.port}/` });
-  await openDiscoverMode(devtools, "the no-forge dashboard");
-  await openCard(devtools, "discover-contribution");
-  await click(devtools, "discover-agent-start");
-  await waitStatus(devtools, "discover-contribution", "succeeded");
-  await openTab("contribution");
-  check(
-    (await sectionText("pull-request-style")).includes("Not recorded"),
-    "a forge-less fixture does not render the profile as unknown",
-  );
-  check(
-    (await sectionText("workflow")).includes("bun install"),
-    "a forge-less fixture dropped the git-derived workflow facts",
-  );
-  const noForgeArtifact = JSON.parse(
-    readFileSync(join(noForgeHost, ".omp", "discover", "contribution.json"), "utf8"),
-  ) as {
-    sections: Array<{ id: string; facts: Array<Record<string, unknown>> }>;
-  };
-  const noForgeEvidence = noForgeArtifact.sections.find((section) => section.id === "evidence");
-  check(
-    noForgeEvidence?.facts.find((fact) => fact.key === "forge")?.confidence === "unknown",
-    "a forge-less run reported a known forge",
-  );
-  await openTab("contribution-skill");
-  const noForgeSkill = (await devtools.evaluate(
-    `window.__devboardEditors.get("discover-skill-text").getValue()`,
-  )) as string;
-  check(
-    noForgeSkill.toLowerCase().includes("unknown") && !noForgeSkill.includes("> PR #"),
-    "a forge-less contribution skill does not state its unknown rules",
-  );
-  console.log("PASS contribution-no-forge");
+  if (selected("prompt-chat", "prompt-save")) {
+    /* 7. Prompt chat and save on the source checkout. */
+    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
+    await openDiscoverMode(devtools, "the source dashboard");
+    await openCard(devtools, "sheet");
+    const promptFile = join(source, ".devboard", "prompts", "discover-sheet.md");
+    const originalPrompt = readFileSync(promptFile, "utf8");
+    const otherPrompts = new Map(
+      PROMPT_FILES.filter((file) => file !== "discover-sheet.md").map((file) => [
+        file,
+        readFileSync(join(source, ".devboard", "prompts", file), "utf8"),
+      ]),
+    );
+    check(
+      readFileSync(promptFile, "utf8") === originalPrompt,
+      "opening the card wrote the prompt file",
+    );
+    await setInput(devtools, "discover-agent-prompt-message", "Tighten the evidence rule.");
+    await click(devtools, "discover-agent-prompt-send");
+    await waitFor(
+      async () =>
+        (await text(devtools, "discover-agent-prompt-chat-log")).includes("Here is the revision.")
+          ? true
+          : undefined,
+      "the prompt chat reply",
+      45_000,
+    );
+    const proposal = `${originalPrompt.trimEnd()}\n\n<!-- revised by the verification peer -->\n`;
+    await waitFor(
+      async () =>
+        (await valueOf(devtools, "discover-agent-prompt-editor")) === proposal ? true : undefined,
+      "the proposed prompt in the editor",
+      20_000,
+    );
+    check(
+      readFileSync(promptFile, "utf8") === originalPrompt,
+      "the chat wrote the prompt file before Save",
+    );
+    const assistantEntries = await devtools.evaluate(
+      `document.querySelectorAll('[data-testid="discover-agent-prompt-chat-log"] [data-role="assistant"]').length`,
+    );
+    check(assistantEntries === 1, "the chat log does not show one assistant entry per turn");
+    console.log("PASS prompt-chat");
 
-  /* 8. An installed host renders no prompt editor and refuses a save. */
-  const installed = await makeInstalledHost(root, "installed-host");
-  const installedPrompts = new Map(
-    PROMPT_FILES.map((file) => [
-      file,
-      readFileSync(join(installed, ".devboard", "prompts", file), "utf8"),
-    ]),
-  );
-  const installedDashboard = await startDashboard({
-    repoDir: installed,
-    stateDir: join(installed, ".devboard", ".tmp", "state"),
-    logPath: join(root, "installed-acp.log"),
-  });
-  pids.push(installedDashboard.process.pid ?? 0);
-  await devtools.send("Page.navigate", { url: `http://127.0.0.1:${installedDashboard.port}/` });
-  await openDiscoverMode(devtools, "the installed dashboard");
-  for (const agent of AGENTS) {
-    await openCard(devtools, agent.id);
-    for (const testid of [
-      "discover-agent-prompt-editor",
-      "discover-agent-prompt-chat-log",
-      "discover-agent-prompt-message",
-      "discover-agent-prompt-send",
-      "discover-agent-prompt-save",
-    ]) {
+    await click(devtools, "discover-agent-prompt-save");
+    await waitFor(
+      async () => ((await present(devtools!, "save-feedback")) ? true : undefined),
+      "the prompt save confirmation",
+      20_000,
+    );
+    check(
+      (await attribute(devtools, "save-feedback", "data-scope")) === "discover.prompt.sheet",
+      "the save confirmation does not belong to the prompt it confirmed",
+      await attribute(devtools, "save-feedback", "data-scope"),
+    );
+    check(
+      readFileSync(promptFile, "utf8") === proposal,
+      "Save did not write exactly the editor's bytes",
+    );
+    for (const [file, bytes] of otherPrompts) {
       check(
-        (await countOf(devtools, testid)) === 0,
-        `${testid} is rendered in an installed host`,
+        readFileSync(join(source, ".devboard", "prompts", file), "utf8") === bytes,
+        `Save changed ${file}`,
       );
     }
+    console.log("PASS prompt-save");
   }
-  const refusedSave = await wsCommand(
-    devtools,
-    installedDashboard.port,
-    { type: "saveDiscoverPrompt", agent: "sheet", text: "installed bytes\n" },
-    "discoverPromptError",
-  );
-  check(
-    String(refusedSave.message ?? "").includes("harness source checkout"),
-    "the installed save was not refused with the source-checkout reason",
-    refusedSave,
-  );
-  for (const [file, bytes] of installedPrompts) {
-    check(
-      readFileSync(join(installed, ".devboard", "prompts", file), "utf8") === bytes,
-      `the installed ${file} changed`,
+
+  if (selected("contribution-no-forge")) {
+    /* 7b. Without a forge corpus the profile is unknown and the git facts survive. */
+    const noForgeHost = await makeSourceHost(root, "no-forge-host");
+    const noForge = await startDashboard({
+      repoDir: noForgeHost,
+      stateDir: join(noForgeHost, ".devboard", ".tmp", "state"),
+      logPath: join(root, "no-forge-acp.log"),
+      extraStub: ["--discover-contribution-no-forge"],
+    });
+    pids.push(noForge.process.pid ?? 0);
+    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${noForge.port}/` });
+    await openDiscoverMode(devtools, "the no-forge dashboard");
+    await openCard(devtools, "discover-contribution");
+    await click(devtools, "discover-agent-start");
+    await waitStatus(devtools, "discover-contribution", "succeeded");
+    const opened = await devtools.evaluate(`(() => {
+    const button = document.querySelector('[data-testid="discover-tab"][data-tab="contribution"]');
+    if (button === null) return false;
+    button.click();
+    return true;
+  })()`);
+    check(opened === true, "the Contribution sidebar entry is missing in the no-forge fixture");
+    await waitFor(
+      async () =>
+        (await attribute(devtools, "discover-panel", "data-tab")) === "contribution"
+          ? true
+          : undefined,
+      "the no-forge Contribution panel",
+      20_000,
     );
+    const noForgeSectionText = async (id: string): Promise<string> =>
+      (await devtools.evaluate(`(() => {
+      const section = document.querySelector(
+        '[data-testid="discover-contribution-section"][data-section="${id}"]'
+      );
+      return section?.textContent ?? '';
+    })()`)) as string;
+    check(
+      (await noForgeSectionText("pull-request-style")).includes("Not recorded"),
+      "a forge-less fixture does not render the profile as unknown",
+    );
+    check(
+      (await noForgeSectionText("workflow")).includes("bun install"),
+      "a forge-less fixture dropped the git-derived workflow facts",
+    );
+    const noForgeArtifact = JSON.parse(
+      readFileSync(join(noForgeHost, ".omp", "discover", "contribution.json"), "utf8"),
+    ) as {
+      sections: Array<{ id: string; facts: Array<Record<string, unknown>> }>;
+    };
+    const noForgeEvidence = noForgeArtifact.sections.find((section) => section.id === "evidence");
+    check(
+      noForgeEvidence?.facts.find((fact) => fact.key === "forge")?.confidence === "unknown",
+      "a forge-less run reported a known forge",
+    );
+    const skillTab = await devtools.evaluate(`(() => {
+    const button = document.querySelector(
+      '[data-testid="discover-tab"][data-tab="contribution-skill"]'
+    );
+    if (button === null) return false;
+    button.click();
+    return true;
+  })()`);
+    check(skillTab === true, "the Contribution skill entry is missing in the no-forge fixture");
+    await waitFor(
+      async () =>
+        (await attribute(devtools, "discover-skill", "data-name")) === "discover-contribution"
+          ? true
+          : undefined,
+      "the no-forge Contribution skill page",
+      20_000,
+    );
+    const noForgeSkill = (await devtools.evaluate(
+      `window.__devboardEditors.get("discover-skill-text").getValue()`,
+    )) as string;
+    check(
+      noForgeSkill.toLowerCase().includes("unknown") && !noForgeSkill.includes("> PR #"),
+      "a forge-less contribution skill does not state its unknown rules",
+    );
+    console.log("PASS contribution-no-forge");
   }
-  console.log("PASS installed-read-only");
+
+  if (selected("installed-read-only")) {
+    /* 8. An installed host renders no prompt editor and refuses a save. */
+    const installed = await makeInstalledHost(root, "installed-host");
+    const installedPrompts = new Map(
+      PROMPT_FILES.map((file) => [
+        file,
+        readFileSync(join(installed, ".devboard", "prompts", file), "utf8"),
+      ]),
+    );
+    const installedDashboard = await startDashboard({
+      repoDir: installed,
+      stateDir: join(installed, ".devboard", ".tmp", "state"),
+      logPath: join(root, "installed-acp.log"),
+    });
+    pids.push(installedDashboard.process.pid ?? 0);
+    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${installedDashboard.port}/` });
+    await openDiscoverMode(devtools, "the installed dashboard");
+    for (const agent of AGENTS) {
+      await openCard(devtools, agent.id);
+      for (const testid of [
+        "discover-agent-prompt-editor",
+        "discover-agent-prompt-chat-log",
+        "discover-agent-prompt-message",
+        "discover-agent-prompt-send",
+        "discover-agent-prompt-save",
+      ]) {
+        check(
+          (await countOf(devtools, testid)) === 0,
+          `${testid} is rendered in an installed host`,
+        );
+      }
+    }
+    const refusedSave = await wsCommand(
+      devtools,
+      installedDashboard.port,
+      { type: "saveDiscoverPrompt", agent: "sheet", text: "installed bytes\n" },
+      "discoverPromptError",
+    );
+    check(
+      String(refusedSave.message ?? "").includes("harness source checkout"),
+      "the installed save was not refused with the source-checkout reason",
+      refusedSave,
+    );
+    for (const [file, bytes] of installedPrompts) {
+      check(
+        readFileSync(join(installed, ".devboard", "prompts", file), "utf8") === bytes,
+        `the installed ${file} changed`,
+      );
+    }
+    console.log("PASS installed-read-only");
+  }
 
   check(devtools.errors.length === 0, "the browser reported an error", devtools.errors);
 
-  console.log(
-    "verify:discover: the seven-entry Discovery group, Contribution page and skill, per-agent " +
-      "prompts and publication, the one-at-a-time rule, Run all order and stop-at-first-failure, " +
-      "prompt chat/save, and the installed save refusal all hold",
-  );
+  if (only.size > 0) {
+    console.log(`verify:discover: ran only ${[...only].join(", ")}`);
+  } else {
+    console.log(
+      "verify:discover: the seven-entry Discovery group, Contribution page and skill, per-agent " +
+        "prompts and publication, the one-at-a-time rule, Run all order and stop-at-first-failure, " +
+        "prompt chat/save, and the installed save refusal all hold",
+    );
+  }
 } finally {
   for (const pid of [...pids, chromePid]) {
     if (pid <= 0) continue;

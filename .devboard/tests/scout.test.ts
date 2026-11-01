@@ -195,7 +195,13 @@ class FakeGitHub implements ScoutGitHubClient {
   failIssues = false;
   /** Replaces the generic issue-read failure when set. */
   issuesError: string | null = null;
+  /** One queued issue-read failure per read attempt, consumed in order. */
+  issueFailures: string[] = [];
+  /** Every `listIssues` call, so a test can count read attempts. */
+  readCalls = 0;
   failReleases = false;
+  /** Replaces the generic release-read failure when set. */
+  releasesError: string | null = null;
   nextNumber = 100;
 
   add(issue: Partial<ScoutGitHubIssue> & { number: number; title: string }): void {
@@ -212,6 +218,9 @@ class FakeGitHub implements ScoutGitHubClient {
   }
 
   async listIssues(): Promise<ScoutGitHubIssue[]> {
+    this.readCalls += 1;
+    const queued = this.issueFailures.shift();
+    if (queued !== undefined) throw new Error(queued);
     if (this.failIssues) throw new Error(this.issuesError ?? "the GitHub read failed");
     return this.issues.map((issue) => ({ ...issue }));
   }
@@ -222,6 +231,7 @@ class FakeGitHub implements ScoutGitHubClient {
   }
 
   async listReleases(): Promise<ScoutRelease[]> {
+    if (this.releasesError !== null) throw new Error(this.releasesError);
     if (this.failReleases) throw new Error("the release read failed");
     return this.releases.map((release) => ({ ...release }));
   }
@@ -245,6 +255,7 @@ class HangingGitHub extends FakeGitHub {
   hanging = true;
 
   override async listIssues(): Promise<ScoutGitHubIssue[]> {
+    this.readCalls += 1;
     if (this.hanging) return await new Promise<ScoutGitHubIssue[]>(() => undefined);
     return await super.listIssues();
   }
@@ -362,6 +373,7 @@ async function fixture(options: {
   files?: Record<string, string>;
   syncMs?: number;
   cadenceMs?: number;
+  tickMs?: number;
   readTimeoutMs?: number;
   timeoutMs?: number;
   limit?: { maxPerHour: number; maxPending: number };
@@ -414,6 +426,7 @@ async function fixture(options: {
     stateDir,
     syncMs: options.syncMs ?? 900_000,
     cadenceMs: options.cadenceMs ?? 0,
+    ...(options.tickMs === undefined ? {} : { tickMs: options.tickMs }),
     ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
@@ -449,6 +462,12 @@ async function scan(
 
 function decide(f: Fixture, command: ScoutCommand): void {
   writeCommand(controlDirectory(f.stateDir, f.root), command);
+}
+
+/** Moves the injected clock and runs one worker tick. */
+async function tickAt(f: Fixture, instant: number): Promise<void> {
+  f.clock.now = new Date(instant);
+  await f.worker.tickNow();
 }
 
 describe("direct filing", () => {
@@ -1045,17 +1064,18 @@ describe("periodic reads and state mapping", () => {
     }
   });
 
-  test("a failed read keeps the rows, surfaces the reason, and blocks filing", async () => {
+  test("a permanently failed read keeps the rows, surfaces the reason, and blocks filing", async () => {
     const github = new FakeGitHub();
     github.failIssues = true;
+    github.issuesError = "gh: HTTP 401: Bad credentials";
     const f = await fixture({ label: "sync-failure", github });
     try {
       const failed = await waitFor(
         () => (f.state().sync.state === "error" ? f.state() : undefined),
         "the failed read",
       );
-      expect(failed.sync.error).toContain("GitHub read failed");
-      expect(failed.lastError).toContain("GitHub read failed");
+      expect(failed.sync.error).toContain("Bad credentials");
+      expect(failed.lastError).toContain("Bad credentials");
       expect(failed.scan).toBeNull();
       await f.worker.beginScan();
       expect(f.peers).toEqual([]);
@@ -1073,40 +1093,229 @@ describe("periodic reads and state mapping", () => {
     }
   });
 
-  test("a rate-limited read stays in the sync reason and raises no error", async () => {
+  test("a rate-limited read stays in the sync reason, raises no error, and waits a cadence", async () => {
     const github = new FakeGitHub();
     github.failIssues = true;
     github.issuesError = RATE_LIMIT_ERROR;
-    const f = await fixture({ label: "rate-limited", github });
+    const f = await fixture({
+      label: "rate-limited",
+      github,
+      syncMs: 60_000,
+      tickMs: 10 * 60_000,
+    });
     try {
-      const failed = await waitFor(
-        () => (f.state().sync.state === "error" ? f.state() : undefined),
-        "the rate-limited read",
-      );
+      await tickAt(f, f.clock.now.getTime());
+      const failed = f.state();
+      expect(failed.sync.state).toBe("error");
       expect(failed.sync.error).toContain("API rate limit exceeded");
       // `lastError` is what the page raises as a global error notification.
       expect(failed.lastError).toBeNull();
       await f.worker.beginScan();
       expect(f.peers).toEqual([]);
 
+      // A rate limit is not a transport fault: the next attempt waits the
+      // normal cadence, never the one-second retry schedule.
+      const failedAt = f.clock.now.getTime();
+      const reads = github.readCalls;
+      await tickAt(f, failedAt + 1_000);
+      expect(github.readCalls).toBe(reads);
+      expect(f.state().sync.state).toBe("error");
+
       github.failIssues = false;
-      await f.worker.refresh();
+      await tickAt(f, failedAt + 60_000);
+      expect(github.readCalls).toBe(reads + 1);
       expect(f.state().sync.state).toBe("ok");
     } finally {
       await f.worker.stop();
     }
   });
 
+  test("a transient read failure is retried without a sync error and keeps the rows", async () => {
+    const github = new FakeGitHub();
+    github.add({ number: 1, title: "First finding", createdAt: "2026-10-27T09:00:00.000Z" });
+    const f = await fixture({
+      label: "transient-retry",
+      github,
+      syncMs: 60_000,
+      tickMs: 10 * 60_000,
+      limit: { maxPerHour: 10, maxPending: 1 },
+    });
+    try {
+      const start = f.clock.now.getTime();
+      await tickAt(f, start);
+      const first = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      const previousAt = first.sync.at!;
+      const reads = github.readCalls;
+      github.issueFailures.push("gh: HTTP 503: Service Unavailable");
+      await f.worker.refresh();
+      const retrying = f.state();
+      expect(retrying.sync).toEqual({ state: "stale", at: previousAt, error: null });
+      expect(retrying.issues.map((row) => row.number)).toEqual([1]);
+      expect(retrying.lastError).toBeNull();
+      expect(retrying.lifecycle).toBe("idle");
+
+      await tickAt(f, Date.parse(previousAt) + 999);
+      expect(github.readCalls).toBe(reads + 1);
+
+      github.add({ number: 2, title: "Second finding", createdAt: "2026-10-27T09:05:00.000Z" });
+      await tickAt(f, Date.parse(previousAt) + 1_000);
+      const recovered = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the retried read",
+      );
+      expect(github.readCalls).toBe(reads + 2);
+      expect(recovered.sync.error).toBeNull();
+      expect(Date.parse(recovered.sync.at!)).toBeGreaterThan(Date.parse(previousAt));
+      expect(recovered.issues.map((row) => row.number)).toEqual([2, 1]);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a transient read gets four retries and only the fifth failure is an error", async () => {
+    const github = new FakeGitHub();
+    github.add({ number: 1, title: "First finding", createdAt: "2026-10-27T09:00:00.000Z" });
+    const f = await fixture({
+      label: "retry-schedule",
+      github,
+      syncMs: 60_000,
+      tickMs: 10 * 60_000,
+      limit: { maxPerHour: 10, maxPending: 1 },
+    });
+    try {
+      const start = f.clock.now.getTime();
+      await tickAt(f, start);
+      const first = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      const previousAt = first.sync.at!;
+      const reads = github.readCalls;
+      github.failIssues = true;
+      github.issuesError = "gh: HTTP 503: Service Unavailable";
+      await f.worker.refresh();
+      expect(f.state().sync).toEqual({ state: "stale", at: previousAt, error: null });
+
+      let now = Date.parse(previousAt);
+      let attempts = reads + 1;
+      for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+        await tickAt(f, now + delay - 1);
+        expect(f.state().sync.state).toBe("stale");
+        expect(f.state().sync.error).toBeNull();
+        expect(github.readCalls).toBe(attempts);
+
+        await tickAt(f, now + delay);
+        now += delay;
+        attempts += 1;
+        expect(github.readCalls).toBe(attempts);
+        if (delay !== 8_000) {
+          expect(f.state().sync).toEqual({ state: "stale", at: previousAt, error: null });
+        }
+      }
+      expect(attempts).toBe(reads + 5);
+      const failed = f.state();
+      expect(failed.sync.state).toBe("error");
+      expect(failed.sync.error).toContain("Service Unavailable");
+      expect(failed.lastError).toContain("Service Unavailable");
+      expect(failed.issues.map((row) => row.number)).toEqual([1]);
+
+      // The next attempt is one cadence away, not another immediate retry.
+      await tickAt(f, now + 1_000);
+      expect(github.readCalls).toBe(attempts);
+      expect(f.state().sync.state).toBe("error");
+      await tickAt(f, now + 60_000);
+      expect(github.readCalls).toBe(attempts + 1);
+      expect(f.state().sync.state).toBe("error");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a success during the retry schedule clears everything", async () => {
+    const github = new FakeGitHub();
+    github.add({ number: 1, title: "First finding", createdAt: "2026-10-27T09:00:00.000Z" });
+    github.issueFailures.push("gh: HTTP 502: Bad Gateway", "gh: HTTP 502: Bad Gateway");
+    const f = await fixture({
+      label: "retry-success",
+      github,
+      syncMs: 60_000,
+      tickMs: 10 * 60_000,
+      limit: { maxPerHour: 10, maxPending: 1 },
+    });
+    try {
+      const failedAt = f.clock.now.getTime();
+      await tickAt(f, failedAt);
+      expect(github.readCalls).toBe(1);
+      expect(f.state().sync.state).toBe("stale");
+      expect(f.state().sync.error).toBeNull();
+      await tickAt(f, failedAt + 1_000);
+      expect(f.state().sync.state).toBe("stale");
+      expect(f.state().sync.error).toBeNull();
+      await tickAt(f, failedAt + 3_000);
+      const recovered = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the third read",
+      );
+      expect(github.readCalls).toBe(3);
+      expect(recovered.sync.error).toBeNull();
+      expect(recovered.issues.map((row) => row.number)).toEqual([1]);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  for (const [label, message] of [
+    ["credentials", "gh: HTTP 401: Bad credentials"],
+    ["a missing repository", "gh: HTTP 404: Not Found"],
+    ["a malformed answer", "gh issue list did not print a JSON array"],
+    ["missing configuration", "the agent needs DEVBOARD_GITEA_URL for a Gitea origin"],
+  ] as const) {
+    test(`a permanent read failure (${label}) is attempted once and surfaces at once`, async () => {
+      const github = new FakeGitHub();
+      github.add({ number: 1, title: "First finding", createdAt: "2026-10-27T09:00:00.000Z" });
+      const f = await fixture({
+        label: `permanent-${label.replaceAll(" ", "-")}`,
+        github,
+        syncMs: 60_000,
+        tickMs: 10 * 60_000,
+        limit: { maxPerHour: 10, maxPending: 1 },
+      });
+      try {
+        const start = f.clock.now.getTime();
+        await tickAt(f, start);
+        const first = await waitFor(
+          () => (f.state().sync.state === "ok" ? f.state() : undefined),
+          "the first read",
+        );
+        const reads = github.readCalls;
+        github.failIssues = true;
+        github.issuesError = message;
+        await f.worker.refresh();
+        const failed = f.state();
+        expect(failed.sync).toEqual({ state: "error", at: first.sync.at, error: message });
+        expect(failed.lastError).toBe(message);
+        expect(github.readCalls).toBe(reads + 1);
+        await tickAt(f, f.clock.now.getTime() + 1_000);
+        expect(github.readCalls).toBe(reads + 1);
+      } finally {
+        await f.worker.stop();
+      }
+    });
+  }
+
   test("a release read failure fails the sync", async () => {
     const github = new FakeGitHub();
-    github.failReleases = true;
+    github.releasesError = "gh: HTTP 404: Not Found";
     const f = await fixture({ label: "release-failure", github });
     try {
       const failed = await waitFor(
         () => (f.state().sync.state === "error" ? f.state() : undefined),
         "the failed release read",
       );
-      expect(failed.sync.error).toContain("release read failed");
+      expect(failed.sync.error).toContain("Not Found");
       expect(failed.issues).toEqual([]);
     } finally {
       await f.worker.stop();
@@ -1118,6 +1327,7 @@ describe("periodic reads and state mapping", () => {
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
       f.github.failIssues = true;
+      f.github.issuesError = "gh: HTTP 401: Bad credentials";
       writeRecommendations(
         scanDirectoryOf(peer.prompts[0]!),
         scanDocument(uniqueItems(1, 3)),
@@ -1128,8 +1338,8 @@ describe("periodic reads and state mapping", () => {
         "the failed pre-filing read",
       );
       expect(f.filed).toEqual([]);
-      expect(failed.lastError).toContain("GitHub read failed");
-      expect(failed.sync.error).toContain("GitHub read failed");
+      expect(failed.lastError).toContain("Bad credentials");
+      expect(failed.sync.error).toContain("Bad credentials");
     } finally {
       await f.worker.stop();
     }
@@ -1709,22 +1919,25 @@ describe("filing actions", () => {
 });
 
 describe("bounded commands", () => {
-  test("a periodic read that never resolves fails the sync and releases the worker", async () => {
+  test("a periodic read that never resolves releases the worker and is retried", async () => {
     const github = new HangingGitHub();
     github.add({ number: 7, title: "Recovered finding", createdAt: "2026-10-27T09:00:00.000Z" });
     const started = Date.now();
     const f = await fixture({ label: "sync-deadline", github, readTimeoutMs: 1000 });
     try {
-      const failed = await waitFor(
-        () => (f.state().sync.state === "error" ? f.state() : undefined),
+      const retrying = await waitFor(
+        () => (f.state().sync.state === "stale" && github.readCalls > 0 ? f.state() : undefined),
         "the timed out read",
       );
       expect(Date.now() - started).toBeLessThan(5000);
-      expect(failed.sync.error).toContain("the forge read did not finish within 1000 ms");
-      expect(failed.lastError).toContain("the forge read did not finish within 1000 ms");
-      expect(failed.notice).toContain("Could not read the forge:");
+      expect(retrying.sync.error).toBeNull();
+      expect(retrying.lastError).toBeNull();
 
-      // The failed read released `syncing`: a later refresh runs and succeeds.
+      // The timed-out read released `syncing`: a later refresh runs and succeeds.
+      await waitFor(
+        () => (f.worker.readInFlight ? undefined : true),
+        "the timed-out read to release the worker",
+      );
       github.hanging = false;
       await f.worker.refresh();
       expect(f.state().sync.state).toBe("ok");
