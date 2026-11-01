@@ -97,6 +97,7 @@
   }
 }
 
+:root,
 :root[data-theme="dark"] {
   --flow-contract: #58a6ff;
   --flow-contract-surface: #16233a;
