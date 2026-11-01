@@ -18,8 +18,15 @@ context, but you never edit, comment on, close, or reopen another issue.
 - Resolve the session's host exactly once, before any forge read or write: make one argument-free
   `devboard_status` MCP call and take `<REPO_DIR>` from its `repositoryRoot`, along with
   `harnessDirectory` and `stateDirectory`. That one call is the whole checkout-orientation step,
-  and the canonical checkout is `<REPO_DIR>` itself. Issue it before the auth decision below, and
-  never repeat it later in the session.
+  and the canonical checkout is `<REPO_DIR>` itself. Issue it before the auth decision below.
+  Never issue more than one `devboard_status` call in a turn, except for the one read immediately
+  after `bun run publish` or a dashboard reload that confirms the newly running version; never
+  poll it before each step or between successive forge reads and writes.
+- Read every Devboard fact through the registered MCP tools — `devboard_status`, `issue_get`,
+  `issues_list`, `issue_close`, `verification_run`, `goal_get`, `journal_search`, and
+  `agent_sessions_list` — never by spawning `bun .devboard/call-tool.ts <tool>` or any other
+  subprocess that wraps them: the bridge starts a second Bun process and duplicates a capability
+  the session already has. Never reach for that bridge for a Devboard state read.
 - Never orient the session with a shell probe, and never chain orientation probes: no
   `git remote get-url origin` or `git remote get-url github`, no `git config --get
   remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
@@ -130,10 +137,10 @@ context, but you never edit, comment on, close, or reopen another issue.
   `sed -E 's/(TOKEN|SECRET|PASSWORD)=.*/\1=<redacted>/'` or a variant, because that leaves a
   differently named value such as `GITHUB_APM_PAT` in the transcript.
 - Read the issue before changing anything, using the `repositoryRoot`, `harnessDirectory`, and
-  `stateDirectory` the single `devboard_status` call above resolved; never issue a second
-  `devboard_status` call. `issue_get` with `{"number": <number>}` returns that issue's title,
-  body, labels, state, and URL on whichever forge the repository uses. Use `issues_list` only to
-  confirm the state of a referenced prerequisite, never to survey the backlog.
+  `stateDirectory` the `devboard_status` call above resolved; reuse those values instead of
+  calling `devboard_status` again. `issue_get` with `{"number": <number>}` returns that issue's
+  title, body, labels, state, and URL on whichever forge the repository uses. Use `issues_list`
+  only to confirm the state of a referenced prerequisite, never to survey the backlog.
 - Forge state — issues, labels, releases, and workflow runs or jobs — MUST be read and mutated
   through the `devboard` MCP tools: `issue_get` and `issues_list` for reads, `issue_close` for the
   one close, and `verification_run` for an allowlisted check. NEVER source `.env` (including
@@ -254,8 +261,8 @@ check's whole process group at its 900-second bound, and returns `check`, `exitC
 `bun run verify:interface` and a log an earlier run wrote are never a verdict, and a
 `tail`/`head`/`grep` pipe never replaces one.
 
-- Use `repositoryRoot` and `harnessDirectory` from the single `devboard_status` call above; never
-  issue another `devboard_status` call. When `harnessDirectory` is the `.devboard/` you changed,
+- Use `repositoryRoot` and `harnessDirectory` from the `devboard_status` call above, not a second
+  call. When `harnessDirectory` is the `.devboard/` you changed,
   the tool verifies the changed revision and is the only way to run the check: never invoke
   `bun run verify:interface` from a shell in that case, because the tool result is the whole
   verdict and the shell form only repeats the same run.
