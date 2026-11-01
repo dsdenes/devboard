@@ -335,11 +335,12 @@ into `.devboard/.tmp/*.log` or any other file: the redirect replaces the failing
   write the log under `.devboard/.tmp/` as *Inputs and paths* states — never joined to the
   command with `&&` and never re-probed with `ls` — and echo the tail of the log in the same tool
   result so a failure never arrives as `(no output)`.
-- The `verification_run` tool writes the complete output of its own run to `.devboard`'s
-  `.tmp/verify-interface.log` and returns that path in `log`. Read it whole on failure — never
-  `tail`, `head`, `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON
-  survive instead of a fixed number of trailing lines. Never take a verdict from a log an earlier
-  run wrote: the tool truncates the file before the check starts.
+- The `verification_run` tool writes the complete output of its own run to a log unique to that
+  invocation and returns that path in `log`; when the run settles it also publishes the same
+  complete output to `.devboard`'s `.tmp/verify-interface.log`. Read the returned path whole on
+  failure — never `tail`, `head`, `grep`, or `2>&1 | tee` it — so the failing check message and its
+  evidence JSON survive instead of a fixed number of trailing lines. Never take a verdict from a
+  log an earlier run wrote: each invocation starts its own empty log.
 - Never kill or restart `verify:interface`: a killed job loses the assertion. The
   `verification_run` call itself is never backgrounded; it returns the verdict in one result. For
   the shell fallback, a job status line such as `Backgrounded as job bg_N` is never a failure

@@ -2124,9 +2124,10 @@ from those headers and parses only the matching file, so one read does not cost 
 - `verification_run` runs only `test`, `check`, `build`, `typecheck`, or a `verify:<name>` present
   in `.devboard/package.json`, with `.devboard` as cwd, an optional bounded list of existing test
   paths, a 900-second deadline, and at most 16 KiB of captured output. It writes the check's complete
-  output to `<stateDir>/<check>.log` before the spawn, truncating any earlier file, and returns that
-  repository-relative path as `log`, so the 16 KiB `output` bound never shortens the evidence. The
-  deadline covers the output reads too and reaps the check's process group, so a descendant that
+  output to a log unique to that invocation and returns that repository-relative path as `log`, then
+  publishes the same complete output to `<stateDir>/<check>.log` when the run settles, so two
+  concurrent runs never unlink each other's evidence and the 16 KiB `output` bound never shortens it.
+  The deadline covers the output reads too and reaps the check's process group, so a descendant that
   inherits the pipes cannot hold the call. Any other check, a path outside `.devboard`, or an
   unknown `verify:<name>` is refused before anything runs.
 

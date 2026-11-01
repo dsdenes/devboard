@@ -287,7 +287,8 @@ const TOOLS: readonly McpToolDefinition[] = [
     description:
       "Runs one allowlisted check from `.devboard/package.json` with a 900-second " +
       "timeout and at most 16 KiB of captured output. The check's complete output is " +
-      "written to `<stateDir>/<check>.log` and that path is returned as `log`.",
+      "written to a log unique to that invocation and that path is returned as `log`; " +
+      "when the run settles the same output is published to `<stateDir>/<check>.log`.",
     inputSchema: object(
       {
         check: STRING,

@@ -851,13 +851,15 @@ describe("MCP work and control tools", () => {
     const result = await runVerification(context, "verify:chatty", undefined);
 
     expect(result.truncated).toBe(true);
-    expect(result.log).toBe("state/verify-chatty.log");
-    const logged = await readFile(join(context.stateDir, "verify-chatty.log"), "utf8");
+    expect(result.log).toMatch(/^state\/verify-chatty\.\d+\.\d+\.log$/);
+    const logged = await readFile(join(context.repoDir, result.log), "utf8");
     expect(logged.split("\n").filter((line) => line === "x".repeat(200)).length).toBe(400);
     expect(Buffer.byteLength(logged, "utf8")).toBeGreaterThan(VERIFICATION_OUTPUT_MAX_BYTES);
+    const published = await readFile(join(context.stateDir, "verify-chatty.log"), "utf8");
+    expect(published).toBe(logged);
   }, 30_000);
 
-  test("verification_run truncates a log an earlier run wrote", async () => {
+  test("verification_run publishes over a log an earlier run wrote", async () => {
     await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
     const dir = await mkdtemp(join(harnessRoot, ".tmp", "verification-log-stale-"));
     directories.push(dir);
@@ -879,6 +881,64 @@ describe("MCP work and control tools", () => {
     const logged = await readFile(join(context.stateDir, "verify-brief.log"), "utf8");
     expect(logged.includes("fresh")).toBe(true);
     expect(logged.includes("stale")).toBe(false);
+  }, 30_000);
+
+  test("two concurrent verification runs keep their own logs", async () => {
+    await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
+    const dir = await mkdtemp(join(harnessRoot, ".tmp", "verification-log-concurrent-"));
+    directories.push(dir);
+    const slots = join(dir, "slots");
+    // Each invocation claims the first free slot, so the two markers differ,
+    // then waits until both slots exist, so the runs genuinely overlap.
+    const code =
+      "const fs = require(\"node:fs\");" +
+      `const slots = ${JSON.stringify(slots)};` +
+      "fs.mkdirSync(slots, { recursive: true });" +
+      "let i = 1;" +
+      "for (;;) { try { fs.writeFileSync(slots + \"/slot-\" + i, \"x\", { flag: \"wx\" }); break; }" +
+      " catch { i += 1; } }" +
+      "console.log(\"marker-\" + i);" +
+      "const deadline = Date.now() + 5000;" +
+      "while (Date.now() < deadline) {" +
+      "  let ready = 0;" +
+      "  for (let k = 1; k <= 2; k += 1) {" +
+      "    try { fs.accessSync(slots + \"/slot-\" + k); ready += 1; } catch {}" +
+      "  }" +
+      "  if (ready === 2) break;" +
+      "  await Promise.resolve();" +
+      "}";
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ scripts: { "verify:concurrent": `bun -e '${code}'` } }),
+    );
+    const context: McpContext = {
+      repoDir: dir,
+      harnessDir: dir,
+      stateDir: join(dir, "state"),
+      environment: process.env,
+    };
+
+    const [first, second] = await Promise.all([
+      runVerification(context, "verify:concurrent", undefined),
+      runVerification(context, "verify:concurrent", undefined),
+    ]);
+
+    expect(first.log).not.toBe(second.log);
+    const logs = await Promise.all(
+      [first.log, second.log].map((path) => readFile(join(context.repoDir, path), "utf8")),
+    );
+    const markers = logs.map((text) =>
+      text.split("\n").filter((line) => line.startsWith("marker-")),
+    );
+    expect(markers[0]).toHaveLength(1);
+    expect(markers[1]).toHaveLength(1);
+    const [firstMarker, secondMarker] = [markers[0][0] ?? "", markers[1][0] ?? ""];
+    expect([firstMarker, secondMarker].sort()).toEqual(["marker-1", "marker-2"]);
+    // Each path still holds only its own invocation's complete output.
+    expect(logs[0].includes(secondMarker)).toBe(false);
+    expect(logs[1].includes(firstMarker)).toBe(false);
+    const published = await readFile(join(context.stateDir, "verify-concurrent.log"), "utf8");
+    expect(published === logs[0] || published === logs[1]).toBe(true);
   }, 30_000);
 
   test("every control tool delegates to the one live dashboard", async () => {
