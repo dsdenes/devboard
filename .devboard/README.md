@@ -2606,14 +2606,16 @@ reopened issue returns to `pending` on the next read. For an implemented issue t
 the commit that shipped it — the close entry's commit when present, otherwise the `commit_ref`
 entries of earlier commits whose message names the issue, otherwise every 7–40 character hex token
 of the newest comments, most recent first — to one unambiguous full commit through the checkout or
-GitHub. Each candidate is verified rather than trusted: comment prose carries fingerprints, process
-ids, and epoch stamps that look like a SHA, so a candidate that does not resolve is skipped and the
-next one is tried, up to twelve candidates per issue. The first commit that resolves and appears in
-a published release decides the version. It then selects the earliest published GitHub Release tag
-whose history contains that commit, ordered by `publishedAt` and breaking ties by tag name. The row
-shows `—` when no candidate resolves or no published release contains it, and a release published
-later fills a blank version on the next read. An API close records no commit, so a commit message
-names its issue with a trailing `(#<number>)` to give the forge that link.
+the forge. Each candidate is verified rather than trusted: comment prose carries fingerprints,
+process ids, and epoch stamps that look like a SHA, so a candidate that does not resolve is skipped
+and the next one is tried, up to twelve candidates per issue. The first commit that resolves and
+appears in a published release decides the version. It then selects the earliest published release
+tag whose history contains that commit, ordered by `publishedAt` and breaking ties by tag name. A
+tag the checkout already carries answers containment offline; a release the checkout has not
+fetched is compared on the forge, so a host without local release tags still reports the version.
+The row shows `—` when no candidate resolves or no published release contains it, and a release
+published later fills a blank version on the next read. An API close records no commit, so a commit
+message names its issue with a trailing `(#<number>)` to give the forge that link.
 
 ### Periodic check
 

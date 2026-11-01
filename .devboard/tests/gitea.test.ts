@@ -59,7 +59,7 @@ function repository(): string {
   return directory;
 }
 
-function taggedRepository(tag: string): { directory: string; commit: string } {
+function committedRepository(): { directory: string; commit: string } {
   const directory = repository();
   const git = (args: string[]): string => {
     const result = Bun.spawnSync({
@@ -81,8 +81,17 @@ function taggedRepository(tag: string): { directory: string; commit: string } {
     "-m",
     "shipped",
   ]);
-  const commit = git(["rev-parse", "HEAD"]);
-  git(["tag", tag]);
+  return { directory, commit: git(["rev-parse", "HEAD"]) };
+}
+
+function taggedRepository(tag: string): { directory: string; commit: string } {
+  const { directory, commit } = committedRepository();
+  const result = Bun.spawnSync({
+    cmd: ["git", "-C", directory, "tag", tag],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
   return { directory, commit };
 }
 
@@ -971,6 +980,60 @@ describe("Gitea watchdog activity", () => {
         version: "v1.0.0",
       },
     ]);
+  });
+
+  test("resolves a shipped version through the forge when no local tag names the release", async () => {
+    const checkout = committedRepository();
+    const shipped = "9".repeat(40);
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (/\/issues\/9$/.test(url.pathname)) return Response.json({ state: "closed" });
+      if (url.pathname.endsWith("/issues/9/timeline")) {
+        return Response.json([
+          { type: "commit_ref", ref_commit_sha: shipped },
+          { type: "close", ref_commit_sha: "" },
+        ]);
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1
+            ? [
+                { tag_name: "v2.0.0", published_at: "2026-10-01T00:00:00Z" },
+                { tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" },
+              ]
+            : [],
+        );
+      }
+      if (url.pathname.endsWith(`/git/commits/${shipped}`)) {
+        return Response.json({ sha: shipped });
+      }
+      if (url.pathname.endsWith(`/compare/v1.0.0...${shipped}`)) {
+        return Response.json({ total_commits: 0, commits: [] });
+      }
+      if (url.pathname.endsWith(`/compare/v2.0.0...${shipped}`)) {
+        return Response.json({ total_commits: 4, commits: [] });
+      }
+      return Response.json({ message: `unexpected ${url}` }, 404);
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: checkout.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/9"])).toEqual([
+      {
+        url: "http://gitea.test/acme/fixture/issues/9",
+        state: "implemented",
+        version: "v1.0.0",
+      },
+    ]);
+    expect(calls).toContain(`/api/v1/repos/acme/fixture/compare/v1.0.0...${shipped}`);
+    expect(calls).not.toContain(`/api/v1/repos/acme/fixture/compare/${shipped}...v1.0.0`);
   });
 
   test("scans a repository's releases once for all of its closed issues", async () => {
