@@ -748,8 +748,9 @@ directory, and the decision board is never an ADR record.
 The Discover mode is the fourth client-only view, opened from the activity bar. It exists for an
 existing host project and is produced by seven independently triggerable discovery agents:
 **Data Sheet**, **Contribution Agent**, **Testing Strategy**, **Naming Conventions**, **Coding
-Conventions**, **Architecture & Boundaries**, and **Glossary Agent**. Each agent is one ACP turn with its own prompt file, its own
-slash command, its own staging directory, and its own slice of the published artifacts. Switching
+Conventions**, **Architecture & Boundaries**, and **Glossary Agent**. Each agent is one ACP turn
+with its own prompt file, its own slash command, its own staging directory, and its own slice of
+the published artifacts. Switching
 to Discover, opening a card, and switching its pages send no WebSocket frame and start, stop,
 reset, or clear nothing; all four views stay mounted, so native details, scroll state, and focus
 survive. Discover events render only in this view and never touch Goal Mode's activity, question,
