@@ -2227,6 +2227,14 @@ neither hidden nor stopped; the next read covers it. With no connected client th
 no tracker call, and the worker's own poll still ends a run the moment it sees the issue leave the
 open list.
 
+That stop is a cancellation, never a completion. A run closes its own issue through
+`issue_close`, which records the closing run beside the issue's state under the worker's state
+directory; the worker passes `DEVBOARD_ISSUES_RUN_ID` to each peer so the tool can name it. The
+dashboard sends no `abandon` for a run the record names, and the worker applies none: the run
+finishes its turn, its own turn-end read proves the issue closed, and it is recorded `succeeded`
+with its handled entry, exactly as when a poll never dropped the issue. The record names one run,
+so a later run for the same issue is stopped as usual, and it is removed when its run settles.
+
 Session updates stream into the mode, permission requests are auto-approved by the ACP client,
 elicitation questions are answered per agent, and every peer closes when its run ends or Stop is
 clicked. The agents own every worktree, commit, push, issue closure, and repository mutation; the

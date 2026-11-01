@@ -19,6 +19,7 @@ import {
   statePath,
 } from "../issues/paths";
 import { preflightIssues } from "../issues/preflight";
+import { closedByRun, recordClosedByRun } from "../issues/self-close";
 import {
   appendActivityLine,
   emptyState,
@@ -947,6 +948,44 @@ describe("closed issues", () => {
       expect(state.runs.map((run) => run.status).sort()).toEqual(["running", "stopped"]);
       expect(state.cooldowns).toEqual({});
       expect(state.agents.map((agent) => agent.issueNumber)).toEqual([2]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a run that closed its own issue settles instead of being stopped", async () => {
+    let open = [issue(1)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      const runId = f.state().agents[0]!.runId;
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_RUN_ID).toBe(runId);
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_ISSUE_NUMBER).toBe("1");
+      recordClosedByRun(f.stateDir, f.root, 1, runId);
+
+      // The run's own close drops #1 from the open list while its turn runs.
+      open = [];
+      await f.worker.poll();
+      expect(f.peers[0]!.closed).toBe(false);
+      expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([1]);
+      expect(f.state().notice).toBeNull();
+
+      f.peers[0]!.succeed();
+      const settled = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(1))?.status === "succeeded"
+            ? f.state()
+            : undefined,
+        "the succeeded run",
+      );
+      expect(settled.agents).toEqual([]);
+      expect(settled.notice).toBeNull();
+      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+      expect(ledger.handled["1"]?.runId).toBe(runId);
+      expect(closedByRun(f.stateDir, f.root, 1)).toBeNull();
     } finally {
       await stop(f);
     }

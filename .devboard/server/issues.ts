@@ -16,6 +16,7 @@ import {
 } from "../issues/preflight";
 import { DEADLINE_EXPIRED, withinDeadline } from "../lib/deadline";
 import { cachedRepository, topLevel } from "../issues/repository";
+import { closedByRun } from "../issues/self-close";
 import { closeIssue as closeTrackerIssue, type CloseIssueRequest } from "./issue-close";
 import {
   TrackerSync,
@@ -249,6 +250,12 @@ export class IssuesBridge {
 
     const eligible = state.agents.filter((agent) => {
       if (open.has(agent.issueNumber)) return false;
+      // The run closed its own issue: its worker settles the run as succeeded,
+      // so the dashboard must not send the cancellation it sends for an
+      // operator's close.
+      if (closedByRun(this.stateDir, this.repoDir, agent.issueNumber) === agent.runId) {
+        return false;
+      }
       const startedAt = Date.parse(agent.startedAt);
       return Number.isFinite(startedAt) && startedAt < readStartedAt;
     });

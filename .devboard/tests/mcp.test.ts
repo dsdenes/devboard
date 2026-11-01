@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { MCP_TOOLS, MCP_TOOL_NAMES } from "../mcp/catalog";
 import { GOAL_TEXT_MAX_BYTES } from "../mcp/goals";
 import { ISSUE_BODY_MAX_BYTES } from "../mcp/issues";
+import { closedByRun } from "../issues/self-close";
 import { callTool } from "../mcp/tools";
 import { toolInvocationCounts, toolInvocationFile } from "../mcp/invocations";
 import { runVerification, VERIFICATION_OUTPUT_MAX_BYTES } from "../mcp/verification";
@@ -678,6 +679,22 @@ describe("MCP work and control tools", () => {
       issues: Array<{ number: number }>;
     };
     expect(listed.issues.map((issue) => issue.number)).toEqual([created.number]);
+  });
+
+  test("issue_close names the issues run that closed its own issue", async () => {
+    const { context } = await workspace();
+    const forge = fakeForge();
+    const injected = { ...context, forgeIssues: forge };
+    const first = await forge.create({ title: "outside", body: "", labels: [] });
+    const second = await forge.create({ title: "inside", body: "", labels: [] });
+
+    // A close from a session that is not an issues run names no run.
+    await callTool(injected, "issue_close", { number: first.number });
+    expect(closedByRun(context.stateDir, context.repoDir, first.number)).toBeNull();
+
+    injected.environment.DEVBOARD_ISSUES_RUN_ID = "run-7";
+    await callTool(injected, "issue_close", { number: second.number });
+    expect(closedByRun(context.stateDir, context.repoDir, second.number)).toBe("run-7");
   });
 
   test("multibyte issue bodies and goals stay within their byte budgets", async () => {

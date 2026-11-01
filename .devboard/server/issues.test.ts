@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { IssuesBridge } from "./issues";
 import { acquireLock } from "../issues/lock";
 import { controlDirectory, lockPath, statePath } from "../issues/paths";
+import { recordClosedByRun } from "../issues/self-close";
 import { emptyState, readState, writeState, type IssuesAgent, type IssuesIssue } from "../issues/state";
 import { GITLAB_TRACKER_UNSUPPORTED } from "../issues/tracker";
 import { createdDirectories, temporaryDirectory } from "../tests/fixtures/scout-helpers";
@@ -629,6 +630,46 @@ describe("dashboard tracker sync", () => {
       // The same closure on the next read must not queue a second command.
       await subject.syncNow();
       expect(await controlCommands(stateDir, root)).toEqual([{ type: "abandon", number: 5 }]);
+    } finally {
+      subject.dispose();
+      lock.release();
+    }
+  });
+
+  test("a run that closed its own issue receives no abandon command", async () => {
+    const root = await temporaryDirectory("issues-sync-self-close");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" as const }),
+      enabled: true,
+      agents: [runningAgent(5, "run-5")],
+      queue: [{ ...issue(5), handled: false, runId: null, agentRunId: "run-5" }],
+    });
+    // The run closed #5 itself; its worker settles it as succeeded.
+    recordClosedByRun(stateDir, root, 5, "run-5");
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [], etag: null }),
+    });
+    try {
+      await subject.syncNow();
+      expect(await controlCommands(stateDir, root)).toEqual([]);
     } finally {
       subject.dispose();
       lock.release();
