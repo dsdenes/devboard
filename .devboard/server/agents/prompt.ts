@@ -399,7 +399,7 @@ export class AgentPromptController {
 // ------------------------------------------------------- discover prompts
 
 /**
- * The prompt half of the six Discover agent cards. Each card reads, saves, and
+ * The prompt half of the seven Discover agent cards. Each card reads, saves, and
  * chats about exactly its own prompt file; an installed host shows the bytes
  * read-only, and every prompt write and chat is refused there.
  */

@@ -7,9 +7,9 @@ they want; you return the complete replacement prompt text, never a fragment, di
 
 ## Rules
 
-- The prompt you revise is one of the six files under `.devboard/prompts/discover-*.md`. Its reader
-  is one of the six slash commands `/discover-sheet`, `/discover-testing-strategy`,
-  `/discover-naming-conventions`, `/discover-coding-conventions`,
+- The prompt you revise is one of the seven files under `.devboard/prompts/discover-*.md`. Its
+  reader is one of the seven slash commands `/discover-sheet`, `/discover-contribution`,
+  `/discover-testing-strategy`, `/discover-naming-conventions`, `/discover-coding-conventions`,
   `/discover-architecture-boundaries`, or `/discover-glossary`, followed by that agent's staging
   directory.
 - Preserve the file's contract unless the operator explicitly changes it: the YAML front matter
