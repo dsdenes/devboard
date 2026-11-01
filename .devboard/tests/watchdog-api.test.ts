@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import { acquireLock, type LockOwner } from "../issues/lock";
 import { earliestRelease, resolveShippedVersion, shippedVersion } from "../lib/github-release";
 import { createApp } from "../server/app";
 import {
@@ -13,6 +14,14 @@ import {
   type WatchdogReader,
 } from "../server/watchdog";
 import { CYCLE_HISTORY_LIMIT, readWatchdogCycles } from "../watchdog/history";
+import { takeWatchdogCommands } from "../watchdog/control";
+import {
+  controlDirectory,
+  versionedControlDirectory,
+  versionedLockPath,
+  versionedWorkerDirectory,
+} from "../watchdog/paths";
+import { readHarnessVersion, hostHarnessDir } from "../server/version";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
 import { readWatchdogStatus } from "../watchdog/status";
 import { testProviderService } from "../server/fixtures/test-providers";
@@ -383,6 +392,12 @@ function watchdogAdapter(
     now?: () => number;
     intervalMs?: number;
     staleAfterMs?: number;
+    runningVersion?: string | null;
+    spawnWorker?: (
+      argv: string[],
+      environment: Record<string, string | undefined>,
+    ) => number | undefined;
+    systemctl?: (args: string[]) => { code: number; stdout: string; stderr: string };
   } = {},
 ): WatchdogActivity {
   const root = resolve(directory, "..");
@@ -393,11 +408,61 @@ function watchdogAdapter(
     harnessDir: resolve(import.meta.dir, ".."),
     send: () => undefined,
     watchdogDir: directory,
+    ...(options.runningVersion === undefined ? {} : { runningVersion: options.runningVersion }),
     ...(options.reader === undefined ? {} : { reader: options.reader }),
+    ...(options.spawnWorker === undefined ? {} : { spawnWorker: options.spawnWorker }),
+    ...(options.systemctl === undefined ? {} : { systemctl: options.systemctl }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.intervalMs === undefined ? {} : { intervalMs: options.intervalMs }),
     ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
   });
+}
+
+function workerState(
+  directory: string,
+  options: {
+    version: string | null;
+    lifecycle: "running" | "stopping" | "stopped";
+    stateDir: string;
+    lastRunAt?: string | null;
+    notice?: string | null;
+    draining?: boolean;
+  },
+): void {
+  writeWorkerState(directory, {
+    version: 1,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    root: resolve(directory, ".."),
+    stateDir: options.stateDir,
+    lifecycle: options.lifecycle,
+    enabled: options.lifecycle !== "stopped",
+    harnessVersion: options.version,
+    argv: ["bun", "watchdog/worker.ts"],
+    lastRunAt: options.lastRunAt ?? null,
+    nextRunAt: null,
+    lastError: null,
+    notice: options.notice ?? null,
+    ...(options.draining === true ? { draining: true } : {}),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function holdWorkerLock(
+  directory: string,
+  version: string | null,
+  stateDir: string,
+): ReturnType<typeof acquireLock> {
+  return acquireLock(versionedLockPath(directory, version), {
+    repo: resolve(directory, ".."),
+    stateDir,
+    harnessVersion: version,
+    argv: ["bun", "watchdog/worker.ts"],
+  });
+}
+
+function isLive(result: ReturnType<typeof acquireLock>): result is { acquired: true; owner: LockOwner; release: () => void } {
+  return result.acquired;
 }
 
 function issueStates(snapshot: ReturnType<WatchdogActivity["snapshot"]>): Array<string | null> {
@@ -856,6 +921,140 @@ describe("WatchdogActivity", () => {
         .digest("hex"),
     ).toBe(runBefore);
     expect(existsSync(join(directory, "projection.json"))).toBe(true);
+  });
+});
+
+describe("watchdog worker family", () => {
+  test("lists legacy and versioned workers in one snapshot and controls them all", async () => {
+    const directory = await watchdogDirectory();
+    const root = resolve(directory, "..");
+    const stateDir = join(root, "state");
+    const oldVersion = "0.1.1";
+    const newVersion = "0.1.2";
+    workerState(directory, {
+      version: oldVersion,
+      lifecycle: "running",
+      stateDir,
+      lastRunAt: "2026-10-24T11:00:00.000Z",
+    });
+    const newestDirectory = versionedWorkerDirectory(directory, newVersion);
+    workerState(newestDirectory, {
+      version: newVersion,
+      lifecycle: "running",
+      stateDir,
+      lastRunAt: "2026-10-24T12:30:00.000Z",
+    });
+    const held = holdWorkerLock(directory, newVersion, stateDir);
+    expect(isLive(held)).toBe(true);
+    const activity = watchdogAdapter(directory, {
+      runningVersion: newVersion,
+      reader: fakeReader(new Map()),
+    });
+    try {
+      const snapshot = activity.snapshot();
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.owned).toBe(true);
+      expect(snapshot.lifecycle).toBe("running");
+      expect(snapshot.cadence.lastRunAt).toBe("2026-10-24T12:30:00.000Z");
+      expect(snapshot.workers?.map((worker) => worker.version).sort()).toEqual(
+        [oldVersion, newVersion].sort(),
+      );
+      expect(new Set(snapshot.workers?.map((worker) => worker.lifecycle))).toEqual(
+        new Set(["running"]),
+      );
+      expect(snapshot.notice).toBeNull();
+      expect(JSON.stringify(snapshot)).not.toContain("this dashboard loaded");
+      expect(JSON.stringify(snapshot)).not.toContain("It is left running");
+
+      expect(activity.stop().ok).toBe(true);
+      expect(takeWatchdogCommands(versionedControlDirectory(directory, newVersion))).toEqual([
+        { type: "stop" },
+      ]);
+      expect(takeWatchdogCommands(controlDirectory(directory))).toEqual([{ type: "stop" }]);
+
+      expect(activity.setSettings(30, null, null).ok).toBe(true);
+      expect(
+        takeWatchdogCommands(versionedControlDirectory(directory, newVersion)).map(
+          (command) => command.type,
+        ),
+      ).toEqual(["settings"]);
+      expect(
+        takeWatchdogCommands(controlDirectory(directory)).map((command) => command.type),
+      ).toEqual(["settings"]);
+    } finally {
+      activity.dispose();
+      if (isLive(held)) held.release();
+    }
+  });
+
+  test("auto-starts the newest harness once and drains every older version", async () => {
+    const directory = await watchdogDirectory();
+    const root = resolve(directory, "..");
+    const stateDir = join(root, "state");
+    const newest = readHarnessVersion(hostHarnessDir(root));
+    expect(newest).not.toBeNull();
+    if (newest === null) return;
+    const oldVersion = "0.1.1";
+    expect(oldVersion).not.toBe(newest);
+    const oldDirectory = versionedWorkerDirectory(directory, oldVersion);
+    workerState(oldDirectory, {
+      version: oldVersion,
+      lifecycle: "running",
+      stateDir,
+    });
+    const oldLock = holdWorkerLock(directory, oldVersion, stateDir);
+    expect(isLive(oldLock)).toBe(true);
+    const spawned: string[][] = [];
+    let newestLock: ReturnType<typeof acquireLock> | undefined;
+    const activity = watchdogAdapter(directory, {
+      runningVersion: newest,
+      reader: fakeReader(new Map()),
+      systemctl: () => ({ code: 127, stdout: "", stderr: "systemctl: not found" }),
+      spawnWorker: (argv, environment) => {
+        spawned.push(argv);
+        expect(environment.REPO_DIR).toBe(root);
+        newestLock = holdWorkerLock(directory, newest, stateDir);
+        workerState(versionedWorkerDirectory(directory, newest), {
+          version: newest,
+          lifecycle: "running",
+          stateDir,
+        });
+        return process.pid;
+      },
+    });
+    try {
+      activity.begin();
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]).toEqual([
+        process.execPath,
+        join(resolve(import.meta.dir, ".."), "watchdog", "worker.ts"),
+        "--root",
+        root,
+        "--state-dir",
+        directory,
+        "--owner-state-dir",
+        stateDir,
+      ]);
+      expect(takeWatchdogCommands(versionedControlDirectory(directory, oldVersion))).toEqual([
+        { type: "drain" },
+      ]);
+      const snapshot = activity.snapshot();
+      expect(snapshot.workers?.map((worker) => worker.version).sort()).toEqual(
+        [oldVersion, newest].sort(),
+      );
+      expect(snapshot.lifecycle).toBe("running");
+      expect(snapshot.notice).toBeNull();
+
+      // The takeover is one-shot: later looks never spawn another worker.
+      activity.begin();
+      activity.snapshot();
+      await Bun.sleep(20);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      activity.dispose();
+      if (isLive(oldLock)) oldLock.release();
+      if (newestLock !== undefined && isLive(newestLock)) newestLock.release();
+    }
   });
 });
 

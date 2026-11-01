@@ -78,7 +78,12 @@ describe("shipped prompt assets", () => {
 		const { tarball } = await packHarness("0.0.0-prompt-assets", temporaryDirectory("prompt-pack"));
 		const packed = new Set(await packedPaths(tarball));
 		for (const [relative, prompts] of references) {
-			expect({ path: relative, prompts, present: packed.has(relative) }).toEqual({
+			// A tarball lists files, so a directory reference is present when
+			// at least one file below it is.
+			const present =
+				packed.has(relative) ||
+				[...packed].some((path) => path.startsWith(`${relative}/`));
+			expect({ path: relative, prompts, present }).toEqual({
 				path: relative,
 				prompts,
 				present: true,

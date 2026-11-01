@@ -7,6 +7,8 @@ import { ScoutBridge } from "../server/scout";
 import { agentRegistry } from "../server/agents/registry";
 import { fileScoutIssue, issueBody, type GhRunner } from "../issues/scout/actions";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
+import { liveScanClaim } from "../issues/scout/claims";
+import { versionLockPath } from "../issues/lock";
 import {
   createScoutGitHub,
   isGitHubRateLimited,
@@ -21,6 +23,7 @@ import {
   scansDirectory,
   settingsPath,
   statePath,
+  versionedControlDirectory,
 } from "../issues/scout/paths";
 import { ghCommand } from "../issues/scout/preflight";
 import { readScanFile, readSettings, type ScoutState } from "../issues/scout/state";
@@ -1477,12 +1480,14 @@ describe("lifecycle", () => {
       await scan(f, 0, uniqueItems(1, 1));
       const before = f.state();
       const rows = before.issues.map((row) => row.number);
+      const lock = versionLockPath(lockPath(f.root), before.worker?.harnessVersion ?? null);
+      expect(existsSync(lock)).toBe(true);
       await f.worker.stop();
       expect(f.state().lifecycle).toBe("stopped");
       expect(f.state().enabled).toBe(false);
       expect(f.state().issues.map((row) => row.number)).toEqual(rows);
       expect(f.state().limits).toEqual(before.limits);
-      expect(existsSync(lockPath(f.root))).toBe(false);
+      expect(existsSync(lock)).toBe(false);
 
       resumed = new ScoutWorker({
         repoDir: f.root,
@@ -1502,17 +1507,20 @@ describe("lifecycle", () => {
     }
   });
 
-  test("a live lock attaches without a second worker", async () => {
-    const f = await fixture({ label: "live-lock" });
+  test("a live lock of the same version attaches without a second worker", async () => {
+    const f = await fixture({ label: "live-lock", harnessVersion: "0.1.0" });
     try {
       const second = new ScoutWorker({
         repoDir: f.root,
         stateDir: f.stateDir,
         github: f.github,
+        harnessVersion: "0.1.0",
       });
       workers.push(second);
       expect(second.start("acme/fixture")).toBe(false);
-      expect(readFileSync(lockPath(f.root), "utf8")).toContain(String(process.pid));
+      expect(readFileSync(versionLockPath(lockPath(f.root), "0.1.0"), "utf8")).toContain(
+        String(process.pid),
+      );
       expect(second.currentState.enabled).toBe(false);
     } finally {
       await f.worker.stop();
@@ -1554,6 +1562,77 @@ describe("lifecycle", () => {
       await f.worker.stop();
     }
   });
+});
+
+describe("version takeover", () => {
+  test("the older worker drains its in-flight scan and the newer worker claims the next one", async () => {
+    const f = await fixture({ label: "takeover", harnessVersion: "0.0.9", syncMs: 60_000 });
+    const newerPeers: ControlledPeer[] = [];
+    let newer: ScoutWorker | undefined;
+    try {
+      const oldPeer = await waitFor(() => f.peers[0], "the old worker's scan");
+      const oldScanId = basename(scanDirectoryOf(oldPeer.prompts[0]!));
+
+      newer = new ScoutWorker({
+        repoDir: f.root,
+        stateDir: f.stateDir,
+        syncMs: 60_000,
+        cadenceMs: 0,
+        harnessVersion: "0.1.0",
+        now: () => new Date(f.clock.now),
+        github: f.github,
+        connect: (peerOptions) => {
+          const peer = new ControlledPeer(peerOptions);
+          newerPeers.push(peer);
+          return peer;
+        },
+        fileIssue: fakeFiling(f),
+      });
+      workers.push(newer);
+      expect(newer.start("acme/fixture")).toBe(true);
+
+      // The newer worker reads GitHub but cannot take the running scan slot.
+      await waitFor(
+        () => (newer!.currentState.sync.state === "ok" ? true : undefined),
+        "the newer worker's first read",
+      );
+      await newer.beginScan();
+      expect(newerPeers).toHaveLength(0);
+      expect(readScanFile(scanDirectory(f.root, oldScanId))?.status).toBe("running");
+
+      writeCommand(versionedControlDirectory(f.stateDir, f.root, "0.0.9"), { type: "drain" });
+      await waitFor(
+        () => (f.state().notice?.startsWith("Draining") ? true : undefined),
+        "the old worker to publish its drain",
+      );
+      expect(f.state().enabled).toBe(false);
+      expect(newerPeers).toHaveLength(0);
+
+      // The old worker's in-flight scan finishes after the drain, then it
+      // exits on its own and releases its versioned lock.
+      writeRecommendations(scanDirectoryOf(oldPeer.prompts[0]!), scanDocument(uniqueItems(1, 1)));
+      oldPeer.succeed();
+      await waitSettled(f.root, oldPeer.prompts[0]!, "the old worker's in-flight scan");
+      await waitFor(
+        () => (f.state().lifecycle === "stopped" ? true : undefined),
+        "the drained worker to exit",
+      );
+      expect(existsSync(versionLockPath(lockPath(f.root), "0.0.9"))).toBe(false);
+      expect(existsSync(lockPath(f.root))).toBe(false);
+
+      // The next scan belongs to the newer version, and its claim records it.
+      const nextPeer = await waitFor(() => newerPeers[0], "the newer worker's scan");
+      const claim = liveScanClaim(f.root);
+      expect(claim?.harnessVersion).toBe("0.1.0");
+      expect(claim?.scanId).not.toBe(oldScanId);
+      writeRecommendations(scanDirectoryOf(nextPeer.prompts[0]!), scanDocument(uniqueItems(2, 1)));
+      nextPeer.succeed();
+      await waitSettled(f.root, nextPeer.prompts[0]!, "the newer worker's scan");
+    } finally {
+      await newer?.stop();
+      await f.worker.stop();
+    }
+  }, 20_000);
 });
 
 describe("dashboard bridge", () => {
@@ -1764,7 +1843,7 @@ describe("dashboard bridge", () => {
     }
   });
 
-  test("a worker with another harness version is left running with a notice", async () => {
+  test("a worker of another harness version is listed with no mismatch notice", async () => {
     const f = await fixture({ label: "version-mismatch", harnessVersion: "0.0.9" });
     try {
       const bridge = new ScoutBridge({
@@ -1780,8 +1859,15 @@ describe("dashboard bridge", () => {
       });
       const snapshot = bridge.snapshot();
       expect(snapshot.attached).toBe(true);
-      expect(snapshot.notice).toContain("0.0.9");
-      expect(snapshot.notice).toContain("0.1.0");
+      expect(snapshot.notice).toBeNull();
+      expect(snapshot.workers).toEqual([
+        {
+          pid: process.pid,
+          version: "0.0.9",
+          stateDir: f.stateDir,
+          lifecycle: "running",
+        },
+      ]);
       bridge.dispose();
     } finally {
       await f.worker.stop();

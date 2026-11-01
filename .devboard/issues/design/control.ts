@@ -10,6 +10,7 @@ import { isValidCadence, isValidLimit } from "./state";
 
 export type DesignCommand =
   | { type: "stop" }
+  | { type: "drain" }
   | { type: "limits"; maxPerHour: number | null; maxPending: number | null }
   | { type: "cadence"; intervalMinutes: number }
   | {
@@ -43,6 +44,8 @@ export function parseCommand(text: string): DesignCommand | undefined {
   switch (parsed.type) {
     case "stop":
       return { type: "stop" };
+    case "drain":
+      return { type: "drain" };
     case "limits":
       if (!isValidLimit(parsed.maxPerHour) || !isValidLimit(parsed.maxPending)) return undefined;
       return {

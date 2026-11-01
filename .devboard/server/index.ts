@@ -43,11 +43,17 @@ function isAddressInUse(error: unknown): boolean {
  * replacement starts before the listener stops; if it cannot start, this
  * process keeps serving and the restart error stays recoverable.
  */
-function restart(server: Server<unknown>) {
+function restart(server: Dashboard) {
   relaunch(
     server,
     { hostname, port, adrDir, repoDir, goalFile, stateDir },
-    { stop: (current) => current.stop(true), exit: (code) => process.exit(code) },
+    {
+      stop: (current) => current.stop(true),
+      exit: (code) => process.exit(code),
+      beforeStop: () => {
+        server.prepareReplacement();
+      },
+    },
   );
 }
 
@@ -106,8 +112,28 @@ const runningVersion = readHarnessVersion(runningHarnessDir());
 // and never what a running dashboard answers with.
 const staticSnapshot = await snapshotStaticDir({ staticDir, stateDir, version: runningVersion });
 process.once("exit", staticSnapshot.removeSync);
+type Dashboard = ReturnType<typeof createApp>;
 let updater: Updater | undefined;
-let server: Server<unknown> | undefined;
+let server: Dashboard | undefined;
+/** One automatic replacement per installed version; the fallback control retries. */
+let attemptedReplacementFor: string | null = null;
+
+/**
+ * Replaces the running server with the version under the host prefix. The
+ * attempt happens once per installed version and runs without a click.
+ */
+function replaceWithInstalled(version: string): void {
+  if (server === undefined || attemptedReplacementFor === version) return;
+  attemptedReplacementFor = version;
+  journal.write("update", `replacing ${runningVersion ?? "unknown"} with ${version}`);
+  try {
+    restart(server);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    journal.write("update-error", `could not replace the server with ${version}: ${detail}`);
+    server.noteReplacementFailure(error);
+  }
+}
 for (let attempt = 0; ; attempt += 1) {
   try {
     server = createApp({
@@ -155,6 +181,8 @@ updater = startUpdater({
   stateDir,
   currentVersion: runningVersion,
   journal,
+  onInstalled: (version) => replaceWithInstalled(version),
+  onStale: (version) => replaceWithInstalled(version),
 });
 
 console.log(`ADR interface listening on http://${hostname}:${server.port}`);

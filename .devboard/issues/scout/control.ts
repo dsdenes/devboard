@@ -7,12 +7,15 @@ import { isValidCadence, isValidLimit } from "./state";
  * The dashboard-to-scout channel. Commands are individual files created by
  * atomic rename, so the worker never reads a half-written command, and their
  * names sort in submission order. A worker consumes them from any dashboard
- * attached to the same repository state. Only Stop, one page-open refresh, and
- * one settings change remain: filing needs no command.
+ * attached to the same repository state. Only Stop, one page-open refresh, one
+ * settings change, and the drain a newer harness sends to an older worker
+ * remain: filing needs no command.
  */
 
 export type ScoutCommand =
   | { type: "stop" }
+  /** Finish the in-flight scan, start no new one, then exit and release the lock. */
+  | { type: "drain" }
   | { type: "refresh" }
   | {
       type: "settings";
@@ -45,6 +48,8 @@ export function parseCommand(text: string): ScoutCommand | undefined {
   switch (parsed.type) {
     case "stop":
       return { type: "stop" };
+    case "drain":
+      return { type: "drain" };
     case "refresh":
       return { type: "refresh" };
     case "settings":

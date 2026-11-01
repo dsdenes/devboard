@@ -209,13 +209,14 @@ and the Providers control: the selected provider with its lowest remaining perce
 `No provider`, whose tooltip names the provider's model and which opens the Providers dialog.
 The right group states the running lane count, the issues worker state with a state dot, the
 watchdog's last action and age, the OS notifications control, and the running and installed
-versions; each metric carries a
-10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
-shows the existing reload control (`reload-devboard`), whose accessible name and title name both
-versions; reload behavior is unchanged. A mode states its status in its sidebar and workspace,
-never a second time in the status bar, except the issues worker, which is detached from every
-dashboard and reports through `issues-indicator`. The theme toggle and the notification indicator
-live in the activity bar's action group, not the status bar.
+versions; each metric carries a 10px uppercase label so its meaning never rests on color. The
+reload control (`reload-devboard`) appears only when an automatic replacement could not start;
+its accessible name and title name the running and installed versions, and clicking it retries
+the same launcher. A successful replacement needs no click and reloads every connected page once.
+A mode states its status in its sidebar and workspace, never a second time in the status bar,
+except the issues worker, which is detached from every dashboard and reports through
+`issues-indicator`. The theme toggle and the notification indicator live in the activity bar's
+action group, not the status bar.
 
 ### Verifying the interface
 
@@ -541,6 +542,29 @@ restores neither the old lanes nor the old pass. An accepted `restartServer` wit
 becomes idle; the pending flag is cleared before the launcher is invoked, so the replacement
 never restarts itself again for the same request. With no launcher configured, the existing
 unavailable-restart error is reported and the flag is cleared.
+
+### Detached runs and parallel workers
+
+Every agentic run the dashboard starts owns a detached process, not a peer inside the server: the
+lifecycle lanes, a manual ADR run, goal creation, goal revision, skills preparation, goal-draft
+elaboration, Discover, Flow, and Ask. Each owner spawns the ACP peer, appends activity to a
+run-keyed file, publishes its question, and consumes answer, stop, pause, and resume commands.
+When a newer harness replaces the dashboard, the owners stay alive; the replacement leases and
+re-attaches to the same runs, so state and activity replay after reconnect, an answer reaches the
+same run, Stop ends it, and no replacement records the run as stopped or interrupted. A non-
+replacement server exit ends its runs and records the interruption, because no replacement owns
+them.
+
+Each background worker family also accepts a live worker of more than one harness version. The
+running version starts its own worker as soon as an older-version worker is live, sends the older
+worker a `drain`, and claims every unit that arises afterwards; the older worker starts no new
+unit, finishes its in-flight unit, exits when that unit ends, releases its lock, and leaves its
+state, run directories, and activity readable. The mode lists every live worker with its version
+and merges every running unit into one view, so no surface reports a worker/dashboard or
+front-end/backend version divergence. Start launches the newest installed version when no worker
+is live; Pause, Resume, Check now, Stop, and settings apply to every live worker of the family.
+With no worker live, installing a newer version starts none. A worker or run started by a version
+that predates this mechanism has no drain command; it is never killed mid-unit.
 
 A closed or failed lane whose retention window expired while the server was down is not
 replayed; the remaining window is honored after a restart. An unreadable, truncated, or
@@ -1509,7 +1533,10 @@ propagation wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
-staging prefix, and keeps serving its loaded code. After the package is in place it runs the
+staging prefix, and replaces itself with the installed version without an operator click. Every
+connected page receives `serverRestarting`, waits for the replacement, and reloads once. The
+running process never restarts itself on a canonical source checkout, where no package exists
+under `.devboard/node_modules/@dsdenes/devboard`. After the package is in place it runs the
 same wrapper and harness-tree sync `install` runs, with the same git-tracked paths left
 untouched, so `.omp/commands`, `.omp/extensions`, `.omp/mcp.json`, and
 `.devboard/{prompts,extensions,lib,scripts/forge-auth.ts}` match the installed package before
@@ -1522,12 +1549,15 @@ it started with. If npm cannot serve the artifact and
 `.sha256` and installed instead. The npm child always runs in
 that staging directory, and the dashboard starts from the host root rather than the replaceable
 package directory, so replacing the package never leaves a child with a deleted working
-directory. `versionState` reports `running`, `installed`, `latest`, and `stale`; the reload
-control appears while `stale` is true and restarts the server from the installed package. A
-dashboard serving the canonical source checkout reads neither side from the checked-in manifest:
-it reports the newest release tag reachable from its `HEAD` on both sides, so an unreleased commit
-on top never changes the number and an unpacked checkout never claims `0.1.0`. After
-`bun run publish` the source checkout's `running` is the version that tag just published.
+directory. `versionState` reports `running`, `installed`, `latest`, and `stale`. A newer installed
+version replaces the running server without a click and reloads every connected page. When a
+replacement cannot start, the running version keeps serving, `versionState.replacement` carries
+both versions and the failure, the journal records it, and the reload control retries the
+launcher; the control is absent on the normal path. A dashboard serving the canonical source
+checkout reads neither side from the checked-in manifest: it reports the newest release tag
+reachable from its `HEAD` on both sides, so an unreleased commit on top never changes the number
+and an unpacked checkout never claims `0.1.0`. After `bun run publish` the source checkout's
+`running` is the version that tag just published.
 
 A check that cannot use the feed — an offline host, an unreachable Gitea API, a DNS or proxy
 failure, a refused or reset connection, a timeout, an API rate limit, or an answer that is not a

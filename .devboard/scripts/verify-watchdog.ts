@@ -15,6 +15,16 @@ import { chmodSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
+import {
+  lockPath as watchdogLockPath,
+  versionedWorkerDirectory,
+  versionedWorkerStatePath,
+} from "../watchdog/paths";
+import { readWorkerState } from "../watchdog/worker-state";
+import { WatchdogActivity } from "../server/watchdog";
+import { agentRegistry } from "../server/agents/registry";
+import { readHarnessVersion } from "../server/version";
+import { liveLockOwners } from "../issues/lock";
 import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
 
 const MAX_ISSUES = 10;
@@ -344,6 +354,16 @@ if [ -f "$fixtures/fail" ]; then
 fi
 case "$args" in
   *"repos/acme/fixture --jq .permissions.push"*) echo true ;;
+  *"repos/dsdenes/devboard/issues/901 --jq [.state, .created_at, .closed_at] | @tsv"*)
+    printf 'open\\t2026-10-24T12:00:00Z\\t\\n' ;;
+  *"repos/dsdenes/devboard/issues/902 --jq [.state, .created_at, .closed_at] | @tsv"*)
+    printf 'closed\\t2026-10-24T11:00:00Z\\t2026-10-25T11:00:00Z\\n' ;;
+  *"repos/dsdenes/devboard/issues/903 --jq [.state, .created_at, .closed_at] | @tsv"*)
+    printf 'closed\\t2026-10-24T10:00:00Z\\t2026-10-26T10:00:00Z\\n' ;;
+  *"repos/dsdenes/devboard/issues/904 --jq [.state, .created_at, .closed_at] | @tsv"*)
+    printf 'open\\t2026-10-24T09:00:00Z\\t\\n' ;;
+  *"/issues/"*"--jq [.state, .created_at, .closed_at] | @tsv"*)
+    printf 'open\\t2026-10-24T10:00:00Z\\t\\n' ;;
   *"repos/dsdenes/devboard/issues/901 --jq .state"*) echo open ;;
   *"repos/dsdenes/devboard/issues/902 --jq .state"*) echo closed ;;
   *"repos/dsdenes/devboard/issues/903 --jq .state"*) echo closed ;;
@@ -946,6 +966,123 @@ exit 0
     console.log("PASS no-console-error");
   } finally {
     devtools.close();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* The live worker family: takeover, merged view, whole-family Stop   */
+  /* ---------------------------------------------------------------- */
+  const oldVersion = "0.1.900";
+  const newestVersion = readHarnessVersion(harnessRoot) ?? "unknown";
+  const workerEnvironment: Record<string, string | undefined> = {
+    ...process.env,
+    PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    REPO_DIR: host.directory,
+    STATE_DIR: stateDir,
+  };
+  const oldWorker = spawn(
+    process.execPath,
+    [
+      join(harnessRoot, "watchdog", "worker.ts"),
+      "--root",
+      host.directory,
+      "--state-dir",
+      watchdogDir,
+      "--owner-state-dir",
+      stateDir,
+    ],
+    {
+      cwd: host.directory,
+      env: { ...workerEnvironment, DEVBOARD_HARNESS_VERSION: oldVersion },
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
+  const bridge = new WatchdogActivity({
+    descriptor: agentRegistry.require("watchdog"),
+    repoDir: host.directory,
+    stateDir,
+    watchdogDir,
+    harnessDir: harnessRoot,
+    runningVersion: newestVersion,
+    send: () => undefined,
+    log: (line) => console.error(line),
+    environment: workerEnvironment,
+    preflight: async () => ({ ok: true }),
+    intervalMs: 100,
+  });
+  try {
+    await waitFor(
+      () =>
+        liveLockOwners(watchdogLockPath(watchdogDir)).some(
+          (owner) => owner.harnessVersion === oldVersion,
+        )
+          ? true
+          : undefined,
+      "the old Watchdog worker's lock",
+      20_000,
+      50,
+    );
+    console.log(`verify:watchdog: takeover: the live ${oldVersion} worker holds the family`);
+    bridge.begin();
+    const merged = await waitFor(
+      () => {
+        const snapshot = bridge.snapshot();
+        const workers = snapshot.workers ?? [];
+        return workers.length >= 2 ? workers : undefined;
+      },
+      "the merged Watchdog worker view",
+      30_000,
+      50,
+    );
+    const versions = merged.map((worker) => worker.version).sort();
+    assertTrue(
+      versions.includes(oldVersion),
+      `verify:watchdog: the merged view lost the old worker: ${JSON.stringify(versions)}`,
+    );
+    assertTrue(
+      versions.includes(newestVersion),
+      `verify:watchdog: the newer worker did not become live: ${JSON.stringify(versions)}`,
+    );
+    assertTrue(
+      !JSON.stringify({ workers: merged, notice: bridge.snapshot().notice }).includes(
+        "this dashboard loaded",
+      ),
+      "verify:watchdog: the merged view carries a version divergence notice",
+    );
+    console.log(
+      `verify:watchdog: takeover: old ${oldVersion} and new ${newestVersion} are both live with no divergence notice`,
+    );
+    bridge.stop();
+    await waitFor(
+      () =>
+        liveLockOwners(watchdogLockPath(watchdogDir)).length === 0 ? true : undefined,
+      "every Watchdog worker to exit after the family Stop",
+      30_000,
+      100,
+    );
+    const retired = readWorkerState(versionedWorkerDirectory(watchdogDir, oldVersion));
+    assertTrue(
+      readWorkerState(versionedWorkerDirectory(watchdogDir, oldVersion)) !== undefined,
+      `verify:watchdog: the retired worker's state was removed: ${versionedWorkerStatePath(
+        watchdogDir,
+        oldVersion,
+      )}`,
+    );
+    assertTrue(
+      retired?.lifecycle === "stopped" || retired?.lifecycle === "failed",
+      `verify:watchdog: the retired worker did not publish its stop: ${JSON.stringify(retired)}`,
+    );
+    console.log(
+      "verify:watchdog: takeover: the whole-family Stop ended both workers and the retired state remains readable",
+    );
+  } finally {
+    bridge.dispose();
+    if (oldWorker.pid !== undefined) {
+      try {
+        process.kill(oldWorker.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
   }
 
   console.log("verify:watchdog: page, history, issues, sync, refresh, indicator, and popover passed");

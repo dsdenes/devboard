@@ -22,7 +22,16 @@ import {
   type Window,
 } from "../watchdog/collect";
 import { analyzeEvidence, STALL_MS } from "../watchdog/findings";
-import { acquireLock } from "../watchdog/lock";
+import { claimCycle, liveCycleClaim, readCycleClaim } from "../watchdog/lock";
+import { runWorker } from "../watchdog/worker";
+import { writeWatchdogCommand } from "../watchdog/control";
+import {
+  cycleClaimPath,
+  versionedControlDirectory,
+  versionedLockPath,
+  versionedWorkerDirectory,
+} from "../watchdog/paths";
+import { readWorkerState } from "../watchdog/worker-state";
 import { emptyLedger, loadLedger } from "../watchdog/ledger";
 import { writeProjection } from "../watchdog/projection";
 import { DEFAULT_WATCHDOG_SETTINGS, type WatchdogSettings } from "../watchdog/settings";
@@ -2170,20 +2179,90 @@ describe("ledger migration", () => {
   });
 });
 
-describe("singleton", () => {
-  test("serializes invocations and reclaims a stale lock", async () => {
-    const base = await temporaryDirectory("test-watchdog-lock");
-    const path = join(base, "lock");
-    const first = acquireLock(path);
-    expect(first.acquired).toBe(true);
-    const second = acquireLock(path);
-    expect(second.acquired).toBe(false);
-    if (first.acquired) first.release();
+describe("cycle lease", () => {
+  test("serializes watchdog cycles across versions and reclaims a stale claim", async () => {
+    const base = await temporaryDirectory("test-watchdog-claim");
+    const path = cycleClaimPath(base);
+    const first = claimCycle(path, { harnessVersion: "0.1.1" });
+    expect(first).toBeDefined();
+    expect(claimCycle(path, { harnessVersion: "0.1.2" })).toBeUndefined();
+    expect(liveCycleClaim(path)?.harnessVersion).toBe("0.1.1");
+    first?.release();
+    expect(readCycleClaim(path)).toBeUndefined();
 
-    await writeFile(path, "999999\n");
-    const reclaimed = acquireLock(path);
-    expect(reclaimed.acquired).toBe(true);
-    if (reclaimed.acquired) reclaimed.release();
+    await writeFile(
+      path,
+      JSON.stringify({
+        pid: 999999,
+        startedAt: new Date().toISOString(),
+        harnessVersion: null,
+        token: "stale",
+      }),
+    );
+    const reclaimed = claimCycle(path, { harnessVersion: "0.1.2" });
+    expect(reclaimed).toBeDefined();
+    expect(readCycleClaim(path)?.harnessVersion).toBe("0.1.2");
+    reclaimed?.release();
+  });
+
+  test("a drained worker finishes its in-flight cycle, exits, and releases its version lock", async () => {
+    const root = await temporaryDirectory("test-watchdog-drain");
+    const stateDir = join(root, "watchdog");
+    const gate = Promise.withResolvers<void>();
+    const cycleStarted = Promise.withResolvers<void>();
+    let cycles = 0;
+    const cycle = async (): Promise<{ report: { action: string } }> => {
+      cycles += 1;
+      cycleStarted.resolve();
+      await gate.promise;
+      return { report: { action: "none" } };
+    };
+    const oldWorker = runWorker({
+      root,
+      stateDir,
+      ownerStateDir: join(root, "state"),
+      harnessVersion: "0.1.1",
+      cycle,
+      pollMs: 20,
+    });
+    // The newer worker starts while the older one's cycle is in flight. It
+    // must not claim a second cycle for the same window.
+    const newWorker = runWorker({
+      root,
+      stateDir,
+      ownerStateDir: join(root, "state"),
+      harnessVersion: "0.1.2",
+      cycle,
+      pollMs: 20,
+    });
+    await cycleStarted.promise;
+    expect(cycles).toBe(1);
+    // The in-flight cycle belongs to the older version and is claimed once.
+    expect(readCycleClaim(cycleClaimPath(stateDir))?.harnessVersion).toBe("0.1.1");
+    const oldState = readWorkerState(versionedWorkerDirectory(stateDir, "0.1.1"));
+    const newState = readWorkerState(versionedWorkerDirectory(stateDir, "0.1.2"));
+    expect(oldState?.lifecycle).toBe("running");
+    expect(newState?.lifecycle).toBe("running");
+    expect(newState?.lastRunAt).toBe(oldState?.lastRunAt);
+    expect(existsSync(versionedLockPath(stateDir, "0.1.1"))).toBe(true);
+    expect(existsSync(versionedLockPath(stateDir, "0.1.2"))).toBe(true);
+
+    writeWatchdogCommand(versionedControlDirectory(stateDir, "0.1.1"), { type: "drain" });
+    gate.resolve();
+    await oldWorker;
+
+    expect(cycles).toBe(1);
+    const drained = readWorkerState(versionedWorkerDirectory(stateDir, "0.1.1"));
+    expect(drained?.lifecycle).toBe("stopped");
+    expect(drained?.draining).toBe(true);
+    expect(existsSync(versionedLockPath(stateDir, "0.1.1"))).toBe(false);
+    expect(readCycleClaim(cycleClaimPath(stateDir))).toBeUndefined();
+    // The newer version is the remaining live worker.
+    expect(existsSync(versionedLockPath(stateDir, "0.1.2"))).toBe(true);
+
+    writeWatchdogCommand(versionedControlDirectory(stateDir, "0.1.2"), { type: "stop" });
+    await newWorker;
+    expect(existsSync(versionedLockPath(stateDir, "0.1.2"))).toBe(false);
   });
 
   test("normalizes evidence lines without their timestamps", () => {

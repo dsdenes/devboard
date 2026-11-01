@@ -1,13 +1,16 @@
 import { spawn } from "node:child_process";
-import { readFileSync, readlinkSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { writeCommand, type IssuesCommand } from "../issues/control";
-import { liveLockOwner, pidAlive, type LockOwner } from "../issues/lock";
+import { liveLockOwners, pidAlive, type LockOwner } from "../issues/lock";
 import {
   controlDirectory,
   lockPath,
   runDirectory,
   statePath,
+  versionedControlDirectory,
+  versionedStatePath,
+  workerStateDirectories,
 } from "../issues/paths";
 import {
   ISSUES_PREFLIGHT_TIMEOUT_MS,
@@ -16,6 +19,7 @@ import {
 } from "../issues/preflight";
 import { DEADLINE_EXPIRED, withinDeadline } from "../lib/deadline";
 import { cachedRepository, topLevel } from "../issues/repository";
+import { hostHarnessDir, readHarnessVersion } from "./version";
 import { closedByRun } from "../issues/self-close";
 import { closeIssue as closeTrackerIssue, type CloseIssueRequest } from "./issue-close";
 import {
@@ -32,6 +36,7 @@ import {
   runFilePath,
   type IssuesAgent,
   type IssuesRunDetail,
+  type IssuesLifecycle,
   type IssuesState,
 } from "../issues/state";
 import { activityDelta } from "./activity";
@@ -70,6 +75,13 @@ export interface IssuesSnapshot {
   finishedAt: string | null;
   notice: string | null;
   updatedAt: string | null;
+  /** Every live worker of this family, whatever harness version started it. */
+  workers: Array<{
+    pid: number;
+    version: string | null;
+    stateDir: string;
+    lifecycle: IssuesLifecycle;
+  }>;
   /** The dashboard's own tracker reads, independent of the worker. */
   sync: TrackerSyncView;
 }
@@ -143,6 +155,8 @@ export class IssuesBridge {
   private startTask:
     | Promise<{ ok: true; attached: boolean } | { ok: false; message: string }>
     | undefined;
+  /** One automatic new-version start per dashboard lifetime. */
+  private takeover: "idle" | "started" = "idle";
 
   constructor(options: IssuesBridgeOptions) {
     this.repoDir = resolve(options.repoDir);
@@ -234,52 +248,53 @@ export class IssuesBridge {
    * by the next fresh read.
    */
   private stopClosedRuns(open: Set<number>, readStartedAt: number): void {
-    const state = this.currentState();
-    const owner = this.lockOwner();
-    if (state === undefined || owner === undefined) return;
-    if (resolve(owner.stateDir) !== this.stateDir) return;
-    if (!state.enabled || state.lifecycle === "stopped") return;
-    const workerPollAt = state.poll.lastPollAt === null ? NaN : Date.parse(state.poll.lastPollAt);
-    if (
-      (state.poll.error ?? null) === null &&
-      Number.isFinite(workerPollAt) &&
-      workerPollAt >= readStartedAt
-    ) {
-      return;
-    }
-
-    const eligible = state.agents.filter((agent) => {
-      if (open.has(agent.issueNumber)) return false;
-      // The run closed its own issue: its worker settles the run as succeeded,
-      // so the dashboard must not send the cancellation it sends for an
-      // operator's close.
-      if (closedByRun(this.stateDir, this.repoDir, agent.issueNumber) === agent.runId) {
-        return false;
-      }
-      const startedAt = Date.parse(agent.startedAt);
-      return Number.isFinite(startedAt) && startedAt < readStartedAt;
-    });
+    const owners = this.owners().filter((owner) => !this.foreignOwner(owner));
+    if (owners.length === 0) return;
     const pending = new Set<string>();
-    for (const agent of eligible) pending.add(`${agent.issueNumber}:${agent.runId}`);
+    for (const owner of owners) {
+      const state = this.stateForOwner(owner);
+      if (state === undefined) continue;
+      if (!state.enabled || state.lifecycle === "stopped") continue;
+      const workerPollAt = state.poll.lastPollAt === null ? NaN : Date.parse(state.poll.lastPollAt);
+      if (
+        (state.poll.error ?? null) === null &&
+        Number.isFinite(workerPollAt) &&
+        workerPollAt >= readStartedAt
+      ) {
+        continue;
+      }
+      const eligible = state.agents.filter((agent) => {
+        if (open.has(agent.issueNumber)) return false;
+        // The run closed its own issue: its worker settles the run as
+        // succeeded, so the dashboard must not send the cancellation it sends
+        // for an operator's close.
+        if (closedByRun(this.stateDir, this.repoDir, agent.issueNumber) === agent.runId) {
+          return false;
+        }
+        const startedAt = Date.parse(agent.startedAt);
+        return Number.isFinite(startedAt) && startedAt < readStartedAt;
+      });
+      for (const agent of eligible) pending.add(`${agent.issueNumber}:${agent.runId}`);
+      for (const agent of eligible) {
+        const key = `${agent.issueNumber}:${agent.runId}`;
+        if (this.abandoned.has(key)) continue;
+        try {
+          writeCommand(this.controlFor(owner), {
+            type: "abandon",
+            number: agent.issueNumber,
+          });
+          this.abandoned.add(key);
+        } catch (error) {
+          this.log(
+            `could not ask the issues worker to stop #${agent.issueNumber}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+    }
     for (const key of [...this.abandoned]) {
       if (!pending.has(key)) this.abandoned.delete(key);
-    }
-    for (const agent of eligible) {
-      const key = `${agent.issueNumber}:${agent.runId}`;
-      if (this.abandoned.has(key)) continue;
-      try {
-        writeCommand(controlDirectory(this.stateDir, this.repoDir), {
-          type: "abandon",
-          number: agent.issueNumber,
-        });
-        this.abandoned.add(key);
-      } catch (error) {
-        this.log(
-          `could not ask the issues worker to stop #${agent.issueNumber}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
     }
   }
 
@@ -288,6 +303,7 @@ export class IssuesBridge {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => this.refresh(), this.pollMsValue);
     void this.refresh();
+    void this.takeoverOldWorkers();
     if (this.tracker.unsupportedDetail === null) {
       this.syncTimer = setInterval(() => {
         void this.syncNow();
@@ -301,6 +317,38 @@ export class IssuesBridge {
     if (this.syncTimer === undefined) return;
     clearInterval(this.syncTimer);
     this.syncTimer = undefined;
+  }
+
+  /**
+   * Starts this version's worker when an older version's worker is live and
+   * this process is the newest harness. The older worker is told to drain: it
+   * finishes its current unit, starts no new one, and exits on its own.
+   */
+  private async takeoverOldWorkers(): Promise<void> {
+    if (this.takeover === "started") return;
+    this.takeover = "started";
+    const owners = this.owners().filter((owner) => !this.foreignOwner(owner));
+    if (owners.length === 0) return;
+    const newest = readHarnessVersion(hostHarnessDir(this.repoDir));
+    if (newest === null || newest !== this.runningVersion) return;
+    if (owners.some((owner) => owner.harnessVersion === this.runningVersion)) return;
+    const started = await this.spawn();
+    if (!started.ok) {
+      this.log(`could not start the ${this.runningVersion} issues worker: ${started.message}`);
+      return;
+    }
+    for (const owner of owners) {
+      if (owner.harnessVersion === this.runningVersion) continue;
+      try {
+        writeCommand(this.controlFor(owner), { type: "drain" });
+      } catch (error) {
+        this.log(
+          `could not drain the ${owner.harnessVersion ?? "legacy"} issues worker: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   dispose(): void {
@@ -335,12 +383,48 @@ export class IssuesBridge {
   /* Reading                                                             */
   /* ------------------------------------------------------------------ */
 
+  /** Every readable worker state: the legacy file and each version's file. */
+  private allStates(): IssuesState[] {
+    const states: IssuesState[] = [];
+    const push = (path: string): void => {
+      const state = readState(path);
+      if (state !== undefined) states.push(state);
+    };
+    push(statePath(this.stateDir, this.repoDir));
+    for (const directory of workerStateDirectories(this.stateDir, this.repoDir)) {
+      push(join(directory, "state.json"));
+    }
+    return states;
+  }
+
+  /** The newest published state, or undefined before any worker wrote one. */
   private currentState(): IssuesState | undefined {
-    return readState(statePath(this.stateDir, this.repoDir));
+    return this.allStates().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  }
+
+  /** Owners of every live lock beside this checkout's legacy lock. */
+  private owners(): LockOwner[] {
+    return liveLockOwners(lockPath(this.repoDir));
   }
 
   private lockOwner(): LockOwner | undefined {
-    return liveLockOwner(lockPath(this.repoDir));
+    return this.owners()[0];
+  }
+
+  /** True for a live owner this dashboard's STATE_DIR does not own. */
+  private foreignOwner(owner: LockOwner): boolean {
+    return resolve(owner.stateDir) !== this.stateDir;
+  }
+
+  /** The control directory one live owner consumes, versioned or legacy. */
+  private controlFor(owner: LockOwner): string {
+    if (owner.harnessVersion !== null) {
+      const path = versionedStatePath(this.stateDir, this.repoDir, owner.harnessVersion);
+      if (existsSync(path)) {
+        return versionedControlDirectory(this.stateDir, this.repoDir, owner.harnessVersion);
+      }
+    }
+    return controlDirectory(this.stateDir, this.repoDir);
   }
 
   /** True when there is a worker state or a live lock to replay. */
@@ -349,71 +433,124 @@ export class IssuesBridge {
   }
 
   snapshot(): IssuesSnapshot {
-    const state = this.currentState();
-    const owner = this.lockOwner();
-    const attached =
-      owner !== undefined && resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid);
-    const repo = state !== undefined && state.repo.length > 0 ? state.repo : this.repository();
-    const active = attached ? state : undefined;
-    const lifecycle = active?.lifecycle === "stopped" || active === undefined ? "stopped" : active.lifecycle;
-    const worker = state?.worker ?? null;
-    const mismatch =
-      attached && worker !== null && worker.harnessVersion !== this.runningVersion
-        ? `Issues worker ${worker.harnessVersion ?? "unknown"} is running; this dashboard loaded ${
-            this.runningVersion ?? "unknown"
-          }. It is left running; Stop it to launch the current harness on the next Start.`
-        : null;
+    const owners = this.owners();
+    const attachedOwners = owners.filter((owner) => !this.foreignOwner(owner));
+    const states = this.allStates();
+    const byPid = new Map(
+      states.filter((state) => state.worker !== null).map((state) => [state.worker!.pid, state]),
+    );
+    const ownerless = states.find((state) => state.worker === null);
+    const attachedStates = attachedOwners
+      .map((owner) => byPid.get(owner.pid) ?? ownerless)
+      .filter((state): state is IssuesState => state !== undefined);
+    const attached = attachedOwners.length > 0;
+    const sorted = [...states].sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt),
+    );
+    const active =
+      attachedStates.find(
+        (state) => state.lifecycle === "running" || state.lifecycle === "pausing",
+      ) ?? attachedStates[0] ?? sorted[0];
+    const repo = active !== undefined && active.repo.length > 0 ? active.repo : this.repository();
+    const lifecycle =
+      active === undefined || active.lifecycle === "stopped" || !attached
+        ? "stopped"
+        : active.lifecycle;
+    const workers = attachedOwners.map((owner) => {
+      const state = byPid.get(owner.pid);
+      return {
+        pid: owner.pid,
+        version: owner.harnessVersion,
+        stateDir: owner.stateDir,
+        lifecycle: (state?.lifecycle ?? "running") as IssuesLifecycle,
+      };
+    });
+    const runs = new Map<string, IssuesState["runs"][number]>();
+    for (const state of states) {
+      for (const run of state.runs) if (!runs.has(run.runId)) runs.set(run.runId, run);
+    }
+    const cooldowns: IssuesState["cooldowns"] = {};
+    const agents: IssuesState["agents"] = [];
+    for (const state of attachedStates) {
+      Object.assign(cooldowns, state.cooldowns);
+      agents.push(...state.agents);
+    }
     return {
-      present: state !== undefined,
+      present: states.length > 0 || owners.length > 0,
       repo,
       root: this.repoDir,
       lifecycle,
-      enabled: active?.enabled === true && lifecycle !== "stopped",
-      paused: active?.paused === true && lifecycle !== "stopped",
+      enabled: attached && active?.enabled === true && lifecycle !== "stopped",
+      paused: attached && active?.paused === true && lifecycle !== "stopped",
       attached,
-      worker: active?.worker ?? null,
+      worker: attached && active !== undefined ? active.worker : null,
       poll: active?.poll ?? null,
-      queue: this.queueFor(state, attached),
-      runs: state?.runs ?? [],
-      agents: active?.agents ?? [],
-      cooldowns: active?.cooldowns ?? {},
+      queue: this.queueFor(states, attachedStates, attached),
+      runs: [...runs.values()].sort((left, right) =>
+        right.startedAt.localeCompare(left.startedAt),
+      ),
+      agents,
+      cooldowns,
       lastError: active?.lastError ?? null,
       lastExitCode: active?.lastExitCode ?? null,
       finishedAt: active?.finishedAt ?? null,
-      notice: mismatch ?? active?.notice ?? null,
-      updatedAt: state?.updatedAt ?? null,
+      notice: active?.notice ?? null,
+      updatedAt: active?.updatedAt ?? null,
+      workers,
       sync: this.tracker.view,
     };
   }
 
   /**
-   * The Open issues list. A live worker whose own read started no earlier than
-   * the dashboard's is authoritative; otherwise the dashboard's read is used,
-   * with the worker's handled and running markers merged in. Before the first
-   * dashboard read the worker's queue is the only list there is. Only an
-   * attached worker can be working an issue, so the running markers its state
-   * left behind when it stopped are dropped: a worker that dies without a
-   * final write keeps its last queue, and its old `agentRunId` entries would
-   * otherwise count as running with no agent to run them.
+   * The Open issues list. Every live worker's markers are merged, so the view
+   * never depends on which version answered last. A worker whose own read
+   * started no earlier than the dashboard's is authoritative; otherwise the
+   * dashboard's read is used, with the workers' handled and running markers
+   * merged in. Before the first dashboard read the workers' queues are the
+   * only list there is. Only an attached worker can be working an issue, so a
+   * stopped worker's leftover `agentRunId` is dropped instead of counting as
+   * running with no agent to run it.
    */
-  private queueFor(state: IssuesState | undefined, attached: boolean): IssuesState["queue"] {
-    const workerQueue = attached
-      ? (state?.queue ?? [])
-      : (state?.queue ?? []).map((entry) =>
-          entry.agentRunId === null ? entry : { ...entry, agentRunId: null },
-        );
+  private queueFor(
+    states: IssuesState[],
+    attachedStates: IssuesState[],
+    attached: boolean,
+  ): IssuesState["queue"] {
+    const live = new Set(attachedStates);
+    const markers = new Map<number, IssuesState["queue"][number]>();
+    for (const state of states) {
+      for (const issue of state.queue) {
+        const marker =
+          attached && live.has(state)
+            ? issue
+            : issue.agentRunId === null
+              ? issue
+              : { ...issue, agentRunId: null };
+        const previous = markers.get(issue.number);
+        if (previous === undefined) {
+          markers.set(issue.number, marker);
+          continue;
+        }
+        markers.set(issue.number, {
+          ...previous,
+          handled: previous.handled || marker.handled,
+          runId: previous.runId ?? marker.runId,
+          agentRunId: previous.agentRunId ?? marker.agentRunId,
+        });
+      }
+    }
+    const workerQueue = [...markers.values()].sort((left, right) => left.number - right.number);
     const open = this.tracker.openIssues;
     if (open === null) return workerQueue;
-    const workerPollAt = state?.poll.lastPollAt ?? null;
     const readStartedAt = this.tracker.freshStartedAt;
     const workerIsNewer =
       attached &&
-      (state?.poll.error ?? null) === null &&
-      workerPollAt !== null &&
       readStartedAt !== null &&
-      Date.parse(workerPollAt) >= Date.parse(readStartedAt);
+      attachedStates.some((state) => {
+        if ((state.poll.error ?? null) !== null || state.poll.lastPollAt === null) return false;
+        return Date.parse(state.poll.lastPollAt) >= Date.parse(readStartedAt);
+      });
     if (workerIsNewer) return workerQueue;
-    const markers = new Map(workerQueue.map((issue) => [issue.number, issue]));
     const listed = new Set(open.map((issue) => issue.number));
     const queue = open.map((issue) => {
       const marker = markers.get(issue.number);
@@ -428,12 +565,14 @@ export class IssuesBridge {
     // kept visible until a read that started after the run reports on it.
     const cutoff = readStartedAt === null ? null : Date.parse(readStartedAt);
     if (attached && cutoff !== null && Number.isFinite(cutoff)) {
-      for (const agent of state?.agents ?? []) {
-        if (listed.has(agent.issueNumber)) continue;
-        const startedAt = Date.parse(agent.startedAt);
-        if (!Number.isFinite(startedAt) || startedAt < cutoff) continue;
-        const marker = markers.get(agent.issueNumber);
-        if (marker !== undefined) queue.push(marker);
+      for (const state of attachedStates) {
+        for (const agent of state.agents) {
+          if (listed.has(agent.issueNumber)) continue;
+          const startedAt = Date.parse(agent.startedAt);
+          if (!Number.isFinite(startedAt) || startedAt < cutoff) continue;
+          const marker = markers.get(agent.issueNumber);
+          if (marker !== undefined) queue.push(marker);
+        }
       }
     }
     return queue.sort((left, right) => left.number - right.number);
@@ -545,28 +684,31 @@ export class IssuesBridge {
     { ok: true; attached: boolean } | { ok: false; message: string }
   > {
     for (;;) {
-      const owner = this.lockOwner();
-      if (owner === undefined) break;
-      if (resolve(owner.stateDir) !== this.stateDir) {
+      const owners = this.owners();
+      if (owners.length === 0) break;
+      const foreign = owners.find((owner) => this.foreignOwner(owner));
+      if (foreign !== undefined) {
         return {
           ok: false,
           message:
-            `this checkout already has an issues worker (pid ${owner.pid}) using ${owner.stateDir}; ` +
+            `this checkout already has an issues worker (pid ${foreign.pid}) using ${foreign.stateDir}; ` +
             `this dashboard's STATE_DIR is ${this.stateDir}`,
         };
       }
       // A live owner that this bridge has told to stop is not attachable: the
       // worker is already ending, so report its state only after it has exited
       // and the new spawn holds the lock.
-      if (this.stopping === undefined || this.stopping.pid !== owner.pid) {
+      const stopping = this.stopping;
+      const live = owners.filter((owner) => stopping === undefined || stopping.pid !== owner.pid);
+      if (live.length > 0) {
         this.refresh();
         return { ok: true, attached: true };
       }
-      if (!(await this.waitForStop(owner.pid))) {
+      if (!(await this.waitForStop(stopping?.pid ?? owners[0]!.pid))) {
         return {
           ok: false,
           message:
-            `the previous issues worker (pid ${owner.pid}) is still stopping; ` +
+            `the previous issues worker (pid ${stopping?.pid ?? owners[0]!.pid}) is still stopping; ` +
             "press Start once it has exited.",
         };
       }
@@ -640,36 +782,49 @@ export class IssuesBridge {
   }
 
   command(command: IssuesCommand): { ok: true } | { ok: false; message: string } {
-    const state = this.currentState();
-    const owner = this.lockOwner();
-    if (owner === undefined) {
+    const owners = this.owners();
+    if (owners.length === 0) {
       return { ok: false, message: "No issues worker is running for this checkout." };
     }
-    if (resolve(owner.stateDir) !== this.stateDir) {
+    const foreign = owners.find((owner) => this.foreignOwner(owner));
+    if (foreign !== undefined) {
       return {
         ok: false,
         message:
-          `the issues worker (pid ${owner.pid}) uses ${owner.stateDir}; this dashboard's STATE_DIR is ` +
+          `the issues worker (pid ${foreign.pid}) uses ${foreign.stateDir}; this dashboard's STATE_DIR is ` +
           `${this.stateDir}`,
       };
     }
-    // The live lock proves a worker exists even when its state file is absent,
-    // unreadable, or left by another harness version; Stop, pause, resume, and
-    // check must still reach it. Only an answer needs the state's agent list.
     if (command.type === "answer") {
-      if (state === undefined || !state.enabled || state.lifecycle === "stopped") {
-        return { ok: false, message: "No issues worker is running for this checkout." };
-      }
       if (typeof command.runId !== "string" || command.runId.length === 0) {
         return { ok: false, message: "An answer needs its run id." };
       }
-      if (!state.agents.some((agent) => agent.runId === command.runId)) {
+      const target = owners.find((owner) => {
+        const state = this.stateForOwner(owner);
+        return state !== undefined && state.agents.some((agent) => agent.runId === command.runId);
+      });
+      if (target === undefined) {
         return { ok: false, message: `No agent is running for run ${command.runId}.` };
       }
+      writeCommand(this.controlFor(target), command);
+      return { ok: true };
     }
-    writeCommand(controlDirectory(this.stateDir, this.repoDir), command);
-    if (command.type === "stop") this.scheduleStopProof(owner.pid);
+    for (const owner of owners) {
+      writeCommand(this.controlFor(owner), command);
+      if (command.type === "stop") this.scheduleStopProof(owner.pid);
+    }
     return { ok: true };
+  }
+
+  /** The published state one live owner wrote, when it is readable. */
+  private stateForOwner(owner: LockOwner): IssuesState | undefined {
+    if (owner.harnessVersion !== null) {
+      const state = readState(
+        versionedStatePath(this.stateDir, this.repoDir, owner.harnessVersion),
+      );
+      if (state !== undefined) return state;
+    }
+    return readState(statePath(this.stateDir, this.repoDir));
   }
 
   /**

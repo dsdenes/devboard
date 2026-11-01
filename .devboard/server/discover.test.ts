@@ -1410,6 +1410,11 @@ describe("discover mode", () => {
         expect(rejected).toBeUndefined();
         await client.waitFor((message) => message.type === "lifecycleState");
         client.send({ type: "stopLifecycle" });
+        // The stop must land before this server exits; otherwise the next
+        // dashboard restores a lifecycle that never stopped.
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "goal",
+        );
 
       } finally {
         client.close();
@@ -1550,6 +1555,7 @@ describe("discover mode", () => {
         seedClient.close();
         seeded.server.stop(true);
       }
+      const seededSpawns = spawnCount(fixture.logPath);
 
       // A restart while a run is live re-spawns the crawl against the same
       // host, replaces the staging directory, and publishes on completion.
@@ -1565,6 +1571,13 @@ describe("discover mode", () => {
         await waitUntil(
           () => existsSync(join(fixture.root, ".omp", "discover", "staging", runId)),
           "staging exists before restart",
+        );
+        // The crawl's peer starts in its own detached owner; wait for that
+        // process before snapshotting the count, so the restart's single
+        // re-spawn is the only one measured.
+        await waitUntil(
+          () => spawnCount(fixture.logPath) === seededSpawns + 1,
+          "the live run's peer spawned",
         );
       } finally {
         before.close();

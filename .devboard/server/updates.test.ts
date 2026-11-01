@@ -155,7 +155,31 @@ describe("startUpdater", () => {
       expect(checks).toBe(1);
       expect(updater.latest()).toBe("0.1.1");
       expect(updates).toEqual(["0.1.1", "callback:0.1.1"]);
-      expect(records).toEqual([["update", "installed 0.1.1 (was 0.1.0); a restart loads it"]]);
+      expect(records).toEqual([["update", "installed 0.1.1 (was 0.1.0); replacing the server"]]);
+    } finally {
+      updater.stop();
+    }
+  });
+
+  test("reports an install made outside the process as stale", async () => {
+    const prefix = await installedPrefix("0.1.2");
+    const { journal, records } = journalRecorder();
+    const stale: string[] = [];
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.1",
+      journal,
+      intervalMs: 60_000,
+      startImmediately: false,
+      fetchRelease: async () => release("0.1.2"),
+      onStale: (version) => stale.push(version),
+    });
+    try {
+      expect(await updater.checkNow()).toBe("current");
+      expect(stale).toEqual(["0.1.2"]);
+      expect(records).toEqual([]);
     } finally {
       updater.stop();
     }
@@ -303,7 +327,7 @@ exec '${realNpm}' "$@"
       server.stop(true);
     }
     expect(records).toEqual([
-      ["update", "installed 0.1.42 (was 0.1.0); a restart loads it"],
+      ["update", "installed 0.1.42 (was 0.1.0); replacing the server"],
     ]);
     const record = records[0]?.[1] ?? "";
     expect(record).not.toContain(prefix);

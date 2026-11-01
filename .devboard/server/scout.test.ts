@@ -6,7 +6,7 @@ import { activityDelta } from "./activity";
 import { ScoutBridge } from "./scout";
 import { agentRegistry } from "./agents/registry";
 import { parseCommand } from "../issues/scout/control";
-import { acquireLock } from "../issues/lock";
+import { acquireLock, versionLockPath } from "../issues/lock";
 import { writeActivity } from "../issues/state";
 import {
   closingCommitFromComments,
@@ -25,7 +25,10 @@ import {
   lockPath,
   settingsPath,
   statePath,
+  versionedControlDirectory,
+  versionedStatePath,
 } from "../issues/scout/paths";
+import { hostHarnessDir, readHarnessVersion } from "./version";
 import { preflightScout, scoutCommandPaths, stateInsideRepository } from "../issues/scout/preflight";
 import {
   categoryFromBody,
@@ -85,6 +88,61 @@ async function repository(): Promise<string> {
 
 function items(count: number): DraftRecommendation[] {
   return Array.from({ length: count }, (_value, index) => recommendation(index + 1));
+}
+
+function publishedState(options: {
+  root: string;
+  stateDir: string;
+  lifecycle: ScoutState["lifecycle"];
+  issueNumber: number;
+  version: string | null;
+}): ScoutState {
+  return {
+    version: 2,
+    repo: "acme/fixture",
+    root: options.root,
+    lifecycle: options.lifecycle,
+    enabled: options.lifecycle !== "stopped",
+    worker: {
+      pid: process.pid,
+      startedAt: "2026-01-01T00:00:00Z",
+      stateDir: options.stateDir,
+      harnessVersion: options.version,
+      argv: [],
+    },
+    limits: { ...DEFAULT_LIMITS },
+    intervalMinutes: 1,
+    lastScanStartedAt: null,
+    issues: [
+      {
+        number: options.issueNumber,
+        title: `finding ${options.issueNumber}`,
+        url: `https://github.com/acme/fixture/issues/${options.issueNumber}`,
+        createdAt: "2026-01-01T00:00:00Z",
+        state: "pending",
+        category: "clarity",
+        version: null,
+        versionAttemptAt: null,
+        versionError: null,
+      },
+    ],
+    openTitles: [],
+    releaseSignature: null,
+    sync: { state: "ok", at: "2026-01-01T00:00:00Z", error: null },
+    scan: null,
+    newestScanId: null,
+    nextAttemptAt: null,
+    lastError: null,
+    notice: null,
+    updatedAt: "2026-01-01T00:00:00Z",
+  };
+}
+
+function commandsIn(directory: string): unknown[] {
+  return readdirSync(directory)
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")));
 }
 
 describe("recommendation identity", () => {
@@ -855,6 +913,212 @@ describe("bridge", () => {
     }
   });
 
+  test("two live workers appear with their versions and merge their issues", async () => {
+    const root = await repository();
+    const stateDir = join(root, ".devboard", ".tmp", "state");
+    const older = acquireLock(versionLockPath(lockPath(root), "0.0.9"), {
+      repo: root,
+      stateDir,
+      harnessVersion: "0.0.9",
+      argv: [],
+    });
+    const newer = acquireLock(versionLockPath(lockPath(root), "0.1.0"), {
+      repo: root,
+      stateDir,
+      harnessVersion: "0.1.0",
+      argv: [],
+    });
+    expect(older.acquired).toBe(true);
+    expect(newer.acquired).toBe(true);
+    if (!older.acquired || !newer.acquired) return;
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      writeState(
+        versionedStatePath(stateDir, root, "0.0.9"),
+        publishedState({ root, stateDir, lifecycle: "scanning", issueNumber: 101, version: "0.0.9" }),
+      );
+      writeState(
+        versionedStatePath(stateDir, root, "0.1.0"),
+        publishedState({ root, stateDir, lifecycle: "idle", issueNumber: 102, version: "0.1.0" }),
+      );
+      const snapshot = bridge.snapshot();
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.owned).toBe(true);
+      expect(snapshot.notice).toBeNull();
+      expect(snapshot.lifecycle).toBe("running");
+      expect(snapshot.workers ?? []).toHaveLength(2);
+      expect((snapshot.workers ?? []).map((worker) => worker.version).sort()).toEqual([
+        "0.0.9",
+        "0.1.0",
+      ]);
+      expect((snapshot.workers ?? []).every((worker) => worker.stateDir === stateDir)).toBe(true);
+      expect(snapshot.issues.map((issue) => issue.title).sort()).toEqual([
+        "finding 101",
+        "finding 102",
+      ]);
+      expect(await bridge.start()).toEqual({ ok: true });
+      expect(spawned).toHaveLength(0);
+    } finally {
+      bridge.dispose();
+      older.release();
+      newer.release();
+    }
+  });
+
+  test("Stop and settings reach every live worker's own control directory", async () => {
+    const root = await repository();
+    const stateDir = join(root, ".devboard", ".tmp", "state");
+    const legacy = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: "0.0.9",
+      argv: [],
+    });
+    const versioned = acquireLock(versionLockPath(lockPath(root), "0.1.0"), {
+      repo: root,
+      stateDir,
+      harnessVersion: "0.1.0",
+      argv: [],
+    });
+    expect(legacy.acquired).toBe(true);
+    expect(versioned.acquired).toBe(true);
+    if (!legacy.acquired || !versioned.acquired) return;
+    const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+    });
+    try {
+      writeState(
+        statePath(stateDir, root),
+        publishedState({ root, stateDir, lifecycle: "idle", issueNumber: 101, version: "0.0.9" }),
+      );
+      writeState(
+        versionedStatePath(stateDir, root, "0.1.0"),
+        publishedState({ root, stateDir, lifecycle: "idle", issueNumber: 102, version: "0.1.0" }),
+      );
+      const legacyControl = controlDirectory(stateDir, root);
+      const versionedControl = versionedControlDirectory(stateDir, root, "0.1.0");
+
+      expect(bridge.stop()).toEqual({ ok: true });
+      expect(commandsIn(legacyControl)).toEqual([{ type: "stop" }]);
+      expect(commandsIn(versionedControl)).toEqual([{ type: "stop" }]);
+
+      expect(bridge.setSettings(2, 4, 2)).toEqual({ ok: true });
+      const settings = {
+        type: "settings",
+        intervalMinutes: 2,
+        maxPerHour: 4,
+        maxPending: 2,
+      };
+      for (const directory of [legacyControl, versionedControl]) {
+        const commands = commandsIn(directory) as Array<{ type: string }>;
+        expect(commands.filter((command) => command.type === "stop")).toHaveLength(1);
+        expect(commands).toContainEqual(settings);
+      }
+    } finally {
+      bridge.dispose();
+      legacy.release();
+      versioned.release();
+    }
+  });
+
+  test("a newer worker starts automatically and drains an older live worker", async () => {
+    const root = await repository();
+    const stateDir = join(root, ".devboard", ".tmp", "state");
+    const newest = readHarnessVersion(hostHarnessDir(root));
+    expect(newest).not.toBeNull();
+    const older = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: "0.0.9",
+      argv: [],
+    });
+    expect(older.acquired).toBe(true);
+    if (!older.acquired || newest === null) return;
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: newest,
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      writeState(
+        statePath(stateDir, root),
+        publishedState({ root, stateDir, lifecycle: "scanning", issueNumber: 101, version: "0.0.9" }),
+      );
+      bridge.begin();
+      await bridge.settled();
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.join(" ")).toContain(join("scout", "worker.ts"));
+      expect(spawned[0]!.join(" ")).toContain(join(import.meta.dir, ".."));
+      expect(commandsIn(controlDirectory(stateDir, root))).toEqual([{ type: "drain" }]);
+    } finally {
+      bridge.dispose();
+      older.release();
+    }
+  });
+
+  test("begin starts nothing automatically without a live worker", async () => {
+    const root = await repository();
+    const stateDir = join(root, ".devboard", ".tmp", "state");
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      bridge.begin();
+      await bridge.settled();
+      expect(spawned).toHaveLength(0);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
   test("Start after Stop waits for the stopping worker and spawns", async () => {
     const root = await temporaryDirectory("scout-bridge-stop-start");
     const stateDir = join(root, "state");
@@ -1176,8 +1440,9 @@ describe("bridge", () => {
 });
 
 describe("command surface", () => {
-  test("Stop and settings parse; approve, draft, and reject do not", () => {
+  test("Stop, drain, and settings parse; approve, draft, and reject do not", () => {
     expect(parseCommand('{"type":"stop"}')).toEqual({ type: "stop" });
+    expect(parseCommand('{"type":"drain"}')).toEqual({ type: "drain" });
     expect(
       parseCommand(
         '{"type":"settings","intervalMinutes":5,"maxPerHour":3,"maxPending":2}',

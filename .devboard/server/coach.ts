@@ -7,7 +7,14 @@ import { configuredGiteaToken, giteaBaseUrl } from "../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../lib/forge-read-retry";
 import { giteaRepository } from "../lib/gitea";
 import { originForge } from "../issues/repository";
-import { coachDirectory, controlDirectory } from "../coach/paths";
+import { liveLockOwners, readLock, type LockOwner } from "../issues/lock";
+import {
+  coachDirectory,
+  controlDirectory,
+  lockPath,
+  versionedControlDirectory,
+  workerStateDirectories,
+} from "../coach/paths";
 import { writeCoachCommand } from "../coach/control";
 import { readCoachStatus, type CoachStatus } from "../coach/status";
 import {
@@ -18,6 +25,7 @@ import {
   type CoachSettings,
 } from "../coach/settings";
 import { readWorkerState, type CoachWorkerState } from "../coach/worker-state";
+import { hostHarnessDir, readHarnessVersion } from "./version";
 import { readProjection, writeProjection } from "../watchdog/projection";
 import { createWatchdogGitHubReader, type WatchdogReader } from "./watchdog";
 import type { AgentDescriptor, AgentSnapshotInput } from "./agents/registry";
@@ -39,6 +47,8 @@ export interface CoachActivityOptions {
   /** This dashboard's STATE_DIR; Coach files live under its `coach/`. */
   stateDir: string;
   harnessDir: string;
+  /** The harness version this dashboard loaded, for parallel-worker takeover. */
+  runningVersion?: string | null;
   send: (event: unknown, except?: { send(data: string): unknown }) => void;
   /** Test seam; production derives it from the state directory. */
   coachDir?: string;
@@ -84,6 +94,7 @@ export class CoachActivity implements AgentAdapter {
   private readonly stateDir: string;
   private readonly coachDir: string;
   private readonly harnessDir: string;
+  private readonly runningVersion: string | null;
   private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
   private readonly reader: WatchdogReader;
   private readonly now: () => number;
@@ -109,7 +120,10 @@ export class CoachActivity implements AgentAdapter {
   private stopRequested = false;
   private startError: string | null = null;
   private notice: string | null = null;
-  private stopping: { pid: number; timer: Timer } | undefined;
+  private stopping = new Map<number, Timer>();
+  /** One automatic new-version start per dashboard lifetime. */
+  private takeoverTask: Promise<void> | null = null;
+  private takeoverDone = false;
 
   constructor(options: CoachActivityOptions) {
     this.descriptor = options.descriptor;
@@ -117,6 +131,7 @@ export class CoachActivity implements AgentAdapter {
     this.stateDir = resolve(options.stateDir);
     this.coachDir = resolve(options.coachDir ?? coachDirectory(this.stateDir));
     this.harnessDir = options.harnessDir;
+    this.runningVersion = options.runningVersion ?? null;
     this.send = options.send;
     this.reader =
       options.reader ??
@@ -156,6 +171,9 @@ export class CoachActivity implements AgentAdapter {
   begin(): void {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => this.schedule(), Math.max(50, Math.min(this.intervalMs, 1_000)));
+    this.takeoverTask = this.takeoverOldWorkers().finally(() => {
+      this.takeoverTask = null;
+    });
   }
 
   dispose(): void {
@@ -167,7 +185,8 @@ export class CoachActivity implements AgentAdapter {
   }
 
   settled(): Promise<void> {
-    return this.inFlight ?? Promise.resolve();
+    return Promise.all([this.inFlight ?? Promise.resolve(), this.takeoverTask ?? Promise.resolve()])
+      .then(() => undefined);
   }
 
   replay(_target: { send(data: string): unknown }): void {
@@ -219,7 +238,7 @@ export class CoachActivity implements AgentAdapter {
   }
 
   private shouldPersistProjection(): boolean {
-    if (readWorkerState(this.coachDir) !== undefined) return true;
+    if (this.allStates().length > 0) return true;
     const settings = readCoachSettings(this.coachDir);
     return settings.maxPerHour !== null || settings.maxPending !== null;
   }
@@ -257,19 +276,50 @@ export class CoachActivity implements AgentAdapter {
     return { state: "ok", at, error: null };
   }
 
-  private worker(): CoachWorkerState | undefined {
-    return readWorkerState(this.coachDir);
+  /** Every published worker state: the legacy file and each version's file. */
+  private allStates(): CoachWorkerState[] {
+    const states: CoachWorkerState[] = [];
+    const legacy = readWorkerState(this.coachDir);
+    if (legacy !== undefined) states.push(legacy);
+    for (const directory of workerStateDirectories(this.coachDir)) {
+      const state = readWorkerState(directory);
+      if (state !== undefined) states.push(state);
+    }
+    return states;
   }
 
-  private attached(worker: CoachWorkerState | undefined): boolean {
-    return worker !== undefined && worker.lifecycle !== "stopped" && processAlive(worker.pid);
+  /** Live owners of this family whose STATE_DIR is this dashboard's. */
+  private owners(): LockOwner[] {
+    return liveLockOwners(lockPath(this.coachDir)).filter(
+      (owner) => resolve(owner.stateDir) === this.stateDir,
+    );
+  }
+
+  /** The control directory one live owner consumes, legacy or versioned. */
+  private controlFor(owner: LockOwner): string {
+    // The legacy lock identifies a worker that predates versioned state, even
+    // before that worker has published its state file.
+    const legacyOwner = readLock(lockPath(this.coachDir));
+    if (legacyOwner !== undefined && legacyOwner.pid === owner.pid) {
+      return controlDirectory(this.coachDir);
+    }
+    return versionedControlDirectory(this.coachDir, owner.harnessVersion);
   }
 
   snapshot(): AgentSnapshotInput {
     this.schedule();
-    const worker = this.worker();
-    const attached = this.attached(worker);
-    const owned = attached && resolve(worker?.stateDir ?? "") === this.stateDir;
+    const owners = this.owners();
+    const states = this.allStates();
+    const byPid = new Map(states.map((state) => [state.pid, state] as const));
+    const ownerStates = owners.map((owner) => byPid.get(owner.pid));
+    // A lock whose worker published `stopped` is releasing it: no new work is
+    // served, so it no longer counts as attached.
+    const attached = owners.some((_, index) => ownerStates[index]?.lifecycle !== "stopped");
+    const active =
+      ownerStates.find((state) => state !== undefined && state.lifecycle !== "stopped") ??
+      ownerStates.find((state) => state !== undefined) ??
+      [...states].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    const owned = attached;
     if (this.starting && attached) {
       this.starting = false;
       this.startingSince = null;
@@ -285,40 +335,39 @@ export class CoachActivity implements AgentAdapter {
     }
     if (this.stopRequested && !attached) this.stopRequested = false;
     if (!attached) this.clearStopProof();
-    if (attached && !owned) {
-      this.notice =
-        `Coach is running for this repository from another dashboard ` +
-        `(STATE_DIR ${worker?.stateDir ?? "unknown"}).`;
-    } else if (this.notice !== null && this.notice.startsWith("Coach is running")) {
-      this.notice = null;
-    }
 
     const status: CoachStatus = readCoachStatus(this.coachDir);
     const settings: CoachSettings = readCoachSettings(this.coachDir);
     const lifecycle = this.starting
       ? "starting"
-      : this.stopRequested || worker?.lifecycle === "stopping"
+      : this.stopRequested || active?.lifecycle === "stopping"
         ? "stopping"
         : attached
-          ? worker?.lifecycle === "failed"
+          ? active?.lifecycle === "failed"
             ? "failed"
             : "running"
-          : worker?.lifecycle === "failed"
+          : active?.lifecycle === "failed"
             ? "failed"
             : "stopped";
+    const workers = owners.map((owner) => ({
+      pid: owner.pid,
+      version: owner.harnessVersion,
+      stateDir: owner.stateDir,
+      lifecycle: byPid.get(owner.pid)?.lifecycle ?? "running",
+    }));
     const projection = readProjection(this.coachDir);
     const facts = new Map(
       projection?.issues.map((issue) => [issue.url, issue] as const) ?? [],
     );
     return {
       lifecycle,
-      enabled: attached && worker?.enabled === true && lifecycle !== "stopped",
+      enabled: attached && active?.enabled === true && lifecycle !== "stopped",
       owned,
       attached,
       cadence: {
         minutes: settings.intervalMinutes,
-        lastRunAt: worker?.lastRunAt ?? status.cycle,
-        nextRunAt: attached ? (worker?.nextRunAt ?? null) : null,
+        lastRunAt: active?.lastRunAt ?? status.cycle,
+        nextRunAt: attached ? (active?.nextRunAt ?? null) : null,
       },
       limits: {
         maxPerHour: settings.maxPerHour,
@@ -343,25 +392,59 @@ export class CoachActivity implements AgentAdapter {
       pending: status.pending,
       sync: this.sync(),
       detail: { panel: "cycles", cycles: status.cycles },
-      notice: worker?.notice ?? this.notice,
-      error: this.startError ?? worker?.lastError ?? null,
+      notice: active?.notice ?? this.notice,
+      error: this.startError ?? active?.lastError ?? null,
       timer: null,
+      workers,
     };
   }
 
   async start(): Promise<AgentCommandResult> {
     if (this.starting) return { ok: true };
-    const worker = this.worker();
-    if (this.attached(worker)) {
-      if (worker !== undefined && resolve(worker.stateDir) !== this.stateDir) {
-        this.notice =
-          `Coach is running for this repository from another dashboard ` +
-          `(STATE_DIR ${worker.stateDir}).`;
-        return { ok: true, notice: this.notice };
-      }
+    // Any live worker of this family already serves new cycles, whichever
+    // version started it; Start never duplicates one.
+    if (this.owners().length > 0) {
+      this.schedule();
       return { ok: true };
     }
+    return this.spawn();
+  }
 
+  /**
+   * Starts this version's worker when an older version's worker is live and
+   * this process is the newest harness. The older worker is told to drain: it
+   * finishes the cycle already in flight, starts no new one, and exits on its
+   * own. Runs once per bridge lifetime; with no live worker nothing starts.
+   */
+  private async takeoverOldWorkers(): Promise<void> {
+    if (this.takeoverDone) return;
+    this.takeoverDone = true;
+    const owners = this.owners();
+    if (owners.length === 0) return;
+    if (this.runningVersion === null) return;
+    const newest = readHarnessVersion(hostHarnessDir(this.repoDir));
+    if (newest === null || newest !== this.runningVersion) return;
+    if (owners.some((owner) => owner.harnessVersion === this.runningVersion)) return;
+    const started = await this.spawn();
+    if (!started.ok) {
+      this.log(`could not start the ${this.runningVersion} Coach worker: ${started.message}`);
+      return;
+    }
+    for (const owner of owners) {
+      if (owner.harnessVersion === this.runningVersion) continue;
+      try {
+        writeCoachCommand(this.controlFor(owner), { type: "drain" });
+      } catch (error) {
+        this.log(
+          `could not drain the ${owner.harnessVersion ?? "legacy"} Coach worker: ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+  }
+
+  /** Spawns the newest harness's worker after the Start preflight. */
+  private async spawn(): Promise<AgentCommandResult> {
     this.starting = true;
     this.startingSince = this.now();
     this.startError = null;
@@ -408,31 +491,24 @@ export class CoachActivity implements AgentAdapter {
   }
 
   stop(): AgentCommandResult {
-    const worker = this.worker();
-    if (!this.attached(worker) || worker === undefined) {
+    const owners = this.owners();
+    if (owners.length === 0) {
       return { ok: false, message: "No Coach worker is running for this repository." };
     }
-    if (resolve(worker.stateDir) !== this.stateDir) {
-      return {
-        ok: false,
-        message:
-          `Coach is running from another dashboard (STATE_DIR ${worker.stateDir}); ` +
-          `this dashboard cannot stop it.`,
-      };
+    const failures: string[] = [];
+    for (const owner of owners) {
+      try {
+        writeCoachCommand(this.controlFor(owner), { type: "stop" });
+        this.stopRequested = true;
+        this.scheduleStopProof(owner.pid);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
     }
-    try {
-      writeCoachCommand(controlDirectory(this.coachDir), { type: "stop" });
-    } catch (error) {
-      return {
-        ok: false,
-        message: `Could not reach the worker: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
-    }
-    this.stopRequested = true;
     this.startError = null;
-    this.scheduleStopProof(worker.pid);
+    if (failures.length > 0) {
+      return { ok: false, message: `Could not reach every worker: ${failures.join("; ")}` };
+    }
     return { ok: true };
   }
 
@@ -459,52 +535,51 @@ export class CoachActivity implements AgentAdapter {
         }`,
       };
     }
-    const worker = this.worker();
-    if (
-      worker !== undefined &&
-      processAlive(worker.pid) &&
-      resolve(worker.stateDir) === this.stateDir
-    ) {
+    const failures: string[] = [];
+    for (const owner of this.owners()) {
       try {
-        writeCoachCommand(controlDirectory(this.coachDir), {
+        writeCoachCommand(this.controlFor(owner), {
           type: "settings",
           intervalMinutes: minutes,
           maxPerHour,
           maxPending,
         });
       } catch (error) {
-        return {
-          ok: false,
-          message: `Could not reach the worker: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        };
+        failures.push(error instanceof Error ? error.message : String(error));
       }
     }
     this.startError = null;
     if (this.shouldPersistProjection()) this.persistProjection();
+    if (failures.length > 0) {
+      return { ok: false, message: `Could not reach every worker: ${failures.join("; ")}` };
+    }
     return { ok: true };
   }
 
   private scheduleStopProof(pid: number): void {
-    this.clearStopProof();
+    this.clearStopProof(pid);
     const timer = setTimeout(() => {
-      this.stopping = undefined;
+      this.stopping.delete(pid);
       this.escalateStop(pid);
     }, STOP_CYCLE_GRACE_MS);
     timer.unref?.();
-    this.stopping = { pid, timer };
+    this.stopping.set(pid, timer);
   }
 
-  private clearStopProof(): void {
-    if (this.stopping !== undefined) clearTimeout(this.stopping.timer);
-    this.stopping = undefined;
+  private clearStopProof(pid?: number): void {
+    if (pid === undefined) {
+      for (const timer of this.stopping.values()) clearTimeout(timer);
+      this.stopping.clear();
+      return;
+    }
+    clearTimeout(this.stopping.get(pid));
+    this.stopping.delete(pid);
   }
 
   private stopSettled(pid: number): boolean {
     if (!processAlive(pid)) return true;
-    const worker = this.worker();
-    return worker !== undefined && worker.pid === pid && worker.lifecycle === "stopped";
+    const state = this.allStates().find((candidate) => candidate.pid === pid);
+    return state !== undefined && state.lifecycle === "stopped";
   }
 
   private escalateStop(pid: number): void {
@@ -516,7 +591,7 @@ export class CoachActivity implements AgentAdapter {
       return;
     }
     const timer = setTimeout(() => {
-      this.stopping = undefined;
+      this.stopping.delete(pid);
       if (this.stopSettled(pid)) return;
       if (!this.provesWorker(pid)) return;
       try {
@@ -526,7 +601,7 @@ export class CoachActivity implements AgentAdapter {
       }
     }, STOP_KILL_GRACE_MS);
     timer.unref?.();
-    this.stopping = { pid, timer };
+    this.stopping.set(pid, timer);
   }
 
   private provesWorker(pid: number): boolean {

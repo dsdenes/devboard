@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { journalFile } from "../server/journal";
 import { agentRegistry } from "../server/agents/registry";
 import { saveSubscriptions, writeSelectionSnapshot } from "../server/providers";
@@ -10,8 +10,19 @@ import { OPENCODE_GO_MODEL } from "../server/providers/catalog";
 import { openCodePeers } from "../coach/providers";
 import { CoachActivity, preflightCoach } from "../server/coach";
 import type { WatchdogReader } from "../server/watchdog";
-import { coachDirectory, controlDirectory } from "../coach/paths";
-import { writeCoachCommand } from "../coach/control";
+import {
+  coachDirectory,
+  controlDirectory,
+  cycleLockPath,
+  lockPath,
+  versionedControlDirectory,
+  versionedLockPath,
+  versionedWorkerDirectory,
+} from "../coach/paths";
+import { writeCoachCommand, takeCoachCommands } from "../coach/control";
+import { runWorker, CYCLE_BUSY_NOTICE } from "../coach/worker";
+import { liveLockOwner } from "../issues/lock";
+import { readHarnessVersion } from "../server/version";
 import {
   DEFAULT_COACH_SETTINGS,
   isValidAllowlist,
@@ -20,10 +31,10 @@ import {
   readCoachSettings,
   writeCoachSettings,
 } from "../coach/settings";
-import { readWorkerState, writeWorkerState } from "../coach/worker-state";
+import { readWorkerState, writeWorkerState, type CoachWorkerState } from "../coach/worker-state";
 import { emptyLedger, loadLedger, saveLedger } from "../coach/ledger";
 import { readCoachStatus } from "../coach/status";
-import { describeCycle, runCycle, type CoachReport } from "../coach/coordinator";
+import { describeCycle, runCycle, type CoachReport, type CycleResult } from "../coach/coordinator";
 import {
   buildFamilies,
   familyKey,
@@ -82,6 +93,153 @@ async function workspace(): Promise<{ root: string; repoDir: string; stateDir: s
   await mkdir(join(repoDir, ".devboard"), { recursive: true });
   await mkdir(coachDirectory(stateDir), { recursive: true });
   return { root, repoDir, stateDir };
+}
+
+/** The harness version this checkout's worker publishes. */
+function sourceVersion(): string | null {
+  return readHarnessVersion(harnessRoot);
+}
+
+function versionedState(coachDir: string, version: string | null): CoachWorkerState | undefined {
+  return readWorkerState(versionedWorkerDirectory(coachDir, version));
+}
+
+/** The state this checkout's own worker publishes. */
+function currentWorkerState(coachDir: string): CoachWorkerState | undefined {
+  return versionedState(coachDir, sourceVersion());
+}
+
+/**
+ * Publishes a live lock for `pid` at the version's lock path, exactly like a
+ * worker that took it. The recorded start is the process's real start, from
+ * `/proc` (or this process's own uptime), so the owner reads as alive.
+ */
+function writeOwnerLock(path: string, options: {
+  pid: number;
+  repoDir: string;
+  stateDir: string;
+  harnessVersion: string | null;
+}): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(
+    path,
+    `${JSON.stringify({
+      pid: options.pid,
+      startedAt: processStartedAt(options.pid),
+      repo: options.repoDir,
+      stateDir: options.stateDir,
+      harnessVersion: options.harnessVersion,
+      argv: [],
+      token: `test-${options.pid}-${Math.random().toString(36).slice(2)}`,
+    })}\n`,
+  );
+}
+
+/** The instant `pid` started, in the form the lock records it. */
+function processStartedAt(pid: number): string {
+  if (pid === process.pid) {
+    return new Date(Date.now() - process.uptime() * 1000).toISOString();
+  }
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const close = stat.lastIndexOf(")");
+      const startTicks = Number(stat.slice(close + 2).split(" ")[19]);
+      const uptime = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+      if (Number.isFinite(startTicks) && Number.isFinite(uptime)) {
+        return new Date(Date.now() - uptime * 1000 + startTicks * 10).toISOString();
+      }
+    } catch {
+      // Fall through to the write instant.
+    }
+  }
+  return new Date().toISOString();
+}
+
+function spawnSleeper(): { pid: number; kill: () => void } {
+  const child = spawn("sleep", ["30"], { stdio: "ignore" });
+  return {
+    pid: child.pid!,
+    kill: () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Already exited.
+      }
+    },
+  };
+}
+
+/** Publishes a versioned (or legacy) worker state as that worker would. */
+function publishWorkerState(options: {
+  coachDir: string;
+  version: string;
+  pid: number;
+  repoDir: string;
+  stateDir: string;
+  lifecycle: CoachWorkerState["lifecycle"];
+  legacy?: boolean;
+}): void {
+  const directory =
+    options.legacy === true
+      ? options.coachDir
+      : versionedWorkerDirectory(options.coachDir, options.version);
+  writeWorkerState(directory, {
+    version: 1,
+    pid: options.pid,
+    startedAt: new Date().toISOString(),
+    root: options.repoDir,
+    stateDir: options.stateDir,
+    lifecycle: options.lifecycle,
+    enabled: options.lifecycle !== "stopped",
+    harnessVersion: options.version,
+    argv: [],
+    lastRunAt: null,
+    nextRunAt: null,
+    lastError: null,
+    notice: null,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function controlFileCount(directory: string): number {
+  try {
+    return readdirSync(directory).filter((name) => name.endsWith(".json")).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** A completed cycle with no filings, enough for the worker loop's report. */
+function emptyCycleResult(): CycleResult {
+  const now = new Date().toISOString();
+  return {
+    exitCode: 0,
+    report: {
+      cycle: now,
+      window: { start: now, end: now, minutes: 60 },
+      sessions: 0,
+      sessionFiles: 0,
+      truncated: false,
+      skipped: 0,
+      malformed: 0,
+      journalRecords: 0,
+      families: 0,
+      findings: [],
+      selected: [],
+      omitted: 0,
+      ledgerReset: false,
+      synthesis: [],
+      validations: [],
+      action: "none",
+      reason: "test cycle",
+      issues: [],
+      duplicates: [],
+      dropped: 0,
+      pending: 0,
+      reportPath: "",
+    },
+  };
 }
 
 /** One filed family, so the Coach projection has an issue URL to read. */
@@ -344,6 +502,7 @@ describe("Coach registration and lifecycle", () => {
   test("start reaches starting before the worker and running once its state exists", async () => {
     const { repoDir, stateDir } = await workspace();
     const coachDir = coachDirectory(stateDir);
+    const version = "test-version";
     let spawned = 0;
     const adapter = new CoachActivity({
       descriptor: agentRegistry.require("coach"),
@@ -355,7 +514,13 @@ describe("Coach registration and lifecycle", () => {
       spawnWorker: (argv) => {
         spawned += 1;
         expect(argv).toContain(join(harnessRoot, "coach", "worker.ts"));
-        writeWorkerState(coachDir, {
+        writeOwnerLock(versionedLockPath(coachDir, version), {
+          pid: process.pid,
+          repoDir,
+          stateDir,
+          harnessVersion: version,
+        });
+        writeWorkerState(versionedWorkerDirectory(coachDir, version), {
           version: 1,
           pid: process.pid,
           startedAt: new Date().toISOString(),
@@ -363,7 +528,7 @@ describe("Coach registration and lifecycle", () => {
           stateDir,
           lifecycle: "running",
           enabled: true,
-          harnessVersion: "test",
+          harnessVersion: version,
           argv,
           lastRunAt: null,
           nextRunAt: null,
@@ -381,12 +546,14 @@ describe("Coach registration and lifecycle", () => {
     const running = adapter.snapshot();
     expect(running.lifecycle).toBe("running");
     expect(running.owned).toBe(true);
+    expect(running.workers?.map((worker) => worker.version)).toEqual([version]);
     expect(spawned).toBe(1);
 
     expect(adapter.stop().ok).toBe(true);
     expect(adapter.snapshot().lifecycle).toBe("stopping");
-    writeWorkerState(coachDir, {
-      ...readWorkerState(coachDir)!,
+    expect(controlFileCount(versionedControlDirectory(coachDir, version))).toBe(1);
+    writeWorkerState(versionedWorkerDirectory(coachDir, version), {
+      ...readWorkerState(versionedWorkerDirectory(coachDir, version))!,
       lifecycle: "stopped",
       enabled: false,
     });
@@ -459,9 +626,11 @@ describe("Coach registration and lifecycle", () => {
     try {
       await waitFor(
         () => {
-          const state = readWorkerState(coachDir);
+          const state = currentWorkerState(coachDir);
           const afterCycle =
-            state?.lastRunAt !== null && state?.notice === "no family in the window";
+            state !== undefined &&
+            state.lastRunAt !== null &&
+            state.notice === "no family in the window";
           return afterCycle ? state : undefined;
         },
         "the worker to finish its first cycle",
@@ -473,7 +642,7 @@ describe("Coach registration and lifecycle", () => {
         allowlist: ["bun ", "git "],
         maxIssuesPerCycle: 7,
       });
-      writeCoachCommand(controlDirectory(coachDir), {
+      writeCoachCommand(versionedControlDirectory(coachDir, sourceVersion()), {
         type: "settings",
         intervalMinutes: 30,
         maxPerHour: 5,
@@ -497,9 +666,9 @@ describe("Coach registration and lifecycle", () => {
         maxIssuesPerCycle: 7,
         allowlist: ["bun ", "git "],
       });
-      writeCoachCommand(controlDirectory(coachDir), { type: "stop" });
+      writeCoachCommand(versionedControlDirectory(coachDir, sourceVersion()), { type: "stop" });
       await waitFor(
-        () => (readWorkerState(coachDir)?.lifecycle === "stopped" ? true : undefined),
+        () => (currentWorkerState(coachDir)?.lifecycle === "stopped" ? true : undefined),
         "the worker to stop",
       );
     } finally {
@@ -519,6 +688,237 @@ describe("Coach registration and lifecycle", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("GitLab");
   });
+});
+
+describe("Coach worker versions and takeover", () => {
+  test("lists every live version, reaches both controls, and has no mismatch notice", async () => {
+    const { repoDir, stateDir } = await workspace();
+    const coachDir = coachDirectory(stateDir);
+    const legacyVersion = "0.0.1";
+    const versionedVersion = "0.0.2";
+    const first = spawnSleeper();
+    const second = spawnSleeper();
+    try {
+      writeOwnerLock(lockPath(coachDir), {
+        pid: first.pid,
+        repoDir,
+        stateDir,
+        harnessVersion: legacyVersion,
+      });
+      writeOwnerLock(versionedLockPath(coachDir, versionedVersion), {
+        pid: second.pid,
+        repoDir,
+        stateDir,
+        harnessVersion: versionedVersion,
+      });
+      publishWorkerState({
+        coachDir,
+        version: legacyVersion,
+        pid: first.pid,
+        repoDir,
+        stateDir,
+        lifecycle: "running",
+        legacy: true,
+      });
+      publishWorkerState({
+        coachDir,
+        version: versionedVersion,
+        pid: second.pid,
+        repoDir,
+        stateDir,
+        lifecycle: "running",
+      });
+      let spawned = 0;
+      const adapter = new CoachActivity({
+        descriptor: agentRegistry.require("coach"),
+        repoDir,
+        stateDir,
+        harnessDir: harnessRoot,
+        send: () => undefined,
+        preflight: async () => ({ ok: true }),
+        spawnWorker: () => {
+          spawned += 1;
+          return undefined;
+        },
+      });
+      const snapshot = adapter.snapshot();
+      expect(snapshot.lifecycle).toBe("running");
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.workers).toEqual([
+        { pid: first.pid, version: legacyVersion, stateDir, lifecycle: "running" },
+        { pid: second.pid, version: versionedVersion, stateDir, lifecycle: "running" },
+      ]);
+      expect(snapshot.notice ?? null).toBeNull();
+      expect(JSON.stringify(snapshot)).not.toContain("mismatch");
+
+      const started = await adapter.start();
+      expect(started.ok).toBe(true);
+      expect(spawned).toBe(0);
+
+      expect(adapter.stop().ok).toBe(true);
+      expect(adapter.setSettings(15, 4, 2).ok).toBe(true);
+      expect(controlFileCount(controlDirectory(coachDir))).toBe(2);
+      expect(controlFileCount(versionedControlDirectory(coachDir, versionedVersion))).toBe(2);
+      expect(adapter.snapshot().notice ?? null).toBeNull();
+      adapter.dispose();
+    } finally {
+      first.kill();
+      second.kill();
+    }
+  });
+
+  test("a newer harness starts once and drains the older worker", async () => {
+    const { repoDir, stateDir } = await workspace();
+    const coachDir = coachDirectory(stateDir);
+    const oldVersion = "0.0.1";
+    const newest = sourceVersion();
+    const old = spawnSleeper();
+    try {
+      writeOwnerLock(versionedLockPath(coachDir, oldVersion), {
+        pid: old.pid,
+        repoDir,
+        stateDir,
+        harnessVersion: oldVersion,
+      });
+      publishWorkerState({
+        coachDir,
+        version: oldVersion,
+        pid: old.pid,
+        repoDir,
+        stateDir,
+        lifecycle: "running",
+      });
+      const spawned: string[][] = [];
+      const adapter = new CoachActivity({
+        descriptor: agentRegistry.require("coach"),
+        repoDir,
+        stateDir,
+        harnessDir: harnessRoot,
+        runningVersion: newest,
+        send: () => undefined,
+        preflight: async () => ({ ok: true }),
+        spawnWorker: (argv) => {
+          spawned.push(argv);
+          return process.pid;
+        },
+      });
+      adapter.begin();
+      await adapter.settled();
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]).toContain(join(harnessRoot, "coach", "worker.ts"));
+      expect(takeCoachCommands(versionedControlDirectory(coachDir, oldVersion))).toEqual([
+        { type: "drain" },
+      ]);
+
+      adapter.begin();
+      await adapter.settled();
+      expect(spawned).toHaveLength(1);
+      adapter.dispose();
+    } finally {
+      old.kill();
+    }
+  });
+
+  test("without a live worker the bridge starts nothing automatically", async () => {
+    const { repoDir, stateDir } = await workspace();
+    let spawned = 0;
+    const adapter = new CoachActivity({
+      descriptor: agentRegistry.require("coach"),
+      repoDir,
+      stateDir,
+      harnessDir: harnessRoot,
+      runningVersion: sourceVersion(),
+      send: () => undefined,
+      preflight: async () => ({ ok: true }),
+      spawnWorker: () => {
+        spawned += 1;
+        return process.pid;
+      },
+    });
+    adapter.begin();
+    await adapter.settled();
+    expect(spawned).toBe(0);
+    adapter.dispose();
+  });
+
+  test("a drained worker finishes its cycle, exits, and the next version claims the next one", async () => {
+    const { repoDir, stateDir } = await workspace();
+    const coachDir = coachDirectory(stateDir);
+    const oldVersion = "1.0.0";
+    const newVersion = "1.0.1";
+    const order: string[] = [];
+    const gate = Promise.withResolvers<void>();
+    let oldCycles = 0;
+    let newCycles = 0;
+    const oldRun = runWorker({
+      root: repoDir,
+      stateDir,
+      harnessVersion: oldVersion,
+      controlPollMs: 20,
+      log: () => undefined,
+      cycle: async () => {
+        oldCycles += 1;
+        order.push("old:start");
+        await gate.promise;
+        order.push("old:end");
+        return emptyCycleResult();
+      },
+    });
+    await waitFor(() => (oldCycles === 1 ? true : undefined), "the old worker's cycle");
+    expect(liveLockOwner(cycleLockPath(coachDir))).toBeDefined();
+
+    const newRun = runWorker({
+      root: repoDir,
+      stateDir,
+      harnessVersion: newVersion,
+      controlPollMs: 20,
+      log: () => undefined,
+      cycle: async () => {
+        newCycles += 1;
+        order.push("new:cycle");
+        return emptyCycleResult();
+      },
+    });
+    await waitFor(
+      () => {
+        const state = versionedState(coachDir, newVersion);
+        return state?.notice === CYCLE_BUSY_NOTICE ? true : undefined;
+      },
+      "the new worker to find the cycle claimed",
+    );
+    // The old worker's in-flight cycle owns the one claim; the new version
+    // must not start a second cycle beside it.
+    expect(newCycles).toBe(0);
+    expect(order).toEqual(["old:start"]);
+
+    writeCoachCommand(versionedControlDirectory(coachDir, oldVersion), { type: "drain" });
+    const draining = await waitFor(
+      () => {
+        const state = versionedState(coachDir, oldVersion);
+        return state?.draining === true ? state : undefined;
+      },
+      "the old worker to publish draining",
+    );
+    expect(draining.lifecycle).toBe("stopping");
+    expect(newCycles).toBe(0);
+
+    gate.resolve();
+    await oldRun;
+    expect(versionedState(coachDir, oldVersion)?.lifecycle).toBe("stopped");
+    expect(liveLockOwner(versionedLockPath(coachDir, oldVersion))).toBeUndefined();
+    expect(order[0]).toBe("old:start");
+    expect(order[1]).toBe("old:end");
+
+    await waitFor(() => (newCycles === 1 ? true : undefined), "the new worker's cycle");
+    expect(order).toEqual(["old:start", "old:end", "new:cycle"]);
+
+    writeCoachCommand(versionedControlDirectory(coachDir, newVersion), { type: "drain" });
+    await newRun;
+    expect(versionedState(coachDir, newVersion)?.lifecycle).toBe("stopped");
+    expect(liveLockOwner(versionedLockPath(coachDir, newVersion))).toBeUndefined();
+    expect(oldCycles).toBe(1);
+    expect(newCycles).toBe(1);
+  }, 20_000);
 });
 
 describe("Coach normalization", () => {

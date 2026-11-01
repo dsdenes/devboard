@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { acquireWorkerLock } from "../issues/lock";
+import { readHarnessVersion } from "../server/version";
 import { runCycle } from "./coordinator";
 import { loadRootEnvironment } from "./env";
-import { acquireLock } from "./lock";
-import { lockPath, watchdogDirectory } from "./paths";
+import { claimCycle } from "./lock";
+import { cycleClaimPath, lockPath, watchdogDirectory } from "./paths";
 import { readWatchdogSettings } from "./settings";
 
 /**
@@ -90,11 +92,28 @@ if (!existsSync(join(root, ".devboard"))) {
 loadRootEnvironment(root);
 
 const stateDir = watchdogDirectory(root);
-const lock = acquireLock(lockPath(stateDir));
+const harnessVersion = readHarnessVersion(resolve(import.meta.dir, ".."));
+const lock = acquireWorkerLock(lockPath(stateDir), harnessVersion, {
+  repo: root,
+  stateDir,
+  harnessVersion,
+  argv: [...process.argv],
+});
 if (!lock.acquired) {
   console.log(
-    `watchdog: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner})`}`,
+    `watchdog: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner.pid})`}`,
   );
+  process.exit(0);
+}
+// A one-shot run shares the cycle lease with every detached worker, so it can
+// never overlap a cycle another version is already running. A dry run changes
+// nothing, so it takes no lease file.
+const claim = dryRun || collect ? undefined : claimCycle(cycleClaimPath(stateDir), {
+  harnessVersion,
+});
+if (claim === undefined && !dryRun && !collect) {
+  console.log("watchdog: another worker is running a cycle; try again shortly");
+  lock.release();
   process.exit(0);
 }
 
@@ -117,6 +136,7 @@ try {
   console.error(`watchdog: ${detail}`);
   exitCode = 1;
 } finally {
+  claim?.release();
   lock.release();
 }
 

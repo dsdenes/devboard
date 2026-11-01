@@ -364,6 +364,20 @@
             {asking} {asking === 1 ? "needs an answer" : "need answers"}
           </span>
         {/if}
+        {#if (issues.snapshot?.workers ?? []).length > 0}
+          <span class="issues-workers" data-testid="issues-workers" aria-label="Live workers">
+            {#each issues.snapshot?.workers ?? [] as worker (worker.pid)}
+              <span
+                class="mono"
+                data-testid="issues-worker"
+                data-version={worker.version ?? "unknown"}
+                data-pid={worker.pid}
+              >
+                {worker.version ?? "unknown"}
+              </span>
+            {/each}
+          </span>
+        {/if}
       {/snippet}
     </PageHeader>
     {#if agents.length === 0}

@@ -8,14 +8,21 @@
  */
 
 import { chmodSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { createHash as hash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { journalFile } from "../server/journal";
-import { coachDirectory } from "../coach/paths";
+import { coachDirectory, lockPath, versionedWorkerDirectory } from "../coach/paths";
+import { readWorkerState } from "../coach/worker-state";
+import { CoachActivity } from "../server/coach";
+import { agentRegistry } from "../server/agents/registry";
+import { readHarnessVersion } from "../server/version";
+import { liveLockOwners } from "../issues/lock";
 import { familyTag } from "../coach/issue";
-import { assertTrue, harnessRoot, makeRoot, run } from "./verification";
+import { assertTrue, harnessRoot, makeRoot, run, waitFor } from "./verification";
+import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
 interface Call {
   op: "create";
@@ -449,6 +456,116 @@ try {
   );
   assertTrue(!existsSync(marker), "verify:coach: a cycle spawned an ACP peer");
   console.log("PASS coach-read-only");
+
+  /* ---------------------------------------------------------------- */
+  /* The live worker family: takeover, merged view, whole-family Stop   */
+  /* ---------------------------------------------------------------- */
+  seedVerificationProvider(stateDir);
+  const oldVersion = "0.1.900";
+  const newestVersion = readHarnessVersion(harnessRoot) ?? "unknown";
+  const workerEnvironment: Record<string, string | undefined> = {
+    ...process.env,
+    ...verificationProviderUsageEnv(),
+    PATH: `${root}:${process.env.PATH ?? ""}`,
+    REPO_DIR: repoDir,
+    STATE_DIR: stateDir,
+    AGENT_COMMAND: stubAgent,
+  };
+  const oldWorker = spawn(
+    process.execPath,
+    [
+      join(harnessRoot, "coach", "worker.ts"),
+      "--root",
+      repoDir,
+      "--state-dir",
+      stateDir,
+    ],
+    {
+      cwd: repoDir,
+      env: { ...workerEnvironment, DEVBOARD_HARNESS_VERSION: oldVersion },
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
+  const bridge = new CoachActivity({
+    descriptor: agentRegistry.require("coach"),
+    repoDir,
+    stateDir,
+    harnessDir: harnessRoot,
+    runningVersion: newestVersion,
+    send: () => undefined,
+    preflight: async () => ({ ok: true }),
+    environment: workerEnvironment,
+    pollMs: 100,
+  });
+  try {
+    await waitFor(
+      () =>
+        liveLockOwners(lockPath(coachDir)).some((owner) => owner.harnessVersion === oldVersion)
+          ? true
+          : undefined,
+      "the old Coach worker's lock",
+      20_000,
+      50,
+    );
+    console.log(`verify:coach: takeover: the live ${oldVersion} worker holds the family`);
+    bridge.begin();
+    const merged = await waitFor(
+      () => {
+        const snapshot = bridge.snapshot();
+        const workers = snapshot.workers ?? [];
+        return workers.length >= 2 ? workers : undefined;
+      },
+      "the merged Coach worker view",
+      30_000,
+      50,
+    );
+    const versions = merged.map((worker) => worker.version).sort();
+    assertTrue(
+      versions.includes(oldVersion),
+      `verify:coach: the merged view lost the old worker: ${JSON.stringify(versions)}`,
+    );
+    assertTrue(
+      versions.includes(newestVersion),
+      `verify:coach: the newer worker did not become live: ${JSON.stringify(versions)}`,
+    );
+    assertTrue(
+      !JSON.stringify({ workers: merged, notice: bridge.snapshot().notice }).includes(
+        "this dashboard loaded",
+      ),
+      "verify:coach: the merged view carries a version divergence notice",
+    );
+    console.log(
+      `verify:coach: takeover: old ${oldVersion} and new ${newestVersion} are both live with no divergence notice`,
+    );
+    bridge.stop();
+    await waitFor(
+      () => (liveLockOwners(lockPath(coachDir)).length === 0 ? true : undefined),
+      "every Coach worker to exit after the family Stop",
+      30_000,
+      100,
+    );
+    const retired = readWorkerState(versionedWorkerDirectory(coachDir, oldVersion));
+    assertTrue(
+      retired !== undefined,
+      "verify:coach: the retired worker's state was removed",
+    );
+    assertTrue(
+      retired?.lifecycle === "stopped" || retired?.lifecycle === "failed",
+      `verify:coach: the retired worker did not publish its stop: ${JSON.stringify(retired)}`,
+    );
+    console.log(
+      "verify:coach: takeover: the whole-family Stop ended both workers and the retired state remains readable",
+    );
+  } finally {
+    bridge.dispose();
+    if (oldWorker.pid !== undefined) {
+      try {
+        process.kill(oldWorker.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+  }
 
   console.log("verify:coach: OK");
 } finally {

@@ -20,6 +20,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
@@ -41,6 +42,14 @@ import {
   type AcpQuestion,
   type AcpQuestionOption,
 } from "./acp";
+import {
+  DetachedPeer,
+  beginDetachedHandoff,
+  detachedRunLive,
+  endDetachedHandoff,
+  writeDetachedLease,
+} from "./detached-run";
+import type { PeerConnection } from "./peer";
 import { ASK_TURN_TIMEOUT_MS, AskController } from "./ask";
 import {
   FeedbackDeliveryError,
@@ -135,7 +144,9 @@ import {
 import {
   isHarnessSourceCheckout,
   readHarnessVersion,
+  hostHarnessDir,
   runningHarnessDir,
+  runnableHarnessDir,
   serverVersion,
   type ServerVersion,
 } from "./version";
@@ -252,7 +263,7 @@ interface ActiveRun {
   title: string;
   /** What the agent is doing, so the interface never calls an implementation a resolution. */
   action: RunAction;
-  agent: AcpConnection | undefined;
+  agent: PeerConnection | undefined;
   activity: string[];
   question: RunQuestion | null;
 }
@@ -272,7 +283,7 @@ interface Lane {
   record: { file: string; title: string } | null;
   attempt: number;
   status: LaneStatus;
-  agent: AcpConnection | undefined;
+  agent: PeerConnection | undefined;
   activity: string[];
   question: RunQuestion | null;
   /** True when the peer reported an explicit hard blocker. */
@@ -292,13 +303,13 @@ interface EpicState {
 }
 
 interface GoalRevision {
-  agent: AcpConnection | undefined;
+  agent: PeerConnection | undefined;
   activity: string[];
   question: RunQuestion | null;
 }
 
 interface GoalCreation {
-  agent: AcpConnection | undefined;
+  agent: PeerConnection | undefined;
   activity: string[];
   question: RunQuestion | null;
 }
@@ -340,7 +351,7 @@ interface SkillsSnapshot {
 }
 
 interface SkillsPreparation {
-  agent: AcpConnection | undefined;
+  agent: PeerConnection | undefined;
   activity: string[];
   question: RunQuestion | null;
   snapshot: SkillsSnapshot;
@@ -2131,13 +2142,6 @@ export function createApp(options: AppOptions) {
         cwd: repoDir,
         env: await peerEnvironment(),
       }));
-  // Every Ask peer runs in the host repository, whatever the request came from.
-  const ask = new AskController({
-    command: agentCommand,
-    cwd: repoDir,
-    environment: peerEnvironment,
-    turnTimeoutMs: Math.max(1, options.askTurnTimeoutMs ?? ASK_TURN_TIMEOUT_MS),
-  });
   const tracker = options.tracker ?? findOpenEpics;
   const trackerSettle: TrackerSettle = {
     attempts: Math.max(1, options.trackerSettle?.attempts ?? TRACKER_SETTLE_ATTEMPTS),
@@ -2163,6 +2167,15 @@ export function createApp(options: AppOptions) {
   // The state belongs to this checkout, not to the harness installation: hosts
   // share one harness through a symlink, so the repository path keys the file.
   const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
+  /** Identifies this dashboard instance to the detached-run owners. */
+  const instance = randomUUID();
+  // Detached runs watch this lease to tell a replacement from an ordinary
+  // process exit; it is refreshed while this dashboard lives.
+  writeDetachedLease(stateDir, repoDir, instance);
+  const detachedLeaseTimer = setInterval(() => {
+    writeDetachedLease(stateDir, repoDir, instance);
+  }, 1_000);
+  detachedLeaseTimer.unref?.();
   // The operator's provider credentials and the per-peer selection. OMP's own
   // login state is never consulted for these two providers.
   const providers =
@@ -2185,9 +2198,37 @@ export function createApp(options: AppOptions) {
   const statePath = stateFile(stateDir, resolve(repoDir));
   const loadedState = readStateFile(statePath);
   const runningVersion = options.runningVersion ?? readHarnessVersion(runningHarnessDir());
-  const readVersion =
+  /**
+   * A replacement that could not be started leaves this process serving and
+   * is reported with the version state, so the fallback control can retry it.
+   */
+  let replacementFailure: string | null = null;
+  const baseVersion =
     options.versionState ??
     (() => serverVersion(repoDir, runningVersion, options.latestVersion?.() ?? null));
+  const readVersion = (): ServerVersion => {
+    const state = baseVersion();
+    if (replacementFailure === null) return state;
+    return {
+      ...state,
+      replacement: {
+        running: state.running,
+        installed: state.installed,
+        error: replacementFailure,
+      },
+    };
+  };
+  // Every Ask peer runs in the host repository, whatever the request came from.
+  const ask = new AskController({
+    command: agentCommand,
+    cwd: repoDir,
+    environment: peerEnvironment,
+    turnTimeoutMs: Math.max(1, options.askTurnTimeoutMs ?? ASK_TURN_TIMEOUT_MS),
+    stateDir,
+    instance,
+    harnessVersion: runningVersion,
+    isRestarting: () => restarting,
+  });
 
   /**
    * Discover Mode's run state. The crawl is server-owned: a browser
@@ -2204,7 +2245,7 @@ export function createApp(options: AppOptions) {
     id: DiscoverAgentId;
     /** `all` while the run belongs to a Run all sequence. */
     mode: "single" | "all";
-    peer: AcpConnection | undefined;
+    peer: PeerConnection | undefined;
     activity: string[];
     question: RunQuestion | null;
     /** The remote project this run re-discovers, when the target is remote. */
@@ -2321,6 +2362,8 @@ export function createApp(options: AppOptions) {
     agentEnvironment: peerEnvironment,
     journal,
     goalWorkActive: activeGoalWork,
+    harnessVersion: runningVersion,
+    instance,
     broadcast: (event) => broadcast(event),
     ...(options.flow ?? {}),
   });
@@ -2530,7 +2573,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     agentEnvironment: peerEnvironment,
     runningVersion,
-    harnessDir: runningHarnessDir(),
+    harnessDir: runnableHarnessDir(repoDir),
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     hasClients: () => clients.size > 0,
@@ -2576,7 +2619,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     agentEnvironment: peerEnvironment,
     runningVersion,
-    harnessDir: runningHarnessDir(),
+    harnessDir: runnableHarnessDir(repoDir),
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.scout?.pollMs === undefined ? {} : { pollMs: options.scout.pollMs }),
@@ -2596,7 +2639,8 @@ export function createApp(options: AppOptions) {
     descriptor: watchdogDescriptor,
     repoDir,
     stateDir,
-    harnessDir: runningHarnessDir(),
+    harnessDir: runnableHarnessDir(repoDir),
+    runningVersion,
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.watchdog?.reader === undefined ? {} : { reader: options.watchdog.reader }),
@@ -2628,7 +2672,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     agentEnvironment: peerEnvironment,
     runningVersion,
-    harnessDir: runningHarnessDir(),
+    harnessDir: runnableHarnessDir(repoDir),
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.design?.pollMs === undefined ? {} : { pollMs: options.design.pollMs }),
@@ -2647,7 +2691,8 @@ export function createApp(options: AppOptions) {
     descriptor: coachDescriptor,
     repoDir,
     stateDir,
-    harnessDir: runningHarnessDir(),
+    harnessDir: runnableHarnessDir(repoDir),
+    runningVersion,
     send: (event, except) => sendAll(event, except),
     environment: process.env,
     log: (line) => process.stderr.write(`${line}\n`),
@@ -2705,9 +2750,11 @@ export function createApp(options: AppOptions) {
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
     const children: RecordedChild[] = [];
-    const remember = (agent: AcpConnection | undefined, cwd = repoDir) => {
-      const pid = agent?.pid;
-      if (agent === undefined || pid === undefined) return;
+    const remember = (agent: PeerConnection | undefined, cwd = repoDir) => {
+      // A detached run belongs to its owner, which the replacement adopts.
+      if (agent === undefined || agent instanceof DetachedPeer) return;
+      const pid = agent.pid;
+      if (pid === undefined) return;
       children.push({ pid, argv: agent.argv, cwd });
     };
     remember(manualRun?.agent);
@@ -2842,7 +2889,15 @@ export function createApp(options: AppOptions) {
     process.stderr.write(`${message}\n`);
   }
 
+  /**
+   * A process being replaced hands its durable state to the successor. It
+   * stops writing so its shutdown cleanup cannot overwrite what the
+   * replacement is already reading.
+   */
+  let persistSuppressed = false;
+
   function persistState(): void {
+    if (persistSuppressed) return;
     let text: string;
     try {
       text = JSON.stringify({ version: STATE_VERSION, state: captureState() });
@@ -3464,6 +3519,7 @@ export function createApp(options: AppOptions) {
     mode: "single" | "all",
     target: { root: string; remote: RemoteRepository | undefined; project: string },
     resumed?: StoredDiscover,
+    attach = false,
   ): Promise<boolean> {
     const descriptor = discoverAgent(id);
     if (descriptor === undefined) {
@@ -3472,11 +3528,14 @@ export function createApp(options: AppOptions) {
     }
     const { root, remote, project: projectName } = target;
     let factsBefore;
-    const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
-    const stagingDir = stagingDirectory(root, runId);
+    const runId = attach && resumed !== undefined
+      ? resumed.runId
+      : `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const stagingDir =
+      attach && resumed !== undefined ? resumed.stagingDir : stagingDirectory(root, runId);
     try {
       factsBefore = hostFacts(root);
-      mkdirSync(stagingDir, { recursive: true });
+      if (!attach) mkdirSync(stagingDir, { recursive: true });
     } catch (error) {
       discoverFailure(
         ws,
@@ -3515,7 +3574,7 @@ export function createApp(options: AppOptions) {
     broadcast({ type: "discoverStarted", runId, startedAt, agent: id, mode });
     broadcastDiscoverState();
 
-    let peer: AcpConnection;
+    let peer: PeerConnection;
     try {
       const env = await peerEnvironment();
       // A stop or disposal during provider selection clears the run. The turn
@@ -3525,7 +3584,15 @@ export function createApp(options: AppOptions) {
       // and compress the descriptions in the background; a foreign skill logs
       // a warning the watchdog files. The agent contract already excludes every
       // `.omp` path, so the peer runs without skill discovery or loading.
-      peer = new AcpConnection({
+      peer = new DetachedPeer({
+        repoDir,
+        stateDir,
+        kind: "discover",
+        key: run.runId,
+        harnessVersion: runningVersion,
+        instance,
+        skipActivity: run.activity.length,
+        ...(attach ? { attachOnly: true } : {}),
         command: `${agentCommand} --no-skills`,
         cwd: root,
         env,
@@ -3730,8 +3797,8 @@ export function createApp(options: AppOptions) {
     finishDiscoverCommand(target, "all", last);
   }
 
-  /** Re-spawns the one agent whose process died, against its stored target. */
-  async function resumeDiscoverRun(stored: StoredDiscover): Promise<void> {
+  /** Re-spawns, or re-attaches to, the one agent a replacement inherited. */
+  async function resumeDiscoverRun(stored: StoredDiscover, attach = false): Promise<void> {
     if (!isDiscoverAgentId(stored.agent)) return;
     try {
       if (stored.remote === null) {
@@ -3744,6 +3811,7 @@ export function createApp(options: AppOptions) {
           "single",
           target,
           stored,
+          attach,
         );
         if (published) finishDiscoverCommand(target, "single", stored.agent);
         return;
@@ -4103,6 +4171,26 @@ export function createApp(options: AppOptions) {
   }
 
   /**
+   * Tells every connected page to wait for the replacement and hands the
+   * detached runs and workers to it. The process that installs a newer
+   * harness calls this before it exits, so no click is involved.
+   */
+  function prepareReplacement(): void {
+    beginDetachedHandoff(stateDir, repoDir, instance);
+    goalDrafts.handoff();
+    broadcast({ type: "serverRestarting" });
+  }
+
+  /**
+   * Records a replacement that could not start. This process keeps serving
+   * and the fallback control retries the same launcher.
+   */
+  function noteReplacementFailure(error: unknown): void {
+    replacementFailure = error instanceof Error ? error.message : String(error);
+    broadcast({ type: "versionState", ...readVersion(), feedbackEnabled });
+  }
+
+  /**
    * Replaces this process through its launcher. The event leaves first so a
    * browser stops reconnecting and waits for the replacement instead. Returns
    * the failure detail, or undefined once the launcher owns the process.
@@ -4114,17 +4202,18 @@ export function createApp(options: AppOptions) {
       clearInterval(restartWhenIdleTimer);
       restartWhenIdleTimer = undefined;
     }
-    // Running elaborations belong to the replacement, not to this process.
-    goalDrafts.handoff();
-    broadcast({ type: "serverRestarting" });
+    // Running runs belong to the replacement, not to this process.
+    prepareReplacement();
     try {
       options.restart?.();
       return undefined;
     } catch (error) {
       restarting = false;
-      return `Could not restart the server: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      endDetachedHandoff(stateDir, repoDir, instance);
+      const failure = error instanceof Error ? error.message : String(error);
+      replacementFailure = failure;
+      broadcast({ type: "versionState", ...readVersion(), feedbackEnabled });
+      return `Could not restart the server: ${failure}`;
     }
   }
 
@@ -4771,7 +4860,14 @@ export function createApp(options: AppOptions) {
       // A reset or disposal during provider selection clears the preparation;
       // constructing a peer now would leave it unowned.
       if (skillsPreparation !== preparation) return;
-      const agent = new AcpConnection({
+      const agent = new DetachedPeer({
+        repoDir,
+        stateDir,
+        kind: "goal",
+        key: "skills",
+        harnessVersion: runningVersion,
+        instance,
+        skipActivity: preparation.activity.length,
         command: agentCommand,
         cwd: repoDir,
         env,
@@ -4944,7 +5040,14 @@ export function createApp(options: AppOptions) {
       // A newer creation or a disposal during provider selection clears the
       // owner; no peer may be constructed for it.
       if (goalCreation !== creation) return;
-      const agent = new AcpConnection({
+      const agent = new DetachedPeer({
+        repoDir,
+        stateDir,
+        kind: "goal",
+        key: "creation",
+        harnessVersion: runningVersion,
+        instance,
+        skipActivity: creation.activity.length,
         command: agentCommand,
         cwd: repoDir,
         env,
@@ -5062,7 +5165,14 @@ export function createApp(options: AppOptions) {
       // A newer revision or a disposal during provider selection clears the
       // owner; no peer may be constructed for it.
       if (goalRevision !== revision) return;
-      const agent = new AcpConnection({
+      const agent = new DetachedPeer({
+        repoDir,
+        stateDir,
+        kind: "goal",
+        key: "revision",
+        harnessVersion: runningVersion,
+        instance,
+        skipActivity: revision.activity.length,
         command: agentCommand,
         cwd: repoDir,
         env,
@@ -5115,7 +5225,14 @@ export function createApp(options: AppOptions) {
       // A stop or reset during provider selection ends the manual run; no peer
       // may run its prompt for an owner that is gone.
       if (!isLiveRun(run)) return false;
-      const agent = new AcpConnection({
+      const agent = new DetachedPeer({
+        repoDir,
+        stateDir,
+        kind: "adr",
+        key: run.file,
+        harnessVersion: runningVersion,
+        instance,
+        skipActivity: run.activity.length,
         command: agentCommand,
         cwd: repoDir,
         env,
@@ -5645,7 +5762,14 @@ export function createApp(options: AppOptions) {
       // A stop or disposal during provider selection clears the lane; the
       // prompt must not run for a lane nothing can close.
       if (!liveLanes.has(lane)) return;
-      const agent = new AcpConnection({
+      const agent = new DetachedPeer({
+        repoDir,
+        stateDir,
+        kind: "lane",
+        key: String(lane.id),
+        harnessVersion: runningVersion,
+        instance,
+        skipActivity: lane.activity.length,
         command: agentCommand,
         cwd: repoDir,
         env,
@@ -6531,12 +6655,18 @@ export function createApp(options: AppOptions) {
     if (restoredDiscover !== undefined) {
       const interrupted = restoredDiscover;
       restoredDiscover = undefined;
-      try {
-        rmSync(interrupted.stagingDir, { recursive: true, force: true });
-        // A resumed run uses a fresh staging root of its own.
-        rmSync(dirname(interrupted.stagingDir), { recursive: true, force: true });
-      } catch {
-        // The staging directory may already be gone.
+      // A detached crawl outlives the dashboard, so the replacement attaches
+      // to the same run and the same staging directory. Only an owner that
+      // already ended is replaced by a fresh crawl.
+      const live = detachedRunLive(stateDir, repoDir, "discover", interrupted.runId, instance);
+      if (!live) {
+        try {
+          rmSync(interrupted.stagingDir, { recursive: true, force: true });
+          // A resumed run uses a fresh staging root of its own.
+          rmSync(dirname(interrupted.stagingDir), { recursive: true, force: true });
+        } catch {
+          // The staging directory may already be gone.
+        }
       }
       if (restoredResetActive) {
         // The reset owns the checkout and its interruption is reported once.
@@ -6549,8 +6679,8 @@ export function createApp(options: AppOptions) {
         });
         persistState();
       } else {
-        journal.write("lifecycle", "discover-resume");
-        void resumeDiscoverRun(interrupted);
+        journal.write("lifecycle", live ? "discover-adopt" : "discover-resume");
+        void resumeDiscoverRun(interrupted, live);
       }
     }
 
@@ -6616,15 +6746,42 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    /**
+     * A replacement replays a restored question before the adopted peer has
+     * attached. An answer that arrives in that window waits for the peer
+     * instead of reporting a question that is not pending.
+     */
+    const deliverAnswer = (
+      target: { question: RunQuestion | null; agent: PeerConnection | undefined },
+      onAnswered: () => void,
+    ): void => {
+      const question = target.question;
+      if (question === null) return;
+      const deadline = Date.now() + 5_000;
+      const attempt = (): void => {
+        if (target.question !== question) return;
+        if (target.agent !== undefined) {
+          if (!target.agent.answer(question.id, value)) {
+            send(ws, { type: "error", message: "The question is no longer pending." });
+            return;
+          }
+          target.question = null;
+          onAnswered();
+          return;
+        }
+        if (Date.now() < deadline) {
+          setTimeout(attempt, 50);
+          return;
+        }
+        send(ws, { type: "error", message: "The question is no longer pending." });
+      };
+      attempt();
+    };
+
     const laneAnswer = (target: Lane | undefined): boolean => {
       if (target === undefined) return false;
       if (target.question === null || String(target.question.id) !== String(id)) return false;
-      if (target.agent === undefined || !target.agent.answer(target.question.id, value)) {
-        send(ws, { type: "error", message: "The question is no longer pending." });
-        return true;
-      }
-      target.question = null;
-      publishLanes();
+      deliverAnswer(target, publishLanes);
       return true;
     };
 
@@ -6635,11 +6792,7 @@ export function createApp(options: AppOptions) {
     }
 
     if (active !== undefined && active.question !== null && String(active.question.id) === String(id)) {
-      if (active.agent === undefined || !active.agent.answer(active.question.id, value)) {
-        send(ws, { type: "error", message: "The question is no longer pending." });
-        return;
-      }
-      active.question = null;
+      deliverAnswer(active, () => undefined);
       return;
     }
 
@@ -7599,6 +7752,12 @@ export function createApp(options: AppOptions) {
   bindShutdown(shutdown);
   server.stop = (closeActiveConnections?: boolean) => {
     shutdownHooks.delete(shutdown);
+    if (restarting) {
+      // The successor already owns this state; shutdown cleanup below must
+      // not publish a stopped lifecycle, failed lanes, or cleared runs.
+      persistState();
+      persistSuppressed = true;
+    }
     ask.dispose();
     flow.dispose();
     issues.dispose();
@@ -7615,6 +7774,8 @@ export function createApp(options: AppOptions) {
       clearInterval(providerRefreshTimer);
       providerRefreshTimer = undefined;
     }
+    clearInterval(detachedLeaseTimer);
+    if (!restarting) endDetachedHandoff(stateDir, repoDir, instance);
     restartWhenIdle = false;
     sequencing = false;
     manualSequencing = false;
@@ -7641,7 +7802,7 @@ export function createApp(options: AppOptions) {
     discoverRun = undefined;
     discoverAllActive = false;
     discovering?.peer?.close();
-    if (discovering !== undefined) {
+    if (discovering !== undefined && !restarting) {
       try {
         rmSync(discovering.stagingDir, { recursive: true, force: true });
       } catch {
@@ -7653,5 +7814,10 @@ export function createApp(options: AppOptions) {
     return stop(closeActiveConnections);
   };
 
-  return server;
+  // The installer triggers a replacement without a browser command; these
+  // hooks are the only surface it needs from the interface.
+  return Object.assign(server, {
+    prepareReplacement,
+    noteReplacementFailure,
+  });
 }

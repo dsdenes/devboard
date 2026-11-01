@@ -7,7 +7,7 @@ import {
 } from "../../server/providers/worker-environment";
 import { recordedChildAlive } from "../../server/state";
 import { readHarnessVersion } from "../../server/version";
-import { acquireLock, liveLockOwner } from "../lock";
+import { acquireLock, liveLockOwner, liveLockOwners, versionLockPath } from "../lock";
 import { originForge, originRepository } from "../repository";
 import { appendActivityLine, writeActivity } from "../state";
 import { fileDesignIssue } from "./actions";
@@ -28,11 +28,14 @@ import {
   CYCLE_ISSUE_LIMIT,
   SYNC_INTERVAL_MS,
   controlDirectory,
+  cycleClaimPath,
   designConfig,
   lockPath,
   settingsPath,
   statePath,
   cycleDirectory,
+  versionedControlDirectory,
+  versionedStatePath,
   type DesignConfig,
 } from "./paths";
 import {
@@ -197,6 +200,10 @@ export class DesignWorker {
   private openTitles: string[] = [];
   private ticker: Timer | undefined;
   private lock: { release: () => void } | undefined;
+  /** The checkout-wide lease for the cycle this worker started. */
+  private cycleClaim: { release: () => void } | undefined;
+  /** Set by `drain`; no unit starts after it, and the worker exits when idle. */
+  private draining = false;
   private lastSaved = "";
   private nextSyncAt = 0;
   private cycleDone: Promise<void> = Promise.resolve();
@@ -236,7 +243,9 @@ export class DesignWorker {
     this.fileIssue = options.fileIssue ?? fileDesignIssue;
     this.release = options.release ?? releaseDocuments;
     this.harnessVersion =
-      options.harnessVersion ?? readHarnessVersion(resolve(import.meta.dir, "..", ".."));
+      options.harnessVersion ??
+      process.env.DEVBOARD_HARNESS_VERSION ??
+      readHarnessVersion(resolve(import.meta.dir, "..", ".."));
     this.config = options.config ?? designConfig(this.environment);
     this.manualCycles = options.manualCycles === true;
     this.log = options.log ?? (() => undefined);
@@ -254,18 +263,20 @@ export class DesignWorker {
 
   /** Takes the repository lock and publishes a fresh `idle` cycle. */
   start(repository: string): boolean {
-    const lockResult = acquireLock(lockPath(this.repoDir), {
+    const lockResult = acquireLock(versionLockPath(lockPath(this.repoDir), this.harnessVersion), {
       repo: this.repoDir,
       stateDir: this.stateDir,
       harnessVersion: this.harnessVersion,
       argv: [...process.argv],
     });
     if (!lockResult.acquired) {
-      this.log(`already running for ${this.repoDir}`);
+      this.log(`already running for ${this.repoDir} on ${this.harnessVersion ?? "an unknown version"}`);
       return false;
     }
     this.lock = lockResult;
-    const previous = loadState(statePath(this.stateDir, this.repoDir));
+    const previous =
+      loadState(versionedStatePath(this.stateDir, this.repoDir, this.harnessVersion)) ??
+      loadState(statePath(this.stateDir, this.repoDir));
     const now = this.clock();
     const settings: DesignSettings =
       readSettings(settingsPath(this.stateDir, this.repoDir)) ?? {
@@ -321,7 +332,7 @@ export class DesignWorker {
     const text = JSON.stringify(this.state);
     if (text === this.lastSaved) return;
     try {
-      writeState(statePath(this.stateDir, this.repoDir), this.state);
+      writeState(versionedStatePath(this.stateDir, this.repoDir, this.harnessVersion), this.state);
       this.lastSaved = text;
     } catch (error) {
       this.log(`could not write state: ${detailOf(error)}`);
@@ -339,6 +350,10 @@ export class DesignWorker {
     if (this.stopping) return;
     await this.consumeCommands();
     if (this.stopping || !this.state.enabled) return;
+    if (this.draining) {
+      if (this.active === undefined && !this.cycling && !this.starting) await this.stop();
+      return;
+    }
     this.markStale();
     if (this.syncing || this.cycling) return;
     if (this.clock().getTime() >= this.nextSyncAt) {
@@ -394,9 +409,20 @@ export class DesignWorker {
     if (this.consuming) return;
     this.consuming = true;
     try {
-      for (const command of takeCommands(controlDirectory(this.stateDir, this.repoDir))) {
-        if (this.stopping) return;
-        await this.apply(command);
+      const directories = [
+        versionedControlDirectory(this.stateDir, this.repoDir, this.harnessVersion),
+      ];
+      // The legacy directory belongs to a live pre-version worker while it
+      // runs; a newer worker reading it could steal that worker's drain.
+      const legacyLive = liveLockOwners(lockPath(this.repoDir)).some(
+        (owner) => owner.harnessVersion === null && owner.pid !== process.pid,
+      );
+      if (!legacyLive) directories.push(controlDirectory(this.stateDir, this.repoDir));
+      for (const directory of new Set(directories)) {
+        for (const command of takeCommands(directory)) {
+          if (this.stopping) return;
+          await this.apply(command);
+        }
       }
     } finally {
       this.consuming = false;
@@ -408,6 +434,15 @@ export class DesignWorker {
       case "stop":
         await this.stop();
         return;
+      case "drain": {
+        // A newer version owns new work. Finish the in-flight cycle, then exit.
+        this.draining = true;
+        this.state.draining = true;
+        this.state.lastError = null;
+        this.state.notice = "Draining: this worker exits after its in-flight cycle.";
+        this.publish();
+        return;
+      }
       case "limits": {
         if (!isValidLimit(command.maxPerHour) || !isValidLimit(command.maxPending)) {
           this.state.lastError = "Design System limits must be empty or integers from 1 through 100.";
@@ -608,6 +643,17 @@ export class DesignWorker {
   async beginCycle(): Promise<void> {
     if (this.stopping || this.active !== undefined || this.cycling) return;
     if (!this.state.enabled) return;
+    // One cycle at a time for the checkout, whatever version started the
+    // other worker. The lease is released when this cycle reaches a terminal
+    // state, so the replacement takes the next unit only after this one ends.
+    const claim = acquireLock(cycleClaimPath(this.repoDir), {
+      repo: this.repoDir,
+      stateDir: this.stateDir,
+      harnessVersion: this.harnessVersion,
+      argv: [...process.argv],
+    });
+    if (!claim.acquired) return;
+    this.cycleClaim = claim;
     this.starting = true;
     this.cycling = true;
     const done = Promise.withResolvers<void>();
@@ -626,8 +672,10 @@ export class DesignWorker {
         this.state.nextAttemptAt = new Date(now.getTime() + this.syncMs).toISOString();
         this.publish();
         this.cycling = false;
+        this.releaseCycleClaim();
         this.settleCycle?.();
         this.settleCycle = undefined;
+        if (this.draining) void this.stop();
         return;
       }
       const { cycleId, directory } = createCycleDirectory(this.repoDir, now);
@@ -695,8 +743,10 @@ export class DesignWorker {
         this.state.nextAttemptAt = new Date(now.getTime() + this.syncMs).toISOString();
         this.publish();
         this.cycling = false;
+        this.releaseCycleClaim();
         this.settleCycle?.();
         this.settleCycle = undefined;
+        if (this.draining) void this.stop();
         return;
       }
 
@@ -803,6 +853,7 @@ export class DesignWorker {
     }
     this.active = undefined;
     this.cycling = false;
+    this.releaseCycleClaim();
     this.settleCycle?.();
     this.settleCycle = undefined;
     if (this.stopping) return;
@@ -813,6 +864,7 @@ export class DesignWorker {
     this.state.notice = `Audit failed: ${error}`;
     this.state.nextAttemptAt = new Date(this.clock().getTime() + this.syncMs).toISOString();
     this.publish();
+    if (this.draining) void this.stop();
   }
 
   private closePeer(active: ActiveCycle): void {
@@ -996,6 +1048,11 @@ export class DesignWorker {
     }
   }
 
+  private releaseCycleClaim(): void {
+    this.cycleClaim?.release();
+    this.cycleClaim = undefined;
+  }
+
   private async fileFindings(
     active: ActiveCycle,
     findings: DesignFinding[],
@@ -1057,6 +1114,7 @@ export class DesignWorker {
   private finishCycle(active: ActiveCycle, error: string | null): void {
     this.active = undefined;
     this.cycling = false;
+    this.releaseCycleClaim();
     this.settleCycle?.();
     this.settleCycle = undefined;
     // The release's waiters are answered only here, after every step that
@@ -1074,6 +1132,7 @@ export class DesignWorker {
     const cooldownAt = new Date(now.getTime() + this.syncMs).toISOString();
     this.state.nextAttemptAt = latest(cadenceAt, cooldownAt);
     this.publish();
+    if (this.draining) void this.stop();
   }
 
   /** Stop: end the peer, keep the rows, limits, and last release. */
@@ -1098,6 +1157,7 @@ export class DesignWorker {
         this.active = undefined;
       }
       this.cycling = false;
+      this.releaseCycleClaim();
       this.settleCycle?.();
       this.settleCycle = undefined;
       // A cycle whose release already pushed must finish its workflow wait,
@@ -1109,7 +1169,9 @@ export class DesignWorker {
       this.state.lifecycle = "stopped";
       this.state.nextAttemptAt = null;
       this.state.lastError = null;
-      this.state.notice = null;
+      this.state.notice = this.draining
+        ? "Drained: exited after its in-flight cycle."
+        : null;
       this.publish();
       if (this.ticker !== undefined) {
         clearInterval(this.ticker);
@@ -1179,8 +1241,11 @@ async function main(): Promise<void> {
     console.error("design worker: the checkout's origin does not name a repository");
     process.exit(2);
   }
-  if (liveLockOwner(lockPath(repoDir)) !== undefined) {
-    console.error("design worker: this checkout already has a live design agent");
+  const workerVersion =
+    process.env.DEVBOARD_HARNESS_VERSION ??
+    readHarnessVersion(resolve(import.meta.dir, "..", ".."));
+  if (liveLockOwner(versionLockPath(lockPath(repoDir), workerVersion)) !== undefined) {
+    console.error("design worker: this checkout already has a live design agent for this version");
     process.exit(0);
   }
   const environmentSync = Number(process.env.DESIGN_SYNC_MS);
@@ -1195,6 +1260,7 @@ async function main(): Promise<void> {
   const worker = new DesignWorker({
     repoDir,
     stateDir,
+    harnessVersion: workerVersion,
     ...(syncMs === undefined ? {} : { syncMs }),
     ...(cadenceMs === undefined ? {} : { cadenceMs }),
     log: (line) => console.error(`design: ${line}`),

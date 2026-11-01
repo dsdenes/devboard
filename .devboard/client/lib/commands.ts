@@ -113,7 +113,11 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     id: "app.reload",
     title: "Reload dashboard",
     group: "Application",
-    disabled: () => disabledWhen(connection.version?.stale !== true, "No update is installed."),
+    disabled: () =>
+      disabledWhen(
+        connection.version?.replacement == null,
+        "No automatic replacement needs a retry.",
+      ),
     run: () => connection.requestRestart(),
   });
   add({

@@ -18,6 +18,8 @@ export interface CoachWorkerState {
   stateDir: string;
   lifecycle: AgentLifecycle;
   enabled: boolean;
+  /** True once a drain arrived: the in-flight cycle finishes, then it exits. */
+  draining?: boolean;
   harnessVersion: string | null;
   argv: string[];
   lastRunAt: string | null;
@@ -50,6 +52,7 @@ export function parseWorkerState(text: string): CoachWorkerState | undefined {
   if (typeof parsed.root !== "string" || typeof parsed.stateDir !== "string") return undefined;
   if (!isLifecycle(parsed.lifecycle)) return undefined;
   if (typeof parsed.enabled !== "boolean") return undefined;
+  if (parsed.draining !== undefined && typeof parsed.draining !== "boolean") return undefined;
   if (!nullableString(parsed.harnessVersion)) return undefined;
   if (!Array.isArray(parsed.argv) || !parsed.argv.every((entry) => typeof entry === "string")) {
     return undefined;
@@ -65,6 +68,7 @@ export function parseWorkerState(text: string): CoachWorkerState | undefined {
     stateDir: parsed.stateDir,
     lifecycle: parsed.lifecycle,
     enabled: parsed.enabled,
+    ...(parsed.draining === true ? { draining: true } : {}),
     harnessVersion: parsed.harnessVersion,
     argv: parsed.argv,
     lastRunAt: parsed.lastRunAt,

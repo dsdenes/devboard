@@ -47,7 +47,7 @@ describe("issues bridge commands", () => {
       expect(subject.command({ type: "pause" })).toEqual({ ok: true });
       expect(
         subject.command({ type: "answer", id: 1, value: "yes", runId: "run-1" }),
-      ).toEqual({ ok: false, message: "No issues worker is running for this checkout." });
+      ).toEqual({ ok: false, message: "No agent is running for run run-1." });
       const files = await readdir(controlDirectory(stateDir, root));
       expect(files).toHaveLength(2);
       const commands = await Promise.all(

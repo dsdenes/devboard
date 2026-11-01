@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { liveLockOwners, type LockOwner } from "../issues/lock";
 import { ghCommand } from "../issues/scout/preflight";
 import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
@@ -29,6 +30,9 @@ import { writeWatchdogCommand } from "../watchdog/control";
 import { readProjection, writeProjection } from "../watchdog/projection";
 import {
   controlDirectory,
+  lockPath,
+  versionedControlDirectory,
+  versionedWorkerDirectory,
   watchdogDirectory,
 } from "../watchdog/paths";
 import {
@@ -36,7 +40,13 @@ import {
   writeWatchdogSettings,
   type WatchdogSettings,
 } from "../watchdog/settings";
-import { readWorkerState, type WatchdogWorkerState } from "../watchdog/worker-state";
+import {
+  readNewestWorkerState,
+  readWorkerState,
+  readWorkerStates,
+  type WatchdogWorkerState,
+} from "../watchdog/worker-state";
+import { hostHarnessDir, readHarnessVersion } from "./version";
 import type { AgentDescriptor, AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 
@@ -275,6 +285,8 @@ export interface WatchdogActivityOptions {
   /** This dashboard's STATE_DIR, which decides whether it owns the worker. */
   stateDir: string;
   harnessDir: string;
+  /** The harness version this dashboard loaded, for parallel-worker takeover. */
+  runningVersion?: string | null;
   send: (event: unknown, except?: { send(data: string): unknown }) => void;
   reader?: WatchdogReader;
   now?: () => number;
@@ -323,6 +335,11 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/** The identity a legacy owner's state publishes for its control directory. */
+function legacyControlKey(pid: number, version: string | null): string {
+  return `${pid}:${version ?? "unknown"}`;
+}
+
 function watchdogIssueTitle(issue: WatchdogIssue): string {
   return `[watchdog] ${issue.category}: ${issue.line}`;
 }
@@ -339,6 +356,8 @@ export class WatchdogActivity implements AgentAdapter {
   private readonly stateDir: string;
   private readonly watchdogDir: string;
   private readonly harnessDir: string;
+  /** The harness version this dashboard loaded, for parallel-worker takeover. */
+  private readonly runningVersion: string | null;
   private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
   private readonly reader: WatchdogReader;
   private readonly now: () => number;
@@ -368,7 +387,11 @@ export class WatchdogActivity implements AgentAdapter {
   private stopRequested = false;
   private startError: string | null = null;
   private notice: string | null = null;
-  private stopping: { pid: number; timer: Timer } | undefined;
+  private stopping: { pids: number[]; timer: Timer } | undefined;
+  /** One automatic new-version start per dashboard lifetime. */
+  private takeover: "idle" | "started" = "idle";
+  /** Legacy workers whose published state proves they read the legacy control dir. */
+  private readonly legacyControlKeys = new Set<string>();
 
   constructor(options: WatchdogActivityOptions) {
     this.descriptor = options.descriptor;
@@ -376,6 +399,7 @@ export class WatchdogActivity implements AgentAdapter {
     this.stateDir = resolve(options.stateDir);
     this.watchdogDir = resolve(options.watchdogDir ?? watchdogDirectory(this.repoDir));
     this.harnessDir = options.harnessDir;
+    this.runningVersion = options.runningVersion ?? null;
     this.send = options.send;
     this.reader =
       options.reader ??
@@ -420,6 +444,7 @@ export class WatchdogActivity implements AgentAdapter {
       void this.refreshTimer(false);
     }, Math.max(50, Math.min(this.intervalMs, 1_000)));
     void this.refreshTimer(true);
+    void this.takeoverOldWorkers();
   }
 
   dispose(): void {
@@ -428,6 +453,109 @@ export class WatchdogActivity implements AgentAdapter {
       this.timer = undefined;
     }
     this.clearStopProof();
+  }
+
+  /**
+   * Starts this version's worker when an older version's worker is live and
+   * this process is the newest harness. The older worker is told to drain: it
+   * finishes the in-flight cycle, starts no new one, and exits on its own.
+   */
+  private async takeoverOldWorkers(): Promise<void> {
+    if (this.takeover === "started") return;
+    this.takeover = "started";
+    const owners = this.owners().filter((owner) => !this.foreignOwner(owner));
+    if (owners.length === 0) return;
+    const newest = readHarnessVersion(hostHarnessDir(this.repoDir));
+    if (newest === null || newest !== this.runningVersion) return;
+    if (owners.some((owner) => owner.harnessVersion === this.runningVersion)) return;
+    const pid = this.spawnNewest();
+    if (pid === undefined) {
+      this.log(`could not start the ${this.runningVersion} watchdog worker`);
+      return;
+    }
+    for (const owner of owners) {
+      if (owner.harnessVersion === this.runningVersion) continue;
+      try {
+        writeWatchdogCommand(this.controlFor(owner), { type: "drain" });
+      } catch (error) {
+        this.log(
+          `could not drain the ${owner.harnessVersion ?? "legacy"} watchdog worker: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
+
+  /** Spawns the newest harness's worker for this root. */
+  private spawnNewest(): number | undefined {
+    const argv = [
+      process.execPath,
+      join(this.harnessDir, "watchdog", "worker.ts"),
+      "--root",
+      this.repoDir,
+      "--state-dir",
+      this.watchdogDir,
+      "--owner-state-dir",
+      this.stateDir,
+    ];
+    return this.spawnWorker(argv, { ...this.environment, REPO_DIR: this.repoDir });
+  }
+
+  /** Every live worker: versioned locks first, then a legacy state-only owner. */
+  private owners(): LockOwner[] {
+    const owners = liveLockOwners(lockPath(this.watchdogDir));
+    const legacy = readWorkerState(this.watchdogDir);
+    if (legacy === undefined || legacy.lifecycle === "stopped" || !processAlive(legacy.pid)) {
+      return owners;
+    }
+    // The older harness wrote a pid-only lock that cannot be parsed as the
+    // shared owner format; its published state is the remaining proof, and it
+    // tells this bridge which control directory that worker reads.
+    this.legacyControlKeys.add(legacyControlKey(legacy.pid, legacy.harnessVersion));
+    if (
+      !owners.some(
+        (owner) => owner.pid === legacy.pid && owner.harnessVersion === legacy.harnessVersion,
+      )
+    ) {
+      owners.push({
+        pid: legacy.pid,
+        startedAt: legacy.startedAt,
+        repo: legacy.root,
+        stateDir: legacy.stateDir,
+        harnessVersion: legacy.harnessVersion,
+        argv: legacy.argv,
+      });
+    }
+    return owners;
+  }
+
+  /** True for a live owner this dashboard's STATE_DIR does not own. */
+  private foreignOwner(owner: LockOwner): boolean {
+    return resolve(owner.stateDir) !== this.stateDir;
+  }
+
+  /** The control directory one live owner consumes, versioned or legacy. */
+  private controlFor(owner: LockOwner): string {
+    if (
+      owner.harnessVersion !== null &&
+      !this.legacyControlKeys.has(legacyControlKey(owner.pid, owner.harnessVersion))
+    ) {
+      return versionedControlDirectory(this.watchdogDir, owner.harnessVersion);
+    }
+    return controlDirectory(this.watchdogDir);
+  }
+
+  /** The published state one live owner wrote, when it is readable. */
+  private stateForOwner(owner: LockOwner): WatchdogWorkerState | undefined {
+    if (owner.harnessVersion !== null) {
+      const state = readWorkerState(
+        versionedWorkerDirectory(this.watchdogDir, owner.harnessVersion),
+      );
+      if (state !== undefined && state.pid === owner.pid) return state;
+    }
+    const legacy = readWorkerState(this.watchdogDir);
+    return legacy !== undefined && legacy.pid === owner.pid ? legacy : undefined;
   }
 
   /** Awaits the background projection refresh a snapshot scheduled. */
@@ -495,7 +623,7 @@ export class WatchdogActivity implements AgentAdapter {
    * set, so a reset never stages a projection the operator did not create.
    */
   private shouldPersistProjection(): boolean {
-    if (readWorkerState(this.watchdogDir) !== undefined) return true;
+    if (readWorkerStates(this.watchdogDir).length > 0) return true;
     const settings = readWatchdogSettings(this.watchdogDir);
     return settings.maxPerHour !== null || settings.maxPending !== null;
   }
@@ -540,10 +668,16 @@ export class WatchdogActivity implements AgentAdapter {
 
   snapshot(): AgentSnapshotInput {
     this.schedule();
-    const worker = readWorkerState(this.watchdogDir);
-    const attached =
-      worker !== undefined && worker.lifecycle !== "stopped" && processAlive(worker.pid);
-    const owned = attached && resolve(worker.stateDir) === this.stateDir;
+    const owners = this.owners();
+    const own = owners.filter((owner) => !this.foreignOwner(owner));
+    const foreign = owners.find((owner) => this.foreignOwner(owner));
+    const attached = owners.length > 0;
+    const owned = own.length > 0;
+    const states = readWorkerStates(this.watchdogDir);
+    const ownStates = own
+      .map((owner) => this.stateForOwner(owner))
+      .filter((state): state is WatchdogWorkerState => state !== undefined);
+    const newest = readNewestWorkerState(this.watchdogDir);
     if (this.starting && attached) {
       this.starting = false;
       this.startingSince = null;
@@ -561,27 +695,36 @@ export class WatchdogActivity implements AgentAdapter {
     // A worker that published stopped needs no proof, even if its process is
     // still finishing its exit.
     if (!attached) this.clearStopProof();
-    if (attached && !owned) {
+    if (foreign !== undefined) {
       this.notice =
         `Watchdog is running for this root from another dashboard ` +
-        `(STATE_DIR ${worker?.stateDir ?? "unknown"}).`;
+        `(STATE_DIR ${foreign.stateDir}).`;
     } else if (this.notice !== null && this.notice.startsWith("Watchdog is running")) {
       this.notice = null;
     }
 
     const status = readWatchdogStatus(this.watchdogDir);
     const settings = readWatchdogSettings(this.watchdogDir);
+    // A running worker outranks one that is draining; both stay in `workers`
+    // so the operator sees the whole takeover.
+    const runningState = ownStates.find((state) => state.lifecycle === "running");
+    const drainingState = ownStates.find((state) => state.lifecycle === "stopping");
+    const active = runningState ?? drainingState ?? newest;
     const lifecycle = this.starting
       ? "starting"
-      : this.stopRequested || worker?.lifecycle === "stopping"
+      : this.stopRequested
         ? "stopping"
-        : attached
-          ? worker?.lifecycle === "failed"
-            ? "failed"
-            : "running"
-          : worker?.lifecycle === "failed"
-            ? "failed"
-            : "stopped";
+        : runningState !== undefined
+          ? "running"
+          : ownStates.some((state) => state.lifecycle === "stopping")
+            ? "stopping"
+          : attached
+            ? ownStates.some((state) => state.lifecycle === "failed")
+              ? "failed"
+              : "running"
+            : newest?.lifecycle === "failed"
+              ? "failed"
+              : "stopped";
     const issues: WatchdogIssueRow[] = status.issues.map((issue) => ({
       ...issue,
       state: this.facts.get(issue.url)?.state ?? null,
@@ -590,16 +733,30 @@ export class WatchdogActivity implements AgentAdapter {
           ? (this.facts.get(issue.url)?.version ?? null)
           : null,
     }));
-    const lastRunAt = worker?.lastRunAt ?? status.cycle;
+    const lastRunAt =
+      states
+        .map((state) => state.lastRunAt)
+        .filter((value): value is string => value !== null)
+        .sort()
+        .at(-1) ?? status.cycle;
+    const workers: NonNullable<AgentSnapshotInput["workers"]> = own.map((owner) => {
+      const state = this.stateForOwner(owner);
+      return {
+        pid: owner.pid,
+        version: owner.harnessVersion,
+        stateDir: owner.stateDir,
+        lifecycle: state?.lifecycle ?? "running",
+      };
+    });
     return {
       lifecycle,
-      enabled: attached && worker?.enabled === true && lifecycle !== "stopped",
+      enabled: attached && active?.enabled === true && lifecycle !== "stopped",
       owned,
       attached,
       cadence: {
         minutes: settings.intervalMinutes,
         lastRunAt,
-        nextRunAt: attached ? (worker?.nextRunAt ?? null) : null,
+        nextRunAt: attached ? ((runningState ?? active)?.nextRunAt ?? null) : null,
       },
       limits: {
         maxPerHour: settings.maxPerHour,
@@ -616,22 +773,24 @@ export class WatchdogActivity implements AgentAdapter {
       pending: status.pending,
       sync: this.sync(),
       detail: { panel: "cycles", cycles: status.cycles },
-      notice: worker?.notice ?? this.notice,
-      error: this.startError ?? worker?.lastError ?? null,
+      notice: active?.notice ?? this.notice,
+      error: this.startError ?? active?.lastError ?? null,
       timer: this.timerGate,
+      workers,
     };
   }
 
   async start(): Promise<AgentCommandResult> {
     if (this.starting) return { ok: true };
-    const worker = readWorkerState(this.watchdogDir);
-    const attached =
-      worker !== undefined && worker.lifecycle !== "stopped" && processAlive(worker.pid);
-    if (attached) {
-      if (resolve(worker.stateDir) !== this.stateDir) {
+    // Start never adds a second worker to a live family, whatever version it
+    // is: only Stop (or the automatic drain/exiting takeover) ends one.
+    const owners = this.owners();
+    if (owners.length > 0) {
+      const foreign = owners.find((owner) => this.foreignOwner(owner));
+      if (foreign !== undefined) {
         this.notice =
           `Watchdog is running for this root from another dashboard ` +
-          `(STATE_DIR ${worker.stateDir}).`;
+          `(STATE_DIR ${foreign.stateDir}).`;
         return { ok: true, notice: this.notice };
       }
       return { ok: true };
@@ -652,20 +811,7 @@ export class WatchdogActivity implements AgentAdapter {
         this.startError = result.message;
         return { ok: false, message: result.message };
       }
-      const argv = [
-        process.execPath,
-        join(this.harnessDir, "watchdog", "worker.ts"),
-        "--root",
-        this.repoDir,
-        "--state-dir",
-        this.watchdogDir,
-        "--owner-state-dir",
-        this.stateDir,
-      ];
-      const pid = this.spawnWorker(argv, {
-        ...this.environment,
-        REPO_DIR: this.repoDir,
-      });
+      const pid = this.spawnNewest();
       if (pid === undefined) {
         this.starting = false;
         this.startingSince = null;
@@ -685,33 +831,36 @@ export class WatchdogActivity implements AgentAdapter {
   }
 
   stop(): AgentCommandResult {
-    const worker = readWorkerState(this.watchdogDir);
-    const attached =
-      worker !== undefined && worker.lifecycle !== "stopped" && processAlive(worker.pid);
-    if (!attached || worker === undefined) {
+    const owners = this.owners();
+    if (owners.length === 0) {
       return { ok: false, message: "No Watchdog worker is running for this root." };
     }
-    if (resolve(worker.stateDir) !== this.stateDir) {
+    const foreign = owners.find((owner) => this.foreignOwner(owner));
+    if (foreign !== undefined) {
       return {
         ok: false,
         message:
-          `Watchdog is running from another dashboard (STATE_DIR ${worker.stateDir}); ` +
+          `Watchdog is running from another dashboard (STATE_DIR ${foreign.stateDir}); ` +
           `this dashboard cannot stop it.`,
       };
     }
-    try {
-      writeWatchdogCommand(controlDirectory(this.watchdogDir), { type: "stop" });
-    } catch (error) {
-      return {
-        ok: false,
-        message: `Could not reach the worker: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
+    // Every live version gets Stop in its own control directory; each one
+    // finishes its in-flight cycle and exits on its own.
+    for (const owner of owners) {
+      try {
+        writeWatchdogCommand(this.controlFor(owner), { type: "stop" });
+      } catch (error) {
+        return {
+          ok: false,
+          message: `Could not reach the worker: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
     }
     this.stopRequested = true;
     this.startError = null;
-    this.scheduleStopProof(worker.pid);
+    this.scheduleStopProof(owners.map((owner) => owner.pid));
     return { ok: true };
   }
 
@@ -739,10 +888,11 @@ export class WatchdogActivity implements AgentAdapter {
         }`,
       };
     }
-    const worker = readWorkerState(this.watchdogDir);
-    if (worker !== undefined && processAlive(worker.pid) && resolve(worker.stateDir) === this.stateDir) {
+    // The settings file already carries the new values; a live worker of any
+    // version is also told immediately so its cadence changes without restart.
+    for (const owner of this.owners().filter((entry) => !this.foreignOwner(entry))) {
       try {
-        writeWatchdogCommand(controlDirectory(this.watchdogDir), {
+        writeWatchdogCommand(this.controlFor(owner), {
           type: "settings",
           intervalMinutes: minutes,
           maxPerHour,
@@ -780,14 +930,15 @@ export class WatchdogActivity implements AgentAdapter {
     return { ok: true };
   }
 
-  private scheduleStopProof(pid: number): void {
+  private scheduleStopProof(pids: number[]): void {
+    if (pids.length === 0) return;
     this.clearStopProof();
     const timer = setTimeout(() => {
       this.stopping = undefined;
-      this.escalateStop(pid);
+      this.escalateStop(pids);
     }, STOP_CYCLE_GRACE_MS);
     timer.unref?.();
-    this.stopping = { pid, timer };
+    this.stopping = { pids, timer };
   }
 
   private clearStopProof(): void {
@@ -798,34 +949,39 @@ export class WatchdogActivity implements AgentAdapter {
   /** True when the worker published stopped or is no longer alive. */
   private stopSettled(pid: number): boolean {
     if (!processAlive(pid)) return true;
-    const worker = readWorkerState(this.watchdogDir);
-    return worker !== undefined && worker.pid === pid && worker.lifecycle === "stopped";
+    return readWorkerStates(this.watchdogDir).some(
+      (worker) => worker.pid === pid && worker.lifecycle === "stopped",
+    );
   }
 
   /**
    * The grace ended without a stopped state. Signal only a process the table
    * proves is this root's worker, then give its handler the kill grace.
    */
-  private escalateStop(pid: number): void {
-    if (this.stopSettled(pid)) return;
-    if (!this.provesWorker(pid)) return;
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      return;
-    }
+  private escalateStop(pids: number[]): void {
+    const signalled = pids.filter((pid) => {
+      if (this.stopSettled(pid) || !this.provesWorker(pid)) return false;
+      try {
+        process.kill(pid, "SIGTERM");
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (signalled.length === 0) return;
     const timer = setTimeout(() => {
       this.stopping = undefined;
-      if (this.stopSettled(pid)) return;
-      if (!this.provesWorker(pid)) return;
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // It exited between the proof and the signal.
+      for (const pid of signalled) {
+        if (this.stopSettled(pid) || !this.provesWorker(pid)) continue;
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // It exited between the proof and the signal.
+        }
       }
     }, STOP_KILL_GRACE_MS);
     timer.unref?.();
-    this.stopping = { pid, timer };
+    this.stopping = { pids: signalled, timer };
   }
 
   private provesWorker(pid: number): boolean {

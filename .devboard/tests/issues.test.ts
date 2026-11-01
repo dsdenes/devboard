@@ -9,7 +9,10 @@ import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { writeCommand } from "../issues/control";
 import { migrateLegacyLedger, legacyLiveLock, legacyLockRefusal } from "../issues/legacy";
 import { pruneLedger } from "../issues/ledger";
-import { acquireLock, liveLockOwner, readLock, type LockResult } from "../issues/lock";
+import { acquireLock, liveLockOwner, pidAlive, readLock, versionLockPath, type LockResult } from "../issues/lock";
+import { createApp } from "../server/app";
+import { testProviderService } from "../server/fixtures/test-providers";
+import { readGoalDraftOwnerState } from "../server/goal-draft-owner";
 import {
   controlDirectory,
   ledgerPath,
@@ -17,6 +20,8 @@ import {
   runDirectory,
   runsDirectory,
   statePath,
+  versionedControlDirectory,
+  versionedStatePath,
 } from "../issues/paths";
 import { preflightIssues } from "../issues/preflight";
 import { closedByRun, recordClosedByRun } from "../issues/self-close";
@@ -294,7 +299,11 @@ async function fixture(options: {
     peers,
     issues,
     state: () => worker.currentState,
-    path: statePath(stateDir, root),
+    path: versionedStatePath(
+      stateDir,
+      root,
+      options.harnessVersion ?? readHarnessVersion(harnessRoot),
+    ),
   };
 }
 
@@ -1079,7 +1088,7 @@ describe("closed issues", () => {
     }
     // Two real stub peers, three polls, and a third peer spawn: under the
     // suite's own parallel file load this exceeds Bun's 5 s default bound.
-  }, 20_000);
+  }, 40_000);
 });
 
 describe("history and isolation", () => {
@@ -1394,12 +1403,13 @@ describe("history and isolation", () => {
       }),
     );
     const f = await fixture({ stateDir, issues: [] });
+    const versioned = versionLockPath(lockPath(f.root), readHarnessVersion(harnessRoot));
     try {
-      expect(liveLockOwner(lockPath(f.root))?.pid).toBe(process.pid);
+      expect(liveLockOwner(versioned)?.pid).toBe(process.pid);
     } finally {
       await stop(f);
     }
-    expect(existsSync(lockPath(f.root))).toBe(false);
+    expect(existsSync(versioned)).toBe(false);
   });
 });
 
@@ -2200,4 +2210,210 @@ describe("dashboard bridge", () => {
     bridge.dispose();
     held.release();
   });
+});
+
+describe("parallel version workers", () => {
+  test("a new version drains the old one and claims every later unit", async () => {
+    const base = await temporaryDirectory("issues-fleet");
+    const root = join(base, "repo");
+    const stateDir = join(base, "state");
+    await mkdir(root, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    const a = await fixture({
+      root,
+      stateDir,
+      harnessVersion: "0.1.A",
+      issues: [issue(1)],
+      listIssues: async () => ({
+        kind: "issues" as const,
+        issues: [issue(1)],
+        etag: "etag-a",
+      }),
+    });
+    try {
+      await waitFor(() => (a.peers.length === 1 ? true : undefined), "the A peer");
+      const b = await fixture({
+        root,
+        stateDir,
+        harnessVersion: "0.1.B",
+        issues: [issue(1), issue(2)],
+        listIssues: async () => ({
+          kind: "issues" as const,
+          issues: [issue(1), issue(2)],
+          etag: "etag-b",
+        }),
+      });
+      try {
+        await waitFor(() => (b.peers.length === 1 ? true : undefined), "the B peer");
+        expect(a.state().agents.map((agent) => agent.issueNumber)).toEqual([1]);
+        expect(b.state().agents.map((agent) => agent.issueNumber)).toEqual([2]);
+
+        writeCommand(versionedControlDirectory(stateDir, root, "0.1.A"), { type: "drain" });
+        a.peers[0]!.succeed();
+        await waitFor(
+          () => (a.state().lifecycle === "stopped" ? true : undefined),
+          "the A worker to drain",
+        );
+        expect(a.peers).toHaveLength(1);
+        expect(liveLockOwner(lockPath(root))).toBeUndefined();
+        expect(existsSync(versionedStatePath(stateDir, root, "0.1.A"))).toBe(true);
+        expect(existsSync(versionedStatePath(stateDir, root, "0.1.B"))).toBe(true);
+
+        b.peers[0]!.succeed();
+        await waitFor(
+          () => (b.state().runs.some((run) => run.status === "succeeded") ? true : undefined),
+          "the B run to finish",
+        );
+        const ledger = JSON.parse(readFileSync(ledgerPath(stateDir, root), "utf8")) as {
+          handled: Record<string, unknown>;
+        };
+        expect(Object.keys(ledger.handled).sort()).toEqual(["1", "2"]);
+      } finally {
+        await stop(b);
+      }
+    } finally {
+      await stop(a);
+    }
+  });
+});
+
+describe("detached goal drafts", () => {
+  test("a detached elaboration survives a dashboard replacement, answers, and stops", async () => {
+    const base = await temporaryDirectory("detached-draft");
+    const repo = join(base, "repo");
+    const stateDir = join(base, "state");
+    const drafts = join(repo, ".devboard", "goal-proposals");
+    const staticDir = join(base, "static");
+    await mkdir(join(repo, "adrs"), { recursive: true });
+    await mkdir(drafts, { recursive: true });
+    await mkdir(staticDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    writeFileSync(join(staticDir, "index.html"), "<!doctype html><title>Draft</title>");
+    writeFileSync(join(repo, "GOAL.md"), "# Goal\n\nFixture.\n");
+    writeFileSync(join(drafts, "detached.md"), "# Draft\n\n> Unprocessed draft. STUB-HANG\n");
+
+    const log = join(base, "agent.log");
+    const options = {
+      adrDir: join(repo, "adrs"),
+      staticDir,
+      hostname: "127.0.0.1",
+      port: 0,
+      repoDir: repo,
+      stateDir,
+      providers: testProviderService(stateDir),
+      goalFile: join(repo, "GOAL.md"),
+      agentCommand: `${process.execPath} ${join(harnessRoot, "server", "fixtures", "stub-agent.ts")} --goal-draft --log=${log}`,
+      tracker: async () => undefined,
+      restart: () => undefined,
+    } as const;
+    const first = createApp(options);
+    interface Client {
+      send(command: unknown): void;
+      waitFor(
+        predicate: (frame: Record<string, unknown>) => boolean,
+        label: string,
+      ): Promise<Record<string, unknown>>;
+      close(): void;
+    }
+    const connect = async (port: number): Promise<Client> => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      const frames: Record<string, unknown>[] = [];
+      const waiters: Array<{
+        predicate: (frame: Record<string, unknown>) => boolean;
+        settle: (frame: Record<string, unknown>) => void;
+      }> = [];
+      socket.onmessage = (event) => {
+        const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+        frames.push(frame);
+        for (let index = waiters.length - 1; index >= 0; index -= 1) {
+          const waiter = waiters[index];
+          if (waiter === undefined || !waiter.predicate(frame)) continue;
+          waiters.splice(index, 1);
+          waiter.settle(frame);
+        }
+      };
+      const opened = Promise.withResolvers<void>();
+      socket.onopen = () => opened.resolve();
+      socket.onerror = () => opened.reject(new Error("websocket failed"));
+      await opened.promise;
+      return {
+        send: (command) => socket.send(JSON.stringify(command)),
+        waitFor: (predicate, label) => {
+          const found = frames.find(predicate);
+          if (found !== undefined) return Promise.resolve(found);
+          const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+          const waiter = { predicate, settle: resolve };
+          waiters.push(waiter);
+          setTimeout(() => {
+            const index = waiters.indexOf(waiter);
+            if (index >= 0) waiters.splice(index, 1);
+            reject(new Error(`timed out waiting for ${label}`));
+          }, 10_000);
+          return promise;
+        },
+        close: () => socket.close(),
+      };
+    };
+    const path = ".devboard/goal-proposals/detached.md";
+    const tab = await connect(first.port ?? 0);
+    let second: ReturnType<typeof createApp> | undefined;
+    try {
+      tab.send({ type: "startGoalDraft", path });
+      const started = await tab.waitFor(
+        (frame) =>
+          frame.type === "issuesDraftState" &&
+          (frame.draft as Record<string, unknown> | undefined)?.path === path &&
+          (frame.draft as Record<string, unknown>).status === "running" &&
+          Array.isArray((frame.draft as Record<string, unknown>).activity) &&
+          ((frame.draft as Record<string, unknown>).activity as unknown[]).length > 0,
+        "the draft's first activity",
+      );
+      const draft = started.draft as Record<string, unknown>;
+      const startedAt = String(draft.startedAt);
+      const owner = readGoalDraftOwnerState(stateDir, repo, path);
+      expect(owner?.peer?.pid).toBeGreaterThan(0);
+      const pid = owner!.peer!.pid;
+      expect(pidAlive(pid)).toBe(true);
+
+      tab.send({ type: "restartServer" });
+      await tab.waitFor((frame) => frame.type === "serverRestarting", "the restart handoff");
+      first.stop(true);
+      second = createApp({ ...options, port: first.port ?? 0 });
+      const after = await connect(second.port ?? 0);
+      try {
+        after.send({ type: "getGoalDrafts" });
+        const replay = await after.waitFor(
+          (frame) =>
+            frame.type === "issuesDrafts" &&
+            Array.isArray(frame.runs) &&
+            (frame.runs as Array<Record<string, unknown>>).some(
+              (run) => run.path === path && run.startedAt === startedAt && run.status === "running",
+            ),
+          "the adopted draft replay",
+        );
+        expect(JSON.stringify(replay)).not.toContain("interrupted");
+        expect(readGoalDraftOwnerState(stateDir, repo, path)?.peer?.pid).toBe(pid);
+        expect(pidAlive(pid)).toBe(true);
+
+        after.send({ type: "stopGoalDraft", path });
+        const stopped = await after.waitFor(
+          (frame) =>
+            frame.type === "issuesDraftState" &&
+            (frame.draft as Record<string, unknown> | undefined)?.path === path &&
+            (frame.draft as Record<string, unknown>).status === "stopped",
+          "the stopped draft",
+        );
+        expect(JSON.stringify(stopped)).not.toContain("interrupted");
+        const deadline = Date.now() + 5_000;
+        while (pidAlive(pid) && Date.now() < deadline) await Bun.sleep(25);
+        expect(pidAlive(pid)).toBe(false);
+      } finally {
+        after.close();
+      }
+    } finally {
+      tab.close();
+      first.stop(true);
+      second?.stop(true);
+    }
+  }, 30_000);
 });

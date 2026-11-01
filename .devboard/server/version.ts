@@ -12,6 +12,15 @@ export interface ServerVersion {
   latest: string | null;
   /** True when a restart would load different code. */
   stale: boolean;
+  /**
+   * Present only when an automatic replacement was attempted and could not
+   * start. The running process keeps serving; the fallback control retries.
+   */
+  replacement?: {
+    running: string | null;
+    installed: string | null;
+    error: string;
+  };
 }
 
 const HARNESS_NAME = "@dsdenes/devboard";
@@ -135,6 +144,16 @@ export function hostHarnessDir(repoDir: string): string {
   if (existsSync(join(installed, "package.json"))) return installed;
   if (isHarnessSource(prefix)) return prefix;
   return runningHarnessDir();
+}
+
+/**
+ * The harness whose worker modules can actually run. A prefix that carries
+ * only a manifest (a fixture, or a half-copied host) has no server to start,
+ * so worker spawning falls back to the running checkout.
+ */
+export function runnableHarnessDir(repoDir: string): string {
+  const host = hostHarnessDir(repoDir);
+  return existsSync(join(host, "server", "index.ts")) ? host : runningHarnessDir();
 }
 
 /**
