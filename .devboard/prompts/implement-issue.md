@@ -658,9 +658,9 @@ branch.
 
 Waiting for CI has exactly two sanctioned forms, and nothing else. The first is `bun run publish`
 for the `devboard-release.yml` run of `HEAD`: `bun run publish` blocks on that run for up to 1800
-seconds by default, then verifies the npm package and the Gitea release assets, so its recorded
-exit code is the whole wait. Run it once as the Publish section specifies, with that default bound
-and with `timeout: 0` on the tool call.
+seconds by default, then verifies the npm package and the Gitea release assets, so its exit status
+is the whole wait. Run it once as the Publish section specifies — in the foreground from
+`.devboard` with `timeout: 0` — and read the output and exit status it returns.
 
 The second is one long-lived background watcher whose whole lifetime is that wait — a non-release
 run or a local `verify` process that publish does not cover — started with `async: true` and
@@ -685,49 +685,51 @@ the watcher's completion follow-up is the answer, so end the turn.
 ## Publish
 
 Publishing is part of the task, and its final step. Invoke `bun run publish` exactly once per
-issue, from the repository root in the integration checkout, and only after the change is merged to
-`main` and pushed — never from a worktree and never before the push. Run it as a background job
-that keeps the whole log and the exit code:
+issue, from the integration checkout's `.devboard/`, and only after the change is merged to `main`
+and pushed — never from a worktree and never before the push. Run it in the foreground and read
+what it prints:
 
 ```bash
-cd .devboard && bun run publish \
-  > .tmp/publish.log 2>&1; echo "EXIT:$?" >> .tmp/publish.log
+bun run publish
 ```
 
-- Start this command with `async: true` and `timeout: 0`, so it has no tool deadline and keeps its
-  job handle for the completion follow-up. Publish waits up to 1800 seconds for the release
-  workflow, so the default call deadline aborts it at 300 seconds and reports `Command aborted`.
-  That message means the launch was wrong, not that publish failed: inspect the still-running job
-  and its recorded log, and never re-issue the command.
-- Use this invocation verbatim and from the repository root: no absolute `cd` path such as
-  `/home/...`, no `tail`/`head`/`tee` pipe or any other output consumer, no `--wait-timeout` flag
-  or any other option, and no other log file. `publish` already defaults to the 1800-second wait,
-  so an override only drifts from this form. The redirected log `.devboard/.tmp/publish.log` is the
-  full output and its final line is the exit code; never mint a per-call name such as
-  `publish-<number>.log`. Publish already verifies `main`, the release workflow, the npm
-  package, the release assets, and the mirror; the push block already owns the push proof, so add
-  no `git ls-remote` or `git status` probe around the publish run. Read no release or workflow
-  state through `curl`, `gh`, or `glab`; publish prints the verification result.
-- Publish is long-running. While it runs, do other work or end the turn and wait for its
-  completion follow-up. Never abort, kill, or re-invoke it while a run is pending, and never poll
-  for it.
-- An aborted, timed-out, or truncated publish call is inspected through the still-running job and
-  its recorded log, never re-issued.
+- Set `cwd` to `.devboard` and `timeout: 0` on that call: publish waits up to 1800 seconds for the
+  release workflow, so the default 300-second deadline would abort it with `Command aborted`.
+  Never redirect it into `.devboard/.tmp/publish.log` or any other file, never append an
+  `echo "EXIT:$?"` to a log, and never pass `async: true`. The tool result and its completion
+  follow-up carry publish's output and exit status; a log file would hide both behind a path the
+  turn then has to be woken to read.
+- Publish is long-running. When the call outlives the harness's foreground window it prints
+  `Backgrounded as job <id>` and keeps running; that acknowledgement is not the result. Its
+  completion follow-up carries the whole output and the exit status, so end the turn and read that
+  follow-up. Never poll for it — no `sleep`, `ps`, `pgrep`, `top`, or log tailing — never abort,
+  kill, or re-invoke it while it runs, and never start a second `bun run publish` for the same
+  issue.
+- Use this invocation and this working directory: no absolute `cd` path such as `/home/...`, no
+  `tail`/`head`/`tee` pipe or any other output consumer, and no option other than
+  `--wait-timeout N`, passed only when the default 1800-second wait is too short. Publish already
+  verifies `main`, the release workflow, the npm package, the release assets, and the mirror; the
+  push block already owns the push proof, so add no `git ls-remote` or `git status` probe around
+  the publish run. Read no release or workflow state through `curl`, `gh`, or `glab`; publish
+  prints the verification result.
 - A nonzero exit is never followed by an immediate identical re-run, and no second `bun run publish`
   starts for the same issue after the release workflow concluded failure until the failing step is
-  diagnosed, fixed, committed, and pushed. Read the log, name the failing step, and fix the cause
-  in a new commit. When the log reports
+  diagnosed, fixed, committed, and pushed. Read publish's output, name the failing step, and fix
+  the cause in a new commit. When that output reports
   `the release workflow concluded failure`, open that workflow run for the named commit and read
   its failing step; when the run's log is not reachable through the exposed tools, reproduce the
   workflow's own steps locally from the package root (`bun install --frozen-lockfile`,
   `verification_run` with `{"check": "build"}`, `{"check": "test"}`, and `{"check": "typecheck"}`,
   each executing with `.devboard` as the working directory) and fix the step that fails. Land the
-  fix and report the failing step, the fix commit, and the recorded exit code. Publishing the fixed
+  fix and report the failing step, the fix commit, and the exit status. Publishing the fixed
   revision belongs to the next task, never to this one.
-- Never re-run publish in the same session to see its output, to confirm success, to retry the same
-  commit, or with a different log file or command form.
-- Report the recorded exit code as the publish result. Close the issue with `issue_close` only
-  after that value is `0` and the pushed revision is verified on the canonical integration line.
+- When the result reports truncation, read the spilled `artifact://<id>` it names for the complete
+  output instead of re-running publish. Never re-run publish in the same session to see its
+  output, to confirm success, or to retry the same commit.
+- Report the observed exit status and the `publish:` lines it printed — workflow, npm package,
+  release assets, mirror, and dashboards — as the publish result. A completed run whose text ends
+  without `Command exited with code <n>` is exit 0. Close the issue with `issue_close` only after
+  that exit status is `0` and the pushed revision is verified on the canonical integration line.
 
 ## Reporting
 
