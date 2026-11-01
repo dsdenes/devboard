@@ -2859,6 +2859,8 @@ try {
       strongOutline: boolean;
       topGap: number;
       bottomGap: number;
+      leftGap: number;
+      rightGap: number;
     }>;
     resolvedActions: string[];
   }>(`(() => {
@@ -2872,6 +2874,7 @@ try {
     const buttons = [...document.querySelectorAll('[data-testid="start"]')].map((button) => {
       const box = button.getBoundingClientRect();
       const row = button.closest("tr").getBoundingClientRect();
+      const cell = button.closest("td").getBoundingClientRect();
       const style = getComputedStyle(button);
       return {
         file: button.getAttribute("data-file") ?? "",
@@ -2886,6 +2889,8 @@ try {
         strongOutline: style.borderTopColor === rgb(borderStrong),
         topGap: box.top - row.top,
         bottomGap: row.bottom - box.bottom,
+        leftGap: box.left - cell.left,
+        rightGap: cell.right - box.right,
       };
     });
     return {
@@ -2910,6 +2915,11 @@ try {
         Math.abs(button.topGap - button.bottomGap) <= 1,
     ),
     "a Start control is not a centered 24px Button with a record-naming accessible name",
+    startControls,
+  );
+  check(
+    startControls.buttons.every((button) => Math.abs(button.leftGap - button.rightGap) <= 1),
+    "a Start control is not horizontally centered in the Action column",
     startControls,
   );
   const filledStarts = startControls.buttons.filter((button) => button.primaryFill);
