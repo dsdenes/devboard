@@ -34,9 +34,10 @@ context, but you never edit, comment on, close, or reopen another issue.
 - Worktree root: `<REPO_DIR>/.worktree/`. Create and work in exactly one worktree there, named for
   the issue, for example `<REPO_DIR>/.worktree/issue-<number>`. Never work in the canonical
   checkout, never use another agent's worktree, and write nothing outside `<REPO_DIR>` — no
-  temporary file, log, cache, or build output elsewhere. A scratch file that is genuinely
-  required belongs inside `<REPO_DIR>/.devboard/` and is removed after use; never write `/tmp/x`
-  or any other path outside the repository root.
+  temporary file, log, cache, or build output elsewhere. Scratch output that is genuinely
+  required — issue or comment JSON, command capture, a verifier log — belongs inside
+  `<REPO_DIR>/.devboard`'s `.tmp/`, never directly under the harness root, and is removed after
+  use; never write `/tmp/x` or any other path outside the repository root.
 - Before the first forge read or write, and after the single `devboard_status` call above, gate
   the run exactly once per session with the canonical, argument-free auth check, run verbatim from
   the repository root:
@@ -120,8 +121,9 @@ and answer every later question about it from that fetch.
 - One spelling: `git fetch origin`, or `git fetch origin <canonical-branch>` when the question
   names a branch. Never add `--prune`, `--quiet`, `--tags`, or `--all`, and never fetch another
   remote, unless a deleted ref, a tag, or that other remote is itself the question.
-- One fetch answers every later question about that tip in the same turn. A further fetch needs a
-  push, merge, or rebase since the previous one, and a session fetches at most twice before the
+- One fetch answers every later question about that tip, in this turn and in every later turn:
+  reuse the counts and hashes it already printed instead of fetching again. A further fetch needs
+  a push, merge, or rebase since the previous one, and a session fetches at most twice before the
   push block.
 - A ref that looks missing earns a fetch only after `git rev-parse --verify --quiet <ref>` printed
   nothing.
@@ -397,18 +399,25 @@ git status --short --branch && git rev-list --left-right --count HEAD...@{upstre
 
 The status line names the ref the counts belong to, and the count prints `<HEAD-only>
 <upstream-only>` in ref order. The pre-push probe and the sync check below reuse this same count,
-so no second comparison ref ever appears. When the left count is nonzero, add exactly one
-`git merge-base --is-ancestor @{upstream} HEAD`: exit 0 means the upstream tip is already contained
-in `HEAD`, exit 1 means it is not. Never substitute `main`, `origin/main`, or an issue branch
-(`issue-N`) for `@{upstream}` as the divergence ref, never invent an upstream for the unpublished
-task branch to make a count work, and never report an ahead/behind pair without naming the ref it
-was measured against. Never chain a bare `git rev-parse --short=12 <branch>` with a following
-`git rev-list --left-right --count` for the same question. Guard any optional branch that may not
-exist yet with `git rev-parse --verify --quiet <branch>`, which prints nothing instead of exiting
-128 with `fatal: Needed a single revision`; never use a bare `git rev-parse --short=12 <branch>`
-for such a ref. Use `git merge-base --is-ancestor <sha> origin/main` only to confirm one named
-commit landed — a question about one commit, never a divergence measurement against `HEAD`: exit 0
-means it is an ancestor, 1 means it is not, and any other status, such as 128 with
+so no second comparison ref ever appears. `0 0` is the only passing count: any other pair means
+the work is unfinished, and the turn is never reported done without it. The canonical checkout's
+`main` tracks `origin/main`, so this is the same check the coach backlog reports as
+`git fetch origin && git rev-list --left-right --count HEAD...origin/main`; the `@{upstream}`
+spelling stays the one that runs, and it prints the same counts. The `git status --short --branch`
+line is kept only to name the ref the counts belong to. Later turns reuse the counts that fetch
+already printed instead of running the fetch again. When the left count is nonzero, add exactly
+one `git merge-base --is-ancestor @{upstream} HEAD`: exit 0 means the upstream tip is already
+contained in `HEAD`, exit 1 means it is not. Never substitute `main`, `origin/main`, or an issue
+branch (`issue-N`) for `@{upstream}` as the divergence ref, never invent an upstream for the
+unpublished task branch to make a count work, and never report an ahead/behind pair without naming
+the ref it was measured against. Never chain a bare `git rev-parse --short=12 <branch>` with a
+following `git rev-list --left-right --count` for the same question. Guard any optional branch that
+may not exist yet with `git rev-parse --verify --quiet <branch>`, which prints nothing instead of
+exiting 128 with `fatal: Needed a single revision`; never use a bare
+`git rev-parse --short=12 <branch>` for such a ref. Use
+`git merge-base --is-ancestor <sha> origin/main` only to confirm one named commit landed — a
+question about one commit, never a divergence measurement against `HEAD`: exit 0 means it is an
+ancestor, 1 means it is not, and any other status, such as 128 with
 `fatal: Not a valid object name`, means a ref is missing or the command itself failed, never that
 the commit is unrelated. When a ref looks missing, prove it absent with `git rev-parse --verify
 --quiet <ref>` first, then fetch `origin main` under the fetch budget and read the same sync call
@@ -511,8 +520,13 @@ non-fast-forward `git merge origin/main` on `main`. Push before publish, never a
 After that block, release from the integration checkout with the single Publish invocation below.
 
 Untracked scratch entries already present under `.devboard/` are expected status noise: they never
-justify another fetch, merge, or commit. Create no new scratch file outside `.devboard/`. Replace
-`origin` and `main` when the repository names another canonical remote or branch.
+justify another fetch, merge, or commit. This run adds none of them: every scratch file — issue or
+comment JSON, command capture, a verifier log — lives in the harness root's `.tmp/`, which the
+ignore rules keep out of `git status --short --branch`, so the branch line and its counts stay
+readable. The legacy `.devboard/.issue-*.json`, `.devboard/.comment-*.json`, and
+`.devboard/.close-*.out` files sitting at the harness root are noise from earlier runs: never
+create, rewrite, or commit them.
+Replace `origin` and `main` when the repository names another canonical remote or branch.
 
 ## CI waits
 
