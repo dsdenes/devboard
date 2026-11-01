@@ -267,7 +267,8 @@ every agent write and eventually exhausts the dev server's heap.
   adrkit accepts are listed. Each record carries the first paragraph of its `Decision` section as
   a short summary.
 - State: the dashboard's server-owned state is written atomically to
-  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is `<harness>/.tmp`), so it
+  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is
+  `<REPO_DIR>/.devboard/.tmp`, the host prefix rather than the replaceable package tree), so it
   survives a backend restart without leaking between repositories that share one harness install.
   See [Durable state](#durable-state).
 
@@ -470,8 +471,9 @@ The dashboard keeps the state that drives the page in one file per host reposito
 it from a new process after a graceful stop, a launcher restart, or a `SIGKILL`. The file is
 `<stateDir>/state/<key>.json`, where `key` is the 24-hex SHA-256 prefix of the resolved
 `REPO_DIR` (the same key the journal uses) and `stateDir` is the harness state directory,
-`<harness>/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside the repository
-survives an implementation reset unchanged, and the reset records its path in the checkout's
+`<REPO_DIR>/.devboard/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside
+the repository survives an implementation reset unchanged, and the reset records its path in the
+checkout's
 `.git/info/exclude` so it is never staged or reported as untracked; a `STATE_DIR` equal to the
 repository root is refused because preserving the state would preserve the whole checkout. Two
 repositories that share one harness therefore never read or overwrite each other's lifecycle,
@@ -616,7 +618,7 @@ steering note telling the agent to abandon that change and implement another sol
 
 A session lives at `<stateDir>/flow/<24-hex journalKey(REPO_DIR)>/<session-id>/`, keyed exactly
 like the dashboard state, so repositories sharing one harness never see each other's sessions.
-`stateDir` is the harness state directory (`<harness>/.tmp` by default, overridable with
+`stateDir` is the harness state directory (`<REPO_DIR>/.devboard/.tmp` by default, overridable with
 `STATE_DIR`); `<session-id>` is an 8-hex id chosen when the session is created. The directory is
 never committed and never written into the host.
 
@@ -1442,7 +1444,7 @@ and is retried the same way.
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
-|`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
+|`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
 |`DEVBOARD_COACH_SYNTHESIS_STUB`|unset|JSON file answering every Coach synthesis call; verification only, never a peer.|

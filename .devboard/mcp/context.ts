@@ -57,7 +57,10 @@ export function resolveContext(environment: Record<string, string | undefined> =
     configuredHarness !== undefined && configuredHarness.length > 0
       ? resolve(configuredHarness)
       : hostHarnessDir(repoDir);
-  const stateDir = resolve(environment.STATE_DIR ?? join(harnessDir, ".tmp"));
+  // An installed host keeps the package under its prefix's `node_modules`, and
+  // that copy is replaceable code, not host state. The default therefore names
+  // the host prefix the launcher and dashboard share, never `harnessDir`.
+  const stateDir = resolve(environment.STATE_DIR ?? join(repoDir, ".devboard", ".tmp"));
   return { repoDir, harnessDir, stateDir, environment };
 }
 
