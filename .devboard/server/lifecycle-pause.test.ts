@@ -283,6 +283,16 @@ async function exercisePausedRevision(request: string | undefined) {
       (message) => message.type === "lifecycleState" && message.paused === true,
     );
     const pauseIndex = client.events.length;
+    await waitUntil(
+      () =>
+        client.events.some(
+          (message) =>
+            message.type === "activity" &&
+            message.lane !== undefined &&
+            message.text === "Working on epic 21",
+        ),
+      "the lifecycle activity",
+    );
     const lifecycleActivity = client.events
       .filter((message) => message.type === "activity" && message.lane !== undefined)
       .map((message) => message.text);

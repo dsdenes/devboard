@@ -129,7 +129,7 @@ test("Gitea includes an earlier release whose tag the checkout never fetched", a
   expect(calls.filter((call) => call.includes("compare/v1.5.0"))).toEqual([]);
 
   const resolution = await resolveShippedVersion({ number: 7, state: "closed" }, client, releases);
-  expect(resolution).toEqual({ version: "v1.4.0", error: null });
+  expect(resolution).toEqual({ version: "v1.4.0", error: null, inferred: false });
 });
 
 test("GitHub includes an earlier release whose tag the checkout never fetched", async () => {
@@ -150,7 +150,7 @@ test("GitHub includes an earlier release whose tag the checkout never fetched", 
   expect(calls.filter((call) => call.includes("compare/") && call.endsWith("v1.5.0"))).toEqual([]);
 
   const resolution = await resolveShippedVersion({ number: 7, state: "closed" }, github, releases);
-  expect(resolution).toEqual({ version: "v1.4.0", error: null });
+  expect(resolution).toEqual({ version: "v1.4.0", error: null, inferred: false });
 });
 
 test("both forges report the same containing set for a partial local tag list", async () => {
