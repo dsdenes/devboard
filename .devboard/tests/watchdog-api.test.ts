@@ -1181,7 +1181,7 @@ describe("earliestRelease", () => {
       await resolveShippedVersion({ number: 1, state: "closed" }, client, [
         { tag: "v1.0.0", publishedAt: "2026-10-01T00:00:00Z" },
       ]),
-    ).toEqual({ version: "v1.0.0", error: null });
+    ).toEqual({ version: "v1.0.0", error: null, inferred: false });
     expect(tried).toEqual(["1793310097358", "2692176", "abc1234"]);
   });
 
@@ -1206,6 +1206,10 @@ describe("earliestRelease", () => {
       await resolveShippedVersion({ number: 1, state: "closed" }, client, [
         { tag: "v1.0.0", publishedAt: "2026-10-01T00:00:00Z" },
       ]),
-    ).toEqual({ version: null, error: `no published release contains ${real}` });
+    ).toEqual({
+      version: null,
+      error: `no published release contains ${real}`,
+      inferred: false,
+    });
   });
 });

@@ -746,6 +746,12 @@ export class ScoutWorker {
         if (resolution.version !== null) {
           row.version = resolution.version;
           row.versionError = null;
+          if (resolution.inferred) {
+            this.log(
+              `#${row.number}: no closing commit; read ${resolution.version} from the release ` +
+                "published closest to the close",
+            );
+          }
         } else {
           this.log(`#${row.number}: no shipped version: ${resolution.error ?? "no reason"}`);
         }
@@ -780,7 +786,7 @@ export class ScoutWorker {
         timedOut.promise,
       ]);
     } catch (error) {
-      return { version: null, error: detailOf(error) };
+      return { version: null, error: detailOf(error), inferred: false };
     } finally {
       clearTimeout(timer);
     }

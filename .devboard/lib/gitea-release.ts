@@ -2,6 +2,7 @@ import { git } from "../issues/repository";
 import { isFullSha, isSha, type GitHubRelease } from "./github-release";
 import { localReleaseContainment } from "./release-containment";
 import {
+  GiteaError,
   giteaClosingCommit,
   giteaClosingCommits,
   giteaJson,
@@ -71,15 +72,25 @@ export function createGiteaVersionClient(
       const sha = local.stdout.split(/\s+/)[0] ?? "";
       if (isFullSha(sha)) return sha;
     }
-    const value = await giteaJson<unknown>(
-      target,
-      `${repoPath(target)}/git/commits/${short}`,
-      undefined,
-      fetchImpl,
-    );
-    if (typeof value !== "object" || value === null || !("sha" in value)) return null;
-    const sha = (value as Record<string, unknown>).sha;
-    return typeof sha === "string" && isFullSha(sha) ? sha : null;
+    try {
+      const value = await giteaJson<unknown>(
+        target,
+        `${repoPath(target)}/git/commits/${short}`,
+        undefined,
+        fetchImpl,
+      );
+      if (typeof value !== "object" || value === null || !("sha" in value)) return null;
+      const sha = (value as Record<string, unknown>).sha;
+      return typeof sha === "string" && isFullSha(sha) ? sha : null;
+    } catch (error) {
+      // Comment prose carries epoch stamps and fingerprints that look like a
+      // SHA. A 404 means "no such commit", so the candidate is skipped and the
+      // next one is tried; a failed read is still an error.
+      if (error instanceof GiteaError && (error.status === 404 || error.status === 422)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async function containingReleaseTags(

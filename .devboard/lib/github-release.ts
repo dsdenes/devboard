@@ -46,8 +46,12 @@ export interface RepositoryGitHubOptions {
 export interface RepositoryGitHub {
   /** Every published release, drafts excluded. */
   listReleases(): Promise<GitHubRelease[]>;
-  /** The issue's state as GitHub reports it. */
-  issueState(issueNumber: number): Promise<"open" | "closed">;
+  /** The issue's state and both timestamps, as GitHub reports them. */
+  issueTimes(issueNumber: number): Promise<{
+    state: "open" | "closed";
+    createdAt: string | null;
+    closedAt: string | null;
+  }>;
   /** The commit that closed an issue, from its timeline or newest comment. */
   closingCommit(issueNumber: number): Promise<string | null>;
   /** Every candidate for that commit, newest first, for verification. */
@@ -122,6 +126,10 @@ export function earliestRelease(releases: GitHubRelease[], tags: string[]): stri
 export interface ClosingCommitIssue {
   number: number;
   state: "open" | "closed";
+  /** When the issue was filed, ISO 8601; a release older than it cannot hold the fix. */
+  createdAt?: string | null;
+  /** When the issue was closed, ISO 8601; the anchor of the release-timeline fallback. */
+  closedAt?: string | null;
 }
 
 export interface ClosingCommitClient {
@@ -141,6 +149,14 @@ export interface VersionResolution {
   version: string | null;
   /** Why `version` is null; null when the issue is open or the version shipped. */
   error: string | null;
+  /** True when no commit named the fix and `version` came from the release timeline. */
+  inferred: boolean;
+}
+
+function instant(value: unknown): number | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 async function closingCandidates(
@@ -155,36 +171,86 @@ async function closingCandidates(
 }
 
 /**
+ * The release closest to the issue's close, for a forge that records no
+ * closing commit at all. The harness publishes a release before it closes the
+ * issue that release fixed, so the newest release published at or before the
+ * close is the answer; a release published after the close wins only when none
+ * precedes it. A release published before the issue was filed cannot contain
+ * its fix and is never a candidate, so a bulk-imported issue closed with its
+ * own creation time resolves to the release that followed it, if any.
+ */
+export function releaseAtClose(
+  releases: GitHubRelease[],
+  issue: { createdAt?: string | null; closedAt?: string | null },
+): string | null {
+  const closed = instant(issue.closedAt);
+  if (closed === null) return null;
+  const filed = instant(issue.createdAt);
+  const candidates: Array<{ tag: string; at: number }> = [];
+  for (const release of releases) {
+    const at = instant(release.publishedAt);
+    if (at === null) continue;
+    if (filed !== null && at < filed) continue;
+    candidates.push({ tag: release.tag, at });
+  }
+  candidates.sort((left, right) => {
+    if (left.at !== right.at) return left.at - right.at;
+    if (left.tag === right.tag) return 0;
+    return left.tag < right.tag ? -1 : 1;
+  });
+  const preceding = candidates.filter((candidate) => candidate.at <= closed).at(-1);
+  return preceding?.tag ?? candidates[0]?.tag ?? null;
+}
+
+/**
  * The release that shipped the issue's closing commit: the timeline's commit
  * when present, otherwise the commit candidates of the newest comments, each
  * resolved to one full commit before it is matched against the earliest
  * published release containing it. A candidate that does not resolve is
  * skipped rather than ending the search, because comment prose carries
- * fingerprints, process ids, and epoch stamps that look like a SHA. Every
- * failure is reported rather than thrown, so a caller can record why a closed
- * issue stays unresolved.
+ * fingerprints, process ids, and epoch stamps that look like a SHA. A forge
+ * that records no closing commit at all — the harness closes its own issues
+ * through the API — falls back to the release published closest to the close.
+ * Every failure is reported rather than thrown, so a caller can record why a
+ * closed issue stays unresolved.
  */
 export async function resolveShippedVersion<Issue extends ClosingCommitIssue>(
   issue: Issue,
   client: ClosingCommitClient,
   releases: GitHubRelease[],
 ): Promise<VersionResolution> {
-  if (issue.state !== "closed") return { version: null, error: null };
+  if (issue.state !== "closed") return { version: null, error: null, inferred: false };
+  const nearest = releaseAtClose(releases, issue);
+  const withoutCommit = (error: string): VersionResolution =>
+    nearest === null
+      ? { version: null, error, inferred: false }
+      : { version: nearest, error: null, inferred: true };
   try {
     const candidates = await closingCandidates(client, issue.number);
-    if (candidates.length === 0) return { version: null, error: "no closing commit was found" };
+    if (candidates.length === 0) return withoutCommit("no closing commit was found");
     let error = `closing commit ${candidates[0]} could not be resolved`;
+    let resolved: string | null = null;
     for (const candidate of candidates) {
       const commit = await client.resolveCommit(candidate);
       if (commit === null) continue;
+      resolved = commit;
       const tags = await client.containingReleaseTags(commit, releases);
       const version = earliestRelease(releases, tags);
-      if (version !== null) return { version, error: null };
+      if (version !== null) return { version, error: null, inferred: false };
       error = `no published release contains ${commit}`;
     }
-    return { version: null, error };
+    // A candidate that resolved names the fix, so its release is the answer
+    // once it publishes; only an issue that names no commit at all falls back
+    // to the release timeline.
+    return resolved === null
+      ? withoutCommit(error)
+      : { version: null, error, inferred: false };
   } catch (error) {
-    return { version: null, error: error instanceof Error ? error.message : String(error) };
+    return {
+      version: null,
+      error: error instanceof Error ? error.message : String(error),
+      inferred: false,
+    };
   }
 }
 
@@ -288,16 +354,29 @@ export function createRepositoryGitHub(options: RepositoryGitHubOptions): Reposi
       return releases;
     },
 
-    async issueState(issueNumber: number): Promise<"open" | "closed"> {
+    async issueTimes(issueNumber: number): Promise<{
+      state: "open" | "closed";
+      createdAt: string | null;
+      closedAt: string | null;
+    }> {
       const text = await read([
         "api",
         `repos/${repository}/issues/${issueNumber}`,
         "--jq",
-        ".state",
+        '[.state, .created_at, .closed_at] | @tsv',
       ]);
-      const state = text.trim().toLowerCase();
-      if (state === "open" || state === "closed") return state;
-      throw new Error(`gh reported an unknown issue state for ${repository}#${issueNumber}`);
+      const [reported, created, closed] = text.trim().split("\t");
+      const state = (reported ?? "").toLowerCase();
+      if (state !== "open" && state !== "closed") {
+        throw new Error(`gh reported an unknown issue state for ${repository}#${issueNumber}`);
+      }
+      return {
+        state,
+        createdAt:
+          created !== undefined && created.length > 0 && created !== "null" ? created : null,
+        closedAt:
+          closed !== undefined && closed.length > 0 && closed !== "null" ? closed : null,
+      };
     },
 
     async closingCommit(issueNumber: number): Promise<string | null> {

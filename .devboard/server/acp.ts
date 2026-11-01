@@ -1,4 +1,5 @@
 import type { Subprocess } from "bun";
+import { sessionMcpServers, type SessionMcpServer } from "./peer-mcp";
 
 export interface AcpQuestionOption {
   label: string;
@@ -19,6 +20,12 @@ export interface AcpConnectionOptions {
   cwd: string;
   /** The exact peer environment; omitted means the server's own. */
   env?: Record<string, string | undefined>;
+  /**
+   * MCP servers the session must be opened with. Omitted means the peer's
+   * generated agent registration (`mcp.json`), because an ACP session ignores
+   * on-disk discovery and takes its servers from this request alone.
+   */
+  mcpServers?: SessionMcpServer[];
   /**
    * `allow` selects the first allow option for a permission request. `deny`
    * cancels every request and every elicitation, for a peer that must answer
@@ -287,7 +294,8 @@ export class AcpConnection {
     const session = asRecord(
       await this.#request("session/new", {
         cwd: this.#options.cwd,
-        mcpServers: [],
+        mcpServers:
+          this.#options.mcpServers ?? sessionMcpServers(this.#options.env ?? process.env),
       }),
     );
 
