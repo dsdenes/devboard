@@ -89,6 +89,21 @@ export function laneStatus(text: string): string | undefined {
   return tokens.length < 2 ? undefined : tokens[tokens.length - 1];
 }
 
+/**
+ * omp's thinking-loop guard aborts the repeated stream and schedules the retry
+ * itself, so the notice records a recovery, never a defect. A turn that cannot
+ * recover still ends with its own provider-error record; filing an issue for
+ * each discarded attempt would ask a maintainer to change the model's
+ * repetition, which no repository change can do.
+ */
+function recoveredStreamWarning(event: EvidenceEvent): boolean {
+  return (
+    event.kind === "omp-log" &&
+    event.level === "warn" &&
+    /^Thinking loop detected\b/.test(normalizeEvidenceLine(event.text))
+  );
+}
+
 function eventKey(event: EvidenceEvent): string {
   return event.instance === undefined
     ? event.source
@@ -213,7 +228,7 @@ export function analyzeEvidence(
     }
     if (!inWindow(occurred)) continue;
     if (event.kind === "omp-log" && event.level !== undefined) {
-      add(`omp-${event.level}` as FindingCategory, event);
+      if (!recoveredStreamWarning(event)) add(`omp-${event.level}` as FindingCategory, event);
       continue;
     }
     const category = SIGNAL_KINDS[event.kind];

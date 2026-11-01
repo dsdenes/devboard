@@ -1786,6 +1786,9 @@ of journal and omp evidence, filing one issue per fingerprint, and commenting on
 already `filed:<url>` is never filed again. No cycle closes an issue. A fingerprint covers the
 category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
 omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
+omp's own thinking-loop notice — `Thinking loop detected; aborting stream for retry.` — is a
+recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
+provider-error record.
 
 ### Deduplication gate
 
@@ -2261,7 +2264,8 @@ The `goal` label keeps its goal-mode implementation contract: every goal-labeled
 `/implement-goal-issue <number>` concurrently with the rest. The command follows the origin's
 forge: GitHub reads and closes the issue through `gh` under the forge-auth wrapper, and Gitea
 reads it through the API (`GET /api/v1/repos/<owner/repo>/issues/<number>`) and closes it with an
-API `PATCH` through the same wrapper. A GitLab goal issue is refused with that reason.
+API `PATCH` after the wrapper's `check` confirms the write identity. A GitLab goal issue is
+refused with that reason.
 
 ### Per-agent state, lifecycle, and history
 
@@ -2539,9 +2543,9 @@ branch under `.worktree/`, activates the `goal` tool, and calls the `goal` creat
 the fetched issue body verbatim as the objective: no distillation, no section filtering, and no
 appended requirements. It then implements the body, verifies every criterion through the product
 surface, merges into `main` with conflict integration and retry, pushes `main` to origin, removes
-the worktree and branch, and closes the issue only after the push, through the same forge-auth
-wrapper. On Gitea it fetches the issue through the API and closes it with an API `PATCH`; GitHub
-keeps `gh issue view` and `gh issue close` under the wrapper.
+the worktree and branch, and closes the issue only after the push. On Gitea it fetches the issue
+through the API, resolves the close identity with the wrapper's `check`, and closes it with an API
+`PATCH`; GitHub keeps `gh issue view` and `gh issue close` under the wrapper's `exec`.
 
 Pause lets every active peer finish, then reports `paused` and starts no new peer or poll.
 Resume polls immediately. Stop closes every peer, records every active run as `stopped`, leaves

@@ -43,9 +43,20 @@ export const TRIVIAL_COMMANDS: readonly string[] = Object.freeze([
   "bunx tsc --noEmit",
 ]);
 
-/** True when a normalized signature is plain inspection, not a capability gap. */
+/**
+ * The same allowlist in family-key space. A family key never carries a `--flag`,
+ * so an entry that does (`bunx tsc --noEmit`) would otherwise be compared against
+ * a key it can never equal, and the command it declares trivial would become a
+ * family. Mapping every entry through `familyKey` once keeps the guard and the
+ * key in one space, so a flag-bearing entry stays effective.
+ */
+const TRIVIAL_KEYS: readonly string[] = Object.freeze([
+  ...new Set(TRIVIAL_COMMANDS.map((entry) => familyKey(entry))),
+]);
+
+/** True when a normalized signature or family key is plain inspection, not a capability gap. */
 export function isTrivialCommand(signature: string): boolean {
-  for (const prefix of TRIVIAL_COMMANDS) {
+  for (const prefix of TRIVIAL_KEYS) {
     if (signature === prefix || signature.startsWith(`${prefix} `)) return true;
   }
   return false;
@@ -266,13 +277,13 @@ export function familyKey(normalized: string): string {
  */
 export function normalizeCommandSignature(command: string, repoDir: string): string {
   const segments = splitSegments(unwrapParenthesized(command.trim()));
-  const prepared = segments
-    .map((segment) => stripRedirections(stripPipes(segment)))
-    .filter((segment) => segment.length > 0);
-  const commands = prepared.filter((segment) => !/^cd(?:\s|$)/.test(segment));
-  const chosen =
-    commands.find((segment) => !isTrivialCommand(segment)) ?? commands[0] ?? "";
-  return familyKey(replaceVolatile(chosen, repoDir));
+  const commands = segments
+    .map((segment) => replaceVolatile(stripRedirections(stripPipes(segment)), repoDir))
+    .filter((segment) => segment.length > 0 && !/^cd(?:\s|$)/.test(segment));
+  // Triviality is judged on the same normalized text the key is cut from, so an
+  // env-prefixed or repo-rooted `bunx tsc --noEmit` is recognized as inspection.
+  const chosen = commands.find((segment) => !isTrivialCommand(segment)) ?? commands[0] ?? "";
+  return familyKey(chosen);
 }
 
 function bound(value: string, max: number): string {

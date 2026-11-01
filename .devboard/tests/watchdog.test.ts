@@ -703,6 +703,33 @@ describe("evidence mapping", () => {
     ]);
   });
 
+  test("omp's retried thinking-loop notice is not a finding", async () => {
+    const root = await temporaryDirectory("test-watchdog-omp-retry");
+    const owner = instanceFor(root, 8080);
+    const retried = event(
+      root,
+      2,
+      "Thinking loop detected; aborting stream for retry.",
+      "omp-log",
+      owner,
+      "warn",
+    );
+    expect(analyzeEvidence([retried], { window })).toEqual([]);
+
+    const terminal = event(
+      root,
+      1,
+      "agent turn ended with provider error: Thinking loop detected: the model " +
+        "repeated near-identical content (4 near-identical segments within the last 16).",
+      "omp-log",
+      owner,
+      "warn",
+    );
+    expect(analyzeEvidence([terminal], { window }).map((finding) => finding.category)).toEqual([
+      "omp-warn",
+    ]);
+  });
+
   test("detects a question loop and a stalled start", async () => {
     const root = await temporaryDirectory("test-watchdog-loop");
     const owner = instanceFor(root, 8080);

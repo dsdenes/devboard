@@ -5,6 +5,7 @@ import {
   fetchGoalIssue,
   runImplementGoalIssue,
 } from "../extensions/implement-goal-issue.ts";
+import { forgeAuthCommand } from "../extensions/implement-next-epic.ts";
 import type { Exec } from "../lib/forge-auth.ts";
 
 interface Reply {
@@ -345,6 +346,8 @@ describe("runImplementGoalIssue", () => {
     expect(prompt).toContain("curl -sS -X PATCH");
     expect(prompt).toContain('"$DEVBOARD_GITEA_URL/api/v1/repos/owner/repo/issues/42"');
     expect(prompt).toContain("Authorization: token $GITEA_TOKEN");
+    expect(prompt).toContain(".devboard/scripts/forge-auth.ts check");
+    expect(prompt).not.toContain("forge-auth.ts exec");
     expect(prompt).not.toContain("gh issue close 42");
     expect(harness.calls.some((call) => call.startsWith("gh issue view"))).toBe(false);
     expect(gitea.calls).toContain("/api/v1/repos/owner/repo/issues/42");
@@ -401,6 +404,35 @@ describe("prompt and title", () => {
     const start = prompt.indexOf("<<<OBJECTIVE\n") + "<<<OBJECTIVE\n".length;
     const end = prompt.indexOf("\nOBJECTIVE>>>");
     expect(prompt.slice(start, end)).toBe(BODY);
+  });
+
+  test("a Gitea close checks the identity, then calls the API", () => {
+    const prompt = buildGoalIssuePrompt(
+      {
+        number: 7,
+        title: "A goal",
+        url: "http://localhost:3001/owner/repo/issues/7",
+        body: BODY,
+        labels: ["goal"],
+      },
+      "/repo",
+      "/repo/.worktree/g",
+      "devboard/g",
+      "gitea",
+      "owner/repo",
+      forgeAuthCommand("/repo", {
+        host: "localhost:3001",
+        project: "owner/repo",
+        forge: "gitea",
+      }),
+    );
+    const close = prompt.match(/^ {2}`(.+)`$/m)?.[1] ?? "";
+
+    expect(close).toContain(".devboard/scripts/forge-auth.ts check");
+    expect(close).not.toContain("forge-auth.ts exec");
+    expect(close).toContain("--forge gitea --required write");
+    expect(close).toContain("&& curl -sS -X PATCH");
+    expect(close).toContain('"$DEVBOARD_GITEA_URL/api/v1/repos/owner/repo/issues/7"');
   });
 
   test("bounds the title to 200 characters", () => {
