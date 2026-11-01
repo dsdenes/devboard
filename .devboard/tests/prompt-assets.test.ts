@@ -47,6 +47,9 @@ function promptReferences(): Map<string, string[]> {
 			if (relative === ".tmp" || relative.startsWith(".tmp/")) continue;
 			// Illustrative paths such as `.devboard/client/Foo.svelte` name no harness file.
 			if (!existsSync(join(harnessRoot, relative))) continue;
+			// A prompt may name a directory namespace (`.devboard/scripts/*`); only a
+			// concrete file has to exist as that same entry in the package.
+			if (!statSync(join(harnessRoot, relative)).isFile()) continue;
 			const files = references.get(relative) ?? [];
 			if (!files.includes(prompt)) files.push(prompt);
 			references.set(relative, files);

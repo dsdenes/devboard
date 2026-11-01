@@ -187,24 +187,41 @@ const FAMILIES = [
   "./scripts/verify-family-three",
 ];
 
-await writeFile(
-  synthesisStub,
-  `${JSON.stringify({
-    default: {
-      family: "{{family}}",
-      action: "tool",
-      tool: {
-        name: "coach_family_tool",
-        title: "Run the recurring family command",
-        description: "Replaces the recurring command with one named capability.",
-        inputSchema: { type: "object", additionalProperties: false, properties: {} },
-        covers: ["{{family}}"],
-      },
-      rationale: "The family recurs, so one named capability removes the manual command.",
-      acceptance: ["- [ ] The family command runs through the named tool."],
+/** Distinct names keep the filed tool definitions unique, as the dedup rule requires. */
+const TOOL_NAMES: Record<string, string> = {
+  [FAMILIES[0]!]: "coach_family_one",
+  [FAMILIES[1]!]: "coach_family_two",
+  [FAMILIES[2]!]: "coach_family_three",
+};
+
+function familyProposal(family: string, suffix = ""): Record<string, unknown> {
+  return {
+    family: "{{family}}",
+    action: "tool",
+    tool: {
+      name: `${TOOL_NAMES[family]!}${suffix}`,
+      title: "Run the recurring family command",
+      description: "Replaces the recurring command with one named capability.",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      covers: ["{{family}}"],
     },
-  })}\n`,
-);
+    rationale: "The family recurs, so one named capability removes the manual command.",
+    acceptance: ["- [ ] The family command runs through the named tool."],
+  };
+}
+
+async function writeSynthesisStub(suffix = ""): Promise<void> {
+  await writeFile(
+    synthesisStub,
+    `${JSON.stringify({
+      families: Object.fromEntries(
+        FAMILIES.map((family) => [family, familyProposal(family, suffix)]),
+      ),
+    })}\n`,
+  );
+}
+
+await writeSynthesisStub();
 
 Bun.spawnSync({ cmd: ["git", "init", "-q", repoDir], stdout: "ignore", stderr: "ignore" });
 Bun.spawnSync({
@@ -300,7 +317,7 @@ try {
     const match = created.find((call) => call.title === `[coach] ${key}`);
     assertTrue(match !== undefined, `verify:coach: no issue titled [coach] ${key}`);
     const tool = {
-      name: "coach_family_tool",
+      name: TOOL_NAMES[key]!,
       title: "Run the recurring family command",
       description: "Replaces the recurring command with one named capability.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
@@ -339,6 +356,7 @@ try {
   console.log("PASS coach-families");
 
   /* 2. The same evidence files nothing a second time. */
+  await writeSynthesisStub("_v2");
   const second = coach(["--once", "--now", START.toISOString()]);
   assertTrue(second.action === "none", `verify:coach: second cycle action ${second.action}`);
   assertTrue(

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { ghCommand } from "../issues/scout/preflight";
 import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl } from "../lib/forge";
+import { ForgeReadRetry, classifyForgeReadFailure } from "../lib/forge-read-retry";
 import { giteaRepository } from "../lib/gitea";
 import { originForge } from "../issues/repository";
 import { coachDirectory, controlDirectory } from "../coach/paths";
@@ -97,6 +98,10 @@ export class CoachActivity implements AgentAdapter {
   private lastStarted: number | null = null;
   private lastSuccess: number | null = null;
   private lastFailure: string | null = null;
+  /** When the next projection read is due; null means the normal cadence. */
+  private nextAttemptAt: number | null = null;
+  /** The consecutive transient failures of the projection read. */
+  private readonly retry = new ForgeReadRetry();
   private inFlight: Promise<void> | null = null;
   private timer: Timer | undefined;
   private starting = false;
@@ -172,8 +177,12 @@ export class CoachActivity implements AgentAdapter {
   private schedule(): void {
     if (this.inFlight !== null) return;
     const now = this.now();
-    if (this.lastStarted !== null && now - this.lastStarted < this.intervalMs) return;
+    if (this.lastStarted !== null) {
+      const due = this.nextAttemptAt ?? this.lastStarted + this.intervalMs;
+      if (now < due) return;
+    }
     this.lastStarted = now;
+    this.nextAttemptAt = null;
     this.inFlight = this.refresh().finally(() => {
       this.inFlight = null;
     });
@@ -190,8 +199,21 @@ export class CoachActivity implements AgentAdapter {
       for (const [url, fact] of next) this.facts.set(url, fact);
       this.lastSuccess = this.now();
       this.lastFailure = null;
+      this.nextAttemptAt = null;
+      this.retry.succeed();
     } catch (error) {
-      this.lastFailure = firstLineOf(error instanceof Error ? error.message : String(error));
+      const reason = firstLineOf(error instanceof Error ? error.message : String(error));
+      const kind = classifyForgeReadFailure(reason);
+      const delay = this.retry.record(kind);
+      if (kind === "transient" && delay !== null) {
+        // The retry window is not an alert: the last known rows and read time
+        // stay, and the sync reads `stale` with no reason.
+        this.lastFailure = null;
+        this.nextAttemptAt = this.now() + delay;
+      } else {
+        this.lastFailure = reason;
+        this.nextAttemptAt = null;
+      }
     }
     if (this.shouldPersistProjection()) this.persistProjection();
   }
@@ -229,6 +251,7 @@ export class CoachActivity implements AgentAdapter {
     const now = this.now();
     const at = this.lastSuccess === null ? null : new Date(this.lastSuccess).toISOString();
     if (this.lastFailure !== null) return { state: "error", at, error: this.lastFailure };
+    if (this.retry.failures > 0) return { state: "stale", at, error: null };
     if (this.lastSuccess === null) return { state: "stale", at: null, error: null };
     if (now - this.lastSuccess > this.staleAfterMs) return { state: "stale", at, error: null };
     return { state: "ok", at, error: null };

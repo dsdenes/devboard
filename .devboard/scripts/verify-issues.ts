@@ -538,6 +538,9 @@ try {
   await devtools.connect();
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
+  await devtools.send("Page.navigate", {
+    url: `http://127.0.0.1:${dashboardA.port}/`,
+  });
 
   await click(devtools, "mode-issues");
   await waitFor(
@@ -594,13 +597,21 @@ try {
     fleet.queue,
   );
 
-  const prompts = promptLines(a);
-  for (const expected of [
+  const expectedPrompts = [
     "/implement-issue 1",
     "/implement-issue 2",
     "/implement-goal-issue 3",
     "/implement-goal-issue 4",
-  ]) {
+  ];
+  const prompts = await waitFor(
+    () => {
+      const lines = promptLines(a);
+      return expectedPrompts.every((prompt) => lines.includes(prompt)) ? lines : undefined;
+    },
+    "the four peer prompts",
+    10_000,
+  );
+  for (const expected of expectedPrompts) {
     check(prompts.includes(expected), `the ${expected} prompt is missing`, prompts);
   }
   check(
@@ -609,7 +620,14 @@ try {
     prompts,
   );
 
-  const starts = acpLogLines(a).filter((line) => line.startsWith("start "));
+  const starts = await waitFor(
+    () => {
+      const lines = acpLogLines(a).filter((line) => line.startsWith("start "));
+      return lines.length >= 4 ? lines : undefined;
+    },
+    "the four peer starts",
+    10_000,
+  );
   check(starts.length === 4, `the four peers did not all start in one poll: ${starts.length}`, starts);
   check(
     starts.every((line) => line.includes(` ${resolve(a.repo)}`)),

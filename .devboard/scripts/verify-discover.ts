@@ -38,6 +38,7 @@ const chromeCandidates = [
 
 const AGENTS = [
   { id: "sheet", label: "Data Sheet", command: "/discover-sheet" },
+  { id: "discover-contribution", label: "Contribution Agent", command: "/discover-contribution" },
   { id: "discover-testing-strategy", label: "Testing Strategy", command: "/discover-testing-strategy" },
   { id: "discover-naming-conventions", label: "Naming Conventions", command: "/discover-naming-conventions" },
   { id: "discover-coding-conventions", label: "Coding Conventions", command: "/discover-coding-conventions" },
@@ -65,6 +66,8 @@ const SCENARIOS = [
   "per-agent-prompts",
   "run-all-order",
   "per-agent-publication",
+  "contribution-page",
+  "contribution-no-forge",
   "one-at-a-time",
   "run-all-halt",
   "prompt-chat",
@@ -327,6 +330,13 @@ function ompBytes(root: string): Map<string, string> {
 
 function ownedPaths(agent: string): Set<string> {
   if (agent === "sheet") return new Set([".omp/discover/sheet.json"]);
+  if (agent === "discover-contribution") {
+    return new Set([
+      ".omp/discover/contribution.json",
+      ".omp/discover/skills/discover-contribution/SKILL.md",
+      ".omp/skills/discover-contribution/SKILL.md",
+    ]);
+  }
   if (agent === "discover-glossary") {
     return new Set([
       ".omp/discover/glossary/orders.glossary.yaml",
@@ -456,8 +466,8 @@ async function makeInstalledHost(root: string, name: string): Promise<string> {
 async function openCard(devtools: Devtools, agent: string): Promise<void> {
   await waitFor(
     async () =>
-      (await countOf(devtools, "discover-agent-tab")) === 6 ? true : undefined,
-    "the six Discovery entries",
+      (await countOf(devtools, "discover-agent-tab")) === 7 ? true : undefined,
+    "the seven Discovery entries",
     20_000,
   );
   const clicked = await devtools.evaluate(`(() => {
@@ -594,7 +604,7 @@ try {
   );
 
   if (selected("discovery-group")) {
-    /* 1. The Discovery group holds exactly six entries with the declared ids. */
+    /* 1. The Discovery group holds exactly seven entries with the declared ids. */
     const entries = await devtools.evaluate(`(() => [
     ...document.querySelectorAll('[data-testid="discover-agents"] [data-testid="discover-agent-tab"]')
   ].map((button) => ({
@@ -604,16 +614,16 @@ try {
     check(
       JSON.stringify(entries) ===
         JSON.stringify(AGENTS.map((agent) => ({ agent: agent.id, label: agent.label }))),
-      "the Discovery group is not exactly the six declared entries",
+      "the Discovery group is not exactly the seven declared entries",
       entries,
     );
-    // Before any publication the always-present section entries are the two
-    // established pages; the five skill entries arrive with their artifacts.
+    // Before any publication the always-present section entries are the three
+    // established pages; the six skill entries arrive with their artifacts.
     const sectionsBefore = await devtools.evaluate(`(() => [
     ...document.querySelectorAll('[data-testid="discover-tab"]')
   ].map((button) => button.getAttribute('data-tab') ?? ''))()`);
     check(
-      JSON.stringify(sectionsBefore) === JSON.stringify(["overview", "glossary"]),
+      JSON.stringify(sectionsBefore) === JSON.stringify(["overview", "glossary", "contribution"]),
       "the existing Discover section entries changed",
       sectionsBefore,
     );
@@ -629,8 +639,11 @@ try {
   })()`);
     check(
       JSON.stringify(leadingGroup) ===
-        JSON.stringify({ label: "Discover sections", tabs: ["overview", "glossary"] }),
-      "Overview and Glossary are not the first sidebar entries",
+        JSON.stringify({
+          label: "Discover sections",
+          tabs: ["overview", "glossary", "contribution"],
+        }),
+      "Overview, Glossary, and Contribution are not the first sidebar entries",
       leadingGroup,
     );
     console.log("PASS discovery-group");
@@ -681,12 +694,12 @@ try {
       await openCard(devtools, agent.id);
       shown.add(await valueOf(devtools, "discover-agent-prompt-editor"));
     }
-    check(shown.size === 6, "two cards share one prompt text");
+    check(shown.size === 7, "two cards share one prompt text");
     console.log("PASS per-agent-prompts");
   }
 
   if (selected("run-all-order")) {
-    /* 3. Run all runs the six in the fixed order and publishes each slice. */
+    /* 3. Run all runs the seven in the fixed order and publishes each slice. */
     check(
       (await countOf(devtools, "discover-run-all")) === 0,
       "the sidebar still carries a Run all control",
@@ -705,7 +718,7 @@ try {
       })()`)) === true
           ? true
           : undefined,
-      "all six agents to succeed",
+      "all seven agents to succeed",
       120_000,
     );
     const orderedPrompts = logPrompts(sourceLog);
@@ -718,14 +731,17 @@ try {
           "/discover-naming-conventions",
           "/discover-coding-conventions",
           "/discover-architecture-boundaries",
+          "/discover-contribution",
         ]),
-      "Run all did not run the six in the fixed order",
+      "Run all did not run the seven in the fixed order",
       orderedPrompts.map((prompt) => prompt.split(" ")[0]),
     );
     check(
       existsSync(join(source, ".omp", "discover", "sheet.json")) &&
         existsSync(join(source, ".omp", "discover", "glossary", "orders.glossary.yaml")) &&
-        existsSync(join(source, ".omp", "skills", "discover-glossary", "SKILL.md")),
+        existsSync(join(source, ".omp", "skills", "discover-glossary", "SKILL.md")) &&
+        existsSync(join(source, ".omp", "discover", "contribution.json")) &&
+        existsSync(join(source, ".omp", "skills", "discover-contribution", "SKILL.md")),
       "Run all did not publish its slices",
     );
     // Every established Discover page keeps its entry and its panel.
@@ -737,11 +753,13 @@ try {
         JSON.stringify([
           "overview",
           "glossary",
+          "contribution",
           "testing-strategy",
           "naming-conventions",
           "coding-conventions",
           "architecture-boundaries",
           "glossary-skill",
+          "contribution-skill",
         ]),
       "the existing Discover section entries changed after publication",
       sections,
@@ -749,11 +767,13 @@ try {
     for (const tab of [
       "overview",
       "glossary",
+      "contribution",
       "testing-strategy",
       "naming-conventions",
       "coding-conventions",
       "architecture-boundaries",
       "glossary-skill",
+      "contribution-skill",
     ]) {
       const opened = await devtools.evaluate(`(() => {
       const button = document.querySelector('[data-testid="discover-tab"][data-tab="${tab}"]');
@@ -812,6 +832,153 @@ try {
       );
     }
     console.log("PASS per-agent-publication");
+  }
+
+  if (selected("contribution-page")) {
+    /* 4b. The Contribution page, its merged-only evidence, and its skill page. */
+    const openTab = async (tab: string): Promise<void> => {
+      const opened = await devtools.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="discover-tab"][data-tab="${tab}"]');
+      if (button === null) return false;
+      button.click();
+      return true;
+    })()`);
+      check(opened === true, `the ${tab} sidebar entry is missing`);
+      await waitFor(
+        async () =>
+          (await attribute(devtools, "discover-panel", "data-tab")) === tab ? true : undefined,
+        `the ${tab} panel`,
+        20_000,
+      );
+    };
+    const sectionText = async (id: string): Promise<string> =>
+      (await devtools.evaluate(`(() => {
+      const section = document.querySelector(
+        '[data-testid="discover-contribution-section"][data-section="${id}"]'
+      );
+      return section?.textContent ?? '';
+    })()`)) as string;
+
+    await openTab("contribution");
+    check(
+      (await present(devtools, "discover-contribution")) === true,
+      "the Contribution page does not render its body",
+    );
+    const contributionSections = await devtools.evaluate(`(() => [
+    ...document.querySelectorAll('[data-testid="discover-contribution-section"]')
+  ].map((section) => section.getAttribute('data-section') ?? ''))()`);
+    check(
+      JSON.stringify(contributionSections) ===
+        JSON.stringify([
+          "workflow",
+          "testing",
+          "pull-request-style",
+          "pull-request-size",
+          "conventions",
+          "review",
+          "documentation",
+          "hotspots",
+          "evidence",
+        ]),
+      "the Contribution page does not render the nine documented sections",
+      contributionSections,
+    );
+    check(
+      (await sectionText("workflow")).includes("bun install"),
+      "the Contribution workflow section does not show the collected install command",
+    );
+    check(
+      (await sectionText("pull-request-size")).includes("median"),
+      "the Contribution size section does not show its median",
+    );
+    check(
+      (await sectionText("evidence")).includes("1"),
+      "the Contribution evidence section does not show the closed-unmerged count",
+    );
+    const contributionBytes = readFileSync(
+      join(source, ".omp", "discover", "contribution.json"),
+      "utf8",
+    );
+    const contributionSkillBytes = readFileSync(
+      join(source, ".omp", "skills", "discover-contribution", "SKILL.md"),
+      "utf8",
+    );
+    check(
+      !contributionBytes.includes("CLOSED-UNMERGED-DESCRIPTION-MUST-NOT-LEAK") &&
+        !contributionSkillBytes.includes("CLOSED-UNMERGED-DESCRIPTION-MUST-NOT-LEAK"),
+      "a closed-unmerged description reached the contribution artifact or skill",
+    );
+    check(
+      contributionSkillBytes.includes('metadata:\n  devboard-managed: "true"') &&
+        contributionSkillBytes.includes("devboard-skill: contribution") &&
+        contributionSkillBytes.includes(".omp/discover/contribution.json") &&
+        contributionSkillBytes.includes("> PR #12 —"),
+      "the published contribution skill does not carry its markers and exemplars",
+    );
+
+    await openTab("contribution-skill");
+    check(
+      (await attribute(devtools, "discover-skill", "data-name")) === "discover-contribution",
+      "the Contribution skill page does not open the published skill",
+    );
+    const liveSkillPath = join(source, ".omp", "skills", "discover-contribution", "SKILL.md");
+    const originalSkill = readFileSync(liveSkillPath, "utf8");
+    const editedSkill = `${originalSkill.trimEnd()}\n- Keep the review evidence in the description.\n`;
+    await devtools.evaluate(
+      `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(editedSkill)})`,
+    );
+    await waitFor(
+      async () =>
+        (await attribute(devtools, "discover-skill-text", "data-dirty")) === "true"
+          ? true
+          : undefined,
+      "the edited contribution skill to be dirty",
+      20_000,
+    );
+    await click(devtools, "discover-skill-save");
+    await waitFor(
+      async () =>
+        readFileSync(liveSkillPath, "utf8") === editedSkill ? true : undefined,
+      "the edited contribution skill to be saved",
+      20_000,
+    );
+    // A re-crawl replaces an unedited live skill and preserves an edited one.
+    await openCard(devtools, "discover-contribution");
+    await click(devtools, "discover-agent-start");
+    await waitStatus(devtools, "discover-contribution", "succeeded");
+    check(
+      readFileSync(liveSkillPath, "utf8") === editedSkill,
+      "a contribution re-crawl replaced the edited live skill",
+    );
+    // Deleting the live file leaves it missing until the explicit restore control.
+    rmSync(liveSkillPath, { force: true });
+    await wsCommand(devtools, dashboard.port, { type: "getDiscover" }, "discoverState");
+    await openTab("contribution-skill");
+    await waitFor(
+      async () =>
+        (await text(devtools, "discover-skill-status")).includes("missing") ? true : undefined,
+      "the missing contribution skill state",
+      20_000,
+    );
+    check(
+      !existsSync(liveSkillPath),
+      "the deleted contribution skill was recreated without the restore control",
+    );
+    await click(devtools, "discover-skill-restore");
+    await waitFor(
+      async () =>
+        existsSync(liveSkillPath) &&
+        readFileSync(liveSkillPath, "utf8") ===
+          readFileSync(
+            join(source, ".omp", "discover", "skills", "discover-contribution", "SKILL.md"),
+            "utf8",
+          )
+          ? true
+          : undefined,
+      "the restore control to recreate the contribution skill",
+      20_000,
+    );
+    console.log("PASS contribution-page");
   }
 
   if (selected("one-at-a-time")) {
@@ -899,6 +1066,7 @@ try {
       JSON.stringify(states) ===
         JSON.stringify({
           sheet: "succeeded",
+          "discover-contribution": "idle",
           "discover-testing-strategy": "succeeded",
           "discover-naming-conventions": "failed",
           "discover-coding-conventions": "idle",
@@ -984,6 +1152,88 @@ try {
     console.log("PASS prompt-save");
   }
 
+  if (selected("contribution-no-forge")) {
+    /* 7b. Without a forge corpus the profile is unknown and the git facts survive. */
+    const noForgeHost = await makeSourceHost(root, "no-forge-host");
+    const noForge = await startDashboard({
+      repoDir: noForgeHost,
+      stateDir: join(noForgeHost, ".devboard", ".tmp", "state"),
+      logPath: join(root, "no-forge-acp.log"),
+      extraStub: ["--discover-contribution-no-forge"],
+    });
+    pids.push(noForge.process.pid ?? 0);
+    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${noForge.port}/` });
+    await openDiscoverMode(devtools, "the no-forge dashboard");
+    await openCard(devtools, "discover-contribution");
+    await click(devtools, "discover-agent-start");
+    await waitStatus(devtools, "discover-contribution", "succeeded");
+    const opened = await devtools.evaluate(`(() => {
+    const button = document.querySelector('[data-testid="discover-tab"][data-tab="contribution"]');
+    if (button === null) return false;
+    button.click();
+    return true;
+  })()`);
+    check(opened === true, "the Contribution sidebar entry is missing in the no-forge fixture");
+    await waitFor(
+      async () =>
+        (await attribute(devtools, "discover-panel", "data-tab")) === "contribution"
+          ? true
+          : undefined,
+      "the no-forge Contribution panel",
+      20_000,
+    );
+    const noForgeSectionText = async (id: string): Promise<string> =>
+      (await devtools.evaluate(`(() => {
+      const section = document.querySelector(
+        '[data-testid="discover-contribution-section"][data-section="${id}"]'
+      );
+      return section?.textContent ?? '';
+    })()`)) as string;
+    check(
+      (await noForgeSectionText("pull-request-style")).includes("Not recorded"),
+      "a forge-less fixture does not render the profile as unknown",
+    );
+    check(
+      (await noForgeSectionText("workflow")).includes("bun install"),
+      "a forge-less fixture dropped the git-derived workflow facts",
+    );
+    const noForgeArtifact = JSON.parse(
+      readFileSync(join(noForgeHost, ".omp", "discover", "contribution.json"), "utf8"),
+    ) as {
+      sections: Array<{ id: string; facts: Array<Record<string, unknown>> }>;
+    };
+    const noForgeEvidence = noForgeArtifact.sections.find((section) => section.id === "evidence");
+    check(
+      noForgeEvidence?.facts.find((fact) => fact.key === "forge")?.confidence === "unknown",
+      "a forge-less run reported a known forge",
+    );
+    const skillTab = await devtools.evaluate(`(() => {
+    const button = document.querySelector(
+      '[data-testid="discover-tab"][data-tab="contribution-skill"]'
+    );
+    if (button === null) return false;
+    button.click();
+    return true;
+  })()`);
+    check(skillTab === true, "the Contribution skill entry is missing in the no-forge fixture");
+    await waitFor(
+      async () =>
+        (await attribute(devtools, "discover-skill", "data-name")) === "discover-contribution"
+          ? true
+          : undefined,
+      "the no-forge Contribution skill page",
+      20_000,
+    );
+    const noForgeSkill = (await devtools.evaluate(
+      `window.__devboardEditors.get("discover-skill-text").getValue()`,
+    )) as string;
+    check(
+      noForgeSkill.toLowerCase().includes("unknown") && !noForgeSkill.includes("> PR #"),
+      "a forge-less contribution skill does not state its unknown rules",
+    );
+    console.log("PASS contribution-no-forge");
+  }
+
   if (selected("installed-read-only")) {
     /* 8. An installed host renders no prompt editor and refuses a save. */
     const installed = await makeInstalledHost(root, "installed-host");
@@ -1042,9 +1292,9 @@ try {
     console.log(`verify:discover: ran only ${[...only].join(", ")}`);
   } else {
     console.log(
-      "verify:discover: the six-entry Discovery group, per-agent prompts and publication, the " +
-        "one-at-a-time rule, Run all order and stop-at-first-failure, prompt chat/save, and " +
-        "the installed save refusal all hold",
+      "verify:discover: the seven-entry Discovery group, Contribution page and skill, per-agent " +
+        "prompts and publication, the one-at-a-time rule, Run all order and stop-at-first-failure, " +
+        "prompt chat/save, and the installed save refusal all hold",
     );
   }
 } finally {

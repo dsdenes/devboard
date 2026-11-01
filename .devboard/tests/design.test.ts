@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseAudit, readAuditInput, type DesignFinding } from "../issues/design/audit";
 import { issueBody } from "../issues/design/actions";
-import { createDesignForge } from "../issues/design/forge";
+import { createDesignForge, type DesignForgeClient, type DesignForgeIssue } from "../issues/design/forge";
 import { preflightDesign } from "../issues/design/preflight";
 import { releaseDocuments, type ReleaseResult, type RunCommand } from "../issues/design/release";
 import {
@@ -429,6 +429,101 @@ function fakePeer(
   };
 }
 
+interface DesignForgeHarness {
+  client: DesignForgeClient;
+  issues: DesignForgeIssue[];
+  /** One queued issue-read failure per attempt, consumed in order. */
+  failures: string[];
+  /** A failure every read uses until cleared. */
+  failAll: string | null;
+  reads: number;
+}
+
+function designForge(): DesignForgeHarness {
+  const harness: DesignForgeHarness = {
+    issues: [],
+    failures: [],
+    failAll: null,
+    reads: 0,
+    client: undefined as unknown as DesignForgeClient,
+  };
+  harness.client = {
+    async listIssues() {
+      harness.reads += 1;
+      const message = harness.failures.shift() ?? harness.failAll;
+      if (message !== null) throw new Error(message);
+      return harness.issues.map((issue) => ({ ...issue }));
+    },
+    async listOpenIssueTitles() {
+      if (harness.failAll !== null) throw new Error(harness.failAll);
+      return harness.issues.filter((issue) => issue.state === "open").map((issue) => issue.title);
+    },
+    async listReleases() {
+      if (harness.failAll !== null) throw new Error(harness.failAll);
+      return [];
+    },
+    async closingCommit() {
+      return null;
+    },
+    async resolveCommit() {
+      return null;
+    },
+    async containingReleaseTags() {
+      return [];
+    },
+  };
+  return harness;
+}
+
+function forgeIssue(number: number, state: "open" | "closed" = "open"): DesignForgeIssue {
+  return {
+    number,
+    title: `Forge issue ${number}`,
+    url: `https://forge.test/acme/fixture/issues/${number}`,
+    state,
+    createdAt: "2026-01-10T10:00:00.000Z",
+    body: "",
+  };
+}
+
+/** A worker whose periodic read has a deterministic ticker and clock. */
+function retryWorker(options: {
+  repo: string;
+  stateDir: string;
+  github: DesignForgeClient;
+  clock: { now: Date };
+  manualCycles?: boolean;
+  connects?: { connects: number };
+}): DesignWorker {
+  return new DesignWorker({
+    repoDir: options.repo,
+    stateDir: options.stateDir,
+    cadenceMs: 0,
+    syncMs: 60_000,
+    tickMs: 10 * 60_000,
+    manualCycles: options.manualCycles ?? true,
+    now: () => new Date(options.clock.now),
+    github: options.github,
+    fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+    release: async () => ({
+      ok: true,
+      version: "0.1.9",
+      url: "u",
+      sha: "a",
+      branch: "b",
+      files: [],
+      diff: "",
+    }),
+    connect: () =>
+      fakePeer((directory) => {
+        writeFileSync(
+          join(directory, "audit.json"),
+          JSON.stringify({ findings: [], documentation: { decision: "none" } }),
+        );
+      }, options.connects ?? { connects: 0 }).peer as never,
+  });
+}
+
 describe("design worker", () => {
   test("files a valid finding, records activity, and skips the release on no decision", async () => {
     const { repo, stateDir } = await fixture("worker");
@@ -647,7 +742,7 @@ describe("design worker", () => {
       manualCycles: true,
       github: {
         listIssues: async () => {
-          throw new Error("the forge read was refused");
+          throw new Error("gh: HTTP 401: Bad credentials");
         },
         listReleases: async () => [],
         listOpenIssueTitles: async () => [],
@@ -1574,5 +1669,232 @@ describe("design forge releases", () => {
       calls.map((call) => new URL(call, "http://gitea.test").searchParams.get("page")),
     ).toEqual(["1", "2", "3"]);
     expect(calls.every((call) => call.includes("limit=50"))).toBe(true);
+  });
+});
+
+describe("design periodic read retries", () => {
+  test("a transient forge read failure is retried without a sync error and keeps the rows", async () => {
+    const { repo, stateDir } = await fixture("read-retry");
+    const harness = designForge();
+    harness.issues.push(forgeIssue(1));
+    const clock = { now: new Date("2026-01-10T12:00:00.000Z") };
+    const worker = retryWorker({ repo, stateDir, github: harness.client, clock });
+    expect(worker.start("acme/fixture")).toBe(true);
+    try {
+      await worker.refresh();
+      const previousAt = worker.currentState.sync.at!;
+      expect(worker.currentState.issues.map((row) => row.number)).toEqual([1]);
+      const reads = harness.reads;
+      harness.failures.push("gh: HTTP 503: Service Unavailable");
+      await worker.refresh();
+      const retrying = worker.currentState;
+      expect(retrying.sync).toEqual({ state: "stale", at: previousAt, error: null });
+      expect(retrying.issues.map((row) => row.number)).toEqual([1]);
+      expect(retrying.lastError).toBeNull();
+
+      clock.now = new Date(Date.parse(previousAt) + 999);
+      await worker.tickNow();
+      expect(harness.reads).toBe(reads + 1);
+
+      harness.issues.push(forgeIssue(2));
+      clock.now = new Date(Date.parse(previousAt) + 1_000);
+      await worker.tickNow();
+      expect(harness.reads).toBe(reads + 2);
+      expect(worker.currentState.sync.state).toBe("ok");
+      expect(worker.currentState.sync.error).toBeNull();
+      expect(worker.currentState.issues.map((row) => row.number)).toEqual([2, 1]);
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  test("a transient read gets four retries and only the fifth failure is an error", async () => {
+    const { repo, stateDir } = await fixture("read-schedule");
+    const harness = designForge();
+    harness.issues.push(forgeIssue(1));
+    const clock = { now: new Date("2026-01-10T12:00:00.000Z") };
+    const worker = retryWorker({ repo, stateDir, github: harness.client, clock });
+    expect(worker.start("acme/fixture")).toBe(true);
+    try {
+      await worker.refresh();
+      const previousAt = worker.currentState.sync.at!;
+      const reads = harness.reads;
+      harness.failAll = "gh: HTTP 503: Service Unavailable";
+      await worker.refresh();
+      expect(worker.currentState.sync).toEqual({
+        state: "stale",
+        at: previousAt,
+        error: null,
+      });
+
+      let now = Date.parse(previousAt);
+      let attempts = reads + 1;
+      for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+        clock.now = new Date(now + delay - 1);
+        await worker.tickNow();
+        expect(harness.reads).toBe(attempts);
+        expect(worker.currentState.sync.state).toBe("stale");
+        expect(worker.currentState.sync.error).toBeNull();
+
+        clock.now = new Date(now + delay);
+        await worker.tickNow();
+        now += delay;
+        attempts += 1;
+        expect(harness.reads).toBe(attempts);
+        if (delay !== 8_000) {
+          expect(worker.currentState.sync).toEqual({
+            state: "stale",
+            at: previousAt,
+            error: null,
+          });
+        }
+      }
+      expect(attempts).toBe(reads + 5);
+      expect(worker.currentState.sync.state).toBe("error");
+      expect(worker.currentState.sync.error).toContain("Service Unavailable");
+      expect(worker.currentState.lastError).toContain("Service Unavailable");
+      expect(worker.currentState.issues.map((row) => row.number)).toEqual([1]);
+
+      clock.now = new Date(now + 1_000);
+      await worker.tickNow();
+      expect(harness.reads).toBe(attempts);
+      expect(worker.currentState.sync.state).toBe("error");
+      clock.now = new Date(now + 60_000);
+      await worker.tickNow();
+      expect(harness.reads).toBe(attempts + 1);
+      expect(worker.currentState.sync.state).toBe("error");
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  test("a success during the retry schedule clears everything", async () => {
+    const { repo, stateDir } = await fixture("read-retry-success");
+    const harness = designForge();
+    harness.issues.push(forgeIssue(1));
+    harness.failures.push("gh: HTTP 502: Bad Gateway", "gh: HTTP 502: Bad Gateway");
+    const clock = { now: new Date("2026-01-10T12:00:00.000Z") };
+    const worker = retryWorker({ repo, stateDir, github: harness.client, clock });
+    expect(worker.start("acme/fixture")).toBe(true);
+    try {
+      const start = clock.now.getTime();
+      await worker.tickNow();
+      expect(harness.reads).toBe(1);
+      expect(worker.currentState.sync.state).toBe("stale");
+      expect(worker.currentState.sync.error).toBeNull();
+      clock.now = new Date(start + 1_000);
+      await worker.tickNow();
+      expect(harness.reads).toBe(2);
+      expect(worker.currentState.sync.state).toBe("stale");
+      expect(worker.currentState.sync.error).toBeNull();
+      clock.now = new Date(start + 3_000);
+      await worker.tickNow();
+      expect(harness.reads).toBe(3);
+      expect(worker.currentState.sync.state).toBe("ok");
+      expect(worker.currentState.sync.error).toBeNull();
+      expect(worker.currentState.issues.map((row) => row.number)).toEqual([1]);
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  for (const [label, message] of [
+    ["credentials", "gh: HTTP 401: Bad credentials"],
+    ["a missing repository", "gh: HTTP 404: Not Found"],
+    ["a malformed answer", "gh issue list did not print a JSON array"],
+    ["missing configuration", "the design agent needs DEVBOARD_GITEA_URL for a Gitea origin"],
+  ] as const) {
+    test(`a permanent read failure (${label}) is attempted once and surfaces at once`, async () => {
+      const { repo, stateDir } = await fixture(`read-permanent-${label.replaceAll(" ", "-")}`);
+      const harness = designForge();
+      harness.issues.push(forgeIssue(1));
+      const clock = { now: new Date("2026-01-10T12:00:00.000Z") };
+      const worker = retryWorker({ repo, stateDir, github: harness.client, clock });
+      expect(worker.start("acme/fixture")).toBe(true);
+      try {
+        await worker.refresh();
+        const previousAt = worker.currentState.sync.at!;
+        const reads = harness.reads;
+        harness.failAll = message;
+        await worker.refresh();
+        expect(worker.currentState.sync).toEqual({
+          state: "error",
+          at: previousAt,
+          error: message,
+        });
+        expect(worker.currentState.lastError).toBe(message);
+        expect(harness.reads).toBe(reads + 1);
+        clock.now = new Date(Date.parse(previousAt) + 1_000);
+        await worker.tickNow();
+        expect(harness.reads).toBe(reads + 1);
+      } finally {
+        await worker.stop();
+      }
+    });
+  }
+
+  test("a rate-limited read surfaces once, raises no error, and waits a cadence", async () => {
+    const { repo, stateDir } = await fixture("read-rate-limited");
+    const harness = designForge();
+    harness.issues.push(forgeIssue(1));
+    harness.failAll = "You have exceeded a secondary rate limit.";
+    const clock = { now: new Date("2026-01-10T12:00:00.000Z") };
+    const worker = retryWorker({ repo, stateDir, github: harness.client, clock });
+    expect(worker.start("acme/fixture")).toBe(true);
+    try {
+      const start = clock.now.getTime();
+      await worker.tickNow();
+      expect(worker.currentState.sync.state).toBe("error");
+      expect(worker.currentState.sync.error).toContain("secondary rate limit");
+      expect(worker.currentState.lastError).toBeNull();
+      expect(harness.reads).toBe(1);
+
+      clock.now = new Date(start + 1_000);
+      await worker.tickNow();
+      expect(harness.reads).toBe(1);
+      expect(worker.currentState.sync.state).toBe("error");
+
+      harness.failAll = null;
+      clock.now = new Date(start + 60_000);
+      await worker.tickNow();
+      expect(harness.reads).toBe(2);
+      expect(worker.currentState.sync.state).toBe("ok");
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  test("a stale read starts no cycle and the first success resumes one", async () => {
+    const { repo, stateDir } = await fixture("read-cycle-gate");
+    const harness = designForge();
+    harness.issues.push(forgeIssue(1));
+    harness.failAll = "gh: HTTP 503: Service Unavailable";
+    const clock = { now: new Date("2026-01-10T12:00:00.000Z") };
+    const connects = { connects: 0 };
+    const worker = retryWorker({
+      repo,
+      stateDir,
+      github: harness.client,
+      clock,
+      manualCycles: false,
+      connects,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    try {
+      const start = clock.now.getTime();
+      await worker.tickNow();
+      expect(worker.currentState.sync.state).toBe("stale");
+      expect(worker.currentState.sync.error).toBeNull();
+      expect(connects.connects).toBe(0);
+      expect(worker.currentState.newestCycleId).toBeNull();
+
+      harness.failAll = null;
+      clock.now = new Date(start + 1_000);
+      await worker.tickNow();
+      expect(worker.currentState.sync.state).toBe("ok");
+      expect(connects.connects).toBe(1);
+    } finally {
+      await worker.stop();
+    }
   });
 });
