@@ -85,9 +85,6 @@
       {#if discover.startedAt !== null}
         <span class="muted" title={discover.startedAt}>started {startedLabel}</span>
       {/if}
-      {#if discover.runId !== null}
-        <code class="code-chip">{discover.runId}</code>
-      {/if}
       {#if lastActivity.length > 0}
         <span class="discover-run-tag__activity" title={lastActivity}>{lastActivity}</span>
       {/if}

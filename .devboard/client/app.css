@@ -1685,7 +1685,7 @@ kbd {
   margin: 0;
 }
 
-/* One run tag above every Discover page: the run's state, age, id, and last line. */
+/* One run tag above every Discover page: the run's state, age, and last line. */
 .discover-run-tag {
   align-items: center;
   background: var(--surface-raised);
