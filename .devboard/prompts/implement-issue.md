@@ -49,22 +49,25 @@ context, but you never edit, comment on, close, or reopen another issue.
   form infers the forge, host, project, and identity from the `origin` remote and
   `DEVBOARD_GITEA_URL`, so this check has exactly one spelling: that literal command line, with
   no `--forge`, `--host`, `--project`, or `--url` override and no derived replacement for any of
-  them. Never derive those values with `sed`, `git remote get-url`, or any other shell
-  substitution; when the `origin` remote cannot name the forge, stop and report that as the
+  them. An override is justified only when this result itself names a wrong forge or host, never
+  to preempt the check. Never derive those values with `sed`, `git remote get-url`, or any other
+  shell substitution; when the `origin` remote cannot name the forge, stop and report that as the
   blocker instead of guessing a `--forge` override.
 
-  Invoke that one line alone: never prefix it with `cd <absolute path> &&` or
+  A session following this prompt issues at most one call matching `forge-auth.ts check`, with no
+  `cd`, no `--forge`, and no `--host` in its command text. Invoke that one line alone: never
+  prefix it with `cd <absolute repository path> &&` (the `cd /home/... &&` shape) or
   `git rev-parse --show-toplevel &&`, and never chain it into a compound command with a `curl`
   request to the forge API or any other command. Set the tool's working directory to the
   repository root instead of prefixing the command.
 
-  Read the JSON line and proceed only when the exit status is 0 and `canWrite` is `true`; trust
-  its `canWrite`, `permission`, and `source` fields for every later forge step instead of
-  re-checking. A successful result is reused for the rest of the session: never run the check a
-  second time, and never re-run it to confirm a result already read. Only a nonzero exit, or an
-  exit 0 without `canWrite: true`, stops the run, and only that failure justifies one `--help`
-  inspection or the blocker report: report the script's message verbatim, and when the result
-  is JSON, its `error` and `permission` fields verbatim. Never retry across `localhost`,
+  Read the JSON line and treat it as final for the session: exit status 0 with `canWrite: true`
+  authorizes every forge write in the task — labels, the one close, and any other forge write the
+  task requires — so never re-run the check before, between, or after those writes. A nonzero
+  exit, or an exit 0 without `canWrite: true`, ends the task: stop, report `forge`, `host`,
+  `source`, and `permission` from the JSON, and include its `error` text verbatim when present.
+  Never retry the check, never inspect its `--help`, and never fall back to `curl` or any other
+  forge API probe. Never retry across `localhost`,
   `localhost:2223`, `localhost:3001`, `origin`, `ds@localhost:2223`, `gitea`, `127.0.0.1`, a bare
   IP, or a bare port, and never re-derive the host with `git remote get-url origin | sed` or any
   other shell substitution. Never append `echo $?`, `echo "exit=$?"`, `echo "EXIT:$?"`, or
