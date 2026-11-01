@@ -1158,6 +1158,35 @@ describe("periodic reads and state mapping", () => {
       await f.worker.stop();
     }
   });
+
+  test("a page-open refresh reads without waiting for the sync interval", async () => {
+    const github = new FakeGitHub();
+    github.add({ number: 7, title: "Already filed", createdAt: "2026-10-01T00:00:00.000Z" });
+    const f = await fixture({ label: "page-open-refresh", github, syncMs: 900_000 });
+    try {
+      await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the Start read",
+      );
+      expect(f.state().issues.map((row) => row.number)).toEqual([7]);
+
+      // Without a command the next read is 15 minutes away; the page-open
+      // command must surface the new issue immediately.
+      github.add({ number: 8, title: "Filed later", createdAt: "2026-10-02T00:00:00.000Z" });
+      writeCommand(controlDirectory(f.stateDir, f.root), { type: "refresh" });
+      const refreshed = await waitFor(
+        () => {
+          const state = f.state();
+          return state.issues.some((row) => row.number === 8) ? state : undefined;
+        },
+        "the page-open read",
+      );
+      expect(refreshed.sync.state).toBe("ok");
+      expect(refreshed.sync.at).not.toBeNull();
+    } finally {
+      await f.worker.stop();
+    }
+  });
 });
 
 describe("migration", () => {
@@ -1318,6 +1347,68 @@ describe("lifecycle", () => {
 });
 
 describe("dashboard bridge", () => {
+  test("a page open asks the attached worker for one fresh read", async () => {
+    const github = new FakeGitHub();
+    github.add({ number: 7, title: "First", createdAt: "2026-10-01T00:00:00.000Z" });
+    const f = await fixture({ label: "page-open-bridge", github, syncMs: 900_000 });
+    try {
+      await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the Start read",
+      );
+      let spawned = 0;
+      const bridge = new ScoutBridge({
+        descriptor: agentRegistry.require("scout"),
+        repoDir: f.root,
+        stateDir: f.stateDir,
+        agentCommand: "stub",
+        agentEnvironment: async () => ({}),
+        runningVersion: "0.1.0",
+        harnessDir: join(import.meta.dir, ".."),
+        send: () => undefined,
+        pollMs: 60_000,
+        spawnWorker: () => {
+          spawned += 1;
+          return undefined;
+        },
+      });
+      github.add({ number: 8, title: "Second", createdAt: "2026-10-02T00:00:00.000Z" });
+      bridge.requestSync();
+      const refreshed = await waitFor(
+        () => {
+          const state = f.state();
+          return state.issues.some((row) => row.number === 8) ? state : undefined;
+        },
+        "the page-open read",
+      );
+      expect(refreshed.sync.state).toBe("ok");
+      expect(spawned).toBe(0);
+      bridge.dispose();
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a page open with no attached worker writes no command", async () => {
+    const root = await temporaryDirectory("page-open-detached");
+    const stateDir = join(root, "state");
+    const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+    });
+    bridge.requestSync();
+    expect(existsSync(controlDirectory(stateDir, root))).toBe(false);
+    bridge.dispose();
+  });
+
   test("a reload replays the rows and limits without starting a worker", async () => {
     const f = await fixture({ label: "replay" });
     try {
@@ -1629,8 +1720,9 @@ describe("bounded commands", () => {
         "the timed out read",
       );
       expect(Date.now() - started).toBeLessThan(5000);
-      expect(failed.sync.error).toContain("the GitHub read did not finish within 1000 ms");
-      expect(failed.lastError).toContain("the GitHub read did not finish within 1000 ms");
+      expect(failed.sync.error).toContain("the forge read did not finish within 1000 ms");
+      expect(failed.lastError).toContain("the forge read did not finish within 1000 ms");
+      expect(failed.notice).toContain("Could not read the forge:");
 
       // The failed read released `syncing`: a later refresh runs and succeeds.
       github.hanging = false;

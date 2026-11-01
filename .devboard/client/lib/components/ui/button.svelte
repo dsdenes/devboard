@@ -2,7 +2,7 @@
   import { tv, type VariantProps } from "tailwind-variants";
 
   export const buttonVariants = tv({
-    base: "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-sm border text-[12px] font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--background)] disabled:pointer-events-none disabled:opacity-45",
+    base: "inline-flex shrink-0 items-center justify-center gap-1 rounded-sm border text-[12px] font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--background)] disabled:pointer-events-none disabled:opacity-45",
     variants: {
       variant: {
         default:

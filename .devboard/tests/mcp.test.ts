@@ -8,7 +8,7 @@ import { callTool } from "../mcp/tools";
 import { toolInvocationCounts, toolInvocationFile } from "../mcp/invocations";
 import { runVerification, VERIFICATION_OUTPUT_MAX_BYTES } from "../mcp/verification";
 import { startStdio } from "../mcp/index";
-import type { McpContext } from "../mcp/context";
+import { resolveContext, type McpContext } from "../mcp/context";
 import type { LiveDashboard } from "../mcp/dashboard";
 import type { ForgeIssueDocument, ForgeIssues } from "../lib/forge-issues";
 import { journalFile } from "../server/journal";
@@ -930,5 +930,58 @@ describe("MCP work and control tools", () => {
     expect(absolute.error).toContain("relative");
     const bounded = await callTool(context, "agent_session_read", { id: "none" });
     expect(bounded.error).toContain("No session");
+  });
+});
+
+describe("MCP state directory resolution", () => {
+  async function installedHost(): Promise<{ host: string; packageDir: string }> {
+    await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
+    const host = await mkdtemp(join(harnessRoot, ".tmp", "installed-host-"));
+    directories.push(host);
+    const packageDir = join(host, ".devboard", "node_modules", "@dsdenes", "devboard");
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(
+      join(packageDir, "package.json"),
+      JSON.stringify({ name: "@dsdenes/devboard", version: "9.9.9" }),
+    );
+    await mkdir(join(host, "adrs"), { recursive: true });
+    return { host, packageDir };
+  }
+
+  test("an installed host reads state from its prefix, not the package tree", async () => {
+    const { host, packageDir } = await installedHost();
+    const context = resolveContext({ REPO_DIR: host });
+    expect(context.harnessDir).toBe(packageDir);
+    expect(context.stateDir).toBe(join(host, ".devboard", ".tmp"));
+
+    const status = valueOf(
+      await callTool(context, "devboard_status", {}),
+    ) as Record<string, unknown>;
+    expect(status.stateDirectory).toBe(join(host, ".devboard", ".tmp"));
+
+    await mkdir(join(context.stateDir, "journal"), { recursive: true });
+    await writeFile(
+      journalFile(context.stateDir, context.repoDir),
+      JSON.stringify({
+        ts: "2026-01-01T10:00:00.000Z",
+        repo: context.repoDir,
+        port: 1,
+        pid: 1,
+        kind: "question",
+        text: "installed state record",
+        scope: "run-a",
+      }),
+    );
+    const page = valueOf(
+      await callTool(context, "journal_search", { query: "installed" }),
+    ) as { records: Array<Record<string, unknown>> };
+    expect(page.records.map((record) => record.text)).toEqual(["installed state record"]);
+  });
+
+  test("an explicit STATE_DIR still overrides the host prefix", async () => {
+    const { host } = await installedHost();
+    const explicit = join(host, "explicit-state");
+    const context = resolveContext({ REPO_DIR: host, STATE_DIR: explicit });
+    expect(context.stateDir).toBe(explicit);
   });
 });

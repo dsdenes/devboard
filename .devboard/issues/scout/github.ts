@@ -10,6 +10,7 @@ import {
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
   giteaClosingCommit,
+  giteaClosingCommits,
   giteaJson,
   giteaListIssues,
   giteaListReleases,
@@ -61,6 +62,8 @@ export interface ScoutGitHubClient {
   listReleases(): Promise<ScoutRelease[]>;
   /** The commit that closed an issue, from its timeline or newest comment. */
   closingCommit(issueNumber: number): Promise<string | null>;
+  /** Every candidate for that commit, newest first, for verification. */
+  closingCommits?(issueNumber: number): Promise<string[]>;
   /** One unambiguous full commit, through the checkout or GitHub, or null. */
   resolveCommit(short: string): Promise<string | null>;
   /** The published release tags whose history contains `commit`. */
@@ -177,6 +180,10 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
 
     async closingCommit(issueNumber: number): Promise<string | null> {
       return await giteaClosingCommit(target, issueNumber, options.giteaFetch);
+    },
+
+    async closingCommits(issueNumber: number): Promise<string[]> {
+      return await giteaClosingCommits(target, issueNumber, options.giteaFetch);
     },
 
     async resolveCommit(short: string): Promise<string | null> {
@@ -328,6 +335,10 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
 
     async closingCommit(issueNumber: number): Promise<string | null> {
       return await repositoryGitHub.closingCommit(issueNumber);
+    },
+
+    async closingCommits(issueNumber: number): Promise<string[]> {
+      return await repositoryGitHub.closingCommits(issueNumber);
     },
 
     async resolveCommit(short: string): Promise<string | null> {

@@ -599,7 +599,7 @@ try {
   );
   console.log("PASS discovery-group");
 
-  /* 2. Each card shows its own command and, in a source checkout, its prompt. */
+  /* 2. Each card shows, in a source checkout, its own prompt and no command chip. */
   const expectedPrompts = new Map(
     AGENTS.map((agent) => {
       const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
@@ -608,11 +608,10 @@ try {
   );
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    const command = await text(devtools, "discover-agent-prompt-command");
     check(
-      command === `${agent.command} <staging-dir>`,
-      `the ${agent.id} card does not show its command`,
-      command,
+      (await countOf(devtools, "discover-agent-prompt-command")) === 0,
+      `the ${agent.id} card still shows its command chip`,
+      await text(devtools, "discover-agent-prompt-command"),
     );
     check(
       (await valueOf(devtools, "discover-agent-prompt-editor")) ===
@@ -623,13 +622,20 @@ try {
       "discover-agent-prompt-message",
       "discover-agent-prompt-send",
       "discover-agent-prompt-save",
-      "discover-agent-prompt-reset",
     ]) {
       check(
         (await countOf(devtools, testid)) === 1,
         `${testid} is missing on the ${agent.id} card`,
       );
     }
+    check(
+      (await countOf(devtools, "discover-agent-prompt-reset")) === 0,
+      `the removed Reset control is still rendered on the ${agent.id} card`,
+    );
+    check(
+      (await countOf(devtools, "discover-agent-activity")) === 0,
+      `the ${agent.id} card still renders an activity log`,
+    );
   }
   // No card's editor holds another agent's prompt.
   const shown = new Set<string>();
@@ -931,6 +937,14 @@ try {
   await openCard(devtools, "sheet");
   await click(devtools, "discover-agent-start");
   await waitStatus(devtools, "sheet", "running");
+  const runningActivity = await devtools.evaluate(
+    `document.querySelectorAll('[data-testid="discover-agent-activity"]').length`,
+  );
+  check(
+    runningActivity === 0,
+    "a running agent's card still renders an activity log",
+    { runningActivity },
+  );
   await waitFor(
     async () => (logPrompts(join(root, "refusal-acp.log")).length === 1 ? true : undefined),
     "the refusal peer to start",
@@ -1008,7 +1022,7 @@ try {
   );
   console.log("PASS run-all-halt");
 
-  /* 7. Prompt chat, save, and reset on the source checkout. */
+  /* 7. Prompt chat and save on the source checkout. */
   await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
   await openDiscoverMode(devtools, "the source dashboard");
   await openCard(devtools, "sheet");
@@ -1072,20 +1086,6 @@ try {
     );
   }
   console.log("PASS prompt-save");
-
-  await setInput(devtools, "discover-agent-prompt-editor", "a local edit\n");
-  await click(devtools, "discover-agent-prompt-reset");
-  await waitFor(
-    async () =>
-      (await valueOf(devtools, "discover-agent-prompt-editor")) === proposal ? true : undefined,
-    "Reset to restore the file's bytes",
-    20_000,
-  );
-  check(
-    readFileSync(promptFile, "utf8") === proposal,
-    "Reset wrote the prompt file",
-  );
-  console.log("PASS prompt-reset");
 
   /* 7b. Without a forge corpus the profile is unknown and the git facts survive. */
   const noForgeHost = await makeSourceHost(root, "no-forge-host");
@@ -1154,7 +1154,6 @@ try {
       "discover-agent-prompt-message",
       "discover-agent-prompt-send",
       "discover-agent-prompt-save",
-      "discover-agent-prompt-reset",
     ]) {
       check(
         (await countOf(devtools, testid)) === 0,
@@ -1186,7 +1185,7 @@ try {
   console.log(
     "verify:discover: the seven-entry Discovery group, Contribution page and skill, per-agent " +
       "prompts and publication, the one-at-a-time rule, Run all order and stop-at-first-failure, " +
-      "prompt chat/save/reset, and the installed save refusal all hold",
+      "prompt chat/save, and the installed save refusal all hold",
   );
 } finally {
   for (const pid of [...pids, chromePid]) {

@@ -1653,40 +1653,8 @@ kbd {
   min-width: 0;
 }
 
-.discover-block {
-  border-top: 1px solid var(--border);
-  min-width: 0;
-  padding-top: 10px;
-}
-
-.discover-rail > .discover-block:first-child {
-  border-top: 0;
-  padding-top: 0;
-}
-
-.discover-block__head {
-  align-items: baseline;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.discover-block__title {
-  font-size: 12px;
-  font-weight: 600;
-  margin: 0;
-  min-width: 0;
-}
-
-.discover-block__meta {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  text-align: right;
-}
-
 .discover-subblock {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .discover-subblock:first-of-type {
@@ -1717,7 +1685,7 @@ kbd {
   margin: 0;
 }
 
-/* One run tag above every Discover page: the run's state, age, id, and last line. */
+/* One run tag above every Discover page: the run's state, age, and last line. */
 .discover-run-tag {
   align-items: center;
   background: var(--surface-raised);
@@ -1954,15 +1922,17 @@ kbd {
   min-height: 0;
 }
 
-/* The skill header keeps the file identity, its draft state, and the actions on one
-   30px row; the path yields first, while the state and controls never shrink. */
+/* The skill header is the editor's chrome bar: one 34px `surface-raised` band
+   between the page title and the pane, so the 28px controls sit inside the row
+   instead of filling it. The path yields first; the state and controls never
+   shrink. */
 .discover-skill__header {
   align-items: center;
-  flex: 0 0 auto;
+  background: var(--surface-raised);
+  flex: 0 0 34px;
   flex-wrap: nowrap;
   gap: 12px;
-  height: auto;
-  min-height: 30px;
+  height: 34px;
   padding: 0 8px;
 }
 
@@ -1985,20 +1955,43 @@ kbd {
   font-weight: 400;
 }
 
+/* The draft state pairs its 6px dot with the word on the baseline of the Save it
+   qualifies: success while the live file matches the draft, warning while the draft
+   differs, error while the live file is missing. The word carries the meaning and
+   the dot only colors it. */
 .discover-skill__state {
+  align-items: center;
   color: var(--muted-foreground);
+  display: inline-flex;
   flex: 0 0 auto;
   font-size: 11px;
+  gap: 4px;
   line-height: 1.2;
   white-space: nowrap;
+}
+
+.discover-skill__state-dot {
+  background: var(--success);
+  border-radius: 999px;
+  flex: 0 0 6px;
+  height: 6px;
+  width: 6px;
 }
 
 .discover-skill__state[data-state="dirty"] {
   color: var(--warning);
 }
 
+.discover-skill__state[data-state="dirty"] .discover-skill__state-dot {
+  background: var(--warning);
+}
+
 .discover-skill__state[data-state="missing"] {
   color: var(--error);
+}
+
+.discover-skill__state[data-state="missing"] .discover-skill__state-dot {
+  background: var(--error);
 }
 
 .discover-skill__actions {
@@ -2019,7 +2012,13 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 8px 0 0;
+  margin: 0;
+}
+
+.discover-facts--grouped {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 12px;
+  padding-top: 10px;
 }
 
 .discover-fact {
@@ -2075,7 +2074,7 @@ kbd {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin: 8px 0 0;
+  margin: 0;
 }
 
 .code-chip {
@@ -2215,7 +2214,7 @@ a.code-chip--link:focus-visible {
 }
 
 .discover-quality-gate__name {
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .discover-card[data-field="architecture"] {
@@ -2294,132 +2293,11 @@ a.code-chip--link:focus-visible {
   margin: 0;
 }
 
-.discover-boundaries {
-  border-top: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-  margin: 10px 0 0;
-  padding: 0;
-}
-
-.discover-boundary {
-  align-items: baseline;
-  display: grid;
-  gap: 4px 12px;
-  grid-template-columns: 160px minmax(0, 1fr);
-  padding: 8px 0;
-}
-
-.discover-boundary + .discover-boundary {
-  border-top: 1px solid var(--border-subtle);
-}
-
-.discover-boundary:last-child {
-  padding-bottom: 0;
-}
-
-.discover-boundary dt {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.discover-boundary dd {
-  font-size: 12px;
-  line-height: 1.45;
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.discover-boundary .discover-chips {
-  margin: 0;
-}
-
 .discover-boundary-note {
   color: var(--muted-foreground);
   font-size: 12px;
   line-height: 1.45;
   margin: 10px 0 0;
-}
-
-.discover-diagram-figure {
-  margin: 0;
-  max-width: 100%;
-  min-width: 0;
-}
-
-.discover-diagram__bar {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  margin-bottom: 4px;
-  min-height: 24px;
-}
-
-.discover-diagram__legend {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  line-height: 1.3;
-  margin: 0;
-  min-width: 0;
-}
-
-.discover-diagram__canvas {
-  background: var(--background);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  max-height: clamp(220px, 40vh, 400px);
-  min-height: 96px;
-  overflow: auto;
-  padding: 8px;
-}
-
-.discover-diagram__canvas:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 1px;
-}
-
-.discover-diagram {
-  min-height: 80px;
-  width: 100%;
-}
-
-.discover-diagram svg {
-  display: block;
-  height: auto;
-  margin: 0 auto;
-  max-width: 100%;
-}
-
-.discover-diagram .node rect {
-  rx: 4px;
-  ry: 4px;
-}
-
-.discover-diagram .node rect,
-.discover-diagram .node polygon,
-.discover-diagram .node circle {
-  stroke-width: 1px;
-}
-
-.discover-diagram .nodeLabel,
-.discover-diagram .nodeLabel p {
-  color: var(--foreground);
-  font-weight: 500;
-  line-height: 1.3;
-}
-
-.discover-diagram .arrowMarkerPath {
-  fill: var(--muted-foreground);
-  stroke: var(--muted-foreground);
-}
-
-.discover-diagram text {
-  fill: var(--foreground);
 }
 
 .discover-search {
@@ -3726,7 +3604,7 @@ a.code-chip--link:focus-visible {
   gap: 8px;
   width: 100%;
   border-left: 2px solid transparent;
-  padding: 6px 10px 6px 8px;
+  padding: 6px 10px;
   background: transparent;
   color: var(--foreground);
   font-size: 12px;
@@ -4071,6 +3949,32 @@ a.code-chip--link:focus-visible {
   text-overflow: ellipsis;
 }
 
+.status-notifications {
+  border: 1px solid transparent;
+  max-width: 200px;
+}
+
+.status-notifications__dot {
+  background: var(--border-strong);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 6px;
+  width: 6px;
+}
+
+.status-notifications[data-state="on"] .status-notifications__dot {
+  background: var(--success);
+}
+
+.status-notifications[data-state="blocked"] .status-notifications__dot {
+  background: var(--error);
+}
+
+.status-notifications__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Auto Scout */
 .issues-scout {
   display: flex;
@@ -4177,6 +4081,29 @@ a.code-chip--link:focus-visible {
   gap: 12px;
 }
 
+/* The agent page is the workspace, so it uses the whole window: the prompt
+   editor takes every pixel the other blocks leave. Growing without shrinking
+   keeps a short window scrolling the page instead of clipping the editor or its
+   chat input. */
+.discover-agent > .discover-agent__prompt {
+  flex: 1 0 auto;
+  min-height: 0;
+}
+
+.discover-agent__prompt > .panel__body {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.discover-agent__prompt-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.discover-agent__textarea {
+  flex: 1 1 auto;
+}
+
 .discover-agent__header {
   align-items: flex-start;
 }
@@ -4210,22 +4137,6 @@ a.code-chip--link:focus-visible {
 .discover-agent .discover-run-tag {
   border: 0;
   padding: 0;
-}
-
-.discover-agent__activity-log {
-  display: flex;
-  flex-direction: column;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  gap: 2px;
-  max-height: 180px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-.discover-agent__activity-line {
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
 
 .discover-agent__prompt-editor,

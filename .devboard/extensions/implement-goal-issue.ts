@@ -242,7 +242,7 @@ export function buildGoalIssuePrompt(
       ? `${authCommand} gh issue close ${issue.number}`
       : forge === "gitlab"
         ? `${authCommand} glab issue close ${issue.number}`
-        : `${authCommand} curl -sS -X PATCH -H "Authorization: token $GITEA_TOKEN" ` +
+        : `${authCommand} && curl -sS -X PATCH -H "Authorization: token $GITEA_TOKEN" ` +
           `-H "Content-Type: application/json" -d '{"state":"closed"}' ` +
           `"$DEVBOARD_GITEA_URL/api/v1/repos/${project}/issues/${issue.number}"`;
   return `Implement the goal filed as issue ${issue.number}. This run is fully autonomous.
@@ -278,7 +278,7 @@ After the goal tool succeeds, implement the issue end to end:
 - Never end a turn while a background job you started is still running: when a \`wait\` returns a still-running snapshot, call \`wait\` again. Leave the turn only once the work is finished or the exact blocker is known.
 - Keep the goal active until every criterion is verified. Call the \`goal\` tool with {"op":"complete"} only then.
 - When complete, merge ${branch} into main from ${repo}. First fetch the latest main and integrate it into ${branch}; then merge. If the merge fails, fetch the latest main again, integrate it, and retry. Never force-push. After the merge succeeds, push main to origin and remove the worktree and branch, per AGENTS.md. If the push is rejected, fetch and integrate the new main and push again.
-- Never call a tracker CLI directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token:
+- Never call a tracker CLI or the Gitea API directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token; on Gitea, resolve the identity with \`check\` and call the API with \`GITEA_TOKEN\`:
   \`${closeCommand}\`
 - When complete, close issue ${issue.number} in ${repo} with \`${closeCommand}\`. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
 - If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once on a line beginning \`DEVBOARD-BLOCKED:\`. Do not ask for permission or guidance.`;

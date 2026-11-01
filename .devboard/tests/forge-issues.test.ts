@@ -2,9 +2,9 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ForgeTimeoutError, type Exec } from "../lib/forge-auth.ts";
-import { createForgeIssues, type ForgeRunner } from "../lib/forge-issues.ts";
+import { createForgeIssues, FORGE_ISSUE_LIST_MAX, type ForgeRunner } from "../lib/forge-issues.ts";
 import type { FetchLike } from "../lib/gitea.ts";
-import { listIssues } from "../mcp/issues";
+import { ISSUE_LIST_MAX, listIssues } from "../mcp/issues";
 
 /**
  * Both forges answer `list("all", limit)` from two different transports: `gh
@@ -207,6 +207,45 @@ describe("forge issue listing across states", () => {
       "closed",
       "open",
     ]);
+  });
+
+  test("asks for one row past the tool cap so a full page reports truncation", async () => {
+    const repoDir = repository("https://github.com/acme/fixture.git");
+    const stub = github([]);
+    const requested: number[] = [];
+    const forge = createForgeIssues({
+      repoDir,
+      environment: {},
+      exec: stub.exec,
+      run: async (argv) => {
+        const state = argv[argv.indexOf("--state") + 1];
+        const limit = Number(argv[argv.indexOf("--limit") + 1]);
+        requested.push(limit);
+        const rows = Array.from({ length: limit }, (_, index) => {
+          const number = limit - index;
+          return {
+            number,
+            title: `issue ${number}`,
+            state,
+            labels: [],
+            url: `https://example.test/acme/fixture/issues/${number}`,
+            createdAt: new Date(Date.UTC(2026, 0, 1) + number * 60_000).toISOString(),
+          };
+        });
+        return { code: 0, stdout: JSON.stringify(rows), stderr: "" };
+      },
+    });
+
+    const listed = await listIssues(
+      { repoDir, harnessDir: repoDir, stateDir: repoDir, environment: {}, forgeIssues: forge },
+      { state: "open", limit: 200 },
+    );
+
+    expect(requested).toEqual([201]);
+    expect(requested.every((count) => count <= FORGE_ISSUE_LIST_MAX)).toBe(true);
+    expect(ISSUE_LIST_MAX).toBe(200);
+    expect(listed.issues).toHaveLength(200);
+    expect(listed.truncated).toBe(true);
   });
 });
 

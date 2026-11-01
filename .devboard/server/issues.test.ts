@@ -484,6 +484,107 @@ describe("dashboard tracker sync", () => {
     }
   });
 
+  test("a stopped worker's stale running markers never count as running", async () => {
+    const root = await temporaryDirectory("issues-sync-stale-markers");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root }),
+      queue: [
+        { ...issue(5), handled: false, runId: null, agentRunId: "run-5" },
+        { ...issue(6), handled: true, runId: "run-4", agentRunId: "run-6" },
+      ],
+    });
+    const subject = bridge(root, stateDir);
+    try {
+      const snapshot = subject.snapshot();
+      expect(snapshot.attached).toBe(false);
+      expect(snapshot.agents).toEqual([]);
+      // Handled and last-run markers are history; a running marker is not, so
+      // it survives only while a live worker owns the state.
+      expect(snapshot.queue).toEqual([
+        { ...issue(5), handled: false, runId: null, agentRunId: null },
+        { ...issue(6), handled: true, runId: "run-4", agentRunId: null },
+      ]);
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("a stopped worker's running markers are dropped from the dashboard's open list", async () => {
+    const root = await temporaryDirectory("issues-sync-stale-marker-list");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root }),
+      queue: [
+        { ...issue(5), handled: false, runId: null, agentRunId: "run-5" },
+        { ...issue(6), handled: true, runId: "run-4", agentRunId: "run-6" },
+      ],
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [issue(5), issue(6)], etag: null }),
+    });
+    try {
+      await subject.syncNow();
+      expect(subject.snapshot().queue).toEqual([
+        { ...issue(5), handled: false, runId: null, agentRunId: null },
+        { ...issue(6), handled: true, runId: "run-4", agentRunId: null },
+      ]);
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("an attached worker's running markers survive the dashboard's open list", async () => {
+    const root = await temporaryDirectory("issues-sync-live-marker-list");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" }),
+      enabled: true,
+      agents: [runningAgent(5, "run-5")],
+      queue: [{ ...issue(5), handled: false, runId: null, agentRunId: "run-5" }],
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [issue(5)], etag: null }),
+    });
+    try {
+      await subject.syncNow();
+      const snapshot = subject.snapshot();
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.queue).toEqual([
+        { ...issue(5), handled: false, runId: null, agentRunId: "run-5" },
+      ]);
+    } finally {
+      subject.dispose();
+      lock.release();
+    }
+  });
+
   test("a closed running issue receives one abandon command and leaves the queue", async () => {
     const root = await temporaryDirectory("issues-sync-abandon");
     const stateDir = join(root, "state");

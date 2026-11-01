@@ -6,6 +6,7 @@ import { giteaBaseUrl, parseForgeRemote } from "../lib/forge.ts";
 import { createForgeIssues } from "../lib/forge-issues.ts";
 import {
   giteaClosingCommit,
+  giteaClosingCommits,
   closingCommitFromGiteaTimeline,
   giteaCreateRelease,
   giteaLabels,
@@ -892,6 +893,49 @@ describe("Gitea watchdog activity", () => {
     expect(requestedReleasePages(calls)).toContain("2");
   });
 
+  test("reads the commit a comment names past a later fingerprint and epoch stamp", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const short = tagged.commit.slice(0, 7);
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      if (/\/issues\/5$/.test(url.pathname)) return Response.json({ state: "closed" });
+      if (url.pathname.endsWith("/issues/5/timeline")) {
+        return Response.json([{ type: "close", ref_commit_sha: "" }]);
+      }
+      if (url.pathname.endsWith("/issues/5/comments")) {
+        return Response.json([
+          {
+            body:
+              `Shipped in ${short}.\n\n` +
+              `- fingerprint \`${"d".repeat(32)}\`\n` +
+              "- worker pid 2692176 at 1793310097358",
+          },
+        ]);
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/5"])).toEqual([
+      {
+        url: "http://gitea.test/acme/fixture/issues/5",
+        state: "implemented",
+        version: "v1.0.0",
+      },
+    ]);
+  });
+
   test("scans a repository's releases once for all of its closed issues", async () => {
     const tagged = taggedRepository("v1.0.0");
     const calls: string[] = [];
@@ -973,6 +1017,62 @@ describe("Gitea closing commit", () => {
         { type: "close", commit_id: closed },
       ]),
     ).toBe(closed);
+  });
+
+  test("reads the close entry's ref_commit_sha, the field current Gitea emits", () => {
+    expect(
+      closingCommitFromGiteaTimeline([
+        { type: "comment_ref", ref_commit_sha: "b".repeat(40) },
+        { type: "close", ref_commit_sha: closed },
+      ]),
+    ).toBe(closed);
+    expect(
+      closingCommitFromGiteaTimeline([
+        { type: "close", commit_id: null, ref_commit_sha: "" },
+      ]),
+    ).toBeNull();
+  });
+
+  test("offers every comment token newest first when no close entry names a commit", async () => {
+    const fetchImpl: FetchLike = async (input) => {
+      const path = new URL(input).pathname;
+      if (path.endsWith("/issues/9/timeline")) {
+        return Response.json([{ type: "close", ref_commit_sha: "" }]);
+      }
+      if (path.endsWith("/issues/9/comments")) {
+        return Response.json([
+          { body: "older thread names 1234567 then 7654321" },
+          { body: `fingerprint ${"d".repeat(32)} pid 2692176 at 1793310097358` },
+        ]);
+      }
+      return Response.json({ message: `unexpected ${path}` });
+    };
+
+    expect(
+      await giteaClosingCommits(
+        { baseUrl: "http://gitea.test", project: "acme/fixture" },
+        9,
+        fetchImpl,
+      ),
+    ).toEqual(["1793310097358", "2692176", "d".repeat(32), "7654321", "1234567"]);
+  });
+
+  test("a close entry's commit is the only candidate", async () => {
+    const fetchImpl: FetchLike = async (input) => {
+      const path = new URL(input).pathname;
+      if (path.endsWith("/issues/11/timeline")) {
+        return Response.json([{ type: "close", ref_commit_sha: closed }]);
+      }
+      return Response.json({ message: `unexpected ${path}` });
+    };
+
+    expect(
+      await giteaClosingCommits(
+        { baseUrl: "http://gitea.test", project: "acme/fixture" },
+        11,
+        fetchImpl,
+      ),
+    ).toEqual([closed]);
   });
 
   test("falls back to comments only when no close entry carries a commit", async () => {

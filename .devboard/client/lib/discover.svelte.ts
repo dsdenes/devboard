@@ -121,8 +121,6 @@ export class DiscoverStore {
   startedAt = $state<string | null>(null);
   /** The active agent's lines, shown by the shared run tag. */
   activity = $state<string[]>([]);
-  /** Every agent's own lines; a card never shows another agent's. */
-  agentActivity = $state<Record<string, string[]>>({});
   question = $state<RunQuestion | null>(null);
   /** Every agent's own pending question. */
   agentQuestions = $state<Record<string, RunQuestion | null>>({});
@@ -132,8 +130,6 @@ export class DiscoverStore {
   promptProposal = $state<Record<string, DiscoverPromptProposal | null>>({});
   promptError = $state<Record<string, string | null>>({});
   promptChatError = $state<Record<string, string | null>>({});
-  /** A Reset click asks for a fresh read of the file into the editor. */
-  resetTokens = $state<Record<string, number>>({});
   error = $state<string | null>(null);
   warnings = $state<string[]>([]);
   interrupted = $state(false);
@@ -243,16 +239,8 @@ export class DiscoverStore {
     return this.promptStates[id] ?? this.agent(id)?.prompt ?? null;
   }
 
-  agentActivityOf(id: string): string[] {
-    return this.agentActivity[id] ?? [];
-  }
-
   agentQuestionOf(id: string): RunQuestion | null {
     return this.agentQuestions[id] ?? null;
-  }
-
-  resetToken(id: string): number {
-    return this.resetTokens[id] ?? 0;
   }
 
   /** The first reason this card cannot start, or undefined when it can. */
@@ -432,12 +420,6 @@ export class DiscoverStore {
   /** A chat proposal is applied once, then dropped so a remount never replays it. */
   consumeProposal(id: string): void {
     this.promptProposal[id] = null;
-  }
-
-  /** Restores the editor to the file's current bytes without writing. */
-  resetPrompt(id: string): void {
-    this.resetTokens[id] = (this.resetTokens[id] ?? 0) + 1;
-    this.socket.send({ type: "getDiscover" });
   }
 
   /** Sends exactly one `discoverRemote` for the trimmed URL. */
@@ -626,7 +608,6 @@ export class DiscoverStore {
       if (typeof message.runId === "string") this.runId = message.runId;
       this.startedAt = typeof message.startedAt === "string" ? message.startedAt : null;
       if (agent !== null) {
-        this.agentActivity[agent] = [];
         this.agentQuestions[agent] = null;
         this.agentPromptErrorClear(agent);
       }
@@ -638,15 +619,7 @@ export class DiscoverStore {
     }
     if (type === "discoverActivity" && typeof message.text === "string") {
       const agent = typeof message.agent === "string" ? message.agent : null;
-      if (agent !== null) {
-        const lines = appendLine(
-          this.agentActivity[agent] ?? [],
-          message.text,
-          message.append === true,
-        );
-        this.agentActivity[agent] = lines;
-        if (agent === this.activeAgent) this.activity = lines;
-      } else {
+      if (agent === null || agent === this.activeAgent) {
         this.activity = appendLine(this.activity, message.text, message.append === true);
       }
       return;

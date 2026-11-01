@@ -19,7 +19,7 @@
 | Active run panel | run id, start time, stop, activity | `.panel`, `Terminal`, `Button` | reuse (same markup, moved component) |
 | Question panel | run question and answer | `.panel`, `.choice-list`, `.answer-form`, `Button` | reuse unchanged |
 | Error / warning / interrupted banners | run state | `.message`, `.badge` | reuse untouched |
-| Glossary page | context cards, term table, term detail | `DiscoverWorkspace`, `DataTable`, `ConceptKind` | reuse; Kind first, no header row, fixed Kind/Term widths |
+| Glossary page | context cards, term table, term detail | `DiscoverWorkspace`, `DataTable` | reuse; Term first, no header row, fixed Term width |
 | Skill, term, warnings pages | other Discover pages | existing markup and CSS | reuse untouched |
 
 ## New modules

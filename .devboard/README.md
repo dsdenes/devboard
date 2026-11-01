@@ -188,12 +188,28 @@ context as a UI issue through `/api/feedback` at once, then replaces itself with
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context.
 
+The status bar's OS notifications control (`os-notifications`) is a separate channel, off by
+default. Its first click asks the browser for notification permission; after a grant it reads
+`OS notifications on`, after a denial or a blocked site it reads `OS notifications blocked`, and
+a dismissed prompt leaves it off. While it is on, the open dashboard raises one desktop
+notification per pending agent question in Goal, Discover, Flow, and Issues — a lifecycle lane,
+a manual run, goal creation, revision, skills preparation, a Discover agent, a Flow session,
+Flow goal creation, a Flow conversation, or an issues draft elaboration — carrying the dashboard's
+name, the asking surface's label, and the question itself. Repeated snapshots, polls, and
+reconnects never repeat a question, a question already pending at load raises one after the first
+state arrives, and answering one raises nothing. The notification is informational: clicking it
+navigates nowhere. The on choice is stored in the browser profile; permission is always read from
+the browser, and a denied or blocked site leaves the dashboard usable with its own question UI
+unchanged. No service worker, push subscription, server endpoint, or external notifier is
+involved, so with no page open nothing is raised.
+
 The 26px status bar is two groups. The left group states the WebSocket connection, the
 project's own name (the last path segment, with a folder mark and the full path in its tooltip),
 and the Providers control: the selected provider with its lowest remaining percentage, or
 `No provider`, whose tooltip names the provider's model and which opens the Providers dialog.
 The right group states the running lane count, the issues worker state with a state dot, the
-watchdog's last action and age, and the running and installed versions; each metric carries a
+watchdog's last action and age, the OS notifications control, and the running and installed
+versions; each metric carries a
 10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
 shows the existing reload control (`reload-devboard`), whose accessible name and title name both
 versions; reload behavior is unchanged. A mode states its status in its sidebar and workspace,
@@ -251,7 +267,8 @@ every agent write and eventually exhausts the dev server's heap.
   adrkit accepts are listed. Each record carries the first paragraph of its `Decision` section as
   a short summary.
 - State: the dashboard's server-owned state is written atomically to
-  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is `<harness>/.tmp`), so it
+  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is
+  `<REPO_DIR>/.devboard/.tmp`, the host prefix rather than the replaceable package tree), so it
   survives a backend restart without leaking between repositories that share one harness install.
   See [Durable state](#durable-state).
 
@@ -454,8 +471,9 @@ The dashboard keeps the state that drives the page in one file per host reposito
 it from a new process after a graceful stop, a launcher restart, or a `SIGKILL`. The file is
 `<stateDir>/state/<key>.json`, where `key` is the 24-hex SHA-256 prefix of the resolved
 `REPO_DIR` (the same key the journal uses) and `stateDir` is the harness state directory,
-`<harness>/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside the repository
-survives an implementation reset unchanged, and the reset records its path in the checkout's
+`<REPO_DIR>/.devboard/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside
+the repository survives an implementation reset unchanged, and the reset records its path in the
+checkout's
 `.git/info/exclude` so it is never staged or reported as untracked; a `STATE_DIR` equal to the
 repository root is refused because preserving the state would preserve the whole checkout. Two
 repositories that share one harness therefore never read or overwrite each other's lifecycle,
@@ -600,7 +618,7 @@ steering note telling the agent to abandon that change and implement another sol
 
 A session lives at `<stateDir>/flow/<24-hex journalKey(REPO_DIR)>/<session-id>/`, keyed exactly
 like the dashboard state, so repositories sharing one harness never see each other's sessions.
-`stateDir` is the harness state directory (`<harness>/.tmp` by default, overridable with
+`stateDir` is the harness state directory (`<REPO_DIR>/.devboard/.tmp` by default, overridable with
 `STATE_DIR`); `<session-id>` is an 8-hex id chosen when the session is created. The directory is
 never committed and never written into the host.
 
@@ -765,16 +783,14 @@ keeps no freshness group and no recent-notice list.
 
 ## Discovery agent cards
 
-One card per agent carries its command and staging argument
-(`data-testid="discover-agent-prompt-command"`, for example
-`/discover-sheet <staging-dir>`), its run state (`data-testid="discover-agent-status"` with
+One card per agent carries its run state (`data-testid="discover-agent-status"` with
 `data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
-while it runs, a Start control (`data-testid="discover-agent-start"`), its own activity log
-(`data-testid="discover-agent-activity"`), and its own pending question. An error the agent
-reported stays on its card (`data-testid="discover-agent-error"`). `discoverActivity`,
+while it runs, a Start control (`data-testid="discover-agent-start"`), and its own pending
+question. A card carries no activity log: the run tag shows the latest line for the agent that is
+running. An error the agent reported stays on its card (`data-testid="discover-agent-error"`).
 `discoverQuestion`, `discoverStarted`, and `discoverStopped` carry `agent`, so no card shows
-another agent's line or question.
+another agent's question.
 
 | Agent | `data-agent` | Command | Prompt file |
 |---|---|---|---|
@@ -795,13 +811,12 @@ When the dashboard serves a harness source checkout, every card renders an edito
 to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
 (`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
 `discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
-`discover-agent-prompt-save` and `discover-agent-prompt-reset`. One chat turn streams one visible
-reply; a turn that revises the prompt replaces the editor text with a complete replacement. Chat
-never writes a file and never starts an agent. Save writes exactly the editor's UTF-8 bytes to that
-one agent's prompt file and no other file, and the next trigger of that agent reads those bytes;
-Reset restores the editor to the current file bytes without writing. An installed host has no
-prompt view and renders no editor, chat, save, or reset; `saveDiscoverPrompt` and
-`chatDiscoverPrompt` are refused there with an error naming the harness source checkout.
+`discover-agent-prompt-save`. One chat turn streams one visible reply; a turn that revises the
+prompt replaces the editor text with a complete replacement. Chat never writes a file and never
+starts an agent. Save writes exactly the editor's UTF-8 bytes to that one agent's prompt file and
+no other file, and the next trigger of that agent reads those bytes. An installed host has no
+prompt view and renders no editor, chat, or save; `saveDiscoverPrompt` and `chatDiscoverPrompt`
+are refused there with an error naming the harness source checkout.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
@@ -809,10 +824,11 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 the full path stays in the tooltip), the discovery date, and the single
 filled run action, which runs all seven agents. Staleness is not repeated on the sheet: the activity
 bar and the status bar report it. While a run exists, the active agent's card carries a run tag
-above its activity: a status dot, the agent label and `run in progress`, the age, the latest
+in its header: a status dot, the agent label and `run in progress`, the age, the latest
 activity line, and Stop. A queued question region follows on that card while a question waits.
-The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
-Testing in the main column on the right, and Bounded contexts with External boundaries below them.
+The sheet follows: Platform, Delivery, Stack, External boundaries, and Shared kernels in the facts
+column on the left, and Commands, Testing, Quality gates, and Bounded contexts in the main column
+on the right.
 The manual-testing strip is the last region of the page, so a source checkout never pushes it above
 the project identity. An error, an interrupted-run notice, and a stop notice render above the page
 in one notice stack.
@@ -928,10 +944,10 @@ Overview page is a project sheet, not a card grid. A masthead
 the crawl recorded one, and the discovery date. The commit, the dirty flag, and the staleness flag
 stay in the sheet and the state payload but render no header badge. Below the masthead the sheet is
 one bounded two-column spine:
-`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates,
-Bounded contexts, and External boundaries in the main column on the right. Every section carries
-`data-testid="discover-card"` and `data-field`; the commands, testing, and quality-gate panels are
-raised surfaces and the remaining sections are flat, separated by hairlines. Below 1240px viewport
+`Platform`, `Delivery`, `Stack`, `External boundaries`, and `Shared kernels` in the facts column,
+and Commands, Testing, Quality gates, and Bounded contexts in the main column on the right. Every
+section is one panel widget carrying `data-testid="discover-card"` and `data-field`, with the same
+header, body, and chip, fact, or table content. Below 1240px viewport
 the columns collapse into one in reading order.
 Tables grow with the page; neither a panel nor a card shrinks below its rows, and none scrolls
 inside the page. Every non-`unknown` leaf
@@ -971,24 +987,25 @@ second level while its table holds none. Every listed level states an exact test
 table (`data-testid="discover-quality-gates"`): each row names a required CI gate, and the gates
 are not repeated among the Delivery facts. Runtime, deployment, CI, and branching use compact
 `dt`/`dd` facts whose list values are comma-separated.
-Architecture renders as separate cards. `Bounded contexts` shows context rows with the name,
-responsibility, and entry points, the dependency direction, and a rendered Mermaid dependency
-graph. `External boundaries` (`data-field="external-boundaries"`) and `Shared kernels`
-(`data-field="shared-kernels"`) are cards of their own whose banded rows match the context list:
-one band per external system (`data-testid="discover-external-boundaries"`) and one per kernel.
+Every section of the data sheet is one panel widget with the same header, body, and chip, fact,
+or table content. The facts column holds `Platform`, `Delivery` (deployment, CI, and branching
+facts), `Stack`, `External boundaries`, and `Shared kernels`; the main column holds `Commands`,
+`Testing`, `Quality gates`, and `Bounded contexts`.
+`Bounded contexts` shows context rows with the name, responsibility, and entry points, then the
+dependency direction as a fact. No dependency graph is drawn.
+`External boundaries` (`data-field="external-boundaries"`) and `Shared kernels`
+(`data-field="shared-kernels"`) are compact chip widgets: one chip per external system
+(`data-testid="discover-external-boundaries"`) and one per kernel.
 An external boundary leaf recorded `unknown` states its reason there, a missing leaf says no
-external boundary was recorded, and the observed empty list renders `None detected.` as the card's
-only line. The repository path of a bounded context is not rendered. The graph draws one node per
-bounded context and one arrow for every `architecture.dependencies` edge, pointing from the context
-that depends to the context it reaches; it is drawn with `flowchart LR`
-through Mermaid at render time, and a sheet without recorded edges draws no graph.
+external boundary was recorded, and the observed empty list renders `None detected.` as the
+widget's only line. The repository path of a bounded context is not rendered.
 External boundaries name only external systems — a remote API or service, a message broker, a
 database, or an identity provider the host integrates with across its own process and artifact.
 Language and runtime built-ins describe internal architecture, so `node:child_process`,
 `node:worker_threads`, and other concurrency primitives are never boundaries; a host that integrates
-with no external system shows `None detected.` in that card instead of an invented entry or
+with no external system shows `None detected.` in that widget instead of an invented entry or
 `unknown`.
-`Stack` renders one full-width chip band after the two columns; a chip whose package is installed
+`Stack` is a chip widget in the facts column; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip
 stays plain text. Stack chips and the Platform `languages` and `runtimes` facts name the
 technology without a version number, so a recorded `PostgreSQL 15` renders as `PostgreSQL` and a
@@ -1525,7 +1542,7 @@ and is retried the same way.
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
-|`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
+|`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
 |`DEVBOARD_COACH_SYNTHESIS_STUB`|unset|JSON file answering every Coach synthesis call; verification only, never a peer.|
@@ -1655,12 +1672,13 @@ queue.
 
 Browser-to-backend state and controls use the WebSocket from
 `adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
-`startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's `disableAgentTimer`; each
-carries `id`. The prompt surface adds `getAgentPrompt`, `saveAgentPrompt`, and
-`sendAgentPromptChat`, each carrying `id`. The server answers `agentsState` (all agents),
-`agentState` (one), and `agentPromptState` (one agent's prompt section), streams each
-activity-panel agent's activity as `agentActivity` with its agent id, streams one prompt chat as
-`agentPromptChat`, and refuses an unknown id with an error naming it before spawning anything.
+`refreshAgent`, `startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's
+`disableAgentTimer`; each carries `id`. The prompt surface adds `getAgentPrompt`,
+`saveAgentPrompt`, and `sendAgentPromptChat`, each carrying `id`. The server answers
+`agentsState` (all agents), `agentState` (one), and `agentPromptState` (one agent's prompt
+section), streams each activity-panel agent's activity as `agentActivity` with its agent id,
+streams one prompt chat as `agentPromptChat`, and refuses an unknown id with an error naming it
+before spawning anything.
 `scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
 `GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.
@@ -1865,6 +1883,9 @@ of journal and omp evidence, filing one issue per fingerprint, and commenting on
 already `filed:<url>` is never filed again. No cycle closes an issue. A fingerprint covers the
 category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
 omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
+omp's own thinking-loop notice — `Thinking loop detected; aborting stream for retry.` — is a
+recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
+provider-error record.
 
 ### Deduplication gate
 
@@ -2340,7 +2361,8 @@ The `goal` label keeps its goal-mode implementation contract: every goal-labeled
 `/implement-goal-issue <number>` concurrently with the rest. The command follows the origin's
 forge: GitHub reads and closes the issue through `gh` under the forge-auth wrapper, and Gitea
 reads it through the API (`GET /api/v1/repos/<owner/repo>/issues/<number>`) and closes it with an
-API `PATCH` through the same wrapper. A GitLab goal issue is refused with that reason.
+API `PATCH` after the wrapper's `check` confirms the write identity. A GitLab goal issue is
+refused with that reason.
 
 ### Per-agent state, lifecycle, and history
 
@@ -2618,9 +2640,9 @@ branch under `.worktree/`, activates the `goal` tool, and calls the `goal` creat
 the fetched issue body verbatim as the objective: no distillation, no section filtering, and no
 appended requirements. It then implements the body, verifies every criterion through the product
 surface, merges into `main` with conflict integration and retry, pushes `main` to origin, removes
-the worktree and branch, and closes the issue only after the push, through the same forge-auth
-wrapper. On Gitea it fetches the issue through the API and closes it with an API `PATCH`; GitHub
-keeps `gh issue view` and `gh issue close` under the wrapper.
+the worktree and branch, and closes the issue only after the push. On Gitea it fetches the issue
+through the API, resolves the close identity with the wrapper's `check`, and closes it with an API
+`PATCH`; GitHub keeps `gh issue view` and `gh issue close` under the wrapper's `exec`.
 
 Pause lets every active peer finish, then reports `paused` and starts no new peer or poll.
 Resume polls immediately. Stop closes every peer, records every active run as `stopped`, leaves
@@ -2634,7 +2656,9 @@ agent leaves the queue on the next poll.
 
 Auto Scout is the `scout` descriptor in the shared background-agent contract. The Devboard sidebar
 entry `open-devboard-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
-selecting, restoring, or reloading a tab starts nothing. The page shows the shared lifecycle,
+selecting, restoring, or reloading a tab starts no worker, scan, or lock. Opening the page asks
+an already attached worker for one fresh forge read instead of waiting for the next interval; a
+stopped worker is left stopped and receives no command. The page shows the shared lifecycle,
 last-read clock, cadence, limits, filed-issues table, and detail panel described above, plus
 `scout-activity` for the current or newest scan. The page also shows `agent-error` for the last
 error and `agent-sync-error` for a failed forge read.
@@ -2675,12 +2699,15 @@ activity, and consumes no cap slot.
 
 An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the commit that closed it — the timeline's closing commit when present, otherwise the last 7–40
-character hex SHA in the newest comment that contains one — to one unambiguous full commit through
-the checkout or GitHub. It then selects the earliest published GitHub Release tag whose history
-contains that commit, ordered by `publishedAt` and breaking ties by tag name. The row shows `—`
-when no commit resolves or no published release contains it, and a release published later fills a
-blank version on the next read.
+the commit that closed it — the timeline's closing commit when present, otherwise every 7–40
+character hex token of the newest comments, most recent first — to one unambiguous full commit
+through the checkout or GitHub. Each token is verified rather than trusted: comment prose carries
+fingerprints, process ids, and epoch stamps that look like a SHA, so a token that does not resolve
+is skipped and the next candidate is tried, up to twelve candidates per issue. The first commit
+that resolves and appears in a published release decides the version. It then selects the earliest
+published GitHub Release tag whose history contains that commit, ordered by `publishedAt` and
+breaking ties by tag name. The row shows `—` when no candidate resolves or no published release
+contains it, and a release published later fills a blank version on the next read.
 
 ### Periodic check
 
@@ -2694,12 +2721,15 @@ attempt records its time and, when it fails, the reason on the row; the rows tha
 longest are attempted first, and the whole resolution shares the read's deadline, so a stubborn
 issue cannot hold `syncing` and starve the remaining rows or the next scan. A failed
 read keeps the last known rows, shows the reason in `agent-sync-error`, and keeps the last success
-time in `agent-sync-at`; the reason clears on the next successful read. Filing stays blocked until
-a read succeeds. A GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse
-detection, or HTTP 429) is a failed read like any other: it keeps the rows and blocks filing, and
-its reason stays in the sync banner. Because the operator's credential is shared with every other
-process on the host and the limit clears itself, it never raises the dashboard-wide error
-notification.
+time in `agent-sync-at`; the reason clears on the next successful read. A failed read names the
+forge, never GitHub, so a Gitea failure never claims a GitHub read. Opening the page retries at
+once: each open asks the attached worker for a read, shared across clients inside a five-second
+window, so a recovery no longer waits out the 60-second interval; Start still reads immediately,
+and a stopped worker is never started by a page. Filing stays blocked until a read succeeds. A
+GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse detection, or HTTP
+429) is a failed read like any other: it keeps the rows and blocks filing, and its reason stays in
+the sync banner. Because the operator's credential is shared with every other process on the host
+and the limit clears itself, it never raises the dashboard-wide error notification.
 
 ## Report, remove, or redesign a UI element
 
@@ -2856,6 +2886,7 @@ The client sends:
 
 { "type": "getAgents" }
 { "type": "getAgent", "id": "scout" }
+{ "type": "refreshAgent", "id": "scout" }
 { "type": "startAgent", "id": "scout" }
 { "type": "stopAgent", "id": "scout" }
 { "type": "setAgentSettings", "id": "scout", "minutes": 1, "maxPerHour": 10, "maxPending": 5 }
@@ -2953,7 +2984,10 @@ The client sends:
 - `getAgents` answers `agentsState` with both shared snapshots, and `getAgent` answers
   `agentState` with one; a connect replays `agentsState` and Auto Scout's newest scan as
   `agentActivity` before any reply to the client's own commands. Every command carries `id`;
-  an unknown id is refused with an error naming it and spawns nothing. `startAgent` runs the
+  an unknown id is refused with an error naming it and spawns nothing. `refreshAgent` is the
+  page-open read: it asks an attached worker for one fresh forge read (Auto Scout shares one
+  request per five seconds across clients) and answers `agentState`; a stopped worker is left
+  stopped, takes no lock, and receives no command. `startAgent` runs the
   agent's preflight and spawns or attaches; `stopAgent` writes one stop command and persists
   `enabled: false`; `setAgentSettings` accepts `{ minutes, maxPerHour, maxPending }`, requires
   `minutes` from 1 through 1440 and each limit empty or 1–100, and writes `settings.json` once;

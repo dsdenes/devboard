@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { closingCommitFromComments, isSha } from "./commit";
+import { commitCandidatesFromComments, isSha } from "./commit";
 import {
   configuredGiteaToken,
   giteaBaseUrl,
@@ -610,10 +610,12 @@ export async function giteaCommentIssue(
 /**
  * The commit a Gitea timeline closed the issue with. Only a `close` entry
  * names it: `commit_ref`, review, reopen, comment, and every other entry can
- * carry a `commit_id` too, and accepting one reports the wrong shipped
- * version. The newest closing entry wins, because a reopened and re-closed
- * issue has several. A timeline without a closing entry yields null, never a
- * commit that another entry happens to carry.
+ * carry a commit reference too, and accepting one reports the wrong shipped
+ * version. Current Gitea records the reference as `ref_commit_sha`; older
+ * builds used `commit_id`, so both are read. The newest closing entry wins,
+ * because a reopened and re-closed issue has several. A timeline without a
+ * closing entry yields null, never a commit that another entry happens to
+ * carry.
  */
 export function closingCommitFromGiteaTimeline(timeline: unknown): string | null {
   if (!Array.isArray(timeline)) return null;
@@ -622,6 +624,7 @@ export function closingCommitFromGiteaTimeline(timeline: unknown): string | null
     if (typeof entry !== "object" || entry === null) continue;
     const record = entry as Record<string, unknown>;
     if (record.type !== "close") continue;
+    if (isSha(record.ref_commit_sha)) return record.ref_commit_sha;
     if (isSha(record.commit_id)) return record.commit_id;
   }
   return null;
@@ -671,22 +674,26 @@ async function giteaPagedEntries(
 }
 
 /**
- * The commit that closed a Gitea issue. The timeline's closing entry wins;
- * comments are the fallback only when no close entry carries a commit, and a
- * commit named by any other timeline entry is never used.
+ * Every candidate for the commit that closed a Gitea issue, newest first. A
+ * timeline closing entry is authoritative: when it names a commit the list
+ * holds only that commit, because a comment written before the closure must
+ * never outrank it. Without one, every hex token of the newest comment is a
+ * candidate, most recent first; a fingerprint, process id, or epoch stamp in
+ * prose looks like a SHA, so the reader verifies each candidate and reports
+ * the first real commit instead of giving up on the newest token.
  */
-export async function giteaClosingCommit(
+export async function giteaClosingCommits(
   target: GiteaTarget,
   number: number,
   fetchImpl: FetchLike = fetch,
-): Promise<string | null> {
+): Promise<string[]> {
   const timeline = await giteaPagedEntries(
     target,
     `${repoPath(target)}/issues/${number}/timeline`,
     fetchImpl,
   );
   const closing = closingCommitFromGiteaTimeline(timeline);
-  if (closing !== null) return closing;
+  if (closing !== null) return [closing];
   const comments = await giteaPagedEntries(
     target,
     `${repoPath(target)}/issues/${number}/comments`,
@@ -698,7 +705,16 @@ export async function giteaClosingCommit(
     const body = (entry as Record<string, unknown>).body;
     if (typeof body === "string") bodies.push(body);
   }
-  return closingCommitFromComments(bodies);
+  return commitCandidatesFromComments(bodies);
+}
+
+/** The newest candidate from `giteaClosingCommits`, or null. */
+export async function giteaClosingCommit(
+  target: GiteaTarget,
+  number: number,
+  fetchImpl: FetchLike = fetch,
+): Promise<string | null> {
+  return (await giteaClosingCommits(target, number, fetchImpl))[0] ?? null;
 }
 
 /** The trailing issue number of an issue URL, or undefined. */

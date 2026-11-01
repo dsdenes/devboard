@@ -2896,6 +2896,8 @@ try {
       strongOutline: boolean;
       topGap: number;
       bottomGap: number;
+      leftGap: number;
+      rightGap: number;
     }>;
     resolvedActions: string[];
   }>(`(() => {
@@ -2909,6 +2911,7 @@ try {
     const buttons = [...document.querySelectorAll('[data-testid="start"]')].map((button) => {
       const box = button.getBoundingClientRect();
       const row = button.closest("tr").getBoundingClientRect();
+      const cell = button.closest("td").getBoundingClientRect();
       const style = getComputedStyle(button);
       return {
         file: button.getAttribute("data-file") ?? "",
@@ -2923,6 +2926,8 @@ try {
         strongOutline: style.borderTopColor === rgb(borderStrong),
         topGap: box.top - row.top,
         bottomGap: row.bottom - box.bottom,
+        leftGap: box.left - cell.left,
+        rightGap: cell.right - box.right,
       };
     });
     return {
@@ -2947,6 +2952,11 @@ try {
         Math.abs(button.topGap - button.bottomGap) <= 1,
     ),
     "a Start control is not a centered 24px Button with a record-naming accessible name",
+    startControls,
+  );
+  check(
+    startControls.buttons.every((button) => Math.abs(button.leftGap - button.rightGap) <= 1),
+    "a Start control is not horizontally centered in the Action column",
     startControls,
   );
   const filledStarts = startControls.buttons.filter((button) => button.primaryFill);
@@ -3771,10 +3781,10 @@ try {
     contextRows: number;
     contextRoles: string[];
     sharedKernelTitle: string;
-    sharedKernelRows: number;
+    sharedKernelChips: number;
     sharedKernelTexts: string[];
     externalBoundaryTitle: string;
-    externalBoundaryRows: number;
+    externalBoundaryChips: number;
     externalBoundaryTexts: string[];
     stackedSections: number;
     staticText: number;
@@ -3854,16 +3864,16 @@ try {
       commandHeaders: document.querySelectorAll('[data-testid="discover-command-list"] thead').length,
       contextHeader: document.querySelector('#workspace-discover [data-field="architecture"] th')?.textContent?.trim() ?? "",
       contextRows: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context').length,
-      contextRoles: [...document.querySelectorAll('#workspace-discover .discover-boundary dt')]
+      contextRoles: [...document.querySelectorAll('#workspace-discover [data-field="architecture"] .discover-fact dt')]
         .map((term) => term.textContent.trim()),
       sharedKernelTitle: document.querySelector('#workspace-discover [data-field="shared-kernels"] .panel__title')?.textContent?.trim() ?? "",
-      sharedKernelRows: document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] .discover-context').length,
-      sharedKernelTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] .discover-context')]
-        .map((row) => row.textContent.replace(/\\s+/g, " ").trim()),
+      sharedKernelChips: document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] code.code-chip').length,
+      sharedKernelTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] code.code-chip')]
+        .map((chip) => chip.textContent.trim()),
       externalBoundaryTitle: document.querySelector('#workspace-discover [data-field="external-boundaries"] .panel__title')?.textContent?.trim() ?? "",
-      externalBoundaryRows: document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] .discover-context').length,
-      externalBoundaryTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] .discover-context')]
-        .map((row) => row.textContent.replace(/\\s+/g, " ").trim()),
+      externalBoundaryChips: document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] code.code-chip').length,
+      externalBoundaryTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] code.code-chip')]
+        .map((chip) => chip.textContent.trim()),
       stackedSections: document.querySelectorAll('#workspace-discover [data-field="unknowns"], #workspace-discover [data-field="dependencyMap"]').length,
       staticText: document.querySelectorAll('#workspace-discover [data-tab="overview"] .discover-lead, #workspace-discover [data-tab="overview"] .discover-note').length,
       sidebarTitle: document.querySelector('[data-testid="sidebar"] .sidebar__title')?.textContent?.trim() ?? "",
@@ -3877,204 +3887,8 @@ try {
     };
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-dependency-diagram"] svg') !== null`,
-    "the dependency diagram",
-  );
-  const dependencyDiagram = await page.eval<{
-    nodes: number;
-    edges: number;
-    text: string;
-    labelSize: number;
-    radius: string;
-    legend: string;
-    controlVisible: boolean;
-    controlLabel: string;
-    canvasPresent: boolean;
-    canvasOverflow: string;
-    svgWidth: number;
-    svgNaturalWidth: number;
-    canvasWidth: number;
-    scrolls: boolean;
-  }>(`(() => {
-    const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    const control = document.querySelector('[data-testid="discover-dependency-size"]');
-    const svg = root?.querySelector('svg');
-    const label = root?.querySelector('.nodeLabel p');
-    const node = root?.querySelector('g.node rect');
-    return {
-      nodes: root === null ? 0 : root.querySelectorAll('g.node').length,
-      edges: root === null ? 0 : root.querySelectorAll('path.flowchart-link, g.edgePath').length,
-      text: root?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
-      labelSize: label === null || label === undefined ? 0 : Number.parseFloat(getComputedStyle(label).fontSize),
-      radius: node === null || node === undefined ? "" : getComputedStyle(node).rx,
-      legend: document.querySelector('.discover-diagram__legend')?.textContent?.trim() ?? "",
-      controlVisible: control !== null,
-      controlLabel: control?.textContent?.trim() ?? "",
-      canvasPresent: canvas !== null,
-      canvasOverflow: canvas === null ? "" : getComputedStyle(canvas).overflow,
-      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-      svgNaturalWidth: svg?.viewBox?.baseVal?.width ?? 0,
-      canvasWidth: canvas?.clientWidth ?? 0,
-      scrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
-    };
-  })()`);
-  check(dependencyDiagram.nodes >= 2, "the dependency diagram does not draw every bounded context", dependencyDiagram);
-  check(dependencyDiagram.edges >= 1, "the dependency diagram draws no recorded edge", dependencyDiagram);
-  check(
-    dependencyDiagram.text.includes("Checkout") && dependencyDiagram.text.includes("Orders"),
-    "the dependency diagram does not label its contexts",
-    dependencyDiagram,
-  );
-  check(dependencyDiagram.labelSize >= 12, "the dependency diagram labels render below 12px", dependencyDiagram);
-  check(dependencyDiagram.radius === "4px", "the dependency diagram nodes are not on the design radius", dependencyDiagram);
-  check(
-    dependencyDiagram.legend === "Arrows point from a context to the context it uses.",
-    "the dependency diagram does not explain its arrows",
-    dependencyDiagram,
-  );
-  check(
-    dependencyDiagram.canvasPresent && dependencyDiagram.canvasOverflow === "auto",
-    "the dependency diagram is not inside a scrolling canvas",
-    dependencyDiagram,
-  );
-  check(
-    !dependencyDiagram.controlVisible &&
-      dependencyDiagram.svgWidth > 0 &&
-      dependencyDiagram.svgWidth <= dependencyDiagram.canvasWidth + 1 &&
-      !dependencyDiagram.scrolls,
-    "a dependency diagram that fits readably offers a size control or scrolls",
-    dependencyDiagram,
-  );
-
-  // Narrow the real canvas to put the two-context graph below the readable
-  // floor: the graph must open at actual size with one 24px Fit width control.
-  await page.eval(`(() => {
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    if (canvas === null) return false;
-    canvas.style.width = '160px';
-    canvas.style.maxWidth = '160px';
-    return true;
-  })()`);
-  await page.wait(
-    `document.querySelector('[data-testid="discover-dependency-size"]') !== null`,
-    "the dependency diagram size control at a narrow canvas",
-  );
-  const narrowDependencyDiagram = await page.eval<{
-    controlLabel: string;
-    controlHeight: number;
-    canvasWidth: number;
-    canvasScrolls: boolean;
-    canvasFocusable: boolean;
-    svgWidth: number;
-    naturalWidth: number;
-    labelSize: number;
-  }>(`(() => {
-    const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    const control = document.querySelector('[data-testid="discover-dependency-size"]');
-    const svg = root?.querySelector('svg');
-    const label = root?.querySelector('.nodeLabel p');
-    return {
-      controlLabel: control?.textContent?.trim() ?? "",
-      controlHeight: control === null ? 0 : control.getBoundingClientRect().height,
-      canvasWidth: canvas?.clientWidth ?? 0,
-      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
-      canvasFocusable: canvas?.tabIndex === 0,
-      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-      naturalWidth: svg?.viewBox?.baseVal?.width ?? 0,
-      labelSize: label === null || label === undefined ? 0 : Number.parseFloat(getComputedStyle(label).fontSize),
-    };
-  })()`);
-  check(
-    narrowDependencyDiagram.controlLabel === "Fit width" && Math.round(narrowDependencyDiagram.controlHeight) === 24,
-    "a graph below the readable floor does not carry one 24px Fit width control",
-    narrowDependencyDiagram,
-  );
-  check(
-    narrowDependencyDiagram.naturalWidth > 0 &&
-      narrowDependencyDiagram.svgWidth >= narrowDependencyDiagram.naturalWidth - 1 &&
-      narrowDependencyDiagram.svgWidth > narrowDependencyDiagram.canvasWidth + 1 &&
-      narrowDependencyDiagram.canvasScrolls &&
-      narrowDependencyDiagram.canvasFocusable,
-    "the wide dependency diagram is not drawn at actual size in a scrolling canvas",
-    narrowDependencyDiagram,
-  );
-  check(
-    narrowDependencyDiagram.labelSize >= 12,
-    "the dependency diagram labels render below 12px at actual size",
-    narrowDependencyDiagram,
-  );
-  await page.eval(`(() => {
-    const control = document.querySelector('[data-testid="discover-dependency-size"]');
-    if (control === null) return false;
-    control.click();
-    return true;
-  })()`);
-  await page.wait(
-    `document.querySelector('[data-testid="discover-dependency-size"]')?.textContent?.trim() === "Actual size"`,
-    "the dependency diagram Actual size control after fitting",
-  );
-  const fittedDependencyDiagram = await page.eval<{
-    controlLabel: string;
-    canvasWidth: number;
-    canvasScrolls: boolean;
-    canvasFocusable: boolean;
-    svgWidth: number;
-  }>(`(() => {
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    const control = document.querySelector('[data-testid="discover-dependency-size"]');
-    const svg = document.querySelector('[data-testid="discover-dependency-diagram"] svg');
-    return {
-      controlLabel: control?.textContent?.trim() ?? "",
-      canvasWidth: canvas?.clientWidth ?? 0,
-      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
-      canvasFocusable: canvas?.tabIndex === 0,
-      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-    };
-  })()`);
-  check(
-    fittedDependencyDiagram.controlLabel === "Actual size" &&
-      fittedDependencyDiagram.svgWidth > 0 &&
-      fittedDependencyDiagram.svgWidth <= fittedDependencyDiagram.canvasWidth + 1 &&
-      !fittedDependencyDiagram.canvasScrolls &&
-      !fittedDependencyDiagram.canvasFocusable,
-    "the fitted dependency diagram does not fill its canvas without scrolling",
-    fittedDependencyDiagram,
-  );
-  await page.eval(`(() => {
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    if (canvas === null) return false;
-    canvas.style.width = '';
-    canvas.style.maxWidth = '';
-    return true;
-  })()`);
-  await page.wait(
-    `document.querySelector('[data-testid="discover-dependency-size"]') === null`,
-    "the dependency diagram without a size control at full width",
-  );
-  const restoredDependencyDiagram = await page.eval<{
-    controlVisible: boolean;
-    canvasWidth: number;
-    canvasScrolls: boolean;
-    svgWidth: number;
-  }>(`(() => {
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    const svg = document.querySelector('[data-testid="discover-dependency-diagram"] svg');
-    return {
-      controlVisible: document.querySelector('[data-testid="discover-dependency-size"]') !== null,
-      canvasWidth: canvas?.clientWidth ?? 0,
-      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
-      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-    };
-  })()`);
-  check(
-    !restoredDependencyDiagram.controlVisible &&
-      restoredDependencyDiagram.svgWidth > 0 &&
-      restoredDependencyDiagram.svgWidth <= restoredDependencyDiagram.canvasWidth + 1 &&
-      !restoredDependencyDiagram.canvasScrolls,
-    "the fitted dependency diagram does not return to its full-width canvas",
-    restoredDependencyDiagram,
+    `document.querySelector('[data-testid="discover-shared-kernels"] code.code-chip') !== null`,
+    "the shared kernel chips",
   );
   check(discoverTables.cards >= 5, "Discover sections are missing from the overview", discoverTables);
   check(discoverTables.commands > 0, "the Discover command table is empty", discoverTables);
@@ -4145,7 +3959,7 @@ try {
   check(discoverTables.contextRoles.includes("Dependency direction"), "the boundary map does not label the dependency direction", discoverTables.contextRoles);
   check(discoverTables.externalBoundaryTitle === "External boundaries", "external boundaries is not a separate Discover widget", discoverTables.externalBoundaryTitle);
   check(!discoverTables.contextRoles.includes("External boundaries"), "the boundary map still lists external boundaries", discoverTables.contextRoles);
-  check(discoverTables.externalBoundaryRows === 2, "the External boundaries widget does not render one band per system", discoverTables.externalBoundaryRows);
+  check(discoverTables.externalBoundaryChips === 2, "the External boundaries widget does not render one chip per system", discoverTables.externalBoundaryChips);
   check(
     JSON.stringify(discoverTables.externalBoundaryTexts) ===
       JSON.stringify(["PostgreSQL", "api.stripe.com"]),
@@ -4155,7 +3969,7 @@ try {
   check(!(discoverTables.externalBoundaryTexts.join("")).includes("node:"), "the External boundaries block names a runtime built-in", discoverTables.externalBoundaryTexts);
   check(discoverTables.sharedKernelTitle === "Shared kernels", "shared kernels is not a separate Discover widget", discoverTables.sharedKernelTitle);
   check(!discoverTables.contextRoles.includes("Shared kernels"), "the boundary map still lists shared kernels", discoverTables.contextRoles);
-  check(discoverTables.sharedKernelRows === 1, "the Shared kernels widget does not render one band per kernel", discoverTables.sharedKernelRows);
+  check(discoverTables.sharedKernelChips === 1, "the Shared kernels widget does not render one chip per kernel", discoverTables.sharedKernelChips);
   check(
     JSON.stringify(discoverTables.sharedKernelTexts) === JSON.stringify(["src/shared"]),
     "the Shared kernels widget does not render the recorded kernel",
@@ -4273,6 +4087,54 @@ try {
   await page.wait(
     `document.querySelectorAll('[data-testid="discover-command-list"] tbody tr').length === ${collapsedCommands}`,
     "the command list to collapse",
+  );
+
+  // An agent page is a workspace, not a sheet: it takes the window's full
+  // height, and the prompt editor absorbs what the header, activity, and chat
+  // leave, so the lower half of the window is never empty.
+  const agentTab = '[data-testid="discover-agent-tab"]';
+  await page.click(agentTab);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agent-prompt-editor"]') !== null`,
+    "the Discover agent prompt editor",
+  );
+  const agentFill = await page.eval<{
+    pageScroll: number;
+    pageClient: number;
+    contentGap: number;
+    editorHeight: number;
+  }>(`(() => {
+    const page = document.querySelector('#workspace-discover .discover-agent');
+    const prompt = page.querySelector('.discover-agent__prompt');
+    const editor = page.querySelector('[data-testid="discover-agent-prompt-editor"]');
+    const contentBottom = page.getBoundingClientRect().bottom -
+      parseFloat(getComputedStyle(page).paddingBottom);
+    return {
+      pageScroll: page.scrollHeight,
+      pageClient: page.clientHeight,
+      contentGap: Math.round(contentBottom - prompt.getBoundingClientRect().bottom),
+      editorHeight: Math.round(editor.getBoundingClientRect().height),
+    };
+  })()`);
+  check(
+    agentFill.pageScroll <= agentFill.pageClient + 1,
+    "the agent page overflows the window at its supported size",
+    agentFill,
+  );
+  check(
+    Math.abs(agentFill.contentGap) <= 1,
+    "the agent page leaves the lower part of the window empty",
+    agentFill,
+  );
+  check(
+    agentFill.editorHeight > 220,
+    "the prompt editor does not take the height the agent page leaves",
+    agentFill,
+  );
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null`,
+    "the Discover overview after the agent page check",
   );
 
   // The fixture sheet fits at 1440×900; prove the page owns its scrolling and
@@ -4428,10 +4290,6 @@ try {
     slider: { min: string; max: string; value: string; disabled: boolean } | null;
     toggle: { checked: boolean; disabled: boolean } | null;
     menu: boolean;
-    kindIcons: number;
-    kindWords: string[];
-    kindColors: string[];
-    mutedKind: string;
     tableScrolls: number[];
     clippedCards: number;
     rowsOutside: number;
@@ -4440,21 +4298,15 @@ try {
     filterRows: number[];
   }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
-    const kindCells = rows.map((row) => row.querySelector('td:nth-child(1)'));
-    const termCells = rows.map((row) => row.querySelector('td:nth-child(2)'));
-    const significanceCells = rows.map((row) => row.querySelector('td:nth-child(3)'));
-    const exampleCells = rows.map((row) => row.querySelector('td:nth-child(5)'));
+    const termCells = rows.map((row) => row.querySelector('td:nth-child(1)'));
+    const significanceCells = rows.map((row) => row.querySelector('td:nth-child(2)'));
+    const exampleCells = rows.map((row) => row.querySelector('td:nth-child(4)'));
     const wraps = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] .table-wrap')];
     const cards = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"]')];
     const search = document.querySelector('[data-testid="discover-glossary-search"]');
     const searchStyle = search === null ? null : getComputedStyle(search);
     const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
     const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
-    const probe = document.createElement('span');
-    probe.style.color = 'var(--muted-foreground)';
-    document.body.append(probe);
-    const mutedKind = getComputedStyle(probe).color;
-    probe.remove();
     return {
       contexts: document.querySelectorAll('#workspace-discover [data-testid="discover-context"]').length,
       terms: rows.length,
@@ -4470,13 +4322,6 @@ try {
       slider: slider === null ? null : { min: slider.min, max: slider.max, value: slider.value, disabled: slider.disabled },
       toggle: toggle === null ? null : { checked: toggle.checked, disabled: toggle.disabled },
       menu: document.querySelector('[data-testid="discover-glossary-menu"]') !== null,
-      kindIcons: kindCells.filter((cell) => cell?.querySelector('.discover-kind svg') !== null).length,
-      kindWords: kindCells.map((cell) => cell?.querySelector('.discover-kind')?.textContent?.trim() ?? ""),
-      mutedKind,
-      kindColors: [...new Set(kindCells
-        .map((cell) => cell?.querySelector('.discover-kind'))
-        .filter((kind) => kind !== null)
-        .map((kind) => getComputedStyle(kind).color))],
       tableScrolls: wraps.map((wrap) => wrap.scrollHeight - wrap.clientHeight),
       clippedCards: cards.filter((card) => card.scrollHeight > card.clientHeight + 1).length,
       rowsOutside: rows.filter((row) => {
@@ -4502,7 +4347,7 @@ try {
   check(glossary.contexts > 0 && glossary.terms > 0, "the glossary tables are empty", glossary);
   check(glossary.heights.every((height) => height > 0 && height <= 120), "a glossary row is mis-sized", glossary.heights);
   check(
-    glossary.headers.join("|") === "Kind|Term|Significance|Definition|",
+    glossary.headers.join("|") === "Term|Significance|Definition|",
     "the glossary table does not carry the significance and unnamed example columns",
     glossary.headers,
   );
@@ -4540,17 +4385,6 @@ try {
     glossary.ids,
   );
   check(!glossary.menu, "the glossary sidebar still has a disclosure menu", glossary);
-  check(glossary.kindIcons === glossary.terms, "a glossary kind is not the first cell", glossary.kindIcons);
-  check(
-    glossary.kindWords.every((word) => word.length > 0),
-    "a glossary kind row has no visible kind word",
-    glossary.kindWords,
-  );
-  check(
-    glossary.kindColors.length === 1 && glossary.kindColors[0] === glossary.mutedKind,
-    "a glossary kind carries a state color instead of muted foreground",
-    { kindColors: glossary.kindColors, mutedKind: glossary.mutedKind },
-  );
   check(glossary.tableScrolls.every((delta) => delta <= 1), "a glossary table clips its rows", glossary.tableScrolls);
   check(glossary.clippedCards === 0, "a glossary card clips its rows", glossary.clippedCards);
   check(glossary.rowsOutside === 0, "a glossary term falls outside its card", glossary.rowsOutside);
@@ -4650,7 +4484,7 @@ try {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
     const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
     return {
-      significance: rows.map((row) => row.querySelector("td:nth-child(3)")?.textContent?.trim() ?? ""),
+      significance: rows.map((row) => row.querySelector("td:nth-child(2)")?.textContent?.trim() ?? ""),
       attrs: rows.map((row) => row.getAttribute("data-significance") ?? "missing"),
       toggle: toggle === null ? null : { checked: toggle.checked, disabled: toggle.disabled },
       sliderDisabled: document.querySelector('[data-testid="discover-glossary-threshold"]').disabled,
@@ -4693,7 +4527,7 @@ try {
     "a glossary row is still an interactive term page",
     glossaryActivation,
   );
-  await page.click('#workspace-discover [data-testid="discover-term"] td:nth-child(2)');
+  await page.click('#workspace-discover [data-testid="discover-term"] td:nth-child(1)');
   await delay(100);
   const stillGlossary = await page.eval<boolean>(
     `document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="glossary"]') !== null`,
@@ -4710,19 +4544,32 @@ try {
   await delay(150);
   const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
   check(skillDirty, "the skill editor does not mark unsaved changes");
-  const dirtyHeader = await page.eval<{ enabled: boolean; state: string; primary: boolean }>(`(() => {
+  const dirtyHeader = await page.eval<{
+    enabled: boolean;
+    state: string;
+    primary: boolean;
+    dot: string;
+    warning: string;
+  }>(`(() => {
     const button = document.querySelector('[data-testid="discover-skill-save"]');
+    const header = button?.closest('.discover-skill__header');
+    const dot = header?.querySelector('.discover-skill__state-dot');
+    const probe = document.createElement("div");
+    probe.style.background = "var(--warning)";
+    document.body.append(probe);
+    const warning = getComputedStyle(probe).backgroundColor;
+    probe.remove();
     return {
       enabled: button !== null && !button.disabled,
-      state: button
-        ?.closest('.discover-skill__header')
-        ?.querySelector('[data-testid="discover-skill-dirty"]')
-        ?.textContent?.trim() ?? "",
+      state: header?.querySelector('[data-testid="discover-skill-dirty"]')?.textContent?.trim() ?? "",
       primary: button?.classList.contains("bg-[var(--primary)]") ?? false,
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      warning,
     };
   })()`);
   check(
-    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary,
+    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary &&
+      dirtyHeader.dot === dirtyHeader.warning,
     "the skill header does not promote Save to the filled primary for an unsaved draft",
     dirtyHeader,
   );
@@ -4816,22 +4663,33 @@ try {
     saveSecondary: boolean;
     restorePrimary: boolean;
     restore: string;
+    dot: string;
+    error: string;
   }>(`(() => {
     const header = document.querySelector('.discover-skill__header');
     const save = header?.querySelector('[data-testid="discover-skill-save"]');
     const restore = header?.querySelector('[data-testid="discover-skill-restore"]');
+    const dot = header?.querySelector('.discover-skill__state-dot');
+    const probe = document.createElement("div");
+    probe.style.background = "var(--error)";
+    document.body.append(probe);
+    const error = getComputedStyle(probe).backgroundColor;
+    probe.remove();
     return {
       state: header?.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
       saveDisabled: save === null || save.disabled,
       saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
       restorePrimary: restore?.classList.contains("bg-[var(--primary)]") ?? false,
       restore: restore?.textContent?.trim() ?? "",
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      error,
     };
   })()`);
   check(
     missingHeader.state === "Live file missing" && missingHeader.saveDisabled &&
       missingHeader.saveSecondary && missingHeader.restorePrimary &&
-      missingHeader.restore === "Recreate generated version",
+      missingHeader.restore === "Recreate generated version" &&
+      missingHeader.dot === missingHeader.error,
     "the missing skill header does not give the recovery control the only primary",
     missingHeader,
   );
@@ -4901,6 +4759,12 @@ try {
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
+    headerSurface: string;
+    raised: string;
+    dotWidth: number;
+    dotHeight: number;
+    dot: string;
+    success: string;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
@@ -4909,10 +4773,20 @@ try {
     const identity = header?.querySelector('.discover-skill__identity');
     const actions = header?.querySelector('.discover-skill__actions');
     const save = document.querySelector('[data-testid="discover-skill-save"]');
+    const dot = header?.querySelector('.discover-skill__state-dot');
     const center = (element) => {
       const box = element?.getBoundingClientRect();
       return box === undefined ? 0 : box.top + box.height / 2;
     };
+    const token = (name) => {
+      const probe = document.createElement("div");
+      probe.style.background = \`var(\${name})\`;
+      document.body.append(probe);
+      const value = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return value;
+    };
+    const dotBox = dot?.getBoundingClientRect();
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
@@ -4931,6 +4805,12 @@ try {
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
+      headerSurface: header === null ? "" : getComputedStyle(header).backgroundColor,
+      raised: token("--surface-raised"),
+      dotWidth: dotBox === undefined ? 0 : Math.round(dotBox.width),
+      dotHeight: dotBox === undefined ? 0 : Math.round(dotBox.height),
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      success: token("--success"),
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
@@ -4947,8 +4827,14 @@ try {
     skillLayout,
   );
   check(
-    skillLayout.header === 30 && skillLayout.inline,
-    "the skill header is not one 30px row with the state and actions",
+    skillLayout.header === 34 && skillLayout.inline,
+    "the skill header is not one 34px row with the state and actions",
+    skillLayout,
+  );
+  check(
+    skillLayout.headerSurface === skillLayout.raised && skillLayout.dotWidth === 6 &&
+      skillLayout.dotHeight === 6 && skillLayout.dot === skillLayout.success,
+    "the skill header is not a surface-raised band with a success state dot",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);

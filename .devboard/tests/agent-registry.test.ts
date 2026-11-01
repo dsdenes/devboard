@@ -90,16 +90,22 @@ function snapshotInput(descriptor: AgentDescriptor): AgentSnapshotInput {
   };
 }
 
-function fakeAdapter(descriptor: AgentDescriptor): AgentAdapter & { starts: number; stops: number } {
+function fakeAdapter(
+  descriptor: AgentDescriptor,
+): AgentAdapter & { starts: number; stops: number; syncs: number } {
   let snapshot = snapshotInput(descriptor);
   return {
     descriptor,
     starts: 0,
     stops: 0,
+    syncs: 0,
     begin() {},
     dispose() {},
     snapshot: () => snapshot,
     replay() {},
+    requestSync() {
+      this.syncs += 1;
+    },
     async start(): Promise<AgentCommandResult> {
       this.starts += 1;
       snapshot = { ...snapshot, lifecycle: "running" };
@@ -266,6 +272,23 @@ describe("background agent registry", () => {
     ]);
     await bridge.handle(target, { type: "startAgent", id: "patrol" });
     expect(patrol.starts).toBe(1);
+    bridge.dispose();
+  });
+
+  test("an opened page refreshes the agent it names, without starting it", async () => {
+    const descriptor = syntheticDescriptor();
+    const scout = fakeAdapter(descriptor);
+    const events: Array<Record<string, unknown>> = [];
+    const bridge = new BackgroundAgentBridge({
+      registry: defineAgentRegistry([descriptor]),
+      adapters: [scout],
+      broadcast: () => undefined,
+    });
+    const target = { send: (data: string) => events.push(JSON.parse(data)) };
+    await bridge.handle(target, { type: "refreshAgent", id: "patrol" });
+    expect(scout.syncs).toBe(1);
+    expect(scout.starts).toBe(0);
+    expect(events.map((event) => event.type)).toEqual(["agentState"]);
     bridge.dispose();
   });
 

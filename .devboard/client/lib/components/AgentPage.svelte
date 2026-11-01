@@ -39,6 +39,14 @@
       (snapshot?.detail.panel === "activity" ? snapshot.detail.scanId : null),
   );
 
+  // Opening this page asks for one fresh read instead of waiting for the next
+  // cadence. The tracked connection state sends it if the socket was still
+  // connecting when the page mounted; it never starts a worker or a scan.
+  $effect(() => {
+    if (descriptor === undefined) return;
+    agents.refresh(agentId);
+  });
+
   let cadenceText = $state("");
   let maxPerHourText = $state("");
   let maxPendingText = $state("");

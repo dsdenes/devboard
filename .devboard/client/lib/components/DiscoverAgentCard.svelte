@@ -14,12 +14,10 @@
 
   const descriptor = $derived(discoverAgent(agent));
   const descriptorLabel = $derived(descriptor?.label ?? agent);
-  const descriptorCommand = $derived(descriptor?.command ?? "");
   const card = $derived(discover.agent(agent));
   const prompt = $derived(discover.agentPrompt(agent));
   const editable = $derived(prompt?.editable === true);
   const running = $derived(discover.active && discover.activeAgent === agent);
-  const activity = $derived(discover.agentActivityOf(agent));
   const question = $derived(discover.agentQuestionOf(agent));
   const chat = $derived(discover.promptChat[agent] ?? []);
   const proposal = $derived(discover.promptProposal[agent] ?? null);
@@ -53,15 +51,6 @@
     discover.consumeProposal(agent);
   });
 
-  // Reset restores the editor to the file's current bytes and writes nothing.
-  $effect(() => {
-    const token = discover.resetToken(agent);
-    if (token === 0) return;
-    const text = prompt?.text ?? "";
-    editor = text;
-    lastText = text;
-  });
-
   $effect(() => {
     const timer = setInterval(() => (now = Date.now()), 15_000);
     return () => clearInterval(timer);
@@ -86,10 +75,6 @@
     <header class="discover-page__header discover-agent__header">
       <div class="discover-page__heading">
         <h1 class="discover-page__title">{descriptorLabel}</h1>
-        <code
-          class="code-chip"
-          data-testid="discover-agent-prompt-command"
-        >{descriptorCommand} &lt;staging-dir&gt;</code>
       </div>
       <div class="discover-agent__actions">
         <span
@@ -180,26 +165,6 @@
       </section>
     {/if}
 
-    <section class="panel discover-agent__activity" aria-label="Agent activity">
-      <div class="panel__header">
-        <h2 class="panel__title">Activity</h2>
-      </div>
-      <div
-        class="panel__body discover-agent__activity-log"
-        data-testid="discover-agent-activity"
-        role="log"
-        aria-live="polite"
-      >
-        {#if activity.length === 0}
-          <p class="empty">No activity yet. Start the agent to see its lines here.</p>
-        {:else}
-          {#each activity as line, index (index)}
-            <div class="discover-agent__activity-line">{line}</div>
-          {/each}
-        {/if}
-      </div>
-    </section>
-
     <section class="panel discover-agent__prompt" aria-label="Agent prompt">
       <div class="panel__header">
         <h2 class="panel__title">Prompt</h2>
@@ -231,14 +196,6 @@
                 onclick={() => discover.savePrompt(agent, editor)}
               >
                 Save prompt
-              </Button>
-              <Button
-                variant="outline"
-                data-testid="discover-agent-prompt-reset"
-                title="Restore the editor to this prompt file's bytes without writing."
-                onclick={() => discover.resetPrompt(agent)}
-              >
-                Reset
               </Button>
               <SaveFeedback scope={`discover.prompt.${agent}`} />
             </div>

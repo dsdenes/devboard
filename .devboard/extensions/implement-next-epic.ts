@@ -577,13 +577,15 @@ function shellArgument(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** The exact wrapper every tracker command in the lane prompt must use. */
+/**
+ * The exact wrapper every tracker command in the lane prompt must use. `exec`
+ * runs `gh`/`glab` with the selected token; a Gitea origin resolves the
+ * identity with `check` instead, because `forge-auth` refuses to `exec` a
+ * Gitea write and its API call reads the ambient token itself.
+ */
 export function forgeAuthCommand(repo: string, info: RemoteInfo): string {
   const script = resolve(repo, ".devboard", "scripts", "forge-auth.ts");
-  return [
-    "bun",
-    shellArgument(script),
-    "exec",
+  const target = [
     "--host",
     shellArgument(info.host),
     "--project",
@@ -592,8 +594,10 @@ export function forgeAuthCommand(repo: string, info: RemoteInfo): string {
     info.forge,
     "--required",
     "write",
-    "--",
-  ].join(" ");
+  ];
+  return info.forge === "gitea"
+    ? ["bun", shellArgument(script), "check", ...target].join(" ")
+    : ["bun", shellArgument(script), "exec", ...target, "--"].join(" ");
 }
 
 export function buildGoalPrompt(
@@ -611,7 +615,7 @@ export function buildGoalPrompt(
       ? `${authCommand} gh issue close ${epic.ref}`
       : forge === "gitlab"
         ? `${authCommand} glab issue close ${epic.ref}`
-        : `${authCommand} curl -sS -X PATCH -H "Authorization: token $GITEA_TOKEN" ` +
+        : `${authCommand} && curl -sS -X PATCH -H "Authorization: token $GITEA_TOKEN" ` +
           `-H "Content-Type: application/json" -d '{"state":"closed"}' ` +
           `"$DEVBOARD_GITEA_URL/api/v1/repos/${project}/issues/${epic.ref}"`;
   return `Implement the next epic from the tracker. This run is fully autonomous.
@@ -653,7 +657,7 @@ After the goal tool succeeds, implement the epic end to end:
   and retry. Never force-push. After the merge succeeds, push main to origin and remove the
   worktree and branch, per AGENTS.md. If the push is rejected, fetch and integrate the new main
   and push again.
-- Never call \`gh\` or \`glab\` directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token:
+- Never call \`gh\`, \`glab\`, or the Gitea API directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token; on Gitea, resolve the identity with \`check\` and call the API with \`GITEA_TOKEN\`:
   \`${closeCommand}\`
 - When complete, close the epic issue ${epic.ref} in ${repo} with \`${closeCommand}\`. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
 - If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once on a line beginning \`DEVBOARD-BLOCKED:\`. Do not ask for permission or guidance.`;
