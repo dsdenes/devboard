@@ -188,12 +188,28 @@ context as a UI issue through `/api/feedback` at once, then replaces itself with
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context.
 
+The status bar's OS notifications control (`os-notifications`) is a separate channel, off by
+default. Its first click asks the browser for notification permission; after a grant it reads
+`OS notifications on`, after a denial or a blocked site it reads `OS notifications blocked`, and
+a dismissed prompt leaves it off. While it is on, the open dashboard raises one desktop
+notification per pending agent question in Goal, Discover, Flow, and Issues — a lifecycle lane,
+a manual run, goal creation, revision, skills preparation, a Discover agent, a Flow session,
+Flow goal creation, a Flow conversation, or an issues draft elaboration — carrying the dashboard's
+name, the asking surface's label, and the question itself. Repeated snapshots, polls, and
+reconnects never repeat a question, a question already pending at load raises one after the first
+state arrives, and answering one raises nothing. The notification is informational: clicking it
+navigates nowhere. The on choice is stored in the browser profile; permission is always read from
+the browser, and a denied or blocked site leaves the dashboard usable with its own question UI
+unchanged. No service worker, push subscription, server endpoint, or external notifier is
+involved, so with no page open nothing is raised.
+
 The 26px status bar is two groups. The left group states the WebSocket connection, the
 project's own name (the last path segment, with a folder mark and the full path in its tooltip),
 and the Providers control: the selected provider with its lowest remaining percentage, or
 `No provider`, whose tooltip names the provider's model and which opens the Providers dialog.
 The right group states the running lane count, the issues worker state with a state dot, the
-watchdog's last action and age, and the running and installed versions; each metric carries a
+watchdog's last action and age, the OS notifications control, and the running and installed
+versions; each metric carries a
 10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
 shows the existing reload control (`reload-devboard`), whose accessible name and title name both
 versions; reload behavior is unchanged. A mode states its status in its sidebar and workspace,

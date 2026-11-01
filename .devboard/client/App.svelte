@@ -28,6 +28,7 @@
   import { applyTheme, layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { notifications } from "./lib/notifications.svelte";
+  import { collectPendingQuestions, osNotifications } from "./lib/os-notifications.svelte";
   import { providers } from "./lib/providers.svelte";
   import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
   import { MINIMUM_VIEWPORT, viewport } from "./lib/viewport.svelte";
@@ -386,6 +387,9 @@
       devboard.handleEvent(record);
       providers.handleEvent(record);
       handleFlowTabEvents(record);
+      // The OS channel follows the same frames as the in-app state: every
+      // snapshot, poll, and reconnect re-observes the whole pending set.
+      osNotifications.observe(collectPendingQuestions({ goal, discover, flow, issues }));
     });
     connection.connect();
     connection.startPolling();

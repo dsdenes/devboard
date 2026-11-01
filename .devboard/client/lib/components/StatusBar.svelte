@@ -5,6 +5,7 @@
   import { goal } from "../goal.svelte";
   import { issues } from "../issues.svelte";
   import { layout } from "../layout.svelte";
+  import { osNotifications } from "../os-notifications.svelte";
   import { providers } from "../providers.svelte";
   import { statusTone } from "../status-tone";
   import IconButton from "./ui/icon-button.svelte";
@@ -105,6 +106,18 @@
       <span class="status-issues__label">{issuesLabel}</span>
     </button>
     <WatchdogIndicator />
+    <button
+      type="button"
+      class="status-item status-item--button status-notifications"
+      data-testid="os-notifications"
+      data-state={osNotifications.state}
+      title={osNotifications.title}
+      aria-label={osNotifications.label}
+      onclick={() => void osNotifications.toggle()}
+    >
+      <span class="status-notifications__dot" aria-hidden="true"></span>
+      <span class="status-notifications__label">notifications {osNotifications.state}</span>
+    </button>
     <span class="status-item status-versions" title={versions}>
       <span class="status-versions__entry">
         <span class="status-metric__label">running</span>

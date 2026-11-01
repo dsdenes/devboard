@@ -618,9 +618,23 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
 - **Status bar** (`.status-bar`) — a 26px two-group strip on `surface-raised` with a 1px `border`
   top edge. The left group states connection (7px dot plus word) and the project (folder icon plus
   the last path segment in mono), divided by a 1px `border` rule. The right group holds the lane
-  count, the issues worker with a 6px state dot, the watchdog, and the running and installed
-  versions; every metric pairs a 10px `overline` label with an 11px value, so no meaning rests on
-  color. Items are 20px tall with 5px horizontal padding; a hovered control takes `secondary`.
+  count, the issues worker with a 6px state dot, the watchdog, the OS notifications control, and
+  the running and installed versions; every metric pairs a 10px `overline` label with an 11px
+  value, so no meaning rests on color. Items are 20px tall with 5px horizontal padding; a hovered
+  control takes `secondary`.
+- **OS notifications control** (`os-notifications` in `StatusBar.svelte`) — one status-bar button
+  beside the watchdog whose accessible name always begins `OS notifications` and ends in `off`,
+  `on`, or `blocked`, with a 6px state dot (`border-strong` off, `success` on, `error` blocked).
+  Its default is off. A click with undecided permission asks the browser once; a grant turns it
+  on, a denial or blocked site reads `blocked`, and a dismissed prompt leaves it off. While the
+  browser grants permission, every later click toggles without a prompt, and the choice persists
+  in `localStorage` under `devboard.osNotifications.v1`; blocked is never stored but read from
+  `Notification.permission`. While on and granted, the page raises one informational `Notification`
+  per pending agent question it observes on any surface, titled `devboard · <surface label>` with
+  the question as the body, even while the document is focused and visible. Each question is
+  announced once per page session; repeated snapshots, reconnects, and answers raise none, and a
+  question whose run has stopped is never pending. The control adds no palette item and no
+  in-app notification card.
 - **Reset implementation** — the destructive action is the outline button in the Goal
   implementation header, beside `Resolve next ADR` and `Start implementation`. It arms a
   confirmation dialog that names what is deleted and confirms with the `destructive` variant; no

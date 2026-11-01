@@ -4048,6 +4048,32 @@ a.code-chip--link:focus-visible {
   text-overflow: ellipsis;
 }
 
+.status-notifications {
+  border: 1px solid transparent;
+  max-width: 200px;
+}
+
+.status-notifications__dot {
+  background: var(--border-strong);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 6px;
+  width: 6px;
+}
+
+.status-notifications[data-state="on"] .status-notifications__dot {
+  background: var(--success);
+}
+
+.status-notifications[data-state="blocked"] .status-notifications__dot {
+  background: var(--error);
+}
+
+.status-notifications__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Auto Scout */
 .issues-scout {
   display: flex;
