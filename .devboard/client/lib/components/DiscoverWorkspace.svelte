@@ -306,7 +306,7 @@
                   data-state="dirty"
                   data-testid="discover-skill-dirty"
                 >
-                  Unsaved changes
+                  <span class="discover-skill__state-dot" aria-hidden="true"></span>Unsaved changes
                 </span>
               {:else if skillState === "missing"}
                 <span
@@ -314,7 +314,7 @@
                   data-state="missing"
                   data-testid="discover-skill-status"
                 >
-                  Live file missing
+                  <span class="discover-skill__state-dot" aria-hidden="true"></span>Live file missing
                 </span>
               {:else}
                 <span
@@ -322,7 +322,7 @@
                   data-state="clean"
                   data-testid="discover-skill-status"
                 >
-                  No unsaved changes
+                  <span class="discover-skill__state-dot" aria-hidden="true"></span>No unsaved changes
                 </span>
               {/if}
               <Button

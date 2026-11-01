@@ -4504,19 +4504,32 @@ try {
   await delay(150);
   const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
   check(skillDirty, "the skill editor does not mark unsaved changes");
-  const dirtyHeader = await page.eval<{ enabled: boolean; state: string; primary: boolean }>(`(() => {
+  const dirtyHeader = await page.eval<{
+    enabled: boolean;
+    state: string;
+    primary: boolean;
+    dot: string;
+    warning: string;
+  }>(`(() => {
     const button = document.querySelector('[data-testid="discover-skill-save"]');
+    const header = button?.closest('.discover-skill__header');
+    const dot = header?.querySelector('.discover-skill__state-dot');
+    const probe = document.createElement("div");
+    probe.style.background = "var(--warning)";
+    document.body.append(probe);
+    const warning = getComputedStyle(probe).backgroundColor;
+    probe.remove();
     return {
       enabled: button !== null && !button.disabled,
-      state: button
-        ?.closest('.discover-skill__header')
-        ?.querySelector('[data-testid="discover-skill-dirty"]')
-        ?.textContent?.trim() ?? "",
+      state: header?.querySelector('[data-testid="discover-skill-dirty"]')?.textContent?.trim() ?? "",
       primary: button?.classList.contains("bg-[var(--primary)]") ?? false,
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      warning,
     };
   })()`);
   check(
-    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary,
+    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary &&
+      dirtyHeader.dot === dirtyHeader.warning,
     "the skill header does not promote Save to the filled primary for an unsaved draft",
     dirtyHeader,
   );
@@ -4610,22 +4623,33 @@ try {
     saveSecondary: boolean;
     restorePrimary: boolean;
     restore: string;
+    dot: string;
+    error: string;
   }>(`(() => {
     const header = document.querySelector('.discover-skill__header');
     const save = header?.querySelector('[data-testid="discover-skill-save"]');
     const restore = header?.querySelector('[data-testid="discover-skill-restore"]');
+    const dot = header?.querySelector('.discover-skill__state-dot');
+    const probe = document.createElement("div");
+    probe.style.background = "var(--error)";
+    document.body.append(probe);
+    const error = getComputedStyle(probe).backgroundColor;
+    probe.remove();
     return {
       state: header?.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
       saveDisabled: save === null || save.disabled,
       saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
       restorePrimary: restore?.classList.contains("bg-[var(--primary)]") ?? false,
       restore: restore?.textContent?.trim() ?? "",
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      error,
     };
   })()`);
   check(
     missingHeader.state === "Live file missing" && missingHeader.saveDisabled &&
       missingHeader.saveSecondary && missingHeader.restorePrimary &&
-      missingHeader.restore === "Recreate generated version",
+      missingHeader.restore === "Recreate generated version" &&
+      missingHeader.dot === missingHeader.error,
     "the missing skill header does not give the recovery control the only primary",
     missingHeader,
   );
@@ -4695,6 +4719,12 @@ try {
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
+    headerSurface: string;
+    raised: string;
+    dotWidth: number;
+    dotHeight: number;
+    dot: string;
+    success: string;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
@@ -4703,10 +4733,20 @@ try {
     const identity = header?.querySelector('.discover-skill__identity');
     const actions = header?.querySelector('.discover-skill__actions');
     const save = document.querySelector('[data-testid="discover-skill-save"]');
+    const dot = header?.querySelector('.discover-skill__state-dot');
     const center = (element) => {
       const box = element?.getBoundingClientRect();
       return box === undefined ? 0 : box.top + box.height / 2;
     };
+    const token = (name) => {
+      const probe = document.createElement("div");
+      probe.style.background = \`var(\${name})\`;
+      document.body.append(probe);
+      const value = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return value;
+    };
+    const dotBox = dot?.getBoundingClientRect();
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
@@ -4725,6 +4765,12 @@ try {
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
+      headerSurface: header === null ? "" : getComputedStyle(header).backgroundColor,
+      raised: token("--surface-raised"),
+      dotWidth: dotBox === undefined ? 0 : Math.round(dotBox.width),
+      dotHeight: dotBox === undefined ? 0 : Math.round(dotBox.height),
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      success: token("--success"),
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
@@ -4741,8 +4787,14 @@ try {
     skillLayout,
   );
   check(
-    skillLayout.header === 30 && skillLayout.inline,
-    "the skill header is not one 30px row with the state and actions",
+    skillLayout.header === 34 && skillLayout.inline,
+    "the skill header is not one 34px row with the state and actions",
+    skillLayout,
+  );
+  check(
+    skillLayout.headerSurface === skillLayout.raised && skillLayout.dotWidth === 6 &&
+      skillLayout.dotHeight === 6 && skillLayout.dot === skillLayout.success,
+    "the skill header is not a surface-raised band with a success state dot",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);

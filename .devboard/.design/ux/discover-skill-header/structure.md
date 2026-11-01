@@ -2,20 +2,20 @@
 
 ## Observed defect
 
-The 30px panel header held a two-line identity while the 28px action group was centered against
-it. The 12px path and the 11px state line met the divider with no vertical breathing room, and
-the state line sat on a different baseline from Save. The disabled primary Save stayed a filled
-blue block in the clean state, so the strongest element on the surface could not be used. In the
-missing state the only usable recovery control remained an outline button beside that disabled
-primary.
+The shipped 30px row had no surface of its own: it shared the panel's `surface`, so the file
+identity and the editor met through one hairline with nothing marking the row as the editor's
+chrome. The 28px Save left 1px above and below it, `No unsaved changes` read as a footnote at
+11px, and nothing but that small grey word distinguished a saved draft from a dirty one at a
+glance. On a wide viewport the row was a nearly empty strip whose only signals were the far
+right cluster.
 
 ## Regions
 
 | Order | A2UI ID | Region | Journey | Items | Priority |
 |---|---|---|---|---|---|
-| 1 | region_header | Editor panel header, one 30px row | J1–J4 | C1, C2, C3, C4 | P0 |
+| 1 | region_header | Editor chrome bar, one 34px `surface-raised` row | J1–J4 | C1, C2, C3, C4 | P0 |
 | 2 | region_identity | Leading group: mono relative path | J1 | C1 | P1 |
-| 3 | region_actions | Trailing group: state word, Save, optional Restore | J1–J4 | C2, C3, C4 | P0 |
+| 3 | region_actions | Trailing group: state dot and word, Save, optional Restore | J1–J4 | C2, C3, C4 | P0 |
 | 4 | region_editor | Full-height Markdown editor | J2–J4 | — | P0 |
 
 The page title above the panel is unchanged; it is outside this element and keeps the policy name.
@@ -31,11 +31,14 @@ The page title above the panel is unchanged; it is outside this element and keep
 
 ## State coverage
 
-- Clean, generated: `No unsaved changes` muted; Save is a disabled `secondary`; no Restore.
-- Clean, edited: `No unsaved changes` muted; Save disabled `secondary`; Restore `outline`.
-- Dirty: `Unsaved changes` warning; Save enabled `default`; Restore `outline` when the live text
-  differs from the generated version.
-- Missing: `Live file missing` error; Save disabled `secondary`; Recreate `default`.
+- Clean, generated: `No unsaved changes` muted on a `success` dot; Save is a disabled `secondary`;
+  no Restore.
+- Clean, edited: `No unsaved changes` muted on a `success` dot; Save disabled `secondary`; Restore
+  `outline`.
+- Dirty: `Unsaved changes` warning text on a `warning` dot; Save enabled `default`; Restore
+  `outline` when the live text differs from the generated version.
+- Missing: `Live file missing` error text on an `error` dot; Save disabled `secondary`; Recreate
+  `default`.
 - Loading: no separate state; the page renders the editor when the skill record exists.
 - Save/restore failure: the state keeps its value and the existing notification names the error.
 - Long path: one line with ellipsis and the full path as its `title`.
@@ -44,7 +47,7 @@ The page title above the panel is unchanged; it is outside this element and keep
 
 ## Responsive order
 
-- Desktop: path left; state, Save, Restore right on one row.
+- Desktop: path left; state dot and word, Save, Restore right on one row.
 - Narrow or over-wide sidebar: the path truncates first; the action group keeps state → Save →
   Restore order on the same row.
 - Mobile: no layout below 1024×720; the viewport guard replaces the workspace.
@@ -54,6 +57,10 @@ The page title above the panel is unchanged; it is outside this element and keep
 - Grouping: the path is identity, the state qualifies the action, and the action sits at the
   trailing edge. This follows the shipped Flow goal and Decision board headers without adding a
   badge the operator feedback rejected.
-- Alternatives rejected: a badge (duplicates the sidebar and contradicts prior feedback), a
-  44px header (the 12px path and 10px state do not need a lead-surface height), and two lines
-  (the crowding reported in this issue).
+- Chrome: the `surface-raised` band is the documented level-2 surface for panel sub-headers, and
+  the 34px region height gives the 28px controls 3px above and below instead of 1px.
+- State mark: the 6px dot repeats the shipped Discover run header and status-bar grammar; the
+  word still carries the meaning, so the dot adds a scannable cue without a second label.
+- Alternatives rejected: a badge pill (duplicates the sidebar and contradicts prior feedback), a
+  44px header (the 12px path does not need a lead-surface height), two lines (the crowding the
+  earlier run removed), and a larger path size (the `panel-title` step is the panel-header token).
