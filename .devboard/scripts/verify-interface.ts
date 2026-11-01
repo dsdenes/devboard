@@ -2213,6 +2213,18 @@ try {
     input: boolean;
     focus: string;
     search: { height: number; fontSize: number; className: string };
+    shortcutType: {
+      fontSize: number;
+      fontWeight: string;
+      lineHeight: number;
+      fontFamily: string;
+    } | null;
+    reasonType: {
+      fontSize: number;
+      fontWeight: string;
+      lineHeight: number;
+      letterSpacing: string;
+    } | null;
   }>(`(() => {
     const list = [...document.querySelectorAll('.palette__group, [data-testid="command-item"]')];
     let group = "";
@@ -2231,6 +2243,10 @@ try {
     }).filter((item) => item !== null);
     const search = document.querySelector('[data-testid="command-palette-input"]');
     const searchStyle = search === null ? null : getComputedStyle(search);
+    const shortcut = document.querySelector(".palette__shortcut");
+    const shortcutStyle = shortcut === null ? null : getComputedStyle(shortcut);
+    const reason = document.querySelector(".palette__item-reason");
+    const reasonStyle = reason === null ? null : getComputedStyle(reason);
     return {
       items,
       input: search !== null,
@@ -2239,6 +2255,18 @@ try {
         height: searchStyle === null ? 0 : search.getBoundingClientRect().height,
         fontSize: searchStyle === null ? 0 : Number.parseFloat(searchStyle.fontSize),
         className: search?.className ?? "",
+      },
+      shortcutType: shortcutStyle === null ? null : {
+        fontSize: Number.parseFloat(shortcutStyle.fontSize),
+        fontWeight: shortcutStyle.fontWeight,
+        lineHeight: Number.parseFloat(shortcutStyle.lineHeight),
+        fontFamily: shortcutStyle.fontFamily,
+      },
+      reasonType: reasonStyle === null ? null : {
+        fontSize: Number.parseFloat(reasonStyle.fontSize),
+        fontWeight: reasonStyle.fontWeight,
+        lineHeight: Number.parseFloat(reasonStyle.lineHeight),
+        letterSpacing: reasonStyle.letterSpacing,
       },
     };
   })()`);
@@ -2292,6 +2320,24 @@ try {
   );
   const disabledMirror = palette.items.find((item) => item.id === "flow.pr.merge");
   check(disabledMirror?.disabled === true && disabledMirror.reason.length > 0, "a disabled control is not mirrored with a reason", disabledMirror);
+  check(
+    palette.shortcutType !== null &&
+      Math.abs(palette.shortcutType.fontSize - 11.5) < 0.05 &&
+      palette.shortcutType.fontWeight === "400" &&
+      Math.abs(palette.shortcutType.lineHeight - 16.1) < 0.05 &&
+      palette.shortcutType.fontFamily.toLowerCase().includes("mono"),
+    "the palette shortcut does not render the mono-small type",
+    palette.shortcutType,
+  );
+  check(
+    palette.reasonType !== null &&
+      Math.abs(palette.reasonType.fontSize - 12) < 0.05 &&
+      palette.reasonType.fontWeight === "400" &&
+      Math.abs(palette.reasonType.lineHeight - 17.4) < 0.05 &&
+      palette.reasonType.letterSpacing === "normal",
+    "the palette disabled reason does not render the body-small type",
+    palette.reasonType,
+  );
 
   const visibility = await page.eval<{ missing: string[]; palette: number; visible: number }>(`(() => {
     const paletteIds = new Set([...document.querySelectorAll('[data-testid="command-item"]')].map((item) => item.getAttribute("data-command")));
