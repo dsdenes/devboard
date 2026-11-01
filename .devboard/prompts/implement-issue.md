@@ -18,15 +18,16 @@ context, but you never edit, comment on, close, or reopen another issue.
 - Resolve the session's host exactly once, before any forge read or write: make one argument-free
   `devboard_status` MCP call and take `<REPO_DIR>` from its `repositoryRoot`, along with
   `harnessDirectory` and `stateDirectory`. That one call is the whole checkout-orientation step,
-  and the canonical checkout is `<REPO_DIR>` itself. Issue it before, and exactly once before, the
-  `forge-auth.ts check` below, and never repeat it later in the session.
+  and the canonical checkout is `<REPO_DIR>` itself. Issue it before the auth decision below, and
+  never repeat it later in the session.
 - Never orient the session with a shell probe, and never chain orientation probes: no
   `git remote get-url origin` or `git remote get-url github`, no `git config --get
   remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
   directory, no `env | grep`, and no
   `cd <root> && … && bun .devboard/scripts/forge-auth.ts check` line. The `devboard_status`
-  result covers the roots and the `forge-auth.ts check` JSON line below covers the forge, host,
-  project, and identity; neither is re-derived to orient the run.
+  result covers the roots, and the session's auth result — already in context, otherwise the one
+  `forge-auth.ts check` JSON line below — covers the forge, host, project, and identity; neither
+  is re-derived to orient the run.
 - Fall back to a shell probe only for a field neither the `devboard_status` result nor the auth
   gate reports, and then at most one probe, run alone: never a chained discovery line, never
   `git remote get-url origin`, and never a probe that merely confirms a value one of them already
@@ -45,35 +46,45 @@ context, but you never edit, comment on, close, or reopen another issue.
   and move on: never re-run `git rebase origin/main`, and never chain `git log`, `git diff`, or a
   second `git status` after it. A later rebase belongs only to the landing integration or a
   rejected push below, never to re-verification.
-- Before the first forge read or write, and after the single `devboard_status` call above, gate
-  the run exactly once per session with the canonical, argument-free auth check, run verbatim from
-  the repository root:
+- Forge write access is a precondition of the run, not a discovery step to repeat: the harness
+  resolves it once, before the first forge read or write, and the turn's context carries `forge`,
+  `host`, `project`, `login`, `source`, `permission`, and `canWrite` — injected before the turn,
+  or produced by the one check below. Keep those fields in the run's own context instead of
+  re-deriving them. A `canWrite: true` result authorizes every forge write in the task and ends
+  the auth question for the session, so it never earns a probe.
+- Only when the context carries no `canWrite: true` result, resolve it once with the canonical,
+  argument-free auth check, after the single `devboard_status` call above and before the first
+  forge read or write, run verbatim from the repository root:
 
   ```sh
   bun .devboard/scripts/forge-auth.ts check --required write --json
   ```
 
-  This is the only pre-write auth gate and the only auth invocation of the run. The canonical
-  form infers the forge, host, project, and identity from the `origin` remote and
-  `DEVBOARD_GITEA_URL`, so this check has exactly one spelling: that literal command line, with
-  no `--forge`, `--host`, `--project`, or `--url` override and no derived replacement for any of
-  them. An override is justified only when this result itself names a wrong forge or host, never
+  This is the only pre-write auth gate and the session's only auth invocation: a run whose
+  context already carries `canWrite: true` issues none. The canonical form infers the forge,
+  host, project, and identity from the `origin` remote and `DEVBOARD_GITEA_URL`, so this check
+  has exactly one spelling: that literal command line, with no `--forge`, `--host`,
+  `--project`, or `--url` override and no derived replacement for any of them. An override is
+  justified only when this result itself names a wrong forge or host, never
   to preempt the check. Never derive those values with `sed`, `git remote get-url`, or any other
   shell substitution; when the `origin` remote cannot name the forge, stop and report that as the
   blocker instead of guessing a `--forge` override.
 
-  A session following this prompt issues at most one call matching `forge-auth.ts check`, with no
-  `cd`, no `--forge`, and no `--host` in its command text. Invoke that one line alone: never
-  prefix it with `cd <absolute repository path> &&` (the `cd /home/... &&` shape) or
+  A session following this prompt issues at most one call matching `forge-auth.ts check` in
+  total, and none once its context carries `canWrite: true`; that call has no `cd`, no `--forge`,
+  and no `--host` in its command text. Invoke that one line alone: never prefix it with
+  `cd <absolute repository path> &&` (the `cd /home/... &&` shape) or
   `git rev-parse --show-toplevel &&`, and never chain it into a compound command with a `curl`
   request to the forge API or any other command. Set the tool's working directory to the
   repository root instead of prefixing the command.
 
-  Read the JSON line and treat it as final for the session: exit status 0 with `canWrite: true`
-  authorizes every forge write in the task — labels, the one close, and any other forge write the
-  task requires — so never re-run the check before, between, or after those writes. A nonzero
-  exit, or an exit 0 without `canWrite: true`, ends the task: stop, report `forge`, `host`,
-  `source`, and `permission` from the JSON, and include its `error` text verbatim when present.
+  Read the JSON line, add its fields to the run's context, and treat it as final for the session:
+  exit status 0 with `canWrite: true` authorizes every forge write in the task — labels, the one
+  close, and any other forge write the task requires — so never re-run the check after that
+  result, between successive issue reads or writes, or before, between, or after those writes.
+  A nonzero exit, or an exit 0 without `canWrite: true`, ends the task: stop, report `forge`,
+  `host`, `source`, and `permission` from the JSON, and include its `error` text verbatim when
+  present.
   Never retry the check, never inspect its `--help`, and never fall back to `curl` or any other
   forge API probe. Never retry across `localhost`,
   `localhost:2223`, `localhost:3001`, `origin`, `ds@localhost:2223`, `gitea`, `127.0.0.1`, a bare
