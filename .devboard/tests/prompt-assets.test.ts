@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { syncHarnessTrees } from "../bin/devboard.mjs";
 import { packHarness, packedPaths, stageHarness } from "../scripts/harness-package";
@@ -75,7 +75,13 @@ describe("shipped prompt assets", () => {
 		const { tarball } = await packHarness("0.0.0-prompt-assets", temporaryDirectory("prompt-pack"));
 		const packed = new Set(await packedPaths(tarball));
 		for (const [relative, prompts] of references) {
-			expect({ path: relative, prompts, present: packed.has(relative) }).toEqual({
+			// A prompt may name a directory or a glob (`.devboard/scripts/*`); the
+			// tarball lists files, so any packed member proves the directory shipped.
+			const directory = statSync(join(harnessRoot, relative)).isDirectory();
+			const present = directory
+				? [...packed].some((path) => path.startsWith(`${relative}/`))
+				: packed.has(relative);
+			expect({ path: relative, prompts, present }).toEqual({
 				path: relative,
 				prompts,
 				present: true,
