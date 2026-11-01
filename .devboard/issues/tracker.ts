@@ -43,7 +43,16 @@ export type PollResult =
   | { kind: "issues"; issues: IssuesIssue[]; etag: string | null }
   | { kind: "not-modified"; etag: string | null }
   | { kind: "rate-limited"; until: string; detail: string }
-  | { kind: "error"; detail: string };
+  | { kind: "error"; detail: string }
+  | { kind: "unsupported"; detail: string };
+
+/**
+ * The named answer for a forge the tracker never reads. The Open issues view
+ * has a GitHub and a Gitea branch only, so a GitLab origin must not fall
+ * through to a `gh` read of the same-named GitHub repository.
+ */
+export const GITLAB_TRACKER_UNSUPPORTED =
+  "the issues tracker reads GitHub and Gitea origins; a GitLab origin is not supported";
 
 const QUERY =
   ".[] | select(.pull_request == null) | " +
@@ -334,7 +343,9 @@ export async function fetchIssueState(
   options: TrackerOptions,
   number: number,
 ): Promise<IssueStateResult> {
-  if ((options.forge ?? "github") === "gitea") return await giteaIssueState(options, number);
+  const forge = options.forge ?? "github";
+  if (forge === "gitea") return await giteaIssueState(options, number);
+  if (forge !== "github") return { kind: "error", detail: GITLAB_TRACKER_UNSUPPORTED };
   const bound = deadline(options.timeoutMs ?? TRACKER_TIMEOUT_MS, options.signal);
   const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment, bound.signal));
   try {
@@ -395,7 +406,9 @@ async function giteaIssueState(
 
 /** One conditional poll of the origin's open, non-pull-request issues. */
 export async function pollOpenIssues(options: TrackerOptions): Promise<PollResult> {
-  if ((options.forge ?? "github") === "gitea") return await pollGiteaIssues(options);
+  const forge = options.forge ?? "github";
+  if (forge === "gitea") return await pollGiteaIssues(options);
+  if (forge !== "github") return { kind: "unsupported", detail: GITLAB_TRACKER_UNSUPPORTED };
   const bound = deadline(options.timeoutMs ?? TRACKER_TIMEOUT_MS, options.signal);
   const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment, bound.signal));
   const argv = [

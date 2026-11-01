@@ -102,14 +102,18 @@ export async function syncTree(source, destination, skip) {
   }
 }
 
-/** Copies the harness trees the host-side wrappers open by relative path. */
-export async function syncHarnessTrees(host, harness) {
+/**
+ * Copies the harness trees the host-side wrappers open by relative path,
+ * leaving every git-tracked path in `skip` untouched like `syncWrappers`.
+ */
+export async function syncHarnessTrees(host, harness, skip) {
   for (const name of HOST_HARNESS_PATHS) {
     const source = join(harness, name);
     if (!existsSync(source)) continue;
     const target = join(host, ".devboard", name);
+    if (skip?.has(target) ?? false) continue;
     if ((await lstatOrUndefined(source))?.isDirectory()) {
-      await syncTree(source, target);
+      await syncTree(source, target, skip);
       continue;
     }
     await ensureFixedDirectory(dirname(target));
@@ -139,19 +143,33 @@ export async function syncWrappers(host, harness, skip) {
   }
 }
 
-/** Absolute host paths under `paths` that git tracks, or none outside a repository. */
+/**
+ * Absolute host paths under `paths` that git tracks. A probe that cannot
+ * answer rejects: an empty set would let the sync replace files git tracks,
+ * so "unknown" is never treated as "none".
+ */
 export function trackedPaths(host, paths) {
-  return new Promise((settle) => {
+  return new Promise((finish, fail) => {
     execFile(
       "git",
       ["-C", host, "ls-files", "-z", "--", ...paths],
       { encoding: "utf8", timeout: 120_000, maxBuffer: 32 * 1024 * 1024 },
-      (error, stdout) => {
+      (error, stdout, stderr) => {
         if (error) {
-          settle(new Set());
+          const reason =
+            error.message.length > 0
+              ? error.message
+              : (String(stderr ?? "").trim().split("\n")[0] ?? "");
+          fail(
+            new Error(
+              `${host}: git could not list the files it tracks` +
+                `${reason.length > 0 ? ` (${reason})` : ""}; ` +
+                "refusing to replace files it cannot protect",
+            ),
+          );
           return;
         }
-        settle(
+        finish(
           new Set(
             stdout
               .split("\0")
@@ -167,10 +185,12 @@ export function trackedPaths(host, paths) {
 /**
  * The full host sync an install, an update, or an automatic update runs after
  * the package is in place: wrappers with tracked-path protection, then the
- * harness trees the wrappers import.
+ * harness trees the wrappers import, protected the same way. Rejects before
+ * copying anything when git cannot answer, so an unanswerable probe never
+ * turns into an empty protection set.
  */
 export async function syncHostCopies(host, harness) {
-  const skip = await trackedPaths(host, [".omp/commands", ".omp/extensions"]);
-  await syncWrappers(host, harness, skip);
-  await syncHarnessTrees(host, harness);
+  const wrappers = await trackedPaths(host, [".omp/commands", ".omp/extensions"]);
+  await syncWrappers(host, harness, wrappers);
+  await syncHarnessTrees(host, harness, await trackedPaths(host, [".devboard"]));
 }

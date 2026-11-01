@@ -85,16 +85,6 @@
       {#if lastActivity.length > 0}
         <span class="discover-run-tag__activity" title={lastActivity}>{lastActivity}</span>
       {/if}
-      <button
-        type="button"
-        class="discover-run__stop"
-        title="Stop this Discover run"
-        data-command="discover.stop"
-        data-testid="discover-run-tag-stop"
-        onclick={() => discover.stop()}
-      >
-        Stop
-      </button>
     </div>
   {/if}
 {/snippet}
@@ -296,7 +286,11 @@
                 class="panel__title mono discover-skill__title"
                 title={`${activeSkill}/SKILL.md`}
               >
-                <span>{activeSkill}</span><span class="discover-skill__file">/SKILL.md</span>
+                <span class="code-chip discover-skill__path">
+                  <span class="discover-skill__name">{activeSkill}</span><span
+                    class="discover-skill__file">/SKILL.md</span
+                  >
+                </span>
               </h2>
             </div>
             <div class="row-sm discover-skill__actions">

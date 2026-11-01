@@ -19,6 +19,7 @@ import {
   statePath,
 } from "../issues/paths";
 import { preflightIssues } from "../issues/preflight";
+import { closedByRun, recordClosedByRun } from "../issues/self-close";
 import {
   appendActivityLine,
   emptyState,
@@ -952,6 +953,44 @@ describe("closed issues", () => {
     }
   });
 
+  test("a run that closed its own issue settles instead of being stopped", async () => {
+    let open = [issue(1)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      const runId = f.state().agents[0]!.runId;
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_RUN_ID).toBe(runId);
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_ISSUE_NUMBER).toBe("1");
+      recordClosedByRun(f.stateDir, f.root, 1, runId);
+
+      // The run's own close drops #1 from the open list while its turn runs.
+      open = [];
+      await f.worker.poll();
+      expect(f.peers[0]!.closed).toBe(false);
+      expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([1]);
+      expect(f.state().notice).toBeNull();
+
+      f.peers[0]!.succeed();
+      const settled = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(1))?.status === "succeeded"
+            ? f.state()
+            : undefined,
+        "the succeeded run",
+      );
+      expect(settled.agents).toEqual([]);
+      expect(settled.notice).toBeNull();
+      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+      expect(ledger.handled["1"]?.runId).toBe(runId);
+      expect(closedByRun(f.stateDir, f.root, 1)).toBeNull();
+    } finally {
+      await stop(f);
+    }
+  });
+
   test("an abandon command stops only that issue and suppresses a restart", async () => {
     let open = [issue(1), issue(2)];
     const f = await fixture({
@@ -1751,6 +1790,40 @@ describe("tracker", () => {
     );
     expect(state).toEqual({ kind: "state", state: "closed" });
     expect(urls[0]).toBe("http://gitea.test/api/v1/repos/acme/fixture/issues/7");
+  });
+
+  test("never builds a gh argv for a GitLab origin", async () => {
+    const calls: string[][] = [];
+    const run = (argv: string[]) => {
+      calls.push(argv);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const polled = await pollOpenIssues({ repository: "group/project", forge: "gitlab", run });
+    expect(polled.kind).toBe("unsupported");
+    if (polled.kind !== "unsupported") return;
+    expect(polled.detail).toContain("GitLab");
+
+    const state = await fetchIssueState({ repository: "group/project", forge: "gitlab", run }, 7);
+    expect(state.kind).toBe("error");
+    if (state.kind !== "error") return;
+    expect(state.detail).toContain("GitLab");
+    expect(calls).toEqual([]);
+  });
+
+  test("still reads a GitHub origin through gh", async () => {
+    const calls: string[][] = [];
+    const polled = await pollOpenIssues({
+      repository: "acme/fixture",
+      forge: "github",
+      run: (argv) => {
+        calls.push(argv);
+        return { code: 0, stdout: "HTTP/2.0 200 OK\n\n", stderr: "" };
+      },
+    });
+    expect(polled.kind).toBe("issues");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toBe("api");
+    expect(calls[0]?.includes("repos/acme/fixture/issues?state=open&per_page=100")).toBe(true);
   });
 });
 

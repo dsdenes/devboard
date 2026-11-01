@@ -291,6 +291,12 @@ npx @dsdenes/devboard doctor     # one PASS or FAIL line per check
 The launcher never discovers, reads, copies, or waits on another local Devboard installation or
 source checkout; it resolves the npm version and artifact for the target host alone.
 
+`install` refuses a target whose `.devboard/package.json` names `@dsdenes/devboard` — the
+canonical source checkout — and it stops before changing anything when `git` cannot list the
+files it tracks. The probe is never read as "nothing is tracked": a missing `git`, a timeout, or
+a dubious-ownership refusal aborts `install` and `update` instead of letting either sync over a
+tree it cannot protect.
+
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
 package's files. It keeps `.devboard/.tmp`: when the old `.devboard` was a symlink, every
@@ -1316,7 +1322,8 @@ one prompt file, and the installed-host refusal. `verify:discover` builds the cl
 and installed fixture hosts, and drives headless Chrome through the Discovery group, each card's
 command and editor bytes, all six independent triggers with a byte-level check of the fixture
 `.omp` tree, the one-at-a-time refusal, Run all order and stop at the first seeded failure, prompt
-chat/save, and the installed host's refused save.
+chat/save, and the installed host's refused save. `DISCOVER_VERIFY_ONLY=<scenario>` narrows a pass
+to the named scenarios and `DISCOVER_VERIFY_KEEP=1` keeps its fixtures under `.devboard/.tmp`.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
@@ -1404,10 +1411,11 @@ propagation wait (default 1800 seconds).
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
 staging prefix, and keeps serving its loaded code. After the package is in place it runs the
-same wrapper and harness-tree sync `install` runs, with the same git-tracked wrapper paths left
+same wrapper and harness-tree sync `install` runs, with the same git-tracked paths left
 untouched, so `.omp/commands`, `.omp/extensions`, `.omp/mcp.json`, and
 `.devboard/{prompts,extensions,lib,scripts/forge-auth.ts}` match the installed package before
-the check reports the install. The server copies its client bundle from the
+the check reports the install — except a path the host tracks, which `update` neither deletes nor
+overwrites. The server copies its client bundle from the
 installed package into `<stateDir>/serving/<pid>-<version>` at startup and serves that copy, so
 replacing the package changes only what a restart loads; an open page keeps requesting the bytes
 it started with. If npm cannot serve the artifact and
@@ -1809,6 +1817,19 @@ omp's own thinking-loop notice — `Thinking loop detected; aborting stream for 
 recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
 provider-error record.
 
+The ledger outlives a forge change: an entry may name an issue filed through another forge, or
+through the same project under a different instance. The delivery reports the URLs its configured
+forge serves, and the cycle never comments on one it does not. Such an entry stays filed in the
+ledger, is listed under `unowned` in `report.json` and under `Issues on another forge` in
+`report.md`, and makes the cycle `skipped` instead of `failed`; a failed write never masks a
+ledger entry that this forge cannot address.
+
+A cycle reads only real dashboards. A verification fixture is invisible: a dashboard whose
+repository root sits in `.devboard/.tmp`, or that reads a local release directory
+(`DEVBOARD_RELEASE_DIR`), is skipped, because its deliberate release, install, and server failures
+prove a script's assertion. The live watchdog verification opts back in with
+`DEVBOARD_WATCHDOG_FIXTURE=1`.
+
 ### Deduplication gate
 
 No new issue is filed until a deduplication agent has decided the whole candidate set. In every
@@ -2090,7 +2111,7 @@ call; `getMcpTools` reports the table as the `invocations` map and a missing fil
 
 |Tool|Inputs|Bounds|
 |---|---|---|
-|`devboard_status`|none|root, harness, state, live dashboard port/pid, version and versionState; no secret|
+|`devboard_status`|none|root, harness, state, branch/upstream/ahead/behind, live dashboard port/pid, version and versionState; no secret|
 |`agent_sessions_list`|`since`, `until`, `cwd`, `limit`, `offset`|50 rows default, 200 max, newest first|
 |`agent_session_read`|`id`, `offset`, `limit`|50 messages default, 200 max, 64 KiB of text|
 |`agent_session_search`|`query`, `limit`|case-insensitive, 100 matches, 200-character snippets|
@@ -2129,9 +2150,10 @@ from those headers and parses only the matching file, so one read does not cost 
 - `verification_run` runs only `test`, `check`, `build`, `typecheck`, or a `verify:<name>` present
   in `.devboard/package.json`, with `.devboard` as cwd, an optional bounded list of existing test
   paths, a 900-second deadline, and at most 16 KiB of captured output. It writes the check's complete
-  output to `<stateDir>/<check>.log` before the spawn, truncating any earlier file, and returns that
-  repository-relative path as `log`, so the 16 KiB `output` bound never shortens the evidence. The
-  deadline covers the output reads too and reaps the check's process group, so a descendant that
+  output to a log unique to that invocation and returns that repository-relative path as `log`, then
+  publishes the same complete output to `<stateDir>/<check>.log` when the run settles, so two
+  concurrent runs never unlink each other's evidence and the 16 KiB `output` bound never shortens it.
+  The deadline covers the output reads too and reaps the check's process group, so a descendant that
   inherits the pipes cannot hold the call. Any other check, a path outside `.devboard`, or an
   unknown `verify:<name>` is refused before anything runs.
 
@@ -2231,6 +2253,14 @@ neither hidden nor stopped; the next read covers it. With no connected client th
 no tracker call, and the worker's own poll still ends a run the moment it sees the issue leave the
 open list.
 
+That stop is a cancellation, never a completion. A run closes its own issue through
+`issue_close`, which records the closing run beside the issue's state under the worker's state
+directory; the worker passes `DEVBOARD_ISSUES_RUN_ID` to each peer so the tool can name it. The
+dashboard sends no `abandon` for a run the record names, and the worker applies none: the run
+finishes its turn, its own turn-end read proves the issue closed, and it is recorded `succeeded`
+with its handled entry, exactly as when a poll never dropped the issue. The record names one run,
+so a later run for the same issue is stopped as usual, and it is removed when its run settles.
+
 Session updates stream into the mode, permission requests are auto-approved by the ACP client,
 elicitation questions are answered per agent, and every peer closes when its run ends or Stop is
 clicked. The agents own every worktree, commit, push, issue closure, and repository mutation; the
@@ -2248,16 +2278,17 @@ missing, non-numeric, or multi-token argument before changing anything. It fetch
 one issue and never fetches, surveys, or builds a dependency graph for the rest of the backlog.
 It creates and works in one worktree under `<REPO_DIR>/.worktree/` named for the issue, never in
 the canonical checkout and never in another agent's worktree, and writes nothing outside
-`<REPO_DIR>`. Before the first tracker read or write it runs one canonical auth check,
-`bun .devboard/scripts/forge-auth.ts check --forge gitea --required write --json`, from the
+`<REPO_DIR>`. Forge write access is a precondition it resolves once per session: a `canWrite: true`
+result already in context is reused as-is, and only when the context lacks one does it run one
+canonical auth check, `bun .devboard/scripts/forge-auth.ts check --required write --json`, from the
 repository root: the wrapper takes the target from `DEVBOARD_GITEA_URL`, `GITEA_TOKEN`, and the
-`origin` remote, so no host or project is passed, the exit status and JSON are read directly, and
-no other auth probe runs in the session. The shared credential rule every tracker prompt follows
-is `.devboard/prompts/forge-auth.md`: the wrapper is the only authority for forge host, project,
-and token scope, and enumerating the environment or reading credential files to find them is
-forbidden. It changes only that issue's implementation, tests, and documentation; it may read
-other issues and code but never edits, comments on, closes, or reopens another issue. When the
-issue declares an open prerequisite (`depends on`, `blocked by`, or a
+`origin` remote, so no forge, host, project, or URL flag is passed, the exit status and JSON are
+read directly, and no further auth probe runs in the session. The shared credential rule every
+tracker prompt follows is `.devboard/prompts/forge-auth.md`: the wrapper is the only authority for
+forge host, project, and token scope, and enumerating the environment or reading credential files
+to find them is forbidden. It changes only that issue's implementation, tests, and documentation;
+it may read other issues and code but never edits, comments on, closes, or reopens another issue.
+When the issue declares an open prerequisite (`depends on`, `blocked by`, or a
 task-list issue reference), it writes `blocked: #<prerequisite>` as the first stderr line, exits
 nonzero, leaves the issue open and unhandled, and never implements the prerequisite in another
 agent's place. It is
@@ -2621,15 +2652,19 @@ activity, and consumes no cap slot.
 
 An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the commit that closed it — the timeline's closing commit when present, otherwise every 7–40
-character hex token of the newest comments, most recent first — to one unambiguous full commit
-through the checkout or GitHub. Each token is verified rather than trusted: comment prose carries
-fingerprints, process ids, and epoch stamps that look like a SHA, so a token that does not resolve
-is skipped and the next candidate is tried, up to twelve candidates per issue. The first commit
-that resolves and appears in a published release decides the version. It then selects the earliest
-published GitHub Release tag whose history contains that commit, ordered by `publishedAt` and
-breaking ties by tag name. The row shows `—` when no candidate resolves or no published release
-contains it, and a release published later fills a blank version on the next read.
+the commit that shipped it — the close entry's commit when present, otherwise the `commit_ref`
+entries of earlier commits whose message names the issue, otherwise every 7–40 character hex token
+of the newest comments, most recent first — to one unambiguous full commit through the checkout or
+the forge. Each candidate is verified rather than trusted: comment prose carries fingerprints,
+process ids, and epoch stamps that look like a SHA, so a candidate that does not resolve is skipped
+and the next one is tried, up to twelve candidates per issue. The first commit that resolves and
+appears in a published release decides the version. It then selects the earliest published release
+tag whose history contains that commit, ordered by `publishedAt` and breaking ties by tag name. A
+tag the checkout already carries answers containment offline; a release the checkout has not
+fetched is compared on the forge, so a host without local release tags still reports the version.
+The row shows `—` when no candidate resolves or no published release contains it, and a release
+published later fills a blank version on the next read. An API close records no commit, so a commit
+message names its issue with a trailing `(#<number>)` to give the forge that link.
 
 ### Periodic check
 

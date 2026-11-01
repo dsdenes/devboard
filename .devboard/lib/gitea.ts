@@ -4,7 +4,11 @@ import { dirname } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { commitCandidatesFromComments, isSha } from "./commit";
+import {
+  COMMIT_CANDIDATE_LIMIT,
+  commitCandidatesFromComments,
+  isSha,
+} from "./commit";
 import {
   configuredGiteaToken,
   giteaBaseUrl,
@@ -608,26 +612,57 @@ export async function giteaCommentIssue(
 }
 
 /**
- * The commit a Gitea timeline closed the issue with. Only a `close` entry
- * names it: `commit_ref`, review, reopen, comment, and every other entry can
- * carry a commit reference too, and accepting one reports the wrong shipped
- * version. Current Gitea records the reference as `ref_commit_sha`; older
- * builds used `commit_id`, so both are read. The newest closing entry wins,
- * because a reopened and re-closed issue has several. A timeline without a
- * closing entry yields null, never a commit that another entry happens to
- * carry.
+ * The commits a Gitea timeline names for the issue's closure, newest first.
+ * A `close` entry that carries a commit is authoritative and is the only
+ * candidate, because a reference written before the closure must never
+ * outrank it. Current Gitea records that reference as `ref_commit_sha`;
+ * older builds used `commit_id`, so both are read.
+ *
+ * A close performed through the API carries no commit, which is how every
+ * harness close reaches the forge. The commit that shipped the change is
+ * still in the timeline as a `commit_ref` entry, recorded when a pushed
+ * commit's message names the issue (`(#12)`, `Closes #12`). Those entries
+ * before the newest close are the closing candidates, newest first, and the
+ * reader verifies each one before it reports a release. Review, reopen,
+ * comment, label, and every other entry can carry a commit reference too and
+ * is never read.
  */
-export function closingCommitFromGiteaTimeline(timeline: unknown): string | null {
-  if (!Array.isArray(timeline)) return null;
+export function closingCommitsFromGiteaTimeline(timeline: unknown): string[] {
+  if (!Array.isArray(timeline)) return [];
+  let closeIndex = -1;
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
     const entry = timeline[index];
     if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    if (record.type !== "close") continue;
-    if (isSha(record.ref_commit_sha)) return record.ref_commit_sha;
-    if (isSha(record.commit_id)) return record.commit_id;
+    if ((entry as Record<string, unknown>).type === "close") {
+      closeIndex = index;
+      const close = entry as Record<string, unknown>;
+      if (isSha(close.ref_commit_sha)) return [close.ref_commit_sha];
+      if (isSha(close.commit_id)) return [close.commit_id];
+      break;
+    }
   }
-  return null;
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  // Only a timeline that closed the issue can name a shipped commit: an open
+  // issue's cross-reference is a mention, not a shipment.
+  if (closeIndex === -1) return candidates;
+  for (let index = closeIndex - 1; index >= 0; index -= 1) {
+    const entry = timeline[index];
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (record.type !== "commit_ref") continue;
+    const sha = isSha(record.ref_commit_sha) ? record.ref_commit_sha : record.commit_id;
+    if (!isSha(sha) || seen.has(sha)) continue;
+    seen.add(sha);
+    candidates.push(sha);
+    if (candidates.length >= COMMIT_CANDIDATE_LIMIT) break;
+  }
+  return candidates;
+}
+
+/** The newest timeline candidate, or null. */
+export function closingCommitFromGiteaTimeline(timeline: unknown): string | null {
+  return closingCommitsFromGiteaTimeline(timeline)[0] ?? null;
 }
 
 /** Stable identity for a paged entry, so a repeated page adds nothing. */
@@ -674,13 +709,14 @@ async function giteaPagedEntries(
 }
 
 /**
- * Every candidate for the commit that closed a Gitea issue, newest first. A
- * timeline closing entry is authoritative: when it names a commit the list
- * holds only that commit, because a comment written before the closure must
- * never outrank it. Without one, every hex token of the newest comment is a
- * candidate, most recent first; a fingerprint, process id, or epoch stamp in
- * prose looks like a SHA, so the reader verifies each candidate and reports
- * the first real commit instead of giving up on the newest token.
+ * Every candidate for the commit that shipped a Gitea issue, newest first.
+ * A timeline candidate wins: the close entry's commit when it carries one,
+ * otherwise the `commit_ref` entries the forge recorded for commits that name
+ * the issue. Only when the timeline names none does every hex token of the
+ * comments become a candidate, most recent first. Comment prose carries
+ * fingerprints, process ids, and epoch stamps that look like a SHA, so the
+ * reader verifies each candidate and reports the first real commit instead of
+ * giving up on the newest token.
  */
 export async function giteaClosingCommits(
   target: GiteaTarget,
@@ -692,8 +728,8 @@ export async function giteaClosingCommits(
     `${repoPath(target)}/issues/${number}/timeline`,
     fetchImpl,
   );
-  const closing = closingCommitFromGiteaTimeline(timeline);
-  if (closing !== null) return [closing];
+  const closing = closingCommitsFromGiteaTimeline(timeline);
+  if (closing.length > 0) return closing;
   const comments = await giteaPagedEntries(
     target,
     `${repoPath(target)}/issues/${number}/comments`,

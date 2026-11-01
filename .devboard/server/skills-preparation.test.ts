@@ -1,7 +1,16 @@
 import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
@@ -218,6 +227,24 @@ function unmanagedSkill(name: string, directive: string): string {
     `- ${directive}`,
     "",
   ].join("\n");
+}
+
+/**
+ * Creates a skill directory under `.omp/shared-skills` and links it as
+ * `.omp/skills/shared`, the shape a dotfile manager leaves behind.
+ */
+async function symlinkedSkill(root: string): Promise<{ link: string; target: string }> {
+  const target = "../shared-skills";
+  const shared = join(root, ".omp", "shared-skills");
+  await mkdir(shared, { recursive: true });
+  await writeFile(
+    join(shared, "SKILL.md"),
+    unmanagedSkill("shared", "Keep one shared skill directory."),
+  );
+  const link = join(root, ".omp", "skills", "shared");
+  await mkdir(dirname(link), { recursive: true });
+  await symlink(target, link);
+  return { link, target };
 }
 
 function skillDirectories(root: string): string[] {
@@ -724,6 +751,70 @@ describe("skills preparation", () => {
   );
 
   test(
+    "fails when the peer adds a file to an unmanaged skill and restores its entries",
+    async () => {
+      const unmanagedSource = unmanagedSkill("house-style", "Prefer one response shape.");
+      const { server, skillsDir, url } = await startServer({
+        files: { ".omp/skills/house-style/SKILL.md": unmanagedSource },
+        agentArguments: "--prepare-skills --prepare-skills-unmanaged-write",
+      });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const failure = await client.waitFor(
+          (message) => message.type === "error" && /house-style/.test(String(message.message)),
+        );
+        expect(String(failure.message)).toMatch(/unmanaged skill "house-style"/);
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(false);
+        expect(stopped.skills).toBeUndefined();
+
+        expect(Object.fromEntries(directoryBytes(join(skillsDir, "house-style")))).toEqual({
+          "SKILL.md": unmanagedSource,
+        });
+        expect(existsSync(join(skillsDir, "house-style", "extra.md"))).toBe(false);
+        expect(skillDirectories(skillsDir)).toEqual(["house-style"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
+    "fails when the peer creates a new skill without the managed marker and removes it",
+    async () => {
+      const { server, skillsDir, url } = await startServer({
+        agentArguments: "--prepare-skills --prepare-skills-unmanaged-skill",
+      });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const failure = await client.waitFor(
+          (message) => message.type === "error" && /stray-style/.test(String(message.message)),
+        );
+        expect(String(failure.message)).toMatch(/unmanaged skill "stray-style"/);
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(false);
+        expect(stopped.skills).toBeUndefined();
+        expect(existsSync(join(skillsDir, "stray-style"))).toBe(false);
+        expect(skillDirectories(skillsDir)).toEqual([]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
     "fails on a contradiction with an unmanaged skill, names it, and preserves every file",
     async () => {
       const managedBefore = {
@@ -893,6 +984,83 @@ describe("skills preparation", () => {
           managedBefore,
         );
         expect(skillDirectories(skillsDir)).toEqual(["behavior-first-testing"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
+    "a failed preparation restores a symlinked skill entry",
+    async () => {
+      const { server, root, url } = await startServer({
+        agentArguments: "--prepare-skills --prepare-skills-error",
+      });
+      const client = await connect(url);
+      const { link, target } = await symlinkedSkill(root);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(false);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await readlink(link)).toBe(target);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
+    "a successful preparation leaves a symlinked skill entry untouched",
+    async () => {
+      const { server, root, url } = await startServer({
+        agentArguments: "--prepare-skills",
+      });
+      const client = await connect(url);
+      const { link, target } = await symlinkedSkill(root);
+      const sharedBefore = await readFile(join(root, ".omp", "shared-skills", "SKILL.md"), "utf8");
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(true);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await readlink(link)).toBe(target);
+        expect(await readFile(join(root, ".omp", "shared-skills", "SKILL.md"), "utf8")).toBe(
+          sharedBefore,
+        );
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "stopping the server during an active preparation restores a symlinked skill entry",
+    async () => {
+      const { server, root, url } = await startServer({
+        agentArguments: "--prepare-skills --delay-ms=5000",
+      });
+      const client = await connect(url);
+      const { link, target } = await symlinkedSkill(root);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        await client.waitFor((message) => message.type === "skillsPreparationStarted");
+        server.stop(true);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await readlink(link)).toBe(target);
       } finally {
         client.close();
         server.stop(true);

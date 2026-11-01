@@ -85,6 +85,16 @@ export interface ReportIssue {
   line: string;
 }
 
+/**
+ * A ledger entry whose issue URL the configured forge does not serve: it was
+ * filed through another forge, so this cycle cannot comment on it.
+ */
+export interface ReportUnowned {
+  url: string;
+  category: string;
+  fingerprint: string;
+}
+
 export interface ReportDedupDecision {
   fingerprint: string;
   category: string;
@@ -119,6 +129,7 @@ export type CycleAction =
   | "filed"
   | "commented"
   | "capped"
+  | "skipped"
   | "failed";
 
 export interface Report {
@@ -128,6 +139,8 @@ export interface Report {
   findings: ReportFinding[];
   action: CycleAction;
   issues: ReportIssue[];
+  /** Ledger issues filed through another forge; never commented on here. */
+  unowned: ReportUnowned[];
   /** Fingerprints still waiting for a successful filing. */
   pending: number;
   /** This cycle's report; the issue body points at it. */
@@ -313,6 +326,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     })),
     action: "none",
     issues: [],
+    unowned: [],
     pending: ledger.pendingFiling.length,
     reportPath,
     malformed: collection.malformed,
@@ -594,6 +608,17 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
       context.log(`comment on ${entry.url} failed: ${reason}`);
       continue;
     }
+    if (!active.owns(entry.url)) {
+      report.unowned.push({
+        url: entry.url,
+        category: entry.category,
+        fingerprint: finding.fingerprint,
+      });
+      context.log(
+        `comment on ${entry.url} skipped: the configured forge does not serve that issue`,
+      );
+      continue;
+    }
     const comment = await active.comment(
       entry.url,
       issueInput(finding.fingerprint, entry),
@@ -622,6 +647,11 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     report.action = "capped";
     report.reason =
       report.reason ?? `filing cap reached; ${ledger.pendingFiling.length} finding(s) stay pending`;
+  } else if (report.unowned.length > 0) {
+    report.action = "skipped";
+    report.reason =
+      `${report.unowned.length} ledger issue URL(s) belong to another forge; ` +
+      "no comment was made";
   } else if (candidates.length > 0 || suppressed.length > 0) {
     report.action = "duplicate";
     report.reason = "every candidate duplicates an open issue";
@@ -678,6 +708,12 @@ function renderMarkdown(report: Report): string {
     ...(report.issues.length === 0
       ? ["None."]
       : report.issues.map((issue) => `- ${issue.url} (${issue.category})`)),
+    "",
+    "## Issues on another forge",
+    "",
+    ...(report.unowned.length === 0
+      ? ["None."]
+      : report.unowned.map((issue) => `- ${issue.url} (${issue.category})`)),
     "",
   ];
   return `${lines.join("\n")}\n`;

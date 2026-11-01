@@ -3,7 +3,6 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stateFile } from "./state";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "../scripts/provider-fixture";
@@ -17,6 +16,12 @@ import { seedVerificationProvider, verificationProviderUsageEnv } from "../scrip
  */
 
 const temporaryDirectories: string[] = [];
+/**
+ * Fixture repositories live in harness scratch, never in the OS temp directory:
+ * a server that outlives its fixture still roots its journal under
+ * `.devboard/.tmp`, which the watchdog excludes as verification evidence.
+ */
+const testRoot = join(resolve(import.meta.dir, ".."), ".tmp");
 const SERVER = join(import.meta.dir, "index.ts");
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
 const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
@@ -78,7 +83,8 @@ out({});
 `;
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "devboard-restart-"));
+  await mkdir(testRoot, { recursive: true });
+  const directory = await mkdtemp(join(testRoot, "devboard-restart-"));
   temporaryDirectories.push(directory);
   return directory;
 }

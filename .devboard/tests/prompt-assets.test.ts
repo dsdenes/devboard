@@ -43,6 +43,8 @@ function promptReferences(): Map<string, string[]> {
 			const relative = match[1]!.replace(/\/+$/, "");
 			if (relative === "") continue;
 			if (HOST_OWNED.some((owned) => relative === owned || relative.startsWith(`${owned}/`))) continue;
+			// Runtime scratch the host creates on demand; the package never ships it.
+			if (relative === ".tmp" || relative.startsWith(".tmp/")) continue;
 			// Illustrative paths such as `.devboard/client/Foo.svelte` name no harness file.
 			if (!existsSync(join(harnessRoot, relative))) continue;
 			const files = references.get(relative) ?? [];

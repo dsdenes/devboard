@@ -6,8 +6,6 @@ import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../lib/forge-read-retry";
 import {
-  giteaClosingCommit,
-  giteaClosingCommits,
   giteaJson,
   giteaListReleases,
   giteaOrigin,
@@ -16,7 +14,8 @@ import {
   type FetchLike,
   type GiteaTarget,
 } from "../lib/gitea";
-import { git, originForge } from "../issues/repository";
+import { createGiteaVersionClient } from "../lib/gitea-release";
+import { originForge } from "../issues/repository";
 import {
   createRepositoryGitHub,
   shippedVersion,
@@ -183,35 +182,9 @@ function createWatchdogGiteaReader(
           published = await giteaListReleases(target, options.fetchImpl);
           releases.set(locator.repository, published);
         }
-        const client = {
-          async closingCommit(issueNumber: number): Promise<string | null> {
-            return await giteaClosingCommit(target, issueNumber, options.fetchImpl);
-          },
-          async closingCommits(issueNumber: number): Promise<string[]> {
-            return await giteaClosingCommits(target, issueNumber, options.fetchImpl);
-          },
-          async resolveCommit(short: string): Promise<string | null> {
-            if (!/^[0-9a-fA-F]{7,40}$/.test(short)) return null;
-            const local = git(options.repoDir, "rev-parse", "--verify", "--quiet", `${short}^{commit}`);
-            if (local.code !== 0) return null;
-            const sha = local.stdout.split(/\s+/)[0] ?? "";
-            return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
-          },
-          async containingReleaseTags(
-            commit: string,
-            published: GitHubRelease[],
-          ): Promise<string[]> {
-            const local = git(options.repoDir, "tag", "--contains", commit);
-            if (local.code !== 0) return [];
-            const tags = new Set(
-              local.stdout.split("\n").map((line) => line.trim()).filter(Boolean),
-            );
-            return published.filter((release) => tags.has(release.tag)).map((release) => release.tag);
-          },
-        };
         const version = await shippedVersion(
           { number: locator.number, state: "closed" },
-          client,
+          createGiteaVersionClient(target, options.repoDir, options.fetchImpl),
           published,
         );
         facts.push({ url, state: "implemented", version });

@@ -1,5 +1,6 @@
 import { git } from "../issues/repository";
 import { commitCandidatesFromComments, isFullSha, isSha } from "./commit";
+import { localReleaseContainment } from "./release-containment";
 
 export {
   closingCommitFromComments,
@@ -322,23 +323,10 @@ export function createRepositoryGitHub(options: RepositoryGitHubOptions): Reposi
     },
 
     async containingReleaseTags(commit: string, releases: GitHubRelease[]): Promise<string[]> {
-      const local = git(options.repoDir, "tag", "--contains", commit);
-      if (local.code === 0) {
-        const tags = new Set(
-          local.stdout
-            .split("\n")
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0),
-        );
-        if (tags.size > 0) {
-          const contained = releases
-            .filter((release) => tags.has(release.tag))
-            .map((release) => release.tag);
-          if (contained.length > 0) return contained;
-        }
-      }
-      const contained: string[] = [];
-      for (const release of releases) {
+      const local = localReleaseContainment(options.repoDir, commit, releases);
+      if (local.pending.length === 0) return local.contained;
+      const contained = [...local.contained];
+      for (const release of local.pending) {
         const result = await run(
           [
             "api",

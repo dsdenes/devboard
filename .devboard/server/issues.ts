@@ -16,6 +16,7 @@ import {
 } from "../issues/preflight";
 import { DEADLINE_EXPIRED, withinDeadline } from "../lib/deadline";
 import { cachedRepository, topLevel } from "../issues/repository";
+import { closedByRun } from "../issues/self-close";
 import { closeIssue as closeTrackerIssue, type CloseIssueRequest } from "./issue-close";
 import {
   TrackerSync,
@@ -200,6 +201,10 @@ export class IssuesBridge {
     return this.tracker
       .sync()
       .then((result) => {
+        // A forge this reader never reads retries nothing: one named state is
+        // published and the periodic sync stops instead of polling a `gh`
+        // path that cannot answer.
+        if (this.tracker.unsupportedDetail !== null) this.stopSyncTimer();
         if (result.fresh && result.issues !== null && result.startedAt !== null) {
           const startedAt = Date.parse(result.startedAt);
           if (Number.isFinite(startedAt)) {
@@ -245,6 +250,12 @@ export class IssuesBridge {
 
     const eligible = state.agents.filter((agent) => {
       if (open.has(agent.issueNumber)) return false;
+      // The run closed its own issue: its worker settles the run as succeeded,
+      // so the dashboard must not send the cancellation it sends for an
+      // operator's close.
+      if (closedByRun(this.stateDir, this.repoDir, agent.issueNumber) === agent.runId) {
+        return false;
+      }
       const startedAt = Date.parse(agent.startedAt);
       return Number.isFinite(startedAt) && startedAt < readStartedAt;
     });
@@ -277,10 +288,19 @@ export class IssuesBridge {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => this.refresh(), this.pollMsValue);
     void this.refresh();
-    this.syncTimer = setInterval(() => {
-      void this.syncNow();
-    }, this.tracker.view.intervalMs);
-    this.syncTimer.unref?.();
+    if (this.tracker.unsupportedDetail === null) {
+      this.syncTimer = setInterval(() => {
+        void this.syncNow();
+      }, this.tracker.view.intervalMs);
+      this.syncTimer.unref?.();
+    }
+  }
+
+  /** Stops the periodic tracker read once its origin forge is unreadable. */
+  private stopSyncTimer(): void {
+    if (this.syncTimer === undefined) return;
+    clearInterval(this.syncTimer);
+    this.syncTimer = undefined;
   }
 
   dispose(): void {

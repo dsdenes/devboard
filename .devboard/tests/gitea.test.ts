@@ -8,6 +8,7 @@ import {
   giteaClosingCommit,
   giteaClosingCommits,
   closingCommitFromGiteaTimeline,
+  closingCommitsFromGiteaTimeline,
   giteaCreateRelease,
   giteaLabels,
   giteaListIssues,
@@ -58,7 +59,7 @@ function repository(): string {
   return directory;
 }
 
-function taggedRepository(tag: string): { directory: string; commit: string } {
+function committedRepository(): { directory: string; commit: string } {
   const directory = repository();
   const git = (args: string[]): string => {
     const result = Bun.spawnSync({
@@ -80,8 +81,17 @@ function taggedRepository(tag: string): { directory: string; commit: string } {
     "-m",
     "shipped",
   ]);
-  const commit = git(["rev-parse", "HEAD"]);
-  git(["tag", tag]);
+  return { directory, commit: git(["rev-parse", "HEAD"]) };
+}
+
+function taggedRepository(tag: string): { directory: string; commit: string } {
+  const { directory, commit } = committedRepository();
+  const result = Bun.spawnSync({
+    cmd: ["git", "-C", directory, "tag", tag],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
   return { directory, commit };
 }
 
@@ -749,6 +759,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     expect(delivery.repository).toBe("acme/fixture");
+    expect(delivery.owns("http://gitea.test/acme/fixture/issues/12")).toBe(true);
     const filed = await delivery.create({
       category: "server-error",
       fingerprint: "fingerprint",
@@ -793,6 +804,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     const url = "https://github.com/acme/fixture/issues/12";
+    expect(delivery.owns(url)).toBe(false);
     const commented = await delivery.comment(url, {
       category: "server-error",
       fingerprint: "fingerprint",
@@ -809,6 +821,23 @@ describe("Gitea watchdog delivery", () => {
     expect(calls).toEqual([]);
   });
 
+  test("recognises its own issue through a loopback alias", async () => {
+    const calls: Recorded[] = [];
+    const delivery = createWatchdogDelivery({
+      root: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://localhost:3001", GITEA_TOKEN: "gitea-token" },
+      gh: () => {
+        throw new Error("gh must not run for a Gitea origin");
+      },
+      fetchImpl: fakeGitea(calls),
+    });
+    expect(delivery.owns("http://127.0.0.1:3001/acme/fixture/issues/12")).toBe(true);
+    expect(delivery.owns("http://localhost:3001/acme/fixture/issues/12")).toBe(true);
+    expect(delivery.owns("http://127.0.0.1:3001/other/fixture/issues/12")).toBe(false);
+    expect(delivery.owns("http://localhost:3002/acme/fixture/issues/12")).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   test("refuses a ledger URL from another repository on the same origin", async () => {
     const calls: Recorded[] = [];
     const delivery = createWatchdogDelivery({
@@ -820,6 +849,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     const url = "http://gitea.test/other/fixture/issues/12";
+    expect(delivery.owns(url)).toBe(false);
     const commented = await delivery.comment(url, {
       category: "server-error",
       fingerprint: "fingerprint",
@@ -936,6 +966,96 @@ describe("Gitea watchdog activity", () => {
     ]);
   });
 
+  test("reads the commit the forge linked when an API close names none", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      if (/\/issues\/6$/.test(url.pathname)) return Response.json({ state: "closed" });
+      if (url.pathname.endsWith("/issues/6/timeline")) {
+        return Response.json([
+          { type: "label" },
+          { type: "commit_ref", ref_commit_sha: tagged.commit },
+          { type: "close", ref_commit_sha: "" },
+        ]);
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/6"])).toEqual([
+      {
+        url: "http://gitea.test/acme/fixture/issues/6",
+        state: "implemented",
+        version: "v1.0.0",
+      },
+    ]);
+  });
+
+  test("resolves a shipped version through the forge when no local tag names the release", async () => {
+    const checkout = committedRepository();
+    const shipped = "9".repeat(40);
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (/\/issues\/9$/.test(url.pathname)) return Response.json({ state: "closed" });
+      if (url.pathname.endsWith("/issues/9/timeline")) {
+        return Response.json([
+          { type: "commit_ref", ref_commit_sha: shipped },
+          { type: "close", ref_commit_sha: "" },
+        ]);
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1
+            ? [
+                { tag_name: "v2.0.0", published_at: "2026-10-01T00:00:00Z" },
+                { tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" },
+              ]
+            : [],
+        );
+      }
+      if (url.pathname.endsWith(`/git/commits/${shipped}`)) {
+        return Response.json({ sha: shipped });
+      }
+      if (url.pathname.endsWith(`/compare/v1.0.0...${shipped}`)) {
+        return Response.json({ total_commits: 0, commits: [] });
+      }
+      if (url.pathname.endsWith(`/compare/v2.0.0...${shipped}`)) {
+        return Response.json({ total_commits: 4, commits: [] });
+      }
+      return Response.json({ message: `unexpected ${url}` }, 404);
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: checkout.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/9"])).toEqual([
+      {
+        url: "http://gitea.test/acme/fixture/issues/9",
+        state: "implemented",
+        version: "v1.0.0",
+      },
+    ]);
+    expect(calls).toContain(`/api/v1/repos/acme/fixture/compare/v1.0.0...${shipped}`);
+    expect(calls).not.toContain(`/api/v1/repos/acme/fixture/compare/${shipped}...v1.0.0`);
+  });
+
   test("scans a repository's releases once for all of its closed issues", async () => {
     const tagged = taggedRepository("v1.0.0");
     const calls: string[] = [];
@@ -999,14 +1119,62 @@ describe("Gitea watchdog activity", () => {
 describe("Gitea closing commit", () => {
   const closed = "a".repeat(40);
 
-  test("ignores commit_ref and comment entries around the close event", () => {
+  test("a close entry's commit outranks the commit_ref entries around it", () => {
     expect(
       closingCommitFromGiteaTimeline([
-        { type: "commit_ref", commit_id: "b".repeat(40) },
+        { type: "commit_ref", ref_commit_sha: "b".repeat(40) },
         { type: "close", commit_id: closed },
         { type: "comment", commit_id: "c".repeat(40) },
       ]),
     ).toBe(closed);
+  });
+
+  test("every commit_ref before the newest close is a candidate, newest first", () => {
+    const first = "1".repeat(40);
+    const second = "2".repeat(40);
+    expect(
+      closingCommitsFromGiteaTimeline([
+        { type: "commit_ref", ref_commit_sha: first },
+        { type: "label" },
+        { type: "commit_ref", ref_commit_sha: second },
+        { type: "commit_ref", ref_commit_sha: second },
+        { type: "close", ref_commit_sha: "" },
+      ]),
+    ).toEqual([second, first]);
+  });
+
+  test("a commit_ref after the close never outranks the closure", () => {
+    const shipped = "3".repeat(40);
+    const followUp = "4".repeat(40);
+    expect(
+      closingCommitsFromGiteaTimeline([
+        { type: "commit_ref", ref_commit_sha: shipped },
+        { type: "close", ref_commit_sha: "" },
+        { type: "commit_ref", ref_commit_sha: followUp },
+      ]),
+    ).toEqual([shipped]);
+  });
+
+  test("reads commit_ref entries when the API close names no commit", async () => {
+    const shipped = "5".repeat(40);
+    const fetchImpl: FetchLike = async (input) => {
+      const path = new URL(input).pathname;
+      if (path.endsWith("/issues/12/timeline")) {
+        return Response.json([
+          { type: "commit_ref", ref_commit_sha: shipped },
+          { type: "close", ref_commit_sha: "" },
+        ]);
+      }
+      return Response.json({ message: `unexpected ${path}` });
+    };
+
+    expect(
+      await giteaClosingCommits(
+        { baseUrl: "http://gitea.test", project: "acme/fixture" },
+        12,
+        fetchImpl,
+      ),
+    ).toEqual([shipped]);
   });
 
   test("the newest close entry wins across a reopen", () => {
@@ -1081,7 +1249,7 @@ describe("Gitea closing commit", () => {
       const path = new URL(input).pathname;
       if (path.endsWith("/issues/7/timeline")) {
         return Response.json([
-          { type: "commit_ref", commit_id: "b".repeat(40) },
+          { type: "comment", commit_id: "b".repeat(40) },
           { type: "close", commit_id: null },
         ]);
       }

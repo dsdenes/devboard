@@ -21,6 +21,7 @@ import { acquireLock, liveLockOwner } from "./lock";
 import { originForge, originRepository } from "./repository";
 import { giteaBaseUrl } from "../lib/forge";
 import { controlDirectory, lockPath, runsDirectory, statePath } from "./paths";
+import { clearClosedByRun, closedByRun } from "./self-close";
 import {
   fetchIssueState,
   pollOpenIssues,
@@ -727,7 +728,8 @@ export class IssuesWorker {
           this.nextPollDue = Date.parse(result.until);
           break;
         }
-        case "error": {
+        case "error":
+        case "unsupported": {
           this.state.poll.error = result.detail;
           this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
           this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
@@ -896,7 +898,13 @@ export class IssuesWorker {
       peer = this.connect({
         command: this.agentCommand,
         cwd: this.repoDir,
-        env: environment,
+        // The run's own MCP close names this run, so a poll that drops the
+        // issue can tell the run's completion from an operator's cancellation.
+        env: {
+          ...environment,
+          DEVBOARD_ISSUES_RUN_ID: active.runId,
+          DEVBOARD_ISSUES_ISSUE_NUMBER: String(issue.number),
+        },
         onActivity: (entry) => this.recordActivity(active, entry),
         onQuestion: (question) => this.recordQuestion(active, question),
         onStderr: (text) => firstLine.push(text),
@@ -1006,6 +1014,7 @@ export class IssuesWorker {
   private forget(active: ActiveRun): void {
     this.active.delete(active.issue.number);
     this.state.agents = this.state.agents.filter((agent) => agent.runId !== active.runId);
+    clearClosedByRun(this.stateDir, this.repoDir, active.issue.number, active.runId);
   }
 
   private settle(exitCode: number | null, error: string | null, finishedAt: string): void {
@@ -1117,9 +1126,11 @@ export class IssuesWorker {
   }
 
   /**
-   * A poll that no longer lists a running issue means the operator closed it.
-   * Its peer ends and its run is recorded `stopped`; the issue stays unhandled
-   * and gets no cooldown, so a reopened issue is eligible on a later poll.
+   * A poll that no longer lists a running issue stops that run, unless the run
+   * closed the issue itself: its recorded close lets its own turn end settle it
+   * as succeeded. A stopped run is recorded `stopped`; the issue stays
+   * unhandled and gets no cooldown, so a reopened issue is eligible on a later
+   * poll.
    */
   private stopClosedRuns(open: Set<number>): void {
     for (const active of [...this.active.values()]) {
@@ -1134,6 +1145,11 @@ export class IssuesWorker {
   /** Ends one run without a verdict: no succeeded ledger entry, no cooldown. */
   private abandonRun(active: ActiveRun, notice: string): void {
     if (active.finished) return;
+    // A closed issue is not a cancellation when this run closed it: its turn
+    // end verifies the closure and settles it as succeeded. A settling run has
+    // already stopped working and owns that verification.
+    if (active.settling) return;
+    if (closedByRun(this.stateDir, this.repoDir, active.issue.number) === active.runId) return;
     this.dismissed.set(active.issue.number, this.clock().getTime() + DISMISS_MS);
     const finishedAt = this.clock().toISOString();
     active.finished = true;

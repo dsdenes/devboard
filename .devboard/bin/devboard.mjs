@@ -45,11 +45,19 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOST_HARNESS_PATHS, syncHarnessTrees, syncWrappers } from "../lib/host-sync.mjs";
+import {
+  HOST_HARNESS_PATHS,
+  syncHarnessTrees,
+  syncHostCopies,
+  syncWrappers,
+} from "../lib/host-sync.mjs";
 
 // The sync helpers moved to lib/host-sync.mjs so the dashboard updater runs the
 // same code; they stay re-exported here for the launcher's tests.
 export { HOST_HARNESS_PATHS, syncHarnessTrees, syncTree } from "../lib/host-sync.mjs";
+// The guards are exported for the same tests: the installer's refusal of the
+// source checkout and its tracked-path protection.
+export { canonicalSource, trackedPaths };
 
 const PACKAGE_NAME = "@dsdenes/devboard";
 const PACKAGE_SCOPE = "@dsdenes";
@@ -860,9 +868,23 @@ async function ensureFixedDirectory(path) {
   await replacePathWithDirectory(path);
 }
 
+/**
+ * The host paths under `paths` that git tracks. A probe that cannot answer
+ * throws: an empty set would let an install or a sync replace files git
+ * tracks, so "unknown" is never treated as "none".
+ */
 function trackedPaths(host, paths) {
   const result = run("git", ["-C", host, "ls-files", "-z", "--", ...paths], { cwd: host });
-  if (result.code !== 0) return new Set();
+  if (result.code !== 0) {
+    const reason =
+      result.error instanceof Error && result.error.message.length > 0
+        ? result.error.message
+        : firstLine(result.stderr || result.stdout || `exit code ${result.code}`);
+    throw new LauncherError(
+      `${host}: git could not list the files it tracks (${reason}); ` +
+        "refusing to replace files it cannot protect",
+    );
+  }
   return new Set(
     result.stdout
       .split("\0")
@@ -998,20 +1020,22 @@ function processInfo(pid) {
   }
 }
 
+/**
+ * True when `host` is the canonical devboard source checkout. The package name
+ * in `.devboard/package.json` is the whole signal: it answers without git, and
+ * a git probe that cannot answer must never turn the source tree into an
+ * install target. An installed host names its prefix `devboard-host` instead.
+ */
 function canonicalSource(host) {
   const prefix = join(host, ".devboard");
   const info = lstatOrUndefined(prefix);
   if (info === undefined || info.isSymbolicLink()) return false;
   try {
     const parsed = JSON.parse(readFileSync(join(prefix, "package.json"), "utf8"));
-    if (parsed.name !== PACKAGE_NAME) return false;
+    return parsed.name === PACKAGE_NAME;
   } catch {
     return false;
   }
-  const tracked = run("git", ["-C", host, "ls-files", "--error-unmatch", ".devboard/package.json"], {
-    cwd: host,
-  });
-  return tracked.code === 0;
 }
 
 async function ensureOneDashboard(host, harness, version, requestedPort) {
@@ -1215,16 +1239,14 @@ async function installCommand(options) {
 
 /**
  * Copies the installed package's wrappers and harness trees into the host,
- * preserving git-tracked wrapper files. `update` runs it after a reinstall and
- * also when the prefix already holds the target version: an automatic update
- * may have replaced the package while this code was not running, and returning
- * early would leave the host on the previous release's copies.
+ * preserving git-tracked files in both trees. `update` runs it after a
+ * reinstall and also when the prefix already holds the target version: an
+ * automatic update may have replaced the package while this code was not
+ * running, and returning early would leave the host on the previous release's
+ * copies.
  */
 async function syncInstalledCopies(host, prefix) {
-  const harness = packageDir(prefix);
-  const skip = trackedPaths(host, [".omp/commands", ".omp/extensions"]);
-  await syncWrappers(host, harness, skip);
-  await syncHarnessTrees(host, harness);
+  await syncHostCopies(host, packageDir(prefix));
 }
 
 async function updateCommand(options) {
@@ -1279,14 +1301,13 @@ async function updateCommand(options) {
   );
   const harness = packageDir(prefix);
   if (legacy === null) {
-    const skip = trackedPaths(host, [".omp/commands", ".omp/extensions"]);
-    await syncWrappers(host, harness, skip);
+    await syncHostCopies(host, harness);
   } else {
     // A legacy host keeps its wrapper copies and AGENTS.md; migration only
     // replaces the package and leaves local content byte-for-byte intact.
     console.log("devboard: kept the existing omp wrappers and AGENTS.md");
+    await syncHarnessTrees(host, harness, trackedPaths(host, [".devboard"]));
   }
-  await syncHarnessTrees(host, harness);
   console.log(`devboard: ${PACKAGE_NAME} ${before} -> ${resolved.version} (${resolved.via})`);
   console.log("devboard: the dashboard keeps running; reload it to restart on the new version");
 }

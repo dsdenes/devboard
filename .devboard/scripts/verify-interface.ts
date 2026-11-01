@@ -2045,14 +2045,24 @@ try {
     position: string;
     insideDialog: boolean;
     text: string;
+    frame: { top: number; right: number; bottom: number; left: number; leftColor: string; topColor: string };
   }>(`(() => {
     const node = document.querySelector('[data-testid="save-feedback"]');
+    const style = node === null ? null : getComputedStyle(node);
     return {
       scope: node?.getAttribute("data-scope") ?? "",
       parent: node?.parentElement?.className ?? "",
-      position: node === null ? "" : getComputedStyle(node).position,
+      position: style?.position ?? "",
       insideDialog: node?.closest('[data-testid="providers-dialog"]') !== null,
       text: node?.textContent?.trim() ?? "",
+      frame: {
+        top: style === null ? 0 : parseFloat(style.borderTopWidth),
+        right: style === null ? 0 : parseFloat(style.borderRightWidth),
+        bottom: style === null ? 0 : parseFloat(style.borderBottomWidth),
+        left: style === null ? 0 : parseFloat(style.borderLeftWidth),
+        leftColor: style?.borderLeftColor ?? "",
+        topColor: style?.borderTopColor ?? "",
+      },
     };
   })()`);
   check(
@@ -2063,6 +2073,15 @@ try {
       providerConfirmation.text.includes("Provider saved."),
     "the provider save confirmation is not beside its Save control",
     providerConfirmation,
+  );
+  check(
+    providerConfirmation.frame.top === 1 &&
+      providerConfirmation.frame.right === 1 &&
+      providerConfirmation.frame.bottom === 1 &&
+      providerConfirmation.frame.left === 1 &&
+      providerConfirmation.frame.leftColor === providerConfirmation.frame.topColor,
+    "the save confirmation does not carry a uniform 1px frame",
+    providerConfirmation.frame,
   );
   const added = await page.eval<{ statuses: string[]; text: string; inputs: string[]; html: string }>(`(() => ({
     statuses: [...document.querySelectorAll('[data-testid="provider-status"]')].map((node) => node.textContent?.trim() ?? ""),
@@ -2213,6 +2232,18 @@ try {
     input: boolean;
     focus: string;
     search: { height: number; fontSize: number; className: string };
+    shortcutType: {
+      fontSize: number;
+      fontWeight: string;
+      lineHeight: number;
+      fontFamily: string;
+    } | null;
+    reasonType: {
+      fontSize: number;
+      fontWeight: string;
+      lineHeight: number;
+      letterSpacing: string;
+    } | null;
   }>(`(() => {
     const list = [...document.querySelectorAll('.palette__group, [data-testid="command-item"]')];
     let group = "";
@@ -2231,6 +2262,10 @@ try {
     }).filter((item) => item !== null);
     const search = document.querySelector('[data-testid="command-palette-input"]');
     const searchStyle = search === null ? null : getComputedStyle(search);
+    const shortcut = document.querySelector(".palette__shortcut");
+    const shortcutStyle = shortcut === null ? null : getComputedStyle(shortcut);
+    const reason = document.querySelector(".palette__item-reason");
+    const reasonStyle = reason === null ? null : getComputedStyle(reason);
     return {
       items,
       input: search !== null,
@@ -2239,6 +2274,18 @@ try {
         height: searchStyle === null ? 0 : search.getBoundingClientRect().height,
         fontSize: searchStyle === null ? 0 : Number.parseFloat(searchStyle.fontSize),
         className: search?.className ?? "",
+      },
+      shortcutType: shortcutStyle === null ? null : {
+        fontSize: Number.parseFloat(shortcutStyle.fontSize),
+        fontWeight: shortcutStyle.fontWeight,
+        lineHeight: Number.parseFloat(shortcutStyle.lineHeight),
+        fontFamily: shortcutStyle.fontFamily,
+      },
+      reasonType: reasonStyle === null ? null : {
+        fontSize: Number.parseFloat(reasonStyle.fontSize),
+        fontWeight: reasonStyle.fontWeight,
+        lineHeight: Number.parseFloat(reasonStyle.lineHeight),
+        letterSpacing: reasonStyle.letterSpacing,
       },
     };
   })()`);
@@ -2292,6 +2339,24 @@ try {
   );
   const disabledMirror = palette.items.find((item) => item.id === "flow.pr.merge");
   check(disabledMirror?.disabled === true && disabledMirror.reason.length > 0, "a disabled control is not mirrored with a reason", disabledMirror);
+  check(
+    palette.shortcutType !== null &&
+      Math.abs(palette.shortcutType.fontSize - 11.5) < 0.05 &&
+      palette.shortcutType.fontWeight === "400" &&
+      Math.abs(palette.shortcutType.lineHeight - 16.1) < 0.05 &&
+      palette.shortcutType.fontFamily.toLowerCase().includes("mono"),
+    "the palette shortcut does not render the mono-small type",
+    palette.shortcutType,
+  );
+  check(
+    palette.reasonType !== null &&
+      Math.abs(palette.reasonType.fontSize - 12) < 0.05 &&
+      palette.reasonType.fontWeight === "400" &&
+      Math.abs(palette.reasonType.lineHeight - 17.4) < 0.05 &&
+      palette.reasonType.letterSpacing === "normal",
+    "the palette disabled reason does not render the body-small type",
+    palette.reasonType,
+  );
 
   const visibility = await page.eval<{ missing: string[]; palette: number; visible: number }>(`(() => {
     const paletteIds = new Set([...document.querySelectorAll('[data-testid="command-item"]')].map((item) => item.getAttribute("data-command")));
@@ -4784,6 +4849,10 @@ try {
     dotHeight: number;
     dot: string;
     success: string;
+    chip: boolean;
+    chipRadius: string;
+    pillSurface: string;
+    successSurface: string;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
@@ -4793,6 +4862,8 @@ try {
     const actions = header?.querySelector('.discover-skill__actions');
     const save = document.querySelector('[data-testid="discover-skill-save"]');
     const dot = header?.querySelector('.discover-skill__state-dot');
+    const chip = header?.querySelector('.discover-skill__path');
+    const pill = header?.querySelector('[data-testid="discover-skill-status"]');
     const center = (element) => {
       const box = element?.getBoundingClientRect();
       return box === undefined ? 0 : box.top + box.height / 2;
@@ -4830,6 +4901,10 @@ try {
       dotHeight: dotBox === undefined ? 0 : Math.round(dotBox.height),
       dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
       success: token("--success"),
+      chip: chip !== null && chip !== undefined && chip.classList.contains("code-chip"),
+      chipRadius: chip === null || chip === undefined ? "" : getComputedStyle(chip).borderRadius,
+      pillSurface: pill === null || pill === undefined ? "" : getComputedStyle(pill).backgroundColor,
+      successSurface: token("--success-surface"),
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
@@ -4846,14 +4921,20 @@ try {
     skillLayout,
   );
   check(
-    skillLayout.header === 34 && skillLayout.inline,
-    "the skill header is not one 34px row with the state and actions",
+    skillLayout.header === 44 && skillLayout.inline,
+    "the skill header is not one 44px row with the state and actions",
     skillLayout,
   );
   check(
     skillLayout.headerSurface === skillLayout.raised && skillLayout.dotWidth === 6 &&
       skillLayout.dotHeight === 6 && skillLayout.dot === skillLayout.success,
     "the skill header is not a surface-raised band with a success state dot",
+    skillLayout,
+  );
+  check(
+    skillLayout.chip && skillLayout.chipRadius === "3px" &&
+      skillLayout.pillSurface === skillLayout.successSurface,
+    "the skill header does not read as a path chip beside a success state pill",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
@@ -8625,18 +8706,42 @@ try {
     "the disconnected-command notification",
     20_000,
   );
-  const notification = await page.eval<{ severity: string; text: string; count: number; live: string }>(`(() => {
+  const notification = await page.eval<{
+    severity: string;
+    text: string;
+    count: number;
+    live: string;
+    frame: { top: number; right: number; bottom: number; left: number; leftColor: string; topColor: string };
+  }>(`(() => {
     const entries = [...document.querySelectorAll('[data-testid="notifications"] .notification')];
     const entry = entries.find((item) => item.textContent.includes("Not connected")) ?? entries[0];
+    const style = entry === undefined ? null : getComputedStyle(entry);
     return {
       severity: entry?.getAttribute("data-severity") ?? "",
       text: entry?.textContent?.trim() ?? "",
       count: entries.length,
       live: document.querySelector('[data-testid="notifications"]')?.getAttribute("aria-live") ?? "",
+      frame: {
+        top: style === null ? 0 : parseFloat(style.borderTopWidth),
+        right: style === null ? 0 : parseFloat(style.borderRightWidth),
+        bottom: style === null ? 0 : parseFloat(style.borderBottomWidth),
+        left: style === null ? 0 : parseFloat(style.borderLeftWidth),
+        leftColor: style?.borderLeftColor ?? "",
+        topColor: style?.borderTopColor ?? "",
+      },
     };
   })()`);
   check(notification.severity.length > 0 && notification.text.length > 0, "the notification region has no severity or text", notification);
   check(notification.live === "polite", "the notification region is not a live region", notification);
+  check(
+    notification.frame.top === 1 &&
+      notification.frame.right === 1 &&
+      notification.frame.bottom === 1 &&
+      notification.frame.left === 1 &&
+      notification.frame.leftColor === notification.frame.topColor,
+    "the notification card does not carry a uniform 1px frame",
+    notification.frame,
+  );
   const notificationFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(notificationFocus, "a notification stole focus");
   const dismissControl = await page.eval<{

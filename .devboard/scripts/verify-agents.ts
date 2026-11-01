@@ -1532,6 +1532,33 @@ try {
     (await text(devtools, "agent-blocked")).includes("devboard-watchdog.timer"),
     "the block does not name the timer",
   );
+  const blockedFrame = (await devtools.evaluate(`(() => {
+    const node = document.querySelector('[data-testid="agent-blocked"]');
+    const style = node === null ? null : getComputedStyle(node);
+    return {
+      top: style === null ? 0 : parseFloat(style.borderTopWidth),
+      right: style === null ? 0 : parseFloat(style.borderRightWidth),
+      bottom: style === null ? 0 : parseFloat(style.borderBottomWidth),
+      left: style === null ? 0 : parseFloat(style.borderLeftWidth),
+      leftColor: style?.borderLeftColor ?? "",
+      topColor: style?.borderTopColor ?? "",
+    };
+  })()`)) as {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+    leftColor: string;
+    topColor: string;
+  };
+  assertTrue(
+    blockedFrame.top === 1 &&
+      blockedFrame.right === 1 &&
+      blockedFrame.bottom === 1 &&
+      blockedFrame.left === 1 &&
+      blockedFrame.leftColor === blockedFrame.topColor,
+    `the block does not carry a uniform 1px frame: ${JSON.stringify(blockedFrame)}`,
+  );
   const startDisabled = await devtools.evaluate(
     `document.querySelector('[data-testid="agent-start"]')?.disabled ?? null`,
   );

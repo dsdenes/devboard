@@ -843,7 +843,7 @@
     border: 1px solid var(--border-strong);
     border-radius: 4px;
     bottom: 40px;
-    color: var(--text);
+    color: var(--foreground);
     display: flex;
     gap: 8px;
     left: 50%;
@@ -892,14 +892,14 @@
     align-items: center;
     background: none;
     border: 0;
-    color: var(--muted);
+    color: var(--muted-foreground);
     cursor: pointer;
     display: flex;
     padding: 2px;
   }
 
   .feedback-result__close:hover {
-    color: var(--text);
+    color: var(--foreground);
   }
 
   @keyframes feedback-toast-in {
@@ -948,7 +948,7 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 4px;
-    color: var(--text);
+    color: var(--foreground);
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -993,7 +993,7 @@
   .feedback-close {
     background: none;
     border: none;
-    color: var(--muted);
+    color: var(--muted-foreground);
     cursor: pointer;
     font-size: 12px;
     line-height: 1;
@@ -1001,11 +1001,11 @@
   }
 
   .feedback-close:hover {
-    color: var(--text);
+    color: var(--foreground);
   }
 
   .feedback-selector {
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 11.5px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1044,7 +1044,7 @@
   }
 
   .feedback-message__who {
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -1055,7 +1055,7 @@
   .feedback-turn {
     border: 1px solid var(--border);
     border-radius: 6px;
-    color: var(--text);
+    color: var(--foreground);
     font-size: 12px;
     margin: 0;
     overflow-wrap: anywhere;
@@ -1077,7 +1077,7 @@
     background: var(--background);
     border: 1px solid var(--border);
     border-radius: 6px;
-    color: var(--text);
+    color: var(--foreground);
     font: inherit;
     font-size: 12px;
     padding: 8px;
@@ -1119,7 +1119,7 @@
   }
 
   .feedback-status {
-    color: var(--muted);
+    color: var(--muted-foreground);
     font-size: 12px;
     margin: 0;
   }
