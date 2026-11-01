@@ -32,6 +32,7 @@ export {
   isSha,
   parseJsonArray,
   parseJsonLines,
+  releaseAtClose,
   resolveShippedVersion,
   shaTokens,
   shippedVersion,
@@ -44,6 +45,8 @@ export interface ScoutGitHubIssue {
   url: string;
   state: "open" | "closed";
   createdAt: string;
+  /** When the issue was closed, or null while it is open. */
+  closedAt: string | null;
   body: string;
 }
 
@@ -159,6 +162,7 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
           url: issue.url,
           state: issue.state,
           createdAt: issue.createdAt,
+          closedAt: issue.closedAt,
           body: issue.body,
         }));
     },
@@ -224,7 +228,7 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
         "--limit",
         "1000",
         "--json",
-        "number,title,url,state,createdAt,body",
+        "number,title,url,state,createdAt,closedAt,body",
       ]);
       const entries = parseIssues(text);
       if (entries === undefined) throw new Error("gh issue list did not print a JSON array");
@@ -253,6 +257,10 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
           url: record.url,
           state,
           createdAt: record.createdAt,
+          closedAt:
+            typeof record.closedAt === "string" && record.closedAt.length > 0
+              ? record.closedAt
+              : null,
           body: record.body,
         });
       }

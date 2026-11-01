@@ -25,6 +25,8 @@ export interface DesignForgeIssue {
   url: string;
   state: "open" | "closed";
   createdAt: string;
+  /** When the issue was closed, or null while it is open. */
+  closedAt: string | null;
   body: string;
 }
 
@@ -114,6 +116,7 @@ function createDesignGitea(options: DesignForgeOptions): DesignForgeClient {
           url: issue.url,
           state: issue.state,
           createdAt: issue.createdAt,
+          closedAt: issue.closedAt,
           body: issue.body,
         }));
     },
@@ -173,7 +176,7 @@ export function createDesignForge(options: DesignForgeOptions): DesignForgeClien
         "--limit",
         "1000",
         "--json",
-        "number,title,url,state,createdAt,body",
+        "number,title,url,state,createdAt,closedAt,body",
       ]);
       const entries = parseIssues(text);
       if (entries === undefined) throw new Error("gh issue list did not print a JSON array");
@@ -201,6 +204,10 @@ export function createDesignForge(options: DesignForgeOptions): DesignForgeClien
           url: record.url,
           state: record.state.toLowerCase() === "closed" ? "closed" : "open",
           createdAt: record.createdAt,
+          closedAt:
+            typeof record.closedAt === "string" && record.closedAt.length > 0
+              ? record.closedAt
+              : null,
           body: record.body,
         });
       }

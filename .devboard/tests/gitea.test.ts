@@ -15,7 +15,8 @@ import {
   giteaListReleases,
   type FetchLike,
 } from "../lib/gitea.ts";
-import { shippedVersion } from "../lib/github-release.ts";
+import { shippedVersion, resolveShippedVersion } from "../lib/github-release.ts";
+import { createGiteaVersionClient } from "../lib/gitea-release.ts";
 import { createScoutGitHub } from "../issues/scout/github.ts";
 import { createDesignForge } from "../issues/design/forge.ts";
 import { pollOpenIssues } from "../issues/tracker";
@@ -964,6 +965,37 @@ describe("Gitea watchdog activity", () => {
         version: "v1.0.0",
       },
     ]);
+  });
+
+  test("skips a SHA-shaped token the forge reports as no such commit", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const short = tagged.commit.slice(0, 7);
+    const target = { baseUrl: "http://gitea.test", project: "acme/fixture" };
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/issues/7/timeline")) {
+        return Response.json([{ type: "close", ref_commit_sha: "" }]);
+      }
+      if (url.pathname.endsWith("/issues/7/comments")) {
+        return Response.json([{ body: `shipped in ${short}; epoch 1793310097358` }]);
+      }
+      if (url.pathname.endsWith(`/git/commits/${short}`)) {
+        return Response.json({ sha: tagged.commit });
+      }
+      if (url.pathname.includes("/git/commits/")) {
+        return new Response(JSON.stringify({ message: "commit does not exist" }), {
+          status: 404,
+        });
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const client = createGiteaVersionClient(target, tagged.directory, fetchImpl);
+    const resolution = await resolveShippedVersion(
+      { number: 7, state: "closed" },
+      client,
+      [{ tag: "v1.0.0", publishedAt: "2026-09-01T00:00:00Z" }],
+    );
+    expect(resolution).toEqual({ version: "v1.0.0", error: null, inferred: false });
   });
 
   test("reads the commit the forge linked when an API close names none", async () => {

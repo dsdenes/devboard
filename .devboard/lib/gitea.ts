@@ -89,6 +89,8 @@ export interface GiteaIssueDocument {
   title: string;
   url: string;
   createdAt: string;
+  /** When the issue was closed, ISO 8601; null while it is open. */
+  closedAt: string | null;
   state: "open" | "closed";
   body: string;
   labels: string[];
@@ -506,6 +508,10 @@ function issueFromDocument(value: unknown): GiteaIssueDocument | undefined {
     title: record.title,
     url: record.html_url,
     createdAt,
+    closedAt:
+      typeof record.closed_at === "string" && record.closed_at.length > 0
+        ? record.closed_at
+        : null,
     state: record.state === "closed" ? "closed" : "open",
     body: typeof record.body === "string" ? record.body : "",
     labels: labelNames(record.labels),

@@ -168,11 +168,19 @@ function createWatchdogGiteaReader(
           undefined,
           options.fetchImpl,
         );
-        const state =
-          typeof issue === "object" && issue !== null && "state" in issue
-            ? issue.state
-            : undefined;
-        if (state !== "closed") {
+        const record = (typeof issue === "object" && issue !== null ? issue : {}) as Record<
+          string,
+          unknown
+        >;
+        const createdAt =
+          typeof record.created_at === "string" && record.created_at.length > 0
+            ? record.created_at
+            : null;
+        const closedAt =
+          typeof record.closed_at === "string" && record.closed_at.length > 0
+            ? record.closed_at
+            : null;
+        if (record.state !== "closed") {
           facts.push({ url, state: "pending", version: null });
           continue;
         }
@@ -182,7 +190,7 @@ function createWatchdogGiteaReader(
           releases.set(locator.repository, published);
         }
         const version = await shippedVersion(
-          { number: locator.number, state: "closed" },
+          { number: locator.number, state: "closed", createdAt, closedAt },
           createGiteaVersionClient(target, options.repoDir, options.fetchImpl),
           published,
         );
@@ -228,7 +236,7 @@ export function createWatchdogGitHubReader(
           throw new Error(`not a GitHub issue URL: ${url}`);
         }
         const github = client(locator.repository);
-        const state = await github.issueState(locator.number);
+        const { state, createdAt, closedAt } = await github.issueTimes(locator.number);
         if (state === "open") {
           facts.push({ url, state: "pending", version: null });
           continue;
@@ -239,7 +247,7 @@ export function createWatchdogGitHubReader(
           releases.set(locator.repository, published);
         }
         const version = await shippedVersion(
-          { number: locator.number, state: "closed" },
+          { number: locator.number, state: "closed", createdAt, closedAt },
           github,
           published,
         );
