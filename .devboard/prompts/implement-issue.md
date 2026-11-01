@@ -32,7 +32,7 @@ context, but you never edit, comment on, close, or reopen another issue.
   between successive forge reads and writes.
 - Read every Devboard fact through the registered MCP tools — `devboard_status`, `issue_get`,
   `issues_list`, `issue_close`, `verification_run`, `goal_get`, `journal_search`, and
-  `agent_sessions_list` — never by spawning `bun .devboard/call-tool.ts <tool>` or any other
+  `agent_sessions_list` — never by spawning the harness's `call-tool` bridge or any other
   subprocess that wraps them: the bridge starts a second Bun process and duplicates a capability
   the session already has. Never reach for that bridge for a Devboard state read.
 - Never orient the session with a shell probe, and never chain orientation probes: no
