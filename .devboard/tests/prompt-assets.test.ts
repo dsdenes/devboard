@@ -19,7 +19,7 @@ const roots: string[] = [];
  * goal specs, draft proposals, and optional harness instructions. The installer
  * never ships them.
  */
-const HOST_OWNED = ["AGENTS.md", "goals", "goal-proposals"];
+const HOST_OWNED = ["AGENTS.md", "goals", "goal-proposals", ".tmp"];
 
 function temporaryDirectory(name: string): string {
 	mkdirSync(testRoot, { recursive: true });

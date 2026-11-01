@@ -1640,6 +1640,15 @@ describe("discover remote target", () => {
       }
 
       // The dashboard that owned the run removes its checkout and its claim.
+      // Stop closes the crawl in the background, so wait for that teardown.
+      const deadline = Date.now() + 10_000;
+      while (
+        Date.now() < deadline &&
+        (scratchEntries(fixture).some((entry) => entry.startsWith(".staging-")) ||
+          existsSync(join(scratch, ".runs")))
+      ) {
+        await Bun.sleep(25);
+      }
       expect(
         scratchEntries(fixture).filter((entry) => entry.startsWith(".staging-")),
       ).toEqual([]);

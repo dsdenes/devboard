@@ -538,6 +538,9 @@ try {
   await devtools.connect();
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
+  await devtools.send("Page.navigate", {
+    url: `http://127.0.0.1:${dashboardA.port}/`,
+  });
 
   await click(devtools, "mode-issues");
   await waitFor(

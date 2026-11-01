@@ -1,7 +1,15 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
+
+beforeAll(() => {
+  if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
+});
+
+afterAll(() => {
+  if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
+});
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the testing library load after registration.

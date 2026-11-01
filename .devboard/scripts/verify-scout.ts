@@ -607,6 +607,9 @@ try {
   await devtools.connect();
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
+  await devtools.send("Page.navigate", {
+    url: `http://127.0.0.1:${dashboard.port}/`,
+  });
 
   /* ---------------------------------------------------------------- */
   /* 1. Open Auto Scout without starting a worker                      */
