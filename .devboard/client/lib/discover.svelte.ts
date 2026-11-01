@@ -15,6 +15,7 @@ import {
 import type {
   ConceptSignificance,
   ConceptUsage,
+  Contribution,
   DiscoverAgentPrompt,
   DiscoverAgentState,
   DiscoverSkill,
@@ -68,7 +69,7 @@ interface SkillDraftScope {
 const EMPTY_DRAFT_SCOPE: SkillDraftScope = { drafts: {}, dirty: {} };
 
 /**
- * The identity drafts are scoped to. Every project shares the five fixed skill
+ * The identity drafts are scoped to. Every project shares the six fixed skill
  * names, so the target — not the name — decides which unsaved text belongs to
  * which project.
  */
@@ -229,7 +230,7 @@ export class DiscoverStore {
     return undefined;
   }
 
-  /** The six discovery cards, in sidebar order. */
+  /** The seven discovery cards, in sidebar order. */
   get agents(): DiscoverAgentState[] {
     return Array.isArray(this.state?.agents) ? this.state.agents : [];
   }
@@ -297,8 +298,17 @@ export class DiscoverStore {
     return this.repositories[name] ?? this.repositories[name.toLowerCase()] ?? null;
   }
 
+  get contribution(): Contribution | null {
+    return this.state?.contribution ?? null;
+  }
+
   get hasArtifacts(): boolean {
-    return this.sheet !== null || this.contexts.length > 0 || this.skills.length > 0;
+    return (
+      this.sheet !== null ||
+      this.contexts.length > 0 ||
+      this.skills.length > 0 ||
+      this.contribution !== null
+    );
   }
 
   get displayError(): string | null {
@@ -390,7 +400,7 @@ export class DiscoverStore {
     return this.dirty[name] === true;
   }
 
-  /** Runs the six agents in their fixed order from the Overview page. */
+  /** Runs the seven agents in their fixed order from the Overview page. */
   start(): void {
     if (this.startDisabled) return;
     this.socket.send({ type: "discoverProject" });

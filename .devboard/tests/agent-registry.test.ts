@@ -286,9 +286,10 @@ describe("background agent registry", () => {
     bridge.dispose();
   });
 
-  test("ships the six discovery agents with one prompt file and command each", () => {
+  test("ships the seven discovery agents with one prompt file and command each", () => {
     expect(DISCOVER_AGENT_IDS).toEqual([
       "sheet",
+      "discover-contribution",
       "discover-testing-strategy",
       "discover-naming-conventions",
       "discover-coding-conventions",
@@ -298,6 +299,7 @@ describe("background agent registry", () => {
     expect(DISCOVER_AGENTS.map((descriptor) => descriptor.id)).toEqual([...DISCOVER_AGENT_IDS]);
     expect(DISCOVER_AGENTS.map((descriptor) => descriptor.label)).toEqual([
       "Data Sheet",
+      "Contribution Agent",
       "Testing Strategy",
       "Naming Conventions",
       "Coding Conventions",
@@ -311,11 +313,12 @@ describe("background agent registry", () => {
       "discover-naming-conventions",
       "discover-coding-conventions",
       "discover-architecture-boundaries",
+      "discover-contribution",
     ]);
     const promptFiles = new Set(DISCOVER_AGENTS.map((descriptor) => descriptor.promptFile));
     const commands = new Set(DISCOVER_AGENTS.map((descriptor) => descriptor.command));
-    expect(promptFiles.size).toBe(6);
-    expect(commands.size).toBe(6);
+    expect(promptFiles.size).toBe(7);
+    expect(commands.size).toBe(7);
     for (const descriptor of DISCOVER_AGENTS) {
       expect(descriptor.command).toBe(
         descriptor.id === "sheet" ? "/discover-sheet" : `/${descriptor.id}`,
@@ -332,6 +335,12 @@ describe("background agent registry", () => {
     const glossary = discoverAgent("discover-glossary");
     expect(glossary?.skill).toBe("discover-glossary");
     expect(glossary?.glossary).toBe(true);
+    const contribution = discoverAgent("discover-contribution");
+    expect(contribution?.label).toBe("Contribution Agent");
+    expect(contribution?.command).toBe("/discover-contribution");
+    expect(contribution?.promptFile).toBe("discover-contribution.md");
+    expect(contribution?.skill).toBe("discover-contribution");
+    expect(contribution?.glossary).toBe(false);
     expect(isDiscoverAgentId("discover-sheet")).toBe(false);
     expect(isDiscoverAgentId(42)).toBe(false);
     expect(discoverAgent("ghost")).toBeUndefined();

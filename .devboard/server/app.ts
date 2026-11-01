@@ -1265,7 +1265,7 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
     }
   }
 
-  // Discover's published manifest names the five skills even when the
+  // Discover's published manifest names its skills even when the
   // developer deleted one; a missing skill is listed instead of vanishing.
   const published = readArtifacts(dirname(dirname(root)));
   const discoverStates = new Map<string, SkillSummary>();
@@ -2608,7 +2608,7 @@ export function createApp(options: AppOptions) {
   });
 
   /**
-   * The prompt half of each Discover card. Each of the six reads, saves, and
+   * The prompt half of each Discover card. Each of the seven reads, saves, and
    * chats about its own prompt file; an installed host shows the bytes
    * read-only, and every prompt write and chat is refused there.
    */
@@ -3146,6 +3146,7 @@ export function createApp(options: AppOptions) {
           ? {}
           : dependencyRepositories(root, artifacts.sheet),
       glossaries: artifacts?.glossaries ?? [],
+      contribution: artifacts?.contribution ?? null,
       glossaryUsage: artifacts?.usage ?? {},
       glossarySignificance: artifacts?.significance ?? {},
       decisions: artifacts?.decisions ?? [],
@@ -3631,7 +3632,7 @@ export function createApp(options: AppOptions) {
     finishDiscoverCommand(target, "single", agent);
   }
 
-  /** Runs the six agents in the fixed order, publishing each slice as it lands. */
+  /** Runs the seven agents in the fixed order, publishing each slice as it lands. */
   async function startDiscoverAll(ws: { send(data: string): unknown }): Promise<void> {
     if (discoverStartRefusal(ws)) return;
     const target = await discoverRoot(ws);
@@ -3936,7 +3937,7 @@ export function createApp(options: AppOptions) {
 
   /**
    * A skill edit belongs to the target it was written against. Every project
-   * shares the five fixed skill names, so a stale client must not have its text
+   * shares the six fixed skill names, so a stale client must not have its text
    * applied through `targetRoot()` after the active target changed.
    */
   function activeSkillSaveTarget(): SkillSaveTarget {

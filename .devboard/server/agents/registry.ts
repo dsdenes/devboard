@@ -695,7 +695,7 @@ export const agentRegistry: AgentRegistry = defineAgentRegistry(DEFAULT_AGENT_DE
 // ------------------------------------------------------------ discover agents
 
 /**
- * The six independently triggerable Discover agents. Unlike a background
+ * The seven independently triggerable Discover agents. Unlike a background
  * agent, each one is a one-shot ACP turn: it owns exactly one prompt file, one
  * slash command, and one slice of the published Discover artifacts. The client
  * imports this table for labels and order; the server imports it for validation
@@ -704,6 +704,7 @@ export const agentRegistry: AgentRegistry = defineAgentRegistry(DEFAULT_AGENT_DE
 
 export const DISCOVER_AGENT_IDS = [
   "sheet",
+  "discover-contribution",
   "discover-testing-strategy",
   "discover-naming-conventions",
   "discover-coding-conventions",
@@ -734,6 +735,14 @@ export const DISCOVER_AGENTS: readonly DiscoverAgentDescriptor[] = Object.freeze
     command: "/discover-sheet",
     promptFile: "discover-sheet.md",
     skill: null,
+    glossary: false,
+  },
+  {
+    id: "discover-contribution",
+    label: "Contribution Agent",
+    command: "/discover-contribution",
+    promptFile: "discover-contribution.md",
+    skill: "discover-contribution",
     glossary: false,
   },
   {
@@ -778,7 +787,7 @@ export const DISCOVER_AGENTS: readonly DiscoverAgentDescriptor[] = Object.freeze
   },
 ]);
 
-/** The fixed Run all order: the sheet and glossary ground the four skills. */
+/** The fixed Run all order: the sheet and glossary ground the skills that follow. */
 export const DISCOVER_RUN_ORDER: readonly DiscoverAgentId[] = Object.freeze([
   "sheet",
   "discover-glossary",
@@ -786,13 +795,14 @@ export const DISCOVER_RUN_ORDER: readonly DiscoverAgentId[] = Object.freeze([
   "discover-naming-conventions",
   "discover-coding-conventions",
   "discover-architecture-boundaries",
+  "discover-contribution",
 ]);
 
 const DISCOVER_AGENTS_BY_ID = new Map<string, DiscoverAgentDescriptor>(
   DISCOVER_AGENTS.map((descriptor) => [descriptor.id, descriptor] as const),
 );
 
-/** True for one of the six ids; never for another string. */
+/** True for one of the seven ids; never for another string. */
 export function isDiscoverAgentId(value: unknown): value is DiscoverAgentId {
   return typeof value === "string" && DISCOVER_AGENTS_BY_ID.has(value);
 }

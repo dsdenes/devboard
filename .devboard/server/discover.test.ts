@@ -41,6 +41,7 @@ const DISCOVER_SKILLS = [
   "discover-coding-conventions",
   "discover-architecture-boundaries",
   "discover-glossary",
+  "discover-contribution",
 ];
 
 mkdirSync(TEST_ROOT, { recursive: true });
@@ -323,6 +324,7 @@ interface DiscoverState {
   glossarySignificance: Record<string, Record<string, { score: number; reason: string }>>;
   decisions: Record<string, unknown>[];
   skills: Record<string, unknown>[];
+  contribution: Record<string, unknown> | null;
 }
 
 function stateOf(message: Record<string, unknown>): DiscoverState {
@@ -456,7 +458,7 @@ describe("discover mode", () => {
   );
 
   test(
-    "runs the six agents in Run all order and publishes each one's slice",
+    "runs the seven agents in Run all order and publishes each one's slice",
     async () => {
       const { server, fixture, url } = startServer();
       const client = await connect(url);
@@ -467,14 +469,15 @@ describe("discover mode", () => {
 
         // One peer per agent, in the fixed Run all order, each with its own
         // command and its own staging directory.
-        expect(spawnCount(fixture.logPath)).toBe(6);
+        expect(spawnCount(fixture.logPath)).toBe(7);
         const sent = prompts(fixture.logPath);
         const commands = ["/discover-sheet", "/discover-glossary",
           "/discover-testing-strategy", "/discover-naming-conventions",
-          "/discover-coding-conventions", "/discover-architecture-boundaries"];
+          "/discover-coding-conventions", "/discover-architecture-boundaries",
+          "/discover-contribution"];
         expect(sent.map((prompt) => prompt.split(" ")[0])).toEqual(commands);
         const stagingPaths = sent.map((prompt) => prompt.slice(prompt.indexOf(" ") + 1));
-        expect(new Set(stagingPaths).size).toBe(6);
+        expect(new Set(stagingPaths).size).toBe(7);
         for (const path of stagingPaths) {
           expect(path).toMatch(/\.omp\/discover\/staging\/run-/);
         }
@@ -508,6 +511,7 @@ describe("discover mode", () => {
         for (const relative of [
           ".omp/discover/manifest.json",
           ".omp/discover/sheet.json",
+          ".omp/discover/contribution.json",
           ".omp/discover/decisions.json",
           ".omp/discover/significance.json",
           ".omp/discover/glossary/orders.glossary.yaml",
@@ -1075,7 +1079,7 @@ describe("discover mode", () => {
           target: { kind: "host" },
         });
         const unknown = await client.waitFor((message) => message.type === "discoverError");
-        expect(String(unknown.message)).toContain("not one of the five");
+        expect(String(unknown.message)).toContain("not a Discover skill");
       } finally {
         client.close();
         server.stop(true);
@@ -1915,6 +1919,13 @@ function agentRow(state: DiscoverState, id: string): DiscoverAgentRow | undefine
 /** Every path one agent owns, relative to the target root. */
 function ownedPaths(agent: string): Set<string> {
   if (agent === "sheet") return new Set([".omp/discover/sheet.json"]);
+  if (agent === "discover-contribution") {
+    return new Set([
+      ".omp/discover/contribution.json",
+      ".omp/discover/skills/discover-contribution/SKILL.md",
+      ".omp/skills/discover-contribution/SKILL.md",
+    ]);
+  }
   if (agent === "discover-glossary") {
     return new Set([
       ".omp/discover/glossary/orders.glossary.yaml",
@@ -1960,10 +1971,11 @@ async function runAgent(client: TestClient, agent: string): Promise<DiscoverStat
 
 describe("discovery agents", () => {
   test(
-    "each of the six triggers sends exactly its own prompt and staging directory",
+    "each of the seven triggers sends exactly its own prompt and staging directory",
     async () => {
       const agents: Array<{ id: string; command: string }> = [
         { id: "sheet", command: "/discover-sheet" },
+        { id: "discover-contribution", command: "/discover-contribution" },
         { id: "discover-testing-strategy", command: "/discover-testing-strategy" },
         { id: "discover-naming-conventions", command: "/discover-naming-conventions" },
         { id: "discover-coding-conventions", command: "/discover-coding-conventions" },
@@ -2029,6 +2041,7 @@ describe("discovery agents", () => {
           "discover-naming-conventions",
           "discover-coding-conventions",
           "discover-architecture-boundaries",
+          "discover-contribution",
         ]) {
           const before = ompBytes(fixture.root);
           const spawns = spawnCount(fixture.logPath);
@@ -2075,6 +2088,167 @@ describe("discovery agents", () => {
       }
     },
     30000,
+  );
+
+  test(
+    "a host with no prior artifacts publishes the contribution slice alone",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        const state = await runAgent(client, "discover-contribution");
+        expect(state.error).toBeNull();
+        expect(state.sheet).toBeNull();
+        expect(state.glossaries).toEqual([]);
+        expect(state.skills.map((skill) => skill.name)).toEqual(["discover-contribution"]);
+        expect(state.contribution).not.toBeNull();
+        const contribution = state.contribution as Record<string, unknown>;
+        expect((contribution.sections as Array<Record<string, unknown>>).map((section) => section.id)).toEqual([
+          "workflow",
+          "testing",
+          "pull-request-style",
+          "pull-request-size",
+          "conventions",
+          "review",
+          "documentation",
+          "hotspots",
+          "evidence",
+        ]);
+        expect((contribution.sample as unknown[]).length).toBe(3);
+        expect(existsSync(join(fixture.root, ".omp", "discover", "sheet.json"))).toBe(false);
+        expect(
+          existsSync(join(fixture.root, ".omp", "discover", "glossary", "orders.glossary.yaml")),
+        ).toBe(false);
+        expect(
+          existsSync(
+            join(fixture.root, ".omp", "discover", "skills", "discover-contribution", "SKILL.md"),
+          ),
+        ).toBe(true);
+        expect(
+          existsSync(join(fixture.root, ".omp", "skills", "discover-contribution", "SKILL.md")),
+        ).toBe(true);
+        const manifest = state.manifest as Record<string, unknown>;
+        expect((manifest.paths as Record<string, unknown>).contribution).toBe(
+          ".omp/discover/contribution.json",
+        );
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "two contribution runs against the same commit and merge set publish the same structure",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        await runAgent(client, "discover-contribution");
+        const first = JSON.parse(
+          readFileSync(join(fixture.root, ".omp", "discover", "contribution.json"), "utf8"),
+        ) as Record<string, unknown>;
+        const firstSkill = readFileSync(
+          join(fixture.root, ".omp", "skills", "discover-contribution", "SKILL.md"),
+          "utf8",
+        );
+        await runAgent(client, "discover-contribution");
+        const second = JSON.parse(
+          readFileSync(join(fixture.root, ".omp", "discover", "contribution.json"), "utf8"),
+        ) as Record<string, unknown>;
+        const secondSkill = readFileSync(
+          join(fixture.root, ".omp", "skills", "discover-contribution", "SKILL.md"),
+          "utf8",
+        );
+        delete first.freshness;
+        delete second.freshness;
+        expect(second).toEqual(first);
+        expect(secondSkill).toBe(firstSkill);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    60000,
+  );
+
+  test(
+    "a contribution trigger without a forge corpus publishes git-derived facts and unknown profile facts",
+    async () => {
+      const { server, fixture, url } = startServer({
+        stub: ["--discover", "--discover-contribution-no-forge"],
+      });
+      const client = await connect(url);
+      try {
+        const state = await runAgent(client, "discover-contribution");
+        const contribution = state.contribution as Record<string, unknown>;
+        const sections = contribution.sections as Array<Record<string, unknown>>;
+        const byId = new Map(sections.map((section) => [String(section.id), section]));
+        const evidence = (byId.get("evidence") as Record<string, unknown>).facts as Array<
+          Record<string, unknown>
+        >;
+        expect(evidence.find((fact) => fact.key === "forge")?.confidence).toBe("unknown");
+        expect(evidence.find((fact) => fact.key === "closedUnmerged")?.confidence).toBe("unknown");
+        const style = (byId.get("pull-request-style") as Record<string, unknown>).facts as Array<
+          Record<string, unknown>
+        >;
+        expect(style.every((fact) => fact.confidence === "unknown")).toBe(true);
+        const workflow = (byId.get("workflow") as Record<string, unknown>).facts as Array<
+          Record<string, unknown>
+        >;
+        expect(workflow.find((fact) => fact.key === "install")?.value).toBe("bun install");
+        const skill = readFileSync(
+          join(fixture.root, ".omp", "skills", "discover-contribution", "SKILL.md"),
+          "utf8",
+        );
+        expect(skill).toContain("unknown");
+        expect(skill).toContain("No forge credential or network was available for the target.");
+        expect(skill).not.toContain("> PR #");
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "an invalid contribution slice publishes nothing and names the reason",
+    async () => {
+      for (const defect of [
+        "missing-file",
+        "unmerged-excerpt",
+        "secret",
+        "absolute",
+        "no-value",
+        "unknown-value",
+        "bad-skill",
+      ]) {
+        const { server, fixture, url } = startServer({
+          stub: ["--discover", `--discover-contribution-invalid=${defect}`],
+        });
+        const client = await connect(url);
+        try {
+          const before = ompBytes(fixture.root);
+          client.send({ type: "discoverAgent", agent: "discover-contribution" });
+          await client.waitFor((message) => message.type === "discoverStarted");
+          const errored = await client.waitFor((message) => message.type === "discoverError");
+          expect(String(errored.message)).toContain("Contribution Agent failed");
+          expect(String(errored.message).length).toBeGreaterThan(30);
+          const stopped = await client.waitFor((message) => message.type === "discoverStopped");
+          expect(stopped.completed).toBe(false);
+          expect(ompBytes(fixture.root)).toEqual(before);
+          const state = await discoverState(client);
+          expect(agentRow(state, "discover-contribution")?.state).toBe("failed");
+          expect(state.contribution).toBeNull();
+        } finally {
+          client.close();
+          server.stop(true);
+        }
+      }
+    },
+    120000,
   );
 
   test(
@@ -2237,6 +2411,8 @@ describe("discovery agents", () => {
         expect(agentRow(state, "discover-naming-conventions")?.state).toBe("failed");
         expect(agentRow(state, "discover-coding-conventions")?.state).toBe("idle");
         expect(agentRow(state, "discover-architecture-boundaries")?.state).toBe("idle");
+        expect(agentRow(state, "discover-contribution")?.state).toBe("idle");
+        expect(state.contribution).toBeNull();
 
         // The successful slices stay published and the failed one publishes nothing.
         expect(existsSync(join(fixture.root, ".omp", "discover", "sheet.json"))).toBe(true);
@@ -2277,6 +2453,7 @@ describe("discovery agents", () => {
       const expected = new Map<string, string>();
       for (const file of [
         "discover-sheet.md",
+        "discover-contribution.md",
         "discover-testing-strategy.md",
         "discover-naming-conventions.md",
         "discover-coding-conventions.md",
@@ -2294,6 +2471,7 @@ describe("discovery agents", () => {
         const agents = agentsOf(state);
         expect(agents.map((agent) => agent.id)).toEqual([
           "sheet",
+          "discover-contribution",
           "discover-testing-strategy",
           "discover-naming-conventions",
           "discover-coding-conventions",
@@ -2308,7 +2486,7 @@ describe("discovery agents", () => {
           expect(agent.prompt?.text).toBe(expected.get(command));
           texts.add(agent.prompt?.text ?? "");
         }
-        expect(texts.size).toBe(6);
+        expect(texts.size).toBe(7);
       } finally {
         client.close();
         server.stop(true);

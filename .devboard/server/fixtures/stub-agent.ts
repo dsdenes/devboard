@@ -20,8 +20,8 @@ import { GOAL_SLUG_PROMPT_MARKER } from "../goal-slug";
  * It answers the protocol handshake, streams a little activity, optionally
  * interviews the developer, writes `status: accepted` into the frontmatter of
  * the record named in the prompt, and ends the turn. With `--discover` it
- * instead stages the sheet, glossary, and five Discover skills named by
- * `/discover <staging-dir>`.
+ * instead stages the sheet, glossary, contribution document, and six Discover
+ * skills named by the agent's `/discover-*` command.
  */
 
 function argument(name: string): string | undefined {
@@ -174,6 +174,10 @@ const discoverNoExit = process.argv.includes("--discover-no-exit");
 const discoverDelayMs = Number(argument("discover-delay-ms") ?? 0);
 /** One agent id whose turn fails before staging, for the Run all halt drill. */
 const discoverFailAgent = argument("discover-fail-agent");
+/** Stages no forge corpus, the degraded shape a host without credentials produces. */
+const discoverContributionNoForge = process.argv.includes("--discover-contribution-no-forge");
+/** One staged contribution defect, for the validator refusal drills. */
+const discoverContributionInvalid = argument("discover-contribution-invalid") ?? "";
 
 /** Ask mode: a read-only answer, preceded by thought and tool noise. */
 const ask = process.argv.includes("--ask");
@@ -1535,8 +1539,313 @@ function discoverSkillText(skill: DiscoverSkill): string {
   ].join("\n");
 }
 
+/** Marker a closed-unmerged fixture body carries; no artifact may quote it. */
+const CLOSED_UNMERGED_MARKER = "CLOSED-UNMERGED-DESCRIPTION-MUST-NOT-LEAK";
+
+interface StubMergedPullRequest {
+  number: number;
+  title: string;
+  body: string;
+  mergedAt: string;
+  additions: number;
+  deletions: number;
+  files: string[];
+  testFiles: number;
+  documentationFiles: number;
+  labels: string[];
+  draft: boolean;
+  approvals: number;
+  checks: string[];
+  commits: Array<{ subject: string; body: string }>;
+  branch: string;
+  mergeMethod: "merge" | "squash" | "rebase";
+  references: number[];
+}
+
+/** Four merged pull requests, newest first, and one closed-unmerged number. */
+const DISCOVER_MERGED_PULL_REQUESTS: StubMergedPullRequest[] = [
+  {
+    number: 12,
+    title: "feat(orders): keep empty order totals at zero",
+    body: "## Summary\n- Return zero for an empty order.\n- Cover the empty case.\n\nCloses #40",
+    mergedAt: "2026-05-04T10:00:00.000Z",
+    additions: 12,
+    deletions: 3,
+    files: ["src/order.ts", "test/order.test.ts"],
+    testFiles: 1,
+    documentationFiles: 0,
+    labels: ["area:orders"],
+    draft: false,
+    approvals: 1,
+    checks: ["ci/test"],
+    commits: [{ subject: "feat(orders): return zero for empty totals", body: "" }],
+    branch: "feat/empty-order-total",
+    mergeMethod: "squash",
+    references: [40],
+  },
+  {
+    number: 11,
+    title: "fix(checkout): reuse the order total",
+    body:
+      "## Summary\n- Reuse the existing total.\n\n## Test plan\n- Run the suite.\n\nCloses #38",
+    mergedAt: "2026-04-20T09:30:00.000Z",
+    additions: 20,
+    deletions: 5,
+    files: ["src/checkout/flow.ts", "test/order.test.ts", "docs/orders.md"],
+    testFiles: 1,
+    documentationFiles: 1,
+    labels: ["area:checkout"],
+    draft: false,
+    approvals: 1,
+    checks: ["ci/lint", "ci/test"],
+    commits: [{ subject: "fix(checkout): reuse the order total", body: "" }],
+    branch: "fix/reuse-order-total",
+    mergeMethod: "squash",
+    references: [38],
+  },
+  {
+    number: 9,
+    title: "docs(orders): document the total",
+    body: "## Summary\nUpdate the guide.\n\n## Checklist\n- [x] Docs updated",
+    mergedAt: "2026-03-15T12:00:00.000Z",
+    additions: 4,
+    deletions: 0,
+    files: ["CHANGELOG.md", "docs/orders.md"],
+    testFiles: 0,
+    documentationFiles: 2,
+    labels: ["documentation"],
+    draft: false,
+    approvals: 1,
+    checks: ["ci/test"],
+    commits: [{ subject: "docs(orders): document the total", body: "Refs #30" }],
+    branch: "docs/order-total",
+    mergeMethod: "squash",
+    references: [30],
+  },
+  {
+    number: 7,
+    title: "test(orders): cover the empty total",
+    body: "## Summary\n- Add a regression test.",
+    mergedAt: "2026-02-01T08:00:00.000Z",
+    additions: 8,
+    deletions: 1,
+    files: ["test/order.test.ts"],
+    testFiles: 1,
+    documentationFiles: 0,
+    labels: ["tests"],
+    draft: true,
+    approvals: 2,
+    checks: ["ci/test"],
+    commits: [{ subject: "test(orders): cover the empty total", body: "" }],
+    branch: "test/empty-total",
+    mergeMethod: "merge",
+    references: [],
+  },
+];
+
+function contributionSource(): Record<string, unknown> {
+  if (discoverContributionNoForge) {
+    return {
+      forge: null,
+      host: null,
+      unavailable: "No forge credential or network was available for the target.",
+      window: null,
+      mergedPullRequests: [],
+      closedUnmergedPullRequests: [],
+    };
+  }
+  const merged = DISCOVER_MERGED_PULL_REQUESTS.map((pullRequest) => {
+    const body =
+      discoverContributionInvalid === "secret"
+        ? `${pullRequest.body}\n\nToken: ${DISCOVER_SECRET}`
+        : pullRequest.body;
+    return {
+      number: pullRequest.number,
+      title: pullRequest.title,
+      body,
+      mergedAt: pullRequest.mergedAt,
+      additions: pullRequest.additions,
+      deletions: pullRequest.deletions,
+      filesChanged: pullRequest.files.length,
+      files: [...pullRequest.files].sort(),
+      testFiles: pullRequest.testFiles,
+      documentationFiles: pullRequest.documentationFiles,
+      labels: [...pullRequest.labels].sort(),
+      draft: pullRequest.draft,
+      approvals: pullRequest.approvals,
+      checks: [...pullRequest.checks].sort(),
+      commits: pullRequest.commits,
+      branch: pullRequest.branch,
+      mergeMethod: pullRequest.mergeMethod,
+      references: pullRequest.references,
+    };
+  });
+  const times = DISCOVER_MERGED_PULL_REQUESTS.map((pullRequest) => pullRequest.mergedAt).sort();
+  return {
+    forge: "gitea",
+    host: "localhost",
+    unavailable: null,
+    window: { from: times[0], to: times[times.length - 1] },
+    mergedPullRequests: merged,
+    closedUnmergedPullRequests: [10],
+  };
+}
+
+function contributionDoc(): Record<string, unknown> {
+  const installFact =
+    discoverContributionInvalid === "no-value"
+      ? { key: "install", evidence: ["package.json"], confidence: "declared" }
+      : discoverContributionInvalid === "unknown-value"
+        ? {
+            key: "install",
+            value: "bun install",
+            evidence: [],
+            confidence: "unknown",
+            reason: "No command was found.",
+          }
+        : discoverContributionInvalid === "absolute"
+          ? {
+              key: "install",
+              value: "/home/operator/bin/install",
+              evidence: ["package.json"],
+              confidence: "declared",
+            }
+          : {
+              key: "install",
+              value: "bun install",
+              evidence: ["package.json"],
+              confidence: "declared",
+            };
+  return {
+    schemaVersion: 1,
+    source: contributionSource(),
+    workflow: [
+      {
+        key: "entryPoints",
+        value: ["CONTRIBUTING.md", ".github/pull_request_template.md"],
+        evidence: ["README.md"],
+        confidence: "declared",
+      },
+      {
+        key: "steps",
+        value: [
+          "Fork the repository and create a feature branch.",
+          "Run the whole test suite before requesting review.",
+          "Open a pull request that links the issue it closes.",
+        ],
+        evidence: ["CONTRIBUTING.md"],
+        confidence: "declared",
+      },
+      {
+        key: "prerequisites",
+        value: ["Bun"],
+        evidence: ["package.json"],
+        confidence: "declared",
+      },
+      installFact,
+      {
+        key: "build",
+        value: "bun run build",
+        evidence: ["package.json"],
+        confidence: "declared",
+      },
+      {
+        key: "lint",
+        value: "bun run lint",
+        evidence: ["package.json"],
+        confidence: "declared",
+      },
+      {
+        key: "typecheck",
+        value: "bunx tsc --noEmit",
+        evidence: ["package.json"],
+        confidence: "declared",
+      },
+      {
+        key: "run",
+        value: "bun run start",
+        evidence: ["package.json"],
+        confidence: "declared",
+      },
+    ],
+    testing: [
+      {
+        key: "suite",
+        value: "bun test",
+        evidence: ["package.json"],
+        confidence: "declared",
+      },
+      {
+        key: "levels",
+        value: [
+          {
+            level: "unit",
+            command: "bun test",
+            paths: ["test"],
+            fixtures: [],
+          },
+        ],
+        evidence: ["test/order.test.ts"],
+        confidence: "observed",
+      },
+    ],
+  };
+}
+
+function contributionSkill(): DiscoverSkill {
+  const sample = discoverContributionNoForge ? [] : [...DISCOVER_MERGED_PULL_REQUESTS]
+    .sort((left, right) => Date.parse(right.mergedAt) - Date.parse(left.mergedAt) || right.number - left.number)
+    .slice(0, 3);
+  const bullets = discoverContributionNoForge
+    ? [
+        "- Read `.omp/discover/contribution.json` before writing a pull request.",
+        "- Treat every pull-request-derived rule and exemplar as unknown: " +
+          "No forge credential or network was available for the target.",
+        "- Run `bun test` and report the test evidence in the pull request.",
+      ]
+    : [
+        "- Read `.omp/discover/contribution.json` before writing a pull request.",
+        "- Keep one accepted change to a median of 2 files (range 1-3) and median 10 additions (range 4-20).",
+        "- Lead with a summary bullet, then the Summary and Test plan sections in that order.",
+        "- Write the description in the imperative voice with a short, specific vocabulary.",
+        "- Run `bun test` and include the test evidence in the pull request.",
+        "- Reference the issue the change closes with a closing keyword and its number.",
+        "- Use `feat(scope): summary` or `fix(scope): summary` commit subjects and `feat/` or `fix/` branches.",
+        "- Wait for one approval and the ci/test and ci/lint checks before merging.",
+        "- Update the documentation and CHANGELOG.md in the same pull request.",
+      ];
+  const exemplars =
+    sample.length === 0
+      ? []
+      : [
+          "## Exemplars",
+          ...sample.flatMap((pullRequest) => [
+            `> PR #${pullRequest.number} — ${pullRequest.title}`,
+            ...(discoverContributionInvalid === "unmerged-excerpt" && pullRequest.number === 12
+              ? [
+                  `> PR #10 — closed: never merged`,
+                  `> ${CLOSED_UNMERGED_MARKER}`,
+                ]
+              : []),
+            ...pullRequest.body.split("\n").map((line) => (line.length === 0 ? ">" : `> ${line}`)),
+          ]),
+        ];
+  const body =
+    discoverContributionInvalid === "bad-skill"
+      ? ["# Contribution", "A paragraph instead of a bullet."]
+      : ["# Author a pull request this repository accepts", ...bullets, ...exemplars];
+  return {
+    name: "discover-contribution",
+    role: "contribution",
+    description:
+      "Author a pull request that matches the merged pull requests this repository accepts.",
+    body,
+  };
+}
+
 /** One agent's slice: its skill, the sheet, or the glossary and its sidecars. */
 function discoverSkillFor(agent: string): DiscoverSkill | undefined {
+  if (agent === "discover-contribution") return contributionSkill();
   return discoverSkills().find((skill) => skill.name === agent);
 }
 
@@ -1582,6 +1891,9 @@ async function runDiscoverAgent(agent: string, staging: string) {
     if (skill === undefined) {
       process.stderr.write(`stub: unknown discover agent ${agent}\n`);
       process.exit(2);
+    }
+    if (agent === "discover-contribution" && discoverContributionInvalid !== "missing-file") {
+      writeFileSync(join(staging, "contribution.json"), `${JSON.stringify(contributionDoc(), null, 2)}\n`);
     }
     if (!discoverMissingArtifact) {
       const directory = join(staging, "skills", skill.name);
@@ -1763,6 +2075,7 @@ async function promptTurn(params: unknown) {
 
   const discoverCommand = [
     "/discover-sheet",
+    "/discover-contribution",
     "/discover-testing-strategy",
     "/discover-naming-conventions",
     "/discover-coding-conventions",

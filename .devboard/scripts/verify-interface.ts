@@ -484,7 +484,7 @@ async function writeFixture(root: string): Promise<string> {
   }
 
   // One prepare-family managed skill, so the Goal skills panel has a row the
-  // delete control owns; the five Discover skills are managed by Discover.
+  // delete control owns; the six Discover skills are managed by Discover.
   await mkdir(join(host, ".omp", "skills", "fixture-conventions"), { recursive: true });
   await writeFile(
     join(host, ".omp", "skills", "fixture-conventions", "SKILL.md"),
@@ -1137,6 +1137,40 @@ providerBehaviors.set(PROVIDER_SLOW_INVALID_KEY, { status: 401, delayMs: 400 });
 
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
+/** Waits on the server's own snapshot until no Discover run is active. */
+async function waitDiscoverIdle(port: number, timeoutMs = 120_000): Promise<void> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  await new Promise<void>((settle, reject) => {
+    socket.onopen = () => settle();
+    socket.onerror = () => reject(new Error("verify:interface: discover idle socket failed"));
+  });
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const state = await new Promise<Record<string, unknown> | null>((settle) => {
+        const guard = setTimeout(() => settle(null), 5_000);
+        socket.onmessage = (event) => {
+          let message: Record<string, unknown>;
+          try {
+            message = JSON.parse(String(event.data)) as Record<string, unknown>;
+          } catch {
+            return;
+          }
+          if (message.type !== "discoverState") return;
+          clearTimeout(guard);
+          settle(message.state as Record<string, unknown>);
+        };
+        socket.send(JSON.stringify({ type: "getDiscover" }));
+      });
+      if (state !== null && state.active !== true) return;
+      await Bun.sleep(250);
+    }
+    throw new Error("verify:interface: the Discover run did not become idle");
+  } finally {
+    socket.close();
+  }
+}
+
 let serverProcess: ReturnType<typeof spawn> | undefined;
 let fixtureHost: string | undefined;
 let feedbackApi: ReturnType<typeof Bun.serve> | undefined;
@@ -2233,6 +2267,9 @@ try {
     "flow.pr.retry", "flow.pr.ready", "flow.pr.merge", "flow.decisions.save",
     "flow.steering.focus", "discover.start", "discover.stop",
     "discover.skill.save.discover-testing-strategy",
+    "discover.tab.contribution", "discover.tab.contribution-skill",
+    "discover.skill.save.discover-contribution",
+    "discover.skill.restore.discover-contribution",
   ];
   const missingCommands = requiredCommands.filter((id) => !ids.has(id));
   check(missingCommands.length === 0, "the palette misses required commands", missingCommands);
@@ -4132,7 +4169,7 @@ try {
   );
   check(discoverTables.contextPathChips === 0, "a bounded context still renders its repository path", discoverTables);
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
-  check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
+  check(discoverTables.sectionTabs === 3 && discoverTables.skillTabs === 6, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
   const discoverChrome = await page.eval<{
     eyebrow: boolean;
@@ -4370,6 +4407,9 @@ try {
     "the Discover running label to clear",
     30_000,
   );
+  // The server's own snapshot proves every agent finished; a DOM badge can
+  // move off the active tab while the run is still advancing.
+  await waitDiscoverIdle(port);
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the glossary term table");
@@ -5019,6 +5059,9 @@ try {
     `document.querySelector('[data-testid="discover-remote-clear"]') !== null`,
     "the retained remote target",
   );
+  // A restart may resume a run the previous server was holding. Let it finish
+  // before reading the remote controls, which are disabled while a run is live.
+  await waitDiscoverIdle(port);
   const remoteStrip = await page.eval<{
     select: boolean;
     options: string[];
@@ -8190,6 +8233,12 @@ try {
     "the second submit did not start its own elaboration",
     busyStart,
   );
+  await waitFor(
+    async () =>
+      (await draftTurns()) === turnsBeforeBusy + 1 ? true : undefined,
+    "the second submit's peer",
+    15_000,
+  );
   check(
     (await draftTurns()) === turnsBeforeBusy + 1,
     "the second submit did not start exactly one more elaboration",
@@ -8742,6 +8791,19 @@ try {
     dismissControl,
   );
   await page.hover('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+  await page.wait(
+    `(() => {
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:absolute;background:var(--secondary-hover)";
+      document.body.append(probe);
+      const expected = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      const button = document.querySelector('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+      return button !== null && getComputedStyle(button).backgroundColor === expected;
+    })()`,
+    "the notification dismiss hover fill",
+    10_000,
+  );
   const dismissHover = await page.eval<{ background: string; expected: string }>(`(() => {
     const probe = document.createElement("div");
     probe.style.cssText = "position:absolute;background:var(--secondary-hover)";
