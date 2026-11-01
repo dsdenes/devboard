@@ -5,6 +5,7 @@ import { IssuesBridge } from "./issues";
 import { acquireLock } from "../issues/lock";
 import { controlDirectory, lockPath, statePath } from "../issues/paths";
 import { emptyState, readState, writeState, type IssuesAgent, type IssuesIssue } from "../issues/state";
+import { GITLAB_TRACKER_UNSUPPORTED } from "../issues/tracker";
 import { createdDirectories, temporaryDirectory } from "../tests/fixtures/scout-helpers";
 
 afterAll(async () => {
@@ -869,6 +870,75 @@ describe("dashboard tracker sync", () => {
       expect(calls).toBe(0);
       expect(subject.snapshot().sync.lastSyncAt).toBeNull();
     } finally {
+      subject.dispose();
+    }
+  });
+
+  test("a GitLab checkout publishes the named state through the real reader", async () => {
+    const root = await temporaryDirectory("issues-sync-gitlab-origin");
+    const stateDir = join(root, "state");
+    const git = (...args: string[]) => {
+      const outcome = Bun.spawnSync({ cmd: ["git", "-C", root, ...args] });
+      expect(outcome.exitCode).toBe(0);
+    };
+    git("init", "-q");
+    git("remote", "add", "origin", "https://gitlab.com/group/project.git");
+    await writeState(statePath(stateDir, root), emptyState({ repo: "group/project", root }));
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      environment: {},
+    });
+    try {
+      await subject.syncNow();
+      const error = subject.snapshot().sync.error;
+      expect(error).toContain("GitLab");
+      expect(subject.snapshot().sync.lastSyncAt).toBeNull();
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("a GitLab origin publishes the named state and stops the periodic sync", async () => {
+    const root = await temporaryDirectory("issues-sync-gitlab");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), emptyState({ repo: "group/project", root }));
+    let calls = 0;
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      syncMs: 5,
+      spawnWorker: () => undefined,
+      syncRead: async () => {
+        calls += 1;
+        return { kind: "unsupported", detail: GITLAB_TRACKER_UNSUPPORTED };
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      subject.begin();
+      vi.advanceTimersByTime(100);
+      await subject.syncNow();
+      expect(subject.snapshot().sync.error).toBe(GITLAB_TRACKER_UNSUPPORTED);
+      expect(calls).toBe(1);
+      vi.advanceTimersByTime(60_000);
+      await subject.syncNow();
+      expect(calls).toBe(1);
+    } finally {
+      vi.useRealTimers();
       subject.dispose();
     }
   });

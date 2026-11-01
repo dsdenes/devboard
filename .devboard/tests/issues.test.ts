@@ -1752,6 +1752,40 @@ describe("tracker", () => {
     expect(state).toEqual({ kind: "state", state: "closed" });
     expect(urls[0]).toBe("http://gitea.test/api/v1/repos/acme/fixture/issues/7");
   });
+
+  test("never builds a gh argv for a GitLab origin", async () => {
+    const calls: string[][] = [];
+    const run = (argv: string[]) => {
+      calls.push(argv);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const polled = await pollOpenIssues({ repository: "group/project", forge: "gitlab", run });
+    expect(polled.kind).toBe("unsupported");
+    if (polled.kind !== "unsupported") return;
+    expect(polled.detail).toContain("GitLab");
+
+    const state = await fetchIssueState({ repository: "group/project", forge: "gitlab", run }, 7);
+    expect(state.kind).toBe("error");
+    if (state.kind !== "error") return;
+    expect(state.detail).toContain("GitLab");
+    expect(calls).toEqual([]);
+  });
+
+  test("still reads a GitHub origin through gh", async () => {
+    const calls: string[][] = [];
+    const polled = await pollOpenIssues({
+      repository: "acme/fixture",
+      forge: "github",
+      run: (argv) => {
+        calls.push(argv);
+        return { code: 0, stdout: "HTTP/2.0 200 OK\n\n", stderr: "" };
+      },
+    });
+    expect(polled.kind).toBe("issues");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toBe("api");
+    expect(calls[0]?.includes("repos/acme/fixture/issues?state=open&per_page=100")).toBe(true);
+  });
 });
 
 describe("activity bounds", () => {

@@ -727,7 +727,8 @@ export class IssuesWorker {
           this.nextPollDue = Date.parse(result.until);
           break;
         }
-        case "error": {
+        case "error":
+        case "unsupported": {
           this.state.poll.error = result.detail;
           this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
           this.nextPollDue = Date.parse(this.state.poll.nextPollAt);

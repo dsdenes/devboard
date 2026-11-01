@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { IssuesIssue } from "../issues/state";
+import { GITLAB_TRACKER_UNSUPPORTED } from "../issues/tracker";
 import { TrackerSync, TRACKER_SYNC_INTERVAL_MS } from "./issue-sync";
 
 function issue(number: number): IssuesIssue {
@@ -119,6 +120,28 @@ describe("dashboard tracker sync", () => {
     expect(first).toBe(second);
     gate.resolve({ kind: "issues", issues: [issue(4)], etag: null });
     expect(await first).toEqual(await second);
+    expect(calls).toBe(1);
+  });
+
+  test("publishes a named unsupported state and never retries that forge", async () => {
+    let calls = 0;
+    const subject = sync(async () => {
+      calls += 1;
+      return { kind: "unsupported", detail: GITLAB_TRACKER_UNSUPPORTED };
+    });
+    const first = await subject.sync();
+    expect(first.fresh).toBe(false);
+    expect(first.error).toBe(GITLAB_TRACKER_UNSUPPORTED);
+    expect(first.startedAt).not.toBeNull();
+    expect(subject.view.error).toBe(GITLAB_TRACKER_UNSUPPORTED);
+    expect(subject.unsupportedDetail).toBe(GITLAB_TRACKER_UNSUPPORTED);
+    const second = await subject.sync();
+    expect(second).toEqual({
+      fresh: false,
+      issues: null,
+      error: GITLAB_TRACKER_UNSUPPORTED,
+      startedAt: null,
+    });
     expect(calls).toBe(1);
   });
 });
