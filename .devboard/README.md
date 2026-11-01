@@ -805,8 +805,9 @@ filled run action, which runs all six agents. Staleness is not repeated on the s
 bar and the status bar report it. While a run exists, the active agent's card carries a run tag
 above its activity: a status dot, the agent label and `run in progress`, the age, the latest
 activity line, and Stop. A queued question region follows on that card while a question waits.
-The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
-Testing in the main column on the right, and Bounded contexts with External boundaries below them.
+The sheet follows: Platform, Delivery, Stack, External boundaries, and Shared kernels in the facts
+column on the left, and Commands, Testing, Quality gates, and Bounded contexts in the main column
+on the right.
 The manual-testing strip is the last region of the page, so a source checkout never pushes it above
 the project identity. An error, an interrupted-run notice, and a stop notice render above the page
 in one notice stack.
@@ -916,10 +917,10 @@ Overview page is a project sheet, not a card grid. A masthead
 the crawl recorded one, and the discovery date. The commit, the dirty flag, and the staleness flag
 stay in the sheet and the state payload but render no header badge. Below the masthead the sheet is
 one bounded two-column spine:
-`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates,
-Bounded contexts, and External boundaries in the main column on the right. Every section carries
-`data-testid="discover-card"` and `data-field`; the commands, testing, and quality-gate panels are
-raised surfaces and the remaining sections are flat, separated by hairlines. Below 1240px viewport
+`Platform`, `Delivery`, `Stack`, `External boundaries`, and `Shared kernels` in the facts column,
+and Commands, Testing, Quality gates, and Bounded contexts in the main column on the right. Every
+section is one panel widget carrying `data-testid="discover-card"` and `data-field`, with the same
+header, body, and chip, fact, or table content. Below 1240px viewport
 the columns collapse into one in reading order.
 Tables grow with the page; neither a panel nor a card shrinks below its rows, and none scrolls
 inside the page. Every non-`unknown` leaf
@@ -959,24 +960,25 @@ second level while its table holds none. Every listed level states an exact test
 table (`data-testid="discover-quality-gates"`): each row names a required CI gate, and the gates
 are not repeated among the Delivery facts. Runtime, deployment, CI, and branching use compact
 `dt`/`dd` facts whose list values are comma-separated.
-Architecture renders as separate cards. `Bounded contexts` shows context rows with the name,
-responsibility, and entry points, the dependency direction, and a rendered Mermaid dependency
-graph. `External boundaries` (`data-field="external-boundaries"`) and `Shared kernels`
-(`data-field="shared-kernels"`) are cards of their own whose banded rows match the context list:
-one band per external system (`data-testid="discover-external-boundaries"`) and one per kernel.
+Every section of the data sheet is one panel widget with the same header, body, and chip, fact,
+or table content. The facts column holds `Platform`, `Delivery` (deployment, CI, and branching
+facts), `Stack`, `External boundaries`, and `Shared kernels`; the main column holds `Commands`,
+`Testing`, `Quality gates`, and `Bounded contexts`.
+`Bounded contexts` shows context rows with the name, responsibility, and entry points, then the
+dependency direction as a fact. No dependency graph is drawn.
+`External boundaries` (`data-field="external-boundaries"`) and `Shared kernels`
+(`data-field="shared-kernels"`) are compact chip widgets: one chip per external system
+(`data-testid="discover-external-boundaries"`) and one per kernel.
 An external boundary leaf recorded `unknown` states its reason there, a missing leaf says no
-external boundary was recorded, and the observed empty list renders `None detected.` as the card's
-only line. The repository path of a bounded context is not rendered. The graph draws one node per
-bounded context and one arrow for every `architecture.dependencies` edge, pointing from the context
-that depends to the context it reaches; it is drawn with `flowchart LR`
-through Mermaid at render time, and a sheet without recorded edges draws no graph.
+external boundary was recorded, and the observed empty list renders `None detected.` as the
+widget's only line. The repository path of a bounded context is not rendered.
 External boundaries name only external systems — a remote API or service, a message broker, a
 database, or an identity provider the host integrates with across its own process and artifact.
 Language and runtime built-ins describe internal architecture, so `node:child_process`,
 `node:worker_threads`, and other concurrency primitives are never boundaries; a host that integrates
-with no external system shows `None detected.` in that card instead of an invented entry or
+with no external system shows `None detected.` in that widget instead of an invented entry or
 `unknown`.
-`Stack` renders one full-width chip band after the two columns; a chip whose package is installed
+`Stack` is a chip widget in the facts column; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip
 stays plain text. Stack chips and the Platform `languages` and `runtimes` facts name the
 technology without a version number, so a recorded `PostgreSQL 15` renders as `PostgreSQL` and a

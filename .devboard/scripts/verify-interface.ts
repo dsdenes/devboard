@@ -3734,10 +3734,10 @@ try {
     contextRows: number;
     contextRoles: string[];
     sharedKernelTitle: string;
-    sharedKernelRows: number;
+    sharedKernelChips: number;
     sharedKernelTexts: string[];
     externalBoundaryTitle: string;
-    externalBoundaryRows: number;
+    externalBoundaryChips: number;
     externalBoundaryTexts: string[];
     stackedSections: number;
     staticText: number;
@@ -3817,16 +3817,16 @@ try {
       commandHeaders: document.querySelectorAll('[data-testid="discover-command-list"] thead').length,
       contextHeader: document.querySelector('#workspace-discover [data-field="architecture"] th')?.textContent?.trim() ?? "",
       contextRows: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context').length,
-      contextRoles: [...document.querySelectorAll('#workspace-discover .discover-boundary dt')]
+      contextRoles: [...document.querySelectorAll('#workspace-discover [data-field="architecture"] .discover-fact dt')]
         .map((term) => term.textContent.trim()),
       sharedKernelTitle: document.querySelector('#workspace-discover [data-field="shared-kernels"] .panel__title')?.textContent?.trim() ?? "",
-      sharedKernelRows: document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] .discover-context').length,
-      sharedKernelTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] .discover-context')]
-        .map((row) => row.textContent.replace(/\\s+/g, " ").trim()),
+      sharedKernelChips: document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] code.code-chip').length,
+      sharedKernelTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] code.code-chip')]
+        .map((chip) => chip.textContent.trim()),
       externalBoundaryTitle: document.querySelector('#workspace-discover [data-field="external-boundaries"] .panel__title')?.textContent?.trim() ?? "",
-      externalBoundaryRows: document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] .discover-context').length,
-      externalBoundaryTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] .discover-context')]
-        .map((row) => row.textContent.replace(/\\s+/g, " ").trim()),
+      externalBoundaryChips: document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] code.code-chip').length,
+      externalBoundaryTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-external-boundaries"] code.code-chip')]
+        .map((chip) => chip.textContent.trim()),
       stackedSections: document.querySelectorAll('#workspace-discover [data-field="unknowns"], #workspace-discover [data-field="dependencyMap"]').length,
       staticText: document.querySelectorAll('#workspace-discover [data-tab="overview"] .discover-lead, #workspace-discover [data-tab="overview"] .discover-note').length,
       sidebarTitle: document.querySelector('[data-testid="sidebar"] .sidebar__title')?.textContent?.trim() ?? "",
@@ -3840,204 +3840,8 @@ try {
     };
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-dependency-diagram"] svg') !== null`,
-    "the dependency diagram",
-  );
-  const dependencyDiagram = await page.eval<{
-    nodes: number;
-    edges: number;
-    text: string;
-    labelSize: number;
-    radius: string;
-    legend: string;
-    controlVisible: boolean;
-    controlLabel: string;
-    canvasPresent: boolean;
-    canvasOverflow: string;
-    svgWidth: number;
-    svgNaturalWidth: number;
-    canvasWidth: number;
-    scrolls: boolean;
-  }>(`(() => {
-    const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    const control = document.querySelector('[data-testid="discover-dependency-size"]');
-    const svg = root?.querySelector('svg');
-    const label = root?.querySelector('.nodeLabel p');
-    const node = root?.querySelector('g.node rect');
-    return {
-      nodes: root === null ? 0 : root.querySelectorAll('g.node').length,
-      edges: root === null ? 0 : root.querySelectorAll('path.flowchart-link, g.edgePath').length,
-      text: root?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
-      labelSize: label === null || label === undefined ? 0 : Number.parseFloat(getComputedStyle(label).fontSize),
-      radius: node === null || node === undefined ? "" : getComputedStyle(node).rx,
-      legend: document.querySelector('.discover-diagram__legend')?.textContent?.trim() ?? "",
-      controlVisible: control !== null,
-      controlLabel: control?.textContent?.trim() ?? "",
-      canvasPresent: canvas !== null,
-      canvasOverflow: canvas === null ? "" : getComputedStyle(canvas).overflow,
-      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-      svgNaturalWidth: svg?.viewBox?.baseVal?.width ?? 0,
-      canvasWidth: canvas?.clientWidth ?? 0,
-      scrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
-    };
-  })()`);
-  check(dependencyDiagram.nodes >= 2, "the dependency diagram does not draw every bounded context", dependencyDiagram);
-  check(dependencyDiagram.edges >= 1, "the dependency diagram draws no recorded edge", dependencyDiagram);
-  check(
-    dependencyDiagram.text.includes("Checkout") && dependencyDiagram.text.includes("Orders"),
-    "the dependency diagram does not label its contexts",
-    dependencyDiagram,
-  );
-  check(dependencyDiagram.labelSize >= 12, "the dependency diagram labels render below 12px", dependencyDiagram);
-  check(dependencyDiagram.radius === "4px", "the dependency diagram nodes are not on the design radius", dependencyDiagram);
-  check(
-    dependencyDiagram.legend === "Arrows point from a context to the context it uses.",
-    "the dependency diagram does not explain its arrows",
-    dependencyDiagram,
-  );
-  check(
-    dependencyDiagram.canvasPresent && dependencyDiagram.canvasOverflow === "auto",
-    "the dependency diagram is not inside a scrolling canvas",
-    dependencyDiagram,
-  );
-  check(
-    !dependencyDiagram.controlVisible &&
-      dependencyDiagram.svgWidth > 0 &&
-      dependencyDiagram.svgWidth <= dependencyDiagram.canvasWidth + 1 &&
-      !dependencyDiagram.scrolls,
-    "a dependency diagram that fits readably offers a size control or scrolls",
-    dependencyDiagram,
-  );
-
-  // Narrow the real canvas to put the two-context graph below the readable
-  // floor: the graph must open at actual size with one 24px Fit width control.
-  await page.eval(`(() => {
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    if (canvas === null) return false;
-    canvas.style.width = '160px';
-    canvas.style.maxWidth = '160px';
-    return true;
-  })()`);
-  await page.wait(
-    `document.querySelector('[data-testid="discover-dependency-size"]') !== null`,
-    "the dependency diagram size control at a narrow canvas",
-  );
-  const narrowDependencyDiagram = await page.eval<{
-    controlLabel: string;
-    controlHeight: number;
-    canvasWidth: number;
-    canvasScrolls: boolean;
-    canvasFocusable: boolean;
-    svgWidth: number;
-    naturalWidth: number;
-    labelSize: number;
-  }>(`(() => {
-    const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    const control = document.querySelector('[data-testid="discover-dependency-size"]');
-    const svg = root?.querySelector('svg');
-    const label = root?.querySelector('.nodeLabel p');
-    return {
-      controlLabel: control?.textContent?.trim() ?? "",
-      controlHeight: control === null ? 0 : control.getBoundingClientRect().height,
-      canvasWidth: canvas?.clientWidth ?? 0,
-      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
-      canvasFocusable: canvas?.tabIndex === 0,
-      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-      naturalWidth: svg?.viewBox?.baseVal?.width ?? 0,
-      labelSize: label === null || label === undefined ? 0 : Number.parseFloat(getComputedStyle(label).fontSize),
-    };
-  })()`);
-  check(
-    narrowDependencyDiagram.controlLabel === "Fit width" && Math.round(narrowDependencyDiagram.controlHeight) === 24,
-    "a graph below the readable floor does not carry one 24px Fit width control",
-    narrowDependencyDiagram,
-  );
-  check(
-    narrowDependencyDiagram.naturalWidth > 0 &&
-      narrowDependencyDiagram.svgWidth >= narrowDependencyDiagram.naturalWidth - 1 &&
-      narrowDependencyDiagram.svgWidth > narrowDependencyDiagram.canvasWidth + 1 &&
-      narrowDependencyDiagram.canvasScrolls &&
-      narrowDependencyDiagram.canvasFocusable,
-    "the wide dependency diagram is not drawn at actual size in a scrolling canvas",
-    narrowDependencyDiagram,
-  );
-  check(
-    narrowDependencyDiagram.labelSize >= 12,
-    "the dependency diagram labels render below 12px at actual size",
-    narrowDependencyDiagram,
-  );
-  await page.eval(`(() => {
-    const control = document.querySelector('[data-testid="discover-dependency-size"]');
-    if (control === null) return false;
-    control.click();
-    return true;
-  })()`);
-  await page.wait(
-    `document.querySelector('[data-testid="discover-dependency-size"]')?.textContent?.trim() === "Actual size"`,
-    "the dependency diagram Actual size control after fitting",
-  );
-  const fittedDependencyDiagram = await page.eval<{
-    controlLabel: string;
-    canvasWidth: number;
-    canvasScrolls: boolean;
-    canvasFocusable: boolean;
-    svgWidth: number;
-  }>(`(() => {
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    const control = document.querySelector('[data-testid="discover-dependency-size"]');
-    const svg = document.querySelector('[data-testid="discover-dependency-diagram"] svg');
-    return {
-      controlLabel: control?.textContent?.trim() ?? "",
-      canvasWidth: canvas?.clientWidth ?? 0,
-      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
-      canvasFocusable: canvas?.tabIndex === 0,
-      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-    };
-  })()`);
-  check(
-    fittedDependencyDiagram.controlLabel === "Actual size" &&
-      fittedDependencyDiagram.svgWidth > 0 &&
-      fittedDependencyDiagram.svgWidth <= fittedDependencyDiagram.canvasWidth + 1 &&
-      !fittedDependencyDiagram.canvasScrolls &&
-      !fittedDependencyDiagram.canvasFocusable,
-    "the fitted dependency diagram does not fill its canvas without scrolling",
-    fittedDependencyDiagram,
-  );
-  await page.eval(`(() => {
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    if (canvas === null) return false;
-    canvas.style.width = '';
-    canvas.style.maxWidth = '';
-    return true;
-  })()`);
-  await page.wait(
-    `document.querySelector('[data-testid="discover-dependency-size"]') === null`,
-    "the dependency diagram without a size control at full width",
-  );
-  const restoredDependencyDiagram = await page.eval<{
-    controlVisible: boolean;
-    canvasWidth: number;
-    canvasScrolls: boolean;
-    svgWidth: number;
-  }>(`(() => {
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
-    const svg = document.querySelector('[data-testid="discover-dependency-diagram"] svg');
-    return {
-      controlVisible: document.querySelector('[data-testid="discover-dependency-size"]') !== null,
-      canvasWidth: canvas?.clientWidth ?? 0,
-      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
-      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-    };
-  })()`);
-  check(
-    !restoredDependencyDiagram.controlVisible &&
-      restoredDependencyDiagram.svgWidth > 0 &&
-      restoredDependencyDiagram.svgWidth <= restoredDependencyDiagram.canvasWidth + 1 &&
-      !restoredDependencyDiagram.canvasScrolls,
-    "the fitted dependency diagram does not return to its full-width canvas",
-    restoredDependencyDiagram,
+    `document.querySelector('[data-testid="discover-shared-kernels"] code.code-chip') !== null`,
+    "the shared kernel chips",
   );
   check(discoverTables.cards >= 5, "Discover sections are missing from the overview", discoverTables);
   check(discoverTables.commands > 0, "the Discover command table is empty", discoverTables);
@@ -4108,7 +3912,7 @@ try {
   check(discoverTables.contextRoles.includes("Dependency direction"), "the boundary map does not label the dependency direction", discoverTables.contextRoles);
   check(discoverTables.externalBoundaryTitle === "External boundaries", "external boundaries is not a separate Discover widget", discoverTables.externalBoundaryTitle);
   check(!discoverTables.contextRoles.includes("External boundaries"), "the boundary map still lists external boundaries", discoverTables.contextRoles);
-  check(discoverTables.externalBoundaryRows === 2, "the External boundaries widget does not render one band per system", discoverTables.externalBoundaryRows);
+  check(discoverTables.externalBoundaryChips === 2, "the External boundaries widget does not render one chip per system", discoverTables.externalBoundaryChips);
   check(
     JSON.stringify(discoverTables.externalBoundaryTexts) ===
       JSON.stringify(["PostgreSQL", "api.stripe.com"]),
@@ -4118,7 +3922,7 @@ try {
   check(!(discoverTables.externalBoundaryTexts.join("")).includes("node:"), "the External boundaries block names a runtime built-in", discoverTables.externalBoundaryTexts);
   check(discoverTables.sharedKernelTitle === "Shared kernels", "shared kernels is not a separate Discover widget", discoverTables.sharedKernelTitle);
   check(!discoverTables.contextRoles.includes("Shared kernels"), "the boundary map still lists shared kernels", discoverTables.contextRoles);
-  check(discoverTables.sharedKernelRows === 1, "the Shared kernels widget does not render one band per kernel", discoverTables.sharedKernelRows);
+  check(discoverTables.sharedKernelChips === 1, "the Shared kernels widget does not render one chip per kernel", discoverTables.sharedKernelChips);
   check(
     JSON.stringify(discoverTables.sharedKernelTexts) === JSON.stringify(["src/shared"]),
     "the Shared kernels widget does not render the recorded kernel",

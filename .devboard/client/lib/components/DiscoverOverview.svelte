@@ -16,11 +16,9 @@
     unknownText,
   } from "../discover-format";
   import { connection } from "../connection.svelte";
-  import { dependencyChart, dependencyEdges } from "../dependency-diagram";
   import { discover } from "../discover.svelte";
   import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
-  import MermaidDiagram from "./MermaidDiagram.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -39,13 +37,12 @@
     { id: "gate", header: "Quality gate", accessorKey: "gate" },
   ];
   const QUALITY_GATE_WIDTHS = { gate: "220px" };
-  /** The architecture leaves that share the Bounded contexts card. */
+  /** The architecture sentences the Bounded contexts widget lists as facts. */
   const BOUNDARY_GROUPS = [
-    { key: "dependencyDirection", label: "Dependency direction", kind: "sentence" },
+    { key: "dependencyDirection", label: "Dependency direction" },
   ] as const;
 
   type BoundaryGroup = (typeof BOUNDARY_GROUPS)[number];
-  type BoundaryKind = "chips" | "sentence";
 
   interface ContextRow {
     name: string;
@@ -57,7 +54,6 @@
   interface BoundaryRow {
     key: BoundaryGroup["key"];
     label: string;
-    kind: BoundaryKind;
     values: string[];
   }
 
@@ -155,6 +151,9 @@
   );
 
   const architectureSection = $derived(sheet?.architecture);
+  const hasArchitecture = $derived(
+    typeof architectureSection === "object" && architectureSection !== null,
+  );
   const contextsLeaf = $derived(sectionLeaf(architectureSection, "contexts"));
   const sharedKernelsLeaf = $derived(sectionLeaf(architectureSection, "sharedKernels"));
   const sharedKernelValues: string[] = $derived.by(() => {
@@ -181,29 +180,21 @@
       })
       .filter((row) => row.name.length > 0 || row.path.length > 0),
   );
-  const dependencyDiagram = $derived.by(() => {
-    const leaf = sectionLeaf(architectureSection, "dependencies");
-    if (leaf === undefined || leaf.confidence === "unknown") return null;
-    return dependencyChart(
-      contextRows.map((row) => row.name),
-      dependencyEdges(leaf.value),
-    );
-  });
   const boundaryRows: BoundaryRow[] = $derived.by(() => {
     const rows: BoundaryRow[] = [];
     for (const group of BOUNDARY_GROUPS) {
       const leaf = sectionLeaf(architectureSection, group.key);
       if (leaf === undefined || leaf.confidence === "unknown") continue;
-      const values = boundaryValues(leaf, group.kind);
+      const values = boundaryValues(leaf);
       if (values.length === 0) continue;
-      rows.push({ key: group.key, label: group.label, kind: group.kind, values });
+      rows.push({ key: group.key, label: group.label, values });
     }
     return rows;
   });
   const externalBoundariesLeaf = $derived(
     sectionLeaf(architectureSection, "externalBoundaries"),
   );
-  /** One band per external system; the observed empty list keeps its own line. */
+  /** The external systems the crawl observed; an empty list keeps its own line. */
   const externalBoundarySystems: string[] = $derived.by(() => {
     const leaf = externalBoundariesLeaf;
     if (leaf === undefined || leaf.confidence === "unknown" || !Array.isArray(leaf.value)) {
@@ -240,15 +231,10 @@
     return leafLines(leaf.value).map(technologyName).join(", ");
   }
 
-  function boundaryValues(leaf: Leaf, kind: BoundaryKind): string[] {
-    if (kind === "sentence") {
-      const text = scalarText(leaf.value).trim();
-      return text.length > 0 && text.toLowerCase() !== "none detected" ? [text] : [];
-    }
-    if (!Array.isArray(leaf.value)) return [];
-    if (leaf.value.length === 0) return ["None detected."];
-    const values = leaf.value.map((value) => scalarText(value).trim()).filter(Boolean);
-    return [...new Set(values)].filter((value) => value.toLowerCase() !== "none detected");
+  /** The dependency direction is one sentence; no direction is not a fact. */
+  function boundaryValues(leaf: Leaf): string[] {
+    const text = scalarText(leaf.value).trim();
+    return text.length > 0 && text.toLowerCase() !== "none detected" ? [text] : [];
   }
 
   function visibleSection(section: unknown, hidden: string[]): Record<string, unknown> {
@@ -416,8 +402,8 @@
   </div>
 {/snippet}
 
-{#snippet plainChips(lines: string[])}
-  <div class="discover-chips">
+{#snippet plainChips(lines: string[], testid: string | undefined = undefined)}
+  <div class="discover-chips" data-testid={testid}>
     {#each lines as line (line)}
       <code class="code-chip">{line}</code>
     {/each}
@@ -456,46 +442,106 @@
 
 {#snippet sheetRail()}
   <div class="discover-rail">
-    <section class="discover-block" data-testid="discover-card" data-field="runtime">
-      <div class="discover-block__head">
-        <h2 class="discover-block__title">Platform</h2>
+    <section class="panel discover-card" data-testid="discover-card" data-field="runtime">
+      <div class="panel__header">
+        <h2 class="panel__title">Platform</h2>
       </div>
-      {@render factList(runtimeSection)}
+      <div class="panel__body">
+        {@render factList(runtimeSection)}
+      </div>
     </section>
 
     {#if hasDelivery}
-      <section class="discover-block" data-testid="discover-card" data-field="delivery">
-        <div class="discover-block__head">
-          <h2 class="discover-block__title">Delivery</h2>
+      <section class="panel discover-card" data-testid="discover-card" data-field="delivery">
+        <div class="panel__header">
+          <h2 class="panel__title">Delivery</h2>
         </div>
-        {#if Object.keys(deploymentSection).length > 0}
-          <div class="discover-subblock">
-            <h3 class="discover-subblock__title">Deployment</h3>
-            {@render factList(deploymentSection)}
-          </div>
-        {/if}
-        {#if Object.keys(ciSection).length > 0}
-          <div class="discover-subblock">
-            <h3 class="discover-subblock__title">CI</h3>
-            {@render factList(ciSection)}
-          </div>
-        {/if}
-        {#if Object.keys(branchingSection).length > 0}
-          <div class="discover-subblock">
-            <h3 class="discover-subblock__title">Branching</h3>
-            {@render factList(branchingSection)}
-          </div>
-        {/if}
+        <div class="panel__body">
+          {#if Object.keys(deploymentSection).length > 0}
+            <div class="discover-subblock">
+              <h3 class="discover-subblock__title">Deployment</h3>
+              {@render factList(deploymentSection)}
+            </div>
+          {/if}
+          {#if Object.keys(ciSection).length > 0}
+            <div class="discover-subblock">
+              <h3 class="discover-subblock__title">CI</h3>
+              {@render factList(ciSection)}
+            </div>
+          {/if}
+          {#if Object.keys(branchingSection).length > 0}
+            <div class="discover-subblock">
+              <h3 class="discover-subblock__title">Branching</h3>
+              {@render factList(branchingSection)}
+            </div>
+          {/if}
+        </div>
       </section>
     {/if}
 
     {#if stackLines.length > 0}
-      <section class="discover-block" data-testid="discover-card" data-field="stack">
-        <div class="discover-block__head">
-          <h2 class="discover-block__title">Stack</h2>
-          <span class="discover-block__meta">{stackLines.length} entries</span>
+      <section class="panel discover-card" data-testid="discover-card" data-field="stack">
+        <div class="panel__header">
+          <h2 class="panel__title">Stack</h2>
+          <span class="panel__subtitle">{stackLines.length} entries</span>
         </div>
-        {@render chipList(stackLines)}
+        <div class="panel__body">
+          {@render chipList(stackLines)}
+        </div>
+      </section>
+    {/if}
+
+    {#if hasArchitecture && externalBoundariesLeaf !== undefined}
+      <section
+        class="panel discover-card"
+        data-testid="discover-card"
+        data-field="external-boundaries"
+      >
+        <div class="panel__header">
+          <h2 class="panel__title">External boundaries</h2>
+          {#if externalBoundarySystems.length > 0}
+            <span class="panel__subtitle">
+              {externalBoundarySystems.length}
+              {externalBoundarySystems.length === 1 ? "system" : "systems"}
+            </span>
+          {/if}
+        </div>
+        <div class="panel__body">
+          {#if externalBoundariesLeaf.confidence === "unknown"}
+            <p class="empty" data-testid="discover-external-boundaries">
+              {unknownText(externalBoundariesLeaf)}
+            </p>
+          {:else if externalBoundarySystems.length > 0}
+            {@render plainChips(externalBoundarySystems, "discover-external-boundaries")}
+          {:else}
+            <p class="empty" data-testid="discover-external-boundaries">
+              None detected.
+            </p>
+          {/if}
+        </div>
+      </section>
+    {/if}
+
+    {#if hasArchitecture && sharedKernelsLeaf !== undefined}
+      <section class="panel discover-card" data-testid="discover-card" data-field="shared-kernels">
+        <div class="panel__header">
+          <h2 class="panel__title">Shared kernels</h2>
+          {#if sharedKernelValues.length > 0}
+            <span class="panel__subtitle">
+              {sharedKernelValues.length}
+              {sharedKernelValues.length === 1 ? "kernel" : "kernels"}
+            </span>
+          {/if}
+        </div>
+        <div class="panel__body">
+          {#if sharedKernelsLeaf.confidence === "unknown"}
+            <p class="empty">{unknownText(sharedKernelsLeaf)}</p>
+          {:else if sharedKernelValues.length > 0}
+            {@render plainChips(sharedKernelValues, "discover-shared-kernels")}
+          {:else}
+            <p class="empty">No shared kernel was detected.</p>
+          {/if}
+        </div>
       </section>
     {/if}
   </div>
@@ -775,10 +821,16 @@
           </section>
         {/if}
 
-        {#if architectureSection !== undefined && typeof architectureSection === "object" && architectureSection !== null}
+        {#if hasArchitecture}
           <section class="panel discover-card" data-testid="discover-card" data-field="architecture">
             <div class="panel__header">
               <h2 class="panel__title">Bounded contexts</h2>
+              {#if contextRows.length > 0}
+                <span class="panel__subtitle">
+                  {contextRows.length}
+                  {contextRows.length === 1 ? "context" : "contexts"}
+                </span>
+              {/if}
             </div>
             <div class="panel__body">
               {#if contextRows.length > 0}
@@ -807,30 +859,14 @@
               {/if}
 
               {#if boundaryRows.length > 0}
-                <dl class="discover-boundaries">
+                <dl class="discover-facts discover-facts--grouped">
                   {#each boundaryRows as row (row.key)}
-                    <div class="discover-boundary" data-role={row.key}>
+                    <div class="discover-fact" data-role={row.key}>
                       <dt>{row.label}</dt>
-                      <dd>
-                        {#if row.kind === "chips"}
-                          {@render plainChips(row.values)}
-                        {:else}
-                          {row.values[0]}
-                        {/if}
-                      </dd>
+                      <dd>{row.values[0]}</dd>
                     </div>
                   {/each}
                 </dl>
-              {/if}
-
-              {#if dependencyDiagram !== null}
-                <div class="discover-subblock" data-testid="discover-dependency-graph">
-                  <h3 class="discover-subblock__title">Dependency graph</h3>
-                  <MermaidDiagram
-                    chart={dependencyDiagram}
-                    label={`Dependency graph for ${projectName}`}
-                  />
-                </div>
               {/if}
 
               {#if unknownBoundaryGroups.labels.length > 0}
@@ -838,72 +874,6 @@
                   Not observed: {unknownBoundaryGroups.labels.join(", ")}.
                   {unknownBoundaryGroups.reasons.join(" ")}
                 </p>
-              {/if}
-            </div>
-          </section>
-
-          <section
-            class="panel discover-card"
-            data-testid="discover-card"
-            data-field="external-boundaries"
-          >
-            <div class="panel__header">
-              <h2 class="panel__title">External boundaries</h2>
-            </div>
-            <div class="panel__body">
-              {#if externalBoundariesLeaf === undefined}
-                <p class="empty">No external boundary was recorded.</p>
-              {:else if externalBoundariesLeaf.confidence === "unknown"}
-                <p class="empty">{unknownText(externalBoundariesLeaf)}</p>
-              {:else if externalBoundarySystems.length > 0}
-                <ul class="discover-contexts" data-testid="discover-external-boundaries">
-                  {#each externalBoundarySystems as system (system)}
-                    <li class="discover-context" data-system={system}>
-                      <div class="discover-context__head">
-                        <code class="code-chip">{system}</code>
-                      </div>
-                    </li>
-                  {/each}
-                </ul>
-              {:else}
-                <p class="empty" data-testid="discover-external-boundaries">
-                  None detected.
-                </p>
-              {/if}
-            </div>
-          </section>
-        {/if}
-
-        {#if sharedKernelsLeaf !== undefined}
-          <section
-            class="panel discover-card"
-            data-testid="discover-card"
-            data-field="shared-kernels"
-          >
-            <div class="panel__header">
-              <h2 class="panel__title">Shared kernels</h2>
-              {#if sharedKernelValues.length > 0}
-                <span class="panel__subtitle">
-                  {sharedKernelValues.length}
-                  {sharedKernelValues.length === 1 ? "kernel" : "kernels"}
-                </span>
-              {/if}
-            </div>
-            <div class="panel__body">
-              {#if sharedKernelsLeaf.confidence === "unknown"}
-                <p class="empty">{unknownText(sharedKernelsLeaf)}</p>
-              {:else if sharedKernelValues.length > 0}
-                <ul class="discover-contexts" data-testid="discover-shared-kernels">
-                  {#each sharedKernelValues as kernel (kernel)}
-                    <li class="discover-context" data-kernel={kernel}>
-                      <div class="discover-context__head">
-                        <code class="code-chip">{kernel}</code>
-                      </div>
-                    </li>
-                  {/each}
-                </ul>
-              {:else}
-                <p class="empty">No shared kernel was detected.</p>
               {/if}
             </div>
           </section>
