@@ -40,12 +40,18 @@ context, but you never edit, comment on, close, or reopen another issue.
   genuinely required — issue or comment JSON, command capture, a verifier log — belongs inside
   `<REPO_DIR>/.devboard`'s `.tmp/`, never directly under the harness root, and is removed after
   use; never write `/tmp/x` or any other path outside the repository root.
-- Sync the worktree exactly once per pass, before the first edit: it was cut from the task-start
-  fetch's `origin/main`, so run one `git rebase origin/main` inside it and never fetch again; a
-  bare `git rebase main` is never used, because `main` is a local ref that can lag the pushed
-  upstream. A conflict is part of that step — edit the conflicted files, `git add` them, and
-  continue with `git rebase --continue`; never `git rebase --abort` and never `git rebase --skip`.
-  Re-run the rebase only after resolving a conflict, never to re-check state. A later rebase
+- Sync the worktree exactly once per pass, before the first edit: the task-start fetch
+  (`git fetch origin`, see *Fetch budget*) already named `origin/main`, and the worktree was cut
+  from it, so run one `git rebase origin/main` inside it and never fetch again. Print the
+  resulting state in that same chain —
+  `git rebase origin/main && git log --oneline -2 && git rev-list --left-right --count
+  HEAD...origin/main` — because a bare `git rebase main` is never used: `main` is a local ref that
+  can lag the pushed upstream, so the target is always `origin/main`. A conflict is part of that
+  step — edit the conflicted files, `git add` them, and continue with `git rebase --continue`;
+  never `git rebase --abort` and never `git rebase --skip`. After a resolved conflict, print that
+  same state with the chain's trailing `git log --oneline -2 && git rev-list --left-right --count
+  HEAD...origin/main`. Re-run the rebase only after a new upstream commit lands or a conflict was
+  resolved — never to re-check state, because the chain already printed it. A later rebase
   belongs only to the landing integration or a rejected push below, never to re-verification.
 - Forge write access is a precondition of the run, not a discovery step to repeat: the harness
   resolves it once, before the first forge read or write, and the turn's context carries `forge`,
