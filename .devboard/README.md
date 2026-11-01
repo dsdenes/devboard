@@ -188,12 +188,28 @@ context as a UI issue through `/api/feedback` at once, then replaces itself with
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context.
 
+The status bar's OS notifications control (`os-notifications`) is a separate channel, off by
+default. Its first click asks the browser for notification permission; after a grant it reads
+`OS notifications on`, after a denial or a blocked site it reads `OS notifications blocked`, and
+a dismissed prompt leaves it off. While it is on, the open dashboard raises one desktop
+notification per pending agent question in Goal, Discover, Flow, and Issues — a lifecycle lane,
+a manual run, goal creation, revision, skills preparation, a Discover agent, a Flow session,
+Flow goal creation, a Flow conversation, or an issues draft elaboration — carrying the dashboard's
+name, the asking surface's label, and the question itself. Repeated snapshots, polls, and
+reconnects never repeat a question, a question already pending at load raises one after the first
+state arrives, and answering one raises nothing. The notification is informational: clicking it
+navigates nowhere. The on choice is stored in the browser profile; permission is always read from
+the browser, and a denied or blocked site leaves the dashboard usable with its own question UI
+unchanged. No service worker, push subscription, server endpoint, or external notifier is
+involved, so with no page open nothing is raised.
+
 The 26px status bar is two groups. The left group states the WebSocket connection, the
 project's own name (the last path segment, with a folder mark and the full path in its tooltip),
 and the Providers control: the selected provider with its lowest remaining percentage, or
 `No provider`, whose tooltip names the provider's model and which opens the Providers dialog.
 The right group states the running lane count, the issues worker state with a state dot, the
-watchdog's last action and age, and the running and installed versions; each metric carries a
+watchdog's last action and age, the OS notifications control, and the running and installed
+versions; each metric carries a
 10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
 shows the existing reload control (`reload-devboard`), whose accessible name and title name both
 versions; reload behavior is unchanged. A mode states its status in its sidebar and workspace,
@@ -251,7 +267,8 @@ every agent write and eventually exhausts the dev server's heap.
   adrkit accepts are listed. Each record carries the first paragraph of its `Decision` section as
   a short summary.
 - State: the dashboard's server-owned state is written atomically to
-  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is `<harness>/.tmp`), so it
+  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is
+  `<REPO_DIR>/.devboard/.tmp`, the host prefix rather than the replaceable package tree), so it
   survives a backend restart without leaking between repositories that share one harness install.
   See [Durable state](#durable-state).
 
@@ -454,8 +471,9 @@ The dashboard keeps the state that drives the page in one file per host reposito
 it from a new process after a graceful stop, a launcher restart, or a `SIGKILL`. The file is
 `<stateDir>/state/<key>.json`, where `key` is the 24-hex SHA-256 prefix of the resolved
 `REPO_DIR` (the same key the journal uses) and `stateDir` is the harness state directory,
-`<harness>/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside the repository
-survives an implementation reset unchanged, and the reset records its path in the checkout's
+`<REPO_DIR>/.devboard/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside
+the repository survives an implementation reset unchanged, and the reset records its path in the
+checkout's
 `.git/info/exclude` so it is never staged or reported as untracked; a `STATE_DIR` equal to the
 repository root is refused because preserving the state would preserve the whole checkout. Two
 repositories that share one harness therefore never read or overwrite each other's lifecycle,
@@ -600,7 +618,7 @@ steering note telling the agent to abandon that change and implement another sol
 
 A session lives at `<stateDir>/flow/<24-hex journalKey(REPO_DIR)>/<session-id>/`, keyed exactly
 like the dashboard state, so repositories sharing one harness never see each other's sessions.
-`stateDir` is the harness state directory (`<harness>/.tmp` by default, overridable with
+`stateDir` is the harness state directory (`<REPO_DIR>/.devboard/.tmp` by default, overridable with
 `STATE_DIR`); `<session-id>` is an 8-hex id chosen when the session is created. The directory is
 never committed and never written into the host.
 
@@ -761,17 +779,14 @@ keeps no freshness group and no recent-notice list.
 
 ## Discovery agent cards
 
-One card per agent carries its command and staging argument
-(`data-testid="discover-agent-prompt-command"`, for example
-`/discover-sheet <staging-dir>`), its run state (`data-testid="discover-agent-status"` with
+One card per agent carries its run state (`data-testid="discover-agent-status"` with
 `data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
-while it runs, a Start control (`data-testid="discover-agent-start"`), its own pending question,
-and, below the prompt panel, its own activity log (`data-testid="discover-agent-activity"`) that
-renders only while that agent runs. An error the agent reported stays on its card
-(`data-testid="discover-agent-error"`). `discoverActivity`,
+while it runs, a Start control (`data-testid="discover-agent-start"`), and its own pending
+question. A card carries no activity log: the run tag shows the latest line for the agent that is
+running. An error the agent reported stays on its card (`data-testid="discover-agent-error"`).
 `discoverQuestion`, `discoverStarted`, and `discoverStopped` carry `agent`, so no card shows
-another agent's line or question.
+another agent's question.
 
 | Agent | `data-agent` | Command | Prompt file |
 |---|---|---|---|
@@ -804,7 +819,7 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 the full path stays in the tooltip), the discovery date, and the single
 filled run action, which runs all six agents. Staleness is not repeated on the sheet: the activity
 bar and the status bar report it. While a run exists, the active agent's card carries a run tag
-above its activity: a status dot, the agent label and `run in progress`, the age, the latest
+in its header: a status dot, the agent label and `run in progress`, the age, the latest
 activity line, and Stop. A queued question region follows on that card while a question waits.
 The sheet follows: Platform, Delivery, Stack, External boundaries, and Shared kernels in the facts
 column on the left, and Commands, Testing, Quality gates, and Bounded contexts in the main column
@@ -1429,7 +1444,7 @@ and is retried the same way.
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
-|`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
+|`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
 |`DEVBOARD_COACH_SYNTHESIS_STUB`|unset|JSON file answering every Coach synthesis call; verification only, never a peer.|
@@ -1790,6 +1805,9 @@ of journal and omp evidence, filing one issue per fingerprint, and commenting on
 already `filed:<url>` is never filed again. No cycle closes an issue. A fingerprint covers the
 category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
 omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
+omp's own thinking-loop notice — `Thinking loop detected; aborting stream for retry.` — is a
+recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
+provider-error record.
 
 ### Deduplication gate
 
@@ -2265,7 +2283,8 @@ The `goal` label keeps its goal-mode implementation contract: every goal-labeled
 `/implement-goal-issue <number>` concurrently with the rest. The command follows the origin's
 forge: GitHub reads and closes the issue through `gh` under the forge-auth wrapper, and Gitea
 reads it through the API (`GET /api/v1/repos/<owner/repo>/issues/<number>`) and closes it with an
-API `PATCH` through the same wrapper. A GitLab goal issue is refused with that reason.
+API `PATCH` after the wrapper's `check` confirms the write identity. A GitLab goal issue is
+refused with that reason.
 
 ### Per-agent state, lifecycle, and history
 
@@ -2543,9 +2562,9 @@ branch under `.worktree/`, activates the `goal` tool, and calls the `goal` creat
 the fetched issue body verbatim as the objective: no distillation, no section filtering, and no
 appended requirements. It then implements the body, verifies every criterion through the product
 surface, merges into `main` with conflict integration and retry, pushes `main` to origin, removes
-the worktree and branch, and closes the issue only after the push, through the same forge-auth
-wrapper. On Gitea it fetches the issue through the API and closes it with an API `PATCH`; GitHub
-keeps `gh issue view` and `gh issue close` under the wrapper.
+the worktree and branch, and closes the issue only after the push. On Gitea it fetches the issue
+through the API, resolves the close identity with the wrapper's `check`, and closes it with an API
+`PATCH`; GitHub keeps `gh issue view` and `gh issue close` under the wrapper's `exec`.
 
 Pause lets every active peer finish, then reports `paused` and starts no new peer or poll.
 Resume polls immediately. Stop closes every peer, records every active run as `stopped`, leaves

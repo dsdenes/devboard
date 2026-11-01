@@ -588,7 +588,7 @@ try {
   );
   console.log("PASS discovery-group");
 
-  /* 2. Each card shows its own command and, in a source checkout, its prompt. */
+  /* 2. Each card shows, in a source checkout, its own prompt and no command chip. */
   const expectedPrompts = new Map(
     AGENTS.map((agent) => {
       const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
@@ -597,11 +597,10 @@ try {
   );
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    const command = await text(devtools, "discover-agent-prompt-command");
     check(
-      command === `${agent.command} <staging-dir>`,
-      `the ${agent.id} card does not show its command`,
-      command,
+      (await countOf(devtools, "discover-agent-prompt-command")) === 0,
+      `the ${agent.id} card still shows its command chip`,
+      await text(devtools, "discover-agent-prompt-command"),
     );
     check(
       (await valueOf(devtools, "discover-agent-prompt-editor")) ===
@@ -624,7 +623,7 @@ try {
     );
     check(
       (await countOf(devtools, "discover-agent-activity")) === 0,
-      `the ${agent.id} card shows an activity log while it is idle`,
+      `the ${agent.id} card still renders an activity log`,
     );
   }
   // No card's editor holds another agent's prompt.
@@ -775,27 +774,13 @@ try {
   await openCard(devtools, "sheet");
   await click(devtools, "discover-agent-start");
   await waitStatus(devtools, "sheet", "running");
-  const activityPlacement = await devtools.evaluate(`(() => {
-    const activity = document.querySelector('[data-testid="discover-agent-activity"]');
-    const prompt = document.querySelector('.discover-agent__prompt');
-    return {
-      present: activity !== null,
-      prompt: prompt !== null,
-      belowPrompt: activity !== null && prompt !== null && prompt.compareDocumentPosition(activity) !== 0 &&
-        (prompt.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-      directlyBelow: activity !== null && prompt !== null &&
-        activity.closest('section')?.previousElementSibling === prompt,
-    };
-  })()`);
-  check(
-    activityPlacement.present,
-    "a running agent's card hides its activity log",
-    activityPlacement,
+  const runningActivity = await devtools.evaluate(
+    `document.querySelectorAll('[data-testid="discover-agent-activity"]').length`,
   );
   check(
-    activityPlacement.belowPrompt && activityPlacement.directlyBelow,
-    "the activity log does not sit directly below the prompt",
-    activityPlacement,
+    runningActivity === 0,
+    "a running agent's card still renders an activity log",
+    { runningActivity },
   );
   await waitFor(
     async () => (logPrompts(join(root, "refusal-acp.log")).length === 1 ? true : undefined),

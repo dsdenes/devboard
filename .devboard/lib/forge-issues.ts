@@ -65,6 +65,14 @@ export interface CreateForgeIssueInput {
 
 export type CloseReason = "completed" | "not planned";
 
+/**
+ * The largest row count one `list` call may ask the forge for. The MCP
+ * `issues_list` tool caps its page at 200 rows and asks for one probe row
+ * beyond the cap so it can report `truncated`; the ceiling leaves room for that
+ * probe instead of clipping it back to a full page.
+ */
+export const FORGE_ISSUE_LIST_MAX = 201;
+
 export interface ForgeIssues {
   readonly forge: "github" | "gitea";
   readonly repository: string;
@@ -330,7 +338,7 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
           "--state",
           current,
           "--limit",
-          String(Math.max(1, Math.min(limit, 200))),
+          String(Math.max(1, Math.min(limit, FORGE_ISSUE_LIST_MAX))),
           "--json",
           "number,title,state,labels,url,createdAt",
         ]);

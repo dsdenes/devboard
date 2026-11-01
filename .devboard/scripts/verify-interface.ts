@@ -1685,11 +1685,22 @@ try {
     projectTitle: string;
     projectIcon: boolean;
     barRight: number;
-    versionsRight: number;
+    metricsRight: number;
     work: string;
     mode: boolean;
     versions: string;
-    reload: { label: string; title: string } | null;
+    reload: {
+      label: string;
+      title: string;
+      text: string;
+      fontSize: number;
+      height: number;
+      top: number;
+      bottom: number;
+    } | null;
+    itemHeights: number[];
+    barTop: number;
+    barBottom: number;
     themeLabel: string;
     notificationLabel: string;
     shortcuts: Array<string | null>;
@@ -1710,11 +1721,32 @@ try {
       projectTitle: project?.closest(".status-project")?.getAttribute("title") ?? "",
       projectIcon: project?.closest(".status-project")?.querySelector("svg") !== null,
       barRight: Math.round(bar?.getBoundingClientRect().right ?? -1),
-      versionsRight: Math.round(versions?.getBoundingClientRect().right ?? -1),
+      metricsRight: Math.round(
+        document.querySelector('[data-testid="status-bar"] .status-group--metrics')
+          ?.getBoundingClientRect().right ?? -1,
+      ),
       work: text('[data-testid="status-bar"] .status-item[title="Running lanes and open epics"]'),
       mode: document.querySelector('[data-testid="status-mode"]') !== null,
       versions: text('[data-testid="status-bar"] .status-versions'),
-      reload: reload === null ? null : { label: reload.getAttribute("aria-label") ?? "", title: reload.getAttribute("title") ?? "" },
+      reload: (() => {
+        if (reload === null) return null;
+        const label = reload.querySelector("span");
+        const rect = reload.getBoundingClientRect();
+        return {
+          label: reload.getAttribute("aria-label") ?? "",
+          title: reload.getAttribute("title") ?? "",
+          text: reload.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+          fontSize: label === null ? 0 : parseFloat(getComputedStyle(label).fontSize),
+          height: Math.round(rect.height),
+          top: Math.round(rect.top),
+          bottom: Math.round(rect.bottom),
+        };
+      })(),
+      itemHeights: [...document.querySelectorAll('[data-testid="status-bar"] .status-item')].map(
+        (item) => Math.round(item.getBoundingClientRect().height),
+      ),
+      barTop: Math.round(bar?.getBoundingClientRect().top ?? -1),
+      barBottom: Math.round(bar?.getBoundingClientRect().bottom ?? -1),
       themeLabel: document.querySelector('[data-testid="theme-toggle"]')?.getAttribute("aria-label") ?? "",
       notificationLabel: document.querySelector('[data-testid="notification-indicator"]')?.getAttribute("aria-label") ?? "",
       shortcuts: [...document.querySelectorAll('[data-testid="command-item"]')].map((item) => item.querySelector(".palette__shortcut")?.textContent ?? null),
@@ -1737,8 +1769,8 @@ try {
   );
   check(!statusBar.mode, "the status bar still repeats the active mode status", statusBar);
   check(
-    statusBar.barRight - statusBar.versionsRight <= 48,
-    "the status bar leaves an empty tail after the versions",
+    statusBar.barRight - statusBar.metricsRight <= 48,
+    "the status bar leaves an empty tail after its right group",
     statusBar,
   );
   check(statusBar.versions.includes("running") && statusBar.versions.includes("installed"), "the status bar does not show both versions", statusBar);
@@ -1756,6 +1788,21 @@ try {
       statusBar.reload!.title.includes(INSTALLED_VERSION),
     "the reload title does not name both versions",
     { sourceVersion, reload: statusBar.reload },
+  );
+  check(
+    statusBar.reload !== null &&
+      statusBar.reload.text === "reload" &&
+      statusBar.reload.fontSize === 11 &&
+      statusBar.reload.height <= 20 &&
+      statusBar.reload.top >= statusBar.barTop &&
+      statusBar.reload.bottom <= statusBar.barBottom,
+    "the reload control is not a 20px status item with an 11px label",
+    statusBar,
+  );
+  check(
+    statusBar.itemHeights.every((height) => height <= 20),
+    "a status-bar control is taller than 20px",
+    statusBar,
   );
   check(
     statusBar.groups === 2 && statusBar.divider && statusBar.barHeight === 26,
@@ -2859,6 +2906,8 @@ try {
       strongOutline: boolean;
       topGap: number;
       bottomGap: number;
+      leftGap: number;
+      rightGap: number;
     }>;
     resolvedActions: string[];
   }>(`(() => {
@@ -2872,6 +2921,7 @@ try {
     const buttons = [...document.querySelectorAll('[data-testid="start"]')].map((button) => {
       const box = button.getBoundingClientRect();
       const row = button.closest("tr").getBoundingClientRect();
+      const cell = button.closest("td").getBoundingClientRect();
       const style = getComputedStyle(button);
       return {
         file: button.getAttribute("data-file") ?? "",
@@ -2886,6 +2936,8 @@ try {
         strongOutline: style.borderTopColor === rgb(borderStrong),
         topGap: box.top - row.top,
         bottomGap: row.bottom - box.bottom,
+        leftGap: box.left - cell.left,
+        rightGap: cell.right - box.right,
       };
     });
     return {
@@ -2910,6 +2962,11 @@ try {
         Math.abs(button.topGap - button.bottomGap) <= 1,
     ),
     "a Start control is not a centered 24px Button with a record-naming accessible name",
+    startControls,
+  );
+  check(
+    startControls.buttons.every((button) => Math.abs(button.leftGap - button.rightGap) <= 1),
+    "a Start control is not horizontally centered in the Action column",
     startControls,
   );
   const filledStarts = startControls.buttons.filter((button) => button.primaryFill);
@@ -4042,6 +4099,54 @@ try {
     "the command list to collapse",
   );
 
+  // An agent page is a workspace, not a sheet: it takes the window's full
+  // height, and the prompt editor absorbs what the header, activity, and chat
+  // leave, so the lower half of the window is never empty.
+  const agentTab = '[data-testid="discover-agent-tab"]';
+  await page.click(agentTab);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agent-prompt-editor"]') !== null`,
+    "the Discover agent prompt editor",
+  );
+  const agentFill = await page.eval<{
+    pageScroll: number;
+    pageClient: number;
+    contentGap: number;
+    editorHeight: number;
+  }>(`(() => {
+    const page = document.querySelector('#workspace-discover .discover-agent');
+    const prompt = page.querySelector('.discover-agent__prompt');
+    const editor = page.querySelector('[data-testid="discover-agent-prompt-editor"]');
+    const contentBottom = page.getBoundingClientRect().bottom -
+      parseFloat(getComputedStyle(page).paddingBottom);
+    return {
+      pageScroll: page.scrollHeight,
+      pageClient: page.clientHeight,
+      contentGap: Math.round(contentBottom - prompt.getBoundingClientRect().bottom),
+      editorHeight: Math.round(editor.getBoundingClientRect().height),
+    };
+  })()`);
+  check(
+    agentFill.pageScroll <= agentFill.pageClient + 1,
+    "the agent page overflows the window at its supported size",
+    agentFill,
+  );
+  check(
+    Math.abs(agentFill.contentGap) <= 1,
+    "the agent page leaves the lower part of the window empty",
+    agentFill,
+  );
+  check(
+    agentFill.editorHeight > 220,
+    "the prompt editor does not take the height the agent page leaves",
+    agentFill,
+  );
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null`,
+    "the Discover overview after the agent page check",
+  );
+
   // The fixture sheet fits at 1440×900; prove the page owns its scrolling and
   // keeps the offset in a narrower supported viewport, where it overflows.
   await devtools.send("Emulation.setDeviceMetricsOverride", {
@@ -4192,33 +4297,24 @@ try {
     slider: { min: string; max: string; value: string; disabled: boolean } | null;
     toggle: { checked: boolean; disabled: boolean } | null;
     menu: boolean;
-    kindIcons: number;
-    kindWords: string[];
-    kindColors: string[];
-    mutedKind: string;
     tableScrolls: number[];
     clippedCards: number;
     rowsOutside: number;
     searchPadding: string[];
     toolbar: { background: string; border: string };
+    floorChip: { fontSize: string; lineHeight: string };
     filterRows: number[];
   }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
-    const kindCells = rows.map((row) => row.querySelector('td:nth-child(1)'));
-    const termCells = rows.map((row) => row.querySelector('td:nth-child(2)'));
-    const significanceCells = rows.map((row) => row.querySelector('td:nth-child(3)'));
-    const exampleCells = rows.map((row) => row.querySelector('td:nth-child(5)'));
+    const termCells = rows.map((row) => row.querySelector('td:nth-child(1)'));
+    const significanceCells = rows.map((row) => row.querySelector('td:nth-child(2)'));
+    const exampleCells = rows.map((row) => row.querySelector('td:nth-child(4)'));
     const wraps = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] .table-wrap')];
     const cards = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"]')];
     const search = document.querySelector('[data-testid="discover-glossary-search"]');
     const searchStyle = search === null ? null : getComputedStyle(search);
     const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
     const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
-    const probe = document.createElement('span');
-    probe.style.color = 'var(--muted-foreground)';
-    document.body.append(probe);
-    const mutedKind = getComputedStyle(probe).color;
-    probe.remove();
     return {
       contexts: document.querySelectorAll('#workspace-discover [data-testid="discover-context"]').length,
       terms: rows.length,
@@ -4234,13 +4330,6 @@ try {
       slider: slider === null ? null : { min: slider.min, max: slider.max, value: slider.value, disabled: slider.disabled },
       toggle: toggle === null ? null : { checked: toggle.checked, disabled: toggle.disabled },
       menu: document.querySelector('[data-testid="discover-glossary-menu"]') !== null,
-      kindIcons: kindCells.filter((cell) => cell?.querySelector('.discover-kind svg') !== null).length,
-      kindWords: kindCells.map((cell) => cell?.querySelector('.discover-kind')?.textContent?.trim() ?? ""),
-      mutedKind,
-      kindColors: [...new Set(kindCells
-        .map((cell) => cell?.querySelector('.discover-kind'))
-        .filter((kind) => kind !== null)
-        .map((kind) => getComputedStyle(kind).color))],
       tableScrolls: wraps.map((wrap) => wrap.scrollHeight - wrap.clientHeight),
       clippedCards: cards.filter((card) => card.scrollHeight > card.clientHeight + 1).length,
       rowsOutside: rows.filter((row) => {
@@ -4252,6 +4341,11 @@ try {
         const controls = document.querySelector('#workspace-discover .discover-glossary-controls');
         const style = controls === null ? null : getComputedStyle(controls);
         return { background: style?.backgroundColor ?? "", border: style?.borderTopWidth ?? "" };
+      })(),
+      floorChip: (() => {
+        const value = document.querySelector('#workspace-discover .discover-floor__value');
+        const style = value === null ? null : getComputedStyle(value);
+        return { fontSize: style?.fontSize ?? "", lineHeight: style?.lineHeight ?? "" };
       })(),
       filterRows: [
         search,
@@ -4266,7 +4360,7 @@ try {
   check(glossary.contexts > 0 && glossary.terms > 0, "the glossary tables are empty", glossary);
   check(glossary.heights.every((height) => height > 0 && height <= 120), "a glossary row is mis-sized", glossary.heights);
   check(
-    glossary.headers.join("|") === "Kind|Term|Significance|Definition|",
+    glossary.headers.join("|") === "Term|Significance|Definition|",
     "the glossary table does not carry the significance and unnamed example columns",
     glossary.headers,
   );
@@ -4304,17 +4398,6 @@ try {
     glossary.ids,
   );
   check(!glossary.menu, "the glossary sidebar still has a disclosure menu", glossary);
-  check(glossary.kindIcons === glossary.terms, "a glossary kind is not the first cell", glossary.kindIcons);
-  check(
-    glossary.kindWords.every((word) => word.length > 0),
-    "a glossary kind row has no visible kind word",
-    glossary.kindWords,
-  );
-  check(
-    glossary.kindColors.length === 1 && glossary.kindColors[0] === glossary.mutedKind,
-    "a glossary kind carries a state color instead of muted foreground",
-    { kindColors: glossary.kindColors, mutedKind: glossary.mutedKind },
-  );
   check(glossary.tableScrolls.every((delta) => delta <= 1), "a glossary table clips its rows", glossary.tableScrolls);
   check(glossary.clippedCards === 0, "a glossary card clips its rows", glossary.clippedCards);
   check(glossary.rowsOutside === 0, "a glossary term falls outside its card", glossary.rowsOutside);
@@ -4328,6 +4411,12 @@ try {
     glossary.filterRows.every((center) => Math.abs(center - glossary.filterRows[0]!) <= 1),
     "the glossary search, switch, and floor do not sit on one row",
     glossary.filterRows,
+  );
+  check(
+    Math.abs(Number.parseFloat(glossary.floorChip.fontSize) - 11.5) < 0.05 &&
+      Math.abs(Number.parseFloat(glossary.floorChip.lineHeight) - 16.1) < 0.05,
+    "the glossary floor chip does not render the mono-small type",
+    glossary.floorChip,
   );
   const warningsSection = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="Warnings"]') !== null`);
   check(!warningsSection, "the sidebar still shows an empty warnings section");
@@ -4414,7 +4503,7 @@ try {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
     const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
     return {
-      significance: rows.map((row) => row.querySelector("td:nth-child(3)")?.textContent?.trim() ?? ""),
+      significance: rows.map((row) => row.querySelector("td:nth-child(2)")?.textContent?.trim() ?? ""),
       attrs: rows.map((row) => row.getAttribute("data-significance") ?? "missing"),
       toggle: toggle === null ? null : { checked: toggle.checked, disabled: toggle.disabled },
       sliderDisabled: document.querySelector('[data-testid="discover-glossary-threshold"]').disabled,
@@ -4457,7 +4546,7 @@ try {
     "a glossary row is still an interactive term page",
     glossaryActivation,
   );
-  await page.click('#workspace-discover [data-testid="discover-term"] td:nth-child(2)');
+  await page.click('#workspace-discover [data-testid="discover-term"] td:nth-child(1)');
   await delay(100);
   const stillGlossary = await page.eval<boolean>(
     `document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="glossary"]') !== null`,
@@ -4474,19 +4563,32 @@ try {
   await delay(150);
   const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
   check(skillDirty, "the skill editor does not mark unsaved changes");
-  const dirtyHeader = await page.eval<{ enabled: boolean; state: string; primary: boolean }>(`(() => {
+  const dirtyHeader = await page.eval<{
+    enabled: boolean;
+    state: string;
+    primary: boolean;
+    dot: string;
+    warning: string;
+  }>(`(() => {
     const button = document.querySelector('[data-testid="discover-skill-save"]');
+    const header = button?.closest('.discover-skill__header');
+    const dot = header?.querySelector('.discover-skill__state-dot');
+    const probe = document.createElement("div");
+    probe.style.background = "var(--warning)";
+    document.body.append(probe);
+    const warning = getComputedStyle(probe).backgroundColor;
+    probe.remove();
     return {
       enabled: button !== null && !button.disabled,
-      state: button
-        ?.closest('.discover-skill__header')
-        ?.querySelector('[data-testid="discover-skill-dirty"]')
-        ?.textContent?.trim() ?? "",
+      state: header?.querySelector('[data-testid="discover-skill-dirty"]')?.textContent?.trim() ?? "",
       primary: button?.classList.contains("bg-[var(--primary)]") ?? false,
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      warning,
     };
   })()`);
   check(
-    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary,
+    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary &&
+      dirtyHeader.dot === dirtyHeader.warning,
     "the skill header does not promote Save to the filled primary for an unsaved draft",
     dirtyHeader,
   );
@@ -4580,22 +4682,33 @@ try {
     saveSecondary: boolean;
     restorePrimary: boolean;
     restore: string;
+    dot: string;
+    error: string;
   }>(`(() => {
     const header = document.querySelector('.discover-skill__header');
     const save = header?.querySelector('[data-testid="discover-skill-save"]');
     const restore = header?.querySelector('[data-testid="discover-skill-restore"]');
+    const dot = header?.querySelector('.discover-skill__state-dot');
+    const probe = document.createElement("div");
+    probe.style.background = "var(--error)";
+    document.body.append(probe);
+    const error = getComputedStyle(probe).backgroundColor;
+    probe.remove();
     return {
       state: header?.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
       saveDisabled: save === null || save.disabled,
       saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
       restorePrimary: restore?.classList.contains("bg-[var(--primary)]") ?? false,
       restore: restore?.textContent?.trim() ?? "",
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      error,
     };
   })()`);
   check(
     missingHeader.state === "Live file missing" && missingHeader.saveDisabled &&
       missingHeader.saveSecondary && missingHeader.restorePrimary &&
-      missingHeader.restore === "Recreate generated version",
+      missingHeader.restore === "Recreate generated version" &&
+      missingHeader.dot === missingHeader.error,
     "the missing skill header does not give the recovery control the only primary",
     missingHeader,
   );
@@ -4665,6 +4778,12 @@ try {
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
+    headerSurface: string;
+    raised: string;
+    dotWidth: number;
+    dotHeight: number;
+    dot: string;
+    success: string;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
@@ -4673,10 +4792,20 @@ try {
     const identity = header?.querySelector('.discover-skill__identity');
     const actions = header?.querySelector('.discover-skill__actions');
     const save = document.querySelector('[data-testid="discover-skill-save"]');
+    const dot = header?.querySelector('.discover-skill__state-dot');
     const center = (element) => {
       const box = element?.getBoundingClientRect();
       return box === undefined ? 0 : box.top + box.height / 2;
     };
+    const token = (name) => {
+      const probe = document.createElement("div");
+      probe.style.background = \`var(\${name})\`;
+      document.body.append(probe);
+      const value = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return value;
+    };
+    const dotBox = dot?.getBoundingClientRect();
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
@@ -4695,6 +4824,12 @@ try {
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
+      headerSurface: header === null ? "" : getComputedStyle(header).backgroundColor,
+      raised: token("--surface-raised"),
+      dotWidth: dotBox === undefined ? 0 : Math.round(dotBox.width),
+      dotHeight: dotBox === undefined ? 0 : Math.round(dotBox.height),
+      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
+      success: token("--success"),
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
@@ -4711,8 +4846,14 @@ try {
     skillLayout,
   );
   check(
-    skillLayout.header === 30 && skillLayout.inline,
-    "the skill header is not one 30px row with the state and actions",
+    skillLayout.header === 34 && skillLayout.inline,
+    "the skill header is not one 34px row with the state and actions",
+    skillLayout,
+  );
+  check(
+    skillLayout.headerSurface === skillLayout.raised && skillLayout.dotWidth === 6 &&
+      skillLayout.dotHeight === 6 && skillLayout.dot === skillLayout.success,
+    "the skill header is not a surface-raised band with a success state dot",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);

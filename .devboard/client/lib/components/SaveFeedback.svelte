@@ -51,7 +51,7 @@
     flex: 0 0 auto;
     gap: 6px;
     max-width: min(320px, 100%);
-    padding: 3px 8px;
+    padding: 2px 8px;
   }
 
   .save-feedback__icon {

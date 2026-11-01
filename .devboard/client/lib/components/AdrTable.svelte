@@ -222,6 +222,7 @@
 
   .adr-action {
     line-height: 24px;
+    text-align: center;
     vertical-align: middle;
   }
 

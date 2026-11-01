@@ -120,8 +120,6 @@ export class DiscoverStore {
   startedAt = $state<string | null>(null);
   /** The active agent's lines, shown by the shared run tag. */
   activity = $state<string[]>([]);
-  /** Every agent's own lines; a card never shows another agent's. */
-  agentActivity = $state<Record<string, string[]>>({});
   question = $state<RunQuestion | null>(null);
   /** Every agent's own pending question. */
   agentQuestions = $state<Record<string, RunQuestion | null>>({});
@@ -238,10 +236,6 @@ export class DiscoverStore {
 
   agentPrompt(id: string): DiscoverAgentPrompt | null {
     return this.promptStates[id] ?? this.agent(id)?.prompt ?? null;
-  }
-
-  agentActivityOf(id: string): string[] {
-    return this.agentActivity[id] ?? [];
   }
 
   agentQuestionOf(id: string): RunQuestion | null {
@@ -604,7 +598,6 @@ export class DiscoverStore {
       if (typeof message.runId === "string") this.runId = message.runId;
       this.startedAt = typeof message.startedAt === "string" ? message.startedAt : null;
       if (agent !== null) {
-        this.agentActivity[agent] = [];
         this.agentQuestions[agent] = null;
         this.agentPromptErrorClear(agent);
       }
@@ -616,15 +609,7 @@ export class DiscoverStore {
     }
     if (type === "discoverActivity" && typeof message.text === "string") {
       const agent = typeof message.agent === "string" ? message.agent : null;
-      if (agent !== null) {
-        const lines = appendLine(
-          this.agentActivity[agent] ?? [],
-          message.text,
-          message.append === true,
-        );
-        this.agentActivity[agent] = lines;
-        if (agent === this.activeAgent) this.activity = lines;
-      } else {
+      if (agent === null || agent === this.activeAgent) {
         this.activity = appendLine(this.activity, message.text, message.append === true);
       }
       return;

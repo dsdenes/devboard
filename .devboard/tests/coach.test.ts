@@ -29,6 +29,7 @@ import {
   familyKey,
   isTrivialCommand,
   normalizeCommandSignature,
+  TRIVIAL_COMMANDS,
   type CoachFamily,
 } from "../coach/families";
 import {
@@ -572,6 +573,26 @@ describe("Coach normalization", () => {
     expect(familyKey("git push origin main")).toBe("git push origin main");
     expect(familyKey("git push origin other")).not.toBe(familyKey("git push origin main"));
   });
+
+  test("a flag-bearing allowlist entry stays trivial in the key it is compared against", () => {
+    for (const entry of TRIVIAL_COMMANDS.filter((candidate) => candidate.includes("--"))) {
+      expect(isTrivialCommand(normalizeCommandSignature(entry, repo))).toBe(true);
+    }
+    expect(normalizeCommandSignature("bunx tsc --noEmit", repo)).toBe("bunx tsc");
+    expect(isTrivialCommand(normalizeCommandSignature("bunx tsc --noEmit", repo))).toBe(true);
+  });
+
+  test("volatile prefixes are removed before a segment is judged trivial", () => {
+    expect(normalizeCommandSignature(`ADRS_DIR=${repo}/adrs bunx tsc --noEmit`, repo)).toBe(
+      "bunx tsc",
+    );
+    expect(
+      normalizeCommandSignature(
+        `ADRS_DIR=${repo}/adrs bunx tsc --noEmit && git push origin main`,
+        repo,
+      ),
+    ).toBe("git push origin main");
+  });
 });
 
 describe("Coach families", () => {
@@ -610,6 +631,17 @@ describe("Coach families", () => {
           { command: "bun run build", isError: true },
           { command: "/some/path.ts", name: "read", isError: true },
         ],
+      }),
+    ]);
+    expect(families).toEqual([]);
+  });
+
+  test("a typechecking session produces no bunx tsc family", () => {
+    const families = familiesOf([
+      sessionOf({
+        id: "a",
+        startedAt: instant(60),
+        calls: [{ command: "bunx tsc --noEmit" }],
       }),
     ]);
     expect(families).toEqual([]);

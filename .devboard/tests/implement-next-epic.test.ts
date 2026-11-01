@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  buildGoalPrompt,
   distillObjective,
   fetchEpic,
+  forgeAuthCommand,
   listOpenEpics,
   runImplementNextEpic,
   slugify,
@@ -341,6 +343,48 @@ describe("slugify", () => {
   });
 });
 
+describe("close command", () => {
+  const epic = {
+    ref: 42,
+    title: "Add export command",
+    url: "http://localhost:3001/owner/repo/issues/42",
+    body: BODY,
+  };
+
+  function render(forge: "github" | "gitea", host: string): string {
+    const info = { host, project: "owner/repo", forge };
+    return buildGoalPrompt(
+      epic,
+      "## Objective\nShip the export command.",
+      "/repo",
+      "/repo/.worktree/add-export-command",
+      "devboard/add-export-command",
+      forge,
+      "owner/repo",
+      forgeAuthCommand("/repo", info),
+    );
+  }
+
+  test("a Gitea close checks the identity, then calls the API", () => {
+    const prompt = render("gitea", "localhost:3001");
+    const close = prompt.match(/^ {2}`(.+)`$/m)?.[1] ?? "";
+
+    expect(close).toContain(".devboard/scripts/forge-auth.ts check");
+    expect(close).not.toContain("forge-auth.ts exec");
+    expect(close).toContain("--forge gitea --required write");
+    expect(close).toContain("&& curl -sS -X PATCH");
+    expect(close).toContain('"$DEVBOARD_GITEA_URL/api/v1/repos/owner/repo/issues/42"');
+  });
+
+  test("a GitHub close still runs gh under exec", () => {
+    const prompt = render("github", "github.com");
+    const close = prompt.match(/^ {2}`(.+)`$/m)?.[1] ?? "";
+
+    expect(close).toContain(".devboard/scripts/forge-auth.ts exec");
+    expect(close).toContain("gh issue close 42");
+  });
+});
+
 describe("runImplementNextEpic", () => {
   test("activates the goal tool and sends the distilled epic objective", async () => {
     const harness = makeHarness(baseTable());
@@ -552,6 +596,8 @@ describe("runImplementNextEpic", () => {
     expect(harness.sent[0]).toContain(
       '"$DEVBOARD_GITEA_URL/api/v1/repos/owner/repo/issues/42"',
     );
+    expect(harness.sent[0]).toContain(".devboard/scripts/forge-auth.ts check");
+    expect(harness.sent[0]).not.toContain("forge-auth.ts exec");
     expect(harness.sent[0]).not.toContain("gh issue close 42");
     expect(gitea.calls.some((call) => call.startsWith("/api/v1/repos/owner/repo/issues?"))).toBe(
       true,

@@ -80,6 +80,12 @@
   let askError = $state<string | null>(null);
   /** True while the proposed-goal draft is being written. */
   let goalPending = $state(false);
+  /**
+   * Invalidates the answer to a filing whose panel the operator closed. Every
+   * reset bumps it, so a late response writes nothing into a panel that is
+   * gone: no re-arm, no phase, no error, no toast.
+   */
+  let generation = 0;
 
   const drag = { pointerId: -1, offsetX: 0, offsetY: 0 };
 
@@ -404,6 +410,7 @@
   }
 
   function reset(): void {
+    generation += 1;
     closeConversation();
     goalPending = false;
     action = null;
@@ -593,6 +600,7 @@
       return;
     }
     const element = target;
+    const attempt = generation;
     goalPending = true;
     errorMessage = null;
     dismissToast();
@@ -601,6 +609,7 @@
       conversation: conversationPayload(),
       ...captured(element),
     });
+    if (attempt !== generation) return;
     goalPending = false;
     if (!response.ok) {
       errorMessage = response.error;
@@ -617,6 +626,7 @@
   async function send(): Promise<void> {
     if (target === null || report.trim().length === 0 || sending) return;
     const element = target;
+    const attempt = generation;
     dismissToast();
     phase = "sending";
     errorMessage = null;
@@ -626,6 +636,7 @@
       conversation: conversationPayload(),
       ...captured(element),
     });
+    if (attempt !== generation) return;
     if (!response.ok) {
       errorMessage = response.error;
       phase = "failed";
@@ -860,7 +871,7 @@
   .feedback-result__body {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
     min-width: 0;
   }
 

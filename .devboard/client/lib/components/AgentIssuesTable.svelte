@@ -187,14 +187,19 @@
 
   /* The pill keeps the overline 12px line height and its 2px padding, so its 18px
      box is 1px taller than the cell's 17px line box. The negative bottom margin
-     removes that 1px from the line box, so the 27px row still comes from the cell. */
+     removes that 1px from the line box, so the 27px row still comes from the cell.
+     A block box lets the 86px state track ellipsize the longest badge ("implemented"). */
   .agent-issues-table .badge {
+    display: inline-block;
     margin-bottom: -1px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
     vertical-align: top;
   }
 
   /* Fixed tracks for category, filed, state, and version; the title takes the rest.
-     The state track fits its longest badge ("implemented", ~90px) plus cell padding. */
+     The state track is the documented 86px and the badge ellipsizes inside it. */
   th:nth-child(2) {
     width: 110px;
   }
@@ -202,7 +207,7 @@
     width: 132px;
   }
   th:nth-child(4) {
-    width: 112px;
+    width: 86px;
   }
   th:nth-child(5) {
     width: 76px;

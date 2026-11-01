@@ -16,6 +16,7 @@
     "verify:install": "bun run scripts/verify-install.ts",
     "verify:update": "bun run scripts/verify-update.ts",
     "verify:ui": "bun run scripts/verify-ui.ts",
+    "verify:notifications": "bun run scripts/verify-notifications.ts",
     "verify:watchdog": "bun run scripts/verify-watchdog.ts",
     "verify:watchdog-live": "bun run scripts/verify-watchdog-live.ts",
     "watchdog": "bun run watchdog/main.ts",
