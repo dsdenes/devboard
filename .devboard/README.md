@@ -1770,6 +1770,9 @@ of journal and omp evidence, filing one issue per fingerprint, and commenting on
 already `filed:<url>` is never filed again. No cycle closes an issue. A fingerprint covers the
 category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
 omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
+omp's own thinking-loop notice — `Thinking loop detected; aborting stream for retry.` — is a
+recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
+provider-error record.
 
 ### Deduplication gate
 
