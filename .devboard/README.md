@@ -2248,13 +2248,13 @@ the canonical checkout and never in another agent's worktree, and writes nothing
 result already in context is reused as-is, and only when the context lacks one does it run one
 canonical auth check, `bun .devboard/scripts/forge-auth.ts check --required write --json`, from the
 repository root: the wrapper takes the target from `DEVBOARD_GITEA_URL`, `GITEA_TOKEN`, and the
-`origin` remote, so no host or project is passed, the exit status and JSON are read directly, and
-no further auth probe runs in the session. The shared credential rule every tracker prompt follows
-is `.devboard/prompts/forge-auth.md`: the wrapper is the only authority for forge host, project,
-and token scope, and enumerating the environment or reading credential files to find them is
-forbidden. It changes only that issue's implementation, tests, and documentation; it may read
-other issues and code but never edits, comments on, closes, or reopens another issue. When the
-issue declares an open prerequisite (`depends on`, `blocked by`, or a
+`origin` remote, so no forge, host, project, or URL flag is passed, the exit status and JSON are
+read directly, and no further auth probe runs in the session. The shared credential rule every
+tracker prompt follows is `.devboard/prompts/forge-auth.md`: the wrapper is the only authority for
+forge host, project, and token scope, and enumerating the environment or reading credential files
+to find them is forbidden. It changes only that issue's implementation, tests, and documentation;
+it may read other issues and code but never edits, comments on, closes, or reopens another issue.
+When the issue declares an open prerequisite (`depends on`, `blocked by`, or a
 task-list issue reference), it writes `blocked: #<prerequisite>` as the first stderr line, exits
 nonzero, leaves the issue open and unhandled, and never implements the prerequisite in another
 agent's place. It is

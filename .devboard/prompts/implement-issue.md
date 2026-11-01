@@ -111,11 +111,11 @@ context, but you never edit, comment on, close, or reopen another issue.
   context already carries `canWrite: true` issues none. The canonical form infers the forge,
   host, project, and identity from the `origin` remote and `DEVBOARD_GITEA_URL`, so this check
   has exactly one spelling: that literal command line, with no `--forge`, `--host`,
-  `--project`, or `--url` override and no derived replacement for any of them. An override is
-  justified only when this result itself names a wrong forge or host, never
-  to preempt the check. Never derive those values with `sed`, `git remote get-url`, or any other
-  shell substitution; when the `origin` remote cannot name the forge, stop and report that as the
-  blocker instead of guessing a `--forge` override.
+  `--project`, or `--url` flag and no derived replacement for any of them. The wrapper resolves
+  all of them from the checkout, so this prompt never overrides one: never preempt the check with
+  a guessed `--forge`, never re-run it with a target flag because the answer looks wrong, and
+  never derive the values with `sed`, `git remote get-url`, or any other shell substitution. When
+  the `origin` remote cannot name the forge, stop and report that as the blocker.
 
   A session following this prompt issues at most one call matching `forge-auth.ts check` in
   total, and none once its context carries `canWrite: true`; that call has no `cd`, no `--forge`,
