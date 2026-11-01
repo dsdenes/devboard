@@ -8,22 +8,38 @@ The argument must be exactly one positive integer issue number. If it is missing
 carries more than one token, refuse before changing anything: write the refusal to stderr, exit
 nonzero, and stop. Never guess an issue number and never accept a range, a list, or a URL.
 
-This run serves one issue. Read exactly that one issue with `issue_get` and never fetch, survey, or
+This run serves one issue. After the single `devboard_status` host-resolution call and the auth gate
+in *Inputs and paths*, read exactly that one issue with `issue_get` and never fetch, survey, or
 build a dependency graph for the rest of the backlog. You may read other issues and code for
 context, but you never edit, comment on, close, or reopen another issue.
 
 ## Inputs and paths
 
-- `<REPO_DIR>` is the checkout root: `git rev-parse --show-toplevel` in the repository. The
-  canonical checkout is `<REPO_DIR>` itself.
+- Resolve the session's host exactly once, before any forge read or write: make one argument-free
+  `devboard_status` MCP call and take `<REPO_DIR>` from its `repositoryRoot`, along with
+  `harnessDirectory` and `stateDirectory`. That one call is the whole checkout-orientation step,
+  and the canonical checkout is `<REPO_DIR>` itself. Issue it before, and exactly once before, the
+  `forge-auth.ts check` below, and never repeat it later in the session.
+- Never orient the session with a shell probe, and never chain orientation probes: no
+  `git remote get-url origin` or `git remote get-url github`, no `git config --get
+  remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
+  directory, no `env | grep`, and no
+  `cd <root> && … && bun .devboard/scripts/forge-auth.ts check` line. The `devboard_status`
+  result covers the roots and the `forge-auth.ts check` JSON line below covers the forge, host,
+  project, and identity; neither is re-derived to orient the run.
+- Fall back to a shell probe only for a field neither the `devboard_status` result nor the auth
+  gate reports, and then at most one probe, run alone: never a chained discovery line, never
+  `git remote get-url origin`, and never a probe that merely confirms a value one of them already
+  reported.
 - Worktree root: `<REPO_DIR>/.worktree/`. Create and work in exactly one worktree there, named for
   the issue, for example `<REPO_DIR>/.worktree/issue-<number>`. Never work in the canonical
   checkout, never use another agent's worktree, and write nothing outside `<REPO_DIR>` — no
   temporary file, log, cache, or build output elsewhere. A scratch file that is genuinely
   required belongs inside `<REPO_DIR>/.devboard/` and is removed after use; never write `/tmp/x`
   or any other path outside the repository root.
-- Before the first forge read or write, gate the run exactly once per session with the canonical,
-  argument-free auth check, run verbatim from the repository root:
+- Before the first forge read or write, and after the single `devboard_status` call above, gate
+  the run exactly once per session with the canonical, argument-free auth check, run verbatim from
+  the repository root:
 
   ```sh
   bun .devboard/scripts/forge-auth.ts check --required write --json
@@ -31,31 +47,36 @@ context, but you never edit, comment on, close, or reopen another issue.
 
   This is the only pre-write auth gate and the only auth invocation of the run. The canonical
   form infers the forge, host, project, and identity from the `origin` remote and
-  `DEVBOARD_GITEA_URL`, so this check has exactly one spelling: the `--host`, `--project`,
-  `--forge`, and `--url` overrides are forbidden on it, and their values must never be derived
-  with `sed`, `git remote get-url`, or any other shell substitution. When the `origin` remote
-  cannot name the forge, stop and report that as the blocker instead of guessing a `--forge`
-  override.
+  `DEVBOARD_GITEA_URL`, so this check has exactly one spelling: that literal command line, with
+  no `--forge`, `--host`, `--project`, or `--url` override and no derived replacement for any of
+  them. Never derive those values with `sed`, `git remote get-url`, or any other shell
+  substitution; when the `origin` remote cannot name the forge, stop and report that as the
+  blocker instead of guessing a `--forge` override.
 
-  Read the JSON line and proceed only when the exit status is 0 and `canWrite` is `true`. A
-  successful result is reused for the rest of the session: never run the check a second time,
-  and never re-run it to confirm a result already read. Only a nonzero exit, or an exit 0
-  without `canWrite: true`, stops the run, and only that failure justifies one `--help`
+  Invoke that one line alone: never prefix it with `cd <absolute path> &&` or
+  `git rev-parse --show-toplevel &&`, and never chain it into a compound command with a `curl`
+  request to the forge API or any other command. Set the tool's working directory to the
+  repository root instead of prefixing the command.
+
+  Read the JSON line and proceed only when the exit status is 0 and `canWrite` is `true`; trust
+  its `canWrite`, `permission`, and `source` fields for every later forge step instead of
+  re-checking. A successful result is reused for the rest of the session: never run the check a
+  second time, and never re-run it to confirm a result already read. Only a nonzero exit, or an
+  exit 0 without `canWrite: true`, stops the run, and only that failure justifies one `--help`
   inspection or the blocker report: report the script's message verbatim, and when the result
   is JSON, its `error` and `permission` fields verbatim. Never retry across `localhost`,
   `localhost:2223`, `localhost:3001`, `origin`, `ds@localhost:2223`, `gitea`, `127.0.0.1`, a bare
   IP, or a bare port, and never re-derive the host with `git remote get-url origin | sed` or any
-  other shell substitution. Never prefix this check with `cd <path>` — set the tool's working
-  directory instead — never append `echo $?`, `echo "exit=$?"`, `echo "EXIT:$?"`, or any other
-  exit-status echo, never append `2>&1 | head`, `2>&1 | tail`, or any other consumer, and never
-  append `env | grep` or a `printenv` sweep. The
-  credentialed target is `DEVBOARD_GITEA_URL` with `GITEA_TOKEN`; a host is a label only, so
+  other shell substitution. Never append `echo $?`, `echo "exit=$?"`, `echo "EXIT:$?"`, or
+  any other exit-status echo, never append `2>&1 | head`, `2>&1 | tail`, or any other consumer,
+  and never append `env | grep` or a `printenv` sweep. The credentialed target is
+  `DEVBOARD_GITEA_URL` with `GITEA_TOKEN`; a host is a label only, so
   never pass `origin`, `github.com`, `localhost`, `localhost:3000`, `localhost:2223`,
   `localhost:3001`, `127.0.0.1`, `ds@localhost:2223`, `gitea`, a bare IP, or a bare port as
-  `--host`. Do not rerun the check in the same session. That JSON line, plus the resolution
-  fields `devboard_status` returns, is the only supported way to learn the forge host, project,
-  or credential state: both report presence and resolution without exposing a value, so an
-  environment sweep answers nothing they do not. Forge and registry configuration MUST be
+  `--host`. Do not rerun the check in the same session. That JSON line is the only supported way
+  to learn the forge host, project, or credential state: it reports presence and resolution
+  without exposing a value, so an environment sweep answers nothing it does not. Forge and
+  registry configuration MUST be
   resolved through `bun .devboard/scripts/forge-auth.ts check` and MUST NOT be discovered with
   an `env | grep` probe, `cat .env`, `cat ~/.npmrc`, `git config --get-regexp 'url\..*'`, or any
   other environment or credential-file sweep: never enumerate the process environment or hunt
@@ -75,11 +96,11 @@ context, but you never edit, comment on, close, or reopen another issue.
   value on every line with `sed -E 's/=.*/=<set>/'`; never mask only a name list with
   `sed -E 's/(TOKEN|SECRET|PASSWORD)=.*/\1=<redacted>/'` or a variant, because that leaves a
   differently named value such as `GITHUB_APM_PAT` in the transcript.
-- Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
-  resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
-  roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,
-  and URL on whichever forge the repository uses. Use `issues_list` only to confirm the state of a
-  referenced prerequisite, never to survey the backlog.
+- Read the issue before changing anything, using the `repositoryRoot`, `harnessDirectory`, and
+  `stateDirectory` the single `devboard_status` call above resolved; never issue a second
+  `devboard_status` call. `issue_get` with `{"number": <number>}` returns that issue's title,
+  body, labels, state, and URL on whichever forge the repository uses. Use `issues_list` only to
+  confirm the state of a referenced prerequisite, never to survey the backlog.
 - Forge state — issues, labels, releases, and workflow runs or jobs — MUST be read and mutated
   through the `devboard` MCP tools: `issue_get` and `issues_list` for reads, `issue_close` for the
   one close, and `verification_run` for an allowlisted check. NEVER source `.env` (including
@@ -127,11 +148,11 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
 - Chain it with `&&` only into a step that must run after a successful install, such as
   `bun run build`; never chain it to an unrelated command, and never re-run it to re-inspect output
   a consumer truncated. Run it once, then run build, typecheck, and tests as separate commands.
-- `verification_run` runs an allowlisted check from the `.devboard/` that `devboard_status` reports
-  as `harnessDirectory`. Use it for interface verification, as *Interface verification* below
-  requires. When it resolves the canonical package root while you work in a worktree, run that
-  same check from `<worktree>/.devboard/` so the changed revision is what executes; that is the
-  only allowed shell invocation of the check.
+- `verification_run` runs an allowlisted check from the `.devboard/` that the `devboard_status`
+  result reports as `harnessDirectory`. Use it for interface verification, as *Interface
+  verification* below requires. When it resolves the canonical package root while you work in a
+  worktree, run that same check from `<worktree>/.devboard/` so the changed revision is what
+  executes; that is the only allowed shell invocation of the check.
 
 ## Interface verification
 
@@ -146,25 +167,33 @@ check's whole process group at its 900-second bound, and returns `check`, `exitC
 `truncated`, and `log` in one result. A bare `bun run verify:interface`, a `tail`/`head`/`grep`
 pipe, and a log an earlier run wrote are never a verdict.
 
-- Read `repositoryRoot` and `harnessDirectory` from `devboard_status` first. When
-  `harnessDirectory` is the `.devboard/` you changed, the tool verifies the changed revision and is
-  the only way to run the check: never invoke `bun run verify:interface` from a shell in that case,
-  because the tool result is the whole verdict and the shell form only repeats the same run.
-- Only when `devboard_status` reports the canonical `<REPO_DIR>/.devboard` while you work in a
-  worktree does the tool verify the pre-change revision. Then run the changed revision once, in the
-  foreground, from `<worktree>/.devboard`, redirecting its complete output to
-  `.tmp/verify-interface.log` — `bun run verify:interface > .tmp/verify-interface.log 2>&1` — and
-  read that file whole. Its exit status is the verdict, so never append a status echo. Say in the
-  final response that the tool's resolved `harnessDirectory` was the canonical root. Every other
-  direct invocation is forbidden.
+- Use `repositoryRoot` and `harnessDirectory` from the single `devboard_status` call above; never
+  issue another `devboard_status` call. When `harnessDirectory` is the `.devboard/` you changed,
+  the tool verifies the changed revision and is the only way to run the check: never invoke
+  `bun run verify:interface` from a shell in that case, because the tool result is the whole
+  verdict and the shell form only repeats the same run.
+- Only when that same result reports the canonical `<REPO_DIR>/.devboard` while you work in a
+  worktree does the tool verify the pre-change revision. Then run the changed revision once from
+  `<worktree>/.devboard`, after creating the log directory with `mkdir -p .tmp` from that package
+  root: a fresh worktree has no `.tmp`, and a redirect into a directory that does not exist fails
+  with `No such file or directory (os error 2)` before the verifier starts. Never redirect into a
+  path you have not created. Since the check can run for many minutes, start it as a background job
+  with no deadline — `async: true`, `timeout: 0` — writing its complete output to
+  `.tmp/verify-interface.log` with `bun run verify:interface > .tmp/verify-interface.log 2>&1`, then
+  end the turn and read that log and the job's exit status from its completion follow-up. Its exit
+  status is the verdict, so never append a status echo. Say in the final response that the tool's
+  resolved `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
 - The complete output of every interface verification lives at `.devboard`'s
   `.tmp/verify-interface.log`: the tool writes that file itself and returns its path in `log`, and
   the worktree fallback redirects there. Read the file whole on failure — never `tail`, `head`,
   `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON survive instead of
   a fixed number of trailing lines. Never take a verdict from a log an earlier run wrote: the tool
   truncates the file before the check starts and the fallback redirect truncates it too.
-- Never background `verify:interface`, never kill or restart it. A backgrounded job ends the turn
-  without its verdict, and a killed job loses the assertion.
+- Never kill or restart `verify:interface`: a killed job loses the assertion. The
+  `verification_run` call itself is never backgrounded; it returns the verdict in one result. For
+  the shell fallback, a job status line such as `Backgrounded as job bg_N` and an empty
+  `(no output)` result are never failure details: read the complete log file and the job's exit
+  status before concluding anything.
 - `truncated: true` means the 16 KiB bound cut the returned `output`; the `log` file still holds the
   complete output. `exitCode` is still the verdict, and a truncated result is never a pass. A result
   ending `[timed out after 900000 ms]` is a failed verification, not a reason to background the
@@ -172,6 +201,11 @@ pipe, and a log an earlier run wrote are never a verdict.
 - On failure, read the complete `verify:interface: <assertion>: <evidence>` line from the log before
   editing: the assertion names the control, and the evidence object carries the measured and
   expected values it compared. A partial read hides which side mismatched.
+- A minified client runtime error such as `undefined is not an object (evaluating 'ne.cancelled')`
+  is not a diagnosis, and a stale bundle is only a hypothesis until it is checked. The verifier
+  builds the client before it starts the dashboard, so confirm the bundle matches the source by
+  running `bun run build` from `.devboard` and rerunning the verifier once. Report the minified
+  message only when it reproduces after that build, and never present it as the failing assertion.
 - Reproduce a failure once at the base revision before you touch code, and classify it. In a
   worktree session whose tool run used the canonical `.devboard/`, that tool result is the base run
   and the fallback shell run is the changed revision; when both print the same assertion and
@@ -186,6 +220,21 @@ pipe, and a log an earlier run wrote are never a verdict.
   `exitCode`, `output`, and `log` it returned, and never answer it with `bun run verify:interface`
   from a shell, a retry in another directory, or a redirected log. A tool error is evidence to
   report, not a reason to rerun the same check.
+
+## Discovery verification
+
+`bun run verify:discover` runs in the foreground from the package root, with its output reaching
+the session transcript: never redirect it to `.tmp/verify-discover.log` or any other file, and
+never pipe it through `tail`, `head`, or `grep`. Read its `PASS` lines and, on failure, the
+`verify:discover:` message with its stack frame from the live run, and report them.
+
+- An exit 1 that prints no output after roughly 30 seconds, or a trace that stops at the
+  `while (Date.now() < deadline)` poll in `scripts/verification.ts`, is a scenario timeout, not an
+  unknown failure: the `timed out waiting for <description>` line names the stalled scenario, and
+  the newest `.tmp/verify-discover-*` directory in the harness root holds its log. Read that log,
+  fix or restart the dependency it names, and only then rerun.
+- Never rerun the same failing invocation without an intervening change or that log inspection:
+  the second identical run adds no information and burns another scenario timeout.
 
 ## Prerequisites
 
@@ -231,8 +280,8 @@ the prerequisite in another agent's place.
   (`git worktree list | grep -E 'issue-807' || echo none`); for a command that exits 0 on an empty
   result, such as `git branch --list`, print `none` when its output is empty. The `none` or `absent`
   marker separates "the target is absent" from "the command failed".
-- To confirm the working directory, run `pwd` or `git rev-parse --show-toplevel`; to confirm a path
-  exists, run `ls <path>`. Never stand in for either with `cd <root> && true`.
+- To confirm the working directory, run `pwd`; to confirm a path exists, run `ls <path>`. Never
+  stand in for either with `cd <root> && true`.
 - Keep a worktree, branch, stash, or remote-tip probe in one command and accept its nonzero exit as
   the answer. Do not pad it with a guard tail.
 

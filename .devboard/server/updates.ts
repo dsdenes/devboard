@@ -165,6 +165,12 @@ export function startUpdater(options: UpdateOptions): Updater {
     }
     latestVersion = release.version;
     options.onLatest?.(release.version);
+    // The check reached the registry and read a release, so the backoff streak
+    // ends here. A failure below counts from this check, not from the streak a
+    // previous one accumulated; without this reset a source checkout (which
+    // returns "not-installed" before the current/installed resets) would keep
+    // the backoff a transient outage produced for the rest of the process.
+    failures = 0;
 
     try {
       const installed = await installedHarnessVersion(options.prefixDir);

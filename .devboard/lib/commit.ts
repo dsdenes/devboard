@@ -21,11 +21,33 @@ export function shaTokens(text: string): string[] {
   return [...text.matchAll(SHA_TOKEN)].map((match) => match[0]);
 }
 
-/** The newest comment that carries a SHA yields its last SHA; else null. */
-export function closingCommitFromComments(comments: string[]): string | null {
+/**
+ * The commit candidates a comment set names, newest comment first and last
+ * token first inside one comment. Comment prose carries fingerprints, process
+ * ids, and epoch stamps that look like a SHA, so every token is a candidate
+ * the reader verifies rather than the one commit it trusts. The bound keeps a
+ * verbose thread from turning one issue into an unbounded forge read.
+ */
+export function commitCandidatesFromComments(
+  comments: string[],
+  limit = 12,
+): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
   for (let index = comments.length - 1; index >= 0; index -= 1) {
     const tokens = shaTokens(comments[index] ?? "");
-    if (tokens.length > 0) return tokens[tokens.length - 1]!;
+    for (let token = tokens.length - 1; token >= 0; token -= 1) {
+      const value = tokens[token]!;
+      if (seen.has(value)) continue;
+      seen.add(value);
+      candidates.push(value);
+      if (candidates.length >= limit) return candidates;
+    }
   }
-  return null;
+  return candidates;
+}
+
+/** The newest comment that carries a SHA yields its last SHA; else null. */
+export function closingCommitFromComments(comments: string[]): string | null {
+  return commitCandidatesFromComments(comments, 1)[0] ?? null;
 }

@@ -6,6 +6,7 @@ import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
 import {
   giteaClosingCommit,
+  giteaClosingCommits,
   giteaJson,
   giteaListReleases,
   giteaOrigin,
@@ -184,6 +185,9 @@ function createWatchdogGiteaReader(
         const client = {
           async closingCommit(issueNumber: number): Promise<string | null> {
             return await giteaClosingCommit(target, issueNumber, options.fetchImpl);
+          },
+          async closingCommits(issueNumber: number): Promise<string[]> {
+            return await giteaClosingCommits(target, issueNumber, options.fetchImpl);
           },
           async resolveCommit(short: string): Promise<string | null> {
             if (!/^[0-9a-fA-F]{7,40}$/.test(short)) return null;

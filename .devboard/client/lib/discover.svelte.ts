@@ -131,8 +131,6 @@ export class DiscoverStore {
   promptProposal = $state<Record<string, DiscoverPromptProposal | null>>({});
   promptError = $state<Record<string, string | null>>({});
   promptChatError = $state<Record<string, string | null>>({});
-  /** A Reset click asks for a fresh read of the file into the editor. */
-  resetTokens = $state<Record<string, number>>({});
   error = $state<string | null>(null);
   warnings = $state<string[]>([]);
   interrupted = $state(false);
@@ -248,10 +246,6 @@ export class DiscoverStore {
 
   agentQuestionOf(id: string): RunQuestion | null {
     return this.agentQuestions[id] ?? null;
-  }
-
-  resetToken(id: string): number {
-    return this.resetTokens[id] ?? 0;
   }
 
   /** The first reason this card cannot start, or undefined when it can. */
@@ -422,12 +416,6 @@ export class DiscoverStore {
   /** A chat proposal is applied once, then dropped so a remount never replays it. */
   consumeProposal(id: string): void {
     this.promptProposal[id] = null;
-  }
-
-  /** Restores the editor to the file's current bytes without writing. */
-  resetPrompt(id: string): void {
-    this.resetTokens[id] = (this.resetTokens[id] ?? 0) + 1;
-    this.socket.send({ type: "getDiscover" });
   }
 
   /** Sends exactly one `discoverRemote` for the trimmed URL. */

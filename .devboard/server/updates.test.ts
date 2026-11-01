@@ -689,4 +689,67 @@ exec '${realNpm}' "$@"
     expect(manual.delays).toEqual([0, 2000, 4000]);
     updater.stop();
   });
+
+  test("returns a source checkout to the base interval after a recovered check", async () => {
+    const prefix = await temporaryDirectory();
+    const { journal } = journalRecorder();
+    const manual = manualSchedule();
+    let calls = 0;
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: null,
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("registry unreachable");
+        return release("0.1.4");
+      },
+    });
+    try {
+      await manual.fire(0);
+      expect(calls).toBe(1);
+      expect(manual.delays).toEqual([0, 2000]);
+      await manual.fire(1);
+      expect(calls).toBe(2);
+      expect(manual.delays).toEqual([0, 2000, 1000]);
+    } finally {
+      updater.stop();
+    }
+  });
+
+  test("keeps a source checkout on the base interval across repeated successful checks", async () => {
+    const prefix = await temporaryDirectory();
+    const { journal } = journalRecorder();
+    const manual = manualSchedule();
+    let calls = 0;
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: null,
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("registry unreachable");
+        return release("0.1.4");
+      },
+    });
+    try {
+      await manual.fire(0);
+      await manual.fire(1);
+      await manual.fire(2);
+      await manual.fire(3);
+      expect(calls).toBe(4);
+      expect(manual.delays.slice(0, 2)).toEqual([0, 2000]);
+      expect(manual.delays.slice(2)).toEqual([1000, 1000, 1000]);
+    } finally {
+      updater.stop();
+    }
+  });
 });

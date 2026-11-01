@@ -806,13 +806,12 @@ When the dashboard serves a harness source checkout, every card renders an edito
 to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
 (`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
 `discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
-`discover-agent-prompt-save` and `discover-agent-prompt-reset`. One chat turn streams one visible
-reply; a turn that revises the prompt replaces the editor text with a complete replacement. Chat
-never writes a file and never starts an agent. Save writes exactly the editor's UTF-8 bytes to that
-one agent's prompt file and no other file, and the next trigger of that agent reads those bytes;
-Reset restores the editor to the current file bytes without writing. An installed host has no
-prompt view and renders no editor, chat, save, or reset; `saveDiscoverPrompt` and
-`chatDiscoverPrompt` are refused there with an error naming the harness source checkout.
+`discover-agent-prompt-save`. One chat turn streams one visible reply; a turn that revises the
+prompt replaces the editor text with a complete replacement. Chat never writes a file and never
+starts an agent. Save writes exactly the editor's UTF-8 bytes to that one agent's prompt file and
+no other file, and the next trigger of that agent reads those bytes. An installed host has no
+prompt view and renders no editor, chat, or save; `saveDiscoverPrompt` and `chatDiscoverPrompt`
+are refused there with an error naming the harness source checkout.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
@@ -822,8 +821,9 @@ filled run action, which runs all six agents. Staleness is not repeated on the s
 bar and the status bar report it. While a run exists, the active agent's card carries a run tag
 above its activity: a status dot, the agent label and `run in progress`, the age, the latest
 activity line, and Stop. A queued question region follows on that card while a question waits.
-The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
-Testing in the main column on the right, and Bounded contexts with External boundaries below them.
+The sheet follows: Platform, Delivery, Stack, External boundaries, and Shared kernels in the facts
+column on the left, and Commands, Testing, Quality gates, and Bounded contexts in the main column
+on the right.
 The manual-testing strip is the last region of the page, so a source checkout never pushes it above
 the project identity. An error, an interrupted-run notice, and a stop notice render above the page
 in one notice stack.
@@ -933,10 +933,10 @@ Overview page is a project sheet, not a card grid. A masthead
 the crawl recorded one, and the discovery date. The commit, the dirty flag, and the staleness flag
 stay in the sheet and the state payload but render no header badge. Below the masthead the sheet is
 one bounded two-column spine:
-`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates,
-Bounded contexts, and External boundaries in the main column on the right. Every section carries
-`data-testid="discover-card"` and `data-field`; the commands, testing, and quality-gate panels are
-raised surfaces and the remaining sections are flat, separated by hairlines. Below 1240px viewport
+`Platform`, `Delivery`, `Stack`, `External boundaries`, and `Shared kernels` in the facts column,
+and Commands, Testing, Quality gates, and Bounded contexts in the main column on the right. Every
+section is one panel widget carrying `data-testid="discover-card"` and `data-field`, with the same
+header, body, and chip, fact, or table content. Below 1240px viewport
 the columns collapse into one in reading order.
 Tables grow with the page; neither a panel nor a card shrinks below its rows, and none scrolls
 inside the page. Every non-`unknown` leaf
@@ -976,24 +976,25 @@ second level while its table holds none. Every listed level states an exact test
 table (`data-testid="discover-quality-gates"`): each row names a required CI gate, and the gates
 are not repeated among the Delivery facts. Runtime, deployment, CI, and branching use compact
 `dt`/`dd` facts whose list values are comma-separated.
-Architecture renders as separate cards. `Bounded contexts` shows context rows with the name,
-responsibility, and entry points, the dependency direction, and a rendered Mermaid dependency
-graph. `External boundaries` (`data-field="external-boundaries"`) and `Shared kernels`
-(`data-field="shared-kernels"`) are cards of their own whose banded rows match the context list:
-one band per external system (`data-testid="discover-external-boundaries"`) and one per kernel.
+Every section of the data sheet is one panel widget with the same header, body, and chip, fact,
+or table content. The facts column holds `Platform`, `Delivery` (deployment, CI, and branching
+facts), `Stack`, `External boundaries`, and `Shared kernels`; the main column holds `Commands`,
+`Testing`, `Quality gates`, and `Bounded contexts`.
+`Bounded contexts` shows context rows with the name, responsibility, and entry points, then the
+dependency direction as a fact. No dependency graph is drawn.
+`External boundaries` (`data-field="external-boundaries"`) and `Shared kernels`
+(`data-field="shared-kernels"`) are compact chip widgets: one chip per external system
+(`data-testid="discover-external-boundaries"`) and one per kernel.
 An external boundary leaf recorded `unknown` states its reason there, a missing leaf says no
-external boundary was recorded, and the observed empty list renders `None detected.` as the card's
-only line. The repository path of a bounded context is not rendered. The graph draws one node per
-bounded context and one arrow for every `architecture.dependencies` edge, pointing from the context
-that depends to the context it reaches; it is drawn with `flowchart LR`
-through Mermaid at render time, and a sheet without recorded edges draws no graph.
+external boundary was recorded, and the observed empty list renders `None detected.` as the
+widget's only line. The repository path of a bounded context is not rendered.
 External boundaries name only external systems — a remote API or service, a message broker, a
 database, or an identity provider the host integrates with across its own process and artifact.
 Language and runtime built-ins describe internal architecture, so `node:child_process`,
 `node:worker_threads`, and other concurrency primitives are never boundaries; a host that integrates
-with no external system shows `None detected.` in that card instead of an invented entry or
+with no external system shows `None detected.` in that widget instead of an invented entry or
 `unknown`.
-`Stack` renders one full-width chip band after the two columns; a chip whose package is installed
+`Stack` is a chip widget in the facts column; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip
 stays plain text. Stack chips and the Platform `languages` and `runtimes` facts name the
 technology without a version number, so a recorded `PostgreSQL 15` renders as `PostgreSQL` and a
@@ -1311,11 +1312,11 @@ slice, that Run all starts the six in the stated order and halts at the first fa
 starting later agents, that a second start while one runs is refused, and that neither stop nor a
 failure rewrites a published artifact. `server/agents/prompt.test.ts` proves the six prompt
 snapshots, the chat proposal that changes the editor without writing, a save that writes exactly
-one prompt file, the reset read, and the installed-host refusal. `verify:discover` builds the
-client, seeds source and installed fixture hosts, and drives headless Chrome through the Discovery
-group, each card's command and editor bytes, all six independent triggers with a byte-level
-check of the fixture `.omp` tree, the one-at-a-time refusal, Run all order and stop at the first
-seeded failure, prompt chat/save/reset, and the installed host's refused save.
+one prompt file, and the installed-host refusal. `verify:discover` builds the client, seeds source
+and installed fixture hosts, and drives headless Chrome through the Discovery group, each card's
+command and editor bytes, all six independent triggers with a byte-level check of the fixture
+`.omp` tree, the one-at-a-time refusal, Run all order and stop at the first seeded failure, prompt
+chat/save, and the installed host's refused save.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
@@ -2593,12 +2594,15 @@ activity, and consumes no cap slot.
 
 An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the commit that closed it — the timeline's closing commit when present, otherwise the last 7–40
-character hex SHA in the newest comment that contains one — to one unambiguous full commit through
-the checkout or GitHub. It then selects the earliest published GitHub Release tag whose history
-contains that commit, ordered by `publishedAt` and breaking ties by tag name. The row shows `—`
-when no commit resolves or no published release contains it, and a release published later fills a
-blank version on the next read.
+the commit that closed it — the timeline's closing commit when present, otherwise every 7–40
+character hex token of the newest comments, most recent first — to one unambiguous full commit
+through the checkout or GitHub. Each token is verified rather than trusted: comment prose carries
+fingerprints, process ids, and epoch stamps that look like a SHA, so a token that does not resolve
+is skipped and the next candidate is tried, up to twelve candidates per issue. The first commit
+that resolves and appears in a published release decides the version. It then selects the earliest
+published GitHub Release tag whose history contains that commit, ordered by `publishedAt` and
+breaking ties by tag name. The row shows `—` when no candidate resolves or no published release
+contains it, and a release published later fills a blank version on the next read.
 
 ### Periodic check
 

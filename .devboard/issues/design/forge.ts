@@ -7,6 +7,7 @@ import {
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
   giteaClosingCommit,
+  giteaClosingCommits,
   giteaJson,
   giteaListIssues,
   giteaListReleases,
@@ -40,6 +41,8 @@ export interface DesignForgeClient {
   listOpenIssueTitles(): Promise<string[]>;
   listReleases(): Promise<DesignRelease[]>;
   closingCommit(issueNumber: number): Promise<string | null>;
+  /** Every candidate for that commit, newest first, for verification. */
+  closingCommits?(issueNumber: number): Promise<string[]>;
   resolveCommit(short: string): Promise<string | null>;
   containingReleaseTags(commit: string, releases: DesignRelease[]): Promise<string[]>;
 }
@@ -131,6 +134,9 @@ function createDesignGitea(options: DesignForgeOptions): DesignForgeClient {
     },
     async closingCommit(issueNumber: number): Promise<string | null> {
       return await giteaClosingCommit(target, issueNumber, options.giteaFetch);
+    },
+    async closingCommits(issueNumber: number): Promise<string[]> {
+      return await giteaClosingCommits(target, issueNumber, options.giteaFetch);
     },
     async resolveCommit(short: string): Promise<string | null> {
       if (!isSha(short)) return null;
@@ -266,6 +272,7 @@ export function createDesignForge(options: DesignForgeOptions): DesignForgeClien
     },
     listReleases: () => repositoryGitHub.listReleases(),
     closingCommit: (issueNumber) => repositoryGitHub.closingCommit(issueNumber),
+    closingCommits: (issueNumber) => repositoryGitHub.closingCommits(issueNumber),
     resolveCommit: (short) => repositoryGitHub.resolveCommit(short),
     containingReleaseTags: (commit, releases) =>
       repositoryGitHub.containingReleaseTags(commit, releases),
