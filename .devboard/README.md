@@ -761,9 +761,7 @@ keeps no freshness group and no recent-notice list.
 
 ## Discovery agent cards
 
-One card per agent carries its command and staging argument
-(`data-testid="discover-agent-prompt-command"`, for example
-`/discover-sheet <staging-dir>`), its run state (`data-testid="discover-agent-status"` with
+One card per agent carries its run state (`data-testid="discover-agent-status"` with
 `data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
 while it runs, a Start control (`data-testid="discover-agent-start"`), its own pending question,
