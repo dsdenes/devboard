@@ -406,9 +406,26 @@ function gitTeardown(repo: string, args: string[]): { code: number; stderr: stri
   return { code: result.exitCode ?? -1, stderr: result.stderr.toString() };
 }
 
+/** True when `repo` resolves to the harness's own source checkout. */
+function isHarnessCheckout(repo: string): boolean {
+  const top = Bun.spawnSync({
+    cmd: ["git", "-C", repo, "rev-parse", "--show-toplevel"],
+    stdout: "pipe",
+    stderr: "ignore",
+  })
+    .stdout.toString()
+    .trim();
+  if (top.length === 0) return false;
+  return existsSync(join(top, ".devboard", "server", "fixtures", "stub-agent.ts"));
+}
+
 /** Simulates the peer's own merge: branch, sentinel commit, merge, cleanup. */
 function mergeFixtureLane(id: string) {
   if (fixtureRepo === undefined) return;
+  if (isHarnessCheckout(fixtureRepo)) {
+    log(`merge-refused-harness-root ${fixtureRepo}`);
+    return;
+  }
   const worktree = join(fixtureRepo, ".worktree", `stub-epic-${id}`);
   const branch = `devboard/stub-epic-${id}`;
   mkdirSync(join(fixtureRepo, ".worktree"), { recursive: true });
@@ -856,6 +873,12 @@ async function runFlowGoal(directory: string) {
 }
 
 async function runFlowImplementation(directory: string) {
+  // A fixture whose worktree could not be created must never commit the
+  // harness checkout itself: `git add -A` there would rewrite the repository.
+  if (isHarnessCheckout(process.cwd())) {
+    log(`flow-implementation-refused-harness-root ${process.cwd()}`);
+    return;
+  }
   log(`flow-implement ${directory} cwd=${process.cwd()}`);
   stream("Reading the plan");
 

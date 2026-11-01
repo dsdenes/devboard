@@ -1,17 +1,20 @@
-import { fixtureRecord } from "./fixtures/adr-source";
+import { fixtureRecord, pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { Server } from "bun";
 import { createApp, projectLabel } from "./app";
+import { detachedRunDirectory, readDetachedRunState } from "./detached-run";
 import { journalFile, journalKey } from "./journal";
 import { toolListPayload } from "../mcp/catalog";
 import { recordToolInvocation } from "../mcp/invocations";
 import { ProviderService, saveSubscriptions } from "./providers";
-import { acquireLock } from "../issues/lock";
+import { acquireLock, pidAlive } from "../issues/lock";
 import { testProviderService } from "./fixtures/test-providers";
 import type { TrackerRead } from "./issue-sync";
+import type { OpenEpic } from "./tracker";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -47,6 +50,14 @@ async function startServer(
     allowedHosts?: string[];
     providers?: (stateDir: string) => ProviderService;
     providersRefreshMs?: number;
+    /** Reuses an existing fixture root for an in-process replacement. */
+    root?: string;
+    /** Replaces the default accepted ADR with the given markdown. */
+    adrSource?: string;
+    /** Tracker responses for lifecycle lanes. */
+    tracker?: (repoDir: string) => Promise<OpenEpic | undefined>;
+    /** Seeds one managed prepare-family skill. */
+    prepareSkill?: boolean;
     issues?: {
       closeIssue?: (request: {
         repoDir: string;
@@ -57,13 +68,35 @@ async function startServer(
     };
   } = {},
 ) {
-  const root = await temporaryDirectory();
+  const root = options.root ?? (await temporaryDirectory());
   const adrDir = join(root, "adrs");
   const staticDir = join(root, "static");
   await mkdir(adrDir, { recursive: true });
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>ADR overview</title>");
-  await writeFile(join(adrDir, "0001-first.md"), fixtureRecord("0001-first.md", "First"));
+  await writeFile(
+    join(adrDir, "0001-first.md"),
+    options.adrSource ?? fixtureRecord("0001-first.md", "First"),
+  );
+  if (options.prepareSkill === true) {
+    await mkdir(join(root, ".omp", "skills", "behavior-first-testing"), { recursive: true });
+    await writeFile(
+      join(root, ".omp", "skills", "behavior-first-testing", "SKILL.md"),
+      [
+        "---",
+        "name: behavior-first-testing",
+        "description: Choose tests by observable behavior.",
+        "metadata:",
+        '  devboard-managed: "true"',
+        "---",
+        "",
+        "# Behavior-first testing",
+        "",
+        "- Prefer observable behavior over implementation details.",
+        "",
+      ].join("\n"),
+    );
+  }
   if (options.origin !== undefined) {
     Bun.spawnSync({ cmd: ["git", "init", "-q", root] });
     Bun.spawnSync({ cmd: ["git", "-C", root, "remote", "add", "origin", options.origin] });
@@ -88,6 +121,7 @@ async function startServer(
     goalFile: options.goalFile,
     agentCommand: options.agentCommand,
     restart: options.restart,
+    tracker: options.tracker,
     versionState: options.versionState,
     runningVersion: options.runningVersion,
     ...(options.issues === undefined
@@ -183,6 +217,7 @@ async function watchFrames(url: string): Promise<{
   waitFor(
     predicate: (frame: Record<string, unknown>) => boolean,
     label: string,
+    timeoutMs?: number,
   ): Promise<Record<string, unknown>>;
   close(): void;
 }> {
@@ -210,7 +245,7 @@ async function watchFrames(url: string): Promise<{
     send(command) {
       socket.send(JSON.stringify(command));
     },
-    waitFor(predicate, label) {
+    waitFor(predicate, label, timeoutMs = 15_000) {
       const received = frames.find(predicate);
       if (received !== undefined) return Promise.resolve(received);
       const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
@@ -222,8 +257,16 @@ async function watchFrames(url: string): Promise<{
         const index = waiters.indexOf(waiter);
         if (index < 0) return;
         waiters.splice(index, 1);
-        reject(new Error(`timed out waiting for ${label}`));
-      }, 5000);
+        reject(
+          new Error(
+            `timed out waiting for ${label}; saw ${JSON.stringify(
+              frames.map((frame) =>
+                frame.type === "error" ? { type: frame.type, message: frame.message } : frame.type,
+              ),
+            )}`,
+          ),
+        );
+      }, timeoutMs);
       return promise;
     },
     close() {
@@ -1234,16 +1277,23 @@ describe("issues protocol", () => {
     }
   });
 
-  test("names both harness versions when the worker loaded another one", async () => {
+  test("reports no version divergence for a worker of another version", async () => {
     const { server, root, url } = await startServer({ runningVersion: "0.2.0" });
     await seedIssues(root);
 
     try {
       const message = (await exchange(url, { type: "getIssues" })) as Record<string, unknown>;
-      expect(message.notice).toBe(
-        "Issues worker 0.1.0 is running; this dashboard loaded 0.2.0. " +
-          "It is left running; Stop it to launch the current harness on the next Start.",
-      );
+      expect(message.notice).toBeNull();
+      expect(message.workers).toEqual([
+        {
+          pid: expect.any(Number),
+          version: "0.1.0",
+          stateDir: expect.any(String),
+          lifecycle: expect.any(String),
+        },
+      ]);
+      expect(JSON.stringify(message)).not.toContain("dashboard" + " loaded");
+      expect(JSON.stringify(message)).not.toContain("It is left " + "running");
     } finally {
       server.stop(true);
     }
@@ -1320,4 +1370,376 @@ describe("issues protocol", () => {
       server.stop(true);
     }
   });
+});
+
+/** A fixture root inside `.devboard/.tmp`, kept for the shared cleanup. */
+async function detachedRoot(): Promise<string> {
+  const base = join(import.meta.dir, "..", ".tmp");
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(join(base, "detached-app-"));
+  temporaryDirectories.push(root);
+  return root;
+}
+
+/** The detached owner a run key has, when it is still published. */
+function detachedOwner(root: string, kind: string, key: string): number | undefined {
+  const state = readDetachedRunState(detachedRunDirectory(join(root, "state"), root, kind, key));
+  return state?.owner?.pid;
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  description: string,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${description}`);
+    await Bun.sleep(25);
+  }
+}
+
+/**
+ * Replaces a dashboard the way the launcher does: the handoff event leaves,
+ * the old server stops without ending its detached runs, and a new app in the
+ * same process adopts them from the same state directory.
+ */
+async function replaceDashboard(
+  first: { server: Server<unknown>; url: string; root: string },
+  options: Parameters<typeof startServer>[0],
+) {
+  const tab = await watchFrames(first.url);
+  tab.send({ type: "restartServer" });
+  await tab.waitFor((frame) => frame.type === "serverRestarting", "the restart handoff");
+  tab.close();
+  first.server.stop(true);
+  return startServer({ ...options, root: first.root });
+}
+
+/** The object `startServer` hands back to the detached-run tests. */
+interface StartedServer {
+  server: Server<unknown>;
+  adrDir: string;
+  root: string;
+  url: string;
+}
+
+describe("detached runs", () => {
+  test("a goal creation answers and finishes on the same run after a replacement", async () => {
+    const root = await detachedRoot();
+    const log = join(root, "agent.log");
+    const command = `bun ${STUB_AGENT} --create-goal --goal=${join(root, "GOAL.md")} --log=${log}`;
+    const options = { root, agentCommand: command, restart: () => undefined };
+    const first = await startServer(options);
+    const tab = await watchFrames(first.url);
+    let second: StartedServer | undefined;
+    try {
+      tab.send({ type: "createGoal" });
+      await tab.waitFor((frame) => frame.type === "goalCreationStarted", "the creation start");
+      const question = await tab.waitFor((frame) => frame.type === "question", "the question");
+      const owner = detachedOwner(root, "goal", "creation");
+      expect(owner).toBeDefined();
+      expect(pidAlive(owner!)).toBe(true);
+      second = await replaceDashboard(first, options);
+      const after = await watchFrames(second.url);
+      try {
+        const replay = await after.waitFor(
+          (frame) => frame.type === "question" && String(frame.id) === String(question.id),
+          "the replayed question",
+        );
+        expect(detachedOwner(root, "goal", "creation")).toBe(owner);
+        expect(pidAlive(owner!)).toBe(true);
+        after.send({ type: "answer", id: replay.id, value: "Alpha" });
+        const stopped = await after.waitFor(
+          (frame) => frame.type === "goalCreationStopped",
+          "the creation stop",
+        );
+        expect(stopped.completed).toBe(true);
+        expect(stopped.text).toBe("# Created goal\n\nThe agent wrote this.");
+        expect(await readFile(join(root, "GOAL.md"), "utf8")).toBe(
+          "# Created goal\n\nThe agent wrote this.",
+        );
+        await waitForCondition(
+          () => !pidAlive(owner!),
+          "the finished creation owner to exit",
+        );
+      } finally {
+        after.close();
+      }
+    } finally {
+      tab.close();
+      first.server.stop(true);
+      second?.server.stop(true);
+    }
+  }, 30_000);
+
+  test("a goal revision answers and finishes on the same run after a replacement", async () => {
+    const root = await detachedRoot();
+    const log = join(root, "agent.log");
+    const command = `bun ${STUB_AGENT} --revise-goal --goal=${join(root, "GOAL.md")} --log=${log}`;
+    const options = { root, agentCommand: command, goalText: "# Goal\n\nFirst.\n", restart: () => undefined };
+    const first = await startServer(options);
+    const tab = await watchFrames(first.url);
+    let second: StartedServer | undefined;
+    try {
+      tab.send({ type: "reviseGoal", request: "tighten the scope" });
+      await tab.waitFor((frame) => frame.type === "goalRevisionStarted", "the revision start");
+      const question = await tab.waitFor((frame) => frame.type === "question", "the question");
+      const owner = detachedOwner(root, "goal", "revision");
+      expect(owner).toBeDefined();
+      expect(pidAlive(owner!)).toBe(true);
+      second = await replaceDashboard(first, options);
+      const after = await watchFrames(second.url);
+      try {
+        const replay = await after.waitFor(
+          (frame) => frame.type === "question" && String(frame.id) === String(question.id),
+          "the replayed question",
+        );
+        expect(pidAlive(owner!)).toBe(true);
+        after.send({ type: "answer", id: replay.id, value: "Alpha" });
+        const stopped = await after.waitFor(
+          (frame) => frame.type === "goalRevisionStopped",
+          "the revision stop",
+        );
+        expect(stopped.completed).toBe(true);
+        expect(stopped.text).toBe("# Revised goal\n\nThe agent rewrote this.");
+      } finally {
+        after.close();
+      }
+    } finally {
+      tab.close();
+      first.server.stop(true);
+      second?.server.stop(true);
+    }
+  }, 30_000);
+
+  test("a skills preparation answers and finishes on the same run after a replacement", async () => {
+    const root = await detachedRoot();
+    const log = join(root, "agent.log");
+    const command = `bun ${STUB_AGENT} --prepare-skills --questions=1 --log=${log}`;
+    const options = { root, agentCommand: command, goalText: "# Goal\n\nFirst.\n", restart: () => undefined };
+    const first = await startServer(options);
+    const tab = await watchFrames(first.url);
+    let second: StartedServer | undefined;
+    try {
+      tab.send({ type: "prepareSkills" });
+      await tab.waitFor(
+        (frame) => frame.type === "skillsPreparationStarted",
+        "the preparation start",
+      );
+      const question = await tab.waitFor((frame) => frame.type === "question", "the question");
+      const owner = detachedOwner(root, "goal", "skills");
+      expect(owner).toBeDefined();
+      expect(pidAlive(owner!)).toBe(true);
+      second = await replaceDashboard(first, options);
+      const after = await watchFrames(second.url);
+      try {
+        const replay = await after.waitFor(
+          (frame) => frame.type === "question" && String(frame.id) === String(question.id),
+          "the replayed question",
+        );
+        expect(pidAlive(owner!)).toBe(true);
+        after.send({ type: "answer", id: replay.id, value: "Alpha" });
+        const stopped = await after.waitFor(
+          (frame) => frame.type === "skillsPreparationStopped",
+          "the preparation stop",
+        );
+        expect(stopped.completed).toBe(true);
+      } finally {
+        after.close();
+      }
+    } finally {
+      tab.close();
+      first.server.stop(true);
+      second?.server.stop(true);
+    }
+  }, 30_000);
+
+  test("a manual ADR run answers and finishes on the same run after a replacement", async () => {
+    const root = await detachedRoot();
+    const log = join(root, "agent.log");
+    const command = `bun ${STUB_AGENT} --questions=1 --log=${log}`;
+    const options = {
+      root,
+      agentCommand: command,
+      adrSource: pendingRecord("0001-first.md", "First"),
+      restart: () => undefined,
+    };
+    const first = await startServer(options);
+    const tab = await watchFrames(first.url);
+    let second: StartedServer | undefined;
+    try {
+      tab.send({ type: "startRun" });
+      await tab.waitFor((frame) => frame.type === "runStarted", "the run start");
+      const question = await tab.waitFor((frame) => frame.type === "question", "the question");
+      const owner = detachedOwner(root, "adr", "0001-first.md");
+      expect(owner).toBeDefined();
+      expect(pidAlive(owner!)).toBe(true);
+      second = await replaceDashboard(first, options);
+      const after = await watchFrames(second.url);
+      try {
+        const replay = await after.waitFor(
+          (frame) => frame.type === "question" && String(frame.id) === String(question.id),
+          "the replayed question",
+        );
+        expect(pidAlive(owner!)).toBe(true);
+        after.send({ type: "answer", id: replay.id, value: "Alpha" });
+        const stopped = await after.waitFor(
+          (frame) => frame.type === "runStopped",
+          "the run stop",
+        );
+        expect(stopped.resolved).toBe(true);
+        await waitForCondition(() => !pidAlive(owner!), "the finished ADR owner to exit");
+      } finally {
+        after.close();
+      }
+    } finally {
+      tab.close();
+      first.server.stop(true);
+      second?.server.stop(true);
+    }
+  }, 30_000);
+
+  test("a lifecycle lane answers and finishes on the same run after a replacement", async () => {
+    const root = await detachedRoot();
+    const log = join(root, "agent.log");
+    const command = `bun ${STUB_AGENT} --questions=1 --log=${log}`;
+    const epic: OpenEpic = {
+      number: 42,
+      title: "Active epic",
+      url: "https://example.test/issues/42",
+    };
+    const options = {
+      root,
+      agentCommand: command,
+      prepareSkill: true,
+      goalText: "# Goal\n\nImplement the active epic.\n",
+      tracker: async () => epic,
+      restart: () => undefined,
+    };
+    const first = await startServer(options);
+    const tab = await watchFrames(first.url);
+    let second: StartedServer | undefined;
+    try {
+      tab.send({ type: "startLifecycle" });
+      await tab.waitFor(
+        (frame) => frame.type === "lifecycleState" && frame.stage === "implementation",
+        "the implementation stage",
+        20_000,
+      );
+      const question = await tab.waitFor(
+        (frame) => frame.type === "question" && typeof frame.lane === "string",
+        "the lane question",
+        20_000,
+      );
+      const lane = String(question.lane);
+      const owner = detachedOwner(root, "lane", lane);
+      expect(owner).toBeDefined();
+      expect(pidAlive(owner!)).toBe(true);
+      second = await replaceDashboard(first, options);
+      const after = await watchFrames(second.url);
+      try {
+        const replayed = await after.waitFor(
+          (frame) =>
+            frame.type === "laneState" &&
+            Array.isArray(frame.lanes) &&
+            (frame.lanes as Array<Record<string, unknown>>).some(
+              (entry) => entry.id === lane && entry.question !== null,
+            ),
+          "the replayed lane question",
+        );
+        expect(pidAlive(owner!)).toBe(true);
+        const entry = (replayed.lanes as Array<Record<string, unknown>>).find(
+          (candidate) => candidate.id === lane,
+        );
+        const pending = entry?.question as Record<string, unknown> | undefined;
+        after.send({ type: "answer", id: pending?.id, value: "Alpha", lane });
+        await after.waitFor(
+          (frame) =>
+            frame.type === "laneState" &&
+            Array.isArray(frame.lanes) &&
+            (frame.lanes as Array<Record<string, unknown>>).some(
+              (candidate) => candidate.id === lane && candidate.question === null,
+            ),
+          "the lane's answer to land",
+        );
+        after.send({ type: "stopLifecycle" });
+        await waitForCondition(() => !pidAlive(owner!), "the lane owner to exit");
+      } finally {
+        after.close();
+      }
+    } finally {
+      tab.close();
+      first.server.stop(true);
+      second?.server.stop(true);
+    }
+  }, 40_000);
+
+  test("an Ask conversation keeps its turn and answers it after a replacement", async () => {
+    const root = await detachedRoot();
+    const log = join(root, "agent.log");
+    const command = `bun ${STUB_AGENT} --ask --log=${log} --ask-delay-ms=1200`;
+    const options = { root, agentCommand: command, restart: () => undefined };
+    const context = {
+      route: "/boards/42",
+      url: "http://127.0.0.1:8080/boards/42",
+      selector: "footer > span.status-item:nth-of-type(2)",
+      viewport: "1440x900 @1x",
+      captured_at: "2026-10-27T10:00:00.000Z",
+      visible_text: "issues working (3)",
+      dom_excerpt: '<span class="status-item">issues working (3)</span>',
+    };
+    const first = await startServer(options);
+    const tab = await watchFrames(first.url);
+    let second: StartedServer | undefined;
+    try {
+      tab.send({
+        type: "ask",
+        conversationId: "detached-conversation",
+        question: "Which file renders the status bar?",
+        context,
+      });
+      await tab.waitFor((frame) => frame.type === "askChunk", "the first answer chunk", 20_000);
+      const owner = detachedOwner(root, "ask", "detached-conversation");
+      expect(owner).toBeDefined();
+      expect(pidAlive(owner!)).toBe(true);
+      second = await replaceDashboard(first, options);
+      const after = await watchFrames(second.url);
+      try {
+        after.send({
+          type: "ask",
+          conversationId: "detached-conversation",
+          question: "Which file renders the status bar?",
+          context,
+        });
+        const done = await after.waitFor(
+          (frame) => frame.type === "askDone",
+          "the continued answer",
+        );
+        expect(done.conversationId).toBe("detached-conversation");
+        expect(pidAlive(owner!)).toBe(true);
+
+        after.send({
+          type: "ask",
+          conversationId: "detached-conversation",
+          question: "And the count?",
+          context,
+        });
+        const secondDone = await after.waitFor(
+          (frame) =>
+            frame.type === "askDone" && frame.conversationId === "detached-conversation",
+          "the second turn",
+        );
+        expect(secondDone.type).toBe("askDone");
+        after.send({ type: "closeAsk", conversationId: "detached-conversation" });
+        await waitForCondition(() => !pidAlive(owner!), "the closed Ask owner to exit");
+      } finally {
+        after.close();
+      }
+    } finally {
+      tab.close();
+      first.server.stop(true);
+      second?.server.stop(true);
+    }
+  }, 40_000);
 });

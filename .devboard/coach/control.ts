@@ -10,6 +10,7 @@ import { isValidCadence, isValidLimit } from "./settings";
  */
 export type CoachCommand =
   | { type: "stop" }
+  | { type: "drain" }
   | {
       type: "settings";
       intervalMinutes: number;
@@ -41,6 +42,8 @@ export function parseCoachCommand(text: string): CoachCommand | undefined {
   switch (parsed.type) {
     case "stop":
       return { type: "stop" };
+    case "drain":
+      return { type: "drain" };
     case "settings":
       if (
         !isValidCadence(parsed.intervalMinutes) ||

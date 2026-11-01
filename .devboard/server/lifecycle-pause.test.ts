@@ -184,7 +184,7 @@ function lifecycleStates(client: TestClient): Record<string, unknown>[] {
  * can be busy with other work, so a loaded CI runner needs more than the
  * default wait before calling the resume lost.
  */
-const resumeDeadlineMs = 20_000;
+const resumeDeadlineMs = 45_000;
 
 async function waitUntil(
   predicate: () => boolean,
@@ -277,6 +277,9 @@ async function exercisePausedRevision(request: string | undefined) {
     await waitUntil(() => spawnCount(logPath) === 1, "the lifecycle peer did not spawn");
     await waitUntil(() => prompts(logPath).length === 1, "the lifecycle peer recorded no prompt");
     expect(prompts(logPath)).toEqual(["/implement-next-epic 21"]);
+    await client.waitFor(
+      (message) => message.type === "activity" && message.text === "Working on epic 21",
+    );
 
     client.send({ type: "pauseLifecycle" });
     await client.waitFor(

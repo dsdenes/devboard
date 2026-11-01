@@ -799,6 +799,9 @@ describe("parallel lifecycle", () => {
             ).length === 2,
         );
         expect(paused.lanes.filter((lane) => lane.kind === "implementation")).toHaveLength(2);
+        // A detached owner starts when its lane starts; the pause lands while
+        // the owners are being created, so wait for both before counting.
+        await waitUntil(() => spawnCount(host.logPath) >= 2, "both paused peers");
         const spawnsAtPause = spawnCount(host.logPath);
         await Bun.sleep(400);
         expect(spawnCount(host.logPath)).toBe(spawnsAtPause);

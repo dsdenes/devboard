@@ -13,6 +13,7 @@ export type IssuesCommand =
   | { type: "pause" }
   | { type: "resume" }
   | { type: "stop" }
+  | { type: "drain" }
   | { type: "check" }
   | { type: "answer"; id: number | string; value: string; runId?: string }
   /** End one issue's run because the tracker now reports that issue closed. */
@@ -43,6 +44,7 @@ function parseCommand(text: string): IssuesCommand | undefined {
     case "pause":
     case "resume":
     case "stop":
+    case "drain":
     case "check":
       return { type: parsed.type };
     case "answer":

@@ -9,6 +9,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { chmod, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createReleaseDirectory } from "./harness-package";
@@ -17,6 +18,7 @@ import {
   assertTrue,
   assertEquals,
   dashboardsFor,
+  freePort,
   httpStatus,
   installState,
   installedPackage,
@@ -28,6 +30,7 @@ import {
   makeRoot,
   processRunning,
   readVersion,
+  waitFor,
   releaseDirectory,
   repoRoot,
   stopDashboard,
@@ -473,6 +476,61 @@ try {
     }),
     "release access",
   );
+
+  step("the source checkout never installs or replaces itself");
+  assertTrue(
+    !existsSync(join(repoRoot, ".devboard", "node_modules", "@dsdenes", "devboard")),
+    "the canonical source checkout has no installed harness package",
+  );
+  const sourcePort = await freePort();
+  const sourceState = join(root, "source-state");
+  await mkdir(sourceState, { recursive: true });
+  const source = spawn("bun", ["run", "server/index.ts"], {
+    cwd: join(repoRoot, ".devboard"),
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"],
+    env: {
+      ...process.env,
+      HOST: "127.0.0.1",
+      PORT: String(sourcePort),
+      ADRS_DIR: join(repoRoot, "adrs"),
+      REPO_DIR: repoRoot,
+      GOAL_FILE: join(repoRoot, "GOAL.md"),
+      STATE_DIR: sourceState,
+      DEVBOARD_RELEASE_DIR: newRelease,
+      DEVBOARD_UPDATE_INTERVAL_MS: "300",
+    },
+  });
+  const sourcePid = source.pid ?? 0;
+  source.unref();
+  try {
+    await waitFor(
+      () => (httpStatus(sourcePort) === 200 ? true : undefined),
+      "the source dashboard",
+    );
+    const first = await readVersion(sourcePort);
+    await Bun.sleep(900);
+    const second = await readVersion(sourcePort);
+    assertEquals(
+      [second.running, second.installed, second.stale],
+      [first.running, first.installed, false],
+      "the source checkout keeps its source-derived version",
+    );
+    assertTrue(second.replacement === undefined, "the source checkout never reports a replacement");
+    assertTrue(processRunning(sourcePid), "the source server is not restarted by the update check");
+    assertEquals(
+      dashboardsFor(repoRoot).filter((entry) => entry.port === sourcePort).length,
+      1,
+      "the source dashboard keeps one process",
+    );
+    step("the canonical checkout refused install and never replaced itself");
+  } finally {
+    try {
+      process.kill(sourcePid, "SIGTERM");
+    } catch {
+      // Already exited.
+    }
+  }
 
   console.log("verify:install: all checks passed");
 } finally {

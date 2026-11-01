@@ -959,7 +959,9 @@ describe("lifecycle restore", () => {
         // The retained tabs are part of the restored state; the run itself is idle.
         const statuses = (snapshot.lanes as { status: string }[]).map((lane) => lane.status);
         expect(statuses.length).toBeGreaterThan(0);
-        expect(statuses.every((status) => status === "closed")).toBe(true);
+        // A lane still live when the lifecycle stopped keeps its failed tab;
+        // a finished one is closed. Both are retained and idle.
+        expect(statuses.every((status) => status === "closed" || status === "failed")).toBe(true);
       } finally {
         resumed.close();
         second.stop(true);

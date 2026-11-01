@@ -14,6 +14,12 @@ export interface VersionState {
   installed: string | null;
   latest: string | null;
   stale: boolean;
+  /** A replacement that could not start; the fallback control retries it. */
+  replacement?: {
+    running: string | null;
+    installed: string | null;
+    error: string;
+  } | null;
 }
 
 export type IssuesLifecycle = "stopped" | "idle" | "running" | "pausing" | "paused" | "failed";
@@ -94,6 +100,13 @@ export interface IssuesSnapshot {
   finishedAt: string | null;
   notice: string | null;
   updatedAt: string | null;
+  /** Every live issues worker, whatever version started it. */
+  workers?: Array<{
+    pid: number;
+    version: string | null;
+    stateDir: string;
+    lifecycle: IssuesLifecycle;
+  }>;
   /**
    * The dashboard's own tracker reads. Optional so a client paired with an
    * older server still validates its snapshot.

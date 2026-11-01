@@ -48,6 +48,11 @@ export interface UpdateOptions {
   install?: (release: ReleaseInfo) => Promise<string>;
   onLatest?: (version: string) => void;
   onInstalled?: (version: string) => void;
+  /**
+   * A newer package is already installed under the prefix but this process
+   * still runs an older one. The caller replaces itself; no install happens.
+   */
+  onStale?: (installedVersion: string) => void;
   /** Test seam; production checks as soon as the event loop turns. */
   startImmediately?: boolean;
   /** Injectable scheduler; production uses an unref'd timeout. */
@@ -191,13 +196,21 @@ export function startUpdater(options: UpdateOptions): Updater {
           }
         }
         failures = 0;
+        // An install made outside this process (the launcher's update) still
+        // has to reach the running server without an operator click.
+        if (
+          options.currentVersion !== null &&
+          isNewerVersion(installed, options.currentVersion)
+        ) {
+          options.onStale?.(installed);
+        }
         return "current";
       }
       const installedVersion = await install(release);
       failures = 0;
       options.journal.write(
         "update",
-        `installed ${installedVersion} (was ${installed}); a restart loads it`,
+        `installed ${installedVersion} (was ${installed}); replacing the server`,
       );
       options.onInstalled?.(installedVersion);
       return "installed";

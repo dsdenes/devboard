@@ -274,6 +274,11 @@ export class AcpConnection {
     return this.#closed;
   }
 
+  /** True once the peer opened a session this connection can prompt again. */
+  get hasSession(): boolean {
+    return this.#sessionId !== undefined;
+  }
+
   /** The child's pid, recorded so a replacement can end an orphaned peer. */
   get pid(): number | undefined {
     return this.#closed ? undefined : this.#process.pid;

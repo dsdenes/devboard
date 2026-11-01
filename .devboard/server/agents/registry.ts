@@ -119,6 +119,14 @@ export interface AgentCyclesDetail {
 
 export type AgentDetail = AgentActivityDetail | AgentCyclesDetail;
 
+/** One live worker process of a background agent family. */
+export interface AgentWorker {
+  pid: number;
+  version: string | null;
+  stateDir: string;
+  lifecycle: AgentLifecycle;
+}
+
 export interface AgentSnapshot {
   id: string;
   label: string;
@@ -146,6 +154,8 @@ export interface AgentSnapshot {
   notice: string | null;
   error: string | null;
   timer: AgentTimerGate | null;
+  /** Every live worker of this family, whatever version started it. */
+  workers: AgentWorker[];
 }
 
 /** What an adapter publishes; the registry validates and normalizes it. */
@@ -169,6 +179,7 @@ export interface AgentSnapshotInput {
   notice?: string | null;
   error?: string | null;
   timer?: AgentTimerGate | null;
+  workers?: AgentWorker[];
 }
 
 /** The prompt section's source: one harness prompt file, or a stated absence. */
@@ -558,7 +569,32 @@ export function projectAgentSnapshot(
             blocked: input.timer.blocked === true,
             error: nullableTimestamp(input.timer.error),
           },
+    workers: normalizeWorkers(descriptor, input.workers),
   };
+}
+
+/** Normalizes the live-worker list every adapter may publish. */
+export function normalizeWorkers(
+  descriptor: AgentDescriptor,
+  value: unknown,
+): AgentWorker[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new AgentRegistryError(`${descriptor.id}: workers must be an array`);
+  }
+  return value.map((entry) => {
+    if (!isRecord(entry) || !isIntegerIn(entry.pid, 1, Number.MAX_SAFE_INTEGER)) {
+      throw new AgentRegistryError(`${descriptor.id}: a worker needs a pid`);
+    }
+    if (!(entry.version === null || typeof entry.version === "string")) {
+      throw new AgentRegistryError(`${descriptor.id}: a worker version must be a string or null`);
+    }
+    if (typeof entry.stateDir !== "string") {
+      throw new AgentRegistryError(`${descriptor.id}: a worker needs its state directory`);
+    }
+    const lifecycle = normalizeLifecycle(descriptor, entry.lifecycle);
+    return { pid: entry.pid, version: entry.version, stateDir: entry.stateDir, lifecycle };
+  });
 }
 
 const SHARED_COMMANDS = {

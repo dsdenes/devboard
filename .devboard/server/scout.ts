@@ -1,15 +1,18 @@
 import { spawn } from "node:child_process";
-import { readFileSync, readlinkSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { liveLockOwner, pidAlive, type LockOwner } from "../issues/lock";
+import { liveLockOwners, pidAlive, type LockOwner } from "../issues/lock";
 import {
   controlDirectory,
   lockPath,
   scanDirectory,
   settingsPath,
   statePath,
+  versionedControlDirectory,
+  versionedStatePath,
+  workerStateDirectories,
 } from "../issues/scout/paths";
-import { writeCommand, type ScoutCommand } from "../issues/scout/control";
+import { writeCommand } from "../issues/scout/control";
 import {
   SCOUT_PREFLIGHT_TIMEOUT_MS,
   preflightScout,
@@ -30,6 +33,7 @@ import {
   type ScoutSync,
 } from "../issues/scout/state";
 import { readActivity } from "../issues/state";
+import { hostHarnessDir, readHarnessVersion } from "./version";
 import { canonicalProcessPath } from "./state";
 import { activityDelta } from "./activity";
 import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
@@ -120,6 +124,9 @@ export class ScoutBridge implements AgentAdapter {
   private startError: string | null = null;
   private notice: string | null = null;
   private startTask: Promise<AgentCommandResult> | undefined;
+  /** One automatic new-version start per dashboard lifetime. */
+  private takeover: "idle" | "started" = "idle";
+  private takeoverTask: Promise<void> | undefined;
   private lastSyncRequestAt = Number.NEGATIVE_INFINITY;
 
   constructor(options: ScoutBridgeOptions) {
@@ -158,6 +165,44 @@ export class ScoutBridge implements AgentAdapter {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => this.refresh(), this.pollMsValue);
     void this.refresh();
+    this.takeoverTask = this.takeoverOldWorkers();
+  }
+
+  /** Resolves after the automatic takeover attempt, if any, has settled. */
+  settled(): Promise<void> {
+    return (this.takeoverTask ?? Promise.resolve()).then(() => undefined);
+  }
+
+  /**
+   * Starts this version's worker when an older version's worker is live and
+   * this process is the newest harness. The older worker is told to drain: it
+   * finishes its in-flight scan, starts no new one, and exits on its own.
+   */
+  private async takeoverOldWorkers(): Promise<void> {
+    if (this.takeover === "started") return;
+    this.takeover = "started";
+    const owners = this.owners();
+    if (owners.length === 0) return;
+    const newest = readHarnessVersion(hostHarnessDir(this.repoDir));
+    if (newest === null || newest !== this.runningVersion) return;
+    if (owners.some((owner) => owner.harnessVersion === this.runningVersion)) return;
+    const started = await this.spawn();
+    if (!started.ok) {
+      this.log(`could not start the ${this.runningVersion} Auto Scout worker: ${started.message}`);
+      return;
+    }
+    for (const owner of owners) {
+      if (owner.harnessVersion === this.runningVersion) continue;
+      try {
+        writeCommand(this.controlFor(owner), { type: "drain" });
+      } catch (error) {
+        this.log(
+          `could not drain the ${owner.harnessVersion ?? "legacy"} Auto Scout worker: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   dispose(): void {
@@ -190,16 +235,58 @@ export class ScoutBridge implements AgentAdapter {
   /* Reading                                                             */
   /* ------------------------------------------------------------------ */
 
+  /** Every readable worker state: the legacy file and each version's file. */
+  private allStates(): ScoutState[] {
+    const states: ScoutState[] = [];
+    const push = (path: string): void => {
+      const state = readState(path);
+      if (state !== undefined) states.push(state);
+    };
+    push(statePath(this.stateDir, this.repoDir));
+    for (const directory of workerStateDirectories(this.stateDir, this.repoDir)) {
+      push(join(directory, "state.json"));
+    }
+    return states;
+  }
+
+  /** The newest published state, or undefined before any worker wrote one. */
   private currentState(): ScoutState | undefined {
+    return this.allStates().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  }
+
+  /** Owners of every live lock beside this checkout's legacy lock. */
+  private allOwners(): LockOwner[] {
+    return liveLockOwners(lockPath(this.repoDir));
+  }
+
+  /** Live owners this dashboard's STATE_DIR may command. */
+  private owners(): LockOwner[] {
+    return this.allOwners().filter((owner) => !this.foreignOwner(owner));
+  }
+
+  /** True for a live owner this dashboard's STATE_DIR does not own. */
+  private foreignOwner(owner: LockOwner): boolean {
+    return resolve(owner.stateDir) !== this.stateDir;
+  }
+
+  /** The control directory one live owner consumes, versioned or legacy. */
+  private controlFor(owner: LockOwner): string {
+    if (owner.harnessVersion !== null) {
+      const path = versionedStatePath(this.stateDir, this.repoDir, owner.harnessVersion);
+      if (existsSync(path)) {
+        return versionedControlDirectory(this.stateDir, this.repoDir, owner.harnessVersion);
+      }
+    }
+    return controlDirectory(this.stateDir, this.repoDir);
+  }
+
+  /** The published state one live owner wrote, when it is readable. */
+  private stateForOwner(owner: LockOwner): ScoutState | undefined {
+    if (owner.harnessVersion !== null) {
+      const state = readState(versionedStatePath(this.stateDir, this.repoDir, owner.harnessVersion));
+      if (state !== undefined) return state;
+    }
     return readState(statePath(this.stateDir, this.repoDir));
-  }
-
-  private lockOwner(): LockOwner | undefined {
-    return liveLockOwner(lockPath(this.repoDir));
-  }
-
-  private owned(owner: LockOwner | undefined): boolean {
-    return owner !== undefined && resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid);
   }
 
   private settings(state: ScoutState | undefined): ScoutSettings {
@@ -212,17 +299,51 @@ export class ScoutBridge implements AgentAdapter {
     );
   }
 
+  /**
+   * The scan the detail panel follows: a running unit first, otherwise the
+   * newest recorded scan across every worker version.
+   */
+  private scanIdOf(states: ScoutState[]): string | null {
+    const running = states
+      .map((state) => state.scan)
+      .filter((scan): scan is NonNullable<ScoutState["scan"]> => scan !== null)
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+    if (running !== undefined) return running.scanId;
+    return states
+      .map((state) => state.newestScanId)
+      .filter((scanId): scanId is string => scanId !== null)
+      .sort()
+      .at(-1) ?? null;
+  }
+
+  /** The shared lifecycle vocabulary for one worker's published state. */
+  private workerLifecycle(state: ScoutState | undefined): AgentSnapshotInput["lifecycle"] {
+    if (state === undefined) return "running";
+    if (state.lifecycle === "failed") return "failed";
+    if (state.lifecycle === "stopped") return "stopped";
+    return "running";
+  }
+
   /** True when there is a worker state or a live lock to replay. */
   get present(): boolean {
-    return this.currentState() !== undefined || this.lockOwner() !== undefined;
+    return this.allStates().length > 0 || this.allOwners().length > 0;
   }
 
   snapshot(): AgentSnapshotInput {
+    const allOwners = this.allOwners();
+    const owners = this.owners();
+    const attached = owners.length > 0;
+    const states = this.allStates();
+    const ownerStates = owners
+      .map((owner) => this.stateForOwner(owner))
+      .filter((state): state is ScoutState => state !== undefined);
     const state = this.currentState();
-    const owner = this.lockOwner();
-    const attached = this.owned(owner);
-    const active = attached ? state : undefined;
-    if (this.starting && owner !== undefined) {
+    const scanning = ownerStates.some((entry) => entry.lifecycle === "scanning");
+    const failed = ownerStates.some((entry) => entry.lifecycle === "failed");
+    const stopped = ownerStates.length > 0 && ownerStates.every((entry) => entry.lifecycle === "stopped");
+    const active = ownerStates.find((entry) => entry.lifecycle === "scanning") ?? ownerStates[0];
+    const foreign = attached ? undefined : allOwners[0];
+    if (this.starting && owners.length > 0) {
       this.starting = false;
       this.startingSince = null;
     }
@@ -235,11 +356,11 @@ export class ScoutBridge implements AgentAdapter {
       this.startingSince = null;
       this.startError = "the Auto Scout worker did not publish its state within 5 seconds";
     }
-    if (this.stopRequested && owner === undefined) this.stopRequested = false;
-    if (owner !== undefined && !this.owned(owner)) {
+    if (this.stopRequested && owners.length === 0) this.stopRequested = false;
+    if (foreign !== undefined) {
       this.notice =
-        `this checkout already has an Auto Scout worker (pid ${owner.pid}) using ` +
-        `${owner.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
+        `this checkout already has an Auto Scout worker (pid ${foreign.pid}) using ` +
+        `${foreign.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
     } else if (this.notice !== null && this.notice.startsWith("this checkout already has")) {
       this.notice = null;
     }
@@ -249,37 +370,59 @@ export class ScoutBridge implements AgentAdapter {
       : this.stopRequested
         ? "stopping"
         : attached
-          ? active?.lifecycle === "idle" || active?.lifecycle === "scanning"
+          ? scanning
             ? "running"
-            : active?.lifecycle === "failed"
+            : failed
               ? "failed"
-              : active?.lifecycle === "stopped"
+              : stopped
                 ? "stopped"
                 : "running"
-          : owner !== undefined
+          : foreign !== undefined
             ? "running"
             : state?.lifecycle === "failed" && state.enabled
               ? "failed"
               : "stopped";
     const settings = this.settings(state);
-    const worker = state?.worker ?? null;
-    const mismatch =
-      attached && worker !== null && worker.harnessVersion !== this.runningVersion
-        ? `Auto Scout worker ${worker.harnessVersion ?? "unknown"} is running; this dashboard ` +
-          `loaded ${this.runningVersion ?? "unknown"}. It is left running; Stop it to launch the ` +
-          "current harness on the next Start."
-        : null;
     const lastRunAt =
-      state?.lastScanStartedAt ?? active?.scan?.startedAt ?? null;
+      ownerStates
+        .map((entry) => entry.lastScanStartedAt)
+        .filter((entry): entry is string => entry !== null)
+        .sort()
+        .at(-1) ??
+      state?.lastScanStartedAt ??
+      active?.scan?.startedAt ??
+      null;
     const nextRunAt = attached
-      ? (state?.nextAttemptAt ?? nextCadenceAt(lastRunAt, settings.intervalMinutes))
+      ? (active?.nextAttemptAt ?? nextCadenceAt(lastRunAt, settings.intervalMinutes))
       : null;
-    const issues = state?.issues ?? [];
-    const sync: ScoutSync = state?.sync ?? { state: "stale", at: null, error: null };
-    const scanId = state?.scan?.scanId ?? state?.newestScanId ?? null;
+    // Live workers' reads are merged, so the view shows every running unit.
+    // A stopped worker's state is history: its dropped rows must not return.
+    const reading = owners.length > 0 ? ownerStates : state === undefined ? [] : [state];
+    const issues = new Map<number, ScoutIssueRow>();
+    for (const entry of [...reading].sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt),
+    )) {
+      for (const issue of entry.issues) if (!issues.has(issue.number)) issues.set(issue.number, issue);
+    }
+    const merged = [...issues.values()].sort((left, right) => {
+      const byCreation = right.createdAt.localeCompare(left.createdAt);
+      return byCreation !== 0 ? byCreation : right.number - left.number;
+    });
+    const sync: ScoutSync =
+      active?.sync ?? state?.sync ?? { state: "stale", at: null, error: null };
+    const scanId = this.scanIdOf(states);
+    const workers = owners.map((owner) => {
+      const workerState = this.stateForOwner(owner);
+      return {
+        pid: owner.pid,
+        version: owner.harnessVersion,
+        stateDir: owner.stateDir,
+        lifecycle: this.workerLifecycle(workerState),
+      };
+    });
     return {
       lifecycle,
-      enabled: attached && active?.enabled === true && lifecycle !== "stopped",
+      enabled: attached && ownerStates.some((entry) => entry.enabled) && lifecycle !== "stopped",
       owned: attached,
       attached,
       cadence: {
@@ -291,17 +434,18 @@ export class ScoutBridge implements AgentAdapter {
         maxPerHour: settings.maxPerHour,
         maxPending: settings.maxPending,
       },
-      issues: issues.map(projectIssue),
-      pending: issues.filter((issue) => issue.state === "pending").length,
+      issues: merged.map(projectIssue),
+      pending: merged.filter((issue) => issue.state === "pending").length,
       sync,
       detail: {
         panel: "activity",
         scanId,
         entries: [...this.lastActivity],
       },
-      notice: mismatch ?? this.notice ?? active?.notice ?? null,
+      notice: this.notice ?? active?.notice ?? null,
       error: this.startError ?? active?.lastError ?? null,
       timer: null,
+      workers,
     };
   }
 
@@ -318,12 +462,11 @@ export class ScoutBridge implements AgentAdapter {
         // The socket closed before the replay finished.
       }
     };
-    const state = this.currentState();
     deliver({
       type: "agentState",
       agent: projectAgentSnapshot(this.descriptor, this.snapshot()),
     });
-    const scanId = this.lastActivityScanId ?? state?.scan?.scanId ?? state?.newestScanId ?? null;
+    const scanId = this.lastActivityScanId ?? this.scanIdOf(this.allStates());
     if (scanId === null) return;
     const activity = this.readActivity(scanId);
     this.lastActivityScanId = scanId;
@@ -380,24 +523,26 @@ export class ScoutBridge implements AgentAdapter {
   }
 
   /**
-   * A view opened this agent: ask the attached worker for one fresh forge
+   * A view opened this agent: ask every attached worker for one fresh forge
    * read, at most once per sync-request window. A stopped or foreign worker
    * gets no command, and no command ever starts one.
    */
   requestSync(): void {
-    const owner = this.lockOwner();
-    if (!this.owned(owner)) return;
+    const owners = this.owners();
+    if (owners.length === 0) return;
     const now = this.now();
     if (now - this.lastSyncRequestAt < SYNC_REQUEST_MIN_INTERVAL_MS) return;
     this.lastSyncRequestAt = now;
-    try {
-      writeCommand(controlDirectory(this.stateDir, this.repoDir), { type: "refresh" });
-    } catch (error) {
-      this.log(
-        `could not request an Auto Scout read: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    for (const owner of owners) {
+      try {
+        writeCommand(this.controlFor(owner), { type: "refresh" });
+      } catch (error) {
+        this.log(
+          `could not request an Auto Scout read: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
   }
 
@@ -420,26 +565,29 @@ export class ScoutBridge implements AgentAdapter {
 
   private async startOnce(): Promise<AgentCommandResult> {
     for (;;) {
-      const owner = this.lockOwner();
-      if (owner === undefined) break;
-      if (!this.owned(owner)) {
+      const allOwners = this.allOwners();
+      const owners = allOwners.filter((owner) => !this.foreignOwner(owner));
+      const foreign = allOwners.find((owner) => this.foreignOwner(owner));
+      if (owners.length === 0) {
+        if (foreign === undefined) break;
         this.notice =
-          `this checkout already has an Auto Scout worker (pid ${owner.pid}) using ` +
-          `${owner.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
+          `this checkout already has an Auto Scout worker (pid ${foreign.pid}) using ` +
+          `${foreign.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
         return { ok: true, notice: this.notice };
       }
-      // A live owner that this bridge has told to stop is not attachable: the
-      // worker is already ending, so report its state only after it has exited
-      // and the new spawn holds the lock.
-      if (this.stopping === undefined || this.stopping.pid !== owner.pid) {
+      // A live worker of any version occupies the family: Start spawns nothing
+      // while one exists. A live owner that this bridge has told to stop is not
+      // attachable, so report its state only after it has exited.
+      const stopping = this.stopping;
+      if (stopping === undefined || !owners.some((owner) => owner.pid === stopping.pid)) {
         this.refresh();
         return { ok: true };
       }
-      if (!(await this.waitForStop(owner.pid))) {
+      if (!(await this.waitForStop(stopping.pid))) {
         return {
           ok: false,
           message:
-            `the previous Auto Scout worker (pid ${owner.pid}) is still stopping; ` +
+            `the previous Auto Scout worker (pid ${stopping.pid}) is still stopping; ` +
             "press Start once it has exited.",
         };
       }
@@ -565,21 +713,20 @@ export class ScoutBridge implements AgentAdapter {
         message: `Could not save the settings: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
-    const owner = this.lockOwner();
-    if (this.owned(owner)) {
-      try {
-        writeCommand(controlDirectory(this.stateDir, this.repoDir), {
+    try {
+      for (const owner of this.owners()) {
+        writeCommand(this.controlFor(owner), {
           type: "settings",
           intervalMinutes: minutes,
           maxPerHour,
           maxPending,
         });
-      } catch (error) {
-        return {
-          ok: false,
-          message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
-        };
       }
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
+      };
     }
     this.startError = null;
     this.refresh();
@@ -587,20 +734,21 @@ export class ScoutBridge implements AgentAdapter {
   }
 
   stop(): AgentCommandResult {
-    const owner = this.lockOwner();
-    if (owner === undefined) {
+    const owners = this.owners();
+    if (owners.length === 0) {
+      const foreign = this.allOwners()[0];
+      if (foreign !== undefined) {
+        return {
+          ok: false,
+          message:
+            `the Auto Scout worker (pid ${foreign.pid}) uses ${foreign.stateDir}; this dashboard's ` +
+            `STATE_DIR is ${this.stateDir}`,
+        };
+      }
       return { ok: false, message: "No Auto Scout worker is running for this checkout." };
     }
-    if (!this.owned(owner)) {
-      return {
-        ok: false,
-        message:
-          `the Auto Scout worker (pid ${owner.pid}) uses ${owner.stateDir}; this dashboard's ` +
-          `STATE_DIR is ${this.stateDir}`,
-      };
-    }
     try {
-      writeCommand(controlDirectory(this.stateDir, this.repoDir), { type: "stop" });
+      for (const owner of owners) writeCommand(this.controlFor(owner), { type: "stop" });
     } catch (error) {
       return {
         ok: false,
@@ -609,7 +757,7 @@ export class ScoutBridge implements AgentAdapter {
     }
     this.stopRequested = true;
     this.startError = null;
-    this.scheduleStopProof(owner.pid);
+    for (const owner of owners) this.scheduleStopProof(owner.pid);
     return { ok: true };
   }
 

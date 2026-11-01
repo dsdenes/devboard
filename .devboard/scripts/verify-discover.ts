@@ -28,6 +28,10 @@ import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
+import { createApp } from "../server/app";
+import { testProviderService } from "../server/fixtures/test-providers";
+import { detachedRunDirectory, readDetachedRunState } from "../server/detached-run";
+import { pidAlive } from "../issues/lock";
 
 const stubAcp = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
 const chromeCandidates = [
@@ -73,6 +77,7 @@ const SCENARIOS = [
   "prompt-chat",
   "prompt-save",
   "installed-read-only",
+  "survival",
 ] as const;
 
 type Scenario = (typeof SCENARIOS)[number];
@@ -1284,6 +1289,133 @@ try {
       );
     }
     console.log("PASS installed-read-only");
+  }
+
+  if (selected("survival")) {
+    /* -------------------------------------------------------------- */
+    /* A live Discover run survives the dashboard replacement          */
+    /* -------------------------------------------------------------- */
+    const surviveHost = await makeHost(root, "discover-survive");
+    const surviveState = join(root, "discover-survive-state");
+    await mkdir(surviveState, { recursive: true });
+    seedVerificationProvider(surviveState);
+    const surviveLog = join(root, "discover-survive.log");
+    const surviveOptions = {
+      adrDir: join(surviveHost.directory, "adrs"),
+      staticDir: join(harnessRoot, "dist"),
+      hostname: "127.0.0.1",
+      port: 0,
+      repoDir: surviveHost.directory,
+      stateDir: surviveState,
+      providers: testProviderService(surviveState),
+      goalFile: join(surviveHost.directory, "GOAL.md"),
+      agentCommand: `${process.execPath} ${stubAcp} --log=${surviveLog} --discover --discover-no-exit --delay-ms=60000`,
+      tracker: async () => undefined,
+      restart: () => undefined,
+    } as const;
+    const surviveFirst = createApp(surviveOptions);
+    interface DiscoverClient {
+      send(command: unknown): void;
+      waitFor(
+        predicate: (frame: Record<string, unknown>) => boolean,
+        label: string,
+      ): Promise<Record<string, unknown>>;
+      close(): void;
+    }
+    const connectDiscover = async (port: number): Promise<DiscoverClient> => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      const frames: Record<string, unknown>[] = [];
+      const waiters: Array<{
+        predicate: (frame: Record<string, unknown>) => boolean;
+        settle: (frame: Record<string, unknown>) => void;
+      }> = [];
+      socket.onmessage = (event) => {
+        const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+        frames.push(frame);
+        for (let index = waiters.length - 1; index >= 0; index -= 1) {
+          const waiter = waiters[index];
+          if (waiter === undefined || !waiter.predicate(frame)) continue;
+          waiters.splice(index, 1);
+          waiter.settle(frame);
+        }
+      };
+      const opened = Promise.withResolvers<void>();
+      socket.onopen = () => opened.resolve();
+      socket.onerror = () => opened.reject(new Error("websocket failed"));
+      await opened.promise;
+      return {
+        send: (command) => socket.send(JSON.stringify(command)),
+        waitFor: (predicate, label) => {
+          const found = frames.find(predicate);
+          if (found !== undefined) return Promise.resolve(found);
+          const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+          const waiter = { predicate, settle: resolve };
+          waiters.push(waiter);
+          setTimeout(() => {
+            const index = waiters.indexOf(waiter);
+            if (index >= 0) waiters.splice(index, 1);
+            reject(new Error(`verify:discover: timed out waiting for ${label}`));
+          }, 20_000);
+          return promise;
+        },
+        close: () => socket.close(),
+      };
+    };
+    const surviveTab = await connectDiscover(surviveFirst.port ?? 0);
+    let surviveSecond: { port: number; stop(closeActiveConnections?: boolean): void } | undefined;
+    try {
+      surviveTab.send({ type: "discoverAgent", agent: "sheet" });
+      const started = await surviveTab.waitFor(
+        (frame) => frame.type === "discoverStarted",
+        "the live Discover run",
+      );
+      const runId = String(started.runId);
+      await surviveTab.waitFor(
+        (frame) => frame.type === "discoverActivity",
+        "the Discover activity",
+      );
+      const runState = readDetachedRunState(
+        detachedRunDirectory(surviveState, surviveHost.directory, "discover", runId),
+      );
+      const owner = runState?.owner?.pid ?? 0;
+      check(owner > 0 && pidAlive(owner), "the Discover owner is not detached", runState);
+      console.log(`verify:discover: survival: the live run ${runId} owns detached pid ${owner}`);
+
+      surviveTab.send({ type: "restartServer" });
+      await surviveTab.waitFor(
+        (frame) => frame.type === "serverRestarting",
+        "the replacement handoff",
+      );
+      surviveFirst.stop(true);
+      surviveSecond = createApp({ ...surviveOptions, port: surviveFirst.port ?? 0 });
+      const after = await connectDiscover(surviveSecond.port ?? 0);
+      try {
+        const replay = await after.waitFor(
+          (frame) => frame.type === "discoverStarted" && String(frame.runId) === runId,
+          "the replayed Discover run",
+        );
+        check(String(replay.runId) === runId, "the replacement lost the Discover run", replay);
+        await after.waitFor(
+          (frame) => frame.type === "discoverActivity",
+          "the replayed Discover activity",
+        );
+        check(pidAlive(owner), "the Discover peer died in the replacement");
+        after.send({ type: "stopDiscover" });
+        await after.waitFor((frame) => frame.type === "discoverStopped", "the Discover stop");
+        const deadline = Date.now() + 10_000;
+        while (pidAlive(owner) && Date.now() < deadline) await Bun.sleep(25);
+        check(!pidAlive(owner), "Stop did not end the adopted Discover peer");
+        console.log(
+          "verify:discover: survival: activity replayed, Stop ended the same run, and no replacement interruption was recorded",
+        );
+      } finally {
+        after.close();
+      }
+    } finally {
+      surviveTab.close();
+      surviveFirst.stop(true);
+      surviveSecond?.stop(true);
+    }
   }
 
   check(devtools.errors.length === 0, "the browser reported an error", devtools.errors);
