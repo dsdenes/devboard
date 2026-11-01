@@ -93,6 +93,8 @@ const prepareSkillsInvalid = process.argv.includes("--prepare-skills-invalid");
 const prepareSkillsEmpty = process.argv.includes("--prepare-skills-empty");
 const prepareSkillsConflict = process.argv.includes("--prepare-skills-conflict");
 const prepareSkillsCollision = process.argv.includes("--prepare-skills-collision");
+const prepareSkillsUnmanagedWrite = process.argv.includes("--prepare-skills-unmanaged-write");
+const prepareSkillsUnmanagedSkill = process.argv.includes("--prepare-skills-unmanaged-skill");
 const prepareSkillsError = process.argv.includes("--prepare-skills-error");
 const collisionName = argument("collision-name") ?? "custom-skill";
 const resolveRecord = !process.argv.includes("--no-resolve");
@@ -589,6 +591,25 @@ function writePreparedSkills() {
       "# Invalid skill\n\n- Missing a description.\n",
       "name: Invalid Name\ndescription:",
     );
+  }
+
+  // The peer crosses the write boundary: a file inside a hand-authored skill,
+  // and a whole new skill directory without the managed marker.
+  if (prepareSkillsUnmanagedWrite) {
+    const directory = join(process.cwd(), ".omp", "skills", "house-style");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "extra.md"), "# Extra\n\n- Added by the preparation peer.\n");
+    log("unmanaged house-style/extra.md");
+  }
+
+  if (prepareSkillsUnmanagedSkill) {
+    const directory = join(process.cwd(), ".omp", "skills", "stray-style");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, "SKILL.md"),
+      "---\nname: stray-style\ndescription: A hand-authored skill the peer invented.\n---\n\n# Stray style\n\n- Keep one writer.\n",
+    );
+    log("unmanaged stray-style/SKILL.md");
   }
 }
 

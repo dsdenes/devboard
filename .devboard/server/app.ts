@@ -1220,6 +1220,23 @@ async function snapshotDirectory(root: string): Promise<SkillsSnapshot> {
   return { exists: true, files, symlinks };
 }
 
+/**
+ * The top-level directory names a snapshot holds. A top-level file is not a
+ * skill entry, so it contributes no name; a top-level symlink does.
+ */
+function snapshotSkillDirectories(snapshot: SkillsSnapshot): Set<string> {
+  const names = new Set<string>();
+  for (const relative of snapshot.files.keys()) {
+    const slash = relative.indexOf("/");
+    if (slash >= 0) names.add(relative.slice(0, slash));
+  }
+  for (const relative of snapshot.symlinks.keys()) {
+    const [directory] = relative.split("/");
+    if (directory !== undefined) names.add(directory);
+  }
+  return names;
+}
+
 async function restoreDirectory(root: string, snapshot: SkillsSnapshot): Promise<void> {
   await rm(root, { recursive: true, force: true });
   if (!snapshot.exists) return;
@@ -4519,21 +4536,42 @@ export function createApp(options: AppOptions) {
     }
 
     // Unmanaged skills are outside this feature's write scope. Any byte
-    // change or deletion of one fails the run before success is reported.
+    // change, addition, or deletion inside one fails the run before success
+    // is reported, so both snapshots are reconciled in both directions.
     const changed = new Set<string>();
-    for (const relative of preparation.snapshot.files.keys()) {
+    const unmanagedDirectory = (relative: string): string | undefined => {
       const directory = relative.split("/")[0];
-      if (directory === undefined || !preparation.unmanagedNames.has(directory)) continue;
+      return directory !== undefined && preparation.unmanagedNames.has(directory)
+        ? directory
+        : undefined;
+    };
+    const paths = new Set([...preparation.snapshot.files.keys(), ...current.files.keys()]);
+    for (const relative of paths) {
+      const directory = unmanagedDirectory(relative);
+      if (directory === undefined) continue;
       const before = preparation.snapshot.files.get(relative);
       const after = current.files.get(relative);
       if (before === undefined || after === undefined || !before.equals(after)) {
         changed.add(directory);
       }
     }
-    for (const [relative, target] of preparation.snapshot.symlinks) {
-      const directory = relative.split("/")[0];
-      if (directory === undefined || !preparation.unmanagedNames.has(directory)) continue;
-      if (current.symlinks.get(relative) !== target) changed.add(directory);
+    const links = new Set([
+      ...preparation.snapshot.symlinks.keys(),
+      ...current.symlinks.keys(),
+    ]);
+    for (const relative of links) {
+      const directory = unmanagedDirectory(relative);
+      if (directory === undefined) continue;
+      if (preparation.snapshot.symlinks.get(relative) !== current.symlinks.get(relative)) {
+        changed.add(directory);
+      }
+    }
+    // A top-level entry the run creates must be a prepared family skill; a new
+    // unmanaged skill directory is as far out of scope as an edit to one.
+    const beforeDirectories = snapshotSkillDirectories(preparation.snapshot);
+    for (const name of snapshotSkillDirectories(current)) {
+      if (beforeDirectories.has(name) || inspection.prepare.has(name)) continue;
+      changed.add(name);
     }
     for (const name of [...changed].sort()) {
       errors.push(`unmanaged skill "${name}" must not be changed by skills preparation.`);

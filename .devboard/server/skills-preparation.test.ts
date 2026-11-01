@@ -751,6 +751,70 @@ describe("skills preparation", () => {
   );
 
   test(
+    "fails when the peer adds a file to an unmanaged skill and restores its entries",
+    async () => {
+      const unmanagedSource = unmanagedSkill("house-style", "Prefer one response shape.");
+      const { server, skillsDir, url } = await startServer({
+        files: { ".omp/skills/house-style/SKILL.md": unmanagedSource },
+        agentArguments: "--prepare-skills --prepare-skills-unmanaged-write",
+      });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const failure = await client.waitFor(
+          (message) => message.type === "error" && /house-style/.test(String(message.message)),
+        );
+        expect(String(failure.message)).toMatch(/unmanaged skill "house-style"/);
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(false);
+        expect(stopped.skills).toBeUndefined();
+
+        expect(Object.fromEntries(directoryBytes(join(skillsDir, "house-style")))).toEqual({
+          "SKILL.md": unmanagedSource,
+        });
+        expect(existsSync(join(skillsDir, "house-style", "extra.md"))).toBe(false);
+        expect(skillDirectories(skillsDir)).toEqual(["house-style"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
+    "fails when the peer creates a new skill without the managed marker and removes it",
+    async () => {
+      const { server, skillsDir, url } = await startServer({
+        agentArguments: "--prepare-skills --prepare-skills-unmanaged-skill",
+      });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const failure = await client.waitFor(
+          (message) => message.type === "error" && /stray-style/.test(String(message.message)),
+        );
+        expect(String(failure.message)).toMatch(/unmanaged skill "stray-style"/);
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(false);
+        expect(stopped.skills).toBeUndefined();
+        expect(existsSync(join(skillsDir, "stray-style"))).toBe(false);
+        expect(skillDirectories(skillsDir)).toEqual([]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
     "fails on a contradiction with an unmanaged skill, names it, and preserves every file",
     async () => {
       const managedBefore = {
