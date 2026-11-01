@@ -2602,15 +2602,17 @@ activity, and consumes no cap slot.
 
 An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the commit that closed it — the timeline's closing commit when present, otherwise every 7–40
-character hex token of the newest comments, most recent first — to one unambiguous full commit
-through the checkout or GitHub. Each token is verified rather than trusted: comment prose carries
-fingerprints, process ids, and epoch stamps that look like a SHA, so a token that does not resolve
-is skipped and the next candidate is tried, up to twelve candidates per issue. The first commit
-that resolves and appears in a published release decides the version. It then selects the earliest
-published GitHub Release tag whose history contains that commit, ordered by `publishedAt` and
-breaking ties by tag name. The row shows `—` when no candidate resolves or no published release
-contains it, and a release published later fills a blank version on the next read.
+the commit that shipped it — the close entry's commit when present, otherwise the `commit_ref`
+entries of earlier commits whose message names the issue, otherwise every 7–40 character hex token
+of the newest comments, most recent first — to one unambiguous full commit through the checkout or
+GitHub. Each candidate is verified rather than trusted: comment prose carries fingerprints, process
+ids, and epoch stamps that look like a SHA, so a candidate that does not resolve is skipped and the
+next one is tried, up to twelve candidates per issue. The first commit that resolves and appears in
+a published release decides the version. It then selects the earliest published GitHub Release tag
+whose history contains that commit, ordered by `publishedAt` and breaking ties by tag name. The row
+shows `—` when no candidate resolves or no published release contains it, and a release published
+later fills a blank version on the next read. An API close records no commit, so a commit message
+names its issue with a trailing `(#<number>)` to give the forge that link.
 
 ### Periodic check
 

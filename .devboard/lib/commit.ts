@@ -21,6 +21,9 @@ export function shaTokens(text: string): string[] {
   return [...text.matchAll(SHA_TOKEN)].map((match) => match[0]);
 }
 
+/** The most candidates one issue may resolve, so a verbose thread stays bounded. */
+export const COMMIT_CANDIDATE_LIMIT = 12;
+
 /**
  * The commit candidates a comment set names, newest comment first and last
  * token first inside one comment. Comment prose carries fingerprints, process
@@ -30,7 +33,7 @@ export function shaTokens(text: string): string[] {
  */
 export function commitCandidatesFromComments(
   comments: string[],
-  limit = 12,
+  limit = COMMIT_CANDIDATE_LIMIT,
 ): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();

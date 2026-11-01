@@ -8,6 +8,7 @@ import {
   giteaClosingCommit,
   giteaClosingCommits,
   closingCommitFromGiteaTimeline,
+  closingCommitsFromGiteaTimeline,
   giteaCreateRelease,
   giteaLabels,
   giteaListIssues,
@@ -936,6 +937,42 @@ describe("Gitea watchdog activity", () => {
     ]);
   });
 
+  test("reads the commit the forge linked when an API close names none", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      if (/\/issues\/6$/.test(url.pathname)) return Response.json({ state: "closed" });
+      if (url.pathname.endsWith("/issues/6/timeline")) {
+        return Response.json([
+          { type: "label" },
+          { type: "commit_ref", ref_commit_sha: tagged.commit },
+          { type: "close", ref_commit_sha: "" },
+        ]);
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/6"])).toEqual([
+      {
+        url: "http://gitea.test/acme/fixture/issues/6",
+        state: "implemented",
+        version: "v1.0.0",
+      },
+    ]);
+  });
+
   test("scans a repository's releases once for all of its closed issues", async () => {
     const tagged = taggedRepository("v1.0.0");
     const calls: string[] = [];
@@ -999,14 +1036,62 @@ describe("Gitea watchdog activity", () => {
 describe("Gitea closing commit", () => {
   const closed = "a".repeat(40);
 
-  test("ignores commit_ref and comment entries around the close event", () => {
+  test("a close entry's commit outranks the commit_ref entries around it", () => {
     expect(
       closingCommitFromGiteaTimeline([
-        { type: "commit_ref", commit_id: "b".repeat(40) },
+        { type: "commit_ref", ref_commit_sha: "b".repeat(40) },
         { type: "close", commit_id: closed },
         { type: "comment", commit_id: "c".repeat(40) },
       ]),
     ).toBe(closed);
+  });
+
+  test("every commit_ref before the newest close is a candidate, newest first", () => {
+    const first = "1".repeat(40);
+    const second = "2".repeat(40);
+    expect(
+      closingCommitsFromGiteaTimeline([
+        { type: "commit_ref", ref_commit_sha: first },
+        { type: "label" },
+        { type: "commit_ref", ref_commit_sha: second },
+        { type: "commit_ref", ref_commit_sha: second },
+        { type: "close", ref_commit_sha: "" },
+      ]),
+    ).toEqual([second, first]);
+  });
+
+  test("a commit_ref after the close never outranks the closure", () => {
+    const shipped = "3".repeat(40);
+    const followUp = "4".repeat(40);
+    expect(
+      closingCommitsFromGiteaTimeline([
+        { type: "commit_ref", ref_commit_sha: shipped },
+        { type: "close", ref_commit_sha: "" },
+        { type: "commit_ref", ref_commit_sha: followUp },
+      ]),
+    ).toEqual([shipped]);
+  });
+
+  test("reads commit_ref entries when the API close names no commit", async () => {
+    const shipped = "5".repeat(40);
+    const fetchImpl: FetchLike = async (input) => {
+      const path = new URL(input).pathname;
+      if (path.endsWith("/issues/12/timeline")) {
+        return Response.json([
+          { type: "commit_ref", ref_commit_sha: shipped },
+          { type: "close", ref_commit_sha: "" },
+        ]);
+      }
+      return Response.json({ message: `unexpected ${path}` });
+    };
+
+    expect(
+      await giteaClosingCommits(
+        { baseUrl: "http://gitea.test", project: "acme/fixture" },
+        12,
+        fetchImpl,
+      ),
+    ).toEqual([shipped]);
   });
 
   test("the newest close entry wins across a reopen", () => {
@@ -1081,7 +1166,7 @@ describe("Gitea closing commit", () => {
       const path = new URL(input).pathname;
       if (path.endsWith("/issues/7/timeline")) {
         return Response.json([
-          { type: "commit_ref", commit_id: "b".repeat(40) },
+          { type: "comment", commit_id: "b".repeat(40) },
           { type: "close", commit_id: null },
         ]);
       }

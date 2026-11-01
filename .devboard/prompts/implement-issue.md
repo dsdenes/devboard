@@ -423,6 +423,12 @@ edit or remove an installed hook. Surface a commit-gate rejection and a
 cause they name before retrying, and never trim the rejection with `tail`, `head`, `grep`, or any
 other consumer.
 
+The commit that lands MUST also name this issue by ending its subject with `(#<number>)`, for
+example `fix(agents): resolve a shipped version from the landed commit (#989)`. Use that reference,
+not a closing keyword: the forge links it in the issue timeline without closing the issue, and the
+link is what lets the dashboard report the release that shipped the work. A commit subject without
+the reference still lands, but its issue shows no shipped version.
+
 Commit in the worktree on the run's own task branch. When the `HEAD...origin/main` count shows
 commits only `origin/main` has, rebase the task branch onto `origin/main` inside the worktree and
 rerun the checks the rebase invalidates before landing; a rebase that reports the branch is up to
