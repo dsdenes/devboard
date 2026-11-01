@@ -24,6 +24,7 @@ export interface AgentBridgeOptions {
 export type AgentCommand =
   | { type: "getAgents" }
   | { type: "getAgent"; id?: unknown }
+  | { type: "refreshAgent"; id?: unknown }
   | { type: "startAgent"; id?: unknown }
   | { type: "stopAgent"; id?: unknown }
   | {
@@ -203,6 +204,11 @@ export class BackgroundAgentBridge {
       return;
     }
     if (command.type === "getAgent") {
+      this.send(target, { type: "agentState", agent: this.project(adapter) });
+      return;
+    }
+    if (command.type === "refreshAgent") {
+      adapter.requestSync?.();
       this.send(target, { type: "agentState", agent: this.project(adapter) });
       return;
     }

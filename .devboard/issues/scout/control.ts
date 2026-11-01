@@ -7,12 +7,13 @@ import { isValidCadence, isValidLimit } from "./state";
  * The dashboard-to-scout channel. Commands are individual files created by
  * atomic rename, so the worker never reads a half-written command, and their
  * names sort in submission order. A worker consumes them from any dashboard
- * attached to the same repository state. Only Stop and one settings change
- * remain: filing needs no command.
+ * attached to the same repository state. Only Stop, one page-open refresh, and
+ * one settings change remain: filing needs no command.
  */
 
 export type ScoutCommand =
   | { type: "stop" }
+  | { type: "refresh" }
   | {
       type: "settings";
       intervalMinutes: number;
@@ -44,6 +45,8 @@ export function parseCommand(text: string): ScoutCommand | undefined {
   switch (parsed.type) {
     case "stop":
       return { type: "stop" };
+    case "refresh":
+      return { type: "refresh" };
     case "settings":
       if (
         !isValidCadence(parsed.intervalMinutes) ||

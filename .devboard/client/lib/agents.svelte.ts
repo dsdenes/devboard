@@ -154,6 +154,16 @@ export class AgentsStore {
     connection.send({ type: "disableAgentTimer", id });
   }
 
+  /**
+   * A page opened this agent: ask for one fresh read. The server only answers
+   * an attached worker, and a page opened before the socket settles sends it
+   * when the connection opens.
+   */
+  refresh(id: string): void {
+    if (!connection.open) return;
+    connection.send({ type: "refreshAgent", id });
+  }
+
   /** Sends the editor's exact text; the server writes only this command. */
   savePrompt(id: string, text: string): void {
     this.promptError[id] = null;
