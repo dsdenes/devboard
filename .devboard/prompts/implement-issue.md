@@ -195,8 +195,9 @@ Interface verification has exactly one entry point: the `verification_run` MCP t
 `{"check": "verify:interface"}`. The tool executes the `verify:interface` script from
 `.devboard/package.json` with the resolved `harnessDirectory` as its working directory, kills the
 check's whole process group at its 900-second bound, and returns `check`, `exitCode`, `output`,
-`truncated`, and `log` in one result. A bare `bun run verify:interface`, a `tail`/`head`/`grep`
-pipe, and a log an earlier run wrote are never a verdict.
+`truncated`, and `log` in one result. Apart from the worktree fallback below, a bare
+`bun run verify:interface` and a log an earlier run wrote are never a verdict, and a
+`tail`/`head`/`grep` pipe never replaces one.
 
 - Use `repositoryRoot` and `harnessDirectory` from the single `devboard_status` call above; never
   issue another `devboard_status` call. When `harnessDirectory` is the `.devboard/` you changed,
@@ -205,38 +206,45 @@ pipe, and a log an earlier run wrote are never a verdict.
   verdict and the shell form only repeats the same run.
 - Only when that same result reports the canonical `<REPO_DIR>/.devboard` while you work in a
   worktree does the tool verify the pre-change revision. Then run the changed revision once from
-  `<worktree>/.devboard`, in three separate commands. First create the log directory with a
-  standalone `mkdir -p .tmp` from that package root: a fresh worktree has no `.tmp`, and a redirect
-  into a directory that does not exist fails with `No such file or directory (os error 2)` before
-  the verifier starts. Never join `mkdir -p` to a build or a check with `&&`, and never probe the
-  directory afterwards with `ls`: a zero-exit `mkdir -p` already guarantees it. Second, run
-  `bun run build` alone in the foreground with its output unredirected, and read that output.
-  Third, start only the verifier as a background job with no deadline — `async: true`,
-  `timeout: 0` — writing its complete output to `.tmp/verify-interface.log` with
-  `bun run verify:interface > .tmp/verify-interface.log 2>&1`, then end the turn and read that log
-  and the job's exit status from its completion follow-up. Never chain the build and the verifier
-  behind one `mkdir -p` with `> log 2>&1` redirections: that form reports only `exit code 1` and an
-  empty output, hiding which stage failed. Its exit status is the verdict, so never append a status
-  echo. Say in the final response that the tool's resolved `harnessDirectory` was the canonical
-  root. Every other direct invocation is forbidden.
-- The complete output of every interface verification lives at `.devboard`'s
-  `.tmp/verify-interface.log`: the tool writes that file itself and returns its path in `log`, and
-  the worktree fallback redirects there. Read the file whole on failure — never `tail`, `head`,
-  `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON survive instead of
-  a fixed number of trailing lines. Never take a verdict from a log an earlier run wrote: the tool
-  truncates the file before the check starts and the fallback redirect truncates it too.
+  `<worktree>/.devboard` in two separate commands. First run `bun run build` alone in the
+  foreground with its output unredirected, and read that output. Second, start only the verifier
+  as a background job with no deadline — `async: true`, `timeout: 0` — as the bare command
+  `bun run verify:interface`, with its output visible in the command result: the job's completion
+  follow-up carries it. Never redirect that command to `.devboard/.tmp/verify-interface.log` or
+  any other file, and never chain the build and the verifier into one command: the redirect turns
+  a real failure into `(no output)`, and the chained form reports only `exit code 1`, hiding which
+  stage failed. Its exit status is the verdict, so never append a status echo. Say in the final
+  response that the tool's resolved `harnessDirectory` was the canonical root. Every other direct
+  invocation is forbidden.
+- When a command's output genuinely has to be captured in a file, create the directory first with
+  a standalone `mkdir -p .devboard/.tmp` from the repository root: a fresh worktree has no
+  `.tmp`, and a redirect into a directory that does not exist fails with
+  `No such file or directory (os error 2)` before the command starts. Never join `mkdir -p` to a
+  build or a check with `&&`, and never probe the directory afterwards with `ls`: a zero-exit
+  `mkdir -p` already guarantees it. Interface verification needs none of this: the verifier
+  creates every `.tmp` directory it writes to.
+- The `verification_run` tool writes the complete output of its own run to `.devboard`'s
+  `.tmp/verify-interface.log` and returns that path in `log`. Read it whole on failure — never
+  `tail`, `head`, `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON
+  survive instead of a fixed number of trailing lines. Never take a verdict from a log an earlier
+  run wrote: the tool truncates the file before the check starts.
 - Never kill or restart `verify:interface`: a killed job loses the assertion. The
   `verification_run` call itself is never backgrounded; it returns the verdict in one result. For
-  the shell fallback, a job status line such as `Backgrounded as job bg_N` and an empty
-  `(no output)` result are never failure details: read the complete log file and the job's exit
-  status before concluding anything.
+  the shell fallback, a job status line such as `Backgrounded as job bg_N` is never a failure
+  detail: read the job's completion follow-up and its exit status before concluding anything.
+- On a nonzero exit, surface the first error line in the turn that reads the result: quote the
+  first line the run printed — the `verify:interface: <assertion>: <evidence>` line, or the first
+  stderr line from a step that crashed before the assertion — in the session transcript. Never
+  report `(no output)`, a bare exit code, or a paraphrase as the failure detail, and never answer
+  a silent failure with an unchanged re-run.
 - `truncated: true` means the 16 KiB bound cut the returned `output`; the `log` file still holds the
   complete output. `exitCode` is still the verdict, and a truncated result is never a pass. A result
   ending `[timed out after 900000 ms]` is a failed verification, not a reason to background the
   check.
-- On failure, read the complete `verify:interface: <assertion>: <evidence>` line from the log before
-  editing: the assertion names the control, and the evidence object carries the measured and
-  expected values it compared. A partial read hides which side mismatched.
+- On failure, read the complete `verify:interface: <assertion>: <evidence>` line before editing —
+  from the tool's `log` or from the fallback job's output: the assertion names the control, and
+  the evidence object carries the measured and expected values it compared. A partial read hides
+  which side mismatched.
 - A minified client runtime error such as `undefined is not an object (evaluating 'ne.cancelled')`
   is not a diagnosis, and a stale bundle is only a hypothesis until it is checked. The verifier
   builds the client before it starts the dashboard, so confirm the bundle matches the source by
