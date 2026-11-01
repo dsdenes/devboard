@@ -62,6 +62,15 @@ import {
 
 export const MAX_CONCURRENT_PEERS = 30;
 
+/**
+ * Follow-up turns one issue may get after a turn ended with its issue still
+ * open. The ACP client owns the turn boundary: the agent runtime injects a
+ * finished background job as a message, but nothing prompts the session again,
+ * so a peer that yielded to a long job — `bun run publish` waits up to 1800
+ * seconds — would otherwise leave its issue open with the work landed.
+ */
+export const MAX_FOLLOW_UP_TURNS = 4;
+
 const DEFAULT_INTERVAL_MS = 10_000;
 const COOLDOWN_MS = 5 * 60_000;
 /** How long an abandon keeps its issue out of the queue. */
@@ -159,6 +168,8 @@ interface ActiveRun {
   activity: string[];
   peer: AcpPeer;
   firstLine: FirstLine;
+  /** Turns started on this peer, including the first prompt. */
+  turns: number;
   /** True once the peer settled and the issue state is being verified. */
   settling: boolean;
   finished: boolean;
@@ -233,6 +244,26 @@ export function isGoalIssue(issue: IssuesIssue): boolean {
 export function promptFor(issue: IssuesIssue): string {
   const command = isGoalIssue(issue) ? IMPLEMENT_GOAL_COMMAND : IMPLEMENT_ISSUE_COMMAND;
   return `${command} ${issue.number}`;
+}
+
+/**
+ * The follow-up prompt for an issue whose turn ended while the issue was still
+ * open. It names the exact gap — the runtime never wakes an ACP session — so
+ * the peer reads its finished background job and closes the issue instead of
+ * yielding a second time.
+ */
+export function continuationPrompt(
+  issue: IssuesIssue,
+  turn: number,
+  limit: number,
+): string {
+  return [
+    `Continue issue #${issue.number} in this session. Your previous turn ended while the issue was still open.`,
+    "Nothing prompts this session again, so ending a turn before the issue is closed leaves it unhandled.",
+    "If you started a background job, wait for it (`wait`) and read its result before you finish.",
+    "Do not repeat work that already landed: check the pushed revision and the issue state first.",
+    `Finish the task and close the issue, or stop with the one concrete blocker. Follow-up turn ${turn} of ${limit}.`,
+  ].join(" ");
 }
 
 /**
@@ -889,6 +920,7 @@ export class IssuesWorker {
       activity,
       peer: undefined as unknown as AcpPeer,
       firstLine,
+      turns: 1,
       settling: false,
       finished: false,
     };
@@ -945,7 +977,7 @@ export class IssuesWorker {
 
     void active.peer
       .run(promptFor(issue))
-      .then(() => this.finishSucceeded(active))
+      .then(() => this.finishTurn(active))
       .catch((error: unknown) => {
         const detail =
           error instanceof Error && error.message.length > 0
@@ -1049,17 +1081,22 @@ export class IssuesWorker {
     this.settle(1, detail, finishedAt);
   }
 
-  private finishSucceeded(active: ActiveRun): void {
+  /**
+   * One turn ended. The peer stays open until the issue state is verified, so
+   * an open issue can earn a follow-up turn instead of a failed run.
+   */
+  private finishTurn(active: ActiveRun): void {
     if (active.finished || active.settling || this.stopping) return;
     active.settling = true;
-    this.closePeer(active);
     void this.verifyAndSettle(active);
   }
 
   /**
    * A clean ACP turn is not proof of work: a refused slash command still ends
-   * the turn normally. Only an issue the tracker now reports closed is
-   * handled; an open one fails and cools down, so it can be retried.
+   * the turn normally, and an agent that yields to a long background job ends
+   * its turn before the issue is closed. Only an issue the tracker now reports
+   * closed is handled; an open one gets a bounded follow-up turn, then fails
+   * and cools down, so it can be retried.
    */
   private async verifyAndSettle(active: ActiveRun): Promise<void> {
     let result: IssueStateResult;
@@ -1072,19 +1109,45 @@ export class IssuesWorker {
       };
     }
     if (this.stopping) return;
-    active.firstLine.finish();
     if (result.kind === "state" && result.state === "closed") {
+      this.closePeer(active);
       this.recordSucceeded(active);
       return;
     }
+    if (result.kind === "state" && active.turns <= MAX_FOLLOW_UP_TURNS) {
+      this.continueRun(active);
+      return;
+    }
+    active.firstLine.finish();
     const detail =
       result.kind === "error"
         ? `could not verify issue #${active.issue.number}: ${result.detail}`
         : `the agent finished but issue #${active.issue.number} is still open`;
+    this.closePeer(active);
     this.recordFailed(
       active,
       active.firstLine.value === null ? detail : `${detail}; agent stderr: ${active.firstLine.value}`,
     );
+  }
+
+  /** Sends the follow-up turn that lets a peer finish work it yielded to. */
+  private continueRun(active: ActiveRun): void {
+    if (active.finished || this.stopping) return;
+    active.turns += 1;
+    active.settling = false;
+    this.log(
+      `issue #${active.issue.number} is still open after turn ${active.turns - 1}; asking the peer to continue`,
+    );
+    void active.peer
+      .prompt(continuationPrompt(active.issue, active.turns, MAX_FOLLOW_UP_TURNS + 1))
+      .then(() => this.finishTurn(active))
+      .catch((error: unknown) => {
+        const detail =
+          error instanceof Error && error.message.length > 0
+            ? error.message
+            : "the agent ended its follow-up turn with an error";
+        this.finishFailed(active, detail);
+      });
   }
 
   private recordSucceeded(active: ActiveRun): void {
