@@ -546,10 +546,10 @@ Replace `origin` and `main` when the repository names another canonical remote o
 ## CI waits
 
 Waiting for CI has exactly two sanctioned forms, and nothing else. The first is `bun run publish`
-for the `devboard-release.yml` run of `HEAD`: `bun run publish --wait-timeout N` blocks on that run
-for up to `N` seconds (1800 by default), then verifies the npm package and the Gitea release
-assets, so its recorded exit code is the whole wait. Run it once as the Publish section specifies,
-with its `--wait-timeout 1800` bound and with `timeout: 0` on the tool call.
+for the `devboard-release.yml` run of `HEAD`: `bun run publish` blocks on that run for up to 1800
+seconds by default, then verifies the npm package and the Gitea release assets, so its recorded
+exit code is the whole wait. Run it once as the Publish section specifies, with that default bound
+and with `timeout: 0` on the tool call.
 
 The second is one long-lived background watcher whose whole lifetime is that wait — a non-release
 run or a local `verify` process that publish does not cover — started with `async: true` and
@@ -573,14 +573,14 @@ the watcher's completion follow-up is the answer, so end the turn.
 
 ## Publish
 
-Publishing is part of the task. Invoke `bun run publish` at most once per issue, from the repository
-root in the integration checkout, and only after the change is merged to `main` and pushed — never
-from a worktree and never before the push. Run it as a background job that keeps the whole log and
-the exit code:
+Publishing is part of the task, and its final step. Invoke `bun run publish` exactly once per
+issue, from the repository root in the integration checkout, and only after the change is merged to
+`main` and pushed — never from a worktree and never before the push. Run it as a background job
+that keeps the whole log and the exit code:
 
 ```bash
-cd .devboard && bun run publish --wait-timeout 1800 \
-  > .tmp/publish-<number>.log 2>&1; echo "EXIT:$?" >> .tmp/publish-<number>.log
+cd .devboard && bun run publish \
+  > .tmp/publish.log 2>&1; echo "EXIT:$?" >> .tmp/publish.log
 ```
 
 - Start this command with `async: true` and `timeout: 0`, so it has no tool deadline and keeps its
@@ -589,9 +589,11 @@ cd .devboard && bun run publish --wait-timeout 1800 \
   That message means the launch was wrong, not that publish failed: inspect the still-running job
   and its recorded log, and never re-issue the command.
 - Use this invocation verbatim and from the repository root: no absolute `cd` path such as
-  `/home/...`, no `tail`/`head`/`tee` pipe or any other output consumer, no `--wait-timeout`
-  value other than `1800`, and no second log file. The redirected log is the full output and its
-  final line is the exit code. Publish already verifies `main`, the release workflow, the npm
+  `/home/...`, no `tail`/`head`/`tee` pipe or any other output consumer, no `--wait-timeout` flag
+  or any other option, and no other log file. `publish` already defaults to the 1800-second wait,
+  so an override only drifts from this form. The redirected log `.devboard/.tmp/publish.log` is the
+  full output and its final line is the exit code; never mint a per-call name such as
+  `publish-<number>.log`. Publish already verifies `main`, the release workflow, the npm
   package, the release assets, and the mirror; the push block already owns the push proof, so add
   no `git ls-remote` or `git status` probe around the publish run. Read no release or workflow
   state through `curl`, `gh`, or `glab`; publish prints the verification result.
@@ -612,7 +614,7 @@ cd .devboard && bun run publish --wait-timeout 1800 \
   fix and report the failing step, the fix commit, and the recorded exit code. Publishing the fixed
   revision belongs to the next task, never to this one.
 - Never re-run publish in the same session to see its output, to confirm success, to retry the same
-  commit, or with a different log file or deadline.
+  commit, or with a different log file or command form.
 - Report the recorded exit code as the publish result. Close the issue with `issue_close` only
   after that value is `0` and the pushed revision is verified on the canonical integration line.
 
