@@ -1,7 +1,16 @@
 import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
@@ -218,6 +227,24 @@ function unmanagedSkill(name: string, directive: string): string {
     `- ${directive}`,
     "",
   ].join("\n");
+}
+
+/**
+ * Creates a skill directory under `.omp/shared-skills` and links it as
+ * `.omp/skills/shared`, the shape a dotfile manager leaves behind.
+ */
+async function symlinkedSkill(root: string): Promise<{ link: string; target: string }> {
+  const target = "../shared-skills";
+  const shared = join(root, ".omp", "shared-skills");
+  await mkdir(shared, { recursive: true });
+  await writeFile(
+    join(shared, "SKILL.md"),
+    unmanagedSkill("shared", "Keep one shared skill directory."),
+  );
+  const link = join(root, ".omp", "skills", "shared");
+  await mkdir(dirname(link), { recursive: true });
+  await symlink(target, link);
+  return { link, target };
 }
 
 function skillDirectories(root: string): string[] {
@@ -893,6 +920,83 @@ describe("skills preparation", () => {
           managedBefore,
         );
         expect(skillDirectories(skillsDir)).toEqual(["behavior-first-testing"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
+    "a failed preparation restores a symlinked skill entry",
+    async () => {
+      const { server, root, url } = await startServer({
+        agentArguments: "--prepare-skills --prepare-skills-error",
+      });
+      const client = await connect(url);
+      const { link, target } = await symlinkedSkill(root);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(false);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await readlink(link)).toBe(target);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
+    "a successful preparation leaves a symlinked skill entry untouched",
+    async () => {
+      const { server, root, url } = await startServer({
+        agentArguments: "--prepare-skills",
+      });
+      const client = await connect(url);
+      const { link, target } = await symlinkedSkill(root);
+      const sharedBefore = await readFile(join(root, ".omp", "shared-skills", "SKILL.md"), "utf8");
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(true);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await readlink(link)).toBe(target);
+        expect(await readFile(join(root, ".omp", "shared-skills", "SKILL.md"), "utf8")).toBe(
+          sharedBefore,
+        );
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "stopping the server during an active preparation restores a symlinked skill entry",
+    async () => {
+      const { server, root, url } = await startServer({
+        agentArguments: "--prepare-skills --delay-ms=5000",
+      });
+      const client = await connect(url);
+      const { link, target } = await symlinkedSkill(root);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        await client.waitFor((message) => message.type === "skillsPreparationStarted");
+        server.stop(true);
+        expect((await lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await readlink(link)).toBe(target);
       } finally {
         client.close();
         server.stop(true);
