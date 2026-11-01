@@ -44,7 +44,6 @@
     animation: save-feedback-in 120ms ease-out;
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
-    border-left: 3px solid var(--success);
     border-radius: 6px;
     color: var(--foreground);
     display: inline-flex;

@@ -2045,14 +2045,24 @@ try {
     position: string;
     insideDialog: boolean;
     text: string;
+    frame: { top: number; right: number; bottom: number; left: number; leftColor: string; topColor: string };
   }>(`(() => {
     const node = document.querySelector('[data-testid="save-feedback"]');
+    const style = node === null ? null : getComputedStyle(node);
     return {
       scope: node?.getAttribute("data-scope") ?? "",
       parent: node?.parentElement?.className ?? "",
-      position: node === null ? "" : getComputedStyle(node).position,
+      position: style?.position ?? "",
       insideDialog: node?.closest('[data-testid="providers-dialog"]') !== null,
       text: node?.textContent?.trim() ?? "",
+      frame: {
+        top: style === null ? 0 : parseFloat(style.borderTopWidth),
+        right: style === null ? 0 : parseFloat(style.borderRightWidth),
+        bottom: style === null ? 0 : parseFloat(style.borderBottomWidth),
+        left: style === null ? 0 : parseFloat(style.borderLeftWidth),
+        leftColor: style?.borderLeftColor ?? "",
+        topColor: style?.borderTopColor ?? "",
+      },
     };
   })()`);
   check(
@@ -2063,6 +2073,15 @@ try {
       providerConfirmation.text.includes("Provider saved."),
     "the provider save confirmation is not beside its Save control",
     providerConfirmation,
+  );
+  check(
+    providerConfirmation.frame.top === 1 &&
+      providerConfirmation.frame.right === 1 &&
+      providerConfirmation.frame.bottom === 1 &&
+      providerConfirmation.frame.left === 1 &&
+      providerConfirmation.frame.leftColor === providerConfirmation.frame.topColor,
+    "the save confirmation does not carry a uniform 1px frame",
+    providerConfirmation.frame,
   );
   const added = await page.eval<{ statuses: string[]; text: string; inputs: string[]; html: string }>(`(() => ({
     statuses: [...document.querySelectorAll('[data-testid="provider-status"]')].map((node) => node.textContent?.trim() ?? ""),
@@ -8687,18 +8706,42 @@ try {
     "the disconnected-command notification",
     20_000,
   );
-  const notification = await page.eval<{ severity: string; text: string; count: number; live: string }>(`(() => {
+  const notification = await page.eval<{
+    severity: string;
+    text: string;
+    count: number;
+    live: string;
+    frame: { top: number; right: number; bottom: number; left: number; leftColor: string; topColor: string };
+  }>(`(() => {
     const entries = [...document.querySelectorAll('[data-testid="notifications"] .notification')];
     const entry = entries.find((item) => item.textContent.includes("Not connected")) ?? entries[0];
+    const style = entry === undefined ? null : getComputedStyle(entry);
     return {
       severity: entry?.getAttribute("data-severity") ?? "",
       text: entry?.textContent?.trim() ?? "",
       count: entries.length,
       live: document.querySelector('[data-testid="notifications"]')?.getAttribute("aria-live") ?? "",
+      frame: {
+        top: style === null ? 0 : parseFloat(style.borderTopWidth),
+        right: style === null ? 0 : parseFloat(style.borderRightWidth),
+        bottom: style === null ? 0 : parseFloat(style.borderBottomWidth),
+        left: style === null ? 0 : parseFloat(style.borderLeftWidth),
+        leftColor: style?.borderLeftColor ?? "",
+        topColor: style?.borderTopColor ?? "",
+      },
     };
   })()`);
   check(notification.severity.length > 0 && notification.text.length > 0, "the notification region has no severity or text", notification);
   check(notification.live === "polite", "the notification region is not a live region", notification);
+  check(
+    notification.frame.top === 1 &&
+      notification.frame.right === 1 &&
+      notification.frame.bottom === 1 &&
+      notification.frame.left === 1 &&
+      notification.frame.leftColor === notification.frame.topColor,
+    "the notification card does not carry a uniform 1px frame",
+    notification.frame,
+  );
   const notificationFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(notificationFocus, "a notification stole focus");
   const dismissControl = await page.eval<{

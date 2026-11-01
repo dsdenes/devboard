@@ -344,7 +344,6 @@
   .agent-blocked {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-left: 3px solid var(--warning, var(--accent));
     border-radius: 4px;
     display: flex;
     flex-direction: column;
