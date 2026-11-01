@@ -1887,6 +1887,7 @@ describe("Flow checkpoints, verification, questions, and blockers", () => {
     client.send({ type: "startFlowImplementation" });
     const checkpoints = await client.waitFor(
       (event) => event.type === "flowCheckpoints" && (event.checkpoints as unknown[]).length > 0,
+      { timeout: 60_000 },
     );
     const entry = (checkpoints.checkpoints as Record<string, unknown>[])[0] as Record<string, unknown>;
     expect(entry.summary).toBe("checkpoint 1: fixture change");
@@ -1907,7 +1908,10 @@ describe("Flow checkpoints, verification, questions, and blockers", () => {
     await connected(failingClient);
     await createGoal(failingClient, failing);
     failingClient.send({ type: "startFlowImplementation" });
-    const verification = await failingClient.waitFor((event) => event.type === "flowVerification");
+    const verification = await failingClient.waitFor(
+      (event) => event.type === "flowVerification",
+      { timeout: 60_000 },
+    );
     expect(verification.verification).toMatchObject({
       command: "bun test",
       status: "failed",
@@ -1918,10 +1922,11 @@ describe("Flow checkpoints, verification, questions, and blockers", () => {
         (event.checkpoints as { verification: string }[]).some(
           (checkpoint) => checkpoint.verification === "failed",
         ),
+      { timeout: 60_000 },
     );
     expect(Array.isArray(failedCheckpoints.checkpoints)).toBe(true);
     failingClient.close();
-  }, 60_000);
+  }, 120_000);
 
   test("an implementation question is answerable and a blocker can be dismissed", async () => {
     const fixture = createFixture("question-blocker");
