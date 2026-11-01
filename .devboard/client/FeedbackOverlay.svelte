@@ -871,7 +871,7 @@
   .feedback-result__body {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
     min-width: 0;
   }
 

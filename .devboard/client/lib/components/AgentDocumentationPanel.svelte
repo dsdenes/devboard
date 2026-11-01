@@ -114,7 +114,7 @@
     cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
   }
 
   .agent-documentation__title {

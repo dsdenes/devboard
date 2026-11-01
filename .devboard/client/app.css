@@ -421,7 +421,7 @@ kbd {
   display: inline-flex;
   font-size: 10px;
   font-weight: 700;
-  gap: 3px;
+  gap: 2px;
   letter-spacing: 0.08em;
   line-height: 1.2;
   padding: 2px 6px;
@@ -922,7 +922,7 @@ kbd {
 .notification__link {
   color: var(--accent);
   font-size: 11px;
-  padding: 3px 2px;
+  padding: 2px;
   text-decoration: none;
   white-space: nowrap;
 }
