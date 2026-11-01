@@ -85,16 +85,6 @@
       {#if lastActivity.length > 0}
         <span class="discover-run-tag__activity" title={lastActivity}>{lastActivity}</span>
       {/if}
-      <button
-        type="button"
-        class="discover-run__stop"
-        title="Stop this Discover run"
-        data-command="discover.stop"
-        data-testid="discover-run-tag-stop"
-        onclick={() => discover.stop()}
-      >
-        Stop
-      </button>
     </div>
   {/if}
 {/snippet}
