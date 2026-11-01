@@ -173,20 +173,27 @@ pipe, and a log an earlier run wrote are never a verdict.
   `bun run verify:interface` from a shell in that case, because the tool result is the whole
   verdict and the shell form only repeats the same run.
 - Only when that same result reports the canonical `<REPO_DIR>/.devboard` while you work in a
-  worktree does the tool verify the pre-change revision. Then run the changed revision once, in the
-  foreground, from `<worktree>/.devboard`, redirecting its complete output to
-  `.tmp/verify-interface.log` — `bun run verify:interface > .tmp/verify-interface.log 2>&1` — and
-  read that file whole. Its exit status is the verdict, so never append a status echo. Say in the
-  final response that the tool's resolved `harnessDirectory` was the canonical root. Every other
-  direct invocation is forbidden.
+  worktree does the tool verify the pre-change revision. Then run the changed revision once from
+  `<worktree>/.devboard`, after creating the log directory with `mkdir -p .tmp` from that package
+  root: a fresh worktree has no `.tmp`, and a redirect into a directory that does not exist fails
+  with `No such file or directory (os error 2)` before the verifier starts. Never redirect into a
+  path you have not created. Since the check can run for many minutes, start it as a background job
+  with no deadline — `async: true`, `timeout: 0` — writing its complete output to
+  `.tmp/verify-interface.log` with `bun run verify:interface > .tmp/verify-interface.log 2>&1`, then
+  end the turn and read that log and the job's exit status from its completion follow-up. Its exit
+  status is the verdict, so never append a status echo. Say in the final response that the tool's
+  resolved `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
 - The complete output of every interface verification lives at `.devboard`'s
   `.tmp/verify-interface.log`: the tool writes that file itself and returns its path in `log`, and
   the worktree fallback redirects there. Read the file whole on failure — never `tail`, `head`,
   `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON survive instead of
   a fixed number of trailing lines. Never take a verdict from a log an earlier run wrote: the tool
   truncates the file before the check starts and the fallback redirect truncates it too.
-- Never background `verify:interface`, never kill or restart it. A backgrounded job ends the turn
-  without its verdict, and a killed job loses the assertion.
+- Never kill or restart `verify:interface`: a killed job loses the assertion. The
+  `verification_run` call itself is never backgrounded; it returns the verdict in one result. For
+  the shell fallback, a job status line such as `Backgrounded as job bg_N` and an empty
+  `(no output)` result are never failure details: read the complete log file and the job's exit
+  status before concluding anything.
 - `truncated: true` means the 16 KiB bound cut the returned `output`; the `log` file still holds the
   complete output. `exitCode` is still the verdict, and a truncated result is never a pass. A result
   ending `[timed out after 900000 ms]` is a failed verification, not a reason to background the
@@ -194,6 +201,11 @@ pipe, and a log an earlier run wrote are never a verdict.
 - On failure, read the complete `verify:interface: <assertion>: <evidence>` line from the log before
   editing: the assertion names the control, and the evidence object carries the measured and
   expected values it compared. A partial read hides which side mismatched.
+- A minified client runtime error such as `undefined is not an object (evaluating 'ne.cancelled')`
+  is not a diagnosis, and a stale bundle is only a hypothesis until it is checked. The verifier
+  builds the client before it starts the dashboard, so confirm the bundle matches the source by
+  running `bun run build` from `.devboard` and rerunning the verifier once. Report the minified
+  message only when it reproduces after that build, and never present it as the failing assertion.
 - Reproduce a failure once at the base revision before you touch code, and classify it. In a
   worktree session whose tool run used the canonical `.devboard/`, that tool result is the base run
   and the fallback shell run is the changed revision; when both print the same assertion and
