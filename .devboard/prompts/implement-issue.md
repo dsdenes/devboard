@@ -42,16 +42,14 @@ context, but you never edit, comment on, close, or reopen another issue.
   use; never write `/tmp/x` or any other path outside the repository root.
 - Sync the worktree exactly once per pass, before the first edit: the task-start fetch
   (`git fetch origin`, see *Fetch budget*) already named `origin/main`, and the worktree was cut
-  from it, so run one `git rebase origin/main` inside it and never fetch again. Print the
-  resulting state in that same chain —
-  `git rebase origin/main && git log --oneline -2 && git rev-list --left-right --count
-  HEAD...origin/main` — because a bare `git rebase main` is never used: `main` is a local ref that
-  can lag the pushed upstream, so the target is always `origin/main`. A conflict is part of that
-  step — edit the conflicted files, `git add` them, and continue with `git rebase --continue`;
-  never `git rebase --abort` and never `git rebase --skip`. After a resolved conflict, print that
-  same state with the chain's trailing `git log --oneline -2 && git rev-list --left-right --count
-  HEAD...origin/main`. Re-run the rebase only after a new upstream commit lands or a conflict was
-  resolved — never to re-check state, because the chain already printed it. A later rebase
+  from it, so run one `git rebase origin/main` inside it and never fetch again. A bare
+  `git rebase main` is never used, because `main` is a local ref that can lag the pushed upstream,
+  so the target is always `origin/main`. A conflict is part of that step — edit the conflicted
+  files, `git add` them, and continue with `git rebase --continue`; never `git rebase --abort` and
+  never `git rebase --skip`. Confirm the result with the one post-rebase
+  `git status --short --branch` sync-state read below, and chain nothing after it: no `git log`,
+  no `git diff`, and no second `git rebase origin/main`. Re-run the rebase only after a new
+  upstream commit lands or a conflict was resolved — never to re-check state. A later rebase
   belongs only to the landing integration or a rejected push below, never to re-verification.
 - Forge write access is a precondition of the run, not a discovery step to repeat: the harness
   resolves it once, before the first forge read or write, and the turn's context carries `forge`,
@@ -441,12 +439,12 @@ rerun the checks the rebase invalidates before landing; a rebase that reports th
 date is the normal case.
 
 Read the worktree's sync state with one `git status --short --branch` call, run in the worktree
-after the task-start fetch. That call reports the branch and, when the branch has one, its upstream
-and the ahead/behind markers; an unpublished task branch has no upstream, so its line carries no
-marker, and its divergence from the integration line is measured by the `HEAD...origin/main` count
-below, never by an invented upstream. Add `git log --oneline -3` only when commit subjects are
-needed, and one `git rev-parse --short=12 <rev>` per revision only when a short hash is needed. Run
-each of those as its own call, never `;`-glued to this status line:
+once the pre-edit rebase has finished. That call reports the branch and, when the branch has one,
+its upstream and the ahead/behind markers; an unpublished task branch has no upstream, so its line
+carries no marker, and its divergence from the integration line is measured by the
+`HEAD...origin/main` count below, never by an invented upstream. Add `git log --oneline -3` only
+when commit subjects are needed, and one `git rev-parse --short=12 <rev>` per revision only when a
+short hash is needed. Run each of those as its own call, never `;`-glued to this status line:
 
 ```sh
 git status --short --branch
