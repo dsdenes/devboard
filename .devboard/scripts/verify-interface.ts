@@ -4042,6 +4042,54 @@ try {
     "the command list to collapse",
   );
 
+  // An agent page is a workspace, not a sheet: it takes the window's full
+  // height, and the prompt editor absorbs what the header, activity, and chat
+  // leave, so the lower half of the window is never empty.
+  const agentTab = '[data-testid="discover-agent-tab"]';
+  await page.click(agentTab);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agent-prompt-editor"]') !== null`,
+    "the Discover agent prompt editor",
+  );
+  const agentFill = await page.eval<{
+    pageScroll: number;
+    pageClient: number;
+    contentGap: number;
+    editorHeight: number;
+  }>(`(() => {
+    const page = document.querySelector('#workspace-discover .discover-agent');
+    const prompt = page.querySelector('.discover-agent__prompt');
+    const editor = page.querySelector('[data-testid="discover-agent-prompt-editor"]');
+    const contentBottom = page.getBoundingClientRect().bottom -
+      parseFloat(getComputedStyle(page).paddingBottom);
+    return {
+      pageScroll: page.scrollHeight,
+      pageClient: page.clientHeight,
+      contentGap: Math.round(contentBottom - prompt.getBoundingClientRect().bottom),
+      editorHeight: Math.round(editor.getBoundingClientRect().height),
+    };
+  })()`);
+  check(
+    agentFill.pageScroll <= agentFill.pageClient + 1,
+    "the agent page overflows the window at its supported size",
+    agentFill,
+  );
+  check(
+    Math.abs(agentFill.contentGap) <= 1,
+    "the agent page leaves the lower part of the window empty",
+    agentFill,
+  );
+  check(
+    agentFill.editorHeight > 220,
+    "the prompt editor does not take the height the agent page leaves",
+    agentFill,
+  );
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null`,
+    "the Discover overview after the agent page check",
+  );
+
   // The fixture sheet fits at 1440×900; prove the page owns its scrolling and
   // keeps the offset in a narrower supported viewport, where it overflows.
   await devtools.send("Emulation.setDeviceMetricsOverride", {
