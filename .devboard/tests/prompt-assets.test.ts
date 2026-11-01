@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { syncHarnessTrees } from "../bin/devboard.mjs";
 import { packHarness, packedPaths, stageHarness } from "../scripts/harness-package";
@@ -19,7 +19,7 @@ const roots: string[] = [];
  * goal specs, draft proposals, and optional harness instructions. The installer
  * never ships them.
  */
-const HOST_OWNED = ["AGENTS.md", "goals", "goal-proposals", ".tmp"];
+const HOST_OWNED = ["AGENTS.md", "goals", "goal-proposals"];
 
 function temporaryDirectory(name: string): string {
 	mkdirSync(testRoot, { recursive: true });
@@ -47,6 +47,9 @@ function promptReferences(): Map<string, string[]> {
 			if (relative === ".tmp" || relative.startsWith(".tmp/")) continue;
 			// Illustrative paths such as `.devboard/client/Foo.svelte` name no harness file.
 			if (!existsSync(join(harnessRoot, relative))) continue;
+			// A prompt may name a directory namespace (`.devboard/scripts/*`); only a
+			// concrete file has to exist as that same entry in the package.
+			if (!statSync(join(harnessRoot, relative)).isFile()) continue;
 			const files = references.get(relative) ?? [];
 			if (!files.includes(prompt)) files.push(prompt);
 			references.set(relative, files);
