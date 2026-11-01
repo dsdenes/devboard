@@ -450,7 +450,7 @@ export class ScoutWorker {
     this.state.sync = {
       state: "stale",
       at,
-      error: `no GitHub read has succeeded for more than ${Math.round((2 * this.syncMs) / 1000)} seconds`,
+      error: `no forge read has succeeded for more than ${Math.round((2 * this.syncMs) / 1000)} seconds`,
     };
     this.publish();
   }
@@ -576,7 +576,7 @@ export class ScoutWorker {
 
   private async readGitHub(active?: ActiveScan): Promise<GitHubRead> {
     const github = active === undefined ? this.github : this.githubFor(active);
-    if (github === undefined) throw new Error("no GitHub client is configured");
+    if (github === undefined) throw new Error("no forge client is configured");
     const [issues, releases, openTitles] = await Promise.all([
       github.listIssues(),
       github.listReleases(),
@@ -594,12 +594,12 @@ export class ScoutWorker {
   private async readGitHubWithinDeadline(deadline: number): Promise<GitHubRead> {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new Error(`the GitHub read did not finish within ${this.readTimeoutMs} ms`);
+      throw new Error(`the forge read did not finish within ${this.readTimeoutMs} ms`);
     }
     const timedOut = Promise.withResolvers<never>();
     let timer: Timer | undefined;
     timer = setTimeout(() => {
-      timedOut.reject(new Error(`the GitHub read did not finish within ${this.readTimeoutMs} ms`));
+      timedOut.reject(new Error(`the forge read did not finish within ${this.readTimeoutMs} ms`));
     }, remaining);
     timer.unref?.();
     try {
@@ -650,7 +650,7 @@ export class ScoutWorker {
     // reason stays in the sync banner, but a rate limit never raises the
     // global error notification the operator can file as a harness issue.
     this.state.lastError = isGitHubRateLimited(detail) ? null : detail;
-    this.state.notice = `Could not read GitHub: ${detail}`;
+    this.state.notice = `Could not read the forge: ${detail}`;
     this.state.nextAttemptAt = null;
     this.nextSyncAt = this.clock().getTime() + this.syncMs;
     this.publish();

@@ -1629,8 +1629,9 @@ describe("bounded commands", () => {
         "the timed out read",
       );
       expect(Date.now() - started).toBeLessThan(5000);
-      expect(failed.sync.error).toContain("the GitHub read did not finish within 1000 ms");
-      expect(failed.lastError).toContain("the GitHub read did not finish within 1000 ms");
+      expect(failed.sync.error).toContain("the forge read did not finish within 1000 ms");
+      expect(failed.lastError).toContain("the forge read did not finish within 1000 ms");
+      expect(failed.notice).toContain("Could not read the forge:");
 
       // The failed read released `syncing`: a later refresh runs and succeeds.
       github.hanging = false;
