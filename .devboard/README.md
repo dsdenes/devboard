@@ -291,6 +291,12 @@ npx @dsdenes/devboard doctor     # one PASS or FAIL line per check
 The launcher never discovers, reads, copies, or waits on another local Devboard installation or
 source checkout; it resolves the npm version and artifact for the target host alone.
 
+`install` refuses a target whose `.devboard/package.json` names `@dsdenes/devboard` — the
+canonical source checkout — and it stops before changing anything when `git` cannot list the
+files it tracks. The probe is never read as "nothing is tracked": a missing `git`, a timeout, or
+a dubious-ownership refusal aborts `install` and `update` instead of letting either sync over a
+tree it cannot protect.
+
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
 package's files. It keeps `.devboard/.tmp`: when the old `.devboard` was a symlink, every

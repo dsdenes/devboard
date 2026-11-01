@@ -55,6 +55,9 @@ import {
 // The sync helpers moved to lib/host-sync.mjs so the dashboard updater runs the
 // same code; they stay re-exported here for the launcher's tests.
 export { HOST_HARNESS_PATHS, syncHarnessTrees, syncTree } from "../lib/host-sync.mjs";
+// The guards are exported for the same tests: the installer's refusal of the
+// source checkout and its tracked-path protection.
+export { canonicalSource, trackedPaths };
 
 const PACKAGE_NAME = "@dsdenes/devboard";
 const PACKAGE_SCOPE = "@dsdenes";
@@ -865,9 +868,23 @@ async function ensureFixedDirectory(path) {
   await replacePathWithDirectory(path);
 }
 
+/**
+ * The host paths under `paths` that git tracks. A probe that cannot answer
+ * throws: an empty set would let an install or a sync replace files git
+ * tracks, so "unknown" is never treated as "none".
+ */
 function trackedPaths(host, paths) {
   const result = run("git", ["-C", host, "ls-files", "-z", "--", ...paths], { cwd: host });
-  if (result.code !== 0) return new Set();
+  if (result.code !== 0) {
+    const reason =
+      result.error instanceof Error && result.error.message.length > 0
+        ? result.error.message
+        : firstLine(result.stderr || result.stdout || `exit code ${result.code}`);
+    throw new LauncherError(
+      `${host}: git could not list the files it tracks (${reason}); ` +
+        "refusing to replace files it cannot protect",
+    );
+  }
   return new Set(
     result.stdout
       .split("\0")
@@ -1003,20 +1020,22 @@ function processInfo(pid) {
   }
 }
 
+/**
+ * True when `host` is the canonical devboard source checkout. The package name
+ * in `.devboard/package.json` is the whole signal: it answers without git, and
+ * a git probe that cannot answer must never turn the source tree into an
+ * install target. An installed host names its prefix `devboard-host` instead.
+ */
 function canonicalSource(host) {
   const prefix = join(host, ".devboard");
   const info = lstatOrUndefined(prefix);
   if (info === undefined || info.isSymbolicLink()) return false;
   try {
     const parsed = JSON.parse(readFileSync(join(prefix, "package.json"), "utf8"));
-    if (parsed.name !== PACKAGE_NAME) return false;
+    return parsed.name === PACKAGE_NAME;
   } catch {
     return false;
   }
-  const tracked = run("git", ["-C", host, "ls-files", "--error-unmatch", ".devboard/package.json"], {
-    cwd: host,
-  });
-  return tracked.code === 0;
 }
 
 async function ensureOneDashboard(host, harness, version, requestedPort) {
