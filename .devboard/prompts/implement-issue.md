@@ -330,18 +330,40 @@ check's whole process group at its 900-second bound, and returns `check`, `exitC
 
 ## Discovery verification
 
-`bun run verify:discover` runs in the foreground from the package root, with its output reaching
-the session transcript: never redirect it to `.tmp/verify-discover.log` or any other file, and
-never pipe it through `tail`, `head`, or `grep`. Read its `PASS` lines and, on failure, the
-`verify:discover:` message with its stack frame from the live run, and report them.
+`bun run verify:discover` runs at most once per change, from the package root `.devboard/`, and its
+output is always captured to the one log `.devboard/.tmp/verify-discover.log` (repository-relative):
 
-- An exit 1 that prints no output after roughly 30 seconds, or a trace that stops at the
-  `while (Date.now() < deadline)` poll in `scripts/verification.ts`, is a scenario timeout, not an
-  unknown failure: the `timed out waiting for <description>` line names the stalled scenario, and
-  the newest `.tmp/verify-discover-*` directory in the harness root holds its log. Read that log,
-  fix or restart the dependency it names, and only then rerun.
-- Never rerun the same failing invocation without an intervening change or that log inspection:
-  the second identical run adds no information and burns another scenario timeout.
+```sh
+bun run verify:discover > .tmp/verify-discover.log 2>&1; echo "EXIT:$?"
+```
+
+Read that log whole — never through `tail`, `head`, or `grep` — together with the recorded
+`EXIT:` line, and report its `PASS` lines and, on failure, the `verify:discover:` message. Keep one
+log name per task: never mint a `-base`, `-2`, or `-3` variant, and never rerun the suite to
+re-confirm a result the log already holds.
+
+- A nonzero `EXIT:` names its failing scenario in the log: the last `PASS` line is the last
+  scenario that held, and the `verify:discover:` message names what the failing one expected.
+  Rerun only that scenario, with its fixtures kept:
+
+  ```sh
+  DISCOVER_VERIFY_KEEP=1 DISCOVER_VERIFY_ONLY=<scenario> bun run verify:discover \
+    > .tmp/verify-discover.log 2>&1; echo "EXIT:$?"
+  ```
+
+  `<scenario>` is one of the names the `PASS` lines carry: `discovery-group`, `per-agent-prompts`,
+  `run-all-order`, `per-agent-publication`, `one-at-a-time`, `run-all-halt`, `prompt-chat`,
+  `prompt-save`, `installed-read-only`. An unknown name exits nonzero and lists them; a narrowed
+  pass prints `verify:discover: ran only <scenario>`, and `DISCOVER_VERIFY_KEEP=1` keeps its
+  fixtures under `.devboard/.tmp/verify-discover-*` for inspection.
+- Never rerun the whole suite to re-confirm a failure: the same scenario set fails until the cause
+  is fixed, so a second full run adds no information and burns another scenario timeout.
+- A failure surfaced at the `while (Date.now() < deadline)` poll —
+  `scripts/verification.ts:194-195`, the frame a `verify:discover` trace shows — is a scenario
+  publication bug, not an unknown failure: the `timed out waiting for <description>` line names the
+  state that never appeared, and the kept fixture directory holds that scenario's dashboard, ACP
+  peer, and browser logs. Read those logs, fix the publication that never happened, and rerun only
+  that scenario.
 
 ## Prerequisites
 
@@ -392,11 +414,12 @@ the prerequisite in another agent's place.
 - Keep a worktree, branch, stash, or remote-tip probe in one command and accept its nonzero exit as
   the answer. Do not pad it with a guard tail.
 - Run build, test, and verify commands bare: `bun run build`, `bun test`,
-  `bun run verify:interface`, `bun run verify:discover`, and every `verification_run` check, with
-  no `mkdir -p .tmp` prefix and no `> .tmp/<name>.log 2>&1` redirect. The harness already returns
-  the failing output inline; a redirect replaces it with `(no output)` or a bare `exit code 1` and
-  forces the same command to be re-run instead of read. When a log is genuinely required for later
-  diffing, write it under `.devboard/.tmp/` and still echo the tail of that log in the tool result.
+  `bun run verify:interface`, and every `verification_run` check, with no `mkdir -p .tmp` prefix and
+  no `> .tmp/<name>.log 2>&1` redirect. The harness already returns the failing output inline; a
+  redirect replaces it with `(no output)` or a bare `exit code 1` and forces the same command to be
+  re-run instead of read. `bun run verify:discover` is the one exception, and it follows *Discovery
+  verification* instead: it runs once, captured to `.devboard/.tmp/verify-discover.log` with its
+  `EXIT:` recorded, and that log is read whole.
 
 ## Contract
 
