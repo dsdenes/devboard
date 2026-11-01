@@ -2,11 +2,12 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { syncTree } from "../bin/devboard.mjs";
+import { syncHarnessTrees, syncTree } from "../bin/devboard.mjs";
 
 /**
- * Wrapper sync protects every git-tracked host path, including files nested
- * below a directory the installed package does not ship.
+ * Wrapper and harness-tree sync protect every git-tracked host path,
+ * including files nested below a directory the installed package does not
+ * ship.
  */
 
 const testRoot = join(resolve(import.meta.dir, ".."), ".tmp");
@@ -56,5 +57,48 @@ describe("syncTree", () => {
     expect(readFileSync(tracked, "utf8")).toBe("tracked\n");
     expect(readFileSync(join(destination, "custom", "shared.md"), "utf8")).toBe("package\n");
     expect(existsSync(join(destination, "custom", "stale.txt"))).toBe(false);
+  });
+});
+
+describe("syncHarnessTrees", () => {
+  async function harnessFixture(): Promise<{ harness: string; host: string }> {
+    await mkdir(testRoot, { recursive: true });
+    const root = await mkdtemp(join(testRoot, "harness-sync-"));
+    roots.push(root);
+    return { harness: join(root, "package"), host: join(root, "host") };
+  }
+
+  test("keeps a tracked prompt and copies the prompts the package ships", async () => {
+    const { harness, host } = await harnessFixture();
+    const prompts = join(host, ".devboard", "prompts");
+    await mkdir(join(harness, "prompts"), { recursive: true });
+    await writeFile(join(harness, "prompts", "shipped.md"), "package\n");
+    await writeFile(join(harness, "prompts", "added.md"), "added\n");
+    await mkdir(prompts, { recursive: true });
+    const trackedShipped = join(prompts, "shipped.md");
+    const trackedLocal = join(prompts, "local.md");
+    await writeFile(trackedShipped, "host\n");
+    await writeFile(trackedLocal, "local\n");
+    await writeFile(join(prompts, "stale.md"), "stale\n");
+
+    await syncHarnessTrees(host, harness, new Set([trackedShipped, trackedLocal]));
+
+    expect(readFileSync(trackedShipped, "utf8")).toBe("host\n");
+    expect(readFileSync(trackedLocal, "utf8")).toBe("local\n");
+    expect(readFileSync(join(prompts, "added.md"), "utf8")).toBe("added\n");
+    expect(existsSync(join(prompts, "stale.md"))).toBe(false);
+  });
+
+  test("keeps a tracked single-file harness path", async () => {
+    const { harness, host } = await harnessFixture();
+    await mkdir(join(harness, "scripts"), { recursive: true });
+    await writeFile(join(harness, "scripts", "forge-auth.ts"), "package\n");
+    const tracked = join(host, ".devboard", "scripts", "forge-auth.ts");
+    await mkdir(join(host, ".devboard", "scripts"), { recursive: true });
+    await writeFile(tracked, "host\n");
+
+    await syncHarnessTrees(host, harness, new Set([tracked]));
+
+    expect(readFileSync(tracked, "utf8")).toBe("host\n");
   });
 });

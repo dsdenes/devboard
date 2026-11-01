@@ -102,14 +102,18 @@ export async function syncTree(source, destination, skip) {
   }
 }
 
-/** Copies the harness trees the host-side wrappers open by relative path. */
-export async function syncHarnessTrees(host, harness) {
+/**
+ * Copies the harness trees the host-side wrappers open by relative path,
+ * leaving every git-tracked path in `skip` untouched like `syncWrappers`.
+ */
+export async function syncHarnessTrees(host, harness, skip) {
   for (const name of HOST_HARNESS_PATHS) {
     const source = join(harness, name);
     if (!existsSync(source)) continue;
     const target = join(host, ".devboard", name);
+    if (skip?.has(target) ?? false) continue;
     if ((await lstatOrUndefined(source))?.isDirectory()) {
-      await syncTree(source, target);
+      await syncTree(source, target, skip);
       continue;
     }
     await ensureFixedDirectory(dirname(target));
@@ -167,10 +171,10 @@ export function trackedPaths(host, paths) {
 /**
  * The full host sync an install, an update, or an automatic update runs after
  * the package is in place: wrappers with tracked-path protection, then the
- * harness trees the wrappers import.
+ * harness trees the wrappers import, protected the same way.
  */
 export async function syncHostCopies(host, harness) {
-  const skip = await trackedPaths(host, [".omp/commands", ".omp/extensions"]);
-  await syncWrappers(host, harness, skip);
-  await syncHarnessTrees(host, harness);
+  const wrappers = await trackedPaths(host, [".omp/commands", ".omp/extensions"]);
+  await syncWrappers(host, harness, wrappers);
+  await syncHarnessTrees(host, harness, await trackedPaths(host, [".devboard"]));
 }

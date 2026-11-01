@@ -1405,10 +1405,11 @@ propagation wait (default 1800 seconds).
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
 staging prefix, and keeps serving its loaded code. After the package is in place it runs the
-same wrapper and harness-tree sync `install` runs, with the same git-tracked wrapper paths left
+same wrapper and harness-tree sync `install` runs, with the same git-tracked paths left
 untouched, so `.omp/commands`, `.omp/extensions`, `.omp/mcp.json`, and
 `.devboard/{prompts,extensions,lib,scripts/forge-auth.ts}` match the installed package before
-the check reports the install. The server copies its client bundle from the
+the check reports the install — except a path the host tracks, which `update` neither deletes nor
+overwrites. The server copies its client bundle from the
 installed package into `<stateDir>/serving/<pid>-<version>` at startup and serves that copy, so
 replacing the package changes only what a restart loads; an open page keeps requesting the bytes
 it started with. If npm cannot serve the artifact and
