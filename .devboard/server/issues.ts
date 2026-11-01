@@ -370,10 +370,18 @@ export class IssuesBridge {
    * The Open issues list. A live worker whose own read started no earlier than
    * the dashboard's is authoritative; otherwise the dashboard's read is used,
    * with the worker's handled and running markers merged in. Before the first
-   * dashboard read the worker's queue is the only list there is.
+   * dashboard read the worker's queue is the only list there is. Only an
+   * attached worker can be working an issue, so the running markers its state
+   * left behind when it stopped are dropped: a worker that dies without a
+   * final write keeps its last queue, and its old `agentRunId` entries would
+   * otherwise count as running with no agent to run them.
    */
   private queueFor(state: IssuesState | undefined, attached: boolean): IssuesState["queue"] {
-    const workerQueue = state?.queue ?? [];
+    const workerQueue = attached
+      ? (state?.queue ?? [])
+      : (state?.queue ?? []).map((entry) =>
+          entry.agentRunId === null ? entry : { ...entry, agentRunId: null },
+        );
     const open = this.tracker.openIssues;
     if (open === null) return workerQueue;
     const workerPollAt = state?.poll.lastPollAt ?? null;
