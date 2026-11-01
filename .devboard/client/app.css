@@ -3556,7 +3556,7 @@ a.code-chip--link:focus-visible {
   gap: 8px;
   width: 100%;
   border-left: 2px solid transparent;
-  padding: 6px 10px 6px 8px;
+  padding: 6px 10px;
   background: transparent;
   color: var(--foreground);
   font-size: 12px;
