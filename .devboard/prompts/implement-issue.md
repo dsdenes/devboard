@@ -69,8 +69,17 @@ context, but you never edit, comment on, close, or reopen another issue.
   `git status --short --branch` sync-state read in *Landing*, and chain nothing after the rebase:
   no `git log`, no `git diff`, no count, and no second `git rebase origin/main`. A conflict is
   part of that step — edit the conflicted files, `git add` them, and continue with
-  `git rebase --continue`; never `git rebase --abort` and never `git rebase --skip`. After a
-  resolved conflict, continue until the rebase completes and read the same status line. Re-run
+  `git rebase --continue`; never `git rebase --abort` and never `git rebase --skip`. A conflict in
+  `.devboard/prompts/implement-issue.md` is the recurring case: the branch re-authored a
+  prompt-doc change main already carries. When main's copy already holds the branch's intended
+  prompt text, resolve that duplicate in favor of main —
+  `git checkout origin/main -- .devboard/prompts/implement-issue.md` — `git add` the file, and
+  continue with `git rebase --continue`; never take `--theirs`, which in a rebase is the branch
+  commit being replayed, while `--ours` is main's side. A branch prompt change main does not
+  carry is a real change: resolve it hunk by hunk instead of discarding it. Never commit a fresh
+  copy of a prompt-doc change that already landed on main under a new hash — a `docs(prompt)`
+  commit whose text main already carries is that duplicate, not a fix. After a resolved
+  conflict, continue until the rebase completes and read the same status line. Re-run
   the rebase only after a new upstream commit lands or a conflict was resolved — never to
   re-check state. A later rebase belongs only to the landing integration or a rejected push
   below, never to re-verification.
