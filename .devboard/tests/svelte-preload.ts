@@ -10,11 +10,19 @@
  * installed as the module mock so component tests can mount.
  */
 import { plugin } from "bun";
-import { mock } from "bun:test";
+import { beforeEach, mock } from "bun:test";
 import { compile, compileModule, preprocess } from "svelte/compiler";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import nativeNetwork from "./native-network";
+
+// A DOM test registers happy-dom at module load and leaves its `Response`,
+// `AbortSignal`, and friends in place. Bun's fetch and Bun.serve only accept
+// the native objects, so every test starts with them restored.
+beforeEach(() => {
+  Object.assign(globalThis, nativeNetwork);
+});
 
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

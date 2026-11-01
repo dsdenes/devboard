@@ -13,7 +13,8 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
-import { settingsPath, statePath } from "../issues/scout/paths";
+import { settingsPath, statePath, controlDirectory } from "../issues/scout/paths";
+import { writeCommand } from "../issues/scout/control";
 import { emptyState, writeSettings, writeState } from "../issues/scout/state";
 import { writeProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
@@ -358,6 +359,34 @@ async function rows(devtools: Devtools): Promise<
   return Array.isArray(value)
     ? (value as Array<{ url: string; state: string; version: string; title: string }>)
     : [];
+}
+
+interface ScoutSyncState {
+  state: "ok" | "error" | "stale";
+  at: string | null;
+  error: string | null;
+}
+
+/** The Auto Scout worker state the source page renders. */
+function scoutSync(stateDir: string, root: string): ScoutSyncState | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(statePath(stateDir, root), "utf8")) as {
+      sync?: ScoutSyncState;
+    };
+    return parsed.sync;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Edits the mutable gh store the source dashboard's stub reads. */
+async function updateGhStore(
+  path: string,
+  update: (store: Record<string, unknown>) => void,
+): Promise<void> {
+  const store = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  update(store);
+  await writeFile(path, JSON.stringify(store, null, 2));
 }
 
 const INSTALLED_PROMPT =
@@ -1664,7 +1693,7 @@ try {
 
   await click(devtools, "agent-prompt-save");
   await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-notice")) ? true : undefined),
+    async () => ((await present(devtools!, "save-feedback")) ? true : undefined),
     "the prompt save notice",
     15_000,
   );
@@ -1746,7 +1775,7 @@ try {
   await setInput(devtools, "agent-prompt-editor", "design saved\n");
   await click(devtools, "agent-prompt-save");
   await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-notice")) ? true : undefined),
+    async () => ((await present(devtools!, "save-feedback")) ? true : undefined),
     "the Design System save notice",
     15_000,
   );
@@ -1760,10 +1789,240 @@ try {
   );
   console.log("PASS design-prompt-source");
 
+  /* 12. A transient forge read is retried before any alert; exhaustion alerts. */
+  await click(devtools, "open-devboard-scout");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === "scout"`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the source Auto Scout page",
+    15_000,
+  );
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = true;
+    store.failMessage = "the GitHub read is unavailable";
+  });
+  await click(devtools, "agent-start");
+  await waitFor(
+    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    "the retrying Auto Scout",
+    15_000,
+  );
+  await waitFor(
+    async () => ((await rows(devtools!)).length === 2 ? true : undefined),
+    "the preserved Auto Scout rows",
+    15_000,
+  );
+  const retrying = await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "stale" && sync.error === null ? sync : undefined;
+    },
+    "the stale sync state during a retry",
+    20_000,
+  );
+  const previousAt = retrying.at;
+  const preservedRows = await rows(devtools);
+  assertTrue(
+    !(await present(devtools, "agent-sync-error")),
+    "agent-sync-error is rendered during the retry window",
+  );
+  const retrySyncAt = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-sync-at"]')?.getAttribute('title') ?? ''`,
+  );
+  assertTrue(
+    retrySyncAt === (previousAt ?? "never"),
+    `the retry changed the last read time: ${String(retrySyncAt)}`,
+  );
+  console.log("PASS sync-retry-stale-state");
+  console.log("PASS sync-retry-no-alert");
+  console.log("PASS sync-retry-preserved-rows");
+
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = false;
+  });
+  const recovered = await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "ok" && sync.error === null && sync.at !== previousAt
+        ? sync
+        : undefined;
+    },
+    "the recovered read",
+    20_000,
+  );
+  await waitFor(
+    async () => ((await present(devtools!, "agent-sync-error")) ? undefined : true),
+    "the cleared retry alert",
+    10_000,
+  );
+  const recoveredRows = await rows(devtools);
+  assertTrue(
+    preservedRows.length === 2 && recoveredRows.length === 2,
+    `the retry changed the filed rows: ${JSON.stringify({ preservedRows, recoveredRows })}`,
+  );
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-sync-at"]')?.getAttribute('title') ?? ''`,
+        )
+        .catch(() => "")) === recovered.at
+        ? true
+        : undefined,
+    "the page to show the recovered read time",
+    10_000,
+  );
+  console.log("PASS sync-retry-clears");
+
+  /* No page shows an error for the retry that just succeeded. */
+  for (const id of ["scout", "watchdog", "design", "coach"]) {
+    await click(devtools, `open-devboard-${id}`);
+    await waitFor(
+      async () =>
+        (await devtools!
+          .evaluate(
+            `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === ${JSON.stringify(id)}`,
+          )
+          .catch(() => false)) === true
+          ? true
+          : undefined,
+      `the ${id} page after a successful retry`,
+      10_000,
+    );
+    assertTrue(
+      !(await present(devtools, "agent-sync-error")),
+      `${id} shows agent-sync-error after a successful retry`,
+    );
+  }
+  console.log("PASS sync-retry-all-pages");
+
+  /* A read that keeps failing exhausts the schedule into one alert. */
+  await click(devtools, "open-devboard-scout");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === "scout"`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the source Auto Scout page",
+    15_000,
+  );
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = true;
+    store.failMessage = "the GitHub read is unavailable";
+  });
+  writeCommand(controlDirectory(sourceStateDir, sourceHost.directory), { type: "refresh" });
+  await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "stale" && sync.error === null ? sync : undefined;
+    },
+    "the first failure of the exhausted schedule",
+    15_000,
+  );
+  assertTrue(
+    !(await present(devtools, "agent-sync-error")),
+    "agent-sync-error is rendered while retries remain",
+  );
+  const exhausted = await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "error" && sync.error !== null ? sync : undefined;
+    },
+    "the exhausted retry schedule",
+    40_000,
+  );
+  await waitFor(
+    async () =>
+      (await text(devtools!, "agent-sync-error")).includes("unavailable") ? true : undefined,
+    "the exhausted sync alert",
+    10_000,
+  );
+  assertTrue(
+    exhausted.at === recovered.at,
+    `the exhausted schedule changed the last read time: ${String(exhausted.at)}`,
+  );
+  assertTrue(
+    (await rows(devtools)).length === 2,
+    "the exhausted schedule dropped the last known rows",
+  );
+  console.log("PASS sync-retry-exhausted-alert");
+
+  /* A permanent failure appears on the first attempt, and a success clears it. */
+  await click(devtools, "agent-stop");
+  await waitFor(
+    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    "the stopped retrying Auto Scout",
+    15_000,
+  );
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = true;
+    store.failMessage = "gh: HTTP 401: Bad credentials";
+  });
+  await click(devtools, "agent-start");
+  await waitFor(
+    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    "the permanently failing Auto Scout",
+    15_000,
+  );
+  await waitFor(
+    async () =>
+      (await text(devtools!, "agent-sync-error")).includes("Bad credentials")
+        ? true
+        : undefined,
+    "the permanent failure alert",
+    10_000,
+  );
+  const permanent = scoutSync(sourceStateDir, sourceHost.directory);
+  assertTrue(
+    permanent?.state === "error" && permanent.error?.includes("Bad credentials"),
+    `the permanent failure did not surface at once: ${JSON.stringify(permanent)}`,
+  );
+  assertTrue(
+    (await rows(devtools)).length === 2,
+    "the permanent failure dropped the last known rows",
+  );
+  console.log("PASS sync-retry-permanent-alert");
+
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = false;
+  });
+  writeCommand(controlDirectory(sourceStateDir, sourceHost.directory), { type: "refresh" });
+  await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "ok" && sync.error === null ? sync : undefined;
+    },
+    "the read after the permanent failure",
+    15_000,
+  );
+  await waitFor(
+    async () => ((await present(devtools!, "agent-sync-error")) ? undefined : true),
+    "the cleared permanent alert",
+    10_000,
+  );
+  console.log("PASS sync-retry-permanent-clears");
+  await click(devtools, "agent-stop");
+  await waitFor(
+    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    "the stopped verified Auto Scout",
+    15_000,
+  );
+
   console.log(
     "verify:agents: the Background agents section, all four shared pages, lifecycle, cadence, " +
       "nullable limits, the Watchdog cap, the shared table, Coach detail and settings, " +
-      "freshness, no mutation on reload, the timer gate, and the footer indicator all hold",
+      "freshness, no mutation on reload, the timer gate, the footer indicator, and the " +
+      "periodic-read retry window and exhausted alert all hold",
   );
 } finally {
   for (const pid of [chromePid, dashboardPid, sourceDashboardPid]) {

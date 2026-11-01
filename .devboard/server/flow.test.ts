@@ -2419,7 +2419,22 @@ describe("Flow persistence and isolation", () => {
     await restored.waitFor(
       (event) => event.type === "flowDecisions" && String(event.text).includes("Run three."),
     );
+    await waitUntil(
+      () => {
+        try {
+          return readFileSync(join(directory, "decisions.md"), "utf8") ===
+            "# Board\n\nRun three.\n";
+        } catch {
+          return false;
+        }
+      },
+      "the decisions file write",
+    );
     expect(readFileSync(join(directory, "decisions.md"), "utf8")).toBe("# Board\n\nRun three.\n");
+    await waitUntil(
+      () => readSession(fixture, sessionId).decisions === "# Board\n\nRun three.\n",
+      "the session decisions write",
+    );
     expect(readSession(fixture, sessionId).decisions).toBe("# Board\n\nRun three.\n");
     restored.close();
   }, 90_000);

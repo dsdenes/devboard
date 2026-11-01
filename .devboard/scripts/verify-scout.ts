@@ -607,6 +607,9 @@ try {
   await devtools.connect();
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
+  await devtools.send("Page.navigate", {
+    url: `http://127.0.0.1:${dashboard.port}/`,
+  });
 
   /* ---------------------------------------------------------------- */
   /* 1. Open Auto Scout without starting a worker                      */
@@ -907,10 +910,15 @@ try {
     "a closed issue with no release shows a version",
     implemented,
   );
+  const afterClose = await waitState(
+    fixture,
+    "the pending count after a close",
+    (state) => state.issues.filter((row) => row.state === "pending").length === 1,
+  );
   check(
-    (await text(devtools, "agent-count-scout")) === "1",
+    afterClose.issues.filter((row) => row.state === "pending").length === 1,
     "the pending count did not fall after a close",
-    await text(devtools, "agent-count-scout"),
+    afterClose,
   );
 
   run("git", ["-C", fixture.repo, "tag", "v0.1.0", fixture.head]);
@@ -939,13 +947,33 @@ try {
   const failing = readStore(fixture);
   failing.failReads = true;
   writeStore(fixture, failing);
+  const retrying = await waitState(
+    fixture,
+    "the retrying read",
+    (state) => state.sync.state === "stale" && state.sync.error === null,
+  );
+  check(
+    retrying.sync.error === null,
+    "the retry window carries a sync reason",
+    retrying.sync,
+  );
+  check(
+    (await text(devtools, "agent-sync-error")) === "",
+    "agent-sync-error is rendered during the retry window",
+  );
+  check(
+    (await text(devtools, "agent-sync-at")) === syncAt,
+    "a retry discarded the last success time",
+    await text(devtools, "agent-sync-at"),
+  );
+  await waitRows(devtools, 2, "the rows during the retry window");
   const syncError = await waitFor(
     async () => {
       const value = await text(devtools, "agent-sync-error");
       return value.length > 0 ? value : undefined;
     },
-    "the sync error reason",
-    10_000,
+    "the exhausted sync error reason",
+    30_000,
   );
   check(
     syncError.includes("unavailable"),
