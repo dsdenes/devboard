@@ -374,6 +374,7 @@
       goal.resetActiveOperations();
       discover.resetActiveOperations();
       providers.resetActiveOperations();
+      issues.resetActiveOperations();
       devboard.request();
       providers.request();
     });
