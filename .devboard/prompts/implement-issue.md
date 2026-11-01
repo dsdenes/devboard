@@ -261,6 +261,12 @@ check's whole process group at its 900-second bound, and returns `check`, `exitC
 `bun run verify:interface` and a log an earlier run wrote are never a verdict, and a
 `tail`/`head`/`grep` pipe never replaces one.
 
+Every direct invocation of `bun run verify:interface` — the worktree fallback below, and any run
+the tool cannot replace — happens in the foreground, exactly as written. It MUST NOT be redirected
+into `.tmp/*.log` or any other file: the redirect replaces the failing assertion with
+`(no output)` and fails outright in a worktree that has no `.tmp` directory, so read the diagnostic
+from the command output instead.
+
 - Use `repositoryRoot` and `harnessDirectory` from the `devboard_status` call above, not a second
   call. When `harnessDirectory` is the `.devboard/` you changed,
   the tool verifies the changed revision and is the only way to run the check: never invoke
@@ -269,15 +275,15 @@ check's whole process group at its 900-second bound, and returns `check`, `exitC
 - Only when that same result reports the canonical `<REPO_DIR>/.devboard` while you work in a
   worktree does the tool verify the pre-change revision. Then run the changed revision once from
   `<worktree>/.devboard` in two separate commands. First run `bun run build` alone in the
-  foreground with its output unredirected, and read that output. Second, start only the verifier
-  as a background job with no deadline — `async: true`, `timeout: 0` — as the bare command
-  `bun run verify:interface`, with its output visible in the command result: the job's completion
-  follow-up carries it. Never redirect that command to `.devboard/.tmp/verify-interface.log` or
-  any other file, and never chain the build and the verifier into one command: the redirect turns
-  a real failure into `(no output)`, and the chained form reports only `exit code 1`, hiding which
-  stage failed. Its exit status is the verdict, so never append a status echo. Say in the final
-  response that the tool's resolved `harnessDirectory` was the canonical root. Every other direct
-  invocation is forbidden.
+  foreground with its output unredirected, and read that output. Second, run only the verifier
+  in the foreground with no deadline — `timeout: 0` — as the bare command
+  `bun run verify:interface`, with its output visible in the command result: when the harness
+  backgrounds the long run, the job's completion follow-up carries it. Never redirect that command
+  to `.devboard/.tmp/verify-interface.log` or any other file, and never chain the build and the
+  verifier into one command: the redirect turns a real failure into `(no output)`, and the chained
+  form reports only `exit code 1`, hiding which stage failed. Its exit status is the verdict, so
+  never append a status echo. Say in the final response that the tool's resolved
+  `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
 - Interface verification needs no scratch directory: the verifier creates every `.tmp` directory
   it writes to. When some other command's output genuinely has to be captured for later diffing,
   the log belongs under `.devboard/.tmp/`; create that directory with a standalone
