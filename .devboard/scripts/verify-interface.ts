@@ -4255,6 +4255,7 @@ try {
     rowsOutside: number;
     searchPadding: string[];
     toolbar: { background: string; border: string };
+    floorChip: { fontSize: string; lineHeight: string };
     filterRows: number[];
   }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
@@ -4293,6 +4294,11 @@ try {
         const controls = document.querySelector('#workspace-discover .discover-glossary-controls');
         const style = controls === null ? null : getComputedStyle(controls);
         return { background: style?.backgroundColor ?? "", border: style?.borderTopWidth ?? "" };
+      })(),
+      floorChip: (() => {
+        const value = document.querySelector('#workspace-discover .discover-floor__value');
+        const style = value === null ? null : getComputedStyle(value);
+        return { fontSize: style?.fontSize ?? "", lineHeight: style?.lineHeight ?? "" };
       })(),
       filterRows: [
         search,
@@ -4358,6 +4364,12 @@ try {
     glossary.filterRows.every((center) => Math.abs(center - glossary.filterRows[0]!) <= 1),
     "the glossary search, switch, and floor do not sit on one row",
     glossary.filterRows,
+  );
+  check(
+    Math.abs(Number.parseFloat(glossary.floorChip.fontSize) - 11.5) < 0.05 &&
+      Math.abs(Number.parseFloat(glossary.floorChip.lineHeight) - 16.1) < 0.05,
+    "the glossary floor chip does not render the mono-small type",
+    glossary.floorChip,
   );
   const warningsSection = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="Warnings"]') !== null`);
   check(!warningsSection, "the sidebar still shows an empty warnings section");
