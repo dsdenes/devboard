@@ -154,14 +154,18 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
   working directory was not already correct — set `cwd` instead. Always pass `--frozen-lockfile`:
   never a plain `bun install`, which may rewrite `bun.lock`.
 - Skip the install when the package root (`.devboard/`) already has `node_modules` and `bun.lock`
-  has not changed since that install. Run it at most once per session: installing is a precondition,
-  never a verification step, and it never repeats before each build, check, test, or verify step.
+  has not changed since that install. Run it once per worktree, before the first build or check of
+  that worktree, and never again in that worktree after source edits: the lockfile is frozen and
+  `node_modules` is already materialized. Installing is a precondition, never a verification step,
+  and it never repeats before each build, check, test, or verify step.
 - Let the install's output through whole: never pipe it to `tail`, `head`, or any other consumer,
-  and never append an `echo "EXIT:$?"` or `echo "..._EXIT:$?"` status probe. It prints one summary
+  never redirect it to `/dev/null` or any other file, and never append an
+  `echo "EXIT:$?"` or `echo "..._EXIT:$?"` status probe. It prints one summary
   line on success and the full error on failure, and a nonzero exit already reports the failure.
-- Run it as its own command and never chain it with `&&` into a build, a typecheck, a test, or a
-  verification check: one failed stage must stay attributable. Never re-run it to re-inspect
-  output a consumer truncated. Run a build or test gate only when the change touches it.
+- Run it as its own command and never chain it with `&&` into `bun run build`, `bun run check`,
+  `bunx tsc --noEmit`, a test, or a verification check: one failed stage must stay attributable.
+  Never re-run it to re-inspect output a consumer truncated. Run a build or test gate only when the
+  change touches it.
 - `verification_run` runs one allowlisted check from the `.devboard/` that the `devboard_status`
   result reports as `harnessDirectory`, and it is the preferred entry point for every check the
   catalog covers: `bun run build` as `{"check": "build"}`, `bun test` as `{"check": "test"}`,
