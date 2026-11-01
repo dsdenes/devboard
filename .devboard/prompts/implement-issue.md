@@ -202,11 +202,14 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
   Never run it from the repository root, and never prefix it with `cd <path> &&` because the
   working directory was not already correct — set `cwd` instead. Always pass `--frozen-lockfile`:
   never a plain `bun install`, which may rewrite `bun.lock`.
-- Skip the install when the package root (`.devboard/`) already has `node_modules` and `bun.lock`
-  has not changed since that install. Run it once per worktree, before the first build or check of
-  that worktree, and never again in that worktree after source edits: the lockfile is frozen and
-  `node_modules` is already materialized. Installing is a precondition, never a verification step,
-  and it never repeats before each build, check, test, or verify step.
+- Run `bun install --frozen-lockfile` at most once per session, and only when the package root's
+  `node_modules` is absent or `bun.lock` is newer than it. From the package root, the probe
+  `[ -d node_modules ] && [ ! bun.lock -nt node_modules ] && echo current || echo install-needed`
+  answers that: when it prints `current`, skip the install entirely and go straight to the build,
+  typecheck, or check step. A fresh worktree has no `node_modules`, so its one install is expected;
+  after it the frozen lockfile and materialized `node_modules` make any later install in that
+  session redundant, including after source edits. Installing is a precondition, never a
+  verification step, and it never repeats before each build, check, test, or verify step.
 - Let the install's output through whole: never pipe it to `tail`, `head`, or any other consumer,
   never redirect it to `/dev/null` or any other file, and never append an
   `echo "EXIT:$?"` or `echo "..._EXIT:$?"` status probe. It prints one summary
