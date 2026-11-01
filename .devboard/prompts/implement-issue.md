@@ -39,12 +39,15 @@ context, but you never edit, comment on, close, or reopen another issue.
   required — issue or comment JSON, command capture, a verifier log — belongs inside
   `<REPO_DIR>/.devboard`'s `.tmp/`, never directly under the harness root, and is removed after
   use; never write `/tmp/x` or any other path outside the repository root.
-- Sync the worktree once, before the first edit: from inside it run `git fetch origin` and then
-  `git rebase origin/main`. A conflict is part of that step — edit the conflicted files, `git add`
-  them, and continue with `git rebase --continue`; never `git rebase --abort` and never
-  `git rebase --skip`. When the rebase finishes, confirm it with one `git status --short --branch`
-  and move on: never re-run `git rebase origin/main`, and never chain `git log`, `git diff`, or a
-  second `git status` after it. A later rebase belongs only to the landing integration or a
+- Sync the worktree exactly once per pass, before the first edit: from inside it run
+  `git fetch origin`, then one `git rebase origin/main`, and print the resulting state in that
+  same chain — `git rebase origin/main && git log --oneline -2 && git rev-list --left-right
+  --count HEAD...origin/main`. A bare `git rebase main` is never used: `main` is a local ref that
+  can lag the pushed upstream, so the target is always `origin/main`. A conflict is part of that
+  step — edit the conflicted files, `git add` them, and continue with `git rebase --continue`;
+  never `git rebase --abort` and never `git rebase --skip`. Re-run the rebase only after fetching
+  a new upstream commit or resolving a conflict, never to re-check state: the chain's `git log`
+  and count already printed it. A later rebase belongs only to the landing integration or a
   rejected push below, never to re-verification.
 - Forge write access is a precondition of the run, not a discovery step to repeat: the harness
   resolves it once, before the first forge read or write, and the turn's context carries `forge`,
@@ -438,15 +441,16 @@ git status --short --branch
 The line names the upstream it compared and appends `[ahead N]`, `[behind N]`, or
 `[ahead N, behind M]` only when one side holds commits the other lacks, so an unmarked
 `## main...origin/main` line is the passing state: neither side has a commit the other lacks.
-Never issue `git rev-list --left-right --count HEAD...<ref>` against `main`, `origin/main`, or an
-issue branch (`issue-<N>`): those refs are stale or absent, the same ahead/behind question gets
-re-derived in several spellings per session, and a variant glued without separators — such as
-`git rev-list --left-right --count HEAD...issue-1010 git log --oneline -3 issue-1010` — returns no
-count at all. Never invent an upstream for the unpublished task branch to make a marker appear,
-and never report a divergence state without naming the ref the status line compared. Later turns
-reuse the status line the fetch already served instead of running the fetch again. When the status
-line shows `[ahead N]`, add exactly one `git merge-base --is-ancestor @{upstream} HEAD`: exit 0
-means the upstream tip is already contained in `HEAD`, exit 1 means it is not. Use
+The branch-sync chain above is the only place `git rev-list --left-right --count` appears; a second
+count elsewhere re-derives the same ahead/behind question in another spelling. Never issue it
+against `main` or an issue branch (`issue-<N>`), whose refs are stale or absent, and never glue it
+without separators — such as
+`git rev-list --left-right --count HEAD...issue-1010 git log --oneline -3 issue-1010` — which
+returns no count at all. Never invent an upstream for the unpublished task branch to make a marker
+appear, and never report a divergence state without naming the ref the status line compared. Later
+turns reuse the status line the fetch already served instead of running the fetch again. When the
+status line shows `[ahead N]`, add exactly one `git merge-base --is-ancestor @{upstream} HEAD`: exit
+0 means the upstream tip is already contained in `HEAD`, exit 1 means it is not. Use
 `git merge-base --is-ancestor <sha> origin/main` only to confirm one named commit landed — a
 question about one commit, never a divergence measurement against `HEAD`: exit 0 means it is an
 ancestor, 1 means it is not, and any other status, such as 128 with
