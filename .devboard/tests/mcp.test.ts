@@ -45,6 +45,26 @@ async function workspace(): Promise<{ root: string; repoDir: string; stateDir: s
   };
 }
 
+async function git(directory: string, args: string[]): Promise<string> {
+  const result = Bun.spawnSync({
+    cmd: ["git", "-C", directory, ...args],
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Devboard Test",
+      GIT_AUTHOR_EMAIL: "test@devboard.invalid",
+      GIT_COMMITTER_NAME: "Devboard Test",
+      GIT_COMMITTER_EMAIL: "test@devboard.invalid",
+    },
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`);
+  }
+  return result.stdout.toString().trim();
+}
+
 async function seedSession(
   stateDir: string,
   repoDir: string,
@@ -411,7 +431,43 @@ describe("MCP context tools", () => {
     expect(status.stateDirectory).toBe(context.stateDir);
     expect(status.dashboard).toBe(null);
     expect(typeof status.versionState).toBe("string");
+    const gitState = status.git as Record<string, unknown>;
+    expect(typeof gitState.ahead).toBe("number");
+    expect(typeof gitState.behind).toBe("number");
     expect(JSON.stringify(status)).not.toContain("TOKEN");
+  });
+
+  test("devboard_status reports the checkout's branch and upstream divergence", async () => {
+    const root = await mkdtemp(join(harnessRoot, ".tmp", "mcp-git-"));
+    directories.push(root);
+    const repoDir = join(root, "checkout");
+    const stateDir = join(root, "state");
+    await mkdir(repoDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    await git(repoDir, ["init", "-q"]);
+    await git(repoDir, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+    await writeFile(join(repoDir, "file.txt"), "one\n");
+    await git(repoDir, ["add", "file.txt"]);
+    await git(repoDir, ["commit", "-q", "-m", "one"]);
+    const first = await git(repoDir, ["rev-parse", "HEAD"]);
+    await writeFile(join(repoDir, "file.txt"), "two\n");
+    await git(repoDir, ["commit", "-q", "-am", "two"]);
+    await git(repoDir, ["checkout", "-q", "-b", "side", first]);
+    await writeFile(join(repoDir, "side.txt"), "side\n");
+    await git(repoDir, ["add", "side.txt"]);
+    await git(repoDir, ["commit", "-q", "-m", "side"]);
+    await git(repoDir, ["checkout", "-q", "main"]);
+    await git(repoDir, ["config", "branch.main.remote", "."]);
+    await git(repoDir, ["config", "branch.main.merge", "refs/heads/side"]);
+
+    const status = valueOf(
+      await callTool(
+        { repoDir, harnessDir: harnessRoot, stateDir, environment: {} },
+        "devboard_status",
+        {},
+      ),
+    ) as Record<string, unknown>;
+    expect(status.git).toEqual({ branch: "main", upstream: "side", ahead: 1, behind: 1 });
   });
 
   test("session list, read, and search share the session reader", async () => {

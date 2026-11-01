@@ -2072,7 +2072,7 @@ call; `getMcpTools` reports the table as the `invocations` map and a missing fil
 
 |Tool|Inputs|Bounds|
 |---|---|---|
-|`devboard_status`|none|root, harness, state, live dashboard port/pid, version and versionState; no secret|
+|`devboard_status`|none|root, harness, state, branch/upstream/ahead/behind, live dashboard port/pid, version and versionState; no secret|
 |`agent_sessions_list`|`since`, `until`, `cwd`, `limit`, `offset`|50 rows default, 200 max, newest first|
 |`agent_session_read`|`id`, `offset`, `limit`|50 messages default, 200 max, 64 KiB of text|
 |`agent_session_search`|`query`, `limit`|case-insensitive, 100 matches, 200-character snippets|

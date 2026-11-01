@@ -15,13 +15,21 @@ context, but you never edit, comment on, close, or reopen another issue.
 
 ## Inputs and paths
 
-- Resolve the session's host exactly once, before any forge read or write: make one argument-free
-  `devboard_status` MCP call and take `<REPO_DIR>` from its `repositoryRoot`, along with
-  `harnessDirectory` and `stateDirectory`. That one call is the whole checkout-orientation step,
-  and the canonical checkout is `<REPO_DIR>` itself. Issue it before the auth decision below.
-  Never issue more than one `devboard_status` call in a turn, except for the one read immediately
-  after `bun run publish` or a dashboard reload that confirms the newly running version; never
-  poll it before each step or between successive forge reads and writes.
+- Resolve the session's host and checkout state exactly once, before any forge read or write: make
+  one argument-free `devboard_status` MCP call. Take `<REPO_DIR>` from its `repositoryRoot` — the
+  checkout's worktree path — along with `harnessDirectory`, `stateDirectory`, and its `git`
+  object: `git.branch` is the checked-out branch, `git.upstream` its canonical upstream, and
+  `git.ahead`/`git.behind` its divergence from that upstream. That one result is the whole
+  checkout-orientation step, and the canonical checkout is `<REPO_DIR>` itself. Do not rebuild
+  that answer from shell output: after the fetch, the one canonical `git status --short --branch`
+  line *Fetch budget* defines supersedes it, and no `git rev-list --left-right --count` may confirm
+  a branch, worktree, or divergence either reports. A ref the result does not name — a task branch
+  that is not that upstream — is never counted either: the one `git status --short --branch` of
+  the checkout that has that branch checked out reports it, and the same count is never re-run
+  between steps. Issue the call before the auth decision below. Never issue more than one
+  `devboard_status` call in a turn, except for the one read immediately after `bun run publish` or
+  a dashboard reload that confirms the newly running version; never poll it before each step or
+  between successive forge reads and writes.
 - Read every Devboard fact through the registered MCP tools — `devboard_status`, `issue_get`,
   `issues_list`, `issue_close`, `verification_run`, `goal_get`, `journal_search`, and
   `agent_sessions_list` — never by spawning `bun .devboard/call-tool.ts <tool>` or any other
@@ -171,17 +179,20 @@ git fetch origin
   never pair a fetch with a `git merge --ff-only` in one command.
 - The divergence read is the `## <branch>...<upstream>` line from one `git status --short --branch`
   in the canonical checkout after that fetch; that line is the sole divergence check, and
-  *Landing* defines how to read its `[ahead N]` and `[behind N]` markers. Reuse the line in every
-  later turn instead of fetching again.
+  *Landing* defines how to read its `[ahead N]` and `[behind N]` markers. The fetch moved the
+  remote refs, so this line, not the pre-fetch `git` object from `devboard_status`, is the verdict.
+  Reuse the line in every later turn instead of fetching again, and never pair it with a second
+  copy of itself.
 - Never measure divergence with `git rev-list --left-right --count`: not against `HEAD...main`,
   not against `HEAD...origin/main`, and not against `HEAD...issue-<N>`. Those refs are stale or
-  absent, and the count re-derives a question the status line already answers. A variant glued
-  without a separator — `git fetch origin && git rev-list --left-right --count HEAD...issue-1010
-  git log --oneline -3 issue-1010` — returns no count at all, and
-  `git rev-parse --short=12 HEAD origin/main` exits 128 with `fatal: Needed a single revision`
-  because `--short` accepts exactly one revision. Never substitute `git rev-parse origin/main` or
-  `git rev-parse --short=12 origin/main` for the markers either, because a hash cannot tell ahead
-  from behind.
+  absent, and the count re-derives a question the status line already answers; the status line,
+  not a count, answers every divergence question here, so a recorded count is never repeated
+  between steps. A variant glued without a separator —
+  `git fetch origin && git rev-list --left-right --count HEAD...issue-1010 git log --oneline -3
+  issue-1010` — returns no count at all, and `git rev-parse --short=12 HEAD origin/main` exits 128
+  with `fatal: Needed a single revision` because `--short` accepts exactly one revision. Never
+  substitute `git rev-parse origin/main` or `git rev-parse --short=12 origin/main` for the markers
+  either, because a hash cannot tell ahead from behind.
 - The only later fetch answers a new question about a new tip: a push was rejected because the
   remote moved, or `git rev-parse --verify --quiet <ref>` printed nothing for the ref itself. That
   fetch belongs to the rejection handling below, never to a re-check of the tip fetched at the
@@ -511,15 +522,23 @@ revision — a missing ref, or several revisions passed to one `--short` call �
 branches diverged. Invoke the command once for each revision whose hash is needed and never pass
 several revisions to one `--short` call.
 
+Before any `git rev-parse` that names more than one ref — `git rev-parse HEAD origin/main`, for
+example — confirm each ref with `git rev-parse --verify --quiet <ref>`. One missing ref makes the
+whole command exit 128 with `fatal: Needed a single revision` and discards the output of every
+command chained to it, so name one revision per call unless every ref is already proven.
+
 Never issue `git rev-list --left-right --count HEAD...<ref>` for this question — not against
 `main`, not against `origin/main`, and not against `issue-<N>` — and never re-derive the line by
-another route. The refs are stale or absent, the spellings multiply per session, and a glued
+another route. The worktree's one status line already answers it, so no count qualifies. The refs
+are stale or absent, the spellings multiply per session, and a glued
 command such as `git rev-list --left-right --count HEAD...issue-1010 git log --oneline -3
-issue-1010` returns no count at all. Never report a divergence state without naming the upstream
-ref the status line compared, and never refetch before the line: the task-start fetch already
-named `origin/main`. The canonical sync verdict is the unmarked `## main...origin/main` line —
-neither side then holds a commit the other lacks — and an `[ahead N]` or `[behind N]` marker means
-the work is unfinished. The turn is never reported done without that unmarked line.
+issue-1010` returns no count at all. Never repeat a count between steps and never pair this status
+line with a second copy of `git status --short --branch`. Never report a divergence state without
+naming the upstream ref the status line compared, and never refetch before the line: the
+task-start fetch already named `origin/main`. The canonical sync verdict is the unmarked
+`## main...origin/main` line — neither side then holds a commit the other lacks — and an
+`[ahead N]` or `[behind N]` marker means the work is unfinished. The turn is never reported done
+without that unmarked line.
 
 `git merge --ff-only <integration-ref>` is permitted only when the status line carries no
 `[ahead N]` marker, where it is a pure catch-up. An `[ahead N]` marker forbids it — beside a

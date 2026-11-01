@@ -114,7 +114,8 @@ const TOOLS: readonly McpToolDefinition[] = [
     title: "Read Devboard status",
     description:
       "Returns the resolved repository root, harness directory, state directory, " +
-      "live dashboard port and pid when one exists, and the harness version state.",
+      "the checkout's branch, upstream, and ahead/behind counts, live dashboard " +
+      "port and pid when one exists, and the harness version state.",
     inputSchema: NO_ARGUMENTS,
     covers: ["git rev-parse --show-toplevel"],
   },
