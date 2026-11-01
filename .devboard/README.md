@@ -766,9 +766,10 @@ One card per agent carries its command and staging argument
 `/discover-sheet <staging-dir>`), its run state (`data-testid="discover-agent-status"` with
 `data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
-while it runs, a Start control (`data-testid="discover-agent-start"`), its own activity log
-(`data-testid="discover-agent-activity"`), and its own pending question. An error the agent
-reported stays on its card (`data-testid="discover-agent-error"`). `discoverActivity`,
+while it runs, a Start control (`data-testid="discover-agent-start"`), its own pending question,
+and, below the prompt panel, its own activity log (`data-testid="discover-agent-activity"`) that
+renders only while that agent runs. An error the agent reported stays on its card
+(`data-testid="discover-agent-error"`). `discoverActivity`,
 `discoverQuestion`, `discoverStarted`, and `discoverStopped` carry `agent`, so no card shows
 another agent's line or question.
 
