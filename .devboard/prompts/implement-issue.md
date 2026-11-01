@@ -38,6 +38,13 @@ context, but you never edit, comment on, close, or reopen another issue.
   required — issue or comment JSON, command capture, a verifier log — belongs inside
   `<REPO_DIR>/.devboard`'s `.tmp/`, never directly under the harness root, and is removed after
   use; never write `/tmp/x` or any other path outside the repository root.
+- Sync the worktree once, before the first edit: from inside it run `git fetch origin` and then
+  `git rebase origin/main`. A conflict is part of that step — edit the conflicted files, `git add`
+  them, and continue with `git rebase --continue`; never `git rebase --abort` and never
+  `git rebase --skip`. When the rebase finishes, confirm it with one `git status --short --branch`
+  and move on: never re-run `git rebase origin/main`, and never chain `git log`, `git diff`, or a
+  second `git status` after it. A later rebase belongs only to the landing integration or a
+  rejected push below, never to re-verification.
 - Before the first forge read or write, and after the single `devboard_status` call above, gate
   the run exactly once per session with the canonical, argument-free auth check, run verbatim from
   the repository root:
@@ -122,9 +129,10 @@ and answer every later question about it from that fetch.
   names a branch. Never add `--prune`, `--quiet`, `--tags`, or `--all`, and never fetch another
   remote, unless a deleted ref, a tag, or that other remote is itself the question.
 - One fetch answers every later question about that tip, in this turn and in every later turn:
-  reuse the revisions and hashes it already printed instead of fetching again. A further fetch needs
-  a push, merge, or rebase since the previous one, and a session fetches at most twice before the
-  push block.
+  reuse the revisions and hashes it already printed instead of fetching again. A further fetch
+  needs a push, merge, or rebase since the previous one, and a session fetches at most three times
+  before the push block: once for the pre-edit worktree sync, once before landing, and once in
+  the pre-push probe.
 - A ref that looks missing earns a fetch only after `git rev-parse --verify --quiet <ref>` printed
   nothing.
 - Never fetch to learn CI, release, or dashboard state: the publish run and the forge report it.
