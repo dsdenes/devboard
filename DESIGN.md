@@ -374,6 +374,9 @@ Spacing uses a **2px base unit** with a half-step grid. The approved scale is 2,
   Inside the rail each mode tab is a 64×52px control with an 18px icon over a 10px `overline`
   label, inset 6px vertically and 4px horizontally so the label never touches the tab edge; the
   label never collapses to an icon-only state.
+- **Page padding.** A full-workspace page that owns its own scrolling area — the Agent page and
+  the Issues agent focus — pads its content 16px; the 8px content padding above belongs to the
+  shell's mode body and panel surfaces.
 - **Responsive spacing.** The supported viewport is at least 1024×720. Panes resize rather than
   reflow; when a pane narrows, gaps collapse to the next lower scale step before text wraps.
   Below 1024×720 the workspace is replaced by the viewport guard, so no mobile spacing scale
