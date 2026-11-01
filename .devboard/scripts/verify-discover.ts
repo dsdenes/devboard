@@ -588,7 +588,7 @@ try {
   );
   console.log("PASS discovery-group");
 
-  /* 2. Each card shows its own command and, in a source checkout, its prompt. */
+  /* 2. Each card shows, in a source checkout, its own prompt and no command chip. */
   const expectedPrompts = new Map(
     AGENTS.map((agent) => {
       const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
@@ -597,11 +597,10 @@ try {
   );
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    const command = await text(devtools, "discover-agent-prompt-command");
     check(
-      command === `${agent.command} <staging-dir>`,
-      `the ${agent.id} card does not show its command`,
-      command,
+      (await countOf(devtools, "discover-agent-prompt-command")) === 0,
+      `the ${agent.id} card still shows its command chip`,
+      await text(devtools, "discover-agent-prompt-command"),
     );
     check(
       (await valueOf(devtools, "discover-agent-prompt-editor")) ===

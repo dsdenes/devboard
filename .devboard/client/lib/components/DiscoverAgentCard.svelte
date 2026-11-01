@@ -14,7 +14,6 @@
 
   const descriptor = $derived(discoverAgent(agent));
   const descriptorLabel = $derived(descriptor?.label ?? agent);
-  const descriptorCommand = $derived(descriptor?.command ?? "");
   const card = $derived(discover.agent(agent));
   const prompt = $derived(discover.agentPrompt(agent));
   const editable = $derived(prompt?.editable === true);
@@ -77,10 +76,6 @@
     <header class="discover-page__header discover-agent__header">
       <div class="discover-page__heading">
         <h1 class="discover-page__title">{descriptorLabel}</h1>
-        <code
-          class="code-chip"
-          data-testid="discover-agent-prompt-command"
-        >{descriptorCommand} &lt;staging-dir&gt;</code>
       </div>
       <div class="discover-agent__actions">
         <span

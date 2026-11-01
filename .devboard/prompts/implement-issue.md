@@ -49,22 +49,25 @@ context, but you never edit, comment on, close, or reopen another issue.
   form infers the forge, host, project, and identity from the `origin` remote and
   `DEVBOARD_GITEA_URL`, so this check has exactly one spelling: that literal command line, with
   no `--forge`, `--host`, `--project`, or `--url` override and no derived replacement for any of
-  them. Never derive those values with `sed`, `git remote get-url`, or any other shell
-  substitution; when the `origin` remote cannot name the forge, stop and report that as the
+  them. An override is justified only when this result itself names a wrong forge or host, never
+  to preempt the check. Never derive those values with `sed`, `git remote get-url`, or any other
+  shell substitution; when the `origin` remote cannot name the forge, stop and report that as the
   blocker instead of guessing a `--forge` override.
 
-  Invoke that one line alone: never prefix it with `cd <absolute path> &&` or
+  A session following this prompt issues at most one call matching `forge-auth.ts check`, with no
+  `cd`, no `--forge`, and no `--host` in its command text. Invoke that one line alone: never
+  prefix it with `cd <absolute repository path> &&` (the `cd /home/... &&` shape) or
   `git rev-parse --show-toplevel &&`, and never chain it into a compound command with a `curl`
   request to the forge API or any other command. Set the tool's working directory to the
   repository root instead of prefixing the command.
 
-  Read the JSON line and proceed only when the exit status is 0 and `canWrite` is `true`; trust
-  its `canWrite`, `permission`, and `source` fields for every later forge step instead of
-  re-checking. A successful result is reused for the rest of the session: never run the check a
-  second time, and never re-run it to confirm a result already read. Only a nonzero exit, or an
-  exit 0 without `canWrite: true`, stops the run, and only that failure justifies one `--help`
-  inspection or the blocker report: report the script's message verbatim, and when the result
-  is JSON, its `error` and `permission` fields verbatim. Never retry across `localhost`,
+  Read the JSON line and treat it as final for the session: exit status 0 with `canWrite: true`
+  authorizes every forge write in the task — labels, the one close, and any other forge write the
+  task requires — so never re-run the check before, between, or after those writes. A nonzero
+  exit, or an exit 0 without `canWrite: true`, ends the task: stop, report `forge`, `host`,
+  `source`, and `permission` from the JSON, and include its `error` text verbatim when present.
+  Never retry the check, never inspect its `--help`, and never fall back to `curl` or any other
+  forge API probe. Never retry across `localhost`,
   `localhost:2223`, `localhost:3001`, `origin`, `ds@localhost:2223`, `gitea`, `127.0.0.1`, a bare
   IP, or a bare port, and never re-derive the host with `git remote get-url origin | sed` or any
   other shell substitution. Never append `echo $?`, `echo "exit=$?"`, `echo "EXIT:$?"`, or
@@ -331,10 +334,12 @@ cut, rebase the task branch onto `origin/main` inside the worktree and rerun the
 invalidates before landing; a rebase that reports the branch is up to date is the normal case.
 
 Read the worktree's sync state with one `git status --short --branch` call, run in the worktree
-after the fetch required before landing. That call reports the branch, its upstream, and the
-ahead/behind counts in that order, and those counts are the divergence proof. Add
-`git log --oneline -3` only when commit subjects are needed, and one
-`git rev-parse --short=12 <rev>` per revision only when a short hash is needed, in the same call:
+after the fetch required before landing. That call reports the branch and, when the branch has one,
+its upstream and the ahead/behind counts; an unpublished task branch has no upstream, so its line
+carries no counts, and its divergence from the integration line is settled by the rebase below,
+never by a count of its own. Add `git log --oneline -3` only when commit subjects are needed, and
+one `git rev-parse --short=12 <rev>` per revision only when a short hash is needed, in the same
+call:
 
 ```sh
 git status --short --branch
@@ -347,15 +352,28 @@ missing ref, or several revisions passed to one `--short` call — never that th
 Invoke the command once for each revision whose hash is needed and never pass several revisions to
 one `--short` call.
 
-An unpublished task branch has no upstream, so its status line carries no counts: add exactly one
-`git rev-list --left-right --count HEAD...origin/main` to that same call, which prints
-`<HEAD-only> <origin/main-only>` in ref order, and read it as the divergence proof. Never chain a
-bare `git rev-parse --short=12 <branch>` with a following `git rev-list --left-right --count`
-for the same question. Guard any optional branch that may not exist yet with
-`git rev-parse --verify --quiet <branch>`, which prints nothing instead of exiting 128 with
-`fatal: Needed a single revision`; never use a bare `git rev-parse --short=12 <branch>` for such a
-ref. Use `git merge-base --is-ancestor <sha> origin/main` only to confirm one named commit landed:
-exit 0 means it is an ancestor, 1 means it is not, and any other status, such as 128 with
+Divergence is measured against exactly one ref — the branch's own upstream — and no other, with
+this one check spelling, run in the canonical checkout on the branch that tracks the integration
+line, never in the worktree whose unpublished task branch has no upstream:
+
+```sh
+git status --short --branch && git rev-list --left-right --count HEAD...@{upstream}
+```
+
+The status line names the ref the counts belong to, and the count prints `<HEAD-only>
+<upstream-only>` in ref order. The pre-push probe and the sync check below reuse this same count,
+so no second comparison ref ever appears. When the left count is nonzero, add exactly one
+`git merge-base --is-ancestor @{upstream} HEAD`: exit 0 means the upstream tip is already contained
+in `HEAD`, exit 1 means it is not. Never substitute `main`, `origin/main`, or an issue branch
+(`issue-N`) for `@{upstream}` as the divergence ref, never invent an upstream for the unpublished
+task branch to make a count work, and never report an ahead/behind pair without naming the ref it
+was measured against. Never chain a bare `git rev-parse --short=12 <branch>` with a following
+`git rev-list --left-right --count` for the same question. Guard any optional branch that may not
+exist yet with `git rev-parse --verify --quiet <branch>`, which prints nothing instead of exiting
+128 with `fatal: Needed a single revision`; never use a bare `git rev-parse --short=12 <branch>`
+for such a ref. Use `git merge-base --is-ancestor <sha> origin/main` only to confirm one named
+commit landed — a question about one commit, never a divergence measurement against `HEAD`: exit 0
+means it is an ancestor, 1 means it is not, and any other status, such as 128 with
 `fatal: Not a valid object name`, means a ref is missing or the command itself failed, never that
 the commit is unrelated. When a ref looks missing, prove it absent with `git rev-parse --verify
 --quiet <ref>` first, then fetch `origin main` under the fetch budget and read the same sync call
@@ -377,14 +395,14 @@ Before pushing, read the behind state against the tip the fetch named with this 
 probe, run in the canonical checkout and read as-is:
 
 ```sh
-git fetch origin && git status --short --branch && git rev-list --left-right --count HEAD...origin/main
+git fetch origin && git status --short --branch && git rev-list --left-right --count HEAD...@{upstream}
 ```
 
-It prints `<HEAD-only> <origin/main-only>`. Push only when the second count is `0`: a nonzero
-second count means `main` is behind the fetched tip, so integrate instead of pushing — rebase the
-task branch onto `origin/main` inside the worktree, rerun the checks the rebase invalidates,
-repeat the landing sequence, and run the probe again. Never push a behind branch, and never answer
-a behind result with a bare retry.
+It prints `<HEAD-only> <upstream-only>`, with the status line naming the upstream ref. Push only
+when the second count is `0`: a nonzero second count means `main` is behind the fetched tip, so
+integrate instead of pushing — rebase the task branch onto `origin/main` inside the worktree, rerun
+the checks the rebase invalidates, repeat the landing sequence, and run the probe again. Never push
+a behind branch, and never answer a behind result with a bare retry.
 
 Push, then prove the push with this one canonical sync check, run verbatim once after the push, in
 the canonical checkout and read as-is:
@@ -392,7 +410,7 @@ the canonical checkout and read as-is:
 ```sh
 git push origin main; echo "PUSH_EXIT:$?"
 git status --short --branch
-git rev-list --left-right --count HEAD...origin/main
+git rev-list --left-right --count HEAD...@{upstream}
 git rev-parse HEAD
 git rev-parse origin/main
 git ls-remote origin refs/heads/main
@@ -403,19 +421,21 @@ The first line is the only push invocation. The push is verified only when `PUSH
 `git rev-parse HEAD` prints equals the SHA `git rev-parse origin/main` prints and the SHA
 `git ls-remote` reads for `refs/heads/main`. `0 0` means neither side has a commit the other lacks,
 and the matching SHAs say the fetched tip, the local branch, and the remote tip are the landing
-commit. Resolve `HEAD` and `origin/main` in separate `git rev-parse` calls: never pass `HEAD`,
-`origin/main`, and an issue branch to one invocation, because one missing ref aborts the whole
-command. `fatal: Needed a single revision` is a ref-resolution error — a missing ref, or several
-revisions where exactly one is expected — never a divergence signal. Run this check once per
-landing attempt and stop. After it passes, never repeat it in the same session — no second
-`git status --short --branch`, `git rev-list`, `git ls-remote`, `git log`, or `git merge-base`
-readback to reconfirm output it already printed. Never append `tail`, `head`, `diff`, `git status`,
-`git rev-list`, a `PIPESTATUS` echo, or any other probe to the `git push` line: those suffixes
-discard the rejection text or its exit status, and the sync check's separate lines are the one
-verification. Never use `git log` or a trimmed merge output as the push proof. The fetch budget
-above governs the push block too: the landing fetch and the pre-push probe answer every question
-about `HEAD...origin/main`, the sync check reads the remote tip directly without fetching, and a
-further fetch needs a push, merge, or rebase since the previous one.
+commit. `git rev-parse origin/main` here reads the tip of the ref the push named, never a
+divergence base, so it stays `origin/main` while the count stays `@{upstream}`. Resolve `HEAD` and
+`origin/main` in separate `git rev-parse` calls: never pass `HEAD`, `origin/main`, and an issue
+branch to one invocation, because one missing ref aborts the whole command. `fatal: Needed a single
+revision` is a ref-resolution error — a missing ref, or several revisions where exactly one is
+expected — never a divergence signal. Run this check once per landing attempt and stop. After it
+passes, never repeat it in the same session — no second `git status --short --branch`,
+`git rev-list`, `git ls-remote`, `git log`, or `git merge-base` readback to reconfirm output it
+already printed. Never append `tail`, `head`, `diff`, `git status`, `git rev-list`, a `PIPESTATUS`
+echo, or any other probe to the `git push` line: those suffixes discard the rejection text or its
+exit status, and the sync check's separate lines are the one verification. Never use `git log` or a
+trimmed merge output as the push proof. The fetch budget above governs the push block too: the
+landing fetch and the pre-push probe answer every question about `HEAD...@{upstream}`, the sync
+check reads the remote tip directly without fetching, and a further fetch needs a push, merge, or
+rebase since the previous one.
 
 An equal tip proves the landing commit is the canonical tip; `PUSH_EXIT:0`, `0 0`, and matching
 `git rev-parse` and `git ls-remote` SHAs are the complete done check. Read the check once and move
@@ -434,11 +454,11 @@ merge or a deleted worktree before that equality is a failed task.
 `Diverging branches can't be fast-forwarded` or "Not possible to fast-forward" is a diagnosis,
 not an instruction to repeat the merge. Never rerun the same `--ff-only` command, and never fall
 back to `--no-ff` silently. Name which side is ahead with exactly one
-`git rev-list --left-right --count HEAD...origin/main` after the refused merge: the left count is
-the commits only `HEAD` has and the right count is the commits only `origin/main` has. Never
-chain that probe with `&&`. Integrate `origin/main` into the task branch — rebase it inside the
-worktree onto `origin/main` and rerun the checks the rebase invalidates — then repeat the sequence
-and the push block from the start.
+`git rev-list --left-right --count HEAD...@{upstream}` after the refused merge, run with the status
+line that names the upstream ref: the left count is the commits only `HEAD` has and the right count
+is the commits only `@{upstream}` has. Never chain that probe with `&&`. Integrate `origin/main`
+into the task branch — rebase it inside the worktree onto `origin/main` and rerun the checks the
+rebase invalidates — then repeat the sequence and the push block from the start.
 
 A `CONFLICT (content)` is resolved in the merge that raised it: edit the conflicted files, stage
 them, commit the result, and rerun the checks the conflict invalidates. `git merge --abort`

@@ -10,7 +10,6 @@
   } from "../discover-format";
   import { discover } from "../discover.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
-  import ConceptKind from "./ConceptKind.svelte";
   import DiscoverAgentCard from "./DiscoverAgentCard.svelte";
   import DataTable from "./DataTable.svelte";
   import DiscoverOverview from "./DiscoverOverview.svelte";
@@ -26,14 +25,12 @@
   let { tab }: Props = $props();
 
   const GLOSSARY_COLUMNS = [
-    { id: "kind", header: "Kind", accessorKey: "kind" },
     { id: "title", header: "Term", accessorKey: "title" },
     { id: "significance", header: "Significance", accessorKey: "significance" },
     { id: "definition", header: "Definition", accessorKey: "definition" },
     { id: "examples", header: "", accessorKey: "examples" },
   ];
   const GLOSSARY_WIDTHS = {
-    kind: "92px",
     title: "210px",
     significance: "104px",
     examples: "240px",
@@ -103,9 +100,7 @@
 {/snippet}
 
 {#snippet glossaryCell(row: Record<string, unknown>, columnId: string)}
-  {#if columnId === "kind"}
-    <ConceptKind kind={String(row.kind ?? "")} />
-  {:else if columnId === "title"}
+  {#if columnId === "title"}
     <strong>{String(row.title ?? "")}</strong>
   {:else if columnId === "significance"}
     {#if typeof row.significance === "number"}
@@ -261,7 +256,6 @@
                 "data-context": context.boundedContext,
                 "data-id": String(row.id ?? ""),
                 "data-status": String(row.status ?? ""),
-                "data-kind": String(row.kind ?? ""),
                 "data-significance":
                   typeof row.significance === "number" ? String(row.significance) : "",
                 "data-examples": Array.isArray(row.examples) ? row.examples.join(",") : "",
