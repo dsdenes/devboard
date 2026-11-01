@@ -48,7 +48,7 @@ context, but you never edit, comment on, close, or reopen another issue.
   `git remote get-url origin`, and never a probe that merely confirms a value one of them already
   reported.
 - Worktree root: `<REPO_DIR>/.worktree/`. Cut the worktree from the integration line the one
-  task-start fetch names (see *Fetch budget*) with
+  task-start sync names (see *Fetch budget*) with
   `git worktree add --track -b issue-<number> .worktree/issue-<number> origin/main`, and never
   refetch it; `--track` makes the task branch's upstream the integration ref, so one
   `git status --short --branch` line reports its divergence. Create and work in exactly one
@@ -61,10 +61,11 @@ context, but you never edit, comment on, close, or reopen another issue.
   root; every log redirect names it, for example `> .devboard/.tmp/verify-interface.log 2>&1`.
   Never create or use a repo-root `.tmp`: no `mkdir -p .tmp` prefix, no
   `ls -d .tmp || mkdir -p .tmp` guard, and no `> .tmp/<name>.log 2>&1` redirect.
-- Sync the worktree exactly once per pass, before the first edit: the task-start fetch
-  (`git fetch origin`, see *Fetch budget*) already named `origin/main`, and the worktree was cut
-  from it, so run one `git rebase origin/main` inside it and never fetch again; a bare
-  `git rebase main` is never used, because `main` is a local ref that can lag the pushed upstream,
+- Sync the worktree exactly once per pass, before the first edit: the task-start sync
+  (`git fetch origin && git status --short --branch`, see *Fetch budget*) already named
+  `origin/main`, and the worktree was cut from it, so run one `git rebase origin/main` inside it
+  and never fetch again; a bare `git rebase main` is never used, because `main` is a local ref that
+  can lag the pushed upstream,
   so the target is always `origin/main`. Confirm the result with the one
   `git status --short --branch` sync-state read in *Landing*, and chain nothing after the rebase:
   no `git log`, no `git diff`, no count, and no second `git rebase origin/main`. A conflict is
@@ -171,27 +172,35 @@ context, but you never edit, comment on, close, or reopen another issue.
 ## Fetch budget
 
 Fetch the canonical integration line exactly once per task, at the start, and answer every later
-question about it from that one fetch. The one fetch is this line, run from the canonical checkout
-before the first edit:
+question about it from that one sync. A fetch on its own reports nothing about divergence, so the
+sync is one command that fetches and reads the divergence line together, run from the canonical
+checkout before the first edit:
 
 ```sh
-git fetch origin
+git fetch origin && git status --short --branch
 ```
 
 - One call and one spelling: that line, or `git fetch origin <canonical-branch>` with the
-  repository's own branch when it names another. Never add `--prune`, `--quiet`, `--tags`, or
+  repository's own branch when it names another, each followed by the same
+  `&& git status --short --branch`. Never add `--prune`, `--quiet`, `--tags`, or
   `--all`, and never fetch another remote, unless a deleted ref, a tag, or that other remote is
   itself the question.
+- A bare fetch is never a step: `git fetch origin` or `git fetch origin main` alone, a fetch
+  chained to a `git rev-list` count, and a second fetch after a rebase, a merge, or a status read
+  are one defect — a retry loop that re-asks a question the sync already answered. A fetch that
+  printed only `Already up to date` never earns a retry to look for divergence; when the status
+  line shows `[behind N]` or `[ahead N, behind M]`, integrate with `git rebase origin/main`
+  instead of fetching again.
 - The fetched `origin/main` is the integration ref for the rest of the task: the worktree base,
   `git log <sha>..origin/main`, `git merge-base`, the landing merges, the pre-push probe, and the
   post-push proof all read it. Never fetch again to re-check state this task already fetched, and
   never pair a fetch with a `git merge --ff-only` in one command.
-- The divergence read is the `## <branch>...<upstream>` line from one `git status --short --branch`
-  in the canonical checkout after that fetch; that line is the sole divergence check, and
-  *Landing* defines how to read its `[ahead N]` and `[behind N]` markers. The fetch moved the
-  remote refs, so this line, not the pre-fetch `git` object from `devboard_status`, is the verdict.
-  Reuse the line in every later turn instead of fetching again, and never pair it with a second
-  copy of itself.
+- The divergence read is the `## <branch>...<upstream>` line from the one
+  `git status --short --branch` half of that sync command, in the canonical checkout; that line is
+  the sole divergence check, and *Landing* defines how to read its `[ahead N]` and `[behind N]`
+  markers. The fetch moved the remote refs, so this line, not the pre-fetch `git` object from
+  `devboard_status`, is the verdict. Reuse the line in every later turn instead of fetching again,
+  and never pair it with a second copy of itself.
 - Never measure divergence with `git rev-list --left-right --count`: not against `HEAD...main`,
   not against `HEAD...origin/main`, and not against `HEAD...issue-<N>`. Those refs are stale or
   absent, and the count re-derives a question the status line already answers; the status line,
@@ -203,9 +212,9 @@ git fetch origin
   substitute `git rev-parse origin/main` or `git rev-parse --short=12 origin/main` for the markers
   either, because a hash cannot tell ahead from behind.
 - The only later fetch answers a new question about a new tip: a push was rejected because the
-  remote moved, or `git rev-parse --verify --quiet <ref>` printed nothing for the ref itself. That
-  fetch belongs to the rejection handling below, never to a re-check of the tip fetched at the
-  start.
+  remote moved, or `git rev-parse --verify --quiet <ref>` printed nothing for the ref itself. It is
+  that same one-step sync — fetch and the divergence line in one command — and it belongs to the
+  rejection handling below, never to a re-check of the tip fetched at the start.
 - Never fetch to learn CI, release, or dashboard state: the publish run and the forge report it.
 
 ## Dependencies
@@ -557,7 +566,9 @@ without that unmarked line.
 `[ahead N]` marker, where it is a pure catch-up. An `[ahead N]` marker forbids it — beside a
 `[behind M]` marker the merge fails with `Diverging branches can't be fast-forwarded` — so
 integrate with `git rebase origin/main` instead, resolve every conflict, and rerun the checks the
-rebase invalidates. Never repeat a refused `--ff-only` merge. When the line carries `[ahead N]`,
+rebase invalidates. The `Diverging branches can't be fast-forwarded` hint means the branch is
+diverged: rebase it, and never answer it with a fetch, a second `--ff-only` merge, or a `--no-ff`
+merge. Never repeat a refused `--ff-only` merge. When the line carries `[ahead N]`,
 one `git merge-base --is-ancestor <integration-ref> HEAD` confirms containment: exit 0 means the
 integration tip is already contained in `HEAD`, exit 1 means it is not. Never substitute an issue
 branch (`issue-N`) for the integration ref, and in the canonical checkout never substitute `main`
@@ -635,9 +646,9 @@ reconfirm output it already printed. Never append `tail`, `head`, `diff`, `git s
 `PIPESTATUS` echo, or any other probe to the `git push` line: those suffixes discard the rejection
 text or its exit status, and the sync check's separate lines are the one verification. Never use
 `git log` or a trimmed merge output as the push proof. The fetch budget above governs the push
-block too: the task-start fetch and the pre-push probe answer every question about the integration
+block too: the task-start sync and the pre-push probe answer every question about the integration
 tip, the sync check reads the remote tip directly without fetching, and only a rejected push earns
-the one fetch of the new tip.
+the one new-tip sync.
 
 An equal tip proves the landing commit is the canonical tip; `PUSH_EXIT:0`, an unmarked status
 line, and matching `git rev-parse` and `git ls-remote` SHAs are the complete done check. Read the
