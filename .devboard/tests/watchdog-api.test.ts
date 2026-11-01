@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { earliestRelease, shippedVersion } from "../lib/github-release";
+import { earliestRelease, resolveShippedVersion, shippedVersion } from "../lib/github-release";
 import { createApp } from "../server/app";
 import {
   WatchdogActivity,
@@ -885,5 +885,56 @@ describe("earliestRelease", () => {
       ]),
     ).toBeNull();
     expect(client.calls).toBe(1);
+  });
+
+  test("skips an unresolvable candidate and reports the next commit's release", async () => {
+    const real = "b".repeat(40);
+    const tried: string[] = [];
+    const client = {
+      async closingCommit() {
+        return null;
+      },
+      async closingCommits() {
+        return ["1793310097358", "2692176", "abc1234"];
+      },
+      async resolveCommit(short: string) {
+        tried.push(short);
+        return short === "abc1234" ? real : null;
+      },
+      async containingReleaseTags(commit: string) {
+        return commit === real ? ["v1.0.0"] : [];
+      },
+    };
+
+    expect(
+      await resolveShippedVersion({ number: 1, state: "closed" }, client, [
+        { tag: "v1.0.0", publishedAt: "2026-10-01T00:00:00Z" },
+      ]),
+    ).toEqual({ version: "v1.0.0", error: null });
+    expect(tried).toEqual(["1793310097358", "2692176", "abc1234"]);
+  });
+
+  test("reports the resolved commit no release contains over an unresolvable token", async () => {
+    const real = "b".repeat(40);
+    const client = {
+      async closingCommit() {
+        return null;
+      },
+      async closingCommits() {
+        return ["2692176", "abc1234"];
+      },
+      async resolveCommit(short: string) {
+        return short === "abc1234" ? real : null;
+      },
+      async containingReleaseTags() {
+        return [];
+      },
+    };
+
+    expect(
+      await resolveShippedVersion({ number: 1, state: "closed" }, client, [
+        { tag: "v1.0.0", publishedAt: "2026-10-01T00:00:00Z" },
+      ]),
+    ).toEqual({ version: null, error: `no published release contains ${real}` });
   });
 });

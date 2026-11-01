@@ -1,9 +1,5 @@
 import { git } from "../issues/repository";
-import {
-  closingCommitFromComments,
-  isFullSha,
-  isSha,
-} from "./commit";
+import { commitCandidatesFromComments, isFullSha, isSha } from "./commit";
 
 export {
   closingCommitFromComments,
@@ -53,6 +49,8 @@ export interface RepositoryGitHub {
   issueState(issueNumber: number): Promise<"open" | "closed">;
   /** The commit that closed an issue, from its timeline or newest comment. */
   closingCommit(issueNumber: number): Promise<string | null>;
+  /** Every candidate for that commit, newest first, for verification. */
+  closingCommits(issueNumber: number): Promise<string[]>;
   /** One unambiguous full commit, through the checkout or GitHub, or null. */
   resolveCommit(short: string): Promise<string | null>;
   /** The published release tags whose history contains `commit`. */
@@ -127,6 +125,12 @@ export interface ClosingCommitIssue {
 
 export interface ClosingCommitClient {
   closingCommit(issueNumber: number): Promise<string | null>;
+  /**
+   * Every candidate for the closing commit, newest first. A reader that can
+   * name several supplies this so one unresolvable token does not hide the
+   * real commit; a client without it is asked for the single closing commit.
+   */
+  closingCommits?(issueNumber: number): Promise<string[]>;
   resolveCommit(short: string): Promise<string | null>;
   containingReleaseTags(commit: string, releases: GitHubRelease[]): Promise<string[]>;
 }
@@ -138,12 +142,26 @@ export interface VersionResolution {
   error: string | null;
 }
 
+async function closingCandidates(
+  client: ClosingCommitClient,
+  issueNumber: number,
+): Promise<string[]> {
+  if (client.closingCommits !== undefined) {
+    return await client.closingCommits(issueNumber);
+  }
+  const single = await client.closingCommit(issueNumber);
+  return single === null ? [] : [single];
+}
+
 /**
  * The release that shipped the issue's closing commit: the timeline's commit
- * when present, otherwise the newest comment's SHA, resolved to one full
- * commit, then matched against the earliest published release containing it.
- * Every failure is reported rather than thrown, so a caller can record why a
- * closed issue stays unresolved.
+ * when present, otherwise the commit candidates of the newest comments, each
+ * resolved to one full commit before it is matched against the earliest
+ * published release containing it. A candidate that does not resolve is
+ * skipped rather than ending the search, because comment prose carries
+ * fingerprints, process ids, and epoch stamps that look like a SHA. Every
+ * failure is reported rather than thrown, so a caller can record why a closed
+ * issue stays unresolved.
  */
 export async function resolveShippedVersion<Issue extends ClosingCommitIssue>(
   issue: Issue,
@@ -152,18 +170,18 @@ export async function resolveShippedVersion<Issue extends ClosingCommitIssue>(
 ): Promise<VersionResolution> {
   if (issue.state !== "closed") return { version: null, error: null };
   try {
-    const candidate = await client.closingCommit(issue.number);
-    if (candidate === null) return { version: null, error: "no closing commit was found" };
-    const commit = await client.resolveCommit(candidate);
-    if (commit === null) {
-      return { version: null, error: `closing commit ${candidate} could not be resolved` };
+    const candidates = await closingCandidates(client, issue.number);
+    if (candidates.length === 0) return { version: null, error: "no closing commit was found" };
+    let error = `closing commit ${candidates[0]} could not be resolved`;
+    for (const candidate of candidates) {
+      const commit = await client.resolveCommit(candidate);
+      if (commit === null) continue;
+      const tags = await client.containingReleaseTags(commit, releases);
+      const version = earliestRelease(releases, tags);
+      if (version !== null) return { version, error: null };
+      error = `no published release contains ${commit}`;
     }
-    const tags = await client.containingReleaseTags(commit, releases);
-    const version = earliestRelease(releases, tags);
-    if (version === null) {
-      return { version: null, error: `no published release contains ${commit}` };
-    }
-    return { version, error: null };
+    return { version: null, error };
   } catch (error) {
     return { version: null, error: error instanceof Error ? error.message : String(error) };
   }
@@ -208,6 +226,46 @@ export function createRepositoryGitHub(options: RepositoryGitHubOptions): Reposi
     return await read(["api", `repos/${repository}/${endpoint}`, "--paginate", "--jq", jq]);
   }
 
+  /**
+   * The timeline's closing commit when GitHub reports one, otherwise every hex
+   * token of the newest comment, most recent first. A later comment's
+   * fingerprint or epoch stamp is not a commit, so the resolver verifies each
+   * candidate before it reports a version.
+   */
+  async function closingCommits(issueNumber: number): Promise<string[]> {
+    let timelineFailure: string | null = null;
+    try {
+      const text = await api(
+        `issues/${issueNumber}/timeline`,
+        '.[] | select(.event == "closed" and .commit_id != null) | .commit_id',
+      );
+      const commits = text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => isSha(line));
+      const timeline = closingCommitFromTimeline(
+        commits.map((commit) => ({ event: "closed", commit_id: commit })),
+      );
+      if (timeline !== null) return [timeline];
+    } catch (error) {
+      timelineFailure = error instanceof Error ? error.message : String(error);
+    }
+
+    try {
+      const text = await api(`issues/${issueNumber}/comments`, ".[] | {body: .body}");
+      const comments: string[] = [];
+      for (const entry of parseJsonLines(text)) {
+        if (typeof entry !== "object" || entry === null) continue;
+        const body = (entry as Record<string, unknown>).body;
+        if (typeof body === "string") comments.push(body);
+      }
+      return commitCandidatesFromComments(comments);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(timelineFailure === null ? detail : `${timelineFailure}; ${detail}`);
+    }
+  }
+
   return {
     async listReleases(): Promise<GitHubRelease[]> {
       const text = await read([
@@ -242,38 +300,10 @@ export function createRepositoryGitHub(options: RepositoryGitHubOptions): Reposi
     },
 
     async closingCommit(issueNumber: number): Promise<string | null> {
-      let timelineFailure: string | null = null;
-      try {
-        const text = await api(
-          `issues/${issueNumber}/timeline`,
-          '.[] | select(.event == "closed" and .commit_id != null) | .commit_id',
-        );
-        const commits = text
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => isSha(line));
-        const timeline = closingCommitFromTimeline(
-          commits.map((commit) => ({ event: "closed", commit_id: commit })),
-        );
-        if (timeline !== null) return timeline;
-      } catch (error) {
-        timelineFailure = error instanceof Error ? error.message : String(error);
-      }
-
-      try {
-        const text = await api(`issues/${issueNumber}/comments`, ".[] | {body: .body}");
-        const comments: string[] = [];
-        for (const entry of parseJsonLines(text)) {
-          if (typeof entry !== "object" || entry === null) continue;
-          const body = (entry as Record<string, unknown>).body;
-          if (typeof body === "string") comments.push(body);
-        }
-        return closingCommitFromComments(comments);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(timelineFailure === null ? detail : `${timelineFailure}; ${detail}`);
-      }
+      return (await closingCommits(issueNumber))[0] ?? null;
     },
+
+    closingCommits,
 
     async resolveCommit(short: string): Promise<string | null> {
       if (!isSha(short)) return null;
