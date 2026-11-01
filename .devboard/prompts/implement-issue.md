@@ -132,10 +132,11 @@ and answer every later question about it from that fetch.
 The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` inside your worktree
 and `<REPO_DIR>/.devboard` in the canonical checkout. Run every harness `bun`/`bunx` command with
 that package root as the working directory: `bun install --frozen-lockfile`, `bun run build`,
-`bun test`, and `bunx tsc --noEmit`, each as its own invocation. The repository root has no
-`package.json`, so a root-level `bun install --frozen-lockfile` exits nonzero with "Bun could not
-find a package.json file to install from", and a root-level `bun run build` fails with
-`error: Script not found "build"`.
+and `bun test`, each as its own invocation. The typecheck is not a bare `bunx tsc --noEmit`
+shell call: run it through `verification_run` with `{"check": "typecheck"}`, as *Typecheck* below
+requires. The repository root has no `package.json`, so a root-level
+`bun install --frozen-lockfile` exits nonzero with "Bun could not find a package.json file to
+install from", and a root-level `bun run build` fails with `error: Script not found "build"`.
 
 - Run `bun install --frozen-lockfile` only from the package root that owns the lockfile: the tool's
   `cwd` is `.devboard/` in the canonical checkout, or `<worktree>/.devboard/` in a task worktree.
@@ -150,8 +151,7 @@ find a package.json file to install from", and a root-level `bun run build` fail
   line on success and the full error on failure, and a nonzero exit already reports the failure.
 - Run it as its own command and never chain it with `&&` into a build, a typecheck, a test, or a
   verification check: one failed stage must stay attributable. Never re-run it to re-inspect
-  output a consumer truncated. Run it once, then run build, typecheck, and tests as separate
-  commands.
+  output a consumer truncated. Run a build or test gate only when the change touches it.
 - `verification_run` runs one allowlisted check from the `.devboard/` that the `devboard_status`
   result reports as `harnessDirectory`, and it is the preferred entry point for every check the
   catalog covers: `bun run build` as `{"check": "build"}`, `bun test` as `{"check": "test"}`,
@@ -159,11 +159,29 @@ find a package.json file to install from", and a root-level `bun run build` fail
   `{"check": "verify:interface"}`. Its result carries `exitCode`, `output`, and the complete `log`
   in one read. When it resolves the canonical package root while you work in a worktree, it checks
   the pre-change revision; run the changed revision once from `<worktree>/.devboard/` as
-  *Interface verification* below requires.
+  *Typecheck* and *Interface verification* below require.
 - Run the build, the typecheck, the tests, and each verification check as separate invocations,
   never chained into one command and never behind a shared `mkdir -p` with `> log 2>&1`
   redirection. When one fails, name the failing stage and quote the last 20 lines of its output in
   the session transcript; a bare `exit code 1` or an empty `(no output)` is never a report.
+
+## Typecheck
+
+The typecheck has exactly one entry point: the `verification_run` MCP tool with
+`{"check": "typecheck"}`. The tool runs the package root's typecheck (`bunx tsc --noEmit`, or its
+`typecheck` script when one exists) from the resolved `harnessDirectory`, keeps at most 16 KiB of
+captured output, writes the complete output to the returned `log`, and returns `check`, `exitCode`,
+`output`, `truncated`, and `log` in one result.
+
+- Run it once per coherent change set: after the batch of edits that can break types, never after
+  every single edit. The typecheck reads the working tree, so an unchanged tree yields unchanged
+  output and a second run carries no new information.
+- A bare `bunx tsc --noEmit` shell invocation is not the typecheck path, and repeating it after
+  unchanged code is never required. One `verification_run` call is the whole typecheck; never rerun
+  it to re-read the same empty output.
+- Run an extra gate only when the change touches it: `{"check": "build"}` after a change to what
+  the build produces, and `{"check": "test", "paths": [...]}` for the tests whose subject the
+  change touched. Never run more than one gate in a single command.
 
 ## Interface verification
 
@@ -310,7 +328,9 @@ the prerequisite in another agent's place.
 - The run is non-interactive: no `question` tool, no confirmation prompt, no interactive editor,
   no login prompt, and no waiting for an operator. Decide from the repository evidence.
 - Complete the work: no stubs, placeholders, disabled checks, or unfinished branches of behavior.
-- Verify the changed surface by running it, then run the checks the change could break.
+- Verify the changed surface by running it, then run the checks the change could break. The
+  typecheck is one `verification_run` call with `{"check": "typecheck"}` per coherent change set,
+  as *Typecheck* above states.
 - Before landing, fetch the canonical integration line (`main` unless the repository names another),
   fast-forward `main` to it, and rebase the run's task branch onto it inside the worktree when it
   has moved. Resolve every conflict yourself and rerun every check the integration invalidates. The
@@ -558,9 +578,10 @@ cd .devboard && bun run publish --wait-timeout 1800 \
   `the release workflow concluded failure`, open that workflow run for the named commit and read
   its failing step; when the run's log is not reachable through the exposed tools, reproduce the
   workflow's own steps locally from the package root (`bun install --frozen-lockfile`,
-  `bun run build`, `bun test`, `bunx tsc --noEmit`, each with `.devboard` as the working directory)
-  and fix the step that fails. Land the fix and report the failing step, the fix commit, and the
-  recorded exit code. Publishing the fixed revision belongs to the next task, never to this one.
+  `verification_run` with `{"check": "build"}`, `{"check": "test"}`, and `{"check": "typecheck"}`,
+  each executing with `.devboard` as the working directory) and fix the step that fails. Land the
+  fix and report the failing step, the fix commit, and the recorded exit code. Publishing the fixed
+  revision belongs to the next task, never to this one.
 - Never re-run publish in the same session to see its output, to confirm success, to retry the same
   commit, or with a different log file or deadline.
 - Report the recorded exit code as the publish result. Close the issue with `issue_close` only
