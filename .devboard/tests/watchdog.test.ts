@@ -400,6 +400,56 @@ describe("discovery", () => {
       [23, 8083, scratchRepo],
     ]);
   });
+
+  test("excludes dashboards that read a local release directory", async () => {
+    const base = await temporaryDirectory("test-watchdog-release-fixture");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, "dist"), { recursive: true });
+    const fixtureRepo = join(base, "devboard-restart-F0Snwz");
+    const emptyOverride = "/projects/.devboard/empty-release-override";
+    const liveFixture = "/projects/.devboard/watchdog-live-fixture";
+    const realRepo = "/projects/.devboard/host";
+
+    const snapshot = (
+      pid: number,
+      repoDir: string,
+      port: string,
+      extra: [string, string][] = [],
+    ): ProcessSnapshot => ({
+      pid,
+      cmdline: "bun /x/server/index.ts",
+      env: new Map([
+        ["REPO_DIR", repoDir],
+        ["PORT", port],
+        ["STATIC_DIR", join(harness, "dist")],
+        ...extra,
+      ]),
+      ancestors: [],
+    });
+
+    const instances = instancesFromProcesses(
+      [
+        snapshot(30, fixtureRepo, "8080", [
+          ["DEVBOARD_RELEASE_DIR", join(fixtureRepo, "releases")],
+        ]),
+        snapshot(31, emptyOverride, "8081", [["DEVBOARD_RELEASE_DIR", ""]]),
+        snapshot(32, liveFixture, "8082", [
+          ["DEVBOARD_RELEASE_DIR", join(base, "releases")],
+          ["DEVBOARD_WATCHDOG_FIXTURE", "1"],
+        ]),
+        snapshot(33, realRepo, "8083"),
+      ],
+      { selfPids: new Set() },
+    );
+
+    // The empty override reads the npm registry, exactly as an unset variable
+    // does, so it stays a host the watchdog reads.
+    expect(instances.map((instance) => [instance.pid, instance.port, instance.repoDir])).toEqual([
+      [31, 8081, emptyOverride],
+      [32, 8082, liveFixture],
+      [33, 8083, realRepo],
+    ]);
+  });
 });
 
 describe("window and attribution", () => {

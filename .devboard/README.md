@@ -1798,6 +1798,12 @@ ledger, is listed under `unowned` in `report.json` and under `Issues on another 
 `report.md`, and makes the cycle `skipped` instead of `failed`; a failed write never masks a
 ledger entry that this forge cannot address.
 
+A cycle reads only real dashboards. A verification fixture is invisible: a dashboard whose
+repository root sits in `.devboard/.tmp`, or that reads a local release directory
+(`DEVBOARD_RELEASE_DIR`), is skipped, because its deliberate release, install, and server failures
+prove a script's assertion. The live watchdog verification opts back in with
+`DEVBOARD_WATCHDOG_FIXTURE=1`.
+
 ### Deduplication gate
 
 No new issue is filed until a deduplication agent has decided the whole candidate set. In every
