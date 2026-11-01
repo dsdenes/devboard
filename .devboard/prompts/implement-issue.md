@@ -131,11 +131,11 @@ and answer every later question about it from that fetch.
 
 The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` inside your worktree
 and `<REPO_DIR>/.devboard` in the canonical checkout. Run every harness `bun`/`bunx` command with
-that package root as the working directory — `cd .devboard && bun install --frozen-lockfile`,
-`cd .devboard && bun run build`, `cd .devboard && bun test`, and
-`cd .devboard && bunx tsc --noEmit`. The repository root has no `package.json`, so a root-level
-`bun install --frozen-lockfile` exits nonzero with "Bun could not find a package.json file to
-install from", and a root-level `bun run build` fails with `error: Script not found "build"`.
+that package root as the working directory: `bun install --frozen-lockfile`, `bun run build`,
+`bun test`, and `bunx tsc --noEmit`, each as its own invocation. The repository root has no
+`package.json`, so a root-level `bun install --frozen-lockfile` exits nonzero with "Bun could not
+find a package.json file to install from", and a root-level `bun run build` fails with
+`error: Script not found "build"`.
 
 - Run `bun install --frozen-lockfile` only from the package root that owns the lockfile: the tool's
   `cwd` is `.devboard/` in the canonical checkout, or `<worktree>/.devboard/` in a task worktree.
@@ -148,14 +148,22 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
 - Let the install's output through whole: never pipe it to `tail`, `head`, or any other consumer,
   and never append an `echo "EXIT:$?"` or `echo "..._EXIT:$?"` status probe. It prints one summary
   line on success and the full error on failure, and a nonzero exit already reports the failure.
-- Chain it with `&&` only into a step that must run after a successful install, such as
-  `bun run build`; never chain it to an unrelated command, and never re-run it to re-inspect output
-  a consumer truncated. Run it once, then run build, typecheck, and tests as separate commands.
-- `verification_run` runs an allowlisted check from the `.devboard/` that the `devboard_status`
-  result reports as `harnessDirectory`. Use it for interface verification, as *Interface
-  verification* below requires. When it resolves the canonical package root while you work in a
-  worktree, run that same check from `<worktree>/.devboard/` so the changed revision is what
-  executes; that is the only allowed shell invocation of the check.
+- Run it as its own command and never chain it with `&&` into a build, a typecheck, a test, or a
+  verification check: one failed stage must stay attributable. Never re-run it to re-inspect
+  output a consumer truncated. Run it once, then run build, typecheck, and tests as separate
+  commands.
+- `verification_run` runs one allowlisted check from the `.devboard/` that the `devboard_status`
+  result reports as `harnessDirectory`, and it is the preferred entry point for every check the
+  catalog covers: `bun run build` as `{"check": "build"}`, `bun test` as `{"check": "test"}`,
+  `bunx tsc --noEmit` as `{"check": "typecheck"}`, and `bun run verify:interface` as
+  `{"check": "verify:interface"}`. Its result carries `exitCode`, `output`, and the complete `log`
+  in one read. When it resolves the canonical package root while you work in a worktree, it checks
+  the pre-change revision; run the changed revision once from `<worktree>/.devboard/` as
+  *Interface verification* below requires.
+- Run the build, the typecheck, the tests, and each verification check as separate invocations,
+  never chained into one command and never behind a shared `mkdir -p` with `> log 2>&1`
+  redirection. When one fails, name the failing stage and quote the last 20 lines of its output in
+  the session transcript; a bare `exit code 1` or an empty `(no output)` is never a report.
 
 ## Interface verification
 
@@ -177,15 +185,20 @@ pipe, and a log an earlier run wrote are never a verdict.
   verdict and the shell form only repeats the same run.
 - Only when that same result reports the canonical `<REPO_DIR>/.devboard` while you work in a
   worktree does the tool verify the pre-change revision. Then run the changed revision once from
-  `<worktree>/.devboard`, after creating the log directory with `mkdir -p .tmp` from that package
-  root: a fresh worktree has no `.tmp`, and a redirect into a directory that does not exist fails
-  with `No such file or directory (os error 2)` before the verifier starts. Never redirect into a
-  path you have not created. Since the check can run for many minutes, start it as a background job
-  with no deadline — `async: true`, `timeout: 0` — writing its complete output to
-  `.tmp/verify-interface.log` with `bun run verify:interface > .tmp/verify-interface.log 2>&1`, then
-  end the turn and read that log and the job's exit status from its completion follow-up. Its exit
-  status is the verdict, so never append a status echo. Say in the final response that the tool's
-  resolved `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
+  `<worktree>/.devboard`, in three separate commands. First create the log directory with a
+  standalone `mkdir -p .tmp` from that package root: a fresh worktree has no `.tmp`, and a redirect
+  into a directory that does not exist fails with `No such file or directory (os error 2)` before
+  the verifier starts. Never join `mkdir -p` to a build or a check with `&&`, and never probe the
+  directory afterwards with `ls`: a zero-exit `mkdir -p` already guarantees it. Second, run
+  `bun run build` alone in the foreground with its output unredirected, and read that output.
+  Third, start only the verifier as a background job with no deadline — `async: true`,
+  `timeout: 0` — writing its complete output to `.tmp/verify-interface.log` with
+  `bun run verify:interface > .tmp/verify-interface.log 2>&1`, then end the turn and read that log
+  and the job's exit status from its completion follow-up. Never chain the build and the verifier
+  behind one `mkdir -p` with `> log 2>&1` redirections: that form reports only `exit code 1` and an
+  empty output, hiding which stage failed. Its exit status is the verdict, so never append a status
+  echo. Say in the final response that the tool's resolved `harnessDirectory` was the canonical
+  root. Every other direct invocation is forbidden.
 - The complete output of every interface verification lives at `.devboard`'s
   `.tmp/verify-interface.log`: the tool writes that file itself and returns its path in `log`, and
   the worktree fallback redirects there. Read the file whole on failure — never `tail`, `head`,
@@ -207,8 +220,10 @@ pipe, and a log an earlier run wrote are never a verdict.
 - A minified client runtime error such as `undefined is not an object (evaluating 'ne.cancelled')`
   is not a diagnosis, and a stale bundle is only a hypothesis until it is checked. The verifier
   builds the client before it starts the dashboard, so confirm the bundle matches the source by
-  running `bun run build` from `.devboard` and rerunning the verifier once. Report the minified
-  message only when it reproduces after that build, and never present it as the failing assertion.
+  running the `build` check through `verification_run` — or, for a worktree revision the tool
+  cannot reach, `bun run build` alone from `<worktree>/.devboard` — and rerunning the verifier
+  once. Report the minified message only when it reproduces after that build, and never present it
+  as the failing assertion.
 - Reproduce a failure once at the base revision before you touch code, and classify it. In a
   worktree session whose tool run used the canonical `.devboard/`, that tool result is the base run
   and the fallback shell run is the changed revision; when both print the same assertion and
