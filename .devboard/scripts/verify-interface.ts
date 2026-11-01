@@ -1685,11 +1685,22 @@ try {
     projectTitle: string;
     projectIcon: boolean;
     barRight: number;
-    versionsRight: number;
+    metricsRight: number;
     work: string;
     mode: boolean;
     versions: string;
-    reload: { label: string; title: string } | null;
+    reload: {
+      label: string;
+      title: string;
+      text: string;
+      fontSize: number;
+      height: number;
+      top: number;
+      bottom: number;
+    } | null;
+    itemHeights: number[];
+    barTop: number;
+    barBottom: number;
     themeLabel: string;
     notificationLabel: string;
     shortcuts: Array<string | null>;
@@ -1710,11 +1721,32 @@ try {
       projectTitle: project?.closest(".status-project")?.getAttribute("title") ?? "",
       projectIcon: project?.closest(".status-project")?.querySelector("svg") !== null,
       barRight: Math.round(bar?.getBoundingClientRect().right ?? -1),
-      versionsRight: Math.round(versions?.getBoundingClientRect().right ?? -1),
+      metricsRight: Math.round(
+        document.querySelector('[data-testid="status-bar"] .status-group--metrics')
+          ?.getBoundingClientRect().right ?? -1,
+      ),
       work: text('[data-testid="status-bar"] .status-item[title="Running lanes and open epics"]'),
       mode: document.querySelector('[data-testid="status-mode"]') !== null,
       versions: text('[data-testid="status-bar"] .status-versions'),
-      reload: reload === null ? null : { label: reload.getAttribute("aria-label") ?? "", title: reload.getAttribute("title") ?? "" },
+      reload: (() => {
+        if (reload === null) return null;
+        const label = reload.querySelector("span");
+        const rect = reload.getBoundingClientRect();
+        return {
+          label: reload.getAttribute("aria-label") ?? "",
+          title: reload.getAttribute("title") ?? "",
+          text: reload.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+          fontSize: label === null ? 0 : parseFloat(getComputedStyle(label).fontSize),
+          height: Math.round(rect.height),
+          top: Math.round(rect.top),
+          bottom: Math.round(rect.bottom),
+        };
+      })(),
+      itemHeights: [...document.querySelectorAll('[data-testid="status-bar"] .status-item')].map(
+        (item) => Math.round(item.getBoundingClientRect().height),
+      ),
+      barTop: Math.round(bar?.getBoundingClientRect().top ?? -1),
+      barBottom: Math.round(bar?.getBoundingClientRect().bottom ?? -1),
       themeLabel: document.querySelector('[data-testid="theme-toggle"]')?.getAttribute("aria-label") ?? "",
       notificationLabel: document.querySelector('[data-testid="notification-indicator"]')?.getAttribute("aria-label") ?? "",
       shortcuts: [...document.querySelectorAll('[data-testid="command-item"]')].map((item) => item.querySelector(".palette__shortcut")?.textContent ?? null),
@@ -1737,8 +1769,8 @@ try {
   );
   check(!statusBar.mode, "the status bar still repeats the active mode status", statusBar);
   check(
-    statusBar.barRight - statusBar.versionsRight <= 48,
-    "the status bar leaves an empty tail after the versions",
+    statusBar.barRight - statusBar.metricsRight <= 48,
+    "the status bar leaves an empty tail after its right group",
     statusBar,
   );
   check(statusBar.versions.includes("running") && statusBar.versions.includes("installed"), "the status bar does not show both versions", statusBar);
@@ -1756,6 +1788,21 @@ try {
       statusBar.reload!.title.includes(INSTALLED_VERSION),
     "the reload title does not name both versions",
     { sourceVersion, reload: statusBar.reload },
+  );
+  check(
+    statusBar.reload !== null &&
+      statusBar.reload.text === "reload" &&
+      statusBar.reload.fontSize === 11 &&
+      statusBar.reload.height <= 20 &&
+      statusBar.reload.top >= statusBar.barTop &&
+      statusBar.reload.bottom <= statusBar.barBottom,
+    "the reload control is not a 20px status item with an 11px label",
+    statusBar,
+  );
+  check(
+    statusBar.itemHeights.every((height) => height <= 20),
+    "a status-bar control is taller than 20px",
+    statusBar,
   );
   check(
     statusBar.groups === 2 && statusBar.divider && statusBar.barHeight === 26,

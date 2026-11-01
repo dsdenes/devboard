@@ -751,6 +751,12 @@ kbd {
   color: var(--foreground);
 }
 
+.status-item--button:disabled {
+  cursor: default;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
 .status-divider {
   background: var(--border);
   flex: 0 0 1px;

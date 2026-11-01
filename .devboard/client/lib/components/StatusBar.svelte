@@ -8,7 +8,6 @@
   import { osNotifications } from "../os-notifications.svelte";
   import { providers } from "../providers.svelte";
   import { statusTone } from "../status-tone";
-  import IconButton from "./ui/icon-button.svelte";
   import WatchdogIndicator from "./watchdog-indicator.svelte";
 
   const connectionLabel = $derived(
@@ -55,6 +54,12 @@
 
   const versions = $derived(
     `running ${connection.version?.running ?? "unknown"} · installed ${
+      connection.version?.installed ?? "unknown"
+    }`,
+  );
+
+  const reloadLabel = $derived(
+    `Restart devboard, running ${connection.version?.running ?? "unknown"}, installed ${
       connection.version?.installed ?? "unknown"
     }`,
   );
@@ -129,17 +134,19 @@
       </span>
     </span>
     {#if connection.version?.stale === true}
-      <IconButton
-        label={`Restart devboard, running ${connection.version?.running ?? "unknown"}, installed ${
-          connection.version?.installed ?? "unknown"
-        }`}
-        command="app.reload"
+      <button
+        type="button"
+        class="status-item status-item--button"
         data-testid="reload-devboard"
+        data-command="app.reload"
+        title={reloadLabel}
+        aria-label={reloadLabel}
         disabled={connection.restarting}
         onclick={() => connection.requestRestart()}
       >
-        <RefreshCw size={14} aria-hidden="true" />
-      </IconButton>
+        <RefreshCw size={12} aria-hidden="true" />
+        <span>reload</span>
+      </button>
     {/if}
   </div>
 </footer>

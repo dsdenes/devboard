@@ -618,10 +618,11 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
 - **Status bar** (`.status-bar`) — a 26px two-group strip on `surface-raised` with a 1px `border`
   top edge. The left group states connection (7px dot plus word) and the project (folder icon plus
   the last path segment in mono), divided by a 1px `border` rule. The right group holds the lane
-  count, the issues worker with a 6px state dot, the watchdog, the OS notifications control, and
-  the running and installed versions; every metric pairs a 10px `overline` label with an 11px
-  value, so no meaning rests on color. Items are 20px tall with 5px horizontal padding; a hovered
-  control takes `secondary`.
+  count, the issues worker with a 6px state dot, the watchdog, the OS notifications control, the
+  running and installed versions, and, while the installed version is newer than the running one,
+  the reload control (12px refresh icon plus an 11px `reload` word); every metric pairs a 10px
+  `overline` label with an 11px value, so no meaning rests on color. Items are 20px tall with 5px
+  horizontal padding; a hovered control takes `secondary`.
 - **OS notifications control** (`os-notifications` in `StatusBar.svelte`) — one status-bar button
   beside the watchdog whose accessible name always begins `OS notifications` and ends in `off`,
   `on`, or `blocked`, with a 6px state dot (`border-strong` off, `success` on, `error` blocked).
