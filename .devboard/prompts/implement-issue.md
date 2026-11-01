@@ -715,8 +715,9 @@ branch.
 Waiting for CI has exactly two sanctioned forms, and nothing else. The first is `bun run publish`
 for the `devboard-release.yml` run of `HEAD`: `bun run publish` blocks on that run for up to 1800
 seconds by default, then verifies the npm package and the Gitea release assets, so its exit status
-is the whole wait. Run it once as the Publish section specifies — in the foreground from
-`.devboard` with `timeout: 0` — and read the output and exit status it returns.
+is the whole wait. Run it once per pushed commit as the Publish section specifies — in the
+foreground from `.devboard` with `--wait-timeout 1800` and `timeout: 0` — and read the output and
+exit status it returns.
 
 The second is one long-lived background watcher whose whole lifetime is that wait — a non-release
 run or a local `verify` process that publish does not cover — started with `async: true` and
@@ -741,47 +742,49 @@ the watcher's completion follow-up is the answer, so end the turn.
 ## Publish
 
 Publishing is part of the task, and its final step. Invoke `bun run publish` exactly once per
-issue, from the integration checkout's `.devboard/`, and only after the change is merged to `main`
-and pushed — never from a worktree and never before the push. Run it in the foreground and read
-what it prints:
+pushed commit, from the integration checkout's `.devboard/`, and only after the change is merged to
+`main` and pushed — never from a worktree and never before the push. Run it in the foreground and
+read what it prints:
 
 ```bash
-bun run publish
+bun run publish --wait-timeout 1800
 ```
 
 - Set `cwd` to `.devboard` and `timeout: 0` on that call: publish waits up to 1800 seconds for the
   release workflow, so the default 300-second deadline would abort it with `Command aborted`.
-  Never redirect it into `.devboard/.tmp/publish.log` or any other file, never append an
-  `echo "EXIT:$?"` to a log, and never pass `async: true`. The tool result and its completion
-  follow-up carry publish's output and exit status; a log file would hide both behind a path the
-  turn then has to be woken to read.
+  Never redirect it — not into `.devboard/.tmp/publish.log` and not into a numbered
+  `.devboard/.tmp/publish-<digits>.log` — never append an `echo "EXIT:$?"` to a log, and never
+  pass `async: true`. The tool result and its completion follow-up carry publish's output and exit
+  status; a log file would hide both behind a path the turn then has to be woken to read.
 - Publish is long-running. When the call outlives the harness's foreground window it prints
   `Backgrounded as job <id>` and keeps running; that acknowledgement is not the result. Its
   completion follow-up carries the whole output and the exit status, so end the turn and read that
   follow-up. Never poll for it — no `sleep`, `ps`, `pgrep`, `top`, or log tailing — never abort,
   kill, or re-invoke it while it runs, and never start a second `bun run publish` for the same
-  issue.
-- Use this invocation and this working directory: no absolute `cd` path such as `/home/...`, no
-  `tail`/`head`/`tee` pipe or any other output consumer, and no option other than
-  `--wait-timeout N`, passed only when the default 1800-second wait is too short. Publish already
+  pushed commit.
+- Use this invocation and this working directory: that `bun run publish` line with
+  `--wait-timeout 1800`, no absolute `cd` path such as `/home/...`, no `| tail`, `| head`,
+  `2>&1 | tee`, or any other output consumer, and no second option. Publish already
   verifies `main`, the release workflow, the npm package, the release assets, and the mirror; the
   push block already owns the push proof, so add no `git ls-remote` or `git status` probe around
-  the publish run. Read no release or workflow state through `curl`, `gh`, or `glab`; publish
-  prints the verification result.
+  the publish run, and never relaunch it to re-check propagation the result already reported. Read
+  no release or workflow state through `curl`, `gh`, or `glab`; publish prints the verification
+  result.
 - A nonzero exit is never followed by an immediate identical re-run, and no second `bun run publish`
-  starts for the same issue after the release workflow concluded failure until the failing step is
-  diagnosed, fixed, committed, and pushed. Read publish's output, name the failing step, and fix
-  the cause in a new commit. When that output reports
+  starts for the same pushed commit after the release workflow concluded failure until the failing
+  step is diagnosed, fixed, committed, and pushed. Read publish's output, name the failing step, and
+  fix the cause in a new commit. When that output reports
   `the release workflow concluded failure`, open that workflow run for the named commit and read
   its failing step; when the run's log is not reachable through the exposed tools, reproduce the
   workflow's own steps locally from the package root (`bun install --frozen-lockfile`,
   `verification_run` with `{"check": "build"}`, `{"check": "test"}`, and `{"check": "typecheck"}`,
   each executing with `.devboard` as the working directory) and fix the step that fails. Land the
-  fix and report the failing step, the fix commit, and the exit status. Publishing the fixed
-  revision belongs to the next task, never to this one.
+  fix — commit it, push it, and prove the push with the sync check above — and then run publish
+  exactly once for that new commit, never again for the commit whose run failed. Report the failing
+  step, the fix commit, and the exit status.
 - When the result reports truncation, read the spilled `artifact://<id>` it names for the complete
-  output instead of re-running publish. Never re-run publish in the same session to see its
-  output, to confirm success, or to retry the same commit.
+  output instead of re-running publish. Never re-run publish for the same commit to see its output,
+  to confirm success, or to re-check propagation, and never retry it before a fix commit is pushed.
 - Report the observed exit status and the `publish:` lines it printed — workflow, npm package,
   release assets, mirror, and dashboards — as the publish result. A completed run whose text ends
   without `Command exited with code <n>` is exit 0. Close the issue with `issue_close` only after
