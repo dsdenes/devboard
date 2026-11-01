@@ -1791,6 +1791,13 @@ omp's own thinking-loop notice — `Thinking loop detected; aborting stream for 
 recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
 provider-error record.
 
+The ledger outlives a forge change: an entry may name an issue filed through another forge, or
+through the same project under a different instance. The delivery reports the URLs its configured
+forge serves, and the cycle never comments on one it does not. Such an entry stays filed in the
+ledger, is listed under `unowned` in `report.json` and under `Issues on another forge` in
+`report.md`, and makes the cycle `skipped` instead of `failed`; a failed write never masks a
+ledger entry that this forge cannot address.
+
 ### Deduplication gate
 
 No new issue is filed until a deduplication agent has decided the whole candidate set. In every

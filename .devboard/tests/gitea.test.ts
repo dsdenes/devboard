@@ -759,6 +759,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     expect(delivery.repository).toBe("acme/fixture");
+    expect(delivery.owns("http://gitea.test/acme/fixture/issues/12")).toBe(true);
     const filed = await delivery.create({
       category: "server-error",
       fingerprint: "fingerprint",
@@ -803,6 +804,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     const url = "https://github.com/acme/fixture/issues/12";
+    expect(delivery.owns(url)).toBe(false);
     const commented = await delivery.comment(url, {
       category: "server-error",
       fingerprint: "fingerprint",
@@ -819,6 +821,23 @@ describe("Gitea watchdog delivery", () => {
     expect(calls).toEqual([]);
   });
 
+  test("recognises its own issue through a loopback alias", async () => {
+    const calls: Recorded[] = [];
+    const delivery = createWatchdogDelivery({
+      root: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://localhost:3001", GITEA_TOKEN: "gitea-token" },
+      gh: () => {
+        throw new Error("gh must not run for a Gitea origin");
+      },
+      fetchImpl: fakeGitea(calls),
+    });
+    expect(delivery.owns("http://127.0.0.1:3001/acme/fixture/issues/12")).toBe(true);
+    expect(delivery.owns("http://localhost:3001/acme/fixture/issues/12")).toBe(true);
+    expect(delivery.owns("http://127.0.0.1:3001/other/fixture/issues/12")).toBe(false);
+    expect(delivery.owns("http://localhost:3002/acme/fixture/issues/12")).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   test("refuses a ledger URL from another repository on the same origin", async () => {
     const calls: Recorded[] = [];
     const delivery = createWatchdogDelivery({
@@ -830,6 +849,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     const url = "http://gitea.test/other/fixture/issues/12";
+    expect(delivery.owns(url)).toBe(false);
     const commented = await delivery.comment(url, {
       category: "server-error",
       fingerprint: "fingerprint",
