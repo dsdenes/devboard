@@ -510,6 +510,12 @@ export class ScoutWorker {
         await this.stop();
         return;
       }
+      case "refresh": {
+        // A page open reads now instead of waiting for the sync interval; a
+        // read already in flight or a scan filing keeps the command cheap.
+        await this.refresh();
+        return;
+      }
       case "settings": {
         if (
           !isValidCadence(command.intervalMinutes) ||
@@ -571,7 +577,7 @@ export class ScoutWorker {
   }
 
   /* ------------------------------------------------------------------ */
-  /* GitHub reads                                                        */
+  /* Forge reads                                                         */
   /* ------------------------------------------------------------------ */
 
   private async readGitHub(active?: ActiveScan): Promise<GitHubRead> {

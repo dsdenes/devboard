@@ -610,6 +610,7 @@ type ClientMessage =
   | { type: "answerGoalDraft"; path?: unknown; id?: unknown; value?: unknown }
   | { type: "getAgents" }
   | { type: "getAgent"; id?: unknown }
+  | { type: "refreshAgent"; id?: unknown }
   | { type: "startAgent"; id?: unknown }
   | { type: "stopAgent"; id?: unknown }
   | {
@@ -697,6 +698,7 @@ function isAgentCommand(
   return (
     command.type === "getAgents" ||
     command.type === "getAgent" ||
+    command.type === "refreshAgent" ||
     command.type === "startAgent" ||
     command.type === "stopAgent" ||
     command.type === "setAgentSettings" ||
@@ -759,6 +761,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getAgents" };
     case "getAgent":
       return { type: "getAgent", id: "id" in value ? value.id : undefined };
+    case "refreshAgent":
+      return { type: "refreshAgent", id: "id" in value ? value.id : undefined };
     case "startAgent":
       return { type: "startAgent", id: "id" in value ? value.id : undefined };
     case "stopAgent":
@@ -7104,6 +7108,7 @@ export function createApp(options: AppOptions) {
           command.type === "getGoalDraft" ||
           command.type === "getAgents" ||
           command.type === "getAgent" ||
+          command.type === "refreshAgent" ||
           command.type === "getAgentPrompt" ||
           command.type === "getSkills" ||
           command.type === "getDiscover" ||

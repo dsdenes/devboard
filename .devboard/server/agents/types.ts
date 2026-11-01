@@ -14,6 +14,11 @@ export interface AgentAdapter {
   snapshot(): AgentSnapshotInput;
   /** Replays any agent-specific stream (activity) to one client. */
   replay(target: { send(data: string): unknown }): void;
+  /**
+   * A view opened this agent: refresh its data now instead of at the next
+   * cadence. Only an adapter with a periodic read implements this.
+   */
+  requestSync?(): void;
   start(): Promise<AgentCommandResult>;
   stop(): AgentCommandResult;
   /** Saves the cadence and both caps as one settings write. */

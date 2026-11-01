@@ -782,9 +782,10 @@ One card per agent carries its command and staging argument
 `/discover-sheet <staging-dir>`), its run state (`data-testid="discover-agent-status"` with
 `data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
-while it runs, a Start control (`data-testid="discover-agent-start"`), its own activity log
-(`data-testid="discover-agent-activity"`), and its own pending question. An error the agent
-reported stays on its card (`data-testid="discover-agent-error"`). `discoverActivity`,
+while it runs, a Start control (`data-testid="discover-agent-start"`), its own pending question,
+and, below the prompt panel, its own activity log (`data-testid="discover-agent-activity"`) that
+renders only while that agent runs. An error the agent reported stays on its card
+(`data-testid="discover-agent-error"`). `discoverActivity`,
 `discoverQuestion`, `discoverStarted`, and `discoverStopped` carry `agent`, so no card shows
 another agent's line or question.
 
@@ -1574,12 +1575,13 @@ queue.
 
 Browser-to-backend state and controls use the WebSocket from
 `adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
-`startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's `disableAgentTimer`; each
-carries `id`. The prompt surface adds `getAgentPrompt`, `saveAgentPrompt`, and
-`sendAgentPromptChat`, each carrying `id`. The server answers `agentsState` (all agents),
-`agentState` (one), and `agentPromptState` (one agent's prompt section), streams each
-activity-panel agent's activity as `agentActivity` with its agent id, streams one prompt chat as
-`agentPromptChat`, and refuses an unknown id with an error naming it before spawning anything.
+`refreshAgent`, `startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's
+`disableAgentTimer`; each carries `id`. The prompt surface adds `getAgentPrompt`,
+`saveAgentPrompt`, and `sendAgentPromptChat`, each carrying `id`. The server answers
+`agentsState` (all agents), `agentState` (one), and `agentPromptState` (one agent's prompt
+section), streams each activity-panel agent's activity as `agentActivity` with its agent id,
+streams one prompt chat as `agentPromptChat`, and refuses an unknown id with an error naming it
+before spawning anything.
 `scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
 `GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.
@@ -2553,7 +2555,9 @@ agent leaves the queue on the next poll.
 
 Auto Scout is the `scout` descriptor in the shared background-agent contract. The Devboard sidebar
 entry `open-devboard-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
-selecting, restoring, or reloading a tab starts nothing. The page shows the shared lifecycle,
+selecting, restoring, or reloading a tab starts no worker, scan, or lock. Opening the page asks
+an already attached worker for one fresh forge read instead of waiting for the next interval; a
+stopped worker is left stopped and receives no command. The page shows the shared lifecycle,
 last-read clock, cadence, limits, filed-issues table, and detail panel described above, plus
 `scout-activity` for the current or newest scan. The page also shows `agent-error` for the last
 error and `agent-sync-error` for a failed forge read.
@@ -2616,12 +2620,15 @@ attempt records its time and, when it fails, the reason on the row; the rows tha
 longest are attempted first, and the whole resolution shares the read's deadline, so a stubborn
 issue cannot hold `syncing` and starve the remaining rows or the next scan. A failed
 read keeps the last known rows, shows the reason in `agent-sync-error`, and keeps the last success
-time in `agent-sync-at`; the reason clears on the next successful read. Filing stays blocked until
-a read succeeds. A GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse
-detection, or HTTP 429) is a failed read like any other: it keeps the rows and blocks filing, and
-its reason stays in the sync banner. Because the operator's credential is shared with every other
-process on the host and the limit clears itself, it never raises the dashboard-wide error
-notification.
+time in `agent-sync-at`; the reason clears on the next successful read. A failed read names the
+forge, never GitHub, so a Gitea failure never claims a GitHub read. Opening the page retries at
+once: each open asks the attached worker for a read, shared across clients inside a five-second
+window, so a recovery no longer waits out the 60-second interval; Start still reads immediately,
+and a stopped worker is never started by a page. Filing stays blocked until a read succeeds. A
+GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse detection, or HTTP
+429) is a failed read like any other: it keeps the rows and blocks filing, and its reason stays in
+the sync banner. Because the operator's credential is shared with every other process on the host
+and the limit clears itself, it never raises the dashboard-wide error notification.
 
 ## Report, remove, or redesign a UI element
 
@@ -2778,6 +2785,7 @@ The client sends:
 
 { "type": "getAgents" }
 { "type": "getAgent", "id": "scout" }
+{ "type": "refreshAgent", "id": "scout" }
 { "type": "startAgent", "id": "scout" }
 { "type": "stopAgent", "id": "scout" }
 { "type": "setAgentSettings", "id": "scout", "minutes": 1, "maxPerHour": 10, "maxPending": 5 }
@@ -2875,7 +2883,10 @@ The client sends:
 - `getAgents` answers `agentsState` with both shared snapshots, and `getAgent` answers
   `agentState` with one; a connect replays `agentsState` and Auto Scout's newest scan as
   `agentActivity` before any reply to the client's own commands. Every command carries `id`;
-  an unknown id is refused with an error naming it and spawns nothing. `startAgent` runs the
+  an unknown id is refused with an error naming it and spawns nothing. `refreshAgent` is the
+  page-open read: it asks an attached worker for one fresh forge read (Auto Scout shares one
+  request per five seconds across clients) and answers `agentState`; a stopped worker is left
+  stopped, takes no lock, and receives no command. `startAgent` runs the
   agent's preflight and spawns or attaches; `stopAgent` writes one stop command and persists
   `enabled: false`; `setAgentSettings` accepts `{ minutes, maxPerHour, maxPending }`, requires
   `minutes` from 1 through 1440 and each limit empty or 1–100, and writes `settings.json` once;

@@ -84,6 +84,11 @@ export interface ScoutBridgeOptions {
 
 /** How long a spawned worker may take to publish its lock before Start fails. */
 const START_PROOF_MS = 5_000;
+/**
+ * A page open asks the attached worker for one fresh read. Two clients opening
+ * the same page within this window share that read instead of queuing another.
+ */
+const SYNC_REQUEST_MIN_INTERVAL_MS = 5_000;
 
 export class ScoutBridge implements AgentAdapter {
   readonly descriptor: AgentDescriptor;
@@ -115,6 +120,7 @@ export class ScoutBridge implements AgentAdapter {
   private startError: string | null = null;
   private notice: string | null = null;
   private startTask: Promise<AgentCommandResult> | undefined;
+  private lastSyncRequestAt = Number.NEGATIVE_INFINITY;
 
   constructor(options: ScoutBridgeOptions) {
     this.descriptor = options.descriptor;
@@ -371,6 +377,28 @@ export class ScoutBridge implements AgentAdapter {
       return;
     }
     this.publishActivity(scanId, this.readActivity(scanId));
+  }
+
+  /**
+   * A view opened this agent: ask the attached worker for one fresh forge
+   * read, at most once per sync-request window. A stopped or foreign worker
+   * gets no command, and no command ever starts one.
+   */
+  requestSync(): void {
+    const owner = this.lockOwner();
+    if (!this.owned(owner)) return;
+    const now = this.now();
+    if (now - this.lastSyncRequestAt < SYNC_REQUEST_MIN_INTERVAL_MS) return;
+    this.lastSyncRequestAt = now;
+    try {
+      writeCommand(controlDirectory(this.stateDir, this.repoDir), { type: "refresh" });
+    } catch (error) {
+      this.log(
+        `could not request an Auto Scout read: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /* ------------------------------------------------------------------ */
