@@ -1,5 +1,6 @@
 import { git } from "../issues/repository";
 import { isFullSha, isSha, type GitHubRelease } from "./github-release";
+import { localReleaseContainment } from "./release-containment";
 import {
   giteaClosingCommit,
   giteaClosingCommits,
@@ -52,10 +53,11 @@ export async function giteaTagContainsCommit(
 }
 
 /**
- * The resolver every Gitea-backed surface reads. A tag already in the checkout
- * answers containment offline; a release the checkout has not fetched is
- * verified against the forge, so a host without local release tags still
- * reports the version that shipped an issue.
+ * The resolver every Gitea-backed surface reads. A release tag already in the
+ * checkout answers containment offline; every other release is verified
+ * against the forge, so a checkout that fetched only some release tags still
+ * sees every release that shipped an issue — including an earlier one whose
+ * tag it never fetched.
  */
 export function createGiteaVersionClient(
   target: GiteaTarget,
@@ -84,16 +86,10 @@ export function createGiteaVersionClient(
     commit: string,
     releases: GitHubRelease[],
   ): Promise<string[]> {
-    const local = git(repoDir, "tag", "--contains", commit);
-    if (local.code === 0) {
-      const tags = new Set(local.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
-      const contained = releases
-        .filter((release) => tags.has(release.tag))
-        .map((release) => release.tag);
-      if (contained.length > 0) return contained;
-    }
-    const contained: string[] = [];
-    for (const release of releases) {
+    const local = localReleaseContainment(repoDir, commit, releases);
+    if (local.pending.length === 0) return local.contained;
+    const contained = [...local.contained];
+    for (const release of local.pending) {
       // One release the forge cannot compare — a deleted tag, an unreadable
       // entry — is skipped: it must not hide a later release that contains the
       // commit.
