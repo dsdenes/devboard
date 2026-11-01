@@ -11,7 +11,6 @@ import {
   buildChatPrompt,
   parsePromptProposal,
 } from "./prompt";
-import { DiscoverStore } from "../../client/lib/discover.svelte";
 import { DISCOVER_AGENTS } from "./registry";
 
 const roots: string[] = [];
@@ -572,67 +571,5 @@ describe("discover prompt chat", () => {
     expect(frames[0]?.type).toBe("discoverPromptChatError");
     expect(String(frames[0]?.message)).toContain("harness source checkout");
     expect(readFileSync(file, "utf8")).toBe("# sheet\n");
-  });
-});
-
-describe("discover prompt reset", () => {
-  test("asks for the file's current bytes without writing", async () => {
-    const sent: Array<Record<string, unknown>> = [];
-    const store = new DiscoverStore({
-      open: true,
-      send: (data: unknown) => {
-        sent.push(data as Record<string, unknown>);
-        return true;
-      },
-    } as unknown as ConstructorParameters<typeof DiscoverStore>[0]);
-    const prompt = {
-      agent: "sheet",
-      editable: true,
-      text: "# Sheet prompt\n",
-      error: null,
-    };
-    store.handleEvent({
-      type: "discoverState",
-      state: {
-        active: false,
-        runId: null,
-        startedAt: null,
-        activeAgent: null,
-        runningAll: false,
-        agents: [
-          {
-            id: "sheet",
-            label: "Data Sheet",
-            command: "/discover-sheet",
-            state: "idle",
-            startedAt: null,
-            endedAt: null,
-            error: null,
-            prompt,
-          },
-        ],
-        interrupted: false,
-        warnings: [],
-        target: { kind: "host" },
-        skills: [],
-        glossaries: [],
-      },
-    });
-    expect(store.agentPrompt("sheet")?.text).toBe("# Sheet prompt\n");
-    expect(store.resetToken("sheet")).toBe(0);
-    store.resetPrompt("sheet");
-    expect(store.resetToken("sheet")).toBe(1);
-    expect(sent).toEqual([{ type: "getDiscover" }]);
-
-    // The fresh read replaces the card's prompt bytes; nothing is written.
-    store.handleEvent({
-      type: "discoverPromptState",
-      agent: "sheet",
-      prompt: { ...prompt, text: "# Sheet prompt, revised on disk\n" },
-    });
-    expect(store.agentPrompt("sheet")?.text).toBe(
-      "# Sheet prompt, revised on disk\n",
-    );
-    expect(sent).toHaveLength(1);
   });
 });

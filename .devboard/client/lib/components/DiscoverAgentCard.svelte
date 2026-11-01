@@ -53,15 +53,6 @@
     discover.consumeProposal(agent);
   });
 
-  // Reset restores the editor to the file's current bytes and writes nothing.
-  $effect(() => {
-    const token = discover.resetToken(agent);
-    if (token === 0) return;
-    const text = prompt?.text ?? "";
-    editor = text;
-    lastText = text;
-  });
-
   $effect(() => {
     const timer = setInterval(() => (now = Date.now()), 15_000);
     return () => clearInterval(timer);
@@ -231,14 +222,6 @@
                 onclick={() => discover.savePrompt(agent, editor)}
               >
                 Save prompt
-              </Button>
-              <Button
-                variant="outline"
-                data-testid="discover-agent-prompt-reset"
-                title="Restore the editor to this prompt file's bytes without writing."
-                onclick={() => discover.resetPrompt(agent)}
-              >
-                Reset
               </Button>
               <SaveFeedback scope={`discover.prompt.${agent}`} />
             </div>

@@ -790,13 +790,12 @@ When the dashboard serves a harness source checkout, every card renders an edito
 to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
 (`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
 `discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
-`discover-agent-prompt-save` and `discover-agent-prompt-reset`. One chat turn streams one visible
-reply; a turn that revises the prompt replaces the editor text with a complete replacement. Chat
-never writes a file and never starts an agent. Save writes exactly the editor's UTF-8 bytes to that
-one agent's prompt file and no other file, and the next trigger of that agent reads those bytes;
-Reset restores the editor to the current file bytes without writing. An installed host has no
-prompt view and renders no editor, chat, save, or reset; `saveDiscoverPrompt` and
-`chatDiscoverPrompt` are refused there with an error naming the harness source checkout.
+`discover-agent-prompt-save`. One chat turn streams one visible reply; a turn that revises the
+prompt replaces the editor text with a complete replacement. Chat never writes a file and never
+starts an agent. Save writes exactly the editor's UTF-8 bytes to that one agent's prompt file and
+no other file, and the next trigger of that agent reads those bytes. An installed host has no
+prompt view and renders no editor, chat, or save; `saveDiscoverPrompt` and `chatDiscoverPrompt`
+are refused there with an error naming the harness source checkout.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
@@ -1295,11 +1294,11 @@ slice, that Run all starts the six in the stated order and halts at the first fa
 starting later agents, that a second start while one runs is refused, and that neither stop nor a
 failure rewrites a published artifact. `server/agents/prompt.test.ts` proves the six prompt
 snapshots, the chat proposal that changes the editor without writing, a save that writes exactly
-one prompt file, the reset read, and the installed-host refusal. `verify:discover` builds the
-client, seeds source and installed fixture hosts, and drives headless Chrome through the Discovery
-group, each card's command and editor bytes, all six independent triggers with a byte-level
-check of the fixture `.omp` tree, the one-at-a-time refusal, Run all order and stop at the first
-seeded failure, prompt chat/save/reset, and the installed host's refused save.
+one prompt file, and the installed-host refusal. `verify:discover` builds the client, seeds source
+and installed fixture hosts, and drives headless Chrome through the Discovery group, each card's
+command and editor bytes, all six independent triggers with a byte-level check of the fixture
+`.omp` tree, the one-at-a-time refusal, Run all order and stop at the first seeded failure, prompt
+chat/save, and the installed host's refused save.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased

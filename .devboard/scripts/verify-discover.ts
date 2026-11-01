@@ -612,13 +612,16 @@ try {
       "discover-agent-prompt-message",
       "discover-agent-prompt-send",
       "discover-agent-prompt-save",
-      "discover-agent-prompt-reset",
     ]) {
       check(
         (await countOf(devtools, testid)) === 1,
         `${testid} is missing on the ${agent.id} card`,
       );
     }
+    check(
+      (await countOf(devtools, "discover-agent-prompt-reset")) === 0,
+      `the removed Reset control is still rendered on the ${agent.id} card`,
+    );
   }
   // No card's editor holds another agent's prompt.
   const shown = new Set<string>();
@@ -844,7 +847,7 @@ try {
   );
   console.log("PASS run-all-halt");
 
-  /* 7. Prompt chat, save, and reset on the source checkout. */
+  /* 7. Prompt chat and save on the source checkout. */
   await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
   await openDiscoverMode(devtools, "the source dashboard");
   await openCard(devtools, "sheet");
@@ -905,20 +908,6 @@ try {
   }
   console.log("PASS prompt-save");
 
-  await setInput(devtools, "discover-agent-prompt-editor", "a local edit\n");
-  await click(devtools, "discover-agent-prompt-reset");
-  await waitFor(
-    async () =>
-      (await valueOf(devtools, "discover-agent-prompt-editor")) === proposal ? true : undefined,
-    "Reset to restore the file's bytes",
-    20_000,
-  );
-  check(
-    readFileSync(promptFile, "utf8") === proposal,
-    "Reset wrote the prompt file",
-  );
-  console.log("PASS prompt-reset");
-
   /* 8. An installed host renders no prompt editor and refuses a save. */
   const installed = await makeInstalledHost(root, "installed-host");
   const installedPrompts = new Map(
@@ -943,7 +932,6 @@ try {
       "discover-agent-prompt-message",
       "discover-agent-prompt-send",
       "discover-agent-prompt-save",
-      "discover-agent-prompt-reset",
     ]) {
       check(
         (await countOf(devtools, testid)) === 0,
@@ -974,7 +962,7 @@ try {
 
   console.log(
     "verify:discover: the six-entry Discovery group, per-agent prompts and publication, the " +
-      "one-at-a-time rule, Run all order and stop-at-first-failure, prompt chat/save/reset, and " +
+      "one-at-a-time rule, Run all order and stop-at-first-failure, prompt chat/save, and " +
       "the installed save refusal all hold",
   );
 } finally {
