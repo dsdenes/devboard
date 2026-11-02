@@ -4243,6 +4243,28 @@ button[data-slot="button"][aria-busy="true"] {
   cursor: progress;
 }
 
+/* The Skills disclosure uses the primitive's bare form, which keeps the
+   caller's class instead of the variant classes, so its own rules live here
+   rather than in a component style block the compiler would prune. */
+.skills-table__disclosure {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.skills-table__disclosure:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 /* The ceiling notice sits beside the control it qualifies, never over another
    message, and dismisses itself through its own control. */
 .command-notice {

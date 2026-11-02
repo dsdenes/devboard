@@ -3259,6 +3259,51 @@ try {
     devboardSkillsTable,
   );
 
+  const devboardDisclosurePaint = await page.eval<{
+    slots: string[];
+    variants: string[];
+    resting: string[];
+    pressed: string[];
+    released: string[];
+  }>(`(async () => {
+    const disclosures = [...document.querySelectorAll('[data-testid="skill-disclosure"]')];
+    const settle = async () => {
+      const { promise, resolve } = Promise.withResolvers();
+      setTimeout(resolve, 50);
+      return promise;
+    };
+    const resting = disclosures.map((control) => getComputedStyle(control).backgroundColor);
+    for (const control of disclosures) {
+      control.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    }
+    await settle();
+    const pressed = disclosures.map((control) => getComputedStyle(control).backgroundColor);
+    for (const control of disclosures) {
+      control.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    }
+    await settle();
+    return {
+      slots: disclosures.map((control) => control.getAttribute("data-slot") ?? ""),
+      variants: disclosures.map((control) => control.getAttribute("data-variant") ?? ""),
+      resting,
+      pressed,
+      released: disclosures.map((control) => getComputedStyle(control).backgroundColor),
+    };
+  })()`);
+  check(
+    devboardDisclosurePaint.slots.every((slot) => slot === "button") &&
+      devboardDisclosurePaint.variants.every((variant) => variant === "bare"),
+    "a Skills disclosure is not the shared Button primitive",
+    devboardDisclosurePaint,
+  );
+  check(
+    devboardDisclosurePaint.pressed.every((paint, index) => paint !== devboardDisclosurePaint.resting[index]) &&
+      JSON.stringify(devboardDisclosurePaint.released) ===
+        JSON.stringify(devboardDisclosurePaint.resting),
+    "a Skills disclosure does not paint a pressed fill",
+    devboardDisclosurePaint,
+  );
+
   const devboardFirstSkill = devboardInstalledSkills[0] ?? "";
   const devboardSkillRow = (name: string): string =>
     `[data-testid="skill-row"][data-skill="${name}"]`;
