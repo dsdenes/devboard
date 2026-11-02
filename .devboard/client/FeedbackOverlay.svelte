@@ -545,10 +545,11 @@
         body: JSON.stringify(payload),
       });
       const body = (await response.json().catch(() => null)) as {
-        url?: unknown;
+        links?: { issue?: { href?: unknown } };
         detail?: unknown;
       } | null;
-      if (!response.ok || typeof body?.url !== "string") {
+      const href = body?.links?.issue?.href;
+      if (!response.ok || typeof href !== "string") {
         return {
           ok: false,
           error:
@@ -557,7 +558,7 @@
               : `The server refused the report (${response.status}).`,
         };
       }
-      return { ok: true, url: body.url };
+      return { ok: true, url: href };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }

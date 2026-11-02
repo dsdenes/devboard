@@ -72,9 +72,14 @@ export interface FeedbackSubmission {
   capturedAt: string;
 }
 
+/** The common hypertext control object: a link to the filed issue. */
 export interface FeedbackIssue {
-  url: string;
   title: string;
+  links: {
+    issue: {
+      href: string;
+    };
+  };
 }
 
 /** A payload the endpoint refuses with a client error. */
@@ -392,7 +397,7 @@ export async function fileFeedbackIssue(
       { title, body },
       withTimeout,
     );
-    return { url: issue.url, title };
+    return { title, links: { issue: { href: issue.url } } };
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
       throw new FeedbackDeliveryError(

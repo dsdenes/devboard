@@ -156,8 +156,8 @@ describe("feedback endpoint", () => {
 
       expect(response.status).toBe(201);
       expect(await response.json()).toEqual({
-        url: ISSUE_URL,
         title: "[ui] The Start button is clipped on narrow windows.",
+        links: { issue: { href: ISSUE_URL } },
       });
 
       expect(calls).toHaveLength(1);
@@ -486,8 +486,8 @@ describe("feedback endpoint", () => {
 
       expect(response.status).toBe(201);
       expect(await response.json()).toEqual({
-        url: ISSUE_URL,
         title: "[ui] Remove element: main > section.run",
+        links: { issue: { href: ISSUE_URL } },
       });
 
       const call = calls[0]!;
@@ -611,8 +611,8 @@ describe("feedback endpoint", () => {
       expect(first.status).toBe(201);
       expect(second.status).toBe(201);
       const expected = {
-        url: ISSUE_URL,
         title: "[ui] The Start button is clipped on narrow windows.",
+        links: { issue: { href: ISSUE_URL } },
       };
       expect(await first.json()).toEqual(expected);
       expect(await second.json()).toEqual(expected);

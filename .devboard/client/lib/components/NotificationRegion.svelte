@@ -70,17 +70,18 @@
         body: JSON.stringify(payload),
       });
       const body = (await response.json().catch(() => null)) as {
-        url?: unknown;
+        links?: { issue?: { href?: unknown } };
         detail?: unknown;
       } | null;
-      if (!response.ok || typeof body?.url !== "string") {
+      const href = body?.links?.issue?.href;
+      if (!response.ok || typeof href !== "string") {
         throw new Error(
           typeof body?.detail === "string"
             ? body.detail
             : `The server refused the report (${response.status}).`,
         );
       }
-      filed = { ...filed, [item.id]: body.url };
+      filed = { ...filed, [item.id]: href };
     } catch (error) {
       failed = {
         ...failed,

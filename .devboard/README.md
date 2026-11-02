@@ -3571,7 +3571,9 @@ failing request is reported in the filing toast and creates nothing. The endpoin
 same-origin `POST` requests, bounds the body to 64 KB, and gives the request 60 seconds.
 
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
-`title`, `status`, and `detail`, so a client reads one media type and one body shape.
+`title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
+`POST /feedback` answers `201` with `title` and the `links.issue.href` hypertext control carrying
+the filed issue's absolute URL; no top-level `url` property remains.
 
 An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
 detail "An internal error occurred.": `POST /feedback` and
