@@ -2,21 +2,25 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { stopDashboard } from "../scripts/verification";
 
 /**
  * `update` must not stop at "already installed": an automatic update can
  * replace the package while the launcher is not running, leaving the host on
  * the previous release's wrappers and prompts. Running update again re-syncs
  * them from the installed package, and it leaves git-tracked host files in a
- * harness tree alone instead of deleting or overwriting them.
+ * harness tree alone instead of deleting or overwriting them — the MCP
+ * manifest included, not only the prompts and the two wrapper directories.
  */
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const testRoot = join(harnessRoot, ".tmp");
 const launcher = join(harnessRoot, "bin", "devboard.mjs");
 const roots: string[] = [];
+const startedHosts: string[] = [];
 
 afterAll(async () => {
+  for (const host of startedHosts) await stopDashboard(host).catch(() => undefined);
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -51,10 +55,10 @@ async function writePackage(packageRoot: string, version: string): Promise<void>
   }
 }
 
-function launcherRun(host: string, command: string, npm: string) {
+function launcherRun(host: string, command: string, npm: string, env: Record<string, string> = {}) {
   return Bun.spawnSync({
     cmd: [process.execPath, launcher, command, "--host", host],
-    env: { ...process.env, DEVBOARD_NPM: npm },
+    env: { ...process.env, DEVBOARD_NPM: npm, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -170,3 +174,147 @@ test("update leaves a git-tracked harness file byte-identical", async () => {
     `${host} tracks files under .devboard; refusing to replace a tracked harness tree`,
   );
 }, 30_000);
+
+const dashboardServer = [
+  "Bun.serve({",
+  '  hostname: process.env.HOST ?? "127.0.0.1",',
+  "  port: Number(process.env.PORT),",
+  "  fetch: (request) =>",
+  '    new URL(request.url).pathname === "/api/ready"',
+  "      ? Response.json({ pid: process.pid })",
+  '      : new Response("ok"),',
+  "});",
+  "",
+].join("\n");
+
+const hostAgents = "# Test host\n";
+const installedManifest = "{}\n";
+
+/** A package tree the `npm install` stub below copies into its staging prefix. */
+async function packageMirror(root: string, version: string): Promise<string> {
+  const packageRoot = join(root, "package");
+  await mkdir(packageRoot, { recursive: true });
+  await writeFile(
+    join(packageRoot, "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard", version })}\n`,
+  );
+  const files: Record<string, string> = {
+    ...packageFiles,
+    "server/index.ts": dashboardServer,
+    "templates/host-AGENTS.md": hostAgents,
+  };
+  for (const [relative, content] of Object.entries(files)) {
+    const target = join(packageRoot, relative);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content);
+  }
+  return packageRoot;
+}
+
+/** Answers `npm view` and stages the fixture package on `npm install`. */
+async function copyingNpm(root: string, version: string): Promise<string> {
+  const npm = join(root, "copy-npm");
+  await writeFile(
+    npm,
+    [
+      "#!/bin/sh",
+      'case "$1" in',
+      `  view) echo ${version};;`,
+      "  install)",
+      "    shift",
+      '    prefix=""',
+      "    while [ $# -gt 0 ]; do",
+      '      if [ "$1" = "--prefix" ]; then prefix="$2"; shift 2; continue; fi',
+      "      shift",
+      "    done",
+      '    mkdir -p "$prefix/node_modules/@dsdenes/devboard"',
+      '    cp -R "$DEVBOARD_FAKE_PACKAGE/." "$prefix/node_modules/@dsdenes/devboard/"',
+      "    ;;",
+      "esac",
+      "",
+    ].join("\n"),
+  );
+  await chmod(npm, 0o755);
+  return npm;
+}
+
+async function installFixture(name: string): Promise<{
+  host: string;
+  packageRoot: string;
+  npm: string;
+}> {
+  await mkdir(testRoot, { recursive: true });
+  const root = join(testRoot, `${name}-${crypto.randomUUID()}`);
+  const host = join(root, "host");
+  await mkdir(host, { recursive: true });
+  roots.push(root);
+  return {
+    host,
+    packageRoot: await packageMirror(root, "1.2.3"),
+    npm: await copyingNpm(root, "1.2.3"),
+  };
+}
+
+test("install and update leave a git-tracked omp manifest byte-identical", async () => {
+  const { host, packageRoot, npm } = await installFixture("omp-tracked");
+  const manifest = join(host, ".omp", "mcp.json");
+  await mkdir(dirname(manifest), { recursive: true });
+  await writeFile(manifest, "local mcp manifest\n");
+  await writeFile(join(host, "AGENTS.md"), hostAgents);
+  await writeFile(
+    join(host, ".gitignore"),
+    "/.devboard\n/.omp/commands\n/.omp/extensions\n/.omp/mcp.json\n",
+  );
+  git(host, "init", "-q");
+  git(host, "add", "-A");
+  // A host that commits its manifest does so against an ignore rule or a
+  // forced add: `.omp/mcp.json` is listed in the synced `.gitignore`.
+  git(host, "add", "-f", ".omp/mcp.json");
+  git(host, "commit", "-q", "-m", "fixture");
+  startedHosts.push(host);
+
+  const env = { DEVBOARD_FAKE_PACKAGE: packageRoot };
+  const install = launcherRun(host, "install", npm, env);
+  expect({ code: install.exitCode, stderr: install.stderr.toString() }).toEqual({
+    code: 0,
+    stderr: "",
+  });
+  expect(await readFile(manifest, "utf8")).toBe("local mcp manifest\n");
+  expect(git(host, "status", "--porcelain")).toBe("");
+
+  const update = launcherRun(host, "update", npm, env);
+  expect({ code: update.exitCode, stderr: update.stderr.toString() }).toEqual({
+    code: 0,
+    stderr: "",
+  });
+  expect(await readFile(manifest, "utf8")).toBe("local mcp manifest\n");
+  expect(git(host, "status", "--porcelain")).toBe("");
+}, 60_000);
+
+test("install and update replace an untracked omp manifest", async () => {
+  const { host, packageRoot, npm } = await installFixture("omp-untracked");
+  const manifest = join(host, ".omp", "mcp.json");
+  await mkdir(dirname(manifest), { recursive: true });
+  await writeFile(manifest, "local mcp manifest\n");
+  await writeFile(join(host, ".gitignore"), "/.devboard\n/.omp\n");
+  git(host, "init", "-q");
+  git(host, "add", ".gitignore");
+  git(host, "commit", "-q", "-m", "fixture");
+  startedHosts.push(host);
+
+  const env = { DEVBOARD_FAKE_PACKAGE: packageRoot };
+  const install = launcherRun(host, "install", npm, env);
+  expect({ code: install.exitCode, stderr: install.stderr.toString() }).toEqual({
+    code: 0,
+    stderr: "",
+  });
+  expect(await readFile(manifest, "utf8")).toBe(installedManifest);
+
+  await writeFile(manifest, "local mcp manifest again\n");
+  const update = launcherRun(host, "update", npm, env);
+  expect({ code: update.exitCode, stderr: update.stderr.toString() }).toEqual({
+    code: 0,
+    stderr: "",
+  });
+  expect(await readFile(manifest, "utf8")).toBe(installedManifest);
+}, 60_000);

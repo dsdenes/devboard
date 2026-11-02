@@ -1153,7 +1153,12 @@ async function installCommand(options) {
   }
   const prefix = join(host, ".devboard");
   const fallback = releaseSourceFromEnv();
-  const skip = trackedPaths(host, [".omp/commands", ".omp/extensions", "AGENTS.md"]);
+  const skip = trackedPaths(host, [
+    ".omp/commands",
+    ".omp/extensions",
+    ".omp/mcp.json",
+    "AGENTS.md",
+  ]);
   const trackedHarness = [...trackedPaths(host, [".devboard"])].filter(
     (path) => path === prefix || path.startsWith(`${prefix}${sep}`),
   );

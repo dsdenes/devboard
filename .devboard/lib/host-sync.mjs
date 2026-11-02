@@ -190,7 +190,11 @@ export function trackedPaths(host, paths) {
  * turns into an empty protection set.
  */
 export async function syncHostCopies(host, harness) {
-  const wrappers = await trackedPaths(host, [".omp/commands", ".omp/extensions"]);
+  const wrappers = await trackedPaths(host, [
+    ".omp/commands",
+    ".omp/extensions",
+    ".omp/mcp.json",
+  ]);
   await syncWrappers(host, harness, wrappers);
   await syncHarnessTrees(host, harness, await trackedPaths(host, [".devboard"]));
 }
