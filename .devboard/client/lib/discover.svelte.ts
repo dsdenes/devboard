@@ -354,8 +354,19 @@ export class DiscoverStore {
     if (trimmed.length === 0) return;
     const id = this.question.id;
     this.question = null;
+    this.clearAgentQuestion(id);
     this.answerDraft = "";
     this.socket.send({ type: "answerDiscover", id, value: trimmed });
+  }
+
+  /**
+   * Drops every per-agent entry for one answered question, so no card keeps
+   * rendering dead choices after the global question is gone.
+   */
+  private clearAgentQuestion(id: string | number): void {
+    for (const [agent, question] of Object.entries(this.agentQuestions)) {
+      if (question !== null && question.id === id) this.agentQuestions[agent] = null;
+    }
   }
 
   setGlossarySearch(value: string): void {
@@ -385,6 +396,7 @@ export class DiscoverStore {
     this.activeAgent =
       typeof payload.activeAgent === "string" ? payload.activeAgent : null;
     this.runningAll = payload.runningAll === true;
+    if (!this.active) this.agentQuestions = {};
     if (Array.isArray(payload.agents)) {
       const prompts = { ...this.promptStates };
       for (const entry of payload.agents) {
@@ -454,6 +466,7 @@ export class DiscoverStore {
       this.active = false;
       this.activeAgent = null;
       this.question = null;
+      this.agentQuestions = {};
       this.answerDraft = "";
       return;
     }
