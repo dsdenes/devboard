@@ -31,6 +31,7 @@ import {
 } from "../issues/design/state";
 import { readActivity } from "../issues/state";
 import { activityDelta } from "./activity";
+import { canonicalProcessPath } from "./state";
 import { hostHarnessDir, readHarnessVersion } from "./version";
 import { AgentForgeState } from "./agents/forge-state";
 import { createForgeIssueReader, type ForgeIssueReader } from "./agents/forge-reader";
@@ -79,6 +80,8 @@ export interface DesignBridgeOptions {
 export class DesignBridge implements AgentAdapter {
   readonly descriptor: AgentDescriptor;
   private readonly repoDir: string;
+  /** The repo path the kernel reports for a worker's cwd. */
+  private readonly canonicalRepoDir: string;
   private readonly stateDir: string;
   private readonly agentCommand: string;
   private readonly agentEnvironment: () => Promise<Record<string, string | undefined>>;
@@ -110,6 +113,7 @@ export class DesignBridge implements AgentAdapter {
   constructor(options: DesignBridgeOptions) {
     this.descriptor = options.descriptor;
     this.repoDir = resolve(options.repoDir);
+    this.canonicalRepoDir = canonicalProcessPath(this.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.agentCommand = options.agentCommand;
     this.agentEnvironment = options.agentEnvironment;
@@ -715,7 +719,7 @@ export class DesignBridge implements AgentAdapter {
     if (!argv.some((entry) => entry.endsWith(join("design", "worker.ts")))) return false;
     if (!argv.includes(this.repoDir)) return false;
     try {
-      return readlinkSync(`/proc/${pid}/cwd`) === this.repoDir;
+      return readlinkSync(`/proc/${pid}/cwd`) === this.canonicalRepoDir;
     } catch {
       return false;
     }

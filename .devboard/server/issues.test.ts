@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test, vi } from "bun:test";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { IssuesBridge } from "./issues";
 import { acquireLock, versionLockPath } from "../issues/lock";
@@ -283,6 +283,71 @@ describe("issues bridge commands", () => {
       await Promise.all([first.exited, second.exited]);
       await rm(lockPath(root), { force: true });
       await rm(versionLockPath(lockPath(root), "0.1.0"), { force: true });
+    }
+  }, 20_000);
+
+  test("the stop proof signals a worker whose repository is reached through a symlink", async () => {
+    const base = await temporaryDirectory("issues-bridge-symlink");
+    const root = join(base, "repo");
+    const link = join(base, "link");
+    const stateDir = join(root, "state");
+    const script = join(root, "fixture", "issues", "worker.ts");
+    await mkdir(dirname(script), { recursive: true });
+    await writeFile(
+      script,
+      "process.on('SIGTERM', () => undefined);\n" +
+        "console.log('ready');\nsetInterval(() => undefined, 1000);\n",
+    );
+    await symlink(root, link);
+    const worker = Bun.spawn({
+      cmd: [process.execPath, script, link],
+      cwd: link,
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const reader = worker.stdout.getReader();
+    const ready = await reader.read();
+    reader.releaseLock();
+    expect(new TextDecoder().decode(ready.value)).toContain("ready");
+    await mkdir(dirname(lockPath(link)), { recursive: true });
+    await writeFile(
+      lockPath(link),
+      JSON.stringify({
+        pid: worker.pid,
+        startedAt: new Date().toISOString(),
+        repo: link,
+        stateDir,
+        harnessVersion: null,
+        argv: [script, link],
+      }),
+    );
+    const subject = new IssuesBridge({
+      repoDir: link,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflight: async () => ({ ok: true, repository: "acme/fixture" }),
+      spawnWorker: () => 4242,
+    });
+    vi.useFakeTimers();
+    try {
+      expect(subject.command({ type: "stop" })).toEqual({ ok: true });
+      // The proof matches the canonical cwd and signals a worker that ignores
+      // SIGTERM; the grace escalates to SIGKILL.
+      vi.advanceTimersByTime(3000);
+      vi.advanceTimersByTime(2000);
+      await worker.exited;
+    } finally {
+      vi.useRealTimers();
+      subject.dispose();
+      worker.kill("SIGKILL");
+      await worker.exited;
+      await rm(lockPath(link), { force: true });
     }
   }, 20_000);
 

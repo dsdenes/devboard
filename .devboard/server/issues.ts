@@ -41,6 +41,7 @@ import {
   type IssuesState,
 } from "../issues/state";
 import { activityDelta } from "./activity";
+import { canonicalProcessPath } from "./state";
 
 /**
  * The dashboard half of Issues mode. It never owns a poll loop, an agent, or
@@ -131,6 +132,8 @@ export interface IssuesBridgeOptions {
 /** The bits of the state a dashboard may safely publish. */
 export class IssuesBridge {
   private readonly repoDir: string;
+  /** The repo path the kernel reports for a worker's cwd. */
+  private readonly canonicalRepoDir: string;
   private readonly stateDir: string;
   private readonly agentCommand: string;
   private readonly agentEnvironment: () => Promise<Record<string, string | undefined>>;
@@ -168,6 +171,7 @@ export class IssuesBridge {
 
   constructor(options: IssuesBridgeOptions) {
     this.repoDir = resolve(options.repoDir);
+    this.canonicalRepoDir = canonicalProcessPath(this.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.agentCommand = options.agentCommand;
     this.agentEnvironment = options.agentEnvironment;
@@ -943,7 +947,7 @@ export class IssuesBridge {
     if (!argv.some((entry) => entry.endsWith(join("issues", "worker.ts")))) return false;
     if (!argv.includes(this.repoDir)) return false;
     try {
-      return readlinkSync(`/proc/${pid}/cwd`) === this.repoDir;
+      return readlinkSync(`/proc/${pid}/cwd`) === this.canonicalRepoDir;
     } catch {
       return false;
     }
