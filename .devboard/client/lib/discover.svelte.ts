@@ -1,6 +1,5 @@
 import { connection, type ConnectionStore } from "./connection.svelte";
 import { dependencyName } from "../../lib/dependencies.ts";
-import { notifications } from "./notifications.svelte";
 import {
   commandAlias,
   conceptSignificance,
@@ -489,7 +488,6 @@ export class DiscoverStore {
     }
     if (type === "discoverError" && typeof message.message === "string") {
       this.error = message.message;
-      notifications.push("Discover", "error", message.message);
     }
   }
 }

@@ -289,7 +289,8 @@ closes itself after five seconds; every entry stays in the history opened from t
 Every error and warning card also carries `File issue`: it files that notification's text and card
 context as a UI issue through `/api/feedback` at once, then replaces itself with the issue URL.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
-Flow blockers and verification results also remain in their mode context.
+Flow blockers and verification results also remain in their mode context. A Discover failure stays
+in the Discover notice stack above the page and is not repeated as a notification card.
 
 The status bar's OS notifications control (`os-notifications`) is a separate channel, off by
 default. Its first click asks the browser for notification permission; after a grant it reads
