@@ -306,6 +306,59 @@ export function releaseVersionAt(directory: string, sha = "HEAD"): string | unde
 }
 
 /**
+ * How the commit a release tag names relates to `head`:
+ *
+ * - `absent` — no tag of that name exists in this checkout.
+ * - `names` — the tag points exactly at `head`.
+ * - `contains` — `head` is an ancestor of the tagged commit, so a concurrent
+ *   landing released this change inside a later commit.
+ * - `behind` — the tagged commit is an ancestor of `head`, the ordinary older
+ *   release a new version is derived from.
+ * - `unrelated` — the two histories are independent: the tag was made for
+ *   another commit, so reporting it for `head` would claim a release that does
+ *   not carry this work.
+ */
+export type TagBinding = "absent" | "names" | "contains" | "behind" | "unrelated";
+
+/** The commit a tag names, or undefined when this checkout has no such tag. */
+export function tagCommit(directory: string, tag: string): string | undefined {
+  const result = git(directory, ["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]);
+  if (result.code !== 0) return undefined;
+  const sha = result.stdout.split(/\s+/)[0] ?? "";
+  return sha.length > 0 ? sha : undefined;
+}
+
+/** How `tag` relates to `head`; see `TagBinding`. */
+export function tagBinding(directory: string, tag: string, head = "HEAD"): TagBinding {
+  const tagged = tagCommit(directory, tag);
+  if (tagged === undefined) return "absent";
+  const target = git(directory, ["rev-parse", "--verify", "--quiet", `${head}^{commit}`]);
+  if (target.code !== 0) return "unrelated";
+  const sha = target.stdout.split(/\s+/)[0] ?? "";
+  if (sha.length === 0) return "unrelated";
+  if (sha === tagged) return "names";
+  if (git(directory, ["merge-base", "--is-ancestor", sha, tagged]).code === 0) return "contains";
+  if (git(directory, ["merge-base", "--is-ancestor", tagged, sha]).code === 0) return "behind";
+  return "unrelated";
+}
+
+/** True when `commit` is `head` itself or a descendant of it. */
+export function commitNamesOrContains(
+  directory: string,
+  commit: string | undefined,
+  head = "HEAD",
+): boolean {
+  if (commit === undefined) return false;
+  const target = git(directory, ["rev-parse", "--verify", "--quiet", `${head}^{commit}`]);
+  if (target.code !== 0) return false;
+  const sha = target.stdout.split(/\s+/)[0] ?? "";
+  if (sha.length === 0) return false;
+  if (sha === commit) return true;
+  if (git(directory, ["cat-file", "-e", `${commit}^{commit}`]).code !== 0) return false;
+  return git(directory, ["merge-base", "--is-ancestor", sha, commit]).code === 0;
+}
+
+/**
  * The version a `head` commit releases: the newest reachable release tag
  * advanced by the non-merge commits after it, or the 1.0.0 baseline while the
  * newest release is still below it.

@@ -1727,13 +1727,31 @@ component that dispatches it.
   derived version records the failure with its detail, ships nothing, and leaves the range
   unreleased. The next due tick starts a new run without operator action; a failed run is never
   recorded as released.
+- The worker verifies a run in three phases and names the one that failed with the version it
+  applies to: `tag binding:` when no release tag names or contains the released commit,
+  `npm visibility:` when the version never appears on npmjs, and `Gitea release assets:` when the
+  release or one of its two assets is missing. A phase never reports another phase's wording.
+- npm's propagation lag is not a failure: the npm read is retried for up to ten minutes before the
+  run is recorded failed, so a version the publish accepted minutes ago is seen once it reaches
+  the registry edge the read hits.
 
 The release version is semver derived from Conventional Commits. The first release of this line
 is `1.0.0` while the highest published release is still below it. Every later release takes the
 newest release tag reachable from `HEAD` and advances it by the highest level in the non-merge
 commits after that tag: a `!` before the colon or a `BREAKING CHANGE:`/`BREAKING-CHANGE:` footer
 raises the major, otherwise a `feat` raises the minor, otherwise the patch is raised. A range with
-no non-merge commit releases nothing. The release step refuses a range that contains a commit
+no non-merge commit releases nothing.
+
+Two rules keep the reported release honest. The step refreshes its release tags from `origin`
+before it derives anything, and when the derived version is not newer than the forge's newest
+published release — the checkout predates that tag — it re-derives the range from the release's
+own commit, read from the local tag or from the forge's tag ref, so one run publishes the next
+version instead of re-deriving the version already out. And a tag the step would report must name
+`HEAD` or contain it: a tag at a commit that is neither is a refusal before the tarball is packed,
+before npm is written, and before a release record is reused, so a stale checkout cannot report
+`release: v<version> is published` for a release that does not carry its commit.
+
+The release step refuses a range that contains a commit
 whose subject is not `<type>[(<scope>)][!]: <description>`, with `<type>` one of
 `feat fix docs style refactor perf test build ci chore revert` in lowercase, so a push made with
 `--no-verify` cannot release.
@@ -2850,6 +2868,11 @@ repository's live claims: an open issue that carries the label with no live clai
 the next poll, which covers a killed worker, a restarted dashboard, and an upgrade that leaves an
 older worker's state behind.
 
+A goal issue is the record of one goal, so its run settles only on a proven close: while the
+issue is open it never finishes `succeeded` or `stopped`. A poll that drops an open goal issue
+fails the run with a detail naming the issue and its open state, and a close the tracker proves
+keeps the cancellation record.
+
 That stop is a cancellation, never a completion. A run closes its own issue through
 `issue_close`, which records the closing run beside the issue's state under the worker's state
 directory; the worker passes `DEVBOARD_ISSUES_RUN_ID` to each peer so the tool can name it. The
@@ -2932,8 +2955,13 @@ an ACP session again: a peer that yielded to a long background job — a full-su
 `verification_run` can wait many minutes — reads that job's result in the next turn and closes its
 issue instead of leaving landed work unhandled. When the issue is still open after the last
 follow-up turn, or its state cannot be read, the run finishes as `failed` with a cooldown and
-stays unhandled. A verification error names its issue; when a later poll no longer lists that
-issue, the error clears, so the Overview never keeps claiming a closed issue is open. The
+stays unhandled. A peer can also stop answering without ever ending its turn — a model call or
+tool that never returns — so a run that produces no activity, stderr, question, or turn end for
+thirty minutes is verified and settled the same way: a close that landed meanwhile is a success,
+and an issue the tracker still reports open finishes `failed` naming `<issue>` and its open state
+instead of sitting `running` indefinitely. A verification error names its issue; when a later poll
+no longer lists that issue, the error clears, so the Overview never keeps claiming a closed issue
+is open. The
 five-minute cooldown remains: an issue in cooldown is retried when it expires, and other issues
 keep running and start normally.
 

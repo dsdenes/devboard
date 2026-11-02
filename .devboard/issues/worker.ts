@@ -84,6 +84,16 @@ export const MAX_CONCURRENT_PEERS = 30;
  */
 export const MAX_FOLLOW_UP_TURNS = 4;
 
+/**
+ * How long one run may produce no output at all — no activity, no stderr, no
+ * question, no turn end — before the worker treats its peer as gone. An ACP
+ * turn has no built-in deadline: a peer whose model call or tool never answers
+ * keeps the run `running` forever, so nothing verifies the issue, nothing
+ * prompts the session again, and the run cannot settle. Bounding the silence
+ * gives that peer a verdict that names the issue it left open.
+ */
+export const TURN_SILENCE_MS = 30 * 60_000;
+
 const DEFAULT_INTERVAL_MS = 10_000;
 const COOLDOWN_MS = 5 * 60_000;
 /** How long an abandon keeps its issue out of the queue. */
@@ -107,6 +117,8 @@ export interface WorkerOptions {
   listIssues?: (options: { etag: string | null }) => Promise<PollResult>;
   /** Bounds one tracker read; defaults to `TRACKER_TIMEOUT_MS`. */
   pollTimeoutMs?: number;
+  /** How long a peer may stay silent before its run fails; defaults to `TURN_SILENCE_MS`. */
+  turnSilenceMs?: number;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: IssuesPeerOptions) => AcpPeer;
   /** Resolves each agent's provider environment; re-reads the store per run. */
@@ -220,6 +232,8 @@ interface ActiveRun {
   /** True once the peer settled and the issue state is being verified. */
   settling: boolean;
   finished: boolean;
+  /** Clock time of the last sign of life from the peer or its turn. */
+  lastSignalMs: number;
 }
 
 /** The child as the process table sees it, for a later proven termination. */
@@ -375,6 +389,7 @@ export class IssuesWorker {
   private readonly clock: () => Date;
   private readonly listIssues: NonNullable<WorkerOptions["listIssues"]>;
   private readonly pollTimeoutMs: number;
+  private readonly turnSilenceMs: number;
   private readonly connect: NonNullable<WorkerOptions["connect"]>;
   private readonly providerEnvironment: WorkerProviderEnvironment;
   private readonly issueState: NonNullable<WorkerOptions["issueState"]>;
@@ -418,6 +433,7 @@ export class IssuesWorker {
     this.environment = options.environment ?? process.env;
     this.clock = options.now ?? (() => new Date());
     this.pollTimeoutMs = Math.max(1, options.pollTimeoutMs ?? TRACKER_TIMEOUT_MS);
+    this.turnSilenceMs = Math.max(1, options.turnSilenceMs ?? TURN_SILENCE_MS);
     this.listIssues =
       options.listIssues ??
       ((request) => {
@@ -634,6 +650,7 @@ export class IssuesWorker {
     await this.guarded("consume control commands", () => this.consumeCommands());
     if (this.stopping) return;
     if (!this.state.enabled) return;
+    await this.guarded("reclaim silent runs", () => this.reclaimSilentRuns());
     if (this.polling) return;
     if (this.draining && !this.running && !this.polling) {
       await this.stop();
@@ -758,6 +775,7 @@ export class IssuesWorker {
           return;
         }
         const answered = run.peer.answer(command.id, command.value);
+        run.lastSignalMs = this.clock().getTime();
         if (!answered) {
           this.state.notice = "That question is no longer waiting for an answer.";
           this.publish();
@@ -775,10 +793,14 @@ export class IssuesWorker {
         // that is not an error, so a missing run is ignored.
         const active = this.active.get(command.number);
         if (active === undefined) return;
-        await this.abandonRun(
-          active,
-          `Issue #${command.number} was closed on the tracker; its run was stopped.`,
-        );
+        const notice = `Issue #${command.number} was closed on the tracker; its run was stopped.`;
+        // The dashboard's read is one observation, so a goal issue settles only
+        // on a close the tracker proves.
+        if (isGoalIssue(active.issue)) {
+          await this.settleDroppedGoal(active, notice);
+          return;
+        }
+        await this.abandonRun(active, notice);
         return;
       }
       case "stop": {
@@ -832,6 +854,7 @@ export class IssuesWorker {
   async poll(): Promise<void> {
     if (this.polling || this.stopping) return;
     this.polling = true;
+    await this.guarded("reclaim silent runs", () => this.reclaimSilentRuns());
     const startedAt = this.clock();
     try {
       let result: PollResult;
@@ -968,7 +991,9 @@ export class IssuesWorker {
   private errorIssue(message: string): number | null {
     const match =
       /^the agent finished but issue #(\d+) is still open(?:;|$)/.exec(message) ??
-      /^could not verify issue #(\d+):/.exec(message);
+      /^could not verify issue #(\d+):/.exec(message) ??
+      /^the agent produced no output for .*; issue #(\d+) is still open(?:;|$)/.exec(message) ??
+      /^the tracker dropped issue #(\d+) from its open list/.exec(message);
     if (match === null) return null;
     const number = Number(match[1]);
     return Number.isSafeInteger(number) && number > 0 ? number : null;
@@ -1076,6 +1101,7 @@ export class IssuesWorker {
       turns: 1,
       settling: false,
       finished: false,
+      lastSignalMs: now.getTime(),
     };
     let peer: AcpPeer;
     try {
@@ -1092,7 +1118,10 @@ export class IssuesWorker {
         },
         onActivity: (entry) => this.recordActivity(active, entry),
         onQuestion: (question) => this.recordQuestion(active, question),
-        onStderr: (text) => firstLine.push(text),
+        onStderr: (text) => {
+          firstLine.push(text);
+          active.lastSignalMs = this.clock().getTime();
+        },
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -1163,6 +1192,7 @@ export class IssuesWorker {
 
   private recordActivity(active: ActiveRun, entry: AcpActivity): void {
     if (active.finished) return;
+    active.lastSignalMs = this.clock().getTime();
     appendActivityLine(active.activity, entry.text, entry.append);
     try {
       writeActivity(active.directory, active.activity);
@@ -1176,6 +1206,7 @@ export class IssuesWorker {
 
   private recordQuestion(active: ActiveRun, question: AcpQuestion): void {
     if (active.finished) return;
+    active.lastSignalMs = this.clock().getTime();
     const stored: IssuesQuestion = {
       id: question.id,
       message: question.message,
@@ -1315,6 +1346,7 @@ export class IssuesWorker {
     if (active.finished || this.stopping) return;
     active.turns += 1;
     active.settling = false;
+    active.lastSignalMs = this.clock().getTime();
     this.log(
       `issue #${active.issue.number} is still open after turn ${active.turns - 1}; asking the peer to continue`,
     );
@@ -1378,11 +1410,103 @@ export class IssuesWorker {
   private async stopClosedRuns(open: Set<number>): Promise<void> {
     for (const active of [...this.active.values()]) {
       if (open.has(active.issue.number)) continue;
-      await this.abandonRun(
-        active,
-        `Issue #${active.issue.number} was closed on the tracker; its run was stopped.`,
-      );
+      const notice = `Issue #${active.issue.number} was closed on the tracker; its run was stopped.`;
+      // A goal issue's run is the record of one goal. A poll that dropped it is
+      // one observation, so a goal still open where the tracker is the judge
+      // fails the run instead of stopping it without a verdict.
+      if (isGoalIssue(active.issue)) {
+        await this.settleDroppedGoal(active, notice);
+        continue;
+      }
+      await this.abandonRun(active, notice);
     }
+  }
+
+  /**
+   * Settles a goal-issue run the poll no longer lists. A close the tracker
+   * proves is the operator's cancellation and keeps the `stopped` record; an
+   * issue still open at the tracker fails the run with a detail naming it and
+   * its state. A goal issue therefore never ends `stopped` while it is open,
+   * and never disappears from the queue without a verdict.
+   */
+  private async settleDroppedGoal(active: ActiveRun, notice: string): Promise<void> {
+    if (active.finished || active.settling) return;
+    if (closedByRun(this.stateDir, this.repoDir, active.issue.number) === active.runId) return;
+    active.settling = true;
+    let result: IssueStateResult;
+    try {
+      result = await this.issueState(active.issue.number);
+    } catch (error) {
+      result = { kind: "error", detail: error instanceof Error ? error.message : String(error) };
+    }
+    if (this.stopping || active.finished) return;
+    if (result.kind === "state" && result.state === "closed") {
+      active.settling = false;
+      await this.abandonRun(active, notice);
+      return;
+    }
+    active.firstLine.finish();
+    this.closePeer(active);
+    const number = active.issue.number;
+    const detail =
+      result.kind === "error"
+        ? `could not verify issue #${number}: ${result.detail}`
+        : `the tracker dropped issue #${number} from its open list while it is still open`;
+    await this.recordFailed(
+      active,
+      active.firstLine.value === null
+        ? detail
+        : `${detail}; agent stderr: ${active.firstLine.value}`,
+    );
+  }
+
+  /**
+   * Fails the run of a peer that has produced no output for `turnSilenceMs`.
+   * The issue is verified first: a close that landed while the turn hung is a
+   * success, an issue the tracker still lists as open fails with a detail
+   * naming it, and an unreadable answer fails with the read's reason.
+   */
+  private async reclaimSilentRuns(): Promise<void> {
+    if (this.stopping || this.active.size === 0) return;
+    const now = this.clock().getTime();
+    for (const active of [...this.active.values()]) {
+      if (active.finished || active.settling) continue;
+      const silentFor = now - active.lastSignalMs;
+      if (silentFor < this.turnSilenceMs) continue;
+      await this.failSilentRun(active, silentFor);
+    }
+  }
+
+  private async failSilentRun(active: ActiveRun, silentFor: number): Promise<void> {
+    if (active.finished || active.settling || this.stopping) return;
+    active.settling = true;
+    let result: IssueStateResult;
+    try {
+      result = await this.issueState(active.issue.number);
+    } catch (error) {
+      result = { kind: "error", detail: error instanceof Error ? error.message : String(error) };
+    }
+    if (this.stopping || active.finished) return;
+    const number = active.issue.number;
+    const minutes = Math.max(1, Math.round(silentFor / 60_000));
+    if (result.kind === "state" && result.state === "closed") {
+      this.closePeer(active);
+      await this.recordSucceeded(active);
+      return;
+    }
+    active.firstLine.finish();
+    this.closePeer(active);
+    const detail =
+      result.kind === "error"
+        ? `the agent produced no output for ${minutes} minute(s) and issue #${number} could ` +
+          `not be verified: ${result.detail}`
+        : `the agent produced no output for ${minutes} minute(s); issue #${number} is still open`;
+    await this.recordFailed(
+      active,
+      active.firstLine.value === null
+        ? detail
+        : `${detail}; agent stderr: ${active.firstLine.value}`,
+    );
   }
 
   /** Ends one run without a verdict: no succeeded ledger entry, no cooldown. */

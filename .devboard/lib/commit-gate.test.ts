@@ -16,6 +16,8 @@ import {
   readCommits,
   releaseLevel,
   subjectRule,
+  tagBinding,
+  tagCommit,
   type CommitRecord,
 } from "./commit-gate";
 
@@ -212,6 +214,39 @@ describe("ranges and release tags", () => {
     expect(violations[0]?.sha).toBe(bad);
     expect(violations[0]?.subject).toBe("Added export control");
     expect(violations[0]?.rule.length).toBeGreaterThan(0);
+  });
+});
+
+describe("release tag binding", () => {
+  test("a tag at HEAD names it, and a tag ahead of HEAD contains it", async () => {
+    const directory = await repository("binding");
+    const head = commit(directory, "fix: one");
+    expect(tagBinding(directory, "v1.0.0")).toBe("absent");
+    expect(tagCommit(directory, "v1.0.0")).toBeUndefined();
+
+    git(directory, ["tag", "v1.0.0", head]);
+    expect(tagBinding(directory, "v1.0.0")).toBe("names");
+    expect(tagCommit(directory, "v1.0.0")).toBe(head);
+
+    // A concurrent landing released this commit inside a later one.
+    const later = commit(directory, "feat: two");
+    git(directory, ["tag", "v1.1.0", later]);
+    expect(tagBinding(directory, "v1.1.0", head)).toBe("contains");
+    // A tag behind HEAD is the ordinary older release a new version follows.
+    expect(tagBinding(directory, "v1.0.0", "HEAD")).toBe("behind");
+  });
+
+  test("a tag made for an unrelated commit is neither a name nor a containment", async () => {
+    const directory = await repository("binding-unrelated");
+    const main = commit(directory, "fix: main");
+    git(directory, ["checkout", "-q", "--orphan", "elsewhere"]);
+    const orphan = commit(directory, "fix: elsewhere");
+    git(directory, ["checkout", "-q", "main"]);
+    git(directory, ["tag", "v1.0.1", orphan]);
+
+    expect(tagCommit(directory, "v1.0.1")).toBe(orphan);
+    expect(tagBinding(directory, "v1.0.1", main)).toBe("unrelated");
+    expect(tagBinding(directory, "v1.0.1", "HEAD")).toBe("unrelated");
   });
 });
 

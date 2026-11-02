@@ -322,6 +322,56 @@ export async function giteaReleaseByTag(
   }
 }
 
+/**
+ * The commit a tag names on the forge. A checkout that never fetched a release
+ * tag cannot answer locally, and the release step still has to learn which
+ * commit the forge's newest release covers before it derives the next version.
+ * An annotated tag is resolved one step further to the commit it carries.
+ */
+export async function giteaTagRefCommit(
+  target: GiteaTarget,
+  tag: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<string | undefined> {
+  let document: unknown;
+  try {
+    document = await giteaJson<unknown>(
+      target,
+      `${repoPath(target)}/git/refs/tags/${encodeURIComponent(tag)}`,
+      undefined,
+      fetchImpl,
+    );
+  } catch (error) {
+    if (error instanceof GiteaError && error.status === 404) return undefined;
+    throw error;
+  }
+  const object = holder(holder(document)?.object);
+  const sha = object?.sha;
+  if (typeof sha !== "string" || sha.length === 0) return undefined;
+  if (object?.type !== "tag") return sha;
+  let annotated: unknown;
+  try {
+    annotated = await giteaJson<unknown>(
+      target,
+      `${repoPath(target)}/git/tags/${encodeURIComponent(sha)}`,
+      undefined,
+      fetchImpl,
+    );
+  } catch (error) {
+    if (error instanceof GiteaError && error.status === 404) return undefined;
+    throw error;
+  }
+  const commit = holder(holder(annotated)?.object)?.sha;
+  return typeof commit === "string" && commit.length > 0 ? commit : undefined;
+}
+
+/** A JSON object as a record, or undefined for any other value. */
+function holder(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 function publishedRelease(value: unknown): GiteaRelease | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;

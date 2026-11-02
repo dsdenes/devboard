@@ -12,7 +12,12 @@ import type { AcpPeer } from "../issues/worker";
 import { originForge } from "../issues/repository";
 import { releaseVersionAt } from "../lib/commit-gate";
 import { lowestReleaseVersion } from "../lib/release";
-import { giteaReleaseByTag, giteaTarget, type GiteaTarget } from "../lib/gitea";
+import {
+  giteaReleaseByTag,
+  giteaTarget,
+  type GiteaReleaseDocument,
+  type GiteaTarget,
+} from "../lib/gitea";
 import {
   checkReleaseTrain,
   type ReleaseTrainCommit,
@@ -170,106 +175,191 @@ function writeRunActivity(runDir: string, lines: string[]): void {
   }
 }
 
-/** Verifies the release the train expects, from Git, npm, and Gitea. */
-async function verifyShipped(options: {
+/** The part of a release the verification read, for a failure that names it. */
+export type ReleaseVerificationPhase = "tag" | "npm" | "gitea";
+
+export type ReleaseVerification =
+  | { ok: true; version: string; url: string }
+  | { ok: false; phase: ReleaseVerificationPhase; version: string; detail: string };
+
+/**
+ * npm's normal propagation lag: a version the publish accepted minutes ago can
+ * still answer E404 from a different registry edge. The verification retries
+ * inside this window before it calls the release failed, so a healthy publish
+ * is never recorded as a failure.
+ */
+export const NPM_VISIBILITY_WINDOW_MS = 10 * 60_000;
+export const NPM_VISIBILITY_POLL_MS = 15_000;
+
+export interface ReleaseVerificationOptions {
   repoDir: string;
+  /** The commit the run released. */
   target: string;
+  /** The version the gate asked this run to release. */
+  version: string;
   environment: Record<string, string | undefined>;
   stateDir: string;
   activity: (line: string) => void;
-}): Promise<ReleasesResult> {
-  const fetched = git(options.repoDir, ["fetch", "--quiet", "--tags", "origin"]);
+  /** Refreshes the checkout's tags; the default fetches the origin's. */
+  refresh?: (repoDir: string) => { code: number; stdout: string; stderr: string };
+  /** Reads one npm version; the default shells out to `npm view`. */
+  npmView?: (version: string) => { code: number; stdout: string; stderr: string };
+  /** Reads one Gitea release and its page URL; the default uses the origin's forge. */
+  readRelease?: (
+    tag: string,
+  ) => Promise<{ release: GiteaReleaseDocument | undefined; url: string }>;
+  sleep?: (ms: number) => Promise<void>;
+  /** Bounds the npm retry; tests shrink it. */
+  npmWindowMs?: number;
+  npmPollMs?: number;
+}
+
+/** Verifies the release the train expects, from Git, npm, and Gitea. */
+export async function verifyShipped(
+  options: ReleaseVerificationOptions,
+): Promise<ReleaseVerification> {
+  const sleep = options.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const refresh =
+    options.refresh ?? ((repoDir: string) => git(repoDir, ["fetch", "--quiet", "--tags", "origin"]));
+  const fetched = refresh(options.repoDir);
   if (fetched.code !== 0) {
     return {
       ok: false,
-      detail: `could not fetch the release tags: ${firstLine(fetched.stderr || fetched.stdout)}`,
+      phase: "tag",
+      version: options.version,
+      detail:
+        `tag binding: could not refresh the release tags for v${options.version}: ` +
+        firstLine(fetched.stderr || fetched.stdout),
     };
   }
-  let version = releaseVersionAt(options.repoDir, options.target);
-  if (version === undefined) {
-    const contains = git(options.repoDir, ["tag", "--contains", options.target, "--list", "v*"]);
-    if (contains.code !== 0) {
-      return {
-        ok: false,
-        detail: `could not read the tags containing ${options.target.slice(0, 7)}: ` +
-          firstLine(contains.stderr || contains.stdout),
-      };
-    }
-    version = lowestReleaseVersion(
+  const contains = git(options.repoDir, ["tag", "--contains", options.target, "--list", "v*"]);
+  if (contains.code !== 0) {
+    return {
+      ok: false,
+      phase: "tag",
+      version: options.version,
+      detail:
+        `tag binding: could not read the tags containing ${options.target.slice(0, 7)} ` +
+        `for v${options.version}: ${firstLine(contains.stderr || contains.stdout)}`,
+    };
+  }
+  const version =
+    releaseVersionAt(options.repoDir, options.target) ??
+    lowestReleaseVersion(
       contains.stdout
         .split("\n")
         .map((line) => /^v([0-9]+\.[0-9]+\.[0-9]+)$/.exec(line.trim())?.[1])
         .filter((entry): entry is string => entry !== undefined),
     );
-  }
   if (version === undefined) {
     return {
       ok: false,
-      detail: `no release tag names or contains ${options.target.slice(0, 7)}`,
+      phase: "tag",
+      version: options.version,
+      detail:
+        `tag binding: no release tag names or contains ${options.target.slice(0, 7)} ` +
+        `for v${options.version}`,
     };
   }
   const tag = `v${version}`;
   options.activity(`verified ${tag} names or contains ${options.target.slice(0, 7)}`);
 
-  const npm = Bun.spawnSync({
-    cmd: [
-      "npm",
-      "view",
-      `${NPM_PACKAGE}@${version}`,
-      "version",
-      "--cache",
-      join(options.stateDir, "npm-cache"),
-      "--prefer-online",
-    ],
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (npm.exitCode !== 0 || npm.stdout.toString().trim() !== version) {
-    return {
-      ok: false,
-      detail:
-        `${NPM_PACKAGE}@${version} is not visible on npmjs: ` +
-        firstLine(npm.stderr.toString() || npm.stdout.toString()),
-    };
+  const npmView =
+    options.npmView ??
+    ((candidate: string) => {
+      const child = Bun.spawnSync({
+        cmd: [
+          "npm",
+          "view",
+          `${NPM_PACKAGE}@${candidate}`,
+          "version",
+          "--cache",
+          join(options.stateDir, "npm-cache"),
+          "--prefer-online",
+        ],
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return {
+        code: child.exitCode ?? 1,
+        stdout: child.stdout.toString().trim(),
+        stderr: child.stderr.toString().trim(),
+      };
+    });
+  const windowMs = options.npmWindowMs ?? NPM_VISIBILITY_WINDOW_MS;
+  const pollMs = options.npmPollMs ?? NPM_VISIBILITY_POLL_MS;
+  const deadline = Date.now() + windowMs;
+  let lastDetail = "npm view answered nothing";
+  let reads = 0;
+  for (;;) {
+    reads += 1;
+    const read = npmView(version);
+    if (read.code === 0 && read.stdout.trim() === version) break;
+    lastDetail = firstLine(read.stderr || read.stdout);
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        phase: "npm",
+        version,
+        detail:
+          `npm visibility: ${NPM_PACKAGE}@${version} is not visible on npmjs after ` +
+          `${Math.round(windowMs / 1000)}s and ${reads} read(s): ${lastDetail}`,
+      };
+    }
+    options.activity(`waiting for ${NPM_PACKAGE}@${version} on npmjs: ${lastDetail}`);
+    await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
   }
 
-  const remote = originForge(options.repoDir, options.environment);
-  let target: GiteaTarget | undefined;
+  let read: { release: GiteaReleaseDocument | undefined; url: string };
   try {
-    target = giteaTarget({ remote, environment: options.environment });
-  } catch (error) {
-    return { ok: false, detail: `the Gitea release could not be read: ${detailOf(error)}` };
-  }
-  if (target === undefined) {
-    return { ok: false, detail: "the Gitea release could not be read: no Gitea origin" };
-  }
-  let release;
-  try {
-    release = await giteaReleaseByTag(target, tag);
+    read = await (options.readRelease ?? defaultReleaseReader(options))(tag);
   } catch (error) {
     return {
       ok: false,
-      detail: `the Gitea release ${tag} could not be read: ${detailOf(error)}`,
+      phase: "gitea",
+      version,
+      detail: `Gitea release assets: the release ${tag} could not be read: ${detailOf(error)}`,
     };
   }
-  if (release === undefined) {
-    return { ok: false, detail: `the Gitea release ${tag} does not exist` };
+  if (read.release === undefined) {
+    return {
+      ok: false,
+      phase: "gitea",
+      version,
+      detail: `Gitea release assets: the release ${tag} does not exist`,
+    };
   }
-  const names = new Set((release.assets ?? []).map((asset) => asset.name));
+  const names = new Set((read.release.assets ?? []).map((asset) => asset.name));
   for (const asset of [`devboard-${version}.tgz`, `devboard-${version}.tgz.sha256`]) {
     if (!names.has(asset)) {
-      return { ok: false, detail: `the Gitea release ${tag} is missing ${asset}` };
+      return {
+        ok: false,
+        phase: "gitea",
+        version,
+        detail: `Gitea release assets: the release ${tag} is missing ${asset}`,
+      };
     }
   }
-  const url = `${target.baseUrl.replace(/\/+$/, "")}/${target.project}/releases/tag/${tag}`;
   options.activity(`verified ${NPM_PACKAGE}@${version} and the Gitea assets`);
-  return { ok: true, version, url };
+  return { ok: true, version, url: read.url };
 }
 
-type ReleasesResult =
-  | { ok: true; version: string; url: string }
-  | { ok: false; detail: string };
+/** The origin forge's release reader and its page URL. */
+function defaultReleaseReader(
+  options: ReleaseVerificationOptions,
+): (tag: string) => Promise<{ release: GiteaReleaseDocument | undefined; url: string }> {
+  return async (tag) => {
+    const remote = originForge(options.repoDir, options.environment);
+    const target = giteaTarget({ remote, environment: options.environment });
+    if (target === undefined) throw new Error("no Gitea origin");
+    const release = await giteaReleaseByTag(target, tag);
+    return {
+      release,
+      url: `${target.baseUrl.replace(/\/+$/, "")}/${target.project}/releases/tag/${tag}`,
+    };
+  };
+}
 
 export class ReleaseTrainWorker {
   readonly repoDir: string;
@@ -807,6 +897,7 @@ export class ReleaseTrainWorker {
     const verified = await verifyShipped({
       repoDir: this.repoDir,
       target: input.request.target,
+      version: input.request.version,
       environment,
       stateDir: this.stateDir,
       activity: input.activity,

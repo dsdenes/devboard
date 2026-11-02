@@ -265,6 +265,7 @@ async function fixture(options: {
   listIssues?: WorkerOptions["listIssues"];
   providerEnvironment?: WorkerOptions["providerEnvironment"];
   pollTimeoutMs?: number;
+  turnSilenceMs?: number;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label);
   const root = options.root ?? join(base, "repo");
@@ -281,6 +282,7 @@ async function fixture(options: {
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.pollTimeoutMs === undefined ? {} : { pollTimeoutMs: options.pollTimeoutMs }),
+    ...(options.turnSilenceMs === undefined ? {} : { turnSilenceMs: options.turnSilenceMs }),
     ...(options.providerEnvironment === undefined
       ? {}
       : { providerEnvironment: options.providerEnvironment }),
@@ -988,6 +990,133 @@ describe("lifecycle", () => {
       const notice = await waitFor(() => f.state().notice, "the refusal notice");
       expect(notice).toBe("Check now is unavailable while paused.");
       expect(f.state().poll.lastPollAt).toBe(last);
+    } finally {
+      await stop(f);
+    }
+  });
+});
+
+describe("goal issue settlement", () => {
+  test("a goal left open by a finished turn gets the continuation turn", async () => {
+    let reads = 0;
+    const f = await fixture({
+      issues: [goalIssue(12)],
+      issueState: async () => {
+        reads += 1;
+        return { kind: "state", state: reads === 1 ? "open" : "closed" } as IssueStateResult;
+      },
+    });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the peer");
+      expect(peer.prompts[0]).toBe("/implement-goal-issue 12");
+      peer.succeed();
+      await waitFor(() => (peer.prompts.length === 2 ? true : undefined), "the continuation turn");
+      expect(peer.prompts[1]).toContain("Continue issue #12");
+      expect(peer.closed).toBe(false);
+      peer.succeed();
+      const handled = await waitFor(
+        () =>
+          f.state().queue.find((entry) => entry.number === 12)?.handled ? f.state() : undefined,
+        "the handled goal issue",
+      );
+      expect(handled.runs.find((run) => run.issueNumbers.includes(12))?.status).toBe("succeeded");
+      expect(closedByRun(f.stateDir, f.root, 12)).toBeNull();
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a goal-issue peer that stops answering fails the run naming the open issue", async () => {
+    let now = new Date("2026-11-02T12:00:00.000Z");
+    const f = await fixture({
+      issues: [goalIssue(7)],
+      now: () => now,
+      turnSilenceMs: 60_000,
+      issueState: async () => ({ kind: "state", state: "open" }),
+    });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the peer");
+      expect(peer.prompts[0]).toBe("/implement-goal-issue 7");
+      // The peer never answers its turn and produces no further output.
+      await f.worker.poll();
+      expect(f.state().runs.some((run) => run.issueNumbers.includes(7) && run.status === "running"))
+        .toBe(true);
+
+      now = new Date(now.getTime() + 61_000);
+      await f.worker.poll();
+      const failed = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(7) && run.status === "failed")
+            ? f.state()
+            : undefined,
+        "the failed goal run",
+      );
+      expect(peer.closed).toBe(true);
+      expect(failed.lastError).toContain("the agent produced no output");
+      expect(failed.lastError).toContain("issue #7 is still open");
+      expect(failed.queue.find((entry) => entry.number === 7)?.handled).toBe(false);
+      expect(failed.cooldowns["7"]).toBeDefined();
+      expect(failed.agents).toEqual([]);
+      expect(failed.runs.find((run) => run.issueNumbers.includes(7))?.firstStderrLine).toContain(
+        "issue #7 is still open",
+      );
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a poll that drops a still-open goal issue fails the run instead of stopping it", async () => {
+    let open = [goalIssue(9)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+      issueState: async () => ({ kind: "state", state: "open" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      open = [];
+      await f.worker.poll();
+      const failed = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(9) && run.status === "failed")
+            ? f.state()
+            : undefined,
+        "the failed goal run",
+      );
+      expect(failed.runs.find((run) => run.issueNumbers.includes(9))?.status).toBe("failed");
+      expect(
+        failed.runs.find((run) => run.issueNumbers.includes(9))?.firstStderrLine,
+      ).toContain("the tracker dropped issue #9 from its open list while it is still open");
+      // The run is never recorded stopped while the tracker still says open,
+      // and the cooldown keeps the next poll from restarting it at once.
+      expect(failed.runs.filter((run) => run.status === "stopped")).toEqual([]);
+      expect(failed.cooldowns["9"]).toBeDefined();
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a goal-issue run whose issue the tracker proves closed is still stopped", async () => {
+    let open = [goalIssue(9)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+      issueState: async () => ({ kind: "state", state: "closed" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      open = [];
+      await f.worker.poll();
+      const stopped = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(9) && run.status === "stopped")
+            ? f.state()
+            : undefined,
+        "the stopped goal run",
+      );
+      expect(stopped.notice).toContain("Issue #9 was closed on the tracker");
+      expect(stopped.queue).toEqual([]);
+      expect(closedByRun(f.stateDir, f.root, 9)).toBeNull();
     } finally {
       await stop(f);
     }

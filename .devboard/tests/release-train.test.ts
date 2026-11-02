@@ -14,8 +14,10 @@ import {
   type ReleaseTrainRun,
 } from "../release-train/state";
 import {
+  NPM_VISIBILITY_WINDOW_MS,
   ReleaseTrainWorker,
   readResult,
+  verifyShipped,
   type ReleaseRunInput,
   type ReleaseRunResult,
 } from "../release-train/worker";
@@ -56,6 +58,38 @@ function workspace(name: string): Workspace {
   return { root, repoDir, stateDir, directory: releaseTrainDirectory(stateDir) };
 }
 
+/** A repository with one tagged commit, the shape a released run leaves. */
+function releasedRepository(name: string, tag = "v1.0.1"): { repoDir: string; head: string } {
+  const repoDir = join(workspace(name).root, "repo");
+  mkdirSync(repoDir, { recursive: true });
+  const run = (args: string[]): string => {
+    const result = Bun.spawnSync({
+      cmd: [
+        "git",
+        "-c",
+        "user.name=Train Test",
+        "-c",
+        "user.email=train@example.test",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "init.defaultBranch=main",
+        ...args,
+      ],
+      cwd: repoDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  run(["init", "-q"]);
+  run(["commit", "--allow-empty", "-q", "-m", "fix: the release"]);
+  const head = run(["rev-parse", "HEAD"]);
+  run(["tag", tag, head]);
+  return { repoDir, head };
+}
+
 function unreleased(target = "a".repeat(40), version = "1.0.1"): ReleaseTrainUnreleased {
   return {
     state: "unreleased",
@@ -90,6 +124,180 @@ function workerAt(
     log: () => undefined,
   });
 }
+
+describe("release verification", () => {
+  test("retries the npm read inside the propagation window and records the release", async () => {
+    const { repoDir, head } = releasedRepository("verify-retry");
+    const reads: string[] = [];
+    const replies = [
+      { code: 1, stdout: "", stderr: "npm error code E404" },
+      { code: 1, stdout: "", stderr: "npm error code E404" },
+      { code: 0, stdout: "1.0.1", stderr: "" },
+    ];
+    const activity: string[] = [];
+    const verified = await verifyShipped({
+      repoDir,
+      target: head,
+      version: "1.0.1",
+      environment: {},
+      stateDir: join(repoDir, ".tmp"),
+      activity: (line) => activity.push(line),
+      refresh: () => ({ code: 0, stdout: "", stderr: "" }),
+      npmView: () => {
+        const reply = replies[Math.min(reads.length, replies.length - 1)]!;
+        reads.push(reply.stderr);
+        return reply;
+      },
+      readRelease: async (tag) => ({
+        release: {
+          id: 1,
+          tag_name: tag,
+          assets: [
+            { name: "devboard-1.0.1.tgz" },
+            { name: "devboard-1.0.1.tgz.sha256" },
+          ],
+        },
+        url: `https://forge.test/releases/tag/${tag}`,
+      }),
+      sleep: async () => undefined,
+    });
+    expect(verified).toEqual({
+      ok: true,
+      version: "1.0.1",
+      url: "https://forge.test/releases/tag/v1.0.1",
+    });
+    expect(reads).toHaveLength(3);
+    expect(activity.filter((line) => line.includes("waiting for"))).toHaveLength(2);
+    expect(activity).toContain("verified @dsdenes/devboard@1.0.1 and the Gitea assets");
+    expect(NPM_VISIBILITY_WINDOW_MS).toBeLessThanOrEqual(10 * 60_000);
+  });
+
+  test("fails at the bound with the npm phase named when the version never appears", async () => {
+    const { repoDir, head } = releasedRepository("verify-npm-bound");
+    let reads = 0;
+    const verified = await verifyShipped({
+      repoDir,
+      target: head,
+      version: "1.0.1",
+      environment: {},
+      stateDir: join(repoDir, ".tmp"),
+      activity: () => undefined,
+      refresh: () => ({ code: 0, stdout: "", stderr: "" }),
+      npmView: () => {
+        reads += 1;
+        return { code: 1, stdout: "", stderr: "npm error code E404" };
+      },
+      readRelease: async () => {
+        throw new Error("the Gitea phase must not run");
+      },
+      sleep: async () => undefined,
+      npmWindowMs: 40,
+      npmPollMs: 5,
+    });
+    expect(verified.ok).toBe(false);
+    if (verified.ok) throw new Error("unreachable");
+    expect(verified.phase).toBe("npm");
+    expect(verified.version).toBe("1.0.1");
+    expect(verified.detail).toStartWith("npm visibility:");
+    expect(verified.detail).toContain("@dsdenes/devboard@1.0.1");
+    expect(verified.detail).toContain("is not visible on npmjs");
+    expect(verified.detail).toContain("npm error code E404");
+    expect(verified.detail).not.toContain("Gitea");
+    expect(reads).toBeGreaterThan(1);
+  });
+
+  test("names the tag phase when no tag carries the released commit", async () => {
+    const { repoDir, head } = releasedRepository("verify-tag");
+    let reads = 0;
+    const verified = await verifyShipped({
+      repoDir,
+      target: head,
+      version: "1.0.1",
+      environment: {},
+      stateDir: join(repoDir, ".tmp"),
+      activity: () => undefined,
+      refresh: () => ({ code: 0, stdout: "", stderr: "" }),
+      npmView: () => {
+        reads += 1;
+        return { code: 0, stdout: "1.0.1", stderr: "" };
+      },
+      readRelease: async (tag) => ({
+        release: {
+          id: 1,
+          tag_name: tag,
+          assets: [
+            { name: "devboard-1.0.1.tgz" },
+            { name: "devboard-1.0.1.tgz.sha256" },
+          ],
+        },
+        url: `https://forge.test/releases/tag/${tag}`,
+      }),
+    });
+    // v1.0.1 names the commit, so the tag phase accepts it and moves on.
+    expect(verified.ok).toBe(true);
+    expect(reads).toBe(1);
+
+    const untagged = await verifyShipped({
+      repoDir,
+      target: "b".repeat(40),
+      version: "1.0.1",
+      environment: {},
+      stateDir: join(repoDir, ".tmp"),
+      activity: () => undefined,
+      refresh: () => ({ code: 0, stdout: "", stderr: "" }),
+      npmView: () => {
+        throw new Error("the npm phase must not run");
+      },
+    });
+    expect(untagged.ok).toBe(false);
+    if (untagged.ok) throw new Error("unreachable");
+    expect(untagged.phase).toBe("tag");
+    expect(untagged.detail).toStartWith("tag binding:");
+    expect(untagged.detail).toContain("for v1.0.1");
+    expect(untagged.detail).toContain("b".repeat(7));
+    expect(untagged.detail).not.toContain("npmjs");
+  });
+
+  test("names the Gitea assets phase with the missing asset and the version", async () => {
+    const { repoDir, head } = releasedRepository("verify-assets");
+    const verified = await verifyShipped({
+      repoDir,
+      target: head,
+      version: "1.0.1",
+      environment: {},
+      stateDir: join(repoDir, ".tmp"),
+      activity: () => undefined,
+      refresh: () => ({ code: 0, stdout: "", stderr: "" }),
+      npmView: () => ({ code: 0, stdout: "1.0.1", stderr: "" }),
+      readRelease: async (tag) => ({
+        release: { id: 1, tag_name: tag, assets: [{ name: "devboard-1.0.1.tgz" }] },
+        url: `https://forge.test/releases/tag/${tag}`,
+      }),
+    });
+    expect(verified.ok).toBe(false);
+    if (verified.ok) throw new Error("unreachable");
+    expect(verified.phase).toBe("gitea");
+    expect(verified.version).toBe("1.0.1");
+    expect(verified.detail).toStartWith("Gitea release assets:");
+    expect(verified.detail).toContain("v1.0.1 is missing devboard-1.0.1.tgz.sha256");
+    expect(verified.detail).not.toContain("npmjs");
+
+    const absent = await verifyShipped({
+      repoDir,
+      target: head,
+      version: "1.0.1",
+      environment: {},
+      stateDir: join(repoDir, ".tmp"),
+      activity: () => undefined,
+      refresh: () => ({ code: 0, stdout: "", stderr: "" }),
+      npmView: () => ({ code: 0, stdout: "1.0.1", stderr: "" }),
+      readRelease: async () => ({ release: undefined, url: "" }),
+    });
+    expect(absent.ok).toBe(false);
+    if (absent.ok) throw new Error("unreachable");
+    expect(absent.detail).toBe("Gitea release assets: the release v1.0.1 does not exist");
+  });
+});
 
 describe("Release Train family", () => {
   test("registers the scheduled family with a 10-minute default", () => {
