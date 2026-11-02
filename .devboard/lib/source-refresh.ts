@@ -254,10 +254,20 @@ export interface SourceRefreshDeliveryOptions {
   now?: () => Date;
 }
 
+/** One dashboard whose request could not be written, and why. */
+export interface SourceRefreshFailure {
+  stateDir: string;
+  pid: number;
+  port: number;
+  error: string;
+}
+
 export interface SourceRefreshDelivery {
   request: SourceRefreshRequest;
   digest: string;
   written: Array<{ stateDir: string; pid: number; port: number }>;
+  /** Every dashboard that kept serving because its request was not written. */
+  failed: SourceRefreshFailure[];
 }
 
 function samePath(left: string, right: string): boolean {
@@ -274,8 +284,9 @@ function samePath(left: string, right: string): boolean {
 /**
  * Writes one request for every live dashboard that serves this checkout's
  * source harness. An installed prefix, another checkout, and a fixture that
- * discovery hides never receive a request. Callers write only after a publish
- * has verified every release step.
+ * discovery hides never receive a request. An unwritable state directory is
+ * recorded in `failed` and never stops delivery to the remaining dashboards.
+ * Callers write only after a publish has verified every release step.
  */
 export function deliverSourceRefresh(
   options: SourceRefreshDeliveryOptions,
@@ -299,19 +310,30 @@ export function deliverSourceRefresh(
     options.instances ??
     discoverInstances({ selfPids: new Set([process.pid]) });
   const written: SourceRefreshDelivery["written"] = [];
-  const seen = new Set<string>();
+  const failed: SourceRefreshFailure[] = [];
+  const outcomes = new Map<string, { ok: true } | { ok: false; error: string }>();
   for (const instance of instances) {
     if (!samePath(instance.repoDir, repoRoot)) continue;
     if (!samePath(instance.harness, harnessRoot)) continue;
     if (!isHarnessSourceCheckout(repoRoot)) continue;
     const stateDir = resolve(instance.stateDir);
-    if (seen.has(stateDir)) {
-      written.push({ stateDir, pid: instance.pid, port: instance.port });
+    const outcome = outcomes.get(stateDir);
+    if (outcome !== undefined) {
+      if (outcome.ok) written.push({ stateDir, pid: instance.pid, port: instance.port });
+      else failed.push({ stateDir, pid: instance.pid, port: instance.port, error: outcome.error });
       continue;
     }
-    writeSourceRefreshRequest(stateDir, validated);
-    seen.add(stateDir);
-    written.push({ stateDir, pid: instance.pid, port: instance.port });
+    try {
+      writeSourceRefreshRequest(stateDir, validated);
+      outcomes.set(stateDir, { ok: true });
+      written.push({ stateDir, pid: instance.pid, port: instance.port });
+    } catch (error) {
+      // One unwritable state directory is that dashboard's problem: the
+      // remaining instances still receive their request.
+      const message = error instanceof Error ? error.message : String(error);
+      outcomes.set(stateDir, { ok: false, error: message });
+      failed.push({ stateDir, pid: instance.pid, port: instance.port, error: message });
+    }
   }
-  return { request: validated, digest: validated.distDigest, written };
+  return { request: validated, digest: validated.distDigest, written, failed };
 }

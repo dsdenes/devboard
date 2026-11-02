@@ -245,6 +245,31 @@ describe("deliverSourceRefresh", () => {
     expect(readSourceRefreshRequest(shared).state).toBe("valid");
   });
 
+  test("reports an unwritable state directory and still delivers to the rest", async () => {
+    const { repo, harness } = await checkout();
+    const unwritable = join(repo, "state-file");
+    await writeFile(unwritable, "not a directory\n");
+    const healthy = join(repo, "state-healthy");
+    const delivery = deliverSourceRefresh({
+      repoRoot: repo,
+      harnessRoot: harness,
+      commit: request().commit,
+      version: "0.9.1",
+      instances: [
+        instance(repo, harness, unwritable, 4401),
+        instance(repo, harness, healthy, 4402),
+      ],
+    });
+
+    expect(delivery.failed).toHaveLength(1);
+    expect(delivery.failed[0]?.stateDir).toBe(resolve(unwritable));
+    expect(delivery.failed[0]?.port).toBe(4401);
+    expect(delivery.failed[0]?.pid).toBe(1000 + 4401);
+    expect(delivery.failed[0]?.error).toContain(join(unwritable, "source-refresh"));
+    expect(delivery.written.map((entry) => entry.port)).toEqual([4402]);
+    expect(readSourceRefreshRequest(healthy).state).toBe("valid");
+  });
+
   test("writes nothing for a host that installed a harness package", async () => {
     const repo = await temporaryDirectory();
     const harness = join(repo, ".devboard");
