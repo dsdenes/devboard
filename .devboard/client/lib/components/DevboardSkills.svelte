@@ -157,14 +157,14 @@
     font-weight: 600;
     letter-spacing: 0.03em;
     line-height: 1.3;
-    padding: 6px 12px;
+    padding: 5px 8px;
     text-align: left;
     text-transform: uppercase;
   }
 
   .skills-table td {
     border-bottom: 1px solid var(--border-subtle);
-    padding: 5px 12px;
+    padding: 5px 8px;
   }
 
   .skills-table tbody tr:last-child td {
