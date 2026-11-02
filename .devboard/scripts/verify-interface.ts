@@ -20,8 +20,11 @@ import {
   drainMarkerPath,
   lockPath,
   runsDirectory,
+  statePath as issueStatePath,
   versionedStatePath,
+  workerStateDirectories,
 } from "../issues/paths";
+import { readState, type QueuedIssue } from "../issues/state";
 import { versionLockPath } from "../issues/lock";
 import { writeDrainMarker } from "../issues/control";
 import { fixtureRecord, pendingRecord } from "../server/fixtures/adr-source";
@@ -676,6 +679,48 @@ async function seedFlow(stateDir: string, host: string): Promise<void> {
   };
   await writeFile(join(sessionDir, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
   await writeFile(join(sessionDir, "goal.md"), session.goal);
+}
+
+/**
+ * The fixture forge's open issues: the seeded worker states' queue merged into
+ * one list, with the `processing` label on each issue a seeded agent owns.
+ * This is the one read the dashboard's Open issues page and counts use.
+ */
+function fixtureOpenIssues(
+  stateDir: string,
+  host: string,
+): Array<Record<string, unknown>> {
+  const root = resolve(host);
+  const paths = [
+    issueStatePath(stateDir, root),
+    ...workerStateDirectories(stateDir, root).map((directory) => join(directory, "state.json")),
+  ];
+  const merged = new Map<number, { issue: QueuedIssue; labels: Set<string> }>();
+  for (const path of paths) {
+    const state = readState(path);
+    if (state === undefined) continue;
+    for (const issue of state.queue) {
+      const labels = new Set(issue.labels ?? []);
+      if (issue.agentRunId !== null) labels.add("processing");
+      const entry = merged.get(issue.number);
+      if (entry === undefined) {
+        merged.set(issue.number, { issue, labels });
+        continue;
+      }
+      for (const label of labels) entry.labels.add(label);
+    }
+  }
+  return [...merged.values()]
+    .sort((left, right) => left.issue.number - right.issue.number)
+    .map(({ issue, labels }) => ({
+      number: issue.number,
+      title: issue.title,
+      html_url: issue.url,
+      created_at: issue.createdAt,
+      state: "open",
+      body: "",
+      labels: [...labels].map((name) => ({ name })),
+    }));
 }
 
 /**
@@ -1651,6 +1696,13 @@ try {
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      // The dashboard's own Issues read, served from the seeded worker states.
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/v1/repos/fixture/host/issues"
+      ) {
+        return Response.json(fixtureOpenIssues(stateDir, host));
+      }
       if (
         request.method !== "POST" ||
         !/^\/api\/v1\/repos\/[^/]+\/[^/]+\/issues$/.test(url.pathname)
@@ -1680,6 +1732,14 @@ try {
     },
   });
   feedbackApi = feedbackServer;
+  // The host's origin names the fixture forge, so the dashboard's Issues read
+  // resolves to the stub instead of an unconfigured GitHub repository.
+  await git(host, [
+    "remote",
+    "add",
+    "origin",
+    `http://127.0.0.1:${feedbackServer.port}/fixture/host.git`,
+  ]);
   const serverEnv = {
     ...process.env,
     HOST: "127.0.0.1",
@@ -1697,6 +1757,9 @@ try {
     DEVBOARD_RELEASE_REPO: "dsdenes/devboard",
     DEVBOARD_RELEASE_DIR: releaseDir,
     DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+    // The Issues queue follows the dashboard's own forge read; a one-second
+    // cadence keeps the fixture's seeded changes visible without a 30-second wait.
+    DEVBOARD_ISSUES_SYNC_INTERVAL_MS: "1000",
     DEVBOARD_OPENCODE_GO_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/zen/go`,
     DEVBOARD_OPENROUTER_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/api`,
     GIT_TERMINAL_PROMPT: "0",
@@ -2735,7 +2798,7 @@ try {
   const ids = new Set(palette.items.map((item) => item.id));
   const requiredCommands = [
     "view.mode.goal", "view.mode.issues", "view.mode.flow", "view.mode.discover",
-    "view.mode.devboard", "devboard.tab.tools",
+    "view.mode.devboard", "devboard.tab.tools", "devboard.tab.skills",
     "issues.start", "issues.pause", "issues.resume", "issues.stop", "issues.check",
     "open.issues.overview", "open.issues.agents", "open.issues.issues", "open.issues.runs",
     "open.issues.drafts",
@@ -2888,12 +2951,6 @@ try {
     description,
     invocations: expectedInvocations[name] ?? 0,
   }));
-  const layoutBeforeDevboard = await page.eval<string>(
-    `localStorage.getItem("devboard.layout.v1") ?? ""`,
-  );
-  const framesBeforeDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
-  );
   await page.click('[data-testid="mode-devboard"]');
   await page.wait(
     `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
@@ -3036,8 +3093,8 @@ try {
   const devboardSidebar = await page.eval<{
     entries: number;
     items: number;
-    label: string;
-    command: string;
+    labels: string[];
+    commands: string[];
     agentLabels: string[];
     agentCommands: string[];
     toolNames: string[];
@@ -3049,8 +3106,10 @@ try {
     return {
       entries: entries.length,
       items: sidebar?.querySelectorAll('.sidebar-item').length ?? 0,
-      label: entries[0]?.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
-      command: entries[0]?.getAttribute("data-command") ?? "",
+      labels: entries.map(
+        (entry) => entry.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
+      ),
+      commands: entries.map((entry) => entry.getAttribute("data-command") ?? ""),
       agentLabels: agents.map(
         (button) =>
           button.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
@@ -3062,8 +3121,8 @@ try {
     };
   })()`);
   check(
-    devboardSidebar.entries === 1 &&
-      devboardSidebar.items === 6 &&
+    devboardSidebar.entries === 2 &&
+      devboardSidebar.items === 7 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify(["Auto Scout", "Watchdog", "Design System", "Coach", "Release Train"]) &&
       JSON.stringify(devboardSidebar.agentCommands) ===
@@ -3074,16 +3133,191 @@ try {
           "open.devboard.coach",
           "open.devboard.release-train",
         ]),
-    "the Devboard sidebar does not carry the background agents beside the MCP tools entry",
+    "the Devboard sidebar does not carry the background agents beside the two page entries",
     devboardSidebar,
   );
   check(
-    devboardSidebar.label === "MCP tools" && devboardSidebar.command === "devboard.tab.tools",
-    "the Devboard sidebar entry is not the MCP tools entry",
+    JSON.stringify(devboardSidebar.labels) === JSON.stringify(["MCP tools", "Skills"]) &&
+      JSON.stringify(devboardSidebar.commands) ===
+        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills"]),
+    "the Devboard sidebar entries are not the MCP tools and Skills pages",
     devboardSidebar,
   );
   check(devboardSidebar.toolNames.length === 0, "a tool name leaked into the sidebar", devboardSidebar);
   check((await sourceOnlyMarkers(page)) === 0, "the Devboard MCP tools page renders a source-only marker");
+
+  // 5c. The Skills page lists the fixture host's installed skills, one entry
+  // opens it, and the checkbox mirrors and writes the project-level exclusion.
+  async function showDevboardSkills(): Promise<void> {
+    await page.click('[data-testid="mode-devboard"]');
+    await page.wait(
+      `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
+      "the Devboard mode before the Skills page",
+    );
+    await page.click('[data-testid="devboard-tab"][data-command="devboard.tab.skills"]');
+    await page.wait(`document.querySelector('[data-testid="skills-table"]') !== null`, "the Skills table");
+  }
+
+  await showDevboardSkills();
+
+  const devboardSkillsTable = await page.eval<{
+    tables: number;
+    columns: number;
+    controls: string[];
+    names: string[];
+    checked: boolean[];
+    cells: number[];
+    text: string;
+  }>(`(() => {
+    const table = document.querySelector('[data-testid="skills-table"]');
+    const rows = [...document.querySelectorAll('[data-testid="skill-row"]')];
+    return {
+      tables: document.querySelectorAll('[data-testid="skills-table"] table, [data-testid="skills-table"]').length,
+      columns: table?.rows[0]?.cells.length ?? -1,
+      controls: [...(table?.querySelectorAll('button, input, select, textarea, a, [role="button"]') ?? [])].map(
+        (control) => control.getAttribute("data-testid") ?? control.tagName,
+      ),
+      names: rows.map((row) => row.getAttribute("data-skill") ?? ""),
+      checked: rows.map((row) => row.querySelector('[data-testid="skill-enabled"]')?.checked === true),
+      cells: rows.map((row) => row.querySelectorAll("td").length),
+      text: table?.textContent ?? "",
+    };
+  })()`);
+  const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
+  check(devboardSkillsTable.tables === 1, "the Skills page does not render one table", devboardSkillsTable);
+  check(devboardSkillsTable.columns === 2, "the Skills table does not have two columns", devboardSkillsTable);
+  check(
+    JSON.stringify(devboardSkillsTable.names) === JSON.stringify(devboardInstalledSkills),
+    "the Skills rows do not equal the installed directories",
+    { rendered: devboardSkillsTable.names, installed: devboardInstalledSkills },
+  );
+  check(
+    devboardSkillsTable.cells.every((cells) => cells === 2) &&
+      devboardSkillsTable.controls.every((control) => control === "skill-enabled"),
+    "a Skills row does not hold exactly one checkbox beside its name",
+    devboardSkillsTable,
+  );
+  check(
+    devboardSkillsTable.checked.every((checked) => checked),
+    "an installed skill does not start checked",
+    devboardSkillsTable,
+  );
+  check(
+    !/devboard-managed|devboard-family|Delete|description/i.test(devboardSkillsTable.text),
+    "the Skills table renders skill content, family, or an action",
+    devboardSkillsTable,
+  );
+
+  const devboardSettingsFile = join(host, ".omp", "settings.json");
+  const devboardSkillCheckbox = (name: string): string =>
+    `[data-testid="skill-row"][data-skill="${name}"] [data-testid="skill-enabled"]`;
+  const devboardFirstSkill = devboardInstalledSkills[0] ?? "";
+  await page.click(devboardSkillCheckbox(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === false`,
+    "the unchecked skill",
+  );
+  const devboardIgnoredAfterUncheck = (): unknown =>
+    JSON.parse(readFileSync(devboardSettingsFile, "utf8")).skills?.ignoredSkills;
+  await waitFor(() => {
+    try {
+      const ignored = devboardIgnoredAfterUncheck();
+      return Array.isArray(ignored) && ignored.length === 1 && ignored[0] === devboardFirstSkill
+        ? true
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }, "the unchecked skill in the project OMP settings");
+  await page.click(devboardSkillCheckbox(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === true`,
+    "the rechecked skill",
+  );
+  await waitFor(() => {
+    try {
+      const ignored = devboardIgnoredAfterUncheck();
+      return Array.isArray(ignored) && !ignored.includes(devboardFirstSkill) && ignored.length === 0
+        ? true
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }, "the rechecked skill removed from the project OMP settings");
+
+  const devboardExtraSkill = join(host, ".omp", "skills", "extra-skill");
+  await mkdir(devboardExtraSkill, { recursive: true });
+  await writeFile(
+    join(devboardExtraSkill, "SKILL.md"),
+    "---\nname: extra-skill\ndescription: Extra fixture guidance.\n---\n\n# Extra skill\n",
+  );
+  await page.reload();
+  await showDevboardSkills();
+  await page.wait(
+    `document.querySelectorAll('[data-testid="skill-row"]').length === ${devboardInstalledSkills.length + 1}`,
+    "the added skill row",
+  );
+  const devboardWithExtra = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
+  );
+  check(
+    JSON.stringify(devboardWithExtra) === JSON.stringify([...devboardInstalledSkills, "extra-skill"].sort()),
+    "an added skill directory does not add exactly its row",
+    devboardWithExtra,
+  );
+  const devboardSidebarAfterAdd = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="sidebar"] [data-testid="devboard-tab"]').length`,
+  );
+  check(devboardSidebarAfterAdd === 2, "a skill directory changed the sidebar entry count", devboardSidebarAfterAdd);
+  await rm(devboardExtraSkill, { recursive: true, force: true });
+  await page.reload();
+  await showDevboardSkills();
+  await page.wait(
+    `document.querySelectorAll('[data-testid="skill-row"]').length === ${devboardInstalledSkills.length}`,
+    "the removed skill row",
+  );
+
+  await writeFile(devboardSettingsFile, `${JSON.stringify({ skills: { ignoredSkills: ["ghost-skill"] } })}\n`);
+  await page.reload();
+  await showDevboardSkills();
+  const devboardGhostRows = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
+  );
+  check(
+    JSON.stringify(devboardGhostRows) === JSON.stringify(devboardInstalledSkills) && !devboardGhostRows.includes("ghost-skill"),
+    "an exclusion name without a directory produced a row",
+    devboardGhostRows,
+  );
+
+  await page.click(devboardSkillCheckbox(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === false`,
+    "the unchecked skill before a reload",
+  );
+  await page.reload();
+  await showDevboardSkills();
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === false`,
+    "the unchecked skill after a reload",
+  );
+  await rm(devboardSettingsFile, { force: true });
+  await page.click(devboardSkillCheckbox(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === true`,
+    "the rechecked skill after the persistence check",
+  );
+  await page.click('[data-testid="devboard-tab"][data-command="devboard.tab.tools"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="mcp-tool"]').length === ${catalog.length}`,
+    "the MCP tool list after the Skills page",
+  );
+
+  const layoutBeforeDevboard = await page.eval<string>(
+    `localStorage.getItem("devboard.layout.v1") ?? ""`,
+  );
+  const framesBeforeDevboard = await page.eval<string[]>(
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools") && !String(frame).includes("getInstalledSkills"))`,
+  );
 
   await page.key("1", 1);
   await page.wait(
@@ -3136,7 +3370,7 @@ try {
     "Devboard from the palette",
   );
   const framesAfterDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools") && !String(frame).includes("getInstalledSkills"))`,
   );
   check(
     JSON.stringify(framesAfterDevboard) === JSON.stringify(framesBeforeDevboard),
@@ -7375,6 +7609,13 @@ try {
     "the issues indicator title omits the lifecycle or the agent count",
     runningIndicatorTitle,
   );
+  // The status bar counts workers; the queue counts the forge read. Wait for
+  // that read to list the seeded issues before its rows and links are read.
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent?.trim() === "2 pending · 3 running"`,
+    "the forge-derived queue summary",
+    10_000,
+  );
 
   // The Overview counts the fleet, lists it in the left column below the
   // Automation panel, and streams the selected agent's output on the right.
@@ -8109,13 +8350,16 @@ try {
   );
 
   await page.click('[data-testid="open-issues-queue"]');
-  await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
-  const queue = await page.eval<Array<{ number: string; handled: string; goal: string; run: string }>>(
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-queue-item"]').length === 5`,
+    "the issues queue rows",
+    8_000,
+  );
+  const queue = await page.eval<Array<{ number: string; processing: string; goal: string }>>(
     `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
       number: item.getAttribute("data-number") ?? "",
-      handled: item.getAttribute("data-handled") ?? "",
+      processing: item.getAttribute("data-processing") ?? "",
       goal: item.getAttribute("data-goal") ?? "",
-      run: item.getAttribute("data-run") ?? "",
     }))`,
   );
   check(queue.length === 5, "the queue does not list every open issue", queue);
@@ -8129,24 +8373,14 @@ try {
     "a goal label is not visible on its issue",
     queue,
   );
-  check(queue.every((entry) => entry.handled === "false"), "a pending issue is not marked pending", queue);
   check(
-    queue.slice(0, 3).every((entry) => entry.run.length > 0) &&
-      queue.slice(3).every((entry) => entry.run === ""),
-    "the queue does not show each issue's running agent",
+    queue.every((entry, index) => entry.processing === (index < 3 ? "true" : "false")),
+    "a row's state is not the forge's processing label",
     queue,
   );
   check(
     await page.eval<number>(`document.querySelectorAll('[data-testid="issues-running-marker"]').length`) === 3,
-    "the queue has no running marker for an active agent",
-  );
-  const queueVersions = await page.eval<string[]>(
-    `[...document.querySelectorAll('[data-testid="issues-running-version"]')].map((item) => item.textContent?.trim() ?? "")`,
-  );
-  check(
-    queueVersions.length === 3 && queueVersions.every((version) => version === seedVersion),
-    "a queue running row does not name its worker version",
-    queueVersions,
+    "the queue has no running marker for a processing label",
   );
   const goalBadges = await page.eval<number>(
     `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
@@ -9537,19 +9771,23 @@ try {
   );
 
   await page.click('[data-testid="open-issues-queue"]');
-  await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the takeover queue");
-  const mixedQueue = await page.eval<Array<{ issue: string; version: string }>>(
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-queue-item"]').length === 4`,
+    "the takeover queue rows",
+    8_000,
+  );
+  const mixedQueue = await page.eval<Array<{ issue: string; processing: string }>>(
     `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
       issue: item.getAttribute("data-number") ?? "",
-      version: item.querySelector('[data-testid="issues-running-version"]')?.textContent?.trim() ?? "",
+      processing: item.getAttribute("data-processing") ?? "",
     }))`,
   );
   check(
     mixedQueue.length === 4 &&
-      mixedQueue.some((row) => row.issue === "17" && row.version === MIXED_OLD_VERSION) &&
-      mixedQueue.some((row) => row.issue === "18" && row.version === seedVersion) &&
-      mixedQueue.filter((row) => row.version.length > 0).length === 2,
-    "the queue does not attribute the takeover's running rows",
+      mixedQueue.some((row) => row.issue === "17" && row.processing === "true") &&
+      mixedQueue.some((row) => row.issue === "18" && row.processing === "true") &&
+      mixedQueue.filter((row) => row.processing === "true").length === 2,
+    "the queue does not show the takeover's processing labels",
     mixedQueue,
   );
 
@@ -10565,6 +10803,7 @@ try {
     ["open.issues.issues", "issues"],
     ["open.issues.runs", "issues"],
     ["devboard.tab.tools", "devboard"],
+    ["devboard.tab.skills", "devboard"],
     ["open.discover.contribution", "discover"],
     ["open.flow.decisions", "flow"],
     ["flow.checkpoint.open.cp-1", "flow"],
@@ -10758,8 +10997,13 @@ try {
     page.eval<string>(
       `document.querySelector(${JSON.stringify(selector)})?.getAttribute("data-run-state") ?? ""`,
     );
-  const framesNow = (): Promise<number> =>
-    page.eval<number>(`(window.__viFrames ?? []).length`);
+  // Periodic reads (the 3s version poll and the MCP page's count refresh) are
+  // not caused by a click, so a menu check counts only the frames a click could
+  // have sent.
+  const countedFrames = `(window.__viFrames ?? []).filter((frame) => !/getVersion|getMcpTools/.test(String(frame)))`;
+  const framesNow = (): Promise<number> => page.eval<number>(`${countedFrames}.length`);
+  const framesSince = (count: number): Promise<string[]> =>
+    page.eval<string[]>(`${countedFrames}.slice(${count})`);
 
   // Goal: the Skills row and Implementation read only the Goal store, and
   // opening a menu entry sends nothing.
@@ -10916,7 +11160,10 @@ try {
     20_000,
   );
   await delay(200);
-  check((await framesNow()) === discoverFrames, "opening a Discover sidebar entry sent a frame");
+  check(
+    (await framesNow()) === discoverFrames,
+    `opening a Discover sidebar entry sent a frame: ${JSON.stringify(await framesSince(discoverFrames))}`,
+  );
   const contributionStart = await page.eval<{ present: boolean; disabled: boolean; title: string }>(
     `(() => {
       const button = document.querySelector('[data-testid="discover-agent-start"]');

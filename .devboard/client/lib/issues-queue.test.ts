@@ -2,40 +2,44 @@ import { describe, expect, test } from "bun:test";
 import { queueCounts, queueSummary } from "./issues-queue";
 import type { QueuedIssue } from "./types";
 
-function issue(
-  number: number,
-  state: { handled?: boolean; agentRunId?: string | null } = {},
-): QueuedIssue {
+function issue(number: number, labels: string[] = []): QueuedIssue {
   return {
     number,
     title: `Issue ${number}`,
     url: `https://tracker.test/issues/${number}`,
     createdAt: "2026-10-26T00:00:00Z",
-    labels: [],
-    handled: state.handled ?? false,
+    labels,
+    handled: false,
     runId: null,
-    agentRunId: state.agentRunId ?? null,
+    agentRunId: null,
   };
 }
 
 describe("queue counts", () => {
-  test("a running issue is not pending", () => {
+  test("a processing issue is running, not pending", () => {
     const counts = queueCounts([
-      issue(17, { agentRunId: "run-17" }),
-      issue(18, { agentRunId: "run-18" }),
+      issue(17, ["processing"]),
+      issue(18, ["processing", "goal"]),
       issue(19),
     ]);
     expect(counts).toEqual({ pending: 1, working: 2 });
   });
 
-  test("a handled issue is neither pending nor working", () => {
-    const counts = queueCounts([issue(17, { handled: true }), issue(18)]);
-    expect(counts).toEqual({ pending: 1, working: 0 });
+  test("a ledger's handled marker changes no count", () => {
+    const handled: QueuedIssue = {
+      ...issue(17),
+      handled: true,
+      runId: "run-17",
+    };
+    expect(queueCounts([handled, issue(18)])).toEqual({ pending: 2, working: 0 });
   });
 
-  test("handled wins over a stale run id, as the row badge does", () => {
-    const counts = queueCounts([issue(17, { handled: true, agentRunId: "stale" })]);
-    expect(counts).toEqual({ pending: 0, working: 0 });
+  test("a stale worker run id changes no count", () => {
+    const stale: QueuedIssue = {
+      ...issue(17),
+      agentRunId: "run-17",
+    };
+    expect(queueCounts([stale])).toEqual({ pending: 1, working: 0 });
   });
 
   test("an empty queue has no waiting or running work", () => {

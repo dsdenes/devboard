@@ -1,7 +1,7 @@
 <script lang="ts">
   import { issues, isGoalIssue } from "../issues.svelte";
   import { versionLabel } from "../issues-label";
-  import { queueCounts, queueSummary } from "../issues-queue";
+  import { isProcessing, queueCounts, queueSummary } from "../issues-queue";
   import type { WorkspaceTab } from "../layout.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
@@ -526,9 +526,8 @@
               class="issues-queue__item"
               data-testid="issues-queue-item"
               data-number={issue.number}
-              data-handled={issue.handled}
               data-goal={isGoalIssue(issue)}
-              data-run={issue.agentRunId ?? ""}
+              data-processing={isProcessing(issue)}
             >
               <a
                 class="issues-queue__number mono"
@@ -544,16 +543,7 @@
                 {#if isGoalIssue(issue)}
                   <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
                 {/if}
-                {#if issue.handled}
-                  <span class="badge" data-tone={statusTone("handled")}>handled</span>
-                {:else if issue.agentRunId !== null}
-                  <span
-                    class="issues-version mono"
-                    data-testid="issues-running-version"
-                    data-run={issue.agentRunId}
-                  >
-                    {versionLabel(issues.versionForRun(issue.agentRunId))}
-                  </span>
+                {#if isProcessing(issue)}
                   <span
                     class="badge"
                     data-tone={statusTone("running")}

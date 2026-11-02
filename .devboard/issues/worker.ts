@@ -18,7 +18,7 @@ import {
   type Ledger,
 } from "./ledger";
 import { migrateLegacyLedger } from "./legacy";
-import { claimIssue, releaseIssueClaim } from "./claims";
+import { claimIssue, liveIssueClaims, releaseIssueClaim } from "./claims";
 import { acquireWorkerLock, liveLockOwner } from "./lock";
 import { originForge, originRepository } from "./repository";
 import { giteaBaseUrl } from "../lib/forge";
@@ -37,9 +37,12 @@ import {
   pollOpenIssues,
   TrackerTimeoutError,
   TRACKER_TIMEOUT_MS,
+  writeIssueProcessing,
   type IssueStateResult,
   type PollResult,
+  type ProcessingWriteResult,
 } from "./tracker";
+import { hasProcessingLabel, PROCESSING_LABEL } from "../lib/issue-labels";
 import {
   appendActivityLine,
   emptyState,
@@ -110,10 +113,44 @@ export interface WorkerOptions {
   providerEnvironment?: WorkerProviderEnvironment;
   /** Injected for tests; defaults to the origin tracker's state for one issue. */
   issueState?: (number: number) => Promise<IssueStateResult>;
+  /** Injected for tests; defaults to the origin forge's label write. */
+  writeProcessing?: (number: number, active: boolean) => Promise<ProcessingWriteResult>;
   harnessVersion?: string | null;
   log?: (line: string) => void;
   /** Runs after Stop has written its state and released the lock. */
   onStopped?: () => void;
+}
+
+export interface ProcessingReconcilerOptions {
+  issues: IssuesIssue[];
+  repoDir: string;
+  /** Issue numbers a run in this process holds right now. */
+  active: ReadonlySet<number>;
+  write: (number: number, active: boolean) => Promise<ProcessingWriteResult>;
+  log?: (line: string) => void;
+}
+
+/**
+ * Clears a `processing` label that no live claim holds. A killed worker, a
+ * restarted dashboard, and an upgrade that left an older worker's file behind
+ * all leave the label behind, so every poll compares the forge's labels with
+ * the repository's live claims and repairs the difference. A label with a
+ * claim — from this worker or another live version — is left alone.
+ */
+export async function reconcileProcessingLabels(
+  options: ProcessingReconcilerOptions,
+): Promise<void> {
+  const live = new Set(liveIssueClaims(options.repoDir).map((claim) => claim.number));
+  for (const issue of options.issues) {
+    if (!hasProcessingLabel(issue.labels)) continue;
+    if (live.has(issue.number) || options.active.has(issue.number)) continue;
+    const result = await options.write(issue.number, false);
+    if (result.kind === "error") {
+      options.log?.(`could not clear the processing label on #${issue.number}: ${result.detail}`);
+      continue;
+    }
+    issue.labels = issue.labels.filter((label) => label !== PROCESSING_LABEL);
+  }
 }
 
 export interface AcpPeer {
@@ -341,6 +378,7 @@ export class IssuesWorker {
   private readonly connect: NonNullable<WorkerOptions["connect"]>;
   private readonly providerEnvironment: WorkerProviderEnvironment;
   private readonly issueState: NonNullable<WorkerOptions["issueState"]>;
+  private readonly writeProcessing: NonNullable<WorkerOptions["writeProcessing"]>;
   private readonly harnessVersion: string | null;
   private readonly log: (line: string) => void;
 
@@ -414,6 +452,24 @@ export class IssuesWorker {
               : {}),
           },
           number,
+        );
+      });
+    this.writeProcessing =
+      options.writeProcessing ??
+      ((number, active) => {
+        const remote = originForge(this.repoDir, this.environment);
+        return writeIssueProcessing(
+          {
+            repository: this.state.repo,
+            environment: this.environment,
+            timeoutMs: this.pollTimeoutMs,
+            ...(remote === undefined ? {} : { forge: remote.forge }),
+            ...(remote?.forge === "gitea"
+              ? { baseUrl: giteaBaseUrl(remote, this.environment) }
+              : {}),
+          },
+          number,
+          active,
         );
       });
     this.harnessVersion =
@@ -719,7 +775,7 @@ export class IssuesWorker {
         // that is not an error, so a missing run is ignored.
         const active = this.active.get(command.number);
         if (active === undefined) return;
-        this.abandonRun(
+        await this.abandonRun(
           active,
           `Issue #${command.number} was closed on the tracker; its run was stopped.`,
         );
@@ -812,7 +868,9 @@ export class IssuesWorker {
           this.state.poll.rateLimitedUntil = null;
           this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
           this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-          this.applyIssues(result.issues);
+          await this.reconcileProcessing(result.issues);
+          if (this.stopping) return;
+          await this.applyIssues(result.issues);
           break;
         }
         case "rate-limited": {
@@ -858,7 +916,27 @@ export class IssuesWorker {
     }
   }
 
-  private applyIssues(issues: IssuesIssue[]): void {
+  private async reconcileProcessing(issues: IssuesIssue[]): Promise<void> {
+    await reconcileProcessingLabels({
+      issues,
+      repoDir: this.repoDir,
+      active: new Set(this.active.keys()),
+      write: this.writeProcessing,
+      log: this.log,
+    });
+  }
+
+  /** Adds or clears the forge label that marks this issue's run. */
+  private async setProcessing(number: number, active: boolean): Promise<boolean> {
+    const result = await this.writeProcessing(number, active);
+    if (result.kind === "ok") return true;
+    this.log(
+      `could not ${active ? "mark" : "unmark"} issue #${number} as processing: ${result.detail}`,
+    );
+    return false;
+  }
+
+  private async applyIssues(issues: IssuesIssue[]): Promise<void> {
     const open = new Set(issues.map((issue) => issue.number));
     // A dismissal lasts until this worker's own read drops the issue or its
     // window passes; a later reopen is then eligible again.
@@ -883,7 +961,7 @@ export class IssuesWorker {
     }
     this.state.queue = issues.map((issue) => this.queued(issue));
     this.clearResolvedError(open);
-    this.stopClosedRuns(open);
+    await this.stopClosedRuns(open);
   }
 
   /** The issue a verification error names, when the worker wrote the message. */
@@ -1026,13 +1104,34 @@ export class IssuesWorker {
 
   /** Starts one peer for one issue and records its run and agent entry. */
   private async begin(issue: IssuesIssue): Promise<void> {
+    // The forge label is the one record of a live run. A run that cannot be
+    // marked is not started: the page would otherwise count it as pending
+    // while an agent works it.
+    if (!(await this.setProcessing(issue.number, true))) {
+      if (this.claiming.delete(issue.number)) releaseIssueClaim(this.repoDir, issue.number);
+      this.state.cooldowns[String(issue.number)] = new Date(
+        this.clock().getTime() + COOLDOWN_MS,
+      ).toISOString();
+      this.state.lastError = `could not mark issue #${issue.number} as processing on the tracker`;
+      this.state.lifecycle = this.settledLifecycle();
+      this.publish();
+      return;
+    }
+    if (this.stopping) {
+      await this.setProcessing(issue.number, false);
+      if (this.claiming.delete(issue.number)) releaseIssueClaim(this.repoDir, issue.number);
+      return;
+    }
     const opened = await this.openRun(issue);
     if ("error" in opened) {
+      await this.setProcessing(issue.number, false);
       this.failWithoutPeer(issue, opened.runId, opened.directory, opened.error);
       return;
     }
     if (this.stopping) {
       this.closePeer(opened.active);
+      await this.setProcessing(issue.number, false);
+      if (this.claiming.delete(issue.number)) releaseIssueClaim(this.repoDir, issue.number);
       return;
     }
     const active = opened.active;
@@ -1118,13 +1217,15 @@ export class IssuesWorker {
     }
   }
 
-  private forget(active: ActiveRun): void {
-    if (this.claiming.delete(active.issue.number)) {
-      releaseIssueClaim(this.repoDir, active.issue.number);
+  private async forget(active: ActiveRun): Promise<void> {
+    const number = active.issue.number;
+    if (this.claiming.delete(number)) {
+      releaseIssueClaim(this.repoDir, number);
     }
-    this.active.delete(active.issue.number);
+    this.active.delete(number);
     this.state.agents = this.state.agents.filter((agent) => agent.runId !== active.runId);
-    clearClosedByRun(this.stateDir, this.repoDir, active.issue.number, active.runId);
+    clearClosedByRun(this.stateDir, this.repoDir, number, active.runId);
+    await this.setProcessing(number, false);
   }
 
   private settle(exitCode: number | null, error: string | null, finishedAt: string): void {
@@ -1190,7 +1291,7 @@ export class IssuesWorker {
     if (this.stopping) return;
     if (result.kind === "state" && result.state === "closed") {
       this.closePeer(active);
-      this.recordSucceeded(active);
+      await this.recordSucceeded(active);
       return;
     }
     if (result.kind === "state" && active.turns <= MAX_FOLLOW_UP_TURNS) {
@@ -1203,7 +1304,7 @@ export class IssuesWorker {
         ? `could not verify issue #${active.issue.number}: ${result.detail}`
         : `the agent finished but issue #${active.issue.number} is still open`;
     this.closePeer(active);
-    this.recordFailed(
+    await this.recordFailed(
       active,
       active.firstLine.value === null ? detail : `${detail}; agent stderr: ${active.firstLine.value}`,
     );
@@ -1229,14 +1330,14 @@ export class IssuesWorker {
       });
   }
 
-  private recordSucceeded(active: ActiveRun): void {
+  private async recordSucceeded(active: ActiveRun): Promise<void> {
     if (active.finished || this.stopping) return;
     active.finished = true;
     const finishedAt = this.clock().toISOString();
     this.updateRun(active.runId, active.directory, "succeeded", finishedAt, 0, null);
     this.ledger = recordHandled(this.ledger, active.captured, active.runId, this.clock());
     // Settle before persisting: a ledger I/O error must never strand the run.
-    this.forget(active);
+    await this.forget(active);
     this.refreshQueue();
     this.settle(0, null, finishedAt);
     const ledgerError = this.persistLedger();
@@ -1246,7 +1347,7 @@ export class IssuesWorker {
     }
   }
 
-  private recordFailed(active: ActiveRun, detail: string): void {
+  private async recordFailed(active: ActiveRun, detail: string): Promise<void> {
     if (active.finished || this.stopping) return;
     active.finished = true;
     const finishedAt = this.clock().toISOString();
@@ -1254,17 +1355,17 @@ export class IssuesWorker {
     this.state.cooldowns[String(active.issue.number)] = new Date(
       this.clock().getTime() + COOLDOWN_MS,
     ).toISOString();
-    this.forget(active);
+    await this.forget(active);
     this.refreshQueue();
     this.settle(1, detail, finishedAt);
   }
 
-  private finishFailed(active: ActiveRun, detail: string): void {
+  private async finishFailed(active: ActiveRun, detail: string): Promise<void> {
     if (active.finished || active.settling || this.stopping) return;
     active.settling = true;
     this.closePeer(active);
     active.firstLine.finish();
-    this.recordFailed(active, active.firstLine.value ?? detail);
+    await this.recordFailed(active, active.firstLine.value ?? detail);
   }
 
   /**
@@ -1274,10 +1375,10 @@ export class IssuesWorker {
    * unhandled and gets no cooldown, so a reopened issue is eligible on a later
    * poll.
    */
-  private stopClosedRuns(open: Set<number>): void {
+  private async stopClosedRuns(open: Set<number>): Promise<void> {
     for (const active of [...this.active.values()]) {
       if (open.has(active.issue.number)) continue;
-      this.abandonRun(
+      await this.abandonRun(
         active,
         `Issue #${active.issue.number} was closed on the tracker; its run was stopped.`,
       );
@@ -1285,7 +1386,7 @@ export class IssuesWorker {
   }
 
   /** Ends one run without a verdict: no succeeded ledger entry, no cooldown. */
-  private abandonRun(active: ActiveRun, notice: string): void {
+  private async abandonRun(active: ActiveRun, notice: string): Promise<void> {
     if (active.finished) return;
     // A closed issue is not a cancellation when this run closed it: its turn
     // end verifies the closure and settles it as succeeded. A settling run has
@@ -1297,7 +1398,7 @@ export class IssuesWorker {
     active.finished = true;
     this.closePeer(active);
     this.updateRun(active.runId, active.directory, "stopped", finishedAt, null, null);
-    this.forget(active);
+    await this.forget(active);
     this.refreshQueue();
     this.state.notice = notice;
     this.settle(null, null, finishedAt);
@@ -1351,6 +1452,9 @@ export class IssuesWorker {
       this.closePeer(active);
       this.updateRun(active.runId, active.directory, "stopped", this.clock().toISOString(), null, null);
     }
+    await Promise.all(
+      [...this.active.keys()].map((number) => this.setProcessing(number, false)),
+    );
     this.active.clear();
     for (const number of this.claiming) releaseIssueClaim(this.repoDir, number);
     this.claiming.clear();
