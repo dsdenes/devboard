@@ -469,15 +469,32 @@ const REQUIRED_SECTIONS = [
  * Keep the epic's title and the sections a goal needs to execute and verify.
  * The tracker marker and other HTML comments are dropped. When the body has
  * none of the expected sections, keep the whole (comment-stripped) body.
+ *
+ * Only level-1 and level-2 headings delimit a required section, so a `###`
+ * subheading stays inside its section. Fenced blocks are tracked and kept
+ * verbatim: a `#` line inside one is a shell comment, never a heading.
  */
 export function distillObjective(title: string, body: string): string {
   const clean = body.replace(/\r\n/g, "\n").replace(/<!--[\s\S]*?-->/g, "");
   const lines = clean.split("\n");
   const sections: Record<string, string[]> = {};
   let current: string | null = null;
+  let fence: string | null = null;
 
   for (const line of lines) {
-    const heading = /^#{1,6}\s+(.+?)\s*$/.exec(line);
+    const fenceRun = /^\s*(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
+    if (fence) {
+      if (current) sections[current]?.push(line);
+      const closing = fenceRun !== null && fenceRun[0] === fence[0] && fenceRun.length >= fence.length;
+      if (closing && line.trim() === fenceRun) fence = null;
+      continue;
+    }
+    if (fenceRun) {
+      fence = fenceRun;
+      if (current) sections[current]?.push(line);
+      continue;
+    }
+    const heading = /^#{1,2}\s+(.+?)\s*$/.exec(line);
     if (heading) {
       const name = heading[1].trim();
       current =
