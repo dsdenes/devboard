@@ -234,6 +234,46 @@ async function text(devtools: Devtools, testid: string): Promise<string> {
   return typeof value === "string" ? value : "";
 }
 
+async function discoverBar(devtools: Devtools): Promise<{
+  bars: number;
+  dot: string;
+  last: string;
+  control: string;
+  removed: boolean;
+}> {
+  const value = await devtools.evaluate(`(() => {
+    const root = document.querySelector('#workspace-discover');
+    const bar = root?.querySelector('[data-testid="agent-activity-bar"]');
+    const control = bar?.querySelector('[data-testid="agent-activity-control"]');
+    return {
+      bars: root?.querySelectorAll('[data-testid="agent-activity-bar"]').length ?? 0,
+      dot: bar?.querySelector('[data-testid="agent-activity-dot"]')?.getAttribute('data-state') ?? '',
+      last: bar?.querySelector('[data-testid="agent-activity-last"]')?.textContent?.trim() ?? '',
+      control:
+        control?.querySelector('[data-testid="discover-start"]') !== null
+          ? 'discover-start'
+          : control?.querySelector('[data-testid="discover-agent-start"]') !== null
+            ? 'discover-agent-start'
+            : control?.querySelector('[data-testid="discover-agent-stop"]') !== null
+              ? 'discover-agent-stop'
+              : control?.querySelector('[data-testid="discover-stop"]') !== null
+                ? 'discover-stop'
+                : '',
+      removed:
+        root?.querySelector('[data-testid="discover-run-tag"]') !== null ||
+        root?.querySelector('[data-testid="discover-agent-run-tag"]') !== null ||
+        root?.querySelector('[data-testid="discover-agent-status"]') !== null,
+    };
+  })()`);
+  return (value ?? { bars: 0, dot: "", last: "", control: "", removed: false }) as {
+    bars: number;
+    dot: string;
+    last: string;
+    control: string;
+    removed: boolean;
+  };
+}
+
 async function valueOf(devtools: Devtools, testid: string): Promise<string> {
   const value = await devtools.evaluate(
     `document.querySelector('[data-testid="${testid}"]')?.value ?? ''`,
@@ -674,6 +714,14 @@ try {
         (await countOf(devtools, "discover-agent-activity")) === 0,
         `the ${agent.id} card still renders an activity log`,
       );
+      const bar = await discoverBar(devtools);
+      check(
+        bar.bars === 1 &&
+          (bar.control === "discover-agent-start" || bar.control === "discover-agent-stop") &&
+          !bar.removed,
+        `the ${agent.id} card does not render its control inside the activity bar`,
+        bar,
+      );
     }
     // No card's editor holds another agent's prompt.
     const shown = new Set<string>();
@@ -692,11 +740,23 @@ try {
       "the sidebar still carries a Run all control",
     );
     await openOverview(devtools);
+    const overviewBar = await discoverBar(devtools);
     check(
-      (await countOf(devtools, "discover-start")) === 1,
-      "the Overview page does not carry the Run all control",
+      overviewBar.bars === 1 && overviewBar.control === "discover-start" && !overviewBar.removed,
+      "the Overview page does not carry the Run all control inside the activity bar",
+      overviewBar,
     );
     await click(devtools, "discover-start");
+    await waitFor(
+      async () => {
+        const bar = await discoverBar(devtools);
+        return bar.dot === "running" && bar.control === "discover-stop" && !bar.removed
+          ? true
+          : undefined;
+      },
+      "the running Discover bar",
+      30_000,
+    );
     await waitFor(
       async () =>
         (await devtools.evaluate(`(() => {
@@ -707,6 +767,12 @@ try {
           : undefined,
       "all six agents to succeed",
       120_000,
+    );
+    const finishedBar = await discoverBar(devtools);
+    check(
+      finishedBar.control === "discover-start" && finishedBar.last.length > 0,
+      "the Discover bar did not return to its idle control",
+      finishedBar,
     );
     const orderedPrompts = logPrompts(sourceLog);
     check(
@@ -767,6 +833,12 @@ try {
           (await attribute(devtools, "discover-panel", "data-tab")) === tab ? true : undefined,
         `the ${tab} panel`,
         15_000,
+      );
+      const tabBar = await discoverBar(devtools);
+      check(
+        tabBar.bars === 1 && tabBar.control === "discover-start" && !tabBar.removed,
+        `the ${tab} page does not render the activity bar with its control`,
+        tabBar,
       );
     }
     console.log("PASS run-all-order");
@@ -854,10 +926,12 @@ try {
       refused,
     );
     await openOverview(devtools);
-    const runAllDisabled = await devtools.evaluate(
-      `document.querySelector('[data-testid="discover-start"]')?.disabled === true`,
+    const runningBar = await discoverBar(devtools);
+    check(
+      runningBar.dot === "running" && runningBar.control === "discover-stop",
+      "Run all is offered in the bar while an agent runs",
+      runningBar,
     );
-    check(runAllDisabled === true, "Run all is enabled while an agent runs");
     console.log("PASS one-at-a-time");
   }
 

@@ -510,6 +510,27 @@ async function text(devtools: Devtools, testid: string): Promise<string> {
   return typeof value === "string" ? value : "";
 }
 
+async function barLog(devtools: Devtools): Promise<string> {
+  const expanded = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]')?.getAttribute('aria-expanded') === 'true'`,
+  );
+  if (expanded !== true) {
+    await devtools.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]');
+      if (button === null) return false;
+      button.click();
+      return true;
+    })()`);
+  }
+  await devtools.evaluate(`new Promise((settle) => requestAnimationFrame(() => settle(true)))`);
+  const value = await devtools
+    .evaluate(
+      `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-log"]')?.textContent?.trim() ?? ''`,
+    )
+    .catch(() => "");
+  return typeof value === "string" ? value : "";
+}
+
 interface RowSnapshot {
   number: string;
   url: string;
@@ -755,7 +776,7 @@ try {
   );
   const activity = await waitFor(
     async () => {
-      const value = await text(devtools!, "scout-activity");
+      const value = await barLog(devtools!);
       return value.includes("filed #") ? value : undefined;
     },
     "the filings in the activity",

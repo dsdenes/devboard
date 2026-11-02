@@ -311,11 +311,15 @@ async function setInput(devtools: Devtools, testid: string, value: string): Prom
 }
 
 const CORE_IDS = [
-  "agent-header",
-  "agent-lifecycle",
-  "agent-sync-at",
+  "agent-activity-bar",
+  "agent-activity-toggle",
+  "agent-activity-dot",
+  "agent-activity-last",
+  "agent-activity-control",
   "agent-start",
   "agent-stop",
+  "agent-header",
+  "agent-sync-at",
   "agent-cadence",
   "agent-last-run",
   "agent-next-run",
@@ -325,12 +329,74 @@ const CORE_IDS = [
   "agent-save-limits",
   "agent-issues-count",
   "agent-issues",
-  "agent-detail",
 ];
+
+async function pageLifecycle(devtools: Devtools): Promise<string> {
+  const value = await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const id = page?.dataset.agent ?? '';
+    return id.length === 0
+      ? ''
+      : document.querySelector('[data-testid="agent-state-' + id + '"]')?.dataset.state ?? '';
+  })()`);
+  return typeof value === "string" ? value : "";
+}
+
+async function agentLast(devtools: Devtools): Promise<string> {
+  const value = await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    return page?.querySelector('[data-testid="agent-activity-last"]')?.textContent?.trim() ?? '';
+  })()`);
+  return typeof value === "string" ? value : "";
+}
+
+async function barLog(devtools: Devtools): Promise<string> {
+  const expanded = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]')?.getAttribute('aria-expanded') === 'true'`,
+  );
+  if (expanded !== true) {
+    await devtools.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]');
+      if (button === null) return false;
+      button.click();
+      return true;
+    })()`);
+  }
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (
+      (await devtools.evaluate(
+        `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-log"]') !== null`,
+      )) === true
+    ) {
+      break;
+    }
+    await Bun.sleep(100);
+  }
+  const shape = await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const toggle = page?.querySelector('[data-testid="agent-activity-toggle"]');
+    return {
+      agent: page?.getAttribute('data-agent') ?? '',
+      toggles: page?.querySelectorAll('[data-testid="agent-activity-toggle"]').length ?? 0,
+      expanded: toggle?.getAttribute('aria-expanded') ?? '',
+      log: page?.querySelector('[data-testid="agent-activity-log"]') !== null,
+    };
+  })()`);
+  if ((shape as { log?: boolean }).log !== true) {
+    throw new Error(`the activity bar log never opened: ${JSON.stringify(shape)}`);
+  }
+  const value = await devtools.evaluate(`(() => {
+    const element = document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-log"]');
+    return element === null ? "" : (element.textContent ?? '').trim();
+  })()`);
+  return typeof value === "string" ? value : "";
+}
 
 async function coreSequence(devtools: Devtools): Promise<string[]> {
   const value = await devtools.evaluate(`(() => {
-    const all = [...document.querySelectorAll('[data-testid]')]
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const all = [...(page?.querySelectorAll('[data-testid]') ?? [])]
       .map((element) => element.getAttribute('data-testid') ?? '');
     const core = ${JSON.stringify(CORE_IDS)};
     return all.filter((id) => core.includes(id));
@@ -811,7 +877,8 @@ try {
   );
   assertTrue(scoutPage === "scout", `the Auto Scout page names ${String(scoutPage)}`);
   assertTrue(await present(devtools, "agent-issues-empty"), "Auto Scout has no empty table");
-  assertTrue(await present(devtools, "scout-activity"), "Auto Scout has no activity panel");
+  assertTrue(!(await present(devtools, "agent-detail")), "Auto Scout still renders the detail panel");
+  assertTrue(!(await present(devtools, "agent-lifecycle")), "Auto Scout still renders a lifecycle badge");
   const scoutCore = await coreSequence(devtools);
   assertTrue(
     JSON.stringify(scoutCore.filter((id) => id !== "agent-stop")) ===
@@ -830,7 +897,8 @@ try {
   );
   assertTrue(designPage === "design", `the Design System page names ${String(designPage)}`);
   assertTrue(await present(devtools, "agent-issues-empty"), "Design System has no empty table");
-  assertTrue(await present(devtools, "design-activity"), "Design System has no activity panel");
+  assertTrue(!(await present(devtools, "agent-detail")), "Design System still renders the detail panel");
+  assertTrue(!(await present(devtools, "agent-lifecycle")), "Design System still renders a lifecycle badge");
   const designCore = await coreSequence(devtools);
   assertTrue(
     JSON.stringify(designCore.filter((id) => id !== "agent-stop")) ===
@@ -849,8 +917,8 @@ try {
   );
   assertTrue(watchdogPage === "watchdog", `the Watchdog page names ${String(watchdogPage)}`);
   assertTrue(await present(devtools, "agent-issues-empty"), "Watchdog has no empty table");
-  assertTrue(await present(devtools, "watchdog-cycles"), "Watchdog has no cycle history");
-  assertTrue(await present(devtools, "watchdog-cycles-empty"), "Watchdog has no empty history");
+  assertTrue(!(await present(devtools, "agent-detail")), "Watchdog still renders the detail panel");
+  assertTrue((await agentLast(devtools)) === "No activity yet.", "Watchdog has no empty bar activity");
   const watchdogCore = await coreSequence(devtools);
   assertTrue(
     JSON.stringify(watchdogCore.filter((id) => id !== "agent-stop")) ===
@@ -858,7 +926,7 @@ try {
     `the Watchdog core ids differ: ${JSON.stringify(watchdogCore)}`,
   );
   assertTrue(
-    (await text(devtools, "agent-lifecycle")).includes("stopped"),
+    (await pageLifecycle(devtools)) === "stopped",
     "Watchdog does not start stopped",
   );
   console.log("PASS shared-page-shape");
@@ -874,8 +942,8 @@ try {
   );
   assertTrue(coachPage === "coach", `the Coach page names ${String(coachPage)}`);
   assertTrue(await present(devtools, "agent-issues-empty"), "Coach has no empty table");
-  assertTrue(await present(devtools, "watchdog-cycles"), "Coach has no cycle history");
-  assertTrue(await present(devtools, "watchdog-cycles-empty"), "Coach has no empty history");
+  assertTrue(!(await present(devtools, "agent-detail")), "Coach still renders the detail panel");
+  assertTrue((await agentLast(devtools)) === "No activity yet.", "Coach has no empty bar activity");
   const coachCore = await coreSequence(devtools);
   assertTrue(
     JSON.stringify(coachCore.filter((id) => id !== "agent-stop")) ===
@@ -883,7 +951,7 @@ try {
     `the Coach core ids differ: ${JSON.stringify(coachCore)}`,
   );
   assertTrue(
-    (await text(devtools, "agent-lifecycle")).includes("stopped"),
+    (await pageLifecycle(devtools)) === "stopped",
     "Coach does not start stopped",
   );
   await waitFor(
@@ -1197,8 +1265,10 @@ try {
     window.__lifecycles = [];
     clearInterval(window.__lifecycleTimer);
     window.__lifecycleTimer = setInterval(() => {
-      const element = document.querySelector('[data-testid="agent-lifecycle"]');
-      const state = element?.dataset.state ?? '';
+      const id = document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? '';
+      const state = id.length === 0
+        ? ''
+        : document.querySelector('[data-testid="agent-state-' + id + '"]')?.dataset.state ?? '';
       const seen = window.__lifecycles[window.__lifecycles.length - 1];
       if (state.length > 0 && state !== seen) window.__lifecycles.push(state);
     }, 5);
@@ -1206,7 +1276,7 @@ try {
   })()`);
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the running lifecycle",
     10_000,
   );
@@ -1219,7 +1289,7 @@ try {
   assertTrue(!(await present(devtools, "agent-start")), "Start is still rendered while running");
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped lifecycle",
     10_000,
   );
@@ -1238,13 +1308,13 @@ try {
   );
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the running Auto Scout",
     10_000,
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped Auto Scout",
     10_000,
   );
@@ -1411,7 +1481,10 @@ try {
     "the Coach sidebar count does not match its filed rows",
   );
   await waitFor(
-    async () => ((await present(devtools!, "watchdog-cycle")) ? true : undefined),
+    async () => {
+      const log = await barLog(devtools!);
+      return log.includes("filed") ? log : undefined;
+    },
     "the Coach cycle detail",
     10_000,
   );
@@ -1495,7 +1568,7 @@ try {
   );
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the capped Watchdog",
     10_000,
   );
@@ -1515,7 +1588,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped capped Watchdog",
     10_000,
   );
@@ -1809,7 +1882,7 @@ try {
   });
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the retrying Auto Scout",
     15_000,
   );
@@ -1960,7 +2033,7 @@ try {
   /* A permanent failure appears on the first attempt, and a success clears it. */
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped retrying Auto Scout",
     15_000,
   );
@@ -1970,7 +2043,7 @@ try {
   });
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the permanently failing Auto Scout",
     15_000,
   );
@@ -2013,7 +2086,7 @@ try {
   console.log("PASS sync-retry-permanent-clears");
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped verified Auto Scout",
     15_000,
   );

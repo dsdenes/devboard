@@ -289,19 +289,6 @@
   }
 </script>
 
-{#snippet startControl()}
-  <Button
-    variant="default"
-    data-command="discover.start"
-    data-testid="discover-start"
-    disabled={discover.startDisabled}
-    title={discover.startTitle}
-    onclick={() => discover.start()}
-  >
-    {discover.hasArtifacts ? "Re-discover" : "Discover project"}
-  </Button>
-{/snippet}
-
 {#snippet questionPanel()}
   {#if discover.question !== null}
     <section class="panel discover-question" data-testid="discover-question">
@@ -684,7 +671,6 @@
         {#if discover.busy !== null}
           <span class="muted">{discover.busy}</span>
         {/if}
-        {@render startControl()}
       </div>
     </div>
 

@@ -70,8 +70,8 @@ The width survives a reload.
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
 surface that holds the same facts. The Flow overview opens with the flow-goal editor, which takes
 the full page height; while a goal interview is running the editor collapses to its header and the
-interview takes the next block. The overview ends with the implementation activity console, which
-also takes a full page height so agent output never shrinks to a thumbnail.
+interview takes the next block. The implementation activity moves to the pinned activity bar, so
+the overview keeps the goal editor, session facts, widgets, files, blockers, and verification.
 
 ### Workspace page
 
@@ -97,6 +97,61 @@ A reload restores the active mode, each mode's open page, sidebar and split size
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
 before Devboard existed still restores every stored mode and page; Devboard starts on its default
 `MCP tools` page.
+
+### Single-agent activity bar
+
+Every page whose work is exactly one agent leads its workspace with the same pinned bar. It is
+the first element of the page, outside every scrolling region, spans the workspace width with the
+standard 8px horizontal padding, and stays fully visible while the page content scrolls. Switching
+tabs or modes replaces its content with the new page's agent and collapses it.
+
+The surfaces are the four background-agent pages (`agent-page` for `scout`, `watchdog`, `design`,
+and `coach`), the six Discover agent pages (`discover-agent`), the Discover run pages
+(`discover-panel` for overview, glossary, skill, and warnings), the Goal lane page
+(`lane-header`), the Goal single-record page (`record-header`), the Issues focus tab
+(`issues-agent-focus`), the Flow overview (`flow-view` overview), and a Flow conversation
+(`flow-conversation`). Pages that can host several agents at once — the Goal implementation
+overview, the Issues overview, the Issues Agents grid, Drafts, the Queue, and Runs — keep their
+current fleet controls and render no bar. The Goal decision-records, document, and skills pages,
+the MCP tools page, and the Flow decision board, checkpoint, and file pages also render none, and
+a page with no attached agent renders none.
+
+Collapsed, the bar is one row. `data-testid="agent-activity-dot"` carries no visible text and
+`data-state` `running`, `idle`, `succeeded`, `failed`, or `stopped`;
+`data-testid="agent-activity-last"` shows the newest non-empty activity line on one line with an
+ellipsis and the complete line in its `title`, or the muted `No activity yet.`;
+`data-testid="agent-activity-toggle"` carries `aria-expanded`; `data-testid="agent-activity-control"`
+holds at most one existing start/stop control; and `data-testid="agent-activity-question"` appears
+only while the page's agent waits for an answer. The collapsed row never shows a run identifier,
+`Run in progress`, `Running`, `started …`, or a lifecycle badge.
+
+While running, the dot uses the accent token and a continuous 1.8-second pulse, and hovering or
+focusing it reveals the current run's ISO 8601 start time in the `title` and the accessible name.
+Any other state uses the muted-foreground token and does not animate; no start time is claimed
+while idle. Under `prefers-reduced-motion: reduce` the pulse is removed while the running color and
+`data-state` remain.
+
+Activating `data-testid="agent-activity-toggle"` expands an inline
+`data-testid="agent-activity-log"` below the row, inside the same docked region and above the page
+content. It holds every retained activity line, newest last, in a scrollable region that follows
+the newest line only while the operator is at the bottom. Activating the toggle again collapses it;
+another tab, mode, or a reload starts collapsed. The expanded panel never contains a run identifier.
+
+Each existing control moved into `data-testid="agent-activity-control"` keeps its test id, command,
+label, disabled conditions, title, and effect, and the page no longer renders a second copy:
+`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` for Discover
+run pages, `discover-agent-start`/`discover-agent-stop` for Discover agent pages, the Goal record
+`start`, and `start-flow-implementation`/`stop-flow-implementation` for the Flow overview. The
+Goal lane, the Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal`
+remains a page action. Moving a control never adds a backend command or a per-agent Stop.
+
+The removed page content is `discover-run-tag`, `discover-agent-run-tag`, `discover-agent-status`,
+`agent-lifecycle`, `agent-detail`, `issues-agent-focus-run`, `issues-agent-focus-run-id`,
+`issues-agent-focus-run-started`, `issues-agent-focus-activity`, `lane-status`, `lane-activity`,
+`flow-status`, `flow-activity-section`, `flow-goal-activity`, and `flow-conversation-activity`.
+Titles, identity, questions and answer forms, errors, notices, interrupted banners, agent settings,
+filed issues, record facts, Flow messages and conclusions, and Discover artifact warnings stay in
+the page. The left mode rail and the footer status bar are unchanged.
 
 ### Split panes
 
@@ -172,11 +227,10 @@ renders; it replaces the previous confirmation and clears itself after three sec
 appears only after the server confirms the exact value it persisted; a refused or invalid save
 keeps its existing inline error or alert and shows no confirmation.
 
-xterm.js renders read-only agent output for Goal current activity and history, lane current
-activity and history, Flow goal creation, implementation activity, conversation activity, and
-Discover activity. Terminals preserve ANSI output, are selectable and copyable, auto-scroll
-unless the developer scrolls away, keep a bounded scrollback, and expose their full buffer to
-assistive technology.
+xterm.js renders read-only Goal current activity and history. Every single-agent page instead
+shows its activity through the shared activity bar. Terminals preserve ANSI output, are
+selectable and copyable, auto-scroll unless the developer scrolls away, keep a bounded
+scrollback, and expose their full buffer to assistive technology.
 
 ### Notifications and status bar
 
