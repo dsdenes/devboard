@@ -623,6 +623,20 @@ describe("goal proposal naming and body", () => {
     }
   });
 
+  test("echoes the request's flow id on the draft response", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const response = await propose(url, proposal(), { "x-flow-id": "4d1c" });
+
+      expect(response.status).toBe(201);
+      expect(response.headers.get("x-flow-id")).toBe("4d1c");
+      expect(await drafts(root)).toHaveLength(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("writes one draft for a retried Idempotency-Key", async () => {
     const { server, root, url } = await startServer();
 

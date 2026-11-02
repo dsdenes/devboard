@@ -62,6 +62,7 @@ import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints.ts"
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { suggestGoalSlug } from "./goal-slug";
 import { IdempotencyStore, parseIdempotencyKey } from "./idempotency";
+import { echoFlowId, parseFlowId } from "./flow-id";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -7561,10 +7562,17 @@ export function createApp(options: AppOptions) {
   /**
    * The one answer an unexpected endpoint failure gives: a fixed detail the
    * client may show, with the exception text recorded only in the journal.
+   * The record's scope names the flow id the request carried, so a failed call
+   * stays correlatable with the client that made it without changing the
+   * exception line the watchdog fingerprints.
    */
-  function internalErrorResponse(endpoint: string, error: unknown): Response {
+  function internalErrorResponse(
+    endpoint: string,
+    error: unknown,
+    flowId: string | null,
+  ): Response {
     const detail = error instanceof Error ? error.message : String(error);
-    journal.write("server-error", `${endpoint}: ${detail}`);
+    journal.write("server-error", `${endpoint}: ${detail}`, flowId ?? undefined);
     return problemResponse(500, INTERNAL_ERROR_DETAIL);
   }
 
@@ -7575,7 +7583,11 @@ export function createApp(options: AppOptions) {
    * Without DEVBOARD_GITEA_URL the endpoint refuses before parsing and makes
    * no request.
    */
-  async function handleFeedbackRequest(request: Request, url: URL): Promise<Response> {
+  async function handleFeedbackRequest(
+    request: Request,
+    url: URL,
+    flowId: string | null,
+  ): Promise<Response> {
     if (!feedbackEnabled) {
       return problemResponse(
         503,
@@ -7595,6 +7607,7 @@ export function createApp(options: AppOptions) {
           ...(options.feedback?.token === undefined || options.feedback.token.length === 0
             ? {}
             : { token: options.feedback.token }),
+          ...(flowId === null ? {} : { flowId }),
           timeoutMs: feedbackTimeoutMs,
           ...(feedbackFetch === undefined ? {} : { fetchImpl: feedbackFetch }),
         }),
@@ -7604,7 +7617,7 @@ export function createApp(options: AppOptions) {
       if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
         return problemResponse(error.status, error.message);
       }
-      return internalErrorResponse("POST /feedback", error);
+      return internalErrorResponse("POST /feedback", error, flowId);
     }
   }
 
@@ -7613,7 +7626,11 @@ export function createApp(options: AppOptions) {
    * peer, or the goal document: the request only creates one Markdown file
    * under `.devboard/goal-proposals/`.
    */
-  async function handleGoalProposalRequest(request: Request, url: URL): Promise<Response> {
+  async function handleGoalProposalRequest(
+    request: Request,
+    url: URL,
+    flowId: string | null,
+  ): Promise<Response> {
     const guarded = await readMutationBody(request, url, allowedHostnames);
     if ("response" in guarded) return guarded.response;
 
@@ -7629,7 +7646,7 @@ export function createApp(options: AppOptions) {
       if (error instanceof FeedbackRequestError) {
         return problemResponse(error.status, error.message);
       }
-      return internalErrorResponse("POST /goal-proposals", error);
+      return internalErrorResponse("POST /goal-proposals", error, flowId);
     }
   }
 
@@ -7638,92 +7655,119 @@ export function createApp(options: AppOptions) {
     port: options.port,
 
     async fetch(request, server) {
+      let flowId: string | null;
+      try {
+        flowId = parseFlowId(request.headers.get("x-flow-id"));
+      } catch (error) {
+        // A malformed flow id is refused before a handler runs, and an invalid
+        // value is never echoed.
+        if (!(error instanceof FeedbackRequestError)) throw error;
+        return problemResponse(error.status, error.message);
+      }
+      // Every answer to a correlated request carries the same flow id back, so
+      // a client can match its call to the server's journal.
+      const reply = (answer: Response | undefined): Response | undefined =>
+        answer === undefined || flowId === null ? answer : echoFlowId(answer, flowId);
+
       const url = new URL(request.url);
       // Cookies ignore ports, so each listener reads only its own page's one.
       const cookieName = `${DASHBOARD_COOKIE}_${server.port}`;
 
       if (url.pathname === FEEDBACK_ENDPOINT) {
         const denied = credentialRefusal(request, cookieName);
-        if (denied !== null) return denied;
-        return handleFeedbackRequest(request, url);
+        if (denied !== null) return reply(denied);
+        return reply(await handleFeedbackRequest(request, url, flowId));
       }
 
       // Readiness for the launcher that owns this process: the pid proves that
       // this dashboard, and not another server on the port, answered.
       if (url.pathname === "/ready") {
         if (request.method !== "GET" && request.method !== "HEAD") {
-          return problemResponse(405, "This path serves GET and HEAD only.", {
-            Allow: "GET, HEAD",
-          });
+          return reply(
+            problemResponse(405, "This path serves GET and HEAD only.", {
+              Allow: "GET, HEAD",
+            }),
+          );
         }
         const ready = Response.json({ pid: process.pid });
         // HEAD answers with GET's headers and no body.
-        return request.method === "HEAD" ? new Response(null, { headers: ready.headers }) : ready;
+        return reply(
+          request.method === "HEAD" ? new Response(null, { headers: ready.headers }) : ready,
+        );
       }
 
       if (url.pathname === GOAL_PROPOSALS_ENDPOINT) {
         const denied = credentialRefusal(request, cookieName);
-        if (denied !== null) return denied;
-        return handleGoalProposalRequest(request, url);
+        if (denied !== null) return reply(denied);
+        return reply(await handleGoalProposalRequest(request, url, flowId));
       }
 
       if (url.pathname === "/ws") {
         // Only a GET can carry a WebSocket handshake: any other method is a
         // method error, and never reaches the upgrade.
         if (request.method !== "GET") {
-          return problemResponse(405, "This path serves GET only.", { Allow: "GET" });
+          return reply(
+            problemResponse(405, "This path serves GET only.", { Allow: "GET" }),
+          );
         }
         const refusal = requestRefusal(request, url, allowedHostnames);
         if (refusal !== null) {
-          return problemResponse(
-            403,
-            refusal === "host"
-              ? "The request host is not served by this dashboard."
-              : "Cross-origin WebSocket upgrades are refused.",
+          return reply(
+            problemResponse(
+              403,
+              refusal === "host"
+                ? "The request host is not served by this dashboard."
+                : "Cross-origin WebSocket upgrades are refused.",
+            ),
           );
         }
         const denied = credentialRefusal(request, cookieName);
-        if (denied !== null) return denied;
+        if (denied !== null) return reply(denied);
         if (server.upgrade(request)) return;
-        return problemResponse(426, "This path upgrades to a WebSocket.", {
-          Upgrade: "websocket",
-        });
+        return reply(
+          problemResponse(426, "This path upgrades to a WebSocket.", {
+            Upgrade: "websocket",
+          }),
+        );
       }
-
 
       let pathname: string;
       try {
         pathname = decodeURIComponent(url.pathname);
       } catch {
-        return problemResponse(400, "The request path is not valid percent-encoding.");
+        return reply(
+          problemResponse(400, "The request path is not valid percent-encoding."),
+        );
       }
 
       const relative = staticRelativePath(url.pathname, pathname);
       if (relative === null) {
-        return problemResponse(404, "The requested file was not found.");
+        return reply(problemResponse(404, "The requested file was not found."));
       }
 
       const filePath = resolve(staticRoot, relative);
       if (filePath !== staticRoot && !filePath.startsWith(staticRoot + sep)) {
-        return problemResponse(404, "The requested file was not found.");
+        return reply(problemResponse(404, "The requested file was not found."));
       }
 
       const file = Bun.file(filePath);
       if (!(await file.exists())) {
-        return problemResponse(404, "The requested file was not found.");
+        return reply(problemResponse(404, "The requested file was not found."));
       }
 
       const fileStat = await stat(filePath);
       if (!fileStat.isFile()) {
-        return problemResponse(404, "The requested file was not found.");
+        return reply(problemResponse(404, "The requested file was not found."));
       }
 
       // A method the static fallback cannot serve is refused only for a file
       // that exists: an unknown path is a 404 on every method.
       if (request.method !== "GET" && request.method !== "HEAD") {
-        return problemResponse(405, "This path serves GET and HEAD only.", {
-          Allow: "GET, HEAD",
-        });
+        return reply(
+          problemResponse(405, "This path serves GET and HEAD only.", {
+            Allow: "GET, HEAD",
+          }),
+        );
       }
 
       // The body differs by Accept-Encoding, so a shared cache must key on it.
@@ -7735,12 +7779,14 @@ export function createApp(options: AppOptions) {
       attachDashboardCookie(headers, relative, cookieName);
       const head = request.method === "HEAD";
       if (!acceptsGzip(request.headers.get("accept-encoding"))) {
-        return new Response(head ? null : file, { headers });
+        return reply(new Response(head ? null : file, { headers }));
       }
       headers["Content-Encoding"] = "gzip";
       // A HEAD response keeps the negotiated headers without paying for a body
       // it never carries.
-      return new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers });
+      return reply(
+        new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers }),
+      );
     },
 
     websocket: {

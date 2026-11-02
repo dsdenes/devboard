@@ -22,6 +22,7 @@ import {
   readDetachedRunState,
 } from "./detached-run";
 import { journalFile, journalKey } from "./journal";
+import { MAX_FLOW_ID } from "./flow-id";
 import {
   remoteProjectDirectory,
   remoteScratchRoot,
@@ -529,6 +530,36 @@ describe("createApp", () => {
       expect(post.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await post.json()).toEqual(
         problemBody("Method Not Allowed", 405, "This path serves GET and HEAD only."),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("echoes a valid flow id on every answer and refuses a malformed one", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const echoed = await fetch(`http://${url}/ready`, {
+        headers: { "x-flow-id": "4d1c" },
+      });
+      expect(echoed.status).toBe(200);
+      expect(echoed.headers.get("x-flow-id")).toBe("4d1c");
+
+      const plain = await fetch(`http://${url}/ready`);
+      expect(plain.headers.get("x-flow-id")).toBeNull();
+
+      const refused = await fetch(`http://${url}/ready`, {
+        headers: { "x-flow-id": "x".repeat(MAX_FLOW_ID + 1) },
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await refused.json()).toEqual(
+        problemBody(
+          "Bad Request",
+          400,
+          `X-Flow-ID is longer than ${MAX_FLOW_ID} characters.`,
+        ),
       );
     } finally {
       server.stop(true);

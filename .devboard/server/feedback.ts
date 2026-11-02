@@ -112,6 +112,8 @@ export interface FeedbackIssueOptions {
   token?: string;
   /** Wall-clock bound for the API request. */
   timeoutMs: number;
+  /** The filing request's `X-Flow-ID`, forwarded on the issue-creation call. */
+  flowId?: string;
   /** Test seam; production uses the global fetch. */
   fetchImpl?: FetchLike;
 }
@@ -396,6 +398,7 @@ export async function fileFeedbackIssue(
       },
       { title, body },
       withTimeout,
+      options.flowId === undefined ? {} : { flowId: options.flowId },
     );
     return { title, links: { issue: { href: issue.url } } };
   } catch (error) {

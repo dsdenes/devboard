@@ -3539,6 +3539,15 @@ same key answers with the first issue or draft instead of creating a second reso
 failed attempt is never retained. A key is 1–255 characters with no control characters; an empty
 or oversized key is refused with `400`.
 
+Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
+dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
+on that request's response, forwards it on the outbound Gitea issue request `POST /feedback`
+makes, and records it as the scope of the `server-error` journal record a failed mutating request
+writes. A value is 1–200 printable ASCII characters with no spaces or control characters;
+surrounding whitespace is trimmed, and an empty, oversized, or non-printable value is refused with
+`400` before any handler runs. A request without the header keeps today's behavior: no outbound
+header, no echoed header, and an unchanged journal record.
+
 `Remove element` and `Redesign element` are one-click shortcuts. Selecting one arms it and shows a
 shortcut-specific hint; the next click on any element files the issue immediately, with no panel
 and no text field. Filing does not use client-supplied report text. A successful filing shows a
