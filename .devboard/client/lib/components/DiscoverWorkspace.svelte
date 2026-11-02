@@ -37,12 +37,10 @@
   };
 
   const activeSkill = $derived(tab?.kind === "skill" ? tab.resourceId : null);
-  const skill = $derived(activeSkill === null ? null : discover.skill(activeSkill));
   const skillText = $derived(activeSkill === null ? "" : discover.skillText(activeSkill));
   const skillTab = $derived(
     activeSkill === null ? null : (TABS.find((entry) => entry.skill === activeSkill) ?? null),
   );
-  const skillState = $derived(skill?.state ?? "missing");
 
   const totalTerms = $derived(
     discover.contexts.reduce(
@@ -297,33 +295,6 @@
                   >
                 </span>
               </h2>
-            </div>
-            <div class="row-sm discover-skill__actions">
-              {#if skillState === "missing"}
-                <span
-                  class="discover-skill__state"
-                  data-state="missing"
-                  data-testid="discover-skill-status"
-                >
-                  <span class="discover-skill__state-dot" aria-hidden="true"></span>Live file missing
-                </span>
-              {:else if skillState === "edited"}
-                <span
-                  class="discover-skill__state"
-                  data-state="edited"
-                  data-testid="discover-skill-status"
-                >
-                  <span class="discover-skill__state-dot" aria-hidden="true"></span>edited
-                </span>
-              {:else}
-                <span
-                  class="discover-skill__state"
-                  data-state="generated"
-                  data-testid="discover-skill-status"
-                >
-                  <span class="discover-skill__state-dot" aria-hidden="true"></span>generated
-                </span>
-              {/if}
             </div>
           </div>
           <div class="grow discover-skill__body">

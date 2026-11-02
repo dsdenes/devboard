@@ -81,8 +81,8 @@ CSS px wide, constrained to 200–600 CSS px, and resized by dragging its separa
 arrow keys with that separator focused. Double-clicking the separator restores the default width.
 The width survives a reload.
 
-- **Goal** lists the goal workspace surfaces, a **Skills** entry that discloses every prepared
-  skill, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
+- **Goal** lists the goal workspace surfaces, one **Skills** entry that opens the prepared-skills
+  table, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
   ADR records group is absent while no record is pending.
 - **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
   session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
@@ -997,9 +997,9 @@ The same vocabulary covers the other modes:
 - **Goal**: the Implementation entry (`data-testid="open-implementation"`) is `running` while a
   manual implementation run or the lifecycle's current step executes and `answer` while that run
   waits for an operator question; its stage, `manual`, or `idle` meta never moves into the badge.
-  The Skills toggle row (`data-testid="goal-skills-toggle"`) is `running` while skills preparation
-  executes, including while the submenu is collapsed. Goal records no failed terminal state, so
-  neither entry shows `failed`, and an operator stop is never relabelled a failure.
+  The Skills entry (`data-testid="goal-skills-open"`) is `running` while skills preparation
+  executes. Goal records no failed terminal state, so neither entry shows `failed`, and an
+  operator stop is never relabelled a failure.
 - **Issues**: the Overview entry (`data-testid="open-issues-overview"`) is `running` while the
   issues lifecycle runs, `failed` while it is failed, and `answer` while a running issue agent has a
   pending question, alongside its lifecycle badge and queue summary. The Draft goals entry
@@ -1451,24 +1451,26 @@ Each skill has a page that shows the whole `SKILL.md` as read-only text
 (`data-testid="discover-skill-text"`), with no rendered preview, no split pane, and no editor. The
 page header holds only the skill's page title. The panel header is one 44px row: the skill's
 relative path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on
-the leading edge, and `data-testid="discover-skill-status"` names `generated`, `edited`, or
-`Live file missing`. The page renders no `discover-skill-save`, `discover-skill-restore`, or
-`discover-skill-dirty`, and no state badge or purpose line, because the sidebar already flags
-`edited` or `missing`. The text is the live file when it exists and the generated baseline while
-it is missing, including the contribution skill.
+the leading edge. The page renders no `discover-skill-save`, `discover-skill-restore`, or
+`discover-skill-dirty`, and no state badge, status pill, or purpose line, because the sidebar
+already flags `edited` or `missing` on the skill entry. The text is the live file when it exists
+and the generated baseline while it is missing, including the contribution skill.
 
 A later run compares each live hash with its last baseline: an unedited skill is replaced, an
 edited skill is preserved byte for byte with its new baseline published beside it, and a skill
-the developer deleted is not recreated but shows `Live file missing`. A generated name colliding
-with a prepare-family, unmanaged, or different Discover skill fails the run and publishes
-nothing.
+the developer deleted is not recreated but keeps rendering its generated baseline with the
+sidebar flagging it `missing`. A generated name colliding with a prepare-family, unmanaged, or
+different Discover skill fails the run and publishes nothing.
 
 The goal lifecycle's skill prerequisite accepts a managed skill from either family: at least one
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`
 carry `name`, `description`, `family` (`prepare` or `discover`), and `state` (`generated`, `edited`,
 or `missing`), and a managed skill with no `devboard-family` field belongs to `prepare`. The Skills
-panel lists both families with their family and Discover state, and every prepare-family row
-carries a Delete control that confirms before removing that one skill. Prepare Skills replaces only its
+page is one `data-testid="skills-table"` with a `data-testid="skill"` row per skill: a collapsed row
+shows the skill name and its description, a click or Enter expands it in place to the rendered
+document and its file path, and a second click collapses it. Both families appear, and every
+prepare-family row carries a Delete control that confirms before removing that one skill. Prepare
+Skills replaces only its
 own family, and its contradiction review covers its family plus hand-authored unmanaged skills, so
 a project-specific Discover directive cannot fail a project-agnostic preparation. Discover's
 generated baselines must agree with each other and with the glossary; a contradiction there fails

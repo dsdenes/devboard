@@ -655,6 +655,10 @@ export class IssuesBridge {
    * only list there is. Only an attached worker can be working an issue, so a
    * stopped worker's leftover `agentRunId` is dropped instead of counting as
    * running with no agent to run it.
+   *
+   * Only a live worker contributes rows at all. A stopped version's state file
+   * keeps the queue of its last read forever, so merging it would return every
+   * issue that worker last listed as pending long after the issue closed.
    */
   private queueFor(
     states: IssuesState[],
@@ -662,8 +666,9 @@ export class IssuesBridge {
     attached: boolean,
   ): IssuesState["queue"] {
     const live = new Set(attachedStates);
+    const sources = attached ? attachedStates : states;
     const markers = new Map<number, IssuesState["queue"][number]>();
-    for (const state of states) {
+    for (const state of sources) {
       for (const issue of state.queue) {
         const marker =
           attached && live.has(state)

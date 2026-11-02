@@ -1197,8 +1197,11 @@ try {
       "the Contribution skill page does not show the live bytes",
     );
     check(
-      (await text(devtools, "discover-skill-status")) === "generated",
-      "the Contribution skill does not name its generated state",
+      (await countOf(devtools, "discover-skill-status")) === 0 &&
+        (await devtools.evaluate(
+          `document.querySelector('[data-testid="discover-tab"][data-skill="discover-contribution"]')?.getAttribute("data-state") ?? ""`,
+        )) === "generated",
+      "the Contribution skill page still names a draft state",
     );
     for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
       check(
@@ -1229,7 +1232,11 @@ try {
     await openTab("contribution-skill");
     await waitFor(
       async () =>
-        (await text(devtools, "discover-skill-status")).includes("missing") ? true : undefined,
+        (await devtools.evaluate(
+          `document.querySelector('[data-testid="discover-tab"][data-skill="discover-contribution"]')?.getAttribute("data-state") === "missing"`,
+        )) === true
+          ? true
+          : undefined,
       "the missing contribution skill state",
       20_000,
     );
@@ -1551,9 +1558,11 @@ try {
       "the skill page does not show the live file bytes",
     );
     check(
-      (await text(devtools, "discover-skill-status")) === "generated",
-      "the generated skill status is not named",
-      await text(devtools, "discover-skill-status"),
+      (await countOf(devtools, "discover-skill-status")) === 0 &&
+        (await devtools.evaluate(
+          `document.querySelector('[data-testid="discover-tab"][data-skill="${skillName}"]')?.getAttribute("data-state") ?? ""`,
+        )) === "generated",
+      "the skill page still names a draft state",
     );
     for (const testid of [
       "discover-skill-save",
@@ -1596,7 +1605,11 @@ try {
     await devtools.evaluate(`document.querySelector('[data-testid="discover-tab"][data-skill="${skillName}"]')?.click()`);
     await waitFor(
       async () =>
-        (await text(devtools, "discover-skill-status")) === "edited" ? true : undefined,
+        (await devtools.evaluate(
+          `document.querySelector('[data-testid="discover-tab"][data-skill="${skillName}"]')?.getAttribute("data-state") === "edited"`,
+        )) === true
+          ? true
+          : undefined,
       "the edited skill status",
       20_000,
     );
