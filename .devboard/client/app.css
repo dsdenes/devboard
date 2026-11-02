@@ -537,6 +537,11 @@ kbd {
   font-size: 11px;
 }
 
+/* A source-only marker follows its header title; free space falls after it. */
+.panel__header > .badge:not([data-tone]) {
+  margin-right: auto;
+}
+
 .panel__body {
   flex: 1;
   min-height: 0;

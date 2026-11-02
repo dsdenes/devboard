@@ -3,6 +3,7 @@
   import { discover } from "../discover.svelte";
   import { relativeTime } from "../discover-format";
   import SaveFeedback from "./SaveFeedback.svelte";
+  import SourceOnlyBadge from "./SourceOnlyBadge.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -168,9 +169,11 @@
     <section class="panel discover-agent__prompt" aria-label="Agent prompt">
       <div class="panel__header">
         <h2 class="panel__title">Prompt</h2>
-        <span class="panel__subtitle">
-          {editable ? "Editable in this source checkout" : "Read-only here"}
-        </span>
+        {#if editable}
+          <SourceOnlyBadge />
+        {:else}
+          <span class="panel__subtitle">Read-only here</span>
+        {/if}
       </div>
       <div class="panel__body stack-sm">
         {#if promptError !== null}
