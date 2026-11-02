@@ -1,0 +1,128 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { FeedbackRequestError } from "./feedback";
+import { IdempotencyStore, MAX_IDEMPOTENCY_KEY, parseIdempotencyKey } from "./idempotency";
+
+const temporaryDirectories: string[] = [];
+const temporaryRoot = join(import.meta.dir, "..", ".tmp");
+
+afterAll(async () => {
+  await Promise.all(
+    temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+});
+
+async function temporaryDirectory(): Promise<string> {
+  await mkdir(temporaryRoot, { recursive: true });
+  const directory = await mkdtemp(join(temporaryRoot, "idempotency-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+describe("idempotency key parsing", () => {
+  test("treats an absent header as no retry contract", () => {
+    expect(parseIdempotencyKey(null)).toBeNull();
+  });
+
+  test("keeps an opaque key verbatim", () => {
+    expect(parseIdempotencyKey(" Retry-1 ")).toBe("Retry-1");
+  });
+
+  test("refuses an empty, oversized, or control-bearing key", () => {
+    for (const value of ["", "   ", "x".repeat(MAX_IDEMPOTENCY_KEY + 1), "line\nbreak"]) {
+      expect(() => parseIdempotencyKey(value)).toThrow(FeedbackRequestError);
+    }
+  });
+});
+
+describe("idempotency store", () => {
+  test("runs one keyed operation and replays its result", async () => {
+    const root = await temporaryDirectory();
+    const store = new IdempotencyStore({ stateDir: join(root, "state"), repoDir: root });
+    let calls = 0;
+    const operation = async () => {
+      calls += 1;
+      return { url: "https://gitea.example/issues/42" };
+    };
+
+    const first = await store.run("feedback", "retry-1", operation);
+    const second = await store.run("feedback", "retry-1", operation);
+
+    expect(calls).toBe(1);
+    expect(second).toEqual(first);
+  });
+
+  test("runs every operation without a key", async () => {
+    const root = await temporaryDirectory();
+    const store = new IdempotencyStore({ stateDir: join(root, "state"), repoDir: root });
+    let calls = 0;
+    const operation = async () => {
+      calls += 1;
+      return calls;
+    };
+
+    await store.run("feedback", null, operation);
+    await store.run("feedback", null, operation);
+
+    expect(calls).toBe(2);
+  });
+
+  test("shares one in-flight attempt between concurrent retries", async () => {
+    const root = await temporaryDirectory();
+    const store = new IdempotencyStore({ stateDir: join(root, "state"), repoDir: root });
+    const gate = Promise.withResolvers<void>();
+    let calls = 0;
+    const operation = async () => {
+      calls += 1;
+      await gate.promise;
+      return { path: ".devboard/goal-proposals/one.md" };
+    };
+
+    const first = store.run("goal-proposal", "retry-1", operation);
+    const second = store.run("goal-proposal", "retry-1", operation);
+    gate.resolve();
+
+    expect(await first).toEqual({ path: ".devboard/goal-proposals/one.md" });
+    expect(await second).toEqual({ path: ".devboard/goal-proposals/one.md" });
+    expect(calls).toBe(1);
+  });
+
+  test("replays a completed result after a dashboard replacement", async () => {
+    const root = await temporaryDirectory();
+    const options = { stateDir: join(root, "state"), repoDir: root };
+    const before = new IdempotencyStore(options);
+    const created = await before.run("feedback", "retry-1", async () => ({
+      url: "https://gitea.example/issues/42",
+    }));
+
+    let calls = 0;
+    const after = new IdempotencyStore(options);
+    const replayed = await after.run("feedback", "retry-1", async () => {
+      calls += 1;
+      return { url: "https://gitea.example/issues/43" };
+    });
+
+    expect(calls).toBe(0);
+    expect(replayed).toEqual(created);
+  });
+
+  test("runs a keyed operation again after a failure", async () => {
+    const root = await temporaryDirectory();
+    const store = new IdempotencyStore({ stateDir: join(root, "state"), repoDir: root });
+    let calls = 0;
+    const operation = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("Gitea refused the request.");
+      return { url: "https://gitea.example/issues/42" };
+    };
+
+    await expect(store.run("feedback", "retry-1", operation)).rejects.toThrow(
+      "Gitea refused the request.",
+    );
+    expect(await store.run("feedback", "retry-1", operation)).toEqual({
+      url: "https://gitea.example/issues/42",
+    });
+    expect(calls).toBe(2);
+  });
+});

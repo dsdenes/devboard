@@ -60,6 +60,7 @@ import {
 import { FlowController, type CheckoutBlocker, type FlowOptions } from "./flow";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { suggestGoalSlug } from "./goal-slug";
+import { IdempotencyStore, parseIdempotencyKey } from "./idempotency";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -2246,6 +2247,11 @@ export function createApp(options: AppOptions) {
   // The state belongs to this checkout, not to the harness installation: hosts
   // share one harness through a symlink, so the repository path keys the file.
   const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
+  /**
+   * Replays a keyed creation after a retry, including across a dashboard
+   * replacement, so one client token never files two issues or drafts.
+   */
+  const idempotency = new IdempotencyStore({ stateDir, repoDir });
   /** Identifies this dashboard instance to the detached-run owners. */
   const instance = randomUUID();
   // Detached runs watch this lease to tell a replacement from an ordinary
@@ -7404,16 +7410,19 @@ export function createApp(options: AppOptions) {
     if ("response" in guarded) return guarded.response;
 
     try {
+      const key = parseIdempotencyKey(request.headers.get("idempotency-key"));
       const submission = parseFeedbackSubmission(guarded.value);
-      const filed = await fileFeedbackIssue(submission, {
-        baseUrl: feedbackBaseUrl,
-        repo: feedbackRepo,
-        ...(options.feedback?.token === undefined || options.feedback.token.length === 0
-          ? {}
-          : { token: options.feedback.token }),
-        timeoutMs: feedbackTimeoutMs,
-        ...(feedbackFetch === undefined ? {} : { fetchImpl: feedbackFetch }),
-      });
+      const filed = await idempotency.run("feedback", key, () =>
+        fileFeedbackIssue(submission, {
+          baseUrl: feedbackBaseUrl,
+          repo: feedbackRepo,
+          ...(options.feedback?.token === undefined || options.feedback.token.length === 0
+            ? {}
+            : { token: options.feedback.token }),
+          timeoutMs: feedbackTimeoutMs,
+          ...(feedbackFetch === undefined ? {} : { fetchImpl: feedbackFetch }),
+        }),
+      );
       return Response.json(filed, { status: 201 });
     } catch (error) {
       if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
@@ -7433,8 +7442,11 @@ export function createApp(options: AppOptions) {
     if ("response" in guarded) return guarded.response;
 
     try {
+      const key = parseIdempotencyKey(request.headers.get("idempotency-key"));
       const submission = parseGoalProposalSubmission(guarded.value);
-      const proposal = await writeGoalProposal(submission, { repoDir, slugger: goalSlug });
+      const proposal = await idempotency.run("goal-proposal", key, () =>
+        writeGoalProposal(submission, { repoDir, slugger: goalSlug }),
+      );
       goalDrafts.publishDrafts();
       return Response.json(proposal, { status: 201 });
     } catch (error) {

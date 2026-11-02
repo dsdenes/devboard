@@ -542,4 +542,54 @@ describe("feedback endpoint", () => {
       server.stop(true);
     }
   });
+
+  test("files one issue for a retried Idempotency-Key", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const first = await submit(url, report(), { "idempotency-key": "report-1" });
+      const second = await submit(url, report(), { "idempotency-key": "report-1" });
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      const expected = {
+        url: ISSUE_URL,
+        title: "[ui] The Start button is clipped on narrow windows.",
+      };
+      expect(await first.json()).toEqual(expected);
+      expect(await second.json()).toEqual(expected);
+      expect(calls).toHaveLength(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("files one issue per distinct Idempotency-Key", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const first = await submit(url, report(), { "idempotency-key": "report-1" });
+      const second = await submit(url, report(), { "idempotency-key": "report-2" });
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(calls).toHaveLength(2);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses an empty Idempotency-Key before reaching Gitea", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(url, report(), { "idempotency-key": "" });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "Idempotency-Key must not be empty." });
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
 });

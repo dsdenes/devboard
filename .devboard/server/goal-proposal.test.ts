@@ -569,6 +569,53 @@ describe("goal proposal naming and body", () => {
     }
   });
 
+  test("writes one draft for a retried Idempotency-Key", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const first = await propose(url, proposal(), { "idempotency-key": "draft-1" });
+      const firstPath = await responsePath(first);
+      const second = await propose(url, proposal(), { "idempotency-key": "draft-1" });
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(await responsePath(second)).toBe(firstPath);
+      expect(await drafts(root)).toEqual(["the-start-button-is-clipped-on.md"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("writes one draft per distinct Idempotency-Key", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const first = await propose(url, proposal(), { "idempotency-key": "draft-1" });
+      const second = await propose(url, proposal(), { "idempotency-key": "draft-2" });
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(await responsePath(second)).not.toBe(await responsePath(first));
+      expect(await drafts(root)).toHaveLength(2);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses an empty Idempotency-Key before writing a draft", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const response = await propose(url, proposal(), { "idempotency-key": "" });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "Idempotency-Key must not be empty." });
+      expect(await drafts(root)).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("falls back to the deterministic name when the agent's answer is unusable", async () => {
     const { server, root, url } = await startServer({
       slug: "agent",

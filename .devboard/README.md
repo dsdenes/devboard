@@ -3516,6 +3516,12 @@ stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
 
+Both `POST /api/feedback` and `POST /api/goal-proposals` accept an `Idempotency-Key` header. The
+server retains each key's result under `<STATE_DIR>/idempotency/` for 24 hours, so a retry with the
+same key answers with the first issue or draft instead of creating a second resource, while a
+failed attempt is never retained. A key is 1–255 characters with no control characters; an empty
+or oversized key is refused with `400`.
+
 `Remove element` and `Redesign element` are one-click shortcuts. Selecting one arms it and shows a
 shortcut-specific hint; the next click on any element files the issue immediately, with no panel
 and no text field. Filing does not use client-supplied report text. A successful filing shows a
