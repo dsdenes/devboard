@@ -3189,9 +3189,17 @@ try {
     checked: boolean[];
     cells: number[];
     text: string;
+    headType: {
+      fontSize: number;
+      fontWeight: string;
+      letterSpacing: number;
+      lineHeight: number;
+    } | null;
   }>(`(() => {
     const table = document.querySelector('[data-testid="skills-table"]');
     const rows = [...document.querySelectorAll('[data-testid="skill-row"]')];
+    const head = table?.querySelector("th") ?? null;
+    const headStyle = head === null ? null : getComputedStyle(head);
     return {
       tables: document.querySelectorAll('[data-testid="skills-table"] table, [data-testid="skills-table"]').length,
       columns: table?.rows[0]?.cells.length ?? -1,
@@ -3202,11 +3210,27 @@ try {
       checked: rows.map((row) => row.querySelector('[data-testid="skill-enabled"]')?.checked === true),
       cells: rows.map((row) => row.querySelectorAll("td").length),
       text: table?.textContent ?? "",
+      headType: headStyle === null ? null : {
+        fontSize: parseFloat(headStyle.fontSize),
+        fontWeight: headStyle.fontWeight,
+        letterSpacing: parseFloat(headStyle.letterSpacing),
+        lineHeight: parseFloat(headStyle.lineHeight),
+      },
     };
   })()`);
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
   check(devboardSkillsTable.tables === 1, "the Skills page does not render one table", devboardSkillsTable);
   check(devboardSkillsTable.columns === 2, "the Skills table does not have two columns", devboardSkillsTable);
+  check(
+    devboardSkillsTable.headType !== null &&
+      Math.abs(devboardSkillsTable.headType.fontSize - 11) < 0.05 &&
+      devboardSkillsTable.headType.fontWeight === "600" &&
+      Math.abs(devboardSkillsTable.headType.letterSpacing / devboardSkillsTable.headType.fontSize - 0.03) <
+        0.005 &&
+      Math.abs(devboardSkillsTable.headType.lineHeight - 14.3) < 0.05,
+    "the Skills table head does not render the label type",
+    devboardSkillsTable.headType,
+  );
   check(
     JSON.stringify(devboardSkillsTable.names) === JSON.stringify(devboardInstalledSkills),
     "the Skills rows do not equal the installed directories",
