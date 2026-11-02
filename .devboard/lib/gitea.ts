@@ -603,6 +603,36 @@ export async function giteaCloseIssue(
   );
 }
 
+/** Adds one existing label to an issue, keeping every other label. */
+export async function giteaAddIssueLabel(
+  target: GiteaTarget,
+  number: number,
+  labelId: number,
+  fetchImpl: FetchLike = fetch,
+): Promise<void> {
+  await giteaRequest(
+    target,
+    `${repoPath(target)}/issues/${number}/labels`,
+    { method: "POST", body: JSON.stringify({ labels: [labelId] }) },
+    fetchImpl,
+  );
+}
+
+/** Removes one label from an issue, leaving every other label in place. */
+export async function giteaRemoveIssueLabel(
+  target: GiteaTarget,
+  number: number,
+  labelId: number,
+  fetchImpl: FetchLike = fetch,
+): Promise<void> {
+  await giteaRequest(
+    target,
+    `${repoPath(target)}/issues/${number}/labels/${labelId}`,
+    { method: "DELETE" },
+    fetchImpl,
+  );
+}
+
 export async function giteaCommentIssue(
   target: GiteaTarget,
   number: number,

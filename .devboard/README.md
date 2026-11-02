@@ -671,9 +671,8 @@ front-end/backend version divergence. While a newer worker takes over, the issue
 reports the family's running work, `issues working (N)` with N summed across every attached
 worker, instead of the older member's `pausing`; the drained worker still records its own truthful
 state, and the Overview's poll line keeps reporting whichever attached worker polls, so an
-automatic drain is never shown as an operator Pause. Every running Overview row, Agents card,
-Open issues running row, and run detail names the harness version of the worker that owns that
-run: the label comes from the run record, backed by the owning worker's live lock while it is
+automatic drain is never shown as an operator Pause. Every running Overview row, Agents card, and run detail names the harness version of the worker
+that owns that run: the label comes from the run record, backed by the owning worker's live lock while it is
 live, never from the dashboard's own version, and the older version stays named in history after
 its worker retires. Start launches the newest installed version when no worker is live; Pause,
 Resume, Check now, Stop, and settings apply to every live worker of the family. With no worker
@@ -2616,31 +2615,41 @@ stopping worker to exit and only then spawns; if it still lives at the stop proo
 is refused with a message naming it instead of reporting it attached. Concurrent Starts share one
 preflight and spawn. Different repositories get independent workers.
 
-The poll is the GitHub issues endpoint through the operator's `gh` credential every 10 seconds,
+The poll is the origin's issues endpoint through the operator's forge credential every 10 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
 `Retry-After` or `X-RateLimit-Reset`. Each read has a 20-second deadline: a stalled `gh` is killed,
 the poll records the timeout in `poll.error`, and the next poll runs on schedule instead of
 leaving the loop blocked on the abandoned read. Pull requests returned by the endpoint are
-excluded, and every issue's labels are part of the poll result. Every open issue in the queue
-carries `handled`, the run id that last handled it, and `agentRunId` while an agent works it. An
-issue that already has a running agent never receives a second peer, so a poll while four peers
-run starts none of them again. An issue first seen while three peers run gets its own peer on the
-next poll without pausing, restarting, or shortening the others. A handled issue is never
-retriggered while it stays open; a closed issue leaves the ledger, so a reopened one is eligible
-again. A poll with no unhandled open issue starts no peer and publishes `idle`.
+excluded, and every issue's labels are part of the poll result. An issue that already has a
+running agent never receives a second peer, so a poll while four peers run starts none of them
+again. An issue first seen while three peers run gets its own peer on the next poll without
+pausing, restarting, or shortening the others. The worker's ledger records which issues a
+successful run already handled; it is bookkeeping that decides when a run may start, never a row
+or a count on any surface. A handled issue is never retriggered while it stays open; a closed issue
+leaves the ledger, so a reopened one is eligible again. A poll with no unhandled open issue starts
+no peer and publishes `idle`.
 
-The dashboard reads the tracker too, and that read never stops. While at least one client is
-connected it re-reads the origin's open issues every 30 seconds
+The Open issues list and every row's state come from one forge read: the dashboard's own read of
+the origin's open issues. While at least one client is connected it re-reads every 30 seconds
 (`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`) and immediately on connect, and publishes the result in the
-snapshot's `sync` field. The Open issues list uses the fresher of that read and the worker's last
-successful poll, so closing an issue in the forge removes it from the list within thirty seconds
-even when the worker is stopped, paused, or failing. A running issue that no longer appears is
-stopped: the dashboard sends one `abandon` command for that issue, the worker records its run
-`stopped` with no handled entry and no cooldown, and the issue stays out of the queue until a
-later read confirms it. A run younger than the read was never part of its answer, so it is
-neither hidden nor stopped; the next read covers it. With no connected client the dashboard makes
-no tracker call, and the worker's own poll still ends a run the moment it sees the issue leave the
-open list.
+snapshot's `sync` field. That read is the only source of a row: no worker state file, stopped
+worker's memory, or ledger entry adds, removes, or re-states one. The `processing` label is the
+one forge state that marks a run in progress: a running worker ensures the label exists, adds it
+to the issue before its peer starts, and removes it when the run finishes, fails, is abandoned, or
+stops. The pending count is every listed issue without that label; the running count is every
+listed issue with it, and the page badge, sidebar entry, overview `Queue` line, and status bar all
+read those numbers from the same queue. A failed read freezes the last successful answer and
+publishes its error in `sync.error`.
+
+A running issue that no longer appears in the dashboard's read is stopped: the dashboard sends one
+`abandon` command for that issue, and the worker records its run `stopped` with no handled entry
+and no cooldown. A live worker's own poll never changes the page's rows or counts, even when it
+lists a different set; only the dashboard's own fresh read does. With no connected client the
+dashboard makes no tracker call, and the worker's own poll still ends a run the moment it sees the
+issue leave the open list. Every running worker also reconciles the `processing` label against the
+repository's live claims: an open issue that carries the label with no live claim is repaired on
+the next poll, which covers a killed worker, a restarted dashboard, and an upgrade that leaves an
+older worker's state behind.
 
 That stop is a cancellation, never a completion. A run closes its own issue through
 `issue_close`, which records the closing run beside the issue's state under the worker's state
@@ -2711,8 +2720,9 @@ refused with that reason.
 Each agent has its own run directory, `run.json`, `activity.json`, first-stderr line, question,
 ACP child record, and retry gate keyed by issue number. No agent shares a run record or question
 slot with another. The published state carries `agents`, one entry per running issue with `runId`,
-`issueNumber`, `startedAt`, `question`, and `acp`; the queue carries each issue's `handled`, last
-handling `runId`, and `agentRunId`; and `cooldowns` maps an issue number to its ISO 8601 retry
+`issueNumber`, `startedAt`, `question`, and `acp`; the worker's own queue document carries each
+issue's `handled`, last handling `runId`, and `agentRunId` for its bookkeeping, never for the Open
+issues snapshot; and `cooldowns` maps an issue number to its ISO 8601 retry
 time. A failed agent finishes its run as `failed` with its first stderr line, leaves its issue
 open and unhandled, and writes only its own cooldown. A clean ACP turn is not proof of work: a
 refused slash command still ends the turn normally, so before a run can succeed the worker asks the
@@ -2845,16 +2855,17 @@ The right column renders only the selected agent's output in
 `data-testid="issues-overview-activity"`, and its question in
 `data-testid="issues-overview-question"`. The first agent is selected by default, the row's select
 control switches the output, and the pane falls back to the first live agent when the selected run
-ends; the overview list selects instead of opening a tab. The queue keeps every open issue, its
-`goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
-active agent. The Runs page lists every run with its status and issue,
+ends; the overview list selects instead of opening a tab. The queue lists exactly the open issues the forge
+read returned, each with its `goal` badge and its `processing` state, and shows a running marker
+only for an issue whose labels carry `processing`; no handled badge, run id, or worker state adds a
+row or a marker. The Runs page lists every run with its status and issue,
 and a run's detail shows only that run's activity. The status bar's issues indicator reports the
 family's running work rather than an older member's drain: `issues working (N)` counts running
 agents across every attached worker, and neither the label nor its accessible name or title says
 `pausing` or `drain` while a newer worker takes over; an operator's Pause still reads
 `issues pausing`. Each running task names its owning worker's harness version on the Overview row,
-the Agents card, the Open issues running row, and the run detail, so granular version migration is
-visible at all times and a known version never reads `unknown`. Activating the indicator opens the
+the Agents card, and the run detail, so granular version migration is visible at all times and a
+known version never reads `unknown`. Activating the indicator opens the
 Issues Overview from whichever Issues surface was open, so a click always lands on the automation
 state it reports.
 
@@ -2981,9 +2992,9 @@ failure and any created issue URL. A successful completion removes the draft fro
 the spec under `.devboard/goals/`, and the next Issues poll lists the new open issue with its
 `goal` badge.
 
-The Open issues list shows every open issue with its `goal` badge and its handled state, from the
-dashboard's own 30-second tracker read while it is the fresher source, so an issue closed in the
-forge disappears there without waiting for the worker. Every
+The Open issues list shows exactly the open issues one forge read returns, each with its `goal`
+badge and its `processing` state, so an issue closed in the forge disappears there without waiting
+for the worker and the worker's own poll can never add, remove, or restate a row. Every
 open, unhandled issue gets its own concurrent peer: non-goal issues are prompted with exactly
 `/implement-issue <number>`, goal issues with exactly `/implement-goal-issue <number>`. Each has its
 own run record, activity, and question slot. The snapshot publishes
@@ -3338,10 +3349,10 @@ The client sends:
   at least one client is connected, the server forces a refresh and broadcasts a fresh
   `providersState` every 60 seconds; an idle server makes no provider call.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
-  lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, `handled`,
-  `runId`, and `agentRunId`, run summaries, the running `agents` (run id, issue number, startedAt,
-  question, ACP child), the per-issue `cooldowns` map, errors, and the harness version the worker
-  loaded. A missing state and no live lock answer `present: false`, `attached: false`, and
+  lifecycle, enabled, paused, repository, poll times, queue entries from the dashboard's forge read
+  with `labels` (and `handled: false`, `runId: null`, `agentRunId: null` because no worker state
+  supplies a row), run summaries, the running `agents` (run id, issue number, startedAt, question,
+  ACP child), the per-issue `cooldowns` map, errors, and the harness version the worker loaded. A missing state and no live lock answer `present: false`, `attached: false`, and
   `lifecycle: "stopped"`. A live worker from another harness version adds a non-blocking `notice`
   naming both versions. A connect also replays one `issuesActivity` with `replay: true` for every
   running agent; `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The

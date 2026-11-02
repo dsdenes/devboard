@@ -1045,9 +1045,9 @@ describe("issues protocol", () => {
       expect(message.attached).toBe(true);
       expect(message.lifecycle).toBe("running");
       expect(message.repo).toBe("acme/fixture");
-      expect((message.queue as Array<{ number: number }>).map((entry) => entry.number)).toEqual([
-        7, 8, 9,
-      ]);
+      // The Open issues list is the dashboard's own forge read; a seeded
+      // worker state never supplies a row, and this fixture has no read yet.
+      expect(message.queue).toEqual([]);
       const agents = message.agents as Array<{ runId: string; issueNumber: number }>;
       expect(agents.map((agent) => agent.issueNumber)).toEqual([7, 9]);
       expect(message.cooldowns).toEqual({ "10": "2026-10-27T10:05:00.000Z" });

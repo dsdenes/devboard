@@ -630,7 +630,7 @@ export class IssuesBridge {
       attached,
       worker: attached && attachedPairs.length > 0 && active !== undefined ? active.worker : null,
       poll: active?.poll ?? null,
-      queue: this.queueFor(states, attachedStates, attached),
+      queue: this.queueFor(),
       runs: [...runs.values()].sort((left, right) =>
         right.startedAt.localeCompare(left.startedAt),
       ),
@@ -647,80 +647,24 @@ export class IssuesBridge {
   }
 
   /**
-   * The Open issues list. Every live worker's markers are merged, so the view
-   * never depends on which version answered last. A worker whose own read
-   * started no earlier than the dashboard's is authoritative; otherwise the
-   * dashboard's read is used, with the workers' handled and running markers
-   * merged in. Before the first dashboard read the workers' queues are the
-   * only list there is. Only an attached worker can be working an issue, so a
-   * stopped worker's leftover `agentRunId` is dropped instead of counting as
-   * running with no agent to run it.
+   * The Open issues list: exactly the open issues one forge read returned.
+   * No worker state adds, removes, or restates a row, so a stopped worker's
+   * stale list, a live worker's newer poll, and the ledger's history all
+   * decide nothing here. A row's running state is the `processing` label the
+   * forge returned for it; the worker-owned markers stay false so no second
+   * source can claim a row is handled or running.
    */
-  private queueFor(
-    states: IssuesState[],
-    attachedStates: IssuesState[],
-    attached: boolean,
-  ): IssuesState["queue"] {
-    const live = new Set(attachedStates);
-    const markers = new Map<number, IssuesState["queue"][number]>();
-    for (const state of states) {
-      for (const issue of state.queue) {
-        const marker =
-          attached && live.has(state)
-            ? issue
-            : issue.agentRunId === null
-              ? issue
-              : { ...issue, agentRunId: null };
-        const previous = markers.get(issue.number);
-        if (previous === undefined) {
-          markers.set(issue.number, marker);
-          continue;
-        }
-        markers.set(issue.number, {
-          ...previous,
-          handled: previous.handled || marker.handled,
-          runId: previous.runId ?? marker.runId,
-          agentRunId: previous.agentRunId ?? marker.agentRunId,
-        });
-      }
-    }
-    const workerQueue = [...markers.values()].sort((left, right) => left.number - right.number);
+  private queueFor(): IssuesState["queue"] {
     const open = this.tracker.openIssues;
-    if (open === null) return workerQueue;
-    const readStartedAt = this.tracker.freshStartedAt;
-    const workerIsNewer =
-      attached &&
-      readStartedAt !== null &&
-      attachedStates.some((state) => {
-        if ((state.poll.error ?? null) !== null || state.poll.lastPollAt === null) return false;
-        return Date.parse(state.poll.lastPollAt) >= Date.parse(readStartedAt);
-      });
-    if (workerIsNewer) return workerQueue;
-    const listed = new Set(open.map((issue) => issue.number));
-    const queue = open.map((issue) => {
-      const marker = markers.get(issue.number);
-      return {
+    if (open === null) return [];
+    return open
+      .map((issue) => ({
         ...issue,
-        handled: marker?.handled ?? false,
-        runId: marker?.runId ?? null,
-        agentRunId: marker?.agentRunId ?? null,
-      };
-    });
-    // A run younger than the read was never part of its answer: its issue is
-    // kept visible until a read that started after the run reports on it.
-    const cutoff = readStartedAt === null ? null : Date.parse(readStartedAt);
-    if (attached && cutoff !== null && Number.isFinite(cutoff)) {
-      for (const state of attachedStates) {
-        for (const agent of state.agents) {
-          if (listed.has(agent.issueNumber)) continue;
-          const startedAt = Date.parse(agent.startedAt);
-          if (!Number.isFinite(startedAt) || startedAt < cutoff) continue;
-          const marker = markers.get(agent.issueNumber);
-          if (marker !== undefined) queue.push(marker);
-        }
-      }
-    }
-    return queue.sort((left, right) => left.number - right.number);
+        handled: false,
+        runId: null,
+        agentRunId: null,
+      }))
+      .sort((left, right) => left.number - right.number);
   }
 
   /**
