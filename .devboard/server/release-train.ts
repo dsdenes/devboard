@@ -257,7 +257,7 @@ export class ReleaseTrainActivity implements AgentAdapter {
     try {
       const argv = [
         process.execPath,
-        resolve(this.harnessDir, "release-train", "worker.ts"),
+        resolve(this.harnessDir, "release-train", "main.ts"),
         "--root",
         this.repoDir,
         "--state-dir",

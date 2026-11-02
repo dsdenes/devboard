@@ -6,9 +6,9 @@ import { ReleaseTrainWorker } from "./worker";
 /**
  * The Release Train entry point.
  *
- *   bun run release-train/worker.ts --root <repo> --state-dir <state>
- *   bun run release-train/worker.ts --root <repo> --state-dir <state> --once
- *   bun run release-train/worker.ts --root <repo> --check [--json]
+ *   bun run release-train/main.ts --root <repo> --state-dir <state>
+ *   bun run release-train/main.ts --root <repo> --state-dir <state> --once
+ *   bun run release-train/main.ts --root <repo> --check [--json]
  *
  * `--once` runs one forced tick and exits; `--check` prints the deterministic
  * gate without writing state or starting an agent. The dashboard starts the
@@ -25,7 +25,7 @@ interface Parsed {
 
 function usage(): never {
   console.error(
-    "usage: release-train/worker.ts --root <checkout> [--state-dir <state>] " +
+    "usage: release-train/main.ts --root <checkout> [--state-dir <state>] " +
       "[--once] [--check] [--json]",
   );
   process.exit(2);
