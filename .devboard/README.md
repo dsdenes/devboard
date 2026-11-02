@@ -3055,8 +3055,10 @@ agent and the transcript is discarded. Reopening a panel starts a new conversati
 different element never resumes the previous one, nothing is written to `localStorage` or the
 state directory, and a page reload loses it. While a turn is pending the composer and both action
 buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A failed start, an exited
-agent, or a rejected prompt shows the error in the panel, keeps the question and earlier answers,
-and accepts the next question. `Ask` never calls `POST /api/feedback` and creates no issue.
+agent, a prompt the agent never answered inside its deadline, or a rejected prompt shows the error
+in the panel, keeps the question and earlier answers, and accepts the next question: the failed
+turn's question returns to the composer, so `File issue`, `Ask`, and `Goal` are enabled again and
+one click or one `Enter` re-asks it. `Ask` never calls `POST /api/feedback` and creates no issue.
 
 Filing or proposing from a panel that has answered questions carries the visible Ask conversation
 into the issue or draft as a `## Ask conversation` block between the request and

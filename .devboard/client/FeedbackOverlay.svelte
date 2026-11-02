@@ -82,6 +82,8 @@
   let transcript = $state<AskTurn[]>([]);
   let askPending = $state(false);
   let askError = $state<string | null>(null);
+  /** The turn in flight; a failed turn returns it to the composer. */
+  let askedQuestion = $state("");
   /** Counts each server answer to an Ask turn: the busy word's evidence. */
   let answerSeq = $state(0);
   /** True while the proposed-goal draft is being written. */
@@ -306,7 +308,6 @@
     conversationId = id;
     askPending = true;
     askError = null;
-    transcript = [...transcript, { role: "developer", text: question }];
     const sent = connection.send({
       type: "ask",
       conversationId: id,
@@ -321,6 +322,8 @@
     }
     // The question now lives in the transcript: clear the composer at once so
     // the next message never starts from the previous one.
+    askedQuestion = question;
+    transcript = [...transcript, { role: "developer", text: question }];
     report = "";
     focusComposer();
   }
@@ -354,6 +357,7 @@
     if (message.type === "askDone") {
       askPending = false;
       askError = null;
+      askedQuestion = "";
       answerSeq += 1;
       focusComposer();
       return;
@@ -365,6 +369,10 @@
         typeof message.message === "string" && message.message.length > 0
           ? message.message
           : "The agent could not answer.";
+      // A failed turn returns its question to the composer, so one Enter
+      // re-asks it and File issue and Goal keep working on the same text.
+      if (report.trim().length === 0) report = askedQuestion;
+      askedQuestion = "";
       answerSeq += 1;
       focusComposer();
     }
@@ -394,6 +402,7 @@
     transcript = [];
     askPending = false;
     askError = null;
+    askedQuestion = "";
     if (id !== null && connection.open) {
       connection.send({ type: "closeAsk", conversationId: id });
     }
