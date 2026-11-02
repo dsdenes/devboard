@@ -7,11 +7,13 @@ import { acquireLock, versionLockPath } from "../issues/lock";
 import {
   controlDirectory,
   drainMarkerPath,
+  ledgerPath,
   lockPath,
   runsDirectory,
   statePath,
   versionedStatePath,
 } from "../issues/paths";
+import { writeLedger } from "../issues/ledger";
 import {
   emptyState,
   readState,
@@ -23,6 +25,7 @@ import {
 import { writeDrainMarker } from "../issues/control";
 import { recordClosedByRun } from "../issues/self-close";
 import { GITLAB_TRACKER_UNSUPPORTED } from "../issues/tracker";
+import { queueCounts } from "../client/lib/issues-queue";
 import { createdDirectories, temporaryDirectory } from "../tests/fixtures/scout-helpers";
 
 afterAll(async () => {
@@ -570,13 +573,13 @@ describe("issues bridge commands", () => {
   });
 });
 
-function issue(number: number): IssuesIssue {
+function issue(number: number, labels: string[] = []): IssuesIssue {
   return {
     number,
     title: `Issue ${number}`,
     url: `https://gitea.test/acme/fixture/issues/${number}`,
     createdAt: "2026-10-29T00:00:00Z",
-    labels: [],
+    labels,
   };
 }
 
@@ -627,8 +630,8 @@ describe("dashboard tracker sync", () => {
     await writeState(statePath(stateDir, root), {
       ...emptyState({ repo: "acme/fixture", root }),
       queue: [
-        { ...issue(1), handled: false, runId: null, agentRunId: null },
-        { ...issue(2), handled: false, runId: null, agentRunId: null },
+        { ...issue(5), handled: false, runId: null, agentRunId: null },
+        { ...issue(7), handled: false, runId: null, agentRunId: null },
       ],
     });
     const subject = new IssuesBridge({
@@ -641,12 +644,15 @@ describe("dashboard tracker sync", () => {
       send: () => undefined,
       pollMs: 60_000,
       spawnWorker: () => undefined,
-      syncRead: async () => ({ kind: "issues", issues: [], etag: null }),
+      // Gitea has since closed #5; only #7 is open.
+      syncRead: async () => ({ kind: "issues", issues: [issue(7)], etag: null }),
     });
     try {
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([1, 2]);
-      await subject.syncNow();
+      // Before any read the page has no forge answer, never a worker's list.
       expect(subject.snapshot().queue).toEqual([]);
+      await subject.syncNow();
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([7]);
+      expect(queueCounts(subject.snapshot().queue)).toEqual({ pending: 1, working: 0 });
       expect(subject.snapshot().sync.lastSyncAt).not.toBeNull();
       expect(subject.snapshot().sync.error).toBeNull();
       expect(await controlCommands(stateDir, root)).toEqual([]);
@@ -670,12 +676,9 @@ describe("dashboard tracker sync", () => {
       const snapshot = subject.snapshot();
       expect(snapshot.attached).toBe(false);
       expect(snapshot.agents).toEqual([]);
-      // Handled and last-run markers are history; a running marker is not, so
-      // it survives only while a live worker owns the state.
-      expect(snapshot.queue).toEqual([
-        { ...issue(5), handled: false, runId: null, agentRunId: null },
-        { ...issue(6), handled: true, runId: "run-4", agentRunId: null },
-      ]);
+      // A stopped worker's queue supplies no row, handled marker, or run id;
+      // only a fresh forge read can list an issue.
+      expect(snapshot.queue).toEqual([]);
     } finally {
       subject.dispose();
     }
@@ -707,14 +710,14 @@ describe("dashboard tracker sync", () => {
       await subject.syncNow();
       expect(subject.snapshot().queue).toEqual([
         { ...issue(5), handled: false, runId: null, agentRunId: null },
-        { ...issue(6), handled: true, runId: "run-4", agentRunId: null },
+        { ...issue(6), handled: false, runId: null, agentRunId: null },
       ]);
     } finally {
       subject.dispose();
     }
   });
 
-  test("an attached worker's running markers survive the dashboard's open list", async () => {
+  test("an attached worker's running markers never overrule the forge read", async () => {
     const root = await temporaryDirectory("issues-sync-live-marker-list");
     const stateDir = join(root, "state");
     const lock = acquireLock(lockPath(root), {
@@ -748,8 +751,9 @@ describe("dashboard tracker sync", () => {
       const snapshot = subject.snapshot();
       expect(snapshot.attached).toBe(true);
       expect(snapshot.queue).toEqual([
-        { ...issue(5), handled: false, runId: null, agentRunId: "run-5" },
+        { ...issue(5), handled: false, runId: null, agentRunId: null },
       ]);
+      expect(queueCounts(snapshot.queue)).toEqual({ pending: 1, working: 0 });
     } finally {
       subject.dispose();
       lock.release();
@@ -932,7 +936,8 @@ describe("dashboard tracker sync", () => {
     });
     try {
       await subject.syncNow();
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([5, 6]);
+      // The younger run is never added back: the read lists the whole queue.
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([6]);
       expect(await controlCommands(stateDir, root)).toEqual([]);
     } finally {
       subject.dispose();
@@ -940,7 +945,7 @@ describe("dashboard tracker sync", () => {
     }
   });
 
-  test("a worker poll that started after the dashboard read keeps its running issue", async () => {
+  test("a worker poll that started after the dashboard read changes no row", async () => {
     const root = await temporaryDirectory("issues-sync-worker-newer");
     const stateDir = join(root, "state");
     const lock = acquireLock(lockPath(root), {
@@ -977,15 +982,18 @@ describe("dashboard tracker sync", () => {
     });
     try {
       await subject.syncNow();
+      // The worker's newer poll and its running marker decide nothing: the
+      // dashboard's own read is the only list, and no run is abandoned.
       expect(await controlCommands(stateDir, root)).toEqual([]);
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([5]);
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([6]);
+      expect(subject.snapshot().queue.every((entry) => entry.agentRunId === null)).toBe(true);
     } finally {
       subject.dispose();
       lock.release();
     }
   });
 
-  test("a worker poll that started after the read keeps the worker queue", async () => {
+  test("a worker poll that started after the read loses to the dashboard's own list", async () => {
     const root = await temporaryDirectory("issues-sync-worker-queue");
     const stateDir = join(root, "state");
     const lock = acquireLock(lockPath(root), {
@@ -999,7 +1007,7 @@ describe("dashboard tracker sync", () => {
     await writeState(statePath(stateDir, root), {
       ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" }),
       enabled: true,
-      queue: [{ ...issue(7), handled: false, runId: null, agentRunId: null }],
+      queue: [],
     });
     const subject = new IssuesBridge({
       repoDir: root,
@@ -1020,19 +1028,62 @@ describe("dashboard tracker sync", () => {
     try {
       await subject.syncNow();
       expect(subject.snapshot().sync.lastSyncAt).not.toBeNull();
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([7]);
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([6]);
+      expect(subject.snapshot().queue.every((entry) => entry.agentRunId === null)).toBe(true);
     } finally {
       subject.dispose();
       lock.release();
     }
   });
 
-  test("a read failure keeps the worker's queue and publishes the error", async () => {
+  test("a failed read freezes the last answer and publishes the error", async () => {
     const root = await temporaryDirectory("issues-sync-failed");
     const stateDir = join(root, "state");
     await writeState(statePath(stateDir, root), {
       ...emptyState({ repo: "acme/fixture", root }),
       queue: [{ ...issue(1), handled: false, runId: null, agentRunId: null }],
+    });
+    let calls = 0;
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => {
+        calls += 1;
+        return calls === 1
+          ? { kind: "issues", issues: [issue(3), issue(4, ["processing"])], etag: null }
+          : { kind: "error", detail: "HTTP 502" };
+      },
+    });
+    try {
+      await subject.syncNow();
+      const success = subject.snapshot();
+      expect(queueCounts(success.queue)).toEqual({ pending: 1, working: 1 });
+      await subject.syncNow();
+      const failed = subject.snapshot();
+      expect(failed.queue).toEqual(success.queue);
+      expect(queueCounts(failed.queue)).toEqual({ pending: 1, working: 1 });
+      expect(failed.sync.error).toBe("HTTP 502");
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("processing is the forge label and nothing else marks a row running", async () => {
+    const root = await temporaryDirectory("issues-sync-processing");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" }),
+      enabled: true,
+      // A worker's own run marker and an empty label list decide nothing.
+      agents: [runningAgent(3, "run-3")],
+      queue: [{ ...issue(3), handled: false, runId: null, agentRunId: "run-3" }],
     });
     const subject = new IssuesBridge({
       repoDir: root,
@@ -1044,12 +1095,52 @@ describe("dashboard tracker sync", () => {
       send: () => undefined,
       pollMs: 60_000,
       spawnWorker: () => undefined,
-      syncRead: async () => ({ kind: "error", detail: "HTTP 502" }),
+      syncRead: async () => ({
+        kind: "issues",
+        issues: [issue(3, ["processing"]), issue(4)],
+        etag: null,
+      }),
     });
     try {
       await subject.syncNow();
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([1]);
-      expect(subject.snapshot().sync.error).toBe("HTTP 502");
+      const queue = subject.snapshot().queue;
+      expect(queue.find((entry) => entry.number === 3)?.labels).toContain("processing");
+      expect(queue.find((entry) => entry.number === 3)?.agentRunId).toBeNull();
+      expect(queueCounts(queue)).toEqual({ pending: 1, working: 1 });
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("a ledger entry decides no row, no marker, and no count", async () => {
+    const root = await temporaryDirectory("issues-sync-ledger");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root }),
+      queue: [{ ...issue(8), handled: true, runId: "run-8", agentRunId: null }],
+    });
+    writeLedger(stateDir, root, {
+      version: 1,
+      handled: { "8": { number: 8, runId: "run-8", at: "2026-10-29T00:00:00Z" } },
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [issue(8)], etag: null }),
+    });
+    try {
+      await subject.syncNow();
+      const queue = subject.snapshot().queue;
+      expect(queue).toEqual([{ ...issue(8), handled: false, runId: null, agentRunId: null }]);
+      expect(queueCounts(queue)).toEqual({ pending: 1, working: 0 });
+      expect(readFileSync(ledgerPath(stateDir, root), "utf8")).toContain("run-8");
     } finally {
       subject.dispose();
     }
@@ -1400,7 +1491,8 @@ describe("issues bridge family view", () => {
       ]);
       expect(takeover.runs.find((run) => run.runId === oldRun)?.harnessVersion).toBe(OLD);
       expect(takeover.runs.find((run) => run.runId === oldRun)?.status).toBe("running");
-      expect(takeover.queue.map((issue) => issue.number)).toEqual([17, 18]);
+      // No forge read ran, so the page lists nothing from worker state.
+      expect(takeover.queue).toEqual([]);
 
       // The older worker retires: its tasks and runs stay readable with their
       // version, the live list drops it, and only the newer version runs.
@@ -1451,7 +1543,7 @@ describe("issues bridge family view", () => {
         }),
       );
       // A retired version keeps the open list of its last read on disk. Those
-      // rows are history: only a live worker's queue may publish them.
+      // rows are history: only the dashboard's own forge read publishes rows.
       writeState(versionedStatePath(stateDir, root, OLD), {
         ...emptyState({ repo: "acme/fixture", root }),
         lifecycle: "stopped",

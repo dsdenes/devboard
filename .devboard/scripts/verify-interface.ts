@@ -20,8 +20,11 @@ import {
   drainMarkerPath,
   lockPath,
   runsDirectory,
+  statePath as issueStatePath,
   versionedStatePath,
+  workerStateDirectories,
 } from "../issues/paths";
+import { readState, type QueuedIssue } from "../issues/state";
 import { versionLockPath } from "../issues/lock";
 import { writeDrainMarker } from "../issues/control";
 import { fixtureRecord, pendingRecord } from "../server/fixtures/adr-source";
@@ -676,6 +679,48 @@ async function seedFlow(stateDir: string, host: string): Promise<void> {
   };
   await writeFile(join(sessionDir, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
   await writeFile(join(sessionDir, "goal.md"), session.goal);
+}
+
+/**
+ * The fixture forge's open issues: the seeded worker states' queue merged into
+ * one list, with the `processing` label on each issue a seeded agent owns.
+ * This is the one read the dashboard's Open issues page and counts use.
+ */
+function fixtureOpenIssues(
+  stateDir: string,
+  host: string,
+): Array<Record<string, unknown>> {
+  const root = resolve(host);
+  const paths = [
+    issueStatePath(stateDir, root),
+    ...workerStateDirectories(stateDir, root).map((directory) => join(directory, "state.json")),
+  ];
+  const merged = new Map<number, { issue: QueuedIssue; labels: Set<string> }>();
+  for (const path of paths) {
+    const state = readState(path);
+    if (state === undefined) continue;
+    for (const issue of state.queue) {
+      const labels = new Set(issue.labels ?? []);
+      if (issue.agentRunId !== null) labels.add("processing");
+      const entry = merged.get(issue.number);
+      if (entry === undefined) {
+        merged.set(issue.number, { issue, labels });
+        continue;
+      }
+      for (const label of labels) entry.labels.add(label);
+    }
+  }
+  return [...merged.values()]
+    .sort((left, right) => left.issue.number - right.issue.number)
+    .map(({ issue, labels }) => ({
+      number: issue.number,
+      title: issue.title,
+      html_url: issue.url,
+      created_at: issue.createdAt,
+      state: "open",
+      body: "",
+      labels: [...labels].map((name) => ({ name })),
+    }));
 }
 
 /**
@@ -1651,6 +1696,13 @@ try {
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      // The dashboard's own Issues read, served from the seeded worker states.
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/v1/repos/fixture/host/issues"
+      ) {
+        return Response.json(fixtureOpenIssues(stateDir, host));
+      }
       if (
         request.method !== "POST" ||
         !/^\/api\/v1\/repos\/[^/]+\/[^/]+\/issues$/.test(url.pathname)
@@ -1680,6 +1732,14 @@ try {
     },
   });
   feedbackApi = feedbackServer;
+  // The host's origin names the fixture forge, so the dashboard's Issues read
+  // resolves to the stub instead of an unconfigured GitHub repository.
+  await git(host, [
+    "remote",
+    "add",
+    "origin",
+    `http://127.0.0.1:${feedbackServer.port}/fixture/host.git`,
+  ]);
   const serverEnv = {
     ...process.env,
     HOST: "127.0.0.1",
@@ -1697,6 +1757,9 @@ try {
     DEVBOARD_RELEASE_REPO: "dsdenes/devboard",
     DEVBOARD_RELEASE_DIR: releaseDir,
     DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+    // The Issues queue follows the dashboard's own forge read; a one-second
+    // cadence keeps the fixture's seeded changes visible without a 30-second wait.
+    DEVBOARD_ISSUES_SYNC_INTERVAL_MS: "1000",
     DEVBOARD_OPENCODE_GO_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/zen/go`,
     DEVBOARD_OPENROUTER_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/api`,
     GIT_TERMINAL_PROMPT: "0",
@@ -7546,6 +7609,13 @@ try {
     "the issues indicator title omits the lifecycle or the agent count",
     runningIndicatorTitle,
   );
+  // The status bar counts workers; the queue counts the forge read. Wait for
+  // that read to list the seeded issues before its rows and links are read.
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent?.trim() === "2 pending · 3 running"`,
+    "the forge-derived queue summary",
+    10_000,
+  );
 
   // The Overview counts the fleet, lists it in the left column below the
   // Automation panel, and streams the selected agent's output on the right.
@@ -8280,13 +8350,16 @@ try {
   );
 
   await page.click('[data-testid="open-issues-queue"]');
-  await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
-  const queue = await page.eval<Array<{ number: string; handled: string; goal: string; run: string }>>(
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-queue-item"]').length === 5`,
+    "the issues queue rows",
+    8_000,
+  );
+  const queue = await page.eval<Array<{ number: string; processing: string; goal: string }>>(
     `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
       number: item.getAttribute("data-number") ?? "",
-      handled: item.getAttribute("data-handled") ?? "",
+      processing: item.getAttribute("data-processing") ?? "",
       goal: item.getAttribute("data-goal") ?? "",
-      run: item.getAttribute("data-run") ?? "",
     }))`,
   );
   check(queue.length === 5, "the queue does not list every open issue", queue);
@@ -8300,24 +8373,14 @@ try {
     "a goal label is not visible on its issue",
     queue,
   );
-  check(queue.every((entry) => entry.handled === "false"), "a pending issue is not marked pending", queue);
   check(
-    queue.slice(0, 3).every((entry) => entry.run.length > 0) &&
-      queue.slice(3).every((entry) => entry.run === ""),
-    "the queue does not show each issue's running agent",
+    queue.every((entry, index) => entry.processing === (index < 3 ? "true" : "false")),
+    "a row's state is not the forge's processing label",
     queue,
   );
   check(
     await page.eval<number>(`document.querySelectorAll('[data-testid="issues-running-marker"]').length`) === 3,
-    "the queue has no running marker for an active agent",
-  );
-  const queueVersions = await page.eval<string[]>(
-    `[...document.querySelectorAll('[data-testid="issues-running-version"]')].map((item) => item.textContent?.trim() ?? "")`,
-  );
-  check(
-    queueVersions.length === 3 && queueVersions.every((version) => version === seedVersion),
-    "a queue running row does not name its worker version",
-    queueVersions,
+    "the queue has no running marker for a processing label",
   );
   const goalBadges = await page.eval<number>(
     `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
@@ -9708,19 +9771,23 @@ try {
   );
 
   await page.click('[data-testid="open-issues-queue"]');
-  await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the takeover queue");
-  const mixedQueue = await page.eval<Array<{ issue: string; version: string }>>(
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-queue-item"]').length === 4`,
+    "the takeover queue rows",
+    8_000,
+  );
+  const mixedQueue = await page.eval<Array<{ issue: string; processing: string }>>(
     `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
       issue: item.getAttribute("data-number") ?? "",
-      version: item.querySelector('[data-testid="issues-running-version"]')?.textContent?.trim() ?? "",
+      processing: item.getAttribute("data-processing") ?? "",
     }))`,
   );
   check(
     mixedQueue.length === 4 &&
-      mixedQueue.some((row) => row.issue === "17" && row.version === MIXED_OLD_VERSION) &&
-      mixedQueue.some((row) => row.issue === "18" && row.version === seedVersion) &&
-      mixedQueue.filter((row) => row.version.length > 0).length === 2,
-    "the queue does not attribute the takeover's running rows",
+      mixedQueue.some((row) => row.issue === "17" && row.processing === "true") &&
+      mixedQueue.some((row) => row.issue === "18" && row.processing === "true") &&
+      mixedQueue.filter((row) => row.processing === "true").length === 2,
+    "the queue does not show the takeover's processing labels",
     mixedQueue,
   );
 
