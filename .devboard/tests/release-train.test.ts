@@ -473,16 +473,22 @@ describe("Release Train family", () => {
 
   test("a failed run leaves the range for the next due tick, which runs again", async () => {
     const workspaceValue = workspace("retry");
-    const now = { value: Date.parse("2026-11-02T10:00:00.000Z") };
+    const start = Date.parse("2026-11-02T10:00:00.000Z");
+    const now = { value: start };
+    let gateReads = 0;
     let runs = 0;
     const worker = workerAt(workspaceValue, {
-      gate: () => unreleased(),
+      gate: () => {
+        gateReads += 1;
+        return unreleased();
+      },
       now: () => new Date(now.value),
       runRelease: async () => {
         runs += 1;
-        return runs === 1
-          ? { ok: false, detail: "the release workflow concluded failure" }
-          : { ok: true, version: "1.0.1", url: "https://forge.test/v1.0.1" };
+        if (runs > 1) return { ok: true, version: "1.0.1", url: "https://forge.test/v1.0.1" };
+        // A failing run that outlasts the cadence must still earn a full gap.
+        now.value += 12 * 60_000;
+        return { ok: false, detail: "the release workflow concluded failure" };
       },
     });
     expect(worker.begin(false)).toBe(true);
@@ -491,9 +497,17 @@ describe("Release Train family", () => {
       expect(runs).toBe(1);
       expect(worker.currentState.release).toBeNull();
       expect(worker.currentState.failure?.detail).toContain("concluded failure");
-      // The cadence is due again ten minutes later, with no operator action.
-      now.value += 10 * 60_000;
-      await worker.tickNow();
+      const endedAt = start + 12 * 60_000;
+      expect(Date.parse(worker.currentWorker?.nextRunAt ?? "")).toBe(endedAt + 10 * 60_000);
+      // Inside the interval after the end: not due, so no gate read and no agent.
+      now.value = endedAt + 9 * 60_000;
+      await worker.tickNow(false);
+      expect(gateReads).toBe(1);
+      expect(runs).toBe(1);
+      // The cadence is due again a full interval after the end, with no operator action.
+      now.value = endedAt + 10 * 60_000;
+      await worker.tickNow(false);
+      expect(gateReads).toBe(2);
       expect(runs).toBe(2);
       expect(worker.currentState.release?.version).toBe("1.0.1");
       expect(worker.currentState.failure).toBeNull();

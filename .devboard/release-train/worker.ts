@@ -509,9 +509,9 @@ export class ReleaseTrainWorker {
     return 0;
   }
 
-  /** Test seam: one forced tick against the injected gate. */
-  async tickNow(): Promise<void> {
-    await this.tick(true);
+  /** Test seam: one tick against the injected gate, forced unless `force` is false. */
+  async tickNow(force = true): Promise<void> {
+    await this.tick(force);
   }
 
   /** Stops this worker and closes any active peer. */
@@ -779,7 +779,11 @@ export class ReleaseTrainWorker {
 
   private finishTick(now: Date): void {
     this.lastRunAt = now.toISOString();
-    this.nextRunAtMs = now.getTime() + Math.max(60_000, this.settings.intervalMinutes * 60_000);
+    // The cadence runs from the tick's end, not its start: a run that outlasts
+    // the interval still earns a full gap before the next tick is due.
+    const endedAtMs = this.clock().getTime();
+    this.nextRunAtMs =
+      endedAtMs + Math.max(60_000, this.settings.intervalMinutes * 60_000);
     if (this.worker !== undefined) {
       this.worker.lastRunAt = this.lastRunAt;
       this.worker.nextRunAt = new Date(this.nextRunAtMs).toISOString();
