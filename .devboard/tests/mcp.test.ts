@@ -633,6 +633,7 @@ describe("MCP context tools", () => {
       "watchdog",
       "design",
       "coach",
+      "api-standards",
       "release-train",
     ]);
     const coach = valueOf(await callTool(context, "background_agent_get", { id: "coach" })) as {

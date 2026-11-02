@@ -523,6 +523,7 @@ describe("Coach registration and lifecycle", () => {
       "watchdog",
       "design",
       "coach",
+      "api-standards",
       "release-train",
     ]);
     const coach = agentRegistry.require("coach");

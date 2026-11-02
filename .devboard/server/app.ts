@@ -72,6 +72,7 @@ import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { TRACKER_SYNC_INTERVAL_MS } from "./issue-sync";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
+import { ApiStandardsBridge, type ApiStandardsBridgeOptions } from "./api-standards";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./release-train";
 import { coachDirectory } from "../coach/paths";
@@ -244,6 +245,8 @@ export interface AppOptions {
   >;
   /** Design System's test seams; production uses the detached worker itself. */
   design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "reader">;
+  /** API Standards' test seams; production uses the detached worker itself. */
+  apiStandards?: Pick<ApiStandardsBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
   /** Coach's test seams; production reads its worker's state and ledger. */
   coach?: Pick<
     CoachActivityOptions,
@@ -2575,6 +2578,7 @@ export function createApp(options: AppOptions) {
   const watchdogDescriptor = agentRegistry.require("watchdog");
   const designDescriptor = agentRegistry.require("design");
   const coachDescriptor = agentRegistry.require("coach");
+  const apiStandardsDescriptor = agentRegistry.require("api-standards");
   const releaseTrainDescriptor = agentRegistry.require("release-train");
   const scout = new ScoutBridge({
     descriptor: scoutDescriptor,
@@ -2681,6 +2685,31 @@ export function createApp(options: AppOptions) {
   });
 
   /**
+   * API Standards audits the dashboard's own HTTP surface against the REST
+   * skill and files capped `api-standards` issues. It never edits the checkout
+   * and runs as a detached worker so it outlives this server.
+   */
+  const apiStandards = new ApiStandardsBridge({
+    descriptor: apiStandardsDescriptor,
+    repoDir,
+    stateDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    runningVersion,
+    harnessDir: runnableHarnessDir(repoDir),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.apiStandards?.pollMs === undefined ? {} : { pollMs: options.apiStandards.pollMs }),
+    ...(options.apiStandards?.preflight === undefined
+      ? {}
+      : { preflight: options.apiStandards.preflight }),
+    ...(options.apiStandards?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.apiStandards.spawnWorker }),
+    hasClients: () => clients.size > 0,
+  });
+
+  /**
    * Release Train reads its detached worker's state and commands it. On each
    * tick the worker runs the deterministic gate and starts one release agent
    * only for unresolved commits; this adapter never runs a release itself.
@@ -2702,7 +2731,7 @@ export function createApp(options: AppOptions) {
   /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog, design, coach, releaseTrain],
+    adapters: [scout, watchdog, design, coach, apiStandards, releaseTrain],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });

@@ -738,6 +738,34 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     tab: { id: "coach", kind: "coach", title: "Coach" },
   }),
   validateAgentDescriptor({
+    id: "api-standards",
+    label: "API Standards",
+    description:
+      "Audits the dashboard HTTP API against the project REST skill and files capped " +
+      "conformance issues for every MUST or SHOULD violation.",
+    scope: "repository",
+    prompt: {
+      kind: "file",
+      file: "api-standards.md",
+    },
+    lifecycle: AGENT_LIFECYCLES,
+    cadence: {
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    },
+    limits: {
+      maxPerHour: { min: 1, max: 100, nullable: true },
+      maxPending: { min: 1, max: 100, nullable: true },
+      default: { maxPerHour: 10, maxPending: 5 },
+    },
+    commands: SHARED_COMMANDS,
+    issues: SHARED_ISSUES,
+    detail: { panel: "activity", testId: "agent-detail" },
+    tab: { id: "api-standards", kind: "api-standards", title: "API Standards" },
+  }),
+  validateAgentDescriptor({
     id: "release-train",
     label: "Release Train",
     description:

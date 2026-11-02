@@ -1064,6 +1064,7 @@ try {
           "open-devboard-watchdog",
           "open-devboard-design",
           "open-devboard-coach",
+          "open-devboard-api-standards",
           "open-devboard-release-train",
         ]),
     `the Background agents section is wrong: ${JSON.stringify(groups)}`,
@@ -1081,6 +1082,7 @@ try {
     ["watchdog", "Watchdog"],
     ["design", "Design System"],
     ["coach", "Coach"],
+    ["api-standards", "API Standards"],
     ["release-train", "Release Train"],
   ]) {
     const entry = await devtools.evaluate(`(() => {
@@ -1187,6 +1189,55 @@ try {
   assertTrue(
     (await pageLifecycle(devtools)) === "stopped",
     "Coach does not start stopped",
+  );
+  await click(devtools, "open-devboard-api-standards");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-page")) ? true : undefined),
+    "the API Standards page",
+    10_000,
+  );
+  const apiStandardsPage = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? ''`,
+  );
+  assertTrue(
+    apiStandardsPage === "api-standards",
+    `the API Standards page names ${String(apiStandardsPage)}`,
+  );
+  assertTrue(await present(devtools, "agent-issues-empty"), "API Standards has no empty table");
+  assertTrue(
+    !(await present(devtools, "agent-detail")),
+    "API Standards still renders the detail panel",
+  );
+  assertTrue(
+    !(await present(devtools, "agent-documentation")),
+    "API Standards renders a documentation panel",
+  );
+  assertTrue(
+    (await agentLast(devtools)) === "No activity yet.",
+    "API Standards has no empty bar activity",
+  );
+  const apiStandardsCore = await coreSequence(devtools);
+  assertTrue(
+    JSON.stringify(apiStandardsCore.filter((id) => id !== "agent-stop")) ===
+      JSON.stringify(CORE_IDS.filter((id) => id !== "agent-stop")),
+    `the API Standards core ids differ: ${JSON.stringify(apiStandardsCore)}`,
+  );
+  assertTrue(
+    (await pageLifecycle(devtools)) === "stopped",
+    "API Standards does not start stopped",
+  );
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
+    "the API Standards prompt section",
+    10_000,
+  );
+  await assertPromptClosed(devtools, "API Standards");
+  await assertPromptMarker(devtools, "API Standards", false);
+  await click(devtools, "open-devboard-coach");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-page")) ? true : undefined),
+    "the Coach page",
+    10_000,
   );
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
@@ -1494,6 +1545,21 @@ try {
     10_000,
   );
   assertTrue(limitsError.includes("1 through 100"), "the limits error is wrong");
+
+  // A rejected save still holds its control's busy word until the shared
+  // ceiling releases it; the next activation must wait for that release.
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-save-limits"]')?.getAttribute('aria-busy') !== 'true'`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the Save limits control after a rejected save",
+    15_000,
+  );
 
   await setInput(devtools, "agent-limit-hour", "");
   await setInput(devtools, "agent-limit-pending", "");
@@ -2304,7 +2370,7 @@ try {
   console.log("PASS sync-retry-clears");
 
   /* No page shows an error for the retry that just succeeded. */
-  for (const id of ["scout", "watchdog", "design", "coach", "release-train"]) {
+  for (const id of ["scout", "watchdog", "design", "coach", "api-standards", "release-train"]) {
     await click(devtools, `open-devboard-${id}`);
     await waitFor(
       async () =>
@@ -2529,7 +2595,7 @@ try {
   }
 
   console.log(
-    "verify:agents: the Background agents section, all five shared pages, lifecycle, cadence, " +
+    "verify:agents: the Background agents section, all six shared pages, lifecycle, cadence, " +
       "nullable limits, the Watchdog cap, the shared table, Coach detail and settings, " +
       "freshness, no mutation on reload, the timer gate, the footer indicator, and the " +
       "periodic-read retry window and exhausted alert all hold",

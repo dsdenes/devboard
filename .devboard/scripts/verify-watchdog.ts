@@ -209,21 +209,6 @@ function renderedLinks(value: unknown): RenderedLink[] | undefined {
   return links;
 }
 
-interface RenderedCycleIssue {
-  href: string;
-  text: string;
-}
-
-interface RenderedCycle {
-  action: string;
-  at: string;
-  datetime: string;
-  actionText: string;
-  issues: RenderedCycleIssue[];
-  /** True when the removed interval, finding count, and reason render nothing. */
-  compact: boolean;
-}
-
 interface RenderedIssue {
   url: string;
   state: string;
@@ -235,35 +220,6 @@ interface RenderedIssue {
   filedText: string;
   stateText: string;
   versionText: string;
-}
-
-function renderedCycleIssues(value: unknown): RenderedCycleIssue[] {
-  if (!Array.isArray(value)) return [];
-  const issues: RenderedCycleIssue[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    issues.push({ href: String(record.href ?? ""), text: String(record.text ?? "") });
-  }
-  return issues;
-}
-
-function renderedCycles(value: unknown): RenderedCycle[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const cycles: RenderedCycle[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    cycles.push({
-      action: String(record.action ?? ""),
-      at: String(record.at ?? ""),
-      datetime: String(record.datetime ?? ""),
-      actionText: String(record.actionText ?? ""),
-      issues: renderedCycleIssues(record.issues),
-      compact: record.compact === true,
-    });
-  }
-  return cycles;
 }
 
 function renderedIssues(value: unknown): RenderedIssue[] | undefined {
@@ -287,20 +243,6 @@ function renderedIssues(value: unknown): RenderedIssue[] | undefined {
   }
   return issues;
 }
-
-const readCycles = `(() => [...document.querySelectorAll('[data-testid="watchdog-cycle"]')].map((row) => ({
-  action: row.dataset.action ?? '',
-  at: row.querySelector('[data-testid="watchdog-cycle-at"]')?.textContent?.trim() ?? '',
-  datetime: row.querySelector('[data-testid="watchdog-cycle-at"] time')?.getAttribute('datetime') ?? '',
-  actionText: row.querySelector('[data-testid="watchdog-cycle-action"]')?.textContent?.trim() ?? '',
-  issues: [...row.querySelectorAll('[data-testid="watchdog-cycle-issue"]')].map((link) => ({
-    href: link.getAttribute('href') ?? '',
-    text: link.textContent?.trim() ?? '',
-  })),
-  compact: row.querySelector('[data-testid="watchdog-cycle-window"]') === null &&
-    row.querySelector('[data-testid="watchdog-cycle-findings"]') === null &&
-    row.querySelector('[data-testid="watchdog-cycle-reason"]') === null,
-})))()`;
 
 const readIssues = `(() => [...document.querySelectorAll('[data-testid="agent-issue"]')].map((row) => ({
   url: row.dataset.url ?? '',
@@ -825,12 +767,7 @@ exit 0
       )),
       "the Watchdog header still carries its Issues eyebrow",
     );
-    assertTrue(await present(devtools, "watchdog-cycles-empty"), "no cycle renders no empty state");
     assertTrue(await present(devtools, "agent-issues-empty"), "no issue renders no empty state");
-    assertTrue(
-      !(await present(devtools, "watchdog-last-cycle")),
-      "the newest-cycle summary is still rendered",
-    );
     const current = await devtools.evaluate(
       `document.querySelector('[data-testid="open-devboard-watchdog"]')?.getAttribute('aria-current') ?? ''`,
     );
@@ -894,48 +831,6 @@ exit 0
     ];
     saveLedger(watchdogDir, ledgerFixture(entries, ["fingerprint-3"]));
 
-    const seededCycles = await waitFor(
-      async () => {
-        const value = renderedCycles(await devtools.evaluate(readCycles).catch(() => undefined));
-        return value !== undefined && value.length === 3 ? value : undefined;
-      },
-      "the cycle history",
-      20_000,
-    );
-    assertTrue(
-      JSON.stringify(seededCycles.map((cycle) => cycle.action)) ===
-        JSON.stringify(["filed", "duplicate", "failed"]),
-      `the cycle history is not newest first: ${JSON.stringify(seededCycles)}`,
-    );
-    assertTrue(
-      seededCycles[0]?.datetime === cycleTimes[2] &&
-        seededCycles[1]?.datetime === cycleTimes[1] &&
-        seededCycles[2]?.datetime === cycleTimes[0],
-      "a cycle row carries the wrong start time",
-    );
-    assertTrue(
-      seededCycles.every((cycle) => !cycle.compact),
-      "a cycle row omits its window, finding count, or reason",
-    );
-    assertTrue(
-      JSON.stringify(seededCycles.map((cycle) => cycle.issues.map((issue) => issue.href))) ===
-        JSON.stringify([[issueUrl(0)], [], [issueUrl(0), issueUrl(1)]]),
-      `a cycle row links the wrong GitHub issue: ${JSON.stringify(seededCycles)}`,
-    );
-    assertTrue(
-      seededCycles[2]?.issues.map((issue) => issue.text).join(" ") === "#901 #902",
-      "a connected issue link does not name its number",
-    );
-    assertTrue(
-      await present(devtools, "watchdog-cycle-window"),
-      "a cycle row does not render its window",
-    );
-    assertTrue(
-      await present(devtools, "watchdog-cycle-findings"),
-      "a cycle row does not render its finding count",
-    );
-    console.log("PASS watchdog-cycles");
-
     const localIssues = await waitFor(
       async () => {
         const value = renderedIssues(await devtools.evaluate(readIssues).catch(() => undefined));
@@ -948,10 +843,6 @@ exit 0
       JSON.stringify(localIssues.map((issue) => issue.url)) ===
         JSON.stringify([issueUrl(0), issueUrl(1), issueUrl(2)]),
       `the table is not newest first: ${JSON.stringify(localIssues.map((issue) => issue.url))}`,
-    );
-    assertTrue(
-      !(await present(devtools, "watchdog-last-cycle")),
-      "a seeded cycle brings the newest-cycle summary back",
     );
     console.log("PASS watchdog-fresh-ledger");
 
@@ -1114,19 +1005,14 @@ exit 0
 
     const fresh = await waitFor(
       async () => {
-        const cycles = renderedCycles(await devtools.evaluate(readCycles).catch(() => undefined));
         const issues = renderedIssues(await devtools.evaluate(readIssues).catch(() => undefined));
-        return cycles?.length === 4 && issues?.length === 4 ? { cycles, issues } : undefined;
+        return issues?.length === 4 ? issues : undefined;
       },
       "the new run directory and ledger entry",
       20_000,
     );
     assertTrue(
-      fresh.cycles[0]?.datetime === newestCycle,
-      "a newly written run directory did not become the newest cycle",
-    );
-    assertTrue(
-      fresh.issues[0]?.url === issueUrl(3),
+      fresh[0]?.url === issueUrl(3),
       "a newly filed ledger entry did not become the newest row",
     );
     assertTrue(

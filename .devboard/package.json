@@ -32,6 +32,7 @@
     "coach": "bun run coach/main.ts",
     "verify:coach": "bun run scripts/verify-coach.ts",
     "verify:mcp": "bun run scripts/verify-mcp.ts",
+    "verify:api-standards": "bun run scripts/verify-api-standards.ts",
     "verify:discover": "bun run scripts/verify-discover.ts"
   },
   "files": [

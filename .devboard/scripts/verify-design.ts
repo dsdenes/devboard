@@ -35,7 +35,6 @@ import {
 import { readState as readDesignState } from "../issues/design/state";
 
 const stubAcp = join(harnessRoot, "tests", "fixtures", "design-stub-acp.ts");
-const stubPublisher = join(harnessRoot, "tests", "fixtures", "design-stub-publisher.ts");
 const stubForge = join(harnessRoot, "tests", "fixtures", "design-stub-forge.ts");
 const chromeCandidates = [
   "/usr/bin/google-chrome",
@@ -516,7 +515,6 @@ try {
   await writeFile(join(stubDir, "admit-tokens.json"), `${JSON.stringify(admitTokens, null, 2)}\n`);
   await writeFile(join(stubDir, "mode"), "issue\n");
   await writeFile(join(stubDir, "push-mode"), "ok\n");
-  await writeFile(join(stubDir, "publish-mode"), "ok\n");
   await writeFile(join(repo, "tracked.txt"), "fixture\n");
 
   const git = (args: string[], cwd = repo): string => {
@@ -588,10 +586,8 @@ try {
   chmodSync(gitPath, 0o755);
 
   const gitLog = join(root, "git.log");
-  const publishLog = join(root, "publish.log");
   const acpLog = join(root, "acp.log");
   await writeFile(gitLog, "");
-  await writeFile(publishLog, "");
   await writeFile(acpLog, "");
 
   seedVerificationProvider(stateDir);
@@ -615,8 +611,6 @@ try {
       DESIGN_STUB_LOG: acpLog,
       DESIGN_STUB_DELAY_MS: "0",
       DESIGN_CADENCE_MS: "3000",
-      DESIGN_PUBLISH_COMMAND: stubPublisher,
-      DESIGN_PUBLISH_LOG: publishLog,
       DESIGN_GIT_LOG: gitLog,
       DESIGN_STUB_REPO: repo,
     },
@@ -686,6 +680,8 @@ try {
         "open-devboard-watchdog",
         "open-devboard-design",
         "open-devboard-coach",
+        "open-devboard-api-standards",
+        "open-devboard-release-train",
       ]),
     "the Background agents order is wrong",
     sidebar,
@@ -887,7 +883,6 @@ try {
 
   /* 3. A single literal yields an issue and no document diff. */
   const headBeforeSingle = git(["rev-parse", "HEAD"]);
-  const publishBeforeSingle = readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length;
   await writeFile(join(stubDir, "mode"), "single\n");
   await click(devtools, "agent-start");
   await waitFor(
@@ -901,10 +896,6 @@ try {
     30_000,
   );
   check(git(["rev-parse", "HEAD"]) === headBeforeSingle, "a single literal released a document change");
-  check(
-    readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length === publishBeforeSingle,
-    "a single literal invoked the publisher",
-  );
   await click(devtools, "agent-stop");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
@@ -924,20 +915,34 @@ try {
   );
   await waitFor(
     async () =>
-      /released \d+\.\d+\.\d+:/.test(await barLog(devtools!))
+      /pushed documentation [0-9a-f]+;/.test(await barLog(devtools!))
         ? true
         : undefined,
-    "the documented standard to release",
+    "the documented standard to push",
     90_000,
   );
+  await click(devtools, "agent-stop");
+  await waitFor(
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
+    "the stopped releasing Design System",
+    15_000,
+  );
   const activity = await barLog(devtools);
-  const released = /released (\d+\.\d+\.\d+): (\S+)/.exec(activity);
-  check(released !== null, "the activity does not name the release", activity);
-  const version = released![1]!;
-  const releaseUrl = released![2]!;
+  const released = /pushed documentation ([0-9a-f]+);/.exec(activity);
+  check(released !== null, "the activity does not name the pushed commit", activity);
+  const pushedSha = released![1]!;
+  check(
+    activity.includes("the Release Train will release it"),
+    "the activity does not hand the release to the Release Train",
+    activity,
+  );
   check(
     git(["--git-dir", bare, "rev-parse", "main"]) !== headBeforeRelease,
-    "the release did not push a commit",
+    "the documentation push did not change the origin",
+  );
+  check(
+    git(["--git-dir", bare, "rev-parse", "main"]).startsWith(pushedSha),
+    "the pushed commit is not the origin tip",
   );
   const changed = git(["--git-dir", bare, "show", "--name-only", "--format=", "main"])
     .split("\n")
@@ -961,21 +966,13 @@ try {
     readdirSync(join(repo, ".worktree")),
   );
   check(git(["branch", "--list", "design/*"]) === "", "the cycle branch was not removed");
-  const publishLines = readFileSync(publishLog, "utf8").split("\n").filter(Boolean);
-  check(
-    publishLines.some((line) => line.includes(version) && line.startsWith("ok ")),
-    "the stub publisher was not invoked for the released version",
-    publishLines,
-  );
-  check(/^\d+\.\d+\.\d+$/.test(version), "the recorded version is not a release version", version);
-  check(releaseUrl.includes(`v${version}`), "the release URL does not name the version", releaseUrl);
   const releasedDocumentation = await documentationLayout(devtools);
   check(
     releasedDocumentation.present &&
       releasedDocumentation.adjacent &&
       !releasedDocumentation.empty &&
-      releasedDocumentation.entries === 1,
-    "the documentation panel did not gain exactly one entry above the issues",
+      releasedDocumentation.entries >= 1,
+    "the documentation panel did not gain an entry above the issues",
     releasedDocumentation,
   );
   const releasedEntryView = await devtools.evaluate(`(() => {
@@ -1004,11 +1001,14 @@ try {
     "the released entry does not show the cycle summary",
     releasedEntry,
   );
-  check(releasedEntry.version === version, "the entry version link text is wrong", releasedEntry);
   check(
-    typeof releasedEntry.href === "string" &&
-      releasedEntry.href.includes(`/releases/tag/v${version}`),
-    "the entry version link does not name the release",
+    typeof releasedEntry.version === "string" && /^\d+\.\d+\.\d+$/.test(releasedEntry.version),
+    "the entry version link text is wrong",
+    releasedEntry,
+  );
+  check(
+    typeof releasedEntry.href === "string" && releasedEntry.href.includes(`/commit/${pushedSha}`),
+    "the entry version link does not name the pushed commit",
     releasedEntry,
   );
   check(
@@ -1084,13 +1084,7 @@ try {
     "the release did not use one worktree under .worktree/",
     worktreeLines,
   );
-  check((await pageLifecycle(devtools)) !== "", "the page lost its lifecycle");
-  await click(devtools, "agent-stop");
-  await waitFor(
-    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
-    "the stopped releasing Design System",
-    15_000,
-  );
+  check((await pageLifecycle(devtools)) === "stopped", "the page lost its lifecycle");
   console.log("PASS documentation-release");
 
   /* 5. Single flight: no two cycles overlap. */
@@ -1109,9 +1103,9 @@ try {
   /* 6. A cycle with no admissible decision makes no commit, push, or publish. */
   await writeFile(join(stubDir, "mode"), "none\n");
   const headBeforeNoop = git(["rev-parse", "HEAD"]);
-  const publishBeforeNoop = readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length;
   const cyclesDir = join(repo, ".devboard", ".tmp", "design", "cycles");
   const cyclesBefore = new Set(readdirSync(cyclesDir));
+  const entriesBeforeNoop = (await documentationLayout(devtools)).entries;
   await click(devtools, "agent-start");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
@@ -1142,11 +1136,7 @@ try {
   );
   check(git(["rev-parse", "HEAD"]) === headBeforeNoop, "a no-op cycle committed a change");
   check(
-    readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length === publishBeforeNoop,
-    "a no-op cycle invoked the publisher",
-  );
-  check(
-    (await documentationLayout(devtools)).entries === 1,
+    (await documentationLayout(devtools)).entries === entriesBeforeNoop,
     "a no-op cycle added a documentation history entry",
   );
   console.log("PASS no-op");
@@ -1170,10 +1160,10 @@ try {
   );
   await waitFor(
     async () =>
-      /released \d+\.\d+\.\d+:/.test(await barLog(devtools!))
+      /pushed documentation [0-9a-f]+;/.test(await barLog(devtools!))
         ? true
         : undefined,
-    "the retried push to release",
+    "the retried push to land",
     90_000,
   );
   await click(devtools, "agent-stop");
@@ -1188,46 +1178,9 @@ try {
   await writeFile(join(stubDir, "push-mode"), "ok\n");
   console.log("PASS rejected-push");
 
-  /* 8. A failed publish leaves the pushed commit and surfaces agent-error. */
-  await writeFile(join(stubDir, "mode"), "admit\n");
-  await writeFile(join(stubDir, "publish-mode"), "fail\n");
-  const entriesBeforePublishFailure = (await documentationLayout(devtools)).entries;
-  const headBeforePublishFailure = git(["rev-parse", "HEAD"]);
-  await click(devtools, "agent-start");
-  await waitFor(
-    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
-    "the failing-publish Design System",
-    15_000,
-  );
-  await waitFor(
-    async () => {
-      const value = await text(devtools!, "agent-error");
-      return value.includes("publish") ? value : undefined;
-    },
-    "the publish failure in agent-error",
-    90_000,
-  );
-  check(
-    git(["rev-parse", "HEAD"]) !== headBeforePublishFailure,
-    "the failed publish did not leave the pushed commit",
-  );
-  await click(devtools, "agent-stop");
-  await waitFor(
-    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
-    "the stopped failing-publish Design System",
-    15_000,
-  );
-  await writeFile(join(stubDir, "publish-mode"), "ok\n");
-  check(
-    (await documentationLayout(devtools)).entries === entriesBeforePublishFailure,
-    "a failed release added a documentation history entry",
-  );
-  console.log("PASS publish-failure");
-
-  /* 9. A dirty integration checkout names its blocking paths. */
+  /* 8. A dirty integration checkout names its blocking paths. */
   await writeFile(join(stubDir, "mode"), "admit\n");
   await writeFile(join(repo, "DESIGN.md"), "local uncommitted edit\n");
-  const publishBeforeDirty = readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length;
   await click(devtools, "agent-start");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
@@ -1246,10 +1199,6 @@ try {
     readFileSync(join(repo, "DESIGN.md"), "utf8") === "local uncommitted edit\n",
     "the dirty integration checkout discarded its edit",
   );
-  check(
-    readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length === publishBeforeDirty,
-    "a dirty checkout still published",
-  );
   await click(devtools, "agent-stop");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
@@ -1264,6 +1213,20 @@ try {
     const moved = `${path}.hidden`;
     run("mv", [path, moved]);
     try {
+      // A refused Start holds its control's busy word until the shared
+      // ceiling releases it; the next activation waits for that release.
+      await waitFor(
+        async () =>
+          (await devtools!
+            .evaluate(
+              `document.querySelector('[data-testid="agent-start"]')?.getAttribute('aria-busy') !== 'true'`,
+            )
+            .catch(() => false)) === true
+            ? true
+            : undefined,
+        "the Start control after a refused start",
+        20_000,
+      );
       await click(devtools!, "agent-start");
       await waitFor(
         async () => {
@@ -1291,7 +1254,7 @@ try {
   );
 
   /* ---------------------------------------------------------------- */
-  /* 9. An older worker hands over without an operator step            */
+  /* 9. An older worker hands over without an operator step.           */
   /* ---------------------------------------------------------------- */
   const oldVersion = "0.1.900";
   const newestVersion = readHarnessVersion(harnessRoot) ?? "unknown";
@@ -1310,8 +1273,6 @@ try {
     DESIGN_STUB_LOG: acpLog,
     DESIGN_STUB_DELAY_MS: "0",
     DESIGN_CADENCE_MS: "600000",
-    DESIGN_PUBLISH_COMMAND: stubPublisher,
-    DESIGN_PUBLISH_LOG: publishLog,
     DESIGN_GIT_LOG: gitLog,
     DESIGN_STUB_REPO: repo,
   };

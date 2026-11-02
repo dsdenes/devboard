@@ -123,12 +123,13 @@ function fakeAdapter(
 }
 
 describe("background agent registry", () => {
-  test("ships exactly the five declared descriptors with their defaults", () => {
+  test("ships every declared descriptor with its defaults", () => {
     expect(DEFAULT_AGENT_DESCRIPTORS.map((descriptor) => descriptor.id)).toEqual([
       "scout",
       "watchdog",
       "design",
       "coach",
+      "api-standards",
       "release-train",
     ]);
     const scout = agentRegistry.require("scout");
@@ -222,6 +223,7 @@ describe("background agent registry", () => {
       "watchdog",
       "design",
       "coach",
+      "api-standards",
       "release-train",
       "patrol",
     ]);
@@ -283,6 +285,7 @@ describe("background agent registry", () => {
       "watchdog",
       "design",
       "coach",
+      "api-standards",
       "release-train",
       "patrol",
     ]);

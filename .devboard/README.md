@@ -1864,13 +1864,13 @@ sudo userdel --remove <user>
 
 ## Background agents
 
-Auto Scout, Watchdog, Design System, and Coach are the four instances of one background-agent
-contract. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
+Auto Scout, Watchdog, Design System, Coach, and API Standards are the five continuous instances of
+one background-agent contract; the Release Train is a sixth descriptor of the same shape. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
 description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
 start/stop commands, issue projection, detail panel, and prompt source. The shared page, the
 shared filed-issues table, and the Devboard sidebar are built from that registry; adding a further
 continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
-sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
+sidebar, and issue table have no agent-id branch: a synthetic further descriptor projects and
 validates unchanged.
 
 All three agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
@@ -1880,12 +1880,13 @@ restarted by a dashboard restart, a page open, or a tab restore. A live worker o
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
 Start is a no-op with a notice.
 
-All four pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
-lifecycle badge `agent-lifecycle`, `agent-sync-at`, exactly one of `agent-start`/`agent-stop`,
+All background-agent pages share `data-testid="agent-page"` and `data-agent`, the header
+`agent-header`, the lifecycle badge `agent-lifecycle`, `agent-sync-at`, exactly one of `agent-start`/`agent-stop`,
 `agent-cadence`, `agent-last-run`, `agent-next-run`, `agent-save-cadence`, `agent-limit-hour`,
-`agent-limit-pending`, `agent-save-limits`, `agent-issues-count`, `agent-issues`, and
-`agent-detail`. Alerts use one position: `agent-error`, `agent-sync-error`, and
-`agent-settings-error`, each with `role="alert"`. Start/Stop is the only filled primary control.
+`agent-limit-pending`, `agent-save-limits`, `agent-issues-count`, `agent-issues`, and the pinned
+`agent-activity-bar`. No shared page renders a separate detail panel. Alerts use one position:
+`agent-error`, `agent-sync-error`, and `agent-settings-error`, each with `role="alert"`.
+Start/Stop is the only filled primary control.
 The header row carries the page identity, the lifecycle badge, the last-read clock, and
 Start/Stop. Its settings footer is one band `role="group"` named `Cadence and filing limits` with
 two visible `overline` groups 24px apart, each with 10px column and 6px row gaps: `Cadence` holds
@@ -1894,8 +1895,9 @@ limits` holds Per hour, Open issues, and the secondary `Save limits`. Each group
 so a field never separates from its save control. Either save validates all three fields and
 sends one settings command. The Devboard sidebar has two groups in order: `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
-`open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`, then
-`open-devboard-coach`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
+`open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`,
+`open-devboard-coach`, `open-devboard-api-standards`, then `open-devboard-release-train`, badges
+`agent-state-<id>`, counts `agent-count-<id>`), and
 `Devboard sections` (the `devboard-tab` MCP tools entry). The Issues sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
@@ -1903,7 +1905,7 @@ queue.
 
 ### Periodic forge reads
 
-All four filed-issues tables — Auto Scout, Watchdog, Design System, and Coach — obtain, age, and
+All five audit tables — Auto Scout, Watchdog, Design System, Coach, and API Standards — obtain, age, and
 fail their issue state through one shared read (`server/agents/forge-state.ts`) that names, for
 each row it lists, the issue's current forge state and its shipping release. The read runs in
 the dashboard and never depends on the agent's worker: a stopped agent's table reflects a
@@ -2037,6 +2039,84 @@ System renders `design-activity`, both streamed as `agentActivity`. Watchdog ren
 cycle history (`watchdog-cycles`, `watchdog-cycle`,
 `watchdog-cycle-at/-window/-action/-findings/-reason`, `watchdog-cycles-empty`), capped at the
 newest 100 run directories.
+
+### API Standards
+
+API Standards is the `api-standards` descriptor. Its sidebar entry
+`open-devboard-api-standards` opens the shared `agent-page` with
+`data-agent="api-standards"`: the same core id sequence every background-agent page renders,
+exactly one of `agent-start`/`agent-stop`, `agent-cadence`, `agent-last-run`,
+`agent-next-run`, `agent-limit-hour`, `agent-limit-pending`, `agent-issues`,
+`agent-issues-count`, `agent-sync-at`, and the pinned `agent-activity-bar`. It renders no
+`agent-detail` and no `agent-documentation` panel, and `agent-count-api-standards` equals the
+rendered row count. Its prompt section shows `.devboard/prompts/api-standards.md`, the file the
+`/api-standards-audit` command reads, as read-only bytes exactly like the Auto Scout prompt.
+
+The normative source is the project OMP skill
+`<REPO_DIR>/.omp/skills/restful-api-implementation/` — `SKILL.md` and its
+`references/zalando-rest-rules.md`, whose rows read `| <rule id> | <MUST|SHOULD|MAY> |
+<directive> |` grouped under the guideline's 15 REST chapter headings. Every cycle reads both
+files; the skill is the sole normative text, the cycle makes no network request to the guideline
+site, and it never invents a rule id, level, chapter, or directive. A finding cites the numeric
+rule id, its level, its chapter, the skill's directive verbatim, and both skill paths. The
+chapter heading is the finding's category in the filed-issues table.
+
+A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
+currently `POST /api/feedback`, `GET /api/ready`, `POST /api/goal-proposals`, the `/ws` upgrade
+with its refusal and method handling, and the static-file fallback, together with any route added
+later. The audit input carries every TypeScript file under `<REPO_DIR>/.devboard/server` that
+defines routing, request parsing, or responses (tests and fixtures excluded), so a route added to
+that directory appears in the next cycle with no engine change. The WebSocket messages carried
+after an upgrade, the MCP tool contract, and the static asset contents are not audited.
+
+A finding is filed only when the HTTP surface violates a MUST- or SHOULD-level rule. MAY-level
+rules, stylistic preferences, and deviations outside the HTTP surface are recorded in activity
+and never filed. Each filed issue is created in the origin with the exact `api-standards` label,
+no title prefix, a non-empty title of at most 200 characters, and a body carrying the chapter,
+the rule id, the level, the skill directive quoted verbatim, both skill paths, every evidence
+path with a line range and a source quote copied verbatim, every affected endpoint with method
+and path, the proposed change, and binary acceptance criteria. The worker proves each decision
+before recording it: a citation that does not match the skill, evidence that is not in the named
+file and span, a missing endpoint, or a claim of a filing the tool never recorded is dropped and
+recorded, never reported as filed.
+
+A finding is a duplicate when its normalized title — lowercased, whitespace runs collapsed,
+trimmed — equals that of any existing `api-standards` issue in any state or any open issue in the
+repository. A duplicate is skipped silently and counted in activity; the prompt forbids
+restating, paraphrasing, or splitting a known finding to reach a count.
+
+The page has the shared `agent-limit-hour` and `agent-limit-pending` fields, each empty
+(unlimited) or an integer 1 through 100, defaulting to 10 per rolling hour and 5 open. The hourly
+cap counts every `api-standards` issue created in the last rolling 60 minutes in any state; the
+pending cap counts every open `api-standards` issue; one cycle files at most the smaller room and
+100. A zero room files nothing and records each skipped finding in activity, and clearing a cap
+resumes filing on the next cycle. A failed forge read files nothing and keeps the last known
+rows. Caps never block the audit. `agent-cadence` defaults to 60 minutes, accepts 1 through 1440,
+persists across reload and restart, applies without a worker restart, and starts no cycle sooner
+than that interval after the previous cycle start; `agent-last-run` and `agent-next-run` show
+both.
+
+The turn is read-only: it never edits the checkout, creates a branch, commits, stashes, pushes,
+builds, tests, installs, or starts another agent, and it writes nothing outside its cycle
+directory and its worker state directory. Its only forge write is `issue_create`; it never
+comments on, closes, relabels, or edits an issue. The worker writes only under
+`<REPO_DIR>/.devboard/.tmp/api-standards/` and `<STATE_DIR>/api-standards/`, both inside the
+repository root, and deletes nothing there.
+
+Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
+the canonical source checkout lacks `.devboard/server` (an installed npm prefix is refused), the
+REST skill's `SKILL.md` or reference is unreadable, the reference carries no rule table, the
+origin is not a supported forge, or its account cannot write. When the repository lacks the exact
+`api-standards` label, preflight creates it with its documented color and description before
+Start proceeds; a failed creation refuses Start naming the forge error. A failed audit, ACP turn,
+forge read, or issue write records the failing step and its reason in activity and in
+`agent-error`, files no issue for that finding, and never claims a filing that did not happen; a
+failed forge read keeps the last known rows and follows the shared retry and `agent-sync-error`
+policy. At most one audit cycle runs at a time: Start while a cycle runs, a cadence change, a page
+open, a tab restore, or a reload never starts a second cycle. `bun run verify:api-standards` proves
+the entry, the shared page, the MUST/SHOULD filings with provenance, the MAY-only and duplicate
+skips, the caps, the added route, the unchanged checkout and git state, the named preflight
+refusals, and activity freshness.
 
 ### Design System
 
