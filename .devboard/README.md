@@ -690,10 +690,19 @@ worker a `drain`, and claims every unit that arises afterwards; the older worker
 unit, finishes its in-flight unit, exits when that unit ends, releases its lock, and leaves its
 state, run directories, and activity readable. The mode lists every live worker with its version
 and merges every running unit into one view, so no surface reports a worker/dashboard or
-front-end/backend version divergence. Start launches the newest installed version when no worker
-is live; Pause, Resume, Check now, Stop, and settings apply to every live worker of the family.
-With no worker live, installing a newer version starts none. A worker or run started by a version
-that predates this mechanism has no drain command; it is never killed mid-unit.
+front-end/backend version divergence. While a newer worker takes over, the issues status bar
+reports the family's running work, `issues working (N)` with N summed across every attached
+worker, instead of the older member's `pausing`; the drained worker still records its own truthful
+state, and the Overview's poll line keeps reporting whichever attached worker polls, so an
+automatic drain is never shown as an operator Pause. Every running Overview row, Agents card,
+Open issues running row, and run detail names the harness version of the worker that owns that
+run: the label comes from the run record, backed by the owning worker's live lock while it is
+live, never from the dashboard's own version, and the older version stays named in history after
+its worker retires. Start launches the newest installed version when no worker is live; Pause,
+Resume, Check now, Stop, and settings apply to every live worker of the family. With no worker
+live, installing a newer version starts none. A worker or run started by a version that predates
+this mechanism has no drain command; it is never killed mid-unit, and the dashboard's own drain
+marker still distinguishes its automatic drain from a manual Pause.
 
 A closed or failed lane whose retention window expired while the server was down is not
 replayed; the remaining window is honored after a restart. An unreadable, truncated, or
@@ -2768,7 +2777,13 @@ damaged state file is renamed aside and never prevents the mode from opening.
 
 The worker records the harness version it loaded, its pid, and its argv; a mismatched dashboard
 shows a notice and never kills the worker, and the state records each ACP child's pid, argv, and
-cwd so Stop or a fresh Start can terminate a proven orphan. The first worker to find no repo-keyed
+cwd so Stop or a fresh Start can terminate a proven orphan. The state also records why it stopped
+claiming work (`pauseSource: "operator"` for a Pause, `"drain"` for a newer version's takeover)
+and each run summary's owning `harnessVersion` and `workerPid`; both fields are optional, so a
+document from an earlier harness still loads, and a summary without them is attributed from its
+`run.json`. `workers/<version>/drain.json` records the dashboard's automatic drain for a worker
+whose harness predates the pause source; it is honoured only for the pid it names, so a later
+worker of the same version never inherits the drain. The first worker to find no repo-keyed
 ledger imports handled numbers from `<STATE_DIR>/orchestrator/state.json` and `ledger.json` when
 the legacy state parses and its `root` resolves to this `REPO_DIR`. A missing, damaged, or
 mismatched legacy file is ignored. The legacy files are otherwise left untouched.
@@ -2858,9 +2873,14 @@ ends; the overview list selects instead of opening a tab. The queue keeps every 
 `goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
 active agent. The Runs page lists every run with its status and issue,
 and a run's detail shows only that run's activity. The status bar's issues indicator reports the
-lifecycle and the running-agent count in its title, and activating it opens the Issues Overview
-from whichever Issues surface was open, so a click always lands on the automation state it
-reports.
+family's running work rather than an older member's drain: `issues working (N)` counts running
+agents across every attached worker, and neither the label nor its accessible name or title says
+`pausing` or `drain` while a newer worker takes over; an operator's Pause still reads
+`issues pausing`. Each running task names its owning worker's harness version on the Overview row,
+the Agents card, the Open issues running row, and the run detail, so granular version migration is
+visible at all times and a known version never reads `unknown`. Activating the indicator opens the
+Issues Overview from whichever Issues surface was open, so a click always lands on the automation
+state it reports.
 
 ## Draft goals and proposed goals
 
