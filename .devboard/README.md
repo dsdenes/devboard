@@ -2176,7 +2176,8 @@ rule id, its level, its chapter, the skill's directive verbatim, and both skill 
 chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
-currently `POST /api/feedback`, `GET /api/ready`, `POST /api/goal-proposals`, the `/ws` upgrade
+currently `POST /api/feedback`, `/api/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
+HEAD` for every other method, `POST /api/goal-proposals`, the `/ws` upgrade
 with its refusal and method handling, and the static-file fallback, together with any route added
 later. The audit input carries every TypeScript file under `<REPO_DIR>/.devboard/server` that
 defines routing, request parsing, or responses (tests and fixtures excluded), so a route added to

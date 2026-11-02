@@ -466,6 +466,28 @@ describe("createApp", () => {
     }
   });
 
+  test("answers /api/ready for GET and HEAD and refuses every other method", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const ready = await fetch(`http://${url}/api/ready`);
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toEqual({ pid: process.pid });
+
+      const head = await fetch(`http://${url}/api/ready`, { method: "HEAD" });
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-type")).toContain("application/json");
+      expect(await head.text()).toBe("");
+
+      const post = await fetch(`http://${url}/api/ready`, { method: "POST" });
+      expect(post.status).toBe(405);
+      expect(post.headers.get("allow")).toBe("GET, HEAD");
+      expect(await post.text()).toBe("Method Not Allowed");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("answers listRecords over the WebSocket", async () => {
     const { server, url } = await startServer();
 

@@ -7449,7 +7449,15 @@ export function createApp(options: AppOptions) {
       // Readiness for the launcher that owns this process: the pid proves that
       // this dashboard, and not another server on the port, answered.
       if (url.pathname === "/api/ready") {
-        return Response.json({ pid: process.pid });
+        if (request.method !== "GET" && request.method !== "HEAD") {
+          return new Response("Method Not Allowed", {
+            status: 405,
+            headers: { Allow: "GET, HEAD" },
+          });
+        }
+        const ready = Response.json({ pid: process.pid });
+        // HEAD answers with GET's headers and no body.
+        return request.method === "HEAD" ? new Response(null, { headers: ready.headers }) : ready;
       }
 
       if (url.pathname === "/api/goal-proposals") {
