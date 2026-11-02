@@ -563,6 +563,12 @@ const GIT_TIMEOUT_MS = 60_000;
 const MAX_FEEDBACK_BYTES = 64_000;
 /** Default wall-clock bound for one issue creation. */
 const FEEDBACK_TIMEOUT_MS = 60_000;
+/**
+ * The one detail an unexpected endpoint failure answers with. The exception
+ * text stays in the journal: a response never carries an implementation
+ * internal (Zalando rule 177).
+ */
+const INTERNAL_ERROR_DETAIL = "An internal error occurred.";
 
 /**
  * Running dashboards register their stop handler here so a termination signal
@@ -7368,6 +7374,16 @@ export function createApp(options: AppOptions) {
   }
 
   /**
+   * The one answer an unexpected endpoint failure gives: a fixed detail the
+   * client may show, with the exception text recorded only in the journal.
+   */
+  function internalErrorResponse(endpoint: string, error: unknown): Response {
+    const detail = error instanceof Error ? error.message : String(error);
+    journal.write("server-error", `${endpoint}: ${detail}`);
+    return Response.json({ error: INTERNAL_ERROR_DETAIL }, { status: 500 });
+  }
+
+  /**
    * Files one browser report as a Gitea issue. The request is bounded before
    * parsing, and a cross-origin browser request is refused: this endpoint has
    * the side effect of creating issues, so another page must not reach it.
@@ -7403,10 +7419,7 @@ export function createApp(options: AppOptions) {
       if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
         return Response.json({ error: error.message }, { status: error.status });
       }
-      return Response.json(
-        { error: error instanceof Error ? error.message : String(error) },
-        { status: 500 },
-      );
+      return internalErrorResponse("POST /api/feedback", error);
     }
   }
 
@@ -7428,10 +7441,7 @@ export function createApp(options: AppOptions) {
       if (error instanceof FeedbackRequestError) {
         return Response.json({ error: error.message }, { status: error.status });
       }
-      return Response.json(
-        { error: error instanceof Error ? error.message : String(error) },
-        { status: 500 },
-      );
+      return internalErrorResponse("POST /api/goal-proposals", error);
     }
   }
 

@@ -12,6 +12,7 @@ import {
   writeGoalProposal,
 } from "./goal-proposal";
 import { testProviderService } from "./fixtures/test-providers";
+import type { Journal, JournalKind } from "./journal";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -25,6 +26,8 @@ interface StartOptions {
   slug?: "fallback" | "agent" | ((report: string) => Promise<string>);
   /** What the stub agent answers the naming turn with. */
   slugAnswer?: string;
+  /** Records the server journal instead of writing one to disk. */
+  journal?: Journal;
 }
 
 afterAll(async () => {
@@ -71,8 +74,18 @@ async function startServer(options: StartOptions = {}) {
     providers: testProviderService(join(root, "state")),
     ...(agentCommand === undefined ? {} : { agentCommand }),
     ...(goalSlug === undefined ? {} : { goalSlug }),
+    ...(options.journal === undefined ? {} : { journal: options.journal }),
   });
   return { server, root, url: `127.0.0.1:${server.port}`, recordPath };
+}
+
+/** Captures the journal records a server would write. */
+function journalRecorder(): { journal: Journal; records: Array<[JournalKind, string]> } {
+  const records: Array<[JournalKind, string]> = [];
+  return {
+    records,
+    journal: { path: "test", write: (kind, text) => records.push([kind, text]) },
+  };
 }
 
 function propose(
@@ -419,7 +432,8 @@ describe("goal proposal drafts", () => {
   });
 
   test("reports a write failure without a partial draft", async () => {
-    const { server, root, url } = await startServer();
+    const { journal, records } = journalRecorder();
+    const { server, root, url } = await startServer({ journal });
     // A file where the harness directory belongs makes the directory creation
     // fail, so the write cannot land.
     await rm(join(root, ".devboard"), { recursive: true, force: true });
@@ -429,15 +443,13 @@ describe("goal proposal drafts", () => {
       const response = await propose(url, proposal());
 
       expect(response.status).toBe(500);
-      const body: unknown = await response.json();
-      const error =
-        typeof body === "object" &&
-        body !== null &&
-        "error" in body &&
-        typeof body.error === "string"
-          ? body.error
-          : "";
-      expect(error.length).toBeGreaterThan(0);
+      expect(await response.json()).toEqual({ error: "An internal error occurred." });
+      // The exception text reaches the journal and never the response.
+      expect(records).toHaveLength(1);
+      const [kind, text] = records[0]!;
+      expect(kind).toBe("server-error");
+      expect(text.startsWith("POST /api/goal-proposals: ")).toBe(true);
+      expect(text.length).toBeGreaterThan("POST /api/goal-proposals: ".length);
       expect(await readFile(join(root, ".devboard"), "utf8")).toBe("not a directory\n");
       expect(await drafts(root)).toEqual([]);
     } finally {

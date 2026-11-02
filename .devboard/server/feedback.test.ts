@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createApp } from "./app";
+import { createApp, type FeedbackOptions } from "./app";
 import { REDESIGN_INSTRUCTION } from "./feedback";
 import { testProviderService } from "./fixtures/test-providers";
+import type { Journal, JournalKind } from "./journal";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -32,7 +33,17 @@ interface RecordedCall {
 
 type Mode = "ok" | "fail" | "hang";
 
-async function startServer(options: { enabled?: boolean; mode?: Mode; timeoutMs?: number } = {}) {
+interface StartOptions {
+  enabled?: boolean;
+  mode?: Mode;
+  timeoutMs?: number;
+  /** Overrides the server's own feedback configuration. */
+  feedback?: FeedbackOptions;
+  /** Records the server journal instead of writing one to disk. */
+  journal?: Journal;
+}
+
+async function startServer(options: StartOptions = {}) {
   const root = await temporaryDirectory();
   const adrDir = join(root, "adrs");
   const staticDir = join(root, "static");
@@ -74,6 +85,18 @@ async function startServer(options: { enabled?: boolean; mode?: Mode; timeoutMs?
     });
   }) as typeof fetch;
 
+  const feedback =
+    options.feedback ??
+    (options.enabled === false
+      ? undefined
+      : {
+          baseUrl: "https://gitea.example",
+          repo: "dsdenes/devboard",
+          token: "secret-token",
+          timeoutMs: options.timeoutMs ?? 5_000,
+          fetchImpl,
+        });
+
   const server = createApp({
     adrDir,
     staticDir,
@@ -82,18 +105,19 @@ async function startServer(options: { enabled?: boolean; mode?: Mode; timeoutMs?
     repoDir: root,
     stateDir: join(root, "state"),
     providers: testProviderService(join(root, "state")),
-    feedback:
-      options.enabled === false
-        ? undefined
-        : {
-            baseUrl: "https://gitea.example",
-            repo: "dsdenes/devboard",
-            token: "secret-token",
-            timeoutMs: options.timeoutMs ?? 5_000,
-            fetchImpl,
-          },
+    feedback,
+    ...(options.journal === undefined ? {} : { journal: options.journal }),
   });
   return { server, root, url: `127.0.0.1:${server.port}`, calls };
+}
+
+/** Captures the journal records a server would write. */
+function journalRecorder(): { journal: Journal; records: Array<[JournalKind, string]> } {
+  const records: Array<[JournalKind, string]> = [];
+  return {
+    records,
+    journal: { path: "test", write: (kind, text) => records.push([kind, text]) },
+  };
 }
 
 function submit(
@@ -334,6 +358,36 @@ describe("feedback endpoint", () => {
       expect(await response.json()).toEqual({
         error: "Issue creation timed out after 100 ms.",
       });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers an unexpected failure with a fixed detail and journals the exception", async () => {
+    const { journal, records } = journalRecorder();
+    // The token is read inside the guarded block, so a throwing accessor stands
+    // for any unexpected exception there: the response must carry no exception
+    // text, and the journal must hold the detail.
+    const feedback: FeedbackOptions = {
+      baseUrl: "https://gitea.example",
+      repo: "dsdenes/devboard",
+      timeoutMs: 5_000,
+    };
+    Object.defineProperty(feedback, "token", {
+      get(): string {
+        throw new Error("gitea token secret-token is unusable");
+      },
+    });
+    const { server, url } = await startServer({ feedback, journal });
+
+    try {
+      const response = await submit(url, report());
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "An internal error occurred." });
+      expect(records).toEqual([
+        ["server-error", "POST /api/feedback: gitea token secret-token is unusable"],
+      ]);
     } finally {
       server.stop(true);
     }
