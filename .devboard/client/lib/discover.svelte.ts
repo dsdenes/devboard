@@ -58,6 +58,7 @@ export class DiscoverStore {
     this.active = false;
     this.activeAgent = null;
     this.runningAll = false;
+    this.suiteFailed = null;
     this.runId = null;
     this.startedAt = null;
     this.question = null;
@@ -70,6 +71,8 @@ export class DiscoverStore {
   /** The agent the active run belongs to. */
   activeAgent = $state<string | null>(null);
   runningAll = $state(false);
+  /** The step a Run all sequence halted on, or null while it runs or succeeds. */
+  suiteFailed = $state<string | null>(null);
   runId = $state<string | null>(null);
   startedAt = $state<string | null>(null);
   /** The active agent's lines, shown by the shared run tag. */
@@ -418,6 +421,7 @@ export class DiscoverStore {
     this.activeAgent =
       typeof payload.activeAgent === "string" ? payload.activeAgent : null;
     this.runningAll = payload.runningAll === true;
+    this.suiteFailed = typeof payload.allFailed === "string" ? payload.allFailed : null;
     if (!this.active) this.agentQuestions = {};
     if (Array.isArray(payload.agents)) {
       const prompts = { ...this.promptStates };

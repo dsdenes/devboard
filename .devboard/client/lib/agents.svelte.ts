@@ -4,6 +4,7 @@ import type {
   AgentDescriptor,
   AgentPromptState,
   AgentSnapshot,
+  RunQuestion,
 } from "./types";
 import { connection } from "./connection.svelte";
 import { notifications } from "./notifications.svelte";
@@ -101,6 +102,15 @@ export class AgentsStore {
 
   lifecycle(id: string): string {
     return this.snapshots[id]?.lifecycle ?? "stopped";
+  }
+
+  /**
+   * A background agent's pending operator question, when its snapshot carries
+   * one. No current descriptor asks, so this stays null until an agent does.
+   */
+  question(id: string): RunQuestion | null {
+    const value = (this.snapshots[id] as { question?: RunQuestion | null } | undefined)?.question;
+    return value ?? null;
   }
 
   detail(id: string): AgentActivityDetail | null {

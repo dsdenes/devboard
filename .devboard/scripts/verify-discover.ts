@@ -69,6 +69,7 @@ const SCENARIOS = [
   "discovery-group",
   "per-agent-prompts",
   "run-all-order",
+  "sidebar-run-state",
   "per-agent-publication",
   "contribution-page",
   "contribution-no-forge",
@@ -652,6 +653,62 @@ async function waitStatus(devtools: Devtools, agent: string, state: string): Pro
     `${agent} to reach ${state}`,
     30_000,
   );
+}
+
+/** Every Discover sidebar entry's `data-run-state`, keyed by tab or agent id. */
+async function sidebarRunStates(devtools: Devtools): Promise<{
+  tabs: Record<string, string>;
+  agents: Record<string, string>;
+}> {
+  const value = await devtools.evaluate(`(() => {
+    const tabs = {};
+    for (const element of document.querySelectorAll('[data-testid="discover-tab"]')) {
+      tabs[element.getAttribute('data-tab') ?? ''] = element.getAttribute('data-run-state') ?? '';
+    }
+    const agents = {};
+    for (const element of document.querySelectorAll('[data-testid="discover-agent-tab"]')) {
+      agents[element.getAttribute('data-agent') ?? ''] =
+        element.getAttribute('data-run-state') ?? '';
+    }
+    return { tabs, agents };
+  })()`);
+  return (value ?? { tabs: {}, agents: {} }) as {
+    tabs: Record<string, string>;
+    agents: Record<string, string>;
+  };
+}
+
+/** The map from a Discover agent to the tab entries its run marks. */
+const AGENT_TAB_ENTRIES: Record<string, string[]> = {
+  sheet: [],
+  "discover-contribution": ["contribution", "contribution-skill"],
+  "discover-testing-strategy": ["testing-strategy"],
+  "discover-naming-conventions": ["naming-conventions"],
+  "discover-coding-conventions": ["coding-conventions"],
+  "discover-architecture-boundaries": ["architecture-boundaries"],
+  "discover-glossary": ["glossary", "glossary-skill"],
+};
+
+/**
+ * Checks that exactly the named agent entry and its tab entries are running,
+ * every other rendered Discover entry is idle, and the Overview is idle unless
+ * the suite itself is the source.
+ */
+function checkOnlyRunning(
+  states: { tabs: Record<string, string>; agents: Record<string, string> },
+  agent: string,
+  label: string,
+  suiteRunning = false,
+): void {
+  const runningTabs = AGENT_TAB_ENTRIES[agent] ?? [];
+  const detail = { states, agent, label };
+  for (const [id, state] of Object.entries(states.agents)) {
+    check(state === (id === agent ? "running" : "idle"), `${label}: ${id} has the wrong run state`, detail);
+  }
+  for (const [id, state] of Object.entries(states.tabs)) {
+    const expected = id === "overview" ? (suiteRunning ? "running" : "idle") : runningTabs.includes(id) ? "running" : "idle";
+    check(state === expected, `${label}: ${id} has the wrong run state`, detail);
+  }
 }
 
 const root = await makeRoot("verify-discover");
@@ -1296,7 +1353,165 @@ try {
         !existsSync(join(haltHost, ".omp", "discover", "skills", "discover-naming-conventions")),
       "Run all did not keep the published slices and skip the later agents",
     );
+    const haltedRun = await devtools.evaluate(`(() => {
+      const overview = document.querySelector(
+        '[data-testid="discover-tab"][data-tab="overview"]'
+      );
+      const naming = document.querySelector(
+        '[data-testid="discover-agent-tab"][data-agent="discover-naming-conventions"]'
+      );
+      const namingSkill = document.querySelector(
+        '[data-testid="discover-tab"][data-tab="naming-conventions"]'
+      );
+      const coding = document.querySelector(
+        '[data-testid="discover-agent-tab"][data-agent="discover-coding-conventions"]'
+      );
+      return {
+        overview: overview?.getAttribute('data-run-state') ?? '',
+        overviewBadge:
+          overview?.querySelector('[data-testid="discover-running"]')?.textContent?.trim() ?? '',
+        naming: naming?.getAttribute('data-run-state') ?? '',
+        namingSkill: namingSkill?.getAttribute('data-run-state') ?? '',
+        coding: coding?.getAttribute('data-run-state') ?? '',
+      };
+    })()`);
+    check(
+      JSON.stringify(haltedRun) ===
+        JSON.stringify({
+          overview: "failed",
+          overviewBadge: "failed",
+          naming: "failed",
+          namingSkill: "failed",
+          coding: "idle",
+        }),
+      "a failed Run all did not leave the step and the Overview failed with later agents idle",
+      haltedRun,
+    );
     console.log("PASS run-all-halt");
+  }
+
+  if (selected("sidebar-run-state")) {
+    /* 6b. Each Discover sidebar entry shows only its own page's run state. */
+    const sidebarHost = await makeSourceHost(root, "sidebar-state-host");
+    const sidebarLog = join(root, "sidebar-state-acp.log");
+    const sidebar = await startDashboard({
+      repoDir: sidebarHost,
+      stateDir: join(sidebarHost, ".devboard", ".tmp", "state"),
+      logPath: sidebarLog,
+      extraStub: ["--discover-delay-ms=2500"],
+    });
+    pids.push(sidebar.process.pid ?? 0);
+    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${sidebar.port}/` });
+    await openDiscoverMode(devtools, "the sidebar run-state dashboard");
+
+    const idle = await sidebarRunStates(devtools);
+    check(
+      Object.values(idle.tabs).every((state) => state === "idle") &&
+        Object.values(idle.agents).every((state) => state === "idle"),
+      "an idle dashboard does not mark every rendered Discover entry idle",
+      idle,
+    );
+    check(
+      Object.keys(idle.agents).length === 7,
+      "the seven agent entries are not all present",
+      idle.agents,
+    );
+    check(
+      (await devtools.evaluate(
+        `document.querySelectorAll('[data-testid="discover-tab"][data-run-state] [data-testid="discover-running"], [data-testid="discover-tab"][data-run-state] [data-testid="run-state-badge"]').length`,
+      )) === 0,
+      "an idle Discover entry renders a run badge",
+    );
+
+    // A single sheet run marks only the Data Sheet entry; the Overview stays idle.
+    await openCard(devtools, "sheet");
+    await click(devtools, "discover-agent-start");
+    await waitFor(
+      async () => ((await sidebarRunStates(devtools)).agents.sheet === "running" ? true : undefined),
+      "the Data Sheet sidebar entry to run",
+      30_000,
+    );
+    checkOnlyRunning(await sidebarRunStates(devtools), "sheet", "the sheet-only run");
+    check(
+      (await devtools.evaluate(
+        `document.querySelector('[data-testid="discover-agent-tab"][data-agent="sheet"] [data-testid="discover-agent-running"]')?.textContent?.trim() ?? ''`,
+      )) === "running",
+      "the Data Sheet entry has no running badge",
+    );
+    await waitStatus(devtools, "sheet", "succeeded");
+
+    // A single contribution run marks exactly the agent, page, and skill entries.
+    await openCard(devtools, "discover-contribution");
+    await click(devtools, "discover-agent-start");
+    await waitFor(
+      async () =>
+        (await sidebarRunStates(devtools)).agents["discover-contribution"] === "running"
+          ? true
+          : undefined,
+      "the Contribution sidebar entries to run",
+      30_000,
+    );
+    const contributionRunning = await sidebarRunStates(devtools);
+    checkOnlyRunning(contributionRunning, "discover-contribution", "the contribution-only run");
+    check(
+      contributionRunning.tabs.overview === "idle" &&
+        contributionRunning.tabs.glossary === "idle" &&
+        contributionRunning.tabs["glossary-skill"] === "idle" &&
+        contributionRunning.agents.sheet === "idle",
+      "a contribution-only run marked another entry",
+      contributionRunning,
+    );
+    await waitStatus(devtools, "discover-contribution", "succeeded");
+
+    // Run all marks the Overview and only the current step's own entries.
+    await openOverview(devtools);
+    await click(devtools, "discover-start");
+    const runOrder = [
+      "sheet",
+      "discover-glossary",
+      "discover-testing-strategy",
+      "discover-naming-conventions",
+      "discover-coding-conventions",
+      "discover-architecture-boundaries",
+      "discover-contribution",
+    ];
+    for (const agent of runOrder) {
+      await waitFor(
+        async () =>
+          (await sidebarRunStates(devtools)).agents[agent] === "running" ? true : undefined,
+        `the ${agent} suite step`,
+        60_000,
+      );
+      const step = await sidebarRunStates(devtools);
+      checkOnlyRunning(step, agent, `the ${agent} suite step`, true);
+    }
+    await waitFor(
+      async () => {
+        const states = await sidebarRunStates(devtools);
+        return Object.values(states.tabs).every((state) => state === "idle") &&
+          Object.values(states.agents).every((state) => state === "idle")
+          ? true
+          : undefined;
+      },
+      "the suite to return every entry to idle",
+      120_000,
+    );
+    const finished = await sidebarRunStates(devtools);
+    check(
+      Object.values(finished.tabs).every((state) => state === "idle") &&
+        Object.values(finished.agents).every((state) => state === "idle"),
+      "a succeeded Run all left a Discover entry marked",
+      finished,
+    );
+    check(
+      (await devtools.evaluate(
+        `document.querySelectorAll('[data-testid="discover-running"], [data-testid="run-state-badge"]').length`,
+      )) === 0,
+      "a succeeded Run all left a Discover run badge",
+    );
+    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
+    await openDiscoverMode(devtools, "the source dashboard after the run-state pass");
+    console.log("PASS sidebar-run-state");
   }
 
   if (selected("skill-read-only")) {
