@@ -73,12 +73,12 @@ function readDocument(repoDir: string, relativePath: string): AuditFile {
 }
 
 /**
- * Reads every `.svelte`, `.css`, `.ts`, and `index.html` file below the
- * configured source directory plus the two documents. A missing source
- * directory, index.html, or document refuses the whole input; an installed
- * npm prefix has no such `client` directory and is refused by name.
+ * The interface source set below the configured source directory, as
+ * repository-relative paths. A missing source directory or index.html refuses
+ * the whole set; an installed npm prefix has no such `client` directory and is
+ * refused by name.
  */
-export function readAuditInput(repoDir: string, config: DesignConfig): AuditInput {
+export function designSourcePaths(repoDir: string, config: DesignConfig): string[] {
   const root = resolve(repoDir);
   const sourceRoot = resolve(root, config.sourceDir);
   if (config.sourceDir !== DEFAULT_SOURCE_DIRECTORY && !config.sourceDir.endsWith("/client")) {
@@ -113,15 +113,22 @@ export function readAuditInput(repoDir: string, config: DesignConfig): AuditInpu
   if (index === undefined) {
     throw new DesignInputError(`${config.sourceDir} has no index.html entry`);
   }
-
   const files: string[] = [];
   walk(sourceRoot, root, files);
+  return files.map((absolute) => relative(root, absolute).split(sep).join("/"));
+}
+
+/**
+ * Reads every `.svelte`, `.css`, `.ts`, and `index.html` file below the
+ * configured source directory plus the two documents.
+ */
+export function readAuditInput(repoDir: string, config: DesignConfig): AuditInput {
+  const root = resolve(repoDir);
   const sources: AuditFile[] = [];
-  for (const absolute of files) {
-    const path = relative(root, absolute).split(sep).join("/");
+  for (const path of designSourcePaths(root, config)) {
     let text: string;
     try {
-      text = readFileSync(absolute, "utf8");
+      text = readFileSync(resolve(root, path), "utf8");
     } catch {
       throw new DesignInputError(`${path} is not readable`);
     }

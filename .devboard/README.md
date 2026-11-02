@@ -1905,8 +1905,9 @@ sudo userdel --remove <user>
 
 ## Background agents
 
-Auto Scout, Watchdog, Design System, Coach, and API Standards are the five continuous instances of
-one background-agent contract; the Release Train is a sixth descriptor of the same shape. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
+Auto Scout, Watchdog, Design System, Dead Code, Coach, and API Standards are the six continuous
+instances of one background-agent contract; the Release Train is a seventh descriptor of the same
+shape. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
 description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
 start/stop commands, issue projection, detail panel, and prompt source. The shared page, the
 shared filed-issues table, and the Devboard sidebar are built from that registry; adding a further
@@ -1914,7 +1915,7 @@ continuous agent means writing its engine, its adapter, and one registry entry. 
 sidebar, and issue table have no agent-id branch: a synthetic further descriptor projects and
 validates unchanged.
 
-All three agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
+All six continuous agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
 `stopping` from the moment Stop is accepted until the worker exits. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
@@ -1922,7 +1923,8 @@ dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cann
 Start is a no-op with a notice.
 
 All background-agent pages share `data-testid="agent-page"` and `data-agent`, the header
-`agent-header`, the lifecycle badge `agent-lifecycle`, `agent-sync-at`, exactly one of `agent-start`/`agent-stop`,
+`agent-header`, the lifecycle badge `agent-lifecycle`, `agent-sync-at`, exactly one of
+`agent-start`/`agent-stop`,
 `agent-cadence`, `agent-last-run`, `agent-next-run`, `agent-save-cadence`, `agent-limit-hour`,
 `agent-limit-pending`, `agent-save-limits`, `agent-issues-count`, `agent-issues`, and the pinned
 `agent-activity-bar`. No shared page renders a separate detail panel. Alerts use one position:
@@ -1937,8 +1939,8 @@ so a field never separates from its save control. Either save validates all thre
 sends one settings command. The Devboard sidebar has two groups in order: `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
 `open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`,
-`open-devboard-coach`, `open-devboard-api-standards`, then `open-devboard-release-train`, badges
-`agent-state-<id>`, counts `agent-count-<id>`), and
+`open-devboard-dead-code`, `open-devboard-coach`, `open-devboard-api-standards`, then
+`open-devboard-release-train`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
 `Devboard sections` (the `devboard-tab` MCP tools and Skills entries). The Issues sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
@@ -1946,7 +1948,8 @@ queue.
 
 ### Periodic forge reads
 
-All five audit tables — Auto Scout, Watchdog, Design System, Coach, and API Standards — obtain, age, and
+All six filed-issues tables — Auto Scout, Watchdog, Design System, Dead Code, Coach, and API
+Standards — obtain, age, and
 fail their issue state through one shared read (`server/agents/forge-state.ts`) that names, for
 each row it lists, the issue's current forge state and its shipping release. The read runs in
 the dashboard and never depends on the agent's worker: a stopped agent's table reflects a
@@ -2002,8 +2005,9 @@ file path as a mono code chip when the descriptor names one, and a chevron, with
 content (`agent-prompt-body`) hidden until the operator opens it. A reload, tab restore, or
 reconnect renders it closed again; opening it changes no file and no agent state.
 
-Auto Scout and Design System read the effective prompt file their worker command opens:
-`.devboard/prompts/scout-recommendations.md` and `.devboard/prompts/design-system.md`. The bytes
+Auto Scout, Design System, and Dead Code read the effective prompt file their worker command
+opens: `.devboard/prompts/scout-recommendations.md`, `.devboard/prompts/design-system.md`, and
+`.devboard/prompts/dead-code-removal.md`. The bytes
 are shown complete in the scrollable monospace region `data-testid="agent-prompt-text"`, and are
 identical in a harness source checkout and an installed host. The Watchdog section contains
 `agent-prompt-absent`, naming that Watchdog runs no editable prompt; its deduplication turn is
@@ -2051,11 +2055,11 @@ only `intervalMinutes`, `maxPerHour`, and `maxPending`, so a save made after its
 the allowlist and the per-cycle cap. Auto Scout defaults to 1 minute and never starts a scan
 sooner than the interval after the previous scan start; Watchdog defaults to 10 minutes, starts
 its first cycle immediately on Start, and uses the interval as its evidence window; Design
-System defaults to 60 minutes and never starts a cycle sooner than that interval after the
-previous cycle start. `agent-last-run` and `agent-next-run` show both.
+System and Dead Code default to 60 minutes and never start a cycle sooner than that interval
+after the previous cycle start. `agent-last-run` and `agent-next-run` show both.
 
-Auto Scout and Design System default to 10 per rolling hour and 5 open; Watchdog defaults to both
-empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
+Auto Scout, Design System, and Dead Code default to 10 per rolling hour and 5 open; Watchdog
+defaults to both empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
 keeps its rolling-hour and open-issue enforcement. Watchdog files at most the hourly cap of new
 issues and at most the pending cap of its own open issues, counts open
 state from the last successful projection (`projection.json`), keeps excess fingerprints in
@@ -2064,15 +2068,15 @@ is not `ok`, and never caps comments. With both caps empty its cycle behaves exa
 
 ### Filed issues
 
-All four pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
+All five pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
 Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
 (`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). With no rows,
 `agent-issues-empty` renders the same inbox composition on every page, naming the agent.
 `agent-issues-count` counts the rows. Auto Scout maps its GitHub title and creation time;
-Watchdog keeps `[watchdog] <category>: <line>`; Design System keeps its finding title with its
-category.
+Watchdog keeps `[watchdog] <category>: <line>`; Design System and Dead Code keep their finding
+title with its category.
 
 ### Detail panels
 
@@ -2244,6 +2248,81 @@ restore, or a reload never starts a second cycle.
 State lives at `<STATE_DIR>/design/<journalKey(REPO_DIR)>/`; the lock, cycles, and worktrees stay
 inside the checkout, and the worker's audit input never leaves the repository root.
 
+### Entry points for background-agent crawls
+
+Auto Scout, Design System, and Dead Code each begin a cycle from one seeded entry point instead
+of a fixed survey. The Devboard MCP tool `entry_point` accepts a `surface` of `scout`, `design`,
+or `dead-code` and an optional `seed`, and returns the chosen repository-relative `path`, a
+1-based `line` inside that file, the `surface`, and the `seed` used. It is read-only, absent from
+the mutating-tool set, creates no file, and refuses an unknown surface, an empty eligible set, or
+a path that resolves outside the repository.
+
+The `scout` pool is every regular text file under the repository root outside `.git`,
+`node_modules`, `dist`, `.worktree`, `.tmp`, and `.devboard/.tmp`. The `design` pool is the
+configured Design System source set that `DESIGN_SOURCE_DIR` names, read through the same audit
+input the Design System cycle uses. The `dead-code` pool is the repository's source-code files:
+the picker discovers the extensions the host actually uses from files whose content is shaped
+like code or a style rule, so a Ruby or Go host is not limited to this project's TypeScript
+layout. No pool follows a symbolic link, and every entry is proven inside the real repository
+root.
+
+One surface and one seed over an unchanged eligible set always return the same path and line. An
+omitted seed produces a fresh pseudo-random seed and returns it; replaying that seed with
+`entry_point` reproduces the same pick, which is how a finished cycle's request can be re-read
+and its crawl reproduced. Ten consecutive fresh seeds over a corpus of at least two eligible
+files reach at least two distinct entry points.
+
+Each scan and cycle calls the tool exactly once with its own surface and a fresh seed, writes the
+returned `surface`, `seed`, and `entryPoint` into `<cycle>/request.json`, and names the path,
+line, and seed in its activity. The prompt requires the crawl to start at that line and follow
+imports, exports, references, callers, and callees outward until no new reachable file appears,
+to record the reachable region in activity, and to admit only findings whose evidence lies inside
+that region. Auto Scout keeps its 4-or-5 significance gate, Design System keeps its documented
+standard, and Dead Code keeps the five dead-code categories below.
+
+### Dead Code
+
+Dead Code is the `dead-code` descriptor. Its sidebar entry `open-devboard-dead-code` opens the
+shared `agent-page` with `data-agent="dead-code"` and `dead-code-activity`. Its prompt section
+shows `.devboard/prompts/dead-code-removal.md`, the file the `/dead-code-removal` command reads,
+as read-only bytes exactly like the Auto Scout and Design System prompts. It defaults to a
+60-minute cadence and 10 issues per rolling hour with 5 open, its limits are editable and
+persisted, and a running worker applies a save without a restart.
+
+Each cycle writes one request under `<REPO_DIR>/.devboard/.tmp/dead-code/cycles/<id>/`, runs one
+ACP turn with that directory as its working directory, and never writes the checkout: no git
+command, commit, push, or install runs in a cycle. The prompt names the seeded entry point and
+the crawl rules above, then restricts every finding to exactly one detection category:
+
+- `unreferenced-file` — a file never imported or referenced by any other file;
+- `unreferenced-symbol` — an exported symbol or declaration with no reference;
+- `unreachable-branch` — a branch or guard proved unreachable;
+- `unused-dependency` — a declared dependency no source imports;
+- `unmatched-selector` — a CSS selector that matches no element.
+
+A filed issue carries the category, at least one repository-relative `path:lines` evidence entry
+with a verbatim quote, the exact reference search that proves the absence, every affected file,
+the concrete removal, and binary acceptance criteria. A finding without that proof is never
+filed. The agent files each accepted finding itself through the Devboard MCP `issue_create` tool
+with the exact `dead-code` label, no title prefix, one title line of at most 200 characters, and
+the complete Markdown body; the worker reads the tool's records and re-reads the forge rather
+than parsing an answer document.
+
+A finding is a duplicate when its normalized title equals the normalized title of any `dead-code`
+issue in any state, any open issue, or any draft-goal heading; `issue_create` enforces that guard
+for the `dead-code` label and files nothing for a duplicate. One cycle files no more than the
+smaller of the hourly and pending room, or 100 when both caps are empty; a cycle with no room
+files nothing and records the skip in activity. A tool error is recorded in activity and ends
+filing for that cycle without a retry or a second turn.
+
+Start preflight refuses before spawning a worker when the state directory is outside the
+checkout, the origin is not a supported forge, the account cannot write, `omp` or `gh` is
+missing, the `/dead-code-removal` command is not installed, or the `dead-code` label cannot be
+created. Start publishes `starting` before the spawn and `running` once the state is readable; at
+most one cycle runs at a time for a checkout. Stop ends the worker and leaves the settings and
+filed rows. State lives at `<STATE_DIR>/dead-code/<journalKey(REPO_DIR)>/`, the lock and cycles
+stay inside the checkout, and a dashboard restart, page open, or tab restore starts nothing.
+
 ## Harness watchdog
 
 Watchdog is a detached worker started and stopped from the dashboard, not a systemd timer. It is
@@ -2387,7 +2466,7 @@ bun run watchdog:uninstall                  # stop, disable, and remove a legacy
 removed GET endpoint, and the footer indicator. `verify:watchdog-live` starts the seeded
 dashboard's watchdog through its Start control (not systemd), waits for a real cycle to file the
 seeded marker, asserts the ledger entry, title, and body, and closes the issue in `finally`.
-`verify:agents` drives all four pages through headless Chrome; `verify:design` drives the Design
+`verify:agents` drives all five pages through headless Chrome; `verify:design` drives the Design
 System route through the same shared interface.
 
 ## Coach
@@ -2602,6 +2681,7 @@ call; `getMcpTools` reports the table as the `invocations` map and a missing fil
 |`goal_draft_read`|`path`|one draft, bounded at 64 KiB|
 |`issues_list`|`state`, `limit`|open and closed issues, 200 rows|
 |`issue_get`|`number`|title, bounded body, labels, state, URL|
+|`entry_point`|`surface`, `seed`|one repository-relative path, a line inside it, the surface, and the seed|
 
 The ACP session parser, token and cost summation, and tool-error fingerprint are the same module
 Coach reads, so a seeded session reports the same id, relative cwd, totals, cost, tool name, and
@@ -2684,7 +2764,9 @@ for an answer document to parse later.
 and seeded sessions, journal, goals, drafts, and issues; speaks JSON-RPC over the declared command;
 and proves the catalog, every read, work, write, and control tool, the expected written paths, the
 refusals, the caps, the generated peer registration, the installed-package server, and secret
-redaction.
+redaction. Its `entry_point` section names the tool, its schema, a repeated seed returning the
+same path, two seeds reaching different paths on a two-file pool, a fresh seed that replays, and
+a refused unknown surface.
 
 
 ## Issues mode
@@ -3831,6 +3913,7 @@ bun run verify:update
 bun run verify:ui
 bun run verify:issues
 bun run verify:scout
+bun run verify:dead-code
 ```
 
 `verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and
@@ -3855,15 +3938,23 @@ creation time, the category, the state, and the shipped version, both limits sav
 reload, an invalid save shows its error and sends nothing, a close flips the row to implemented,
 a release published later fills its blank version, a failed read shows `error` with its reason
 and the last success time while keeping the rows, no review widget or command remains, and Stop
-leaves the table and a released lock. It writes only under `.devboard/.tmp`.
-`bun run verify:agents` builds the client, seeds all four agents, and drives headless Chrome
-through the Background agents section of the Devboard sidebar, the identical core test ids on every
+leaves the table and a released lock. Its entry-point section names the path and seed recorded in
+the scan request, replays the seed, and proves the activity names both. It writes only under
+`.devboard/.tmp`.
+`bun run verify:dead-code` runs the real detached Dead Code worker against a fixture checkout, a
+stub ACP peer, and a stub `gh`: one cycle records its seeded entry point and seed in the request
+and activity, files exactly one `dead-code` issue with its detection category, evidence path, and
+acceptance criteria, and replays the recorded seed to the same entry point. It writes only under
+`.devboard/.tmp`.
+`bun run verify:agents` builds the client, seeds all five agents, and drives headless Chrome
+through the Background agents section of the Devboard sidebar, the Dead Code entry and page with
+its 60-minute, 10-per-hour, and 5-open defaults, the identical core test ids on every
 page, Start -> starting -> running and Stop -> stopping -> stopped, cadence and limit validation
 and persistence, the Watchdog cap, the shared table columns, freshness without a reload, no
 mutating command on reload, the timer-blocked state and one-click disable against a stub
 `systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
 detail and persisted settings, and the read-only prompt section: every page renders `agent-prompt`
-directly after `agent-header`, closed on load; Auto Scout and Design System show complete prompt
+directly after `agent-header`, closed on load; Auto Scout, Design System, and Dead Code show complete prompt
 bytes in `agent-prompt-text`; Watchdog shows `agent-prompt-absent`; Coach shows the one read-only
 `agent-prompt-template` with the fixed intro, every heading and rule line, the three placeholders,
 every catalog tool name, the seeded allowlist, and the fixture's two Coach issues but not its

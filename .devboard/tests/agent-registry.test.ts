@@ -128,6 +128,7 @@ describe("background agent registry", () => {
       "scout",
       "watchdog",
       "design",
+      "dead-code",
       "coach",
       "api-standards",
       "release-train",
@@ -160,6 +161,23 @@ describe("background agent registry", () => {
     expect(design.prompt).toEqual({
       kind: "file",
       file: "design-system.md",
+    });
+    const deadCode = agentRegistry.require("dead-code");
+    expect(deadCode.label).toBe("Dead Code");
+    expect(deadCode.scope).toBe("repository");
+    expect(deadCode.cadence).toEqual({
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    });
+    expect(deadCode.limits.default).toEqual({ maxPerHour: 10, maxPending: 5 });
+    expect(deadCode.detail.panel).toBe("activity");
+    expect(deadCode.tab).toEqual({ id: "dead-code", kind: "dead-code", title: "Dead Code" });
+    expect(deadCode.prompt).toEqual({ kind: "file", file: "dead-code-removal.md" });
+    expect(deadCode.issues).toEqual({
+      testId: "agent-issue",
+      columns: ["title", "category", "filedAt", "state", "version"],
     });
     const coach = agentRegistry.require("coach");
     expect(coach.label).toBe("Coach");
@@ -223,6 +241,7 @@ describe("background agent registry", () => {
       "scout",
       "watchdog",
       "design",
+      "dead-code",
       "coach",
       "api-standards",
       "release-train",
@@ -285,6 +304,7 @@ describe("background agent registry", () => {
       "scout",
       "watchdog",
       "design",
+      "dead-code",
       "coach",
       "api-standards",
       "release-train",

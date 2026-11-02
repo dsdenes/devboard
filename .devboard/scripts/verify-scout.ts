@@ -26,6 +26,7 @@ import {
 } from "../issues/scout/paths";
 import { readSettings, readState, type ScoutState } from "../issues/scout/state";
 import { readHarnessVersion } from "../server/version";
+import { pickEntryPoint } from "../lib/entry-point";
 import { freePort, run, waitFor, websocketCommand } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
@@ -853,6 +854,50 @@ try {
     15_000,
   );
   check(activity.includes("filed #"), "the filings are not in the activity", activity);
+  const scanIds = readdirSync(scansDirectory(fixture.repo)).sort();
+  const newestScan = scanIds.at(-1);
+  check(newestScan !== undefined, "the scan wrote no directory");
+  const scanDirectoryPath = join(scansDirectory(fixture.repo), newestScan!);
+  const scanRequest = JSON.parse(
+    readFileSync(join(scanDirectoryPath, "request.json"), "utf8"),
+  ) as {
+    surface?: unknown;
+    seed?: unknown;
+    entryPoint?: { path?: unknown; line?: unknown };
+  };
+  check(
+    scanRequest.surface === "scout" &&
+      typeof scanRequest.seed === "string" &&
+      typeof scanRequest.entryPoint?.path === "string" &&
+      typeof scanRequest.entryPoint?.line === "number",
+    "the scan request records no seeded entry point",
+    scanRequest,
+  );
+  const entryPath = scanRequest.entryPoint!.path as string;
+  const entryLine = scanRequest.entryPoint!.line as number;
+  check(
+    existsSync(join(fixture.repo, entryPath)),
+    "the entry point is not a repository file",
+    entryPath,
+  );
+  const replayed = pickEntryPoint({
+    repoDir: fixture.repo,
+    surface: "scout",
+    seed: scanRequest.seed as string,
+  });
+  check(
+    replayed.path === entryPath && replayed.line === entryLine,
+    "the recorded seed does not replay its entry point",
+    { recorded: scanRequest.entryPoint, replayed },
+  );
+  const activityText = readFileSync(join(scanDirectoryPath, "activity.json"), "utf8");
+  check(
+    activityText.includes(entryPath) && activityText.includes(scanRequest.seed as string),
+    "the activity does not name the entry point and seed",
+  );
+  console.log(
+    `verify:scout: entry point ${entryPath}:${entryLine} seed ${String(scanRequest.seed)}`,
+  );
   const createdBodies = readStore(fixture).issues.map((issue) => issue.body);
   check(
     createdBodies.every((body) => body.includes("## Significance") && body.includes("5/5")),
@@ -922,22 +967,22 @@ try {
   /* ---------------------------------------------------------------- */
   /* 5. A valid save survives a reload                                 */
   /* ---------------------------------------------------------------- */
-  // The rejected save above holds its control's busy word until the shared
-  // ceiling releases it; the next activation waits for that release.
   await waitFor(
     async () =>
-      (await devtools!
+      (await devtools
         .evaluate(
           `document.querySelector('[data-testid="agent-save-limits"]')?.getAttribute('aria-busy') !== 'true'`,
         )
         .catch(() => false)) === true
         ? true
         : undefined,
-    "the Save limits control after a rejected save",
+    "the Save limits control to settle",
     15_000,
   );
   await setInput(devtools, "agent-limit-hour", "3");
+  await Bun.sleep(100);
   await setInput(devtools, "agent-limit-pending", "1");
+  await Bun.sleep(100);
   await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
@@ -1073,7 +1118,7 @@ try {
       return value.length > 0 ? value : undefined;
     },
     "the exhausted sync error reason",
-    120_000,
+    90_000,
   );
   check(syncError.length > 0, "the sync error carries no reason", syncError);
   const workerFailure = stateOf(fixture);
@@ -1104,7 +1149,7 @@ try {
       return value.length === 0 ? true : undefined;
     },
     "the recovered sync",
-    120_000,
+    90_000,
   );
 
   /* ---------------------------------------------------------------- */
@@ -1166,7 +1211,15 @@ try {
   check(
     Array.isArray(agentFrame.agents) &&
       JSON.stringify((agentFrame.agents as Array<{ id?: string }>).map((agent) => agent.id)) ===
-        JSON.stringify(["scout", "watchdog", "design", "coach", "api-standards", "release-train"]),
+        JSON.stringify([
+          "scout",
+          "watchdog",
+          "design",
+          "dead-code",
+          "coach",
+          "api-standards",
+          "release-train",
+        ]),
     "agentsState does not carry all background agents",
     agentFrame,
   );

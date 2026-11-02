@@ -128,7 +128,19 @@ if (args[0] === "api") {
     process.stderr.write("HTTP 404: Not Found\n");
     process.exit(1);
   }
+  const issueState = /\/issues\/(\d+)$/.exec(endpoint);
+  if (issueState !== null) {
+    if (store.failReads === true) fail(store.failMessage ?? "the GitHub read is unavailable");
+    const issue = store.issues.find((entry) => entry.number === Number(issueState[1]));
+    if (issue === undefined) fail(`no issue ${issueState[1]}`);
+    const closedAt = issue.state === "closed" ? new Date().toISOString() : "";
+    process.stdout.write(
+      `${issue.state}\t${issue.createdAt}\t${closedAt}\n`,
+    );
+    process.exit(0);
+  }
   if (endpoint.endsWith("/releases")) {
+    if (store.failReads === true) fail(store.failMessage ?? "the GitHub read is unavailable");
     const published = store.releases.filter((release) => release.draft !== true);
     for (const release of published) {
       process.stdout.write(

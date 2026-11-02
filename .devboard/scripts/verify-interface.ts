@@ -3122,12 +3122,13 @@ try {
   })()`);
   check(
     devboardSidebar.entries === 2 &&
-      devboardSidebar.items === 8 &&
+      devboardSidebar.items === 9 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify([
           "Auto Scout",
           "Watchdog",
           "Design System",
+          "Dead Code",
           "Coach",
           "API Standards",
           "Release Train",
@@ -3137,6 +3138,7 @@ try {
           "open.devboard.scout",
           "open.devboard.watchdog",
           "open.devboard.design",
+          "open.devboard.dead-code",
           "open.devboard.coach",
           "open.devboard.api-standards",
           "open.devboard.release-train",

@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertTrue,
   freePort,
+  harnessRoot,
   installState,
   installedVersion,
   launcher,
@@ -272,6 +273,44 @@ try {
 
     // The shared page lists every live version and its controls address both,
     // with no version-divergence notice.
+    // The fifth background agent is visible in the replaced bundle: its
+    // sidebar entry and page render, and one screenshot records both.
+    await devtools.evaluate(`document.querySelector('[data-testid="mode-devboard"]')?.click(); true`);
+    await waitFor(
+      async () =>
+        (await devtools
+          .evaluate(`document.querySelector('[data-testid="open-devboard-dead-code"]') !== null`)
+          .catch(() => false)) === true
+          ? true
+          : undefined,
+      "the Dead Code sidebar entry",
+      30_000,
+    );
+    await devtools.evaluate(
+      `document.querySelector('[data-testid="open-devboard-dead-code"]')?.click(); true`,
+    );
+    await waitFor(
+      async () =>
+        (await devtools
+          .evaluate(
+            `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === "dead-code"`,
+          )
+          .catch(() => false)) === true
+          ? true
+          : undefined,
+      "the Dead Code page",
+      30_000,
+    );
+    const screenshot = await devtools.send("Page.captureScreenshot", { format: "png" });
+    const data = (screenshot.result as { data?: unknown }).data;
+    assertTrue(typeof data === "string" && data.length > 0, "the Dead Code screenshot is empty");
+    const screenshotDir = join(harnessRoot, ".tmp", "interface");
+    await mkdir(screenshotDir, { recursive: true });
+    const screenshotPath = join(screenshotDir, "dead-code.png");
+    await writeFile(screenshotPath, Buffer.from(data as string, "base64"));
+    assertTrue(existsSync(screenshotPath), `the Dead Code screenshot was not written: ${screenshotPath}`);
+    console.log(`verify:ui: dead-code sidebar entry and page written to ${screenshotPath}`);
+
     const installedState = join(prefix, ".tmp");
     const liveVersions = [OLD, NEW];
     const held = liveVersions.map((version) => {

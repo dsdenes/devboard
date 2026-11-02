@@ -307,6 +307,22 @@ const TOOLS: readonly McpToolDefinition[] = [
     covers: ["gh issue comment"],
   },
   {
+    name: "entry_point",
+    title: "Pick a crawl entry point",
+    description:
+      "Returns the repository-relative path, a line inside it, the surface, and the " +
+      "seed for one background-agent crawl. The same surface and seed over an " +
+      "unchanged eligible set return the identical path and line; an omitted seed " +
+      "produces a fresh one that replays the same pick. Read-only.",
+    inputSchema: object(
+      {
+        surface: { type: "string", enum: ["scout", "design", "dead-code"] },
+        seed: STRING,
+      },
+      ["surface"],
+    ),
+  },
+  {
     name: "flow_widgets_register",
     title: "Register Flow change widgets",
     description:
@@ -504,6 +520,7 @@ const TOOLS: readonly McpToolDefinition[] = [
       "bun run verify:mcp",
       "bun run verify:providers",
       "bun run verify:scout",
+      "bun run verify:dead-code",
       "bun run verify:ui",
       "bun run verify:update",
       "bun run verify:watchdog",

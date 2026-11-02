@@ -41,6 +41,7 @@ import {
 import { requestDesignRelease } from "./design";
 import { recordWatchdogDuplicate } from "./watchdog";
 import { recordCoachSkip } from "./coach";
+import { pickEntryPoint } from "../lib/entry-point";
 import { logToolCall } from "./tool-log";
 
 /**
@@ -284,6 +285,13 @@ async function dispatch(
       });
     case "issue_comment":
       return commentIssue(context, { number: args.number, body: args.body });
+    case "entry_point":
+      return pickEntryPoint({
+        repoDir: context.repoDir,
+        surface: args.surface,
+        ...(args.seed === undefined ? {} : { seed: args.seed }),
+        environment: context.environment,
+      });
     case "flow_widgets_register":
       return registerFlowWidgets(context, {
         sessionDir: args.sessionDir,

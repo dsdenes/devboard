@@ -474,6 +474,22 @@ async function click(devtools: Devtools, testid: string): Promise<void> {
   assertTrue(clicked === true, `${testid} is not clickable`);
 }
 
+/** Waits for a command control's busy label to clear, by evidence or ceiling. */
+async function settleControl(devtools: Devtools, testid: string): Promise<void> {
+  await waitFor(
+    async () =>
+      (await devtools
+        .evaluate(
+          `document.querySelector('[data-testid="${testid}"]')?.getAttribute('aria-busy') !== 'true'`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    `the ${testid} control to settle`,
+    15_000,
+  );
+}
+
 async function setInput(devtools: Devtools, testid: string, value: string): Promise<void> {
   await devtools.evaluate(`(() => {
     const element = document.querySelector('[data-testid="${testid}"]');
@@ -637,6 +653,10 @@ const INSTALLED_DESIGN_PROMPT =
   "## Manifesto\n\nLeave the interface consistent with its documented standard.\n\nRead-only here.\n";
 const SOURCE_DESIGN_PROMPT =
   "## Manifesto\n\nLeave the interface consistent with its documented standard.\n\nKeep every byte.\n";
+const INSTALLED_DEAD_CODE_PROMPT =
+  "## Manifesto\n\nLeave the host without the dead code the agent proves.\n\nRead-only here.\n";
+const SOURCE_DEAD_CODE_PROMPT =
+  "## Manifesto\n\nLeave the host without the dead code the agent proves.\n\nKeep every byte.\n";
 const SOURCE_ACP = join(import.meta.dir, "..", "tests", "fixtures", "verify-source-acp.ts");
 const SCOUT_STUB_GH = join(import.meta.dir, "..", "tests", "fixtures", "scout-stub-gh.ts");
 
@@ -756,6 +776,10 @@ try {
     join(host.directory, ".devboard", "prompts", "design-system.md"),
     INSTALLED_DESIGN_PROMPT,
   );
+  await writeFile(
+    join(host.directory, ".devboard", "prompts", "dead-code-removal.md"),
+    INSTALLED_DEAD_CODE_PROMPT,
+  );
   assertTrue(
     run("git", ["-C", host.directory, "add", ".devboard/prompts"]).code === 0 &&
       run("git", ["-C", host.directory, "commit", "-q", "-m", "installed prompts"]).code === 0,
@@ -765,6 +789,10 @@ try {
   await writeFile(
     join(host.directory, ".omp", "commands", "scout-recommendations.md"),
     "# scout\n",
+  );
+  await writeFile(
+    join(host.directory, ".omp", "commands", "dead-code-removal.md"),
+    "# dead code\n",
   );
   run("git", [
     "-C",
@@ -851,6 +879,10 @@ try {
     join(sourceHost.directory, ".devboard", "prompts", "design-system.md"),
     SOURCE_DESIGN_PROMPT,
   );
+  await writeFile(
+    join(sourceHost.directory, ".devboard", "prompts", "dead-code-removal.md"),
+    SOURCE_DEAD_CODE_PROMPT,
+  );
   assertTrue(
     run("git", ["-C", sourceHost.directory, "add", ".devboard/prompts"]).code === 0 &&
       run("git", ["-C", sourceHost.directory, "commit", "-q", "-m", "source prompts"]).code === 0,
@@ -865,6 +897,10 @@ try {
   await writeFile(
     join(sourceHost.directory, ".omp", "commands", "scout-recommendations.md"),
     "# scout\n",
+  );
+  await writeFile(
+    join(sourceHost.directory, ".omp", "commands", "dead-code-removal.md"),
+    "# dead code\n",
   );
   run("git", [
     "-C",
@@ -1063,6 +1099,7 @@ try {
           "open-devboard-scout",
           "open-devboard-watchdog",
           "open-devboard-design",
+          "open-devboard-dead-code",
           "open-devboard-coach",
           "open-devboard-api-standards",
           "open-devboard-release-train",
@@ -1081,6 +1118,7 @@ try {
     ["scout", "Auto Scout"],
     ["watchdog", "Watchdog"],
     ["design", "Design System"],
+    ["dead-code", "Dead Code"],
     ["coach", "Coach"],
     ["api-standards", "API Standards"],
     ["release-train", "Release Train"],
@@ -1141,6 +1179,39 @@ try {
       JSON.stringify(CORE_IDS.filter((id) => id !== "agent-stop")),
     `the Design System core ids differ: ${JSON.stringify(designCore)}`,
   );
+
+  await click(devtools, "open-devboard-dead-code");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-page")) ? true : undefined),
+    "the Dead Code page",
+    10_000,
+  );
+  const deadCodePage = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? ''`,
+  );
+  assertTrue(deadCodePage === "dead-code", `the Dead Code page names ${String(deadCodePage)}`);
+  assertTrue(await present(devtools, "agent-issues-empty"), "Dead Code has no empty table");
+  assertTrue(!(await present(devtools, "agent-detail")), "Dead Code still renders the detail panel");
+  assertTrue(!(await present(devtools, "agent-lifecycle")), "Dead Code still renders a lifecycle badge");
+  const deadCodeCore = await coreSequence(devtools);
+  assertTrue(
+    JSON.stringify(deadCodeCore.filter((id) => id !== "agent-stop")) ===
+      JSON.stringify(CORE_IDS.filter((id) => id !== "agent-stop")),
+    `the Dead Code core ids differ: ${JSON.stringify(deadCodeCore)}`,
+  );
+  assertTrue(
+    (await valueOf(devtools, "agent-cadence")) === "60",
+    `the Dead Code cadence is ${await valueOf(devtools, "agent-cadence")}`,
+  );
+  assertTrue(
+    (await valueOf(devtools, "agent-limit-hour")) === "10",
+    `the Dead Code hourly limit is ${await valueOf(devtools, "agent-limit-hour")}`,
+  );
+  assertTrue(
+    (await valueOf(devtools, "agent-limit-pending")) === "5",
+    `the Dead Code pending limit is ${await valueOf(devtools, "agent-limit-pending")}`,
+  );
+  console.log("PASS dead-code-descriptor open-devboard-dead-code agent-page agent-cadence=60 agent-limit-hour=10 agent-limit-pending=5");
 
   await click(devtools, "open-devboard-watchdog");
   await waitFor(
@@ -1422,7 +1493,70 @@ try {
   }
   console.log("PASS design-prompt-read-only");
 
+  await click(devtools, "open-devboard-dead-code");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === "dead-code"`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the Dead Code page after the prompt section",
+    10_000,
+  );
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `(() => {
+            const section = document.querySelector('[data-testid="agent-prompt"]');
+            return section?.dataset.agent === "dead-code";
+          })()`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the Dead Code prompt section",
+    10_000,
+  );
+  await assertPromptClosed(devtools, "Dead Code");
+  await assertPromptMarker(devtools, "Dead Code", false);
+  await openPrompt(devtools, "Dead Code");
+  assertTrue(
+    (await countOf(devtools, "agent-prompt-absent")) === 0,
+    "the Dead Code prompt is declared absent",
+  );
+  for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-chat",
+    "agent-prompt-save",
+  ]) {
+    assertTrue(
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered for Dead Code in an installed host`,
+    );
+  }
+  assertTrue(
+    (await rawText(devtools, "agent-prompt-text")).includes("dead code"),
+    "the Dead Code prompt text does not render dead-code-removal.md",
+  );
+  console.log("PASS dead-code-prompt-read-only dead-code-removal.md");
+
   await click(devtools, "open-devboard-watchdog");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === "watchdog"`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the Watchdog page after the prompt section",
+    10_000,
+  );
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
     "the Watchdog prompt section",
@@ -1545,6 +1679,7 @@ try {
     10_000,
   );
   assertTrue(limitsError.includes("1 through 100"), "the limits error is wrong");
+  await settleControl(devtools, "agent-save-limits");
 
   // A rejected save still holds its control's busy word until the shared
   // ceiling releases it; the next activation must wait for that release.
@@ -1562,7 +1697,9 @@ try {
   );
 
   await setInput(devtools, "agent-limit-hour", "");
+  await Bun.sleep(250);
   await setInput(devtools, "agent-limit-pending", "");
+  await Bun.sleep(250);
   await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
@@ -2460,9 +2597,18 @@ try {
     "the permanently failing Auto Scout",
     15_000,
   );
-  const permanent = scoutSync(sourceStateDir, sourceHost.directory);
+  const permanent = await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "error" && sync.error?.includes("Bad credentials")
+        ? sync
+        : undefined;
+    },
+    "the permanent failure to surface",
+    15_000,
+  );
   assertTrue(
-    permanent?.state === "error" && permanent.error?.includes("Bad credentials"),
+    permanent.error?.includes("Bad credentials"),
     `the permanent failure did not surface at once: ${JSON.stringify(permanent)}`,
   );
   assertTrue(
@@ -2598,7 +2744,7 @@ try {
   }
 
   console.log(
-    "verify:agents: the Background agents section, all six shared pages, lifecycle, cadence, " +
+    "verify:agents: the Background agents section, all seven shared pages, lifecycle, cadence, " +
       "nullable limits, the Watchdog cap, the shared table, Coach detail and settings, " +
       "freshness, no mutation on reload, the timer gate, the footer indicator, and the " +
       "periodic-read retry window and exhausted alert all hold",

@@ -522,6 +522,7 @@ describe("Coach registration and lifecycle", () => {
       "scout",
       "watchdog",
       "design",
+      "dead-code",
       "coach",
       "api-standards",
       "release-train",

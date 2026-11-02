@@ -4,6 +4,7 @@ import { readHarnessVersion } from "../server/version";
 import { ScoutBridge } from "../server/scout";
 import { DesignBridge } from "../server/design";
 import { ApiStandardsBridge } from "../server/api-standards";
+import { DeadCodeBridge } from "../server/dead-code";
 import { agentRegistry, projectAgentSnapshot, type AgentSnapshot } from "../server/agents/registry";
 import { readWatchdogStatus } from "../watchdog/status";
 import { readWatchdogSettings } from "../watchdog/settings";
@@ -91,6 +92,22 @@ function designSnapshot(context: McpContext): AgentSnapshot {
 function apiStandardsSnapshot(context: McpContext): AgentSnapshot {
   const descriptor = agentRegistry.require("api-standards");
   const bridge = new ApiStandardsBridge({
+    descriptor,
+    repoDir: context.repoDir,
+    stateDir: context.stateDir,
+    agentCommand: context.environment.AGENT_COMMAND ?? "omp acp",
+    agentEnvironment: async () => context.environment,
+    runningVersion: readHarnessVersion(context.harnessDir),
+    harnessDir: context.harnessDir,
+    send: () => undefined,
+    environment: context.environment,
+  });
+  return projectAgentSnapshot(descriptor, bridge.snapshot());
+}
+
+function deadCodeSnapshot(context: McpContext): AgentSnapshot {
+  const descriptor = agentRegistry.require("dead-code");
+  const bridge = new DeadCodeBridge({
     descriptor,
     repoDir: context.repoDir,
     stateDir: context.stateDir,
@@ -262,6 +279,7 @@ function persistedAgents(context: McpContext): AgentSnapshot[] {
     if (descriptor.id === "watchdog") return watchdogSnapshot(context);
     if (descriptor.id === "design") return designSnapshot(context);
     if (descriptor.id === "api-standards") return apiStandardsSnapshot(context);
+    if (descriptor.id === "dead-code") return deadCodeSnapshot(context);
     if (descriptor.id === "release-train") return releaseTrainSnapshot(context);
     return coachSnapshot(context);
   });

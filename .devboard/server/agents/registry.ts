@@ -757,6 +757,34 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     tab: { id: "design", kind: "design", title: "Design System" },
   }),
   validateAgentDescriptor({
+    id: "dead-code",
+    label: "Dead Code",
+    description:
+      "Proves dead code from a seeded entry point and files capped removal issues for every " +
+      "finding.",
+    scope: "repository",
+    prompt: {
+      kind: "file",
+      file: "dead-code-removal.md",
+    },
+    lifecycle: AGENT_LIFECYCLES,
+    cadence: {
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    },
+    limits: {
+      maxPerHour: { min: 1, max: 100, nullable: true },
+      maxPending: { min: 1, max: 100, nullable: true },
+      default: { maxPerHour: 10, maxPending: 5 },
+    },
+    commands: SHARED_COMMANDS,
+    issues: SHARED_ISSUES,
+    detail: { panel: "activity", testId: "agent-detail" },
+    tab: { id: "dead-code", kind: "dead-code", title: "Dead Code" },
+  }),
+  validateAgentDescriptor({
     id: "coach",
     label: "Coach",
     description:

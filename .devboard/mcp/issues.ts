@@ -1,5 +1,8 @@
 import { FORGE_ISSUE_LIST_MAX, type ForgeIssueState } from "../lib/forge-issues";
 import { boundBytes } from "../lib/text-budget";
+import { normalizeIssueTitle } from "../lib/issue-title";
+import { readDraftGoalHeadings } from "../lib/draft-goals";
+import { DEAD_CODE_LABEL } from "../issues/dead-code/paths";
 import { recordClosedByRun } from "../issues/self-close";
 import { issuesFor, type McpContext } from "./context";
 
@@ -135,6 +138,28 @@ export async function createIssue(
   }
   const labels = issueLabels(options.labels);
   const forge = issuesFor(context);
+  // A dead-code finding is a claim about absence, so an already known title is
+  // never filed again: the guard covers every dead-code issue in any state,
+  // every open issue, and every draft-goal heading.
+  if (labels.includes(DEAD_CODE_LABEL)) {
+    if ([...title].length > 200) {
+      throw new Error("A dead-code title must be at most 200 characters.");
+    }
+    const known = new Set<string>();
+    for (const issue of await forge.list("all", FORGE_ISSUE_LIST_MAX)) {
+      if (issue.state === "open" || issue.labels.includes(DEAD_CODE_LABEL)) {
+        known.add(normalizeIssueTitle(issue.title));
+      }
+    }
+    for (const heading of readDraftGoalHeadings(context.repoDir)) {
+      known.add(normalizeIssueTitle(heading));
+    }
+    if (known.has(normalizeIssueTitle(title))) {
+      throw new Error(
+        `A dead-code finding titled "${title}" already exists; nothing was filed.`,
+      );
+    }
+  }
   for (const label of labels) await forge.ensureLabel(label);
   const issue = await forge.create({ title, body: options.body, labels });
   return {

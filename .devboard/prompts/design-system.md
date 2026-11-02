@@ -13,6 +13,9 @@ Release Train releases the pushed commit later; you never release.
 
 - The cycle directory arrives as the command argument, absolute and outside your control:
   `<cycle-dir>`. Read `<cycle-dir>/request.json` and `<cycle-dir>/input.json` once.
+- `request.json` carries `surface` (`design`), `seed`, and `entryPoint` with a
+  repository-relative `path` and a 1-based `line`. That seeded entry point is this cycle's
+  starting point; the cycle may not choose another.
 - `<cycle-dir>/input.json` carries `sources` (every audited interface file with its path, line
   count, and text) and `documents` (the current `DESIGN.md` and `design/tokens.json`).
 - `<cycle-dir>/draft/` is yours: it holds a copy of both documents at their repository-relative
@@ -31,6 +34,17 @@ Release Train releases the pushed commit later; you never release.
 - The documents are normative. A client value, state treatment, wording, spacing, or placement
   the documents do not cover is a divergence and becomes a finding. Never treat undocumented
   behavior as the standard.
+
+## Entry point and crawl direction
+
+Start at `entryPoint.path` line `entryPoint.line`. Read that line and the file around it, then
+follow the interface outward: every import, reference, component usage, caller, and callee of the
+entry point, then the same for each file you reach, until no new reachable file appears. Record
+the reachable region in your activity as a repository-relative file list before you file
+anything. Only a divergence whose evidence lies inside that reachable region is admissible: a
+value, state, wording, spacing, or placement you only noticed elsewhere is not reported this
+cycle. `seed` and `entryPoint` stay unchanged for the whole cycle; never pick a different
+starting point.
 
 ## Deduplication and filing room
 

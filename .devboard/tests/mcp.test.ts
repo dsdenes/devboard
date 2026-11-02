@@ -632,6 +632,7 @@ describe("MCP context tools", () => {
       "scout",
       "watchdog",
       "design",
+      "dead-code",
       "coach",
       "api-standards",
       "release-train",
@@ -779,6 +780,47 @@ describe("MCP work and control tools", () => {
     const issue = await forge.get(1);
     expect(issue.body).toBe(body);
     expect(issue.labels).toEqual(["design", "design-system"]);
+  });
+
+  test("a dead-code finding is never filed twice under a normalized title", async () => {
+    const { context } = await workspace();
+    const forge = fakeForge();
+    const injected = { ...context, forgeIssues: forge };
+    await writeFile(
+      join(context.repoDir, ".devboard", "goal-proposals", "one.md"),
+      "# Remove  the duplicated parser\n\nbody\n",
+    );
+    const first = valueOf(
+      await callTool(injected, "issue_create", {
+        title: "Remove the dead parser",
+        body: "## Category\n\nunreferenced-file\n",
+        labels: ["dead-code"],
+      }),
+    ) as { number: number };
+    expect(first.number).toBe(1);
+    const duplicate = await callTool(injected, "issue_create", {
+      title: "remove  the DEAD parser",
+      body: "## Category\n\nunreferenced-file\n",
+      labels: ["dead-code"],
+    });
+    expect(duplicate.error).toContain("already exists");
+    expect((await forge.list("all")).length).toBe(1);
+    const draftDuplicate = await callTool(injected, "issue_create", {
+      title: "remove the DUPLICATED parser",
+      body: "## Category\n\nunreferenced-file\n",
+      labels: ["dead-code"],
+    });
+    expect(draftDuplicate.error).toContain("already exists");
+    expect((await forge.list("all")).length).toBe(1);
+    const open = await forge.create({ title: "An open unrelated issue", body: "", labels: [] });
+    const openDuplicate = await callTool(injected, "issue_create", {
+      title: "an open unrelated issue",
+      body: "## Category\n\nunreferenced-file\n",
+      labels: ["dead-code"],
+    });
+    expect(openDuplicate.error).toContain("already exists");
+    expect((await forge.list("all")).length).toBe(2);
+    expect(open.number).toBe(2);
   });
 
   test("multibyte issue bodies and goals stay within their byte budgets", async () => {

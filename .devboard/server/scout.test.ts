@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test, vi } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { activityDelta } from "./activity";
@@ -174,10 +174,14 @@ describe("scan request", () => {
     expect(request.categories).toContain("correctness");
     expect(request.maxPerHour).toBe(5);
     expect(request.maxPending).toBe(4);
+    expect(request.surface).toBe("scout");
+    expect(request.seed).toMatch(/^[0-9a-f]{32}$/);
+    expect(existsSync(join(root, request.entryPoint.path))).toBe(true);
+    expect(request.entryPoint.line).toBeGreaterThan(0);
     expect(request.draftGoalHeadings).toEqual(["Proposed goal: Merge the two trackers"]);
     writeRequest(scan.directory, request);
     const written = JSON.parse(readFileSync(join(scan.directory, "request.json"), "utf8"));
-    expect(written.version).toBe(3);
+    expect(written.version).toBe(4);
     expect(written.requested).toBe(3);
     expect(promptFor(scan.directory)).toBe(`/scout-recommendations ${scan.directory}`);
   });

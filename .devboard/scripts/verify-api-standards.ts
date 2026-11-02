@@ -615,6 +615,7 @@ try {
         "open-devboard-scout",
         "open-devboard-watchdog",
         "open-devboard-design",
+        "open-devboard-dead-code",
         "open-devboard-coach",
         "open-devboard-api-standards",
         "open-devboard-release-train",

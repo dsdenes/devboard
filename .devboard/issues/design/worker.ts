@@ -682,7 +682,7 @@ export class DesignWorker {
         ...this.state.issues.map((issue) => issue.title),
         ...this.openTitles,
       ];
-      writeCycle(directory, {
+      const request = writeCycle(directory, {
         cycleId,
         repository: this.state.repo,
         repoDir: this.repoDir,
@@ -691,10 +691,14 @@ export class DesignWorker {
         knownTitles,
         issueRoom: Number.isFinite(capacity.batch) ? capacity.batch : CYCLE_ISSUE_LIMIT,
         now,
+        environment: this.environment,
       });
       const prompt = promptFor(directory);
-      writeActivity(directory, []);
-      const activity: string[] = [];
+      const activity: string[] = [
+        `entry point ${request.entryPoint.path}:${request.entryPoint.line} ` +
+          `(seed ${request.seed})`,
+      ];
+      writeActivity(directory, activity);
 
       const record = (line: string): void => {
         const active = this.active;
