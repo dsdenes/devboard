@@ -6,10 +6,10 @@ markup and styles change.
 
 |Need|Decision|OpenUI entry|Storybook story|Data/state requirements|Accessibility|Token needs|
 |---|---|---|---|---|---|---|
-|Card frame|Reuse|n/a (`.panel`, `.discover-card`)|n/a|Absent when the sheet has no architecture section|`section` with a heading; `data-field="architecture"`|`surface`, `border`, `rounded.md`|
-|Context list|Compose (`ul` + shipped heading/chip styles)|n/a|n/a|0, 1, many contexts; long name, path, responsibility; 0–n entry points; repeated path/entry; unknown leaf|Real list; `data-testid="discover-contexts"`; one `data-context` per item; name is text, not a link|`foreground`, `muted-foreground`, `border-subtle`, `mono-small`, `label`|
-|Boundary role rows|Compose (`dl` + shipped chip styles)|n/a|n/a|0–3 rows; chips 0–n; direction as a sentence; observed-empty group omitted|`dl`/`dt`/`dd`; role label is the term; values are definition text|`muted-foreground`, `border-subtle`, `body-small`, `mono-small`|
-|Unknown-group line|Reuse `.empty` typography|n/a|n/a|One or more unknown groups; one shared reason; no reason|Plain paragraph, no color-only signal|`muted-foreground`, `body-small`|
+|Card frame|Reuse|n/a (`.panel`, `.discover-card`)|n/a|Absent when the sheet has no architecture section|`section` with a heading; `data-field="architecture"`, `data-field="external-boundaries"`, `data-field="shared-kernels"`|`surface`, `border`, `rounded.md`|
+|Context list|Compose (`ul` + shipped heading/chip styles)|n/a|n/a|0, 1, many contexts; long name, responsibility; 0–n entry points; duplicate entries; unknown leaf|Real list; `data-testid="discover-contexts"`; one `data-context` per item; name is text, not a link|`foreground`, `muted-foreground`, `border-subtle`, `mono-small`, `label`|
+|Boundary card|Reuse panel chrome|n/a|n/a|One card per group; header title and optional count subtitle; chips 0–n; unknown reason in place of chips; the card's own empty line|`section` with a heading; the group's `data-field`; chip values are definition text|`muted-foreground`, `border-subtle`, `body-small`, `mono-small`|
+|Unknown line|Reuse `.empty` typography|n/a|n/a|One unknown leaf per boundary card; its reason follows `unknown —`; no reason renders `unknown`|Plain paragraph, no color-only signal|`muted-foreground`, `body-small`|
 |Chips|Reuse `.discover-chip`|n/a|n/a|Short path or system name; long value wraps inside the row|`code` element, no link (a boundary is not necessarily a package repository)|`border-subtle`, `mono-small`, `rounded.sm`|
 
 ## Composition rules
@@ -19,16 +19,21 @@ markup and styles change.
   change, so no hover or focus affordance is added.
 - Entry points are plain `code` chips, never repository links: the shipped link helper resolves
   package names, and a path or external system would resolve to the wrong repository.
-- Role rows appear in reading order: shared kernels, external boundaries, dependency direction.
+- The context list is the last card of the main column; the boundary cards follow `Stack` in the
+  facts rail, external boundaries first, then shared kernels.
+- A boundary card renders when its leaf exists, unknown or observed; an absent leaf removes that
+  card alone.
 
 ## Data variety to survive
 
 - 0 contexts; 1; 8 with long names.
-- Responsibility up to the 160-character leaf limit; path and entry point up to the same limit.
-- Entry point equal to the path; duplicate entry points; no entry points.
-- Empty boundary arrays (observed none); unknown leaves with and without a reason; all groups empty.
+- Responsibility up to the 160-character leaf limit; an entry point up to the same limit.
+- Duplicate entry points; no entry points; a context with neither responsibility nor entry points.
+- Empty boundary arrays (observed none); unknown leaves with and without a reason; a missing
+  boundary leaf.
 - Values that are long service names, paths, or a full sentence.
-- Card width from the wide main column down to the single-column 1024×720 workspace.
+- Card width from the wide main column and 320px facts rail down to the single-column 1024×720
+  workspace.
 - Dark and light themes; reduced motion (no motion is added).
 
 ## Verification requirements

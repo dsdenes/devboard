@@ -1,119 +1,87 @@
 # Bounded contexts widget — validation
 
-Scope: the `Bounded contexts` card in Discover › Overview, and its styles. No other Discover
-region, Goal view, or Flow view is changed.
+Scope: the three architecture cards of Discover › Overview — the `Bounded contexts` list card in
+the main column, and the `External boundaries` and `Shared kernels` cards in the facts rail — plus
+the design record that describes them. No other Discover region, Goal view, or Flow view is
+changed.
 
-- Worktree/branch: `.worktree/bounded-contexts-widget`, branch `bounded-contexts-widget`, based on
-  `origin/main` at `547819c` (rebased after the glossary-significance merge; build, tests, and the
-  interface verifier were rerun on this base).
-- Preflight: `bun "$(realpath skill://ui-ux)/scripts/preflight.mjs" .` → `applicable: true`; DESIGN.md
-  lint 0 errors, 29 pre-existing warnings; DTCG 65 tokens; OpenUI 3 components; Storybook 1 story.
-- Commands, all from `.worktree/bounded-contexts-widget/.devboard` unless noted:
-  - `bun install --frozen-lockfile`
-  - `bun run build` → `.devboard/dist/index.html` and assets
-  - `bun run check` → 1044 files, 0 errors, 0 warnings
-  - `bun test` → 364 pass, 0 fail, 2900 expect calls, 30 files
-  - `bun run verify:interface` → passed (shell, modes, sidebar, pages, splits, palette, keyboard,
-    theme, tables, editors, terminals, accessibility, notifications, status bar, persistence,
-    boundary)
-- Validation dashboard:
-  `ADRS_DIR=.tmp/bounded-contexts/host/adrs REPO_DIR=.tmp/bounded-contexts/host
-  GOAL_FILE=.tmp/bounded-contexts/host/GOAL.md STATIC_DIR=dist
-  STATE_DIR=.tmp/bounded-contexts/state PORT=18121
-  AGENT_COMMAND="bun server/fixtures/stub-agent.ts --discover" bun run start`.
-  The stub crawl published a valid `.omp/discover` set; each additional state replaced the
-  fixture's `sheet.json` architecture block and restarted the validation server so the published
-  read path was exercised, not an in-memory overlay.
-- Browser: OMP Playwright-backed headless Chromium. Base URL `http://127.0.0.1:18121/`.
-- Viewports: 1440×900 and 1024×720 (the supported minimum, where the page is single-column).
-  Screenshots carry a 1.25 device scale factor; CSS measurements are reported in CSS pixels.
+## Current revision
 
-## States exercised
+- Layout: the context list renders one stacked row per context — name, optional responsibility,
+  optional entry-point chips. Each boundary group renders as its own rail card below `Stack`. The
+  card renders no per-context path (#230) and no dependency-direction row (#1091).
+- Record: `content-inventory.md`, `structure.md`, `significance.md`, `component-requirements.md`,
+  `brief.md`, and the widget A2UI and wireframe files describe that shipped layout (#1140).
+- History: the files under `screenshots/` were captured for the pass that preceded #230 and #1091,
+  on branch `bounded-contexts-widget` at base `547819c`. They are retained as history; they are not
+  evidence for the cards as shipped, and every row in this file that described the earlier layout
+  is superseded.
 
-|State|Evidence|Result|
+## Commands
+
+From `.worktree/issue-1140/.devboard`:
+
+- `bun install --frozen-lockfile` → 206 packages installed.
+- `bun run build` → `dist/index.html` and assets, built in 6.18s on the rebased revision.
+- `bun run verify:interface` → exit 0:
+  `verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables,
+  read-only documents, terminals, accessibility, notifications, status bar, issues mode, ask
+  transcript, persistence, sidebar run state, and boundary passed`
+- Wireframe: headless Chrome at 390 and 1440 CSS px reports `scrollWidth === clientWidth`
+  (390/390 and 1440/1440) with no element past the viewport edge.
+
+## Widget assertions the verifier covers
+
+The Discover stage of `verify:interface` drives the stub sheet and asserts, among others:
+
+- at least one context row renders (`contextRows > 0`);
+- no context renders a repository path (`contextPathChips === 0`);
+- the architecture card renders no boundary fact row (`boundaryFacts === 0`);
+- `External boundaries` is a card of its own with one chip per system;
+- `Shared kernels` is a card of its own with one chip per kernel;
+- no Discover panel or table scrolls inside the page, and no card clips its own rows.
+
+## State coverage
+
+|State|Structure|Evidence|
 |---|---|---|
-|Observed, full|`rich-1440-dark.png`, `rich-card-1440-dark.png`, `rich-1440-light.png`, `rich-card-1440-light.png`, `rich-1024-dark.png`, `rich-card-1024-dark.png`|2 contexts with path/entry chips, 2 shared kernels, 2 external boundaries, direction|
-|Observed, boundary arrays empty|`empty-boundaries-card-1440-dark.png`|Only the direction row renders; no "None detected." boxes|
-|Unknown groups|`unknown-card-1440-dark.png`|Contexts reason plus one line naming the three unknown groups and both reasons, separated|
-|No contexts, boundaries present|`empty-contexts-card-1440-dark.png`|`No bounded context was detected.` above the role rows|
-|Stress: 9 contexts, long name/path/responsibility, 5 kernels, 6 boundaries|`stress-card-1440-dark.png`, `stress-card-1024-dark.png`, `stress-1440-dark.png`|Name stays on one line, long path moves to its own right-aligned line, chips wrap under the label column|
-|Light theme|`rich-1440-light.png`, `rich-card-1440-light.png`|Tokens mirror correctly; no color-only meaning|
-|Wireframe|`wireframe-discover-bounded-contexts-1440.png`, `wireframe-discover-bounded-contexts-390.png`|1440 and 390 both `scrollWidth === clientWidth`|
+|Observed|Context rows with name, optional responsibility, optional entry-point chips; each boundary card one chip per value plus a count subtitle|verifier: context-row and boundary-chip assertions|
+|No contexts|`No bounded context was detected.` in place of the list; the boundary cards are unaffected|markup branch in `DiscoverOverview.svelte`|
+|Unknown contexts|The contexts leaf's reason replaces the list|`unknownText` branch|
+|Empty boundaries|`External boundaries` shows `None detected.`; `Shared kernels` shows `No shared kernel was detected.`|markup branches|
+|Unknown boundaries|The affected card shows `unknown — <reason>` in place of chips|`unknownText` branch|
+|Partial row|A context with no responsibility and no entry points renders its name alone|markup conditionals|
+|Missing boundary leaf|That card is absent; the other cards render|leaf guards|
 
-Journeys exercised against `brief.md`: find the owning context (name → responsibility → path →
-entry points); judge coupling (kernels, external boundaries, direction); partial sheet (unknown
-groups); empty context list with observed boundaries.
+## Findings during this pass
 
-## Measurements
-
-- 1440×900: document `scrollWidth 1440 === clientWidth 1440`; card `635.7px` wide with
-  `scrollWidth 634`; role labels `14.5px` high (one line) at the 160px column; zero elements with
-  hidden horizontal overflow.
-- 1024×720: document `scrollWidth 1024 === clientWidth 1024`; card `636.4px` wide with
-  `scrollWidth 634`; no viewport guard.
-- Entry point equal to the context path is not repeated (Billing and Orders fixtures prove the
-  filter); duplicate entry points are de-duplicated.
-- Console: 0 console entries, 0 page errors after a clean reload in the final state. Network: 113
-  requests, one failure, `GET /favicon.ico` 404 — pre-existing (the server serves no favicon), not
-  caused by this change.
-- Accessibility: the card exposes one `h2`, one list with one `listitem` per context, and a `dl`
-  of `term`/`definition` pairs in the accessibility tree. The card contains zero focusable
-  elements, so it adds no tab stop; no keyboard path changes. No motion is added. Meaning is
-  carried by words, not color alone.
-
-## Findings and fixes during validation
-
-1. A 31-character context name broke mid-word when the path competed for the same line. Fixed with
-   `flex-wrap` on the head and `margin-left: auto` on the path: the path moves to its own
-   right-aligned line and the name stays whole (proved by the stress card).
-2. Entry chips after a wrap restarted at the card edge. Fixed by rendering the entry row as a grid
-   with the same 160px label column as the role rows; wrapped chips now align.
-3. Two distinct unknown reasons concatenated as `files.No package…`. Fixed by joining the unique
-   reasons with a space; re-captured text reads `…files. No package manifest…`.
-4. The 104px label column wrapped "Dependency direction" onto two lines. Raised the role column to
-   160px and documented it as component geometry in `DESIGN.md` next to the 104px fact-label
-   column; all three labels now measure one line.
-5. Removed a defensive "no shared kernel…" note: valid architecture leaves always carry a
-   dependency-direction value or an unknown reason, so the branch was unreachable. Empty observed
-   arrays simply omit their role row.
-6. `scripts/verify-interface.ts` asserted the shipped `th` text `Bounded context`. Replaced with
-   structural checks: no architecture table header, at least one context row, and a labeled
-   `Dependency direction` role. The verifier passes.
+1. The record and the shipped cards disagreed: the inventory kept the path and the direction as
+   `Keep? yes`, the structure described one role-map card, and the A2UI and wireframe files carried
+   a role-map region and a direction row. #230 and #1091 had already removed the path chip and the
+   direction row, and the verifier asserts their absence. The record now names those removals.
+2. The record described the boundary groups as role rows inside the context card; shipped, each
+   group is its own rail card below `Stack`. Structure, component requirements, and the wireframe
+   now show the three cards.
+3. A15 cited the dependency graph widget; #2ee5ffb6 dropped it. The inventory now records that
+   nothing draws the observed edges.
 
 ## Duplicate and redundancy check
 
-- Context path appears once per context and is suppressed from its own entry chips.
-- The context count is removed; the list is the count (already P3 in the page inventory).
-- Empty observed groups no longer print "None detected." chips in two symmetric boxes; a group
-  renders only when it carries values, and unknown groups are stated once.
+- Entry-point chips are the only locator the card renders; the path element is gone (#230).
+- A5 and A6 each appear once, in their own card; A7 has no card (#1091).
 - The card does not repeat commands, test strategy, stack, or glossary terms.
-
-## Spacing and token audit
-
-- New layout values: 2, 4, 8, 10 and 12px gaps/padding, all on the approved scale. The only new
-  fixed width is the 160px role-label column, documented as component geometry in `DESIGN.md`.
-- No new color, radius, type size, shadow, gradient, or animation. Colors come from
-  `--surface`, `--border`, `--border-subtle`, `--foreground`, `--muted-foreground`, with the
-  shipped mono font variable.
-- No DTCG, OpenUI, or Storybook change: the widget composes existing primitives and adds no new
-  design-system component.
-
-## Artifacts updated for consistency
-
-- `.design/a2ui/discover-overview.{a2ui.jsonl,wireframe.html}`: the architecture region now
-  describes the context list and boundary role rows instead of the removed table and empty boxes.
-- `.design/ux/discover/content-inventory.md`: C19's method now points at the role rows.
-- `.design/ux/discover-bounded-contexts/`: brief, content inventory, significance, structure,
-  component requirements, and this validation.
-- `.design/a2ui/discover-bounded-contexts.{a2ui.jsonl,wireframe.html}`: widget-level structure and
-  its rendered wireframe.
-- `.design/research/2026-10-26-discover-bounded-contexts.md`: designmd research receipt.
 
 ## Not run
 
-- A live-model Discover crawl. The change is presentational and the deterministic stub publishes a
-  schema-valid sheet; the crawl and validation rules are untouched.
-- Storybook. No OpenUI primitive, story, or DTCG token changed; the existing
-  `Design System/Overview` story still matches `design/tokens.json`.
-- Mobile layout. The interface has no mobile shell below 1024×720; the standalone wireframe covers
-  390px only.
+- A live-model Discover crawl: the change is documentation, and the shipped verifier drives the
+  deterministic stub sheet.
+- New browser screenshots of the three cards: the verifier's Discover assertions are the evidence
+  for this revision, and the earlier screenshots are marked superseded above.
+- Storybook and the validation server: no OpenUI primitive, story, DTCG token, or component changed.
+
+## Artifacts updated for consistency
+
+- `.design/ux/discover-bounded-contexts/`: brief, content inventory, significance, structure,
+  component requirements, and this validation (#1140).
+- `.design/a2ui/discover-bounded-contexts.a2ui.jsonl` and its wireframe: three cards, no role-map
+  region, no direction row, and no context path element.
