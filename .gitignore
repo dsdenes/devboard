@@ -11,3 +11,23 @@ dist/
 .design/browsers/
 .devboard/.design/tmp/
 .devboard/goal-proposals/
+
+# background-agent scratch: forge reads, command captures, MCP bridges, and run polling. Every
+# shape below was written into the integration checkout by an agent running with the checkout as
+# its working directory, so none of it is repository content. Keep it out of `git status`, or the
+# branch line drowns in it and a fast-forward check reads noise instead of a change.
+.devboard/.issue*
+.devboard/.comment*
+.devboard/.close*
+.devboard/.mcp*
+.devboard/.scratch*
+.devboard/call-tool.ts
+.devboard/.run*
+.devboard/.r*jobs.json
+.devboard/.job*
+.devboard/.tasks*
+.devboard/.tmp-*
+.devboard/.publish-*
+.devboard/.npm-*
+/.issue*
+/.worktree*
