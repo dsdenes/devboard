@@ -3540,10 +3540,11 @@ try {
     };
   })()`);
   check(
-    flowSurfaces.session && flowSurfaces.pr && flowSurfaces.widgets && flowSurfaces.files && flowSurfaces.bar,
+    flowSurfaces.pr && flowSurfaces.widgets && flowSurfaces.files && flowSurfaces.bar,
     "a Flow surface or the activity bar is missing",
     flowSurfaces,
   );
+  check(!flowSurfaces.session, "the removed Flow session facts panel is still rendered", flowSurfaces);
   check(!flowSurfaces.removed, "a removed Flow activity surface is still rendered", flowSurfaces);
   const flowMenu = await page.eval<{ items: number; icons: number }>(`(() => {
     const group = document.querySelector('[data-testid="sidebar"] section[aria-label="Flow surfaces"]');
@@ -3557,7 +3558,6 @@ try {
   );
   const flowData = await page.eval<{
     status: string;
-    branch: string;
     pr: string;
     widgets: number;
     files: number;
@@ -3566,7 +3566,6 @@ try {
     readyEnabled: boolean;
   }>(`(() => ({
     status: document.querySelector('[data-testid="flow-view"]')?.getAttribute("data-status") ?? "",
-    branch: document.querySelector('[data-testid="flow-branch"]')?.textContent?.trim() ?? "",
     pr: document.querySelector('[data-testid="flow-pr"]')?.getAttribute("data-state") ?? "",
     widgets: document.querySelectorAll('[data-testid="flow-widget"]').length,
     files: document.querySelectorAll('[data-testid="flow-file"]').length,
@@ -3574,7 +3573,7 @@ try {
     blockers: document.querySelectorAll('[data-testid="flow-blocker"]').length,
     readyEnabled: !(document.querySelector('[data-testid="mark-flow-pr-ready"]')?.disabled ?? true),
   }))()`);
-  check(flowData.status === "stopped" && flowData.branch.length > 0 && flowData.pr === "draft", "the Flow session is not restored", flowData);
+  check(flowData.status === "stopped" && flowData.pr === "draft", "the Flow session is not restored", flowData);
   check(flowData.widgets === 1 && flowData.files === 1 && flowData.blockers === 1 && flowData.readyEnabled, "Flow data surfaces are incomplete", flowData);
   check((await sourceOnlyMarkers(page)) === 0, "the Flow surface renders a source-only marker");
   const flowVerification = await page.eval<{ status: string; text: string; tone: string }>(`(() => {

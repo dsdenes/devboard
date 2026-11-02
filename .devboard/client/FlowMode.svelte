@@ -485,34 +485,16 @@
       </section>
     {/if}
 
-    <section class="panel" data-testid="flow-session">
-      <div class="panel__header">
-        <h2 class="panel__title">Session</h2>
-      </div>
-      <div class="panel__body">
-        <dl class="kv-grid">
-          {#if flow.sessionId !== null}
-            <dt>Session</dt>
-            <dd><code>{flow.sessionId}</code></dd>
-          {/if}
-          {#if flow.worktree !== null}
-            <dt>Worktree</dt>
-            <dd><code data-testid="flow-worktree">{flow.worktree}</code></dd>
-          {/if}
-          {#if flow.branch !== null}
-            <dt>Branch</dt>
-            <dd><code data-testid="flow-branch">{flow.branch}</code></dd>
-          {/if}
-          {#if flow.baseRevision !== null}
-            <dt>Base revision</dt>
-            <dd><code data-testid="flow-base-revision">{flow.baseRevision}</code></dd>
-          {/if}
-        </dl>
-        {#if flow.question !== null}
+    {#if flow.question !== null}
+      <section class="panel" data-testid="flow-question-section">
+        <div class="panel__header">
+          <h2 class="panel__title">Implementation question</h2>
+        </div>
+        <div class="panel__body">
           {@render questionPanel(flow.question, "implementation", "flow-question")}
-        {/if}
-      </div>
-    </section>
+        </div>
+      </section>
+    {/if}
 
     <section class="panel" data-testid="flow-pr-section">
       <div class="panel__header">

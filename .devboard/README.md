@@ -103,8 +103,8 @@ surface that holds the same facts. The Flow overview opens with the read-only fl
 takes the full page height; while a goal interview is running the panel collapses to its header.
 The `flow-goal-active` interview block follows it only while the interview holds a pending
 question, so an answered interview leaves no empty panel behind. The implementation activity
-moves to the pinned activity bar, so the overview keeps the read-only goal, session facts,
-widgets, files, blockers, and verification.
+moves to the pinned activity bar, so the overview keeps the read-only goal, the pending
+implementation question, widgets, files, blockers, and verification.
 
 ### Workspace page
 
