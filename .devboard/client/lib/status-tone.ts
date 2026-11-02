@@ -20,6 +20,7 @@ export function statusTone(status: string): BadgeTone | undefined {
     case "merged":
     case "handled":
     case "accepted":
+    case "implemented":
       return "success";
     case "failed":
       return "error";
