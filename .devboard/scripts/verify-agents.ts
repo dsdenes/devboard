@@ -2304,6 +2304,9 @@ try {
     "the source Auto Scout page",
     15_000,
   );
+  const syncAtBeforeRetry = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-sync-at"]')?.getAttribute('title') ?? ''`,
+  );
   await updateGhStore(ghStore, (store) => {
     store.failReads = true;
     store.failMessage = "the GitHub read is unavailable";
@@ -2337,8 +2340,8 @@ try {
     `document.querySelector('[data-testid="agent-sync-at"]')?.getAttribute('title') ?? ''`,
   );
   assertTrue(
-    retrySyncAt === (previousAt ?? "never"),
-    `the retry changed the last read time: ${String(retrySyncAt)}`,
+    retrySyncAt === syncAtBeforeRetry,
+    `the retry changed the last read time: ${String(retrySyncAt)} was ${String(syncAtBeforeRetry)}`,
   );
   console.log("PASS sync-retry-stale-state");
   console.log("PASS sync-retry-no-alert");
