@@ -1997,7 +1997,8 @@ the same Watchdog snapshot through the agent store.
 
 Directly below `agent-header`, before the alert region and `agent-main`, every background-agent
 page renders one prompt section `data-testid="agent-prompt"`. It is a `<details>` disclosure:
-closed on every page load, naming its summary `Prompt` (`agent-prompt-summary`), with all of its
+closed on every page load, its summary (`agent-prompt-summary`) carrying `Prompt`, the prompt
+file path as a mono code chip when the descriptor names one, and a chevron, with all of its
 content (`agent-prompt-body`) hidden until the operator opens it. A reload, tab restore, or
 reconnect renders it closed again; opening it changes no file and no agent state.
 
