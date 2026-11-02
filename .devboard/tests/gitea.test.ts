@@ -962,7 +962,7 @@ describe("Gitea watchdog activity", () => {
       }
       return Response.json({ message: `unexpected ${url}` });
     };
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: tagged.directory,
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
@@ -1017,7 +1017,7 @@ describe("Gitea watchdog activity", () => {
       }
       return Response.json({ message: `unexpected ${url}` });
     };
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: tagged.directory,
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
