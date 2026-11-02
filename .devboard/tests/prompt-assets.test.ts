@@ -39,9 +39,11 @@ function promptReferences(): Map<string, string[]> {
 	const references = new Map<string, string[]>();
 	for (const prompt of prompts) {
 		const text = readFileSync(join(harnessRoot, "prompts", prompt), "utf8");
-		for (const match of text.matchAll(/\.devboard\/([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\/?)/g)) {
+		for (const match of text.matchAll(/\.devboard\/([A-Za-z0-9_.*-]+(?:\/[A-Za-z0-9_.*-]+)*\/?)/g)) {
 			const relative = match[1]!.replace(/\/+$/, "");
 			if (relative === "") continue;
+			// A glob names no single file; the prompt uses it illustratively.
+			if (relative.includes("*")) continue;
 			if (HOST_OWNED.some((owned) => relative === owned || relative.startsWith(`${owned}/`))) continue;
 			// Runtime scratch the host creates on demand; the package never ships it.
 			if (relative === ".tmp" || relative.startsWith(".tmp/")) continue;
