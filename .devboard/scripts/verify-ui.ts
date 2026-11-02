@@ -21,6 +21,7 @@ import { createReleaseDirectory } from "./harness-package";
 import {
   assertEquals,
   assertTrue,
+  dashboardSocket,
   freePort,
   harnessRoot,
   installState,
@@ -338,7 +339,7 @@ try {
       // The shared contract first: both versions are live and the page data
       // carries no divergence notice.
       const snapshot = await new Promise<Record<string, unknown>>((resolve, reject) => {
-        const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+        const socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
         const timer = setTimeout(() => {
           socket.close();
           reject(new Error("verify:ui: timed out reading agentsState"));
@@ -379,7 +380,7 @@ try {
       );
       assertTrue(notice === false, "verify:ui: the page shows a version divergence notice");
       await new Promise<void>((resolve, reject) => {
-        const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+        const socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
         const timer = setTimeout(() => {
           socket.close();
           reject(new Error("verify:ui: timed out sending stopAgent"));

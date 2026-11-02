@@ -18,6 +18,7 @@ import {
   assertEquals,
   assertTrue,
   copyRelease,
+  dashboardSocket,
   dashboardsFor,
   installState,
   installedPackage,
@@ -70,7 +71,7 @@ async function readDraftRun(port: number, path: string): Promise<Record<string, 
 /** Sends one command without waiting for its state broadcast. */
 async function sendDraftCommand(port: number, command: unknown): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   const timer = setTimeout(resolve, 5_000);
   socket.onopen = () => {
     clearTimeout(timer);

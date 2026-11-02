@@ -29,6 +29,7 @@ import { devboardStatus } from "../mcp/status";
 import {
   assertEquals,
   assertTrue,
+  dashboardSocket,
   dashboardsFor,
   freePort,
   harnessRoot,
@@ -191,7 +192,7 @@ function agentLines(log: string): string[] {
 /** Resolves on the first `serverRestarting` frame the page would receive. */
 function watchRestart(port: number, timeoutMs = 30_000): Promise<void> {
   const { promise, resolve: settle, reject } = Promise.withResolvers<void>();
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   const timer = setTimeout(() => {
     socket.close();
     reject(new Error("the connected page never received serverRestarting"));

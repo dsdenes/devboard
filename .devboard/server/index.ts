@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
@@ -38,6 +39,21 @@ const goalFile = process.env.GOAL_FILE
 const staticDir = process.env.STATIC_DIR ?? join(import.meta.dir, "..", "dist");
 const agentCommand = process.env.AGENT_COMMAND ?? "omp acp";
 const stateDir = resolve(process.env.STATE_DIR ?? join(import.meta.dir, "..", ".tmp"));
+
+/**
+ * The credential the mutating endpoints and the socket upgrade require. An
+ * operator may configure it; otherwise this process generates one and keeps it
+ * in its own environment, so a replacement inherits the same credential and an
+ * open page's cookie keeps working across it.
+ */
+const dashboardToken =
+  process.env.DEVBOARD_DASHBOARD_TOKEN?.trim() || randomBytes(32).toString("base64url");
+if (!/^[A-Za-z0-9._~+/=:-]+$/.test(dashboardToken)) {
+  throw new Error(
+    "DEVBOARD_DASHBOARD_TOKEN must carry RFC 6750 characters only: no whitespace, ';', or ','.",
+  );
+}
+process.env.DEVBOARD_DASHBOARD_TOKEN = dashboardToken;
 
 function isAddressInUse(error: unknown): boolean {
   if (typeof error === "object" && error !== null && "code" in error) {
@@ -196,6 +212,7 @@ for (let attempt = 0; ; attempt += 1) {
       stateDir,
       hostname,
       allowedHosts,
+      token: dashboardToken,
       port,
       journal,
       runningVersion,

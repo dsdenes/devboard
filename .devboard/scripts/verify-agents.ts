@@ -31,7 +31,16 @@ import { writeProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
 import { coachDirectory } from "../coach/paths";
 import { MCP_TOOLS } from "../mcp/catalog";
-import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
+import {
+  assertTrue,
+  dashboardSocket,
+  freePort,
+  harnessRoot,
+  makeHost,
+  makeRoot,
+  run,
+  waitFor,
+} from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
 const chromeCandidates = [
@@ -2698,7 +2707,7 @@ try {
   });
   try {
     const snapshotReady = Promise.withResolvers<Record<string, unknown>>();
-    const snapshotSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const snapshotSocket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
     const snapshotTimer = setTimeout(() => {
       snapshotSocket.close();
       snapshotReady.reject(new Error("verify:agents: timed out reading agentsState"));
@@ -2734,7 +2743,7 @@ try {
       "verify:agents: the shared page shows a version divergence notice",
     );
     const stopped = Promise.withResolvers<void>();
-    const stopSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const stopSocket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
     const stopTimer = setTimeout(() => {
       stopSocket.close();
       stopped.reject(new Error("verify:agents: timed out sending stopAgent"));

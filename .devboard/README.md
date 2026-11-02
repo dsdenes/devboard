@@ -400,6 +400,11 @@ dev page answers its own 404, so `File issue` reports `The server refused the re
 goal drafting fails the same way. Both entries come from `lib/endpoints.ts`, which the client and
 the server read too, so the three cannot disagree about a path.
 
+The backend requires its dashboard token on the `/ws` upgrade, and the page carries that token in
+an `HttpOnly` cookie the backend sets on its own `index.html`. Open `http://127.0.0.1:8080/` once
+in the same browser profile before loading the dev page, so the profile holds the cookie the proxy
+forwards; otherwise the dev page's socket stays on `Connecting`.
+
 The dev server ignores the generated trees (`.tmp`, `.test-tmp`, `dist`, `coverage`). A busy
 checkout writes hundreds of thousands of files under `.tmp`; watching them reloads the page for
 every agent write and eventually exhausts the dev server's heap.
@@ -1916,6 +1921,7 @@ and is retried the same way.
 |`HOST`|`127.0.0.1`|Listen address.|
 |`PORT`|`8080`|Listen port.|
 |`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
+|`DEVBOARD_DASHBOARD_TOKEN`|generated at startup|Bearer credential for `POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade; the page receives it as an `HttpOnly`, `SameSite=Strict` cookie and a programmatic client sends `Authorization: Bearer <token>`. The same value stays in the process environment so a replacement keeps authenticating an open page.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
@@ -3576,6 +3582,18 @@ Every 4xx and 5xx response these routes answer is `application/problem+json` car
 `title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
 `POST /feedback` answers `201` with `title` and the `links.issue.href` hypertext control carrying
 the filed issue's absolute URL; no top-level `url` property remains.
+
+`POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade require the dashboard token
+before their handler runs. The request carries `Authorization: Bearer <token>`, which the server
+compares with its own token in constant time; a missing or wrong credential answers `401` with
+`WWW-Authenticate: Bearer`, and the request then files no issue, writes no draft, and never
+upgrades the socket. `/ready` stays unauthenticated because the launcher probes it before it
+holds a credential. The token comes from `DEVBOARD_DASHBOARD_TOKEN`, or is generated at startup
+when that variable is unset and kept in the process environment so a replacement inherits it. The
+page never reads the token in JavaScript: the `index.html` response sets the same value as an
+`HttpOnly`, `SameSite=Strict` cookie, which the browser attaches to its own socket upgrade and
+mutating fetches. A reverse proxy, a script, or a health probe that is not a page sends the
+bearer header.
 
 An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
 detail "An internal error occurred.": `POST /feedback` and

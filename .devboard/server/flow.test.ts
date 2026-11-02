@@ -35,6 +35,8 @@ import { seedVerificationProvider, verificationProviderUsageEnv } from "../scrip
 
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
 const TEST_ROOT = join(import.meta.dir, "..", ".tmp", "flow-tests");
+/** The credential a spawned dashboard requires; an in-process app ignores it. */
+const DASHBOARD_TOKEN = "flow-test-token";
 const SENTINEL_GOAL = "# Fixture goal\n\nThe goal the host already had.\n";
 const FLOW_GOAL = "# Flow goal\n\nMake the fixture behavior observable.";
 
@@ -229,7 +231,9 @@ function latest(client: TestClient, type: string): Event | undefined {
 
 function connect(testServer: { url: string }): Promise<TestClient> {
   const { promise, resolve, reject } = Promise.withResolvers<TestClient>();
-  const socket = new WebSocket(`ws://${testServer.url}/ws`);
+  const socket = new WebSocket(`ws://${testServer.url}/ws`, {
+    headers: { authorization: `Bearer ${DASHBOARD_TOKEN}` },
+  } as unknown as string[]);
   const events: Event[] = [];
   const waiters: {
     predicate: (event: Event) => boolean;
@@ -3136,6 +3140,7 @@ async function startFlowProcess(fixture: Fixture, command: string): Promise<Flow
       GOAL_FILE: fixture.goalFile,
       STATIC_DIR: join(fixture.root, "static"),
       STATE_DIR: fixture.stateDir,
+      DEVBOARD_DASHBOARD_TOKEN: DASHBOARD_TOKEN,
       AGENT_COMMAND: command,
       DEVBOARD_RELEASE_DIR: releaseDir,
       ...verificationProviderUsageEnv(),

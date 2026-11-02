@@ -20,7 +20,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
@@ -195,6 +195,12 @@ export interface AppOptions {
   hostname: string;
   /** Extra hostnames the listener answers to, e.g. a reverse proxy name. */
   allowedHosts?: readonly string[];
+  /**
+   * The bearer credential the mutating endpoints and the socket upgrade
+   * require. `index.ts` always supplies one, so a running dashboard is never
+   * tokenless; a test may omit it to construct the tokenless surface.
+   */
+  token?: string;
   port: number;
   repoDir?: string;
   goalFile?: string;
@@ -2128,6 +2134,7 @@ function requestRefusal(
 /** The reason phrase each status this server reports as a failure carries. */
 const PROBLEM_TITLES: Readonly<Record<number, string>> = {
   400: "Bad Request",
+  401: "Unauthorized",
   403: "Forbidden",
   404: "Not Found",
   405: "Method Not Allowed",
@@ -2138,6 +2145,50 @@ const PROBLEM_TITLES: Readonly<Record<number, string>> = {
   503: "Service Unavailable",
   504: "Gateway Timeout",
 };
+
+/**
+ * The cookie name that carries the dashboard credential to its own page. The
+ * port is part of the name because cookies ignore ports: several dashboards on
+ * one host would otherwise overwrite each other's credential.
+ */
+const DASHBOARD_COOKIE = "devboard_dashboard";
+
+/**
+ * The credential a request presents. A programmatic client sends
+ * `Authorization: Bearer <token>`; the dashboard's own page cannot read the
+ * token in JavaScript, so the HTML document hands it an HttpOnly, same-site
+ * cookie the browser attaches to the same requests.
+ */
+function presentedCredential(request: Request, cookieName: string): string | null {
+  const header = request.headers.get("authorization");
+  if (header !== null) {
+    const match = /^Bearer[ ]+(.+)$/i.exec(header.trim());
+    if (match !== null && match[1] !== undefined) {
+      const token = match[1].trim();
+      if (token.length > 0) return token;
+    }
+  }
+  const cookies = request.headers.get("cookie");
+  if (cookies === null) return null;
+  for (const entry of cookies.split(";")) {
+    const separator = entry.indexOf("=");
+    if (separator < 0) continue;
+    if (entry.slice(0, separator).trim() !== cookieName) continue;
+    return entry.slice(separator + 1).trim();
+  }
+  return null;
+}
+
+/**
+ * Whether a presented credential is the dashboard token. Both sides are hashed
+ * first, so the comparison neither short-circuits on a wrong prefix nor leaks
+ * the token's length through its timing.
+ */
+function credentialMatches(presented: string | null, token: string): boolean {
+  if (presented === null) return false;
+  const digest = (value: string) => createHash("sha256").update(value).digest();
+  return timingSafeEqual(digest(presented), digest(token));
+}
 
 /**
  * One RFC 9457 failure body. Every 4xx and 5xx response this server writes
@@ -2292,6 +2343,9 @@ async function readMutationBody(
 export function createApp(options: AppOptions) {
   const staticRoot = resolve(options.staticDir);
   const allowedHostnames = allowedRequestHostnames(options.hostname, options.allowedHosts);
+  // Empty means this construction has no credential to compare, which only a
+  // test uses: `index.ts` always resolves the token a running dashboard keeps.
+  const dashboardToken = options.token?.trim() ?? "";
   const adrDir = resolve(options.adrDir);
   const repoDir = options.repoDir ?? dirname(adrDir);
   const project = projectLabel(repoDir);
@@ -7474,6 +7528,37 @@ export function createApp(options: AppOptions) {
   }
 
   /**
+   * The 401 for a request that presents no valid dashboard credential, or null
+   * when the endpoint may run. The tokenless construction is a test seam; a
+   * running dashboard always has one, so its mutating endpoints and its socket
+   * upgrade are never reachable without it.
+   */
+  function credentialRefusal(request: Request, cookieName: string): Response | null {
+    if (dashboardToken.length === 0) return null;
+    if (credentialMatches(presentedCredential(request, cookieName), dashboardToken)) return null;
+    return problemResponse(401, "This endpoint requires the dashboard token.", {
+      "WWW-Authenticate": "Bearer",
+    });
+  }
+
+  /**
+   * The page's own credential, attached to the HTML document it loads. The
+   * token never reaches JavaScript: the HttpOnly, same-site cookie is what the
+   * browser sends on the socket upgrade and the mutating fetches.
+   */
+  function attachDashboardCookie(
+    headers: Record<string, string>,
+    path: string,
+    cookieName: string,
+  ): void {
+    if (dashboardToken.length === 0) return;
+    if (!/\.html?$/i.test(path)) return;
+    if (!/^[A-Za-z0-9._~+/=:-]+$/.test(dashboardToken)) return;
+    headers["Set-Cookie"] =
+      `${cookieName}=${dashboardToken}; Path=/; HttpOnly; SameSite=Strict`;
+  }
+
+  /**
    * The one answer an unexpected endpoint failure gives: a fixed detail the
    * client may show, with the exception text recorded only in the journal.
    */
@@ -7554,8 +7639,12 @@ export function createApp(options: AppOptions) {
 
     async fetch(request, server) {
       const url = new URL(request.url);
+      // Cookies ignore ports, so each listener reads only its own page's one.
+      const cookieName = `${DASHBOARD_COOKIE}_${server.port}`;
 
       if (url.pathname === FEEDBACK_ENDPOINT) {
+        const denied = credentialRefusal(request, cookieName);
+        if (denied !== null) return denied;
         return handleFeedbackRequest(request, url);
       }
 
@@ -7573,6 +7662,8 @@ export function createApp(options: AppOptions) {
       }
 
       if (url.pathname === GOAL_PROPOSALS_ENDPOINT) {
+        const denied = credentialRefusal(request, cookieName);
+        if (denied !== null) return denied;
         return handleGoalProposalRequest(request, url);
       }
 
@@ -7591,6 +7682,8 @@ export function createApp(options: AppOptions) {
               : "Cross-origin WebSocket upgrades are refused.",
           );
         }
+        const denied = credentialRefusal(request, cookieName);
+        if (denied !== null) return denied;
         if (server.upgrade(request)) return;
         return problemResponse(426, "This path upgrades to a WebSocket.", {
           Upgrade: "websocket",
@@ -7638,6 +7731,8 @@ export function createApp(options: AppOptions) {
         "Content-Type": file.type,
         Vary: "Accept-Encoding",
       };
+      // The document carries the page's credential; every other asset is inert.
+      attachDashboardCookie(headers, relative, cookieName);
       const head = request.method === "HEAD";
       if (!acceptsGzip(request.headers.get("accept-encoding"))) {
         return new Response(head ? null : file, { headers });
