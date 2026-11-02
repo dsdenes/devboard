@@ -241,7 +241,7 @@ async function dispatch(
     case "background_agents_list":
       return { agents: await backgroundAgentsList(context) };
     case "devboard_status":
-      return devboardStatus(context);
+      return await devboardStatus(context);
     case "flow_control":
       return flowControl(context, { action: args.action });
     case "goal_control":

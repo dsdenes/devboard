@@ -268,6 +268,8 @@ export interface VersionState {
   installed: string | null;
   latest: string | null;
   stale: boolean;
+  /** True when the dashboard serves a harness source checkout. */
+  source?: boolean;
   replacement?: {
     running: string | null;
     installed: string | null;
@@ -331,6 +333,7 @@ export async function readVersion(port: number): Promise<VersionState> {
     installed: (reply.installed as string | null) ?? null,
     latest: (reply.latest as string | null) ?? null,
     stale: reply.stale === true,
+    source: reply.source === true,
     ...(typeof replacement === "object" && replacement !== null
       ? {
           replacement: {

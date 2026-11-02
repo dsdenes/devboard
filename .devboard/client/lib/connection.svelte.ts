@@ -155,6 +155,7 @@ export class ConnectionStore {
         installed: message.installed as string | null,
         latest: message.latest as string | null,
         stale: message.stale as boolean,
+        source: message.source === true,
         replacement,
       };
       this.feedbackEnabled = message.feedbackEnabled === true;

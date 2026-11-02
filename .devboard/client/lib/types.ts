@@ -11,9 +11,16 @@ export interface AdrRecord {
 
 export interface VersionState {
   running: string | null;
+  /**
+   * What a restart would load now. On a source checkout this is the source
+   * version the status bar labels `source`; on an installed host it is the
+   * package version under the prefix.
+   */
   installed: string | null;
   latest: string | null;
   stale: boolean;
+  /** True when the dashboard serves a harness source checkout. */
+  source?: boolean;
   /** A replacement that could not start; the fallback control retries it. */
   replacement?: {
     running: string | null;

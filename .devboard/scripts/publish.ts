@@ -3,9 +3,11 @@
  * Verifies a pushed `main` commit's release and reports the running
  * dashboards. The Gitea workflow builds, tests, publishes the launcher to
  * npmjs, and creates the harness release; this script waits for that run,
- * proves the release and launcher exist, pushes the GitHub mirror, and never
- * restarts a dashboard or writes into a host. A dashboard installs a new
- * harness itself and shows its reload control until an operator restarts it.
+ * proves the release and launcher exist, and pushes the GitHub mirror. Only
+ * after every step passed does it write a source refresh request into the
+ * state directory of each live dashboard that serves this checkout. Installed
+ * hosts keep updating themselves; a source checkout replaces itself only from
+ * that request.
  */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
@@ -21,6 +23,7 @@ import {
   type GiteaWorkflowRun,
 } from "../lib/gitea";
 import { dashboardInventory, describeInventory } from "../lib/inventory";
+import { deliverSourceRefresh } from "../lib/source-refresh";
 import { discoverInstances } from "../watchdog/discovery";
 
 interface CommandResult {
@@ -51,8 +54,10 @@ function usage(): never {
 
 Waits for the Gitea release workflow of the pushed main commit, verifies the
 private harness release and the public launcher version, pushes the GitHub
-mirror, and reports every running dashboard's installed and running versions
-without restarting it.
+mirror, and reports every running dashboard's installed and running versions.
+Once every step passed, it writes a source refresh request for each live
+dashboard that serves this checkout's source harness; those dashboards replace
+themselves. Installed hosts are never sent a request.
 
   --wait-timeout N    Seconds to wait for the workflow and propagation (default 1800).
   -h, --help          Show this text.`);
@@ -467,6 +472,27 @@ if (remotes.includes("github")) {
   console.log("publish: no github mirror remote; skipped");
 }
 
-const inventory = dashboardInventory(discoverInstances());
+const instances = discoverInstances();
+const delivery = deliverSourceRefresh({
+  repoRoot,
+  harnessRoot: join(repoRoot, ".devboard"),
+  commit: published,
+  version,
+  distDir,
+  instances,
+});
+for (const target of delivery.written) {
+  console.log(
+    `publish: source refresh requested for ${target.stateDir} ` +
+      `(pid ${target.pid}, port ${target.port}) at ${delivery.digest.slice(0, 12)}`,
+  );
+}
+if (delivery.written.length === 0) {
+  console.log("publish: no live dashboard serves this source checkout");
+}
+const inventory = dashboardInventory(instances);
 for (const entry of inventory) console.log(describeInventory(entry));
-console.log(`publish: ${inventory.length} dashboard(s) reported; no restart was requested`);
+console.log(
+  `publish: ${inventory.length} dashboard(s) reported; ` +
+    `${delivery.written.length} source refresh request(s) written`,
+);

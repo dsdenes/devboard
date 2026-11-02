@@ -599,7 +599,7 @@ try {
     "release access",
   );
 
-  step("the source checkout never installs or replaces itself");
+  step("the source checkout never installs and restarts only from a publish request");
   assertTrue(
     !existsSync(join(repoRoot, ".devboard", "node_modules", "@dsdenes", "devboard")),
     "the canonical source checkout has no installed harness package",
@@ -634,18 +634,22 @@ try {
     await Bun.sleep(900);
     const second = await readVersion(sourcePort);
     assertEquals(
-      [second.running, second.installed, second.stale],
-      [first.running, first.installed, false],
-      "the source checkout keeps its source-derived version",
+      [second.running, second.installed, second.stale, second.source],
+      [first.running, first.installed, false, true],
+      "the source checkout reports the source version a restart would load",
     );
     assertTrue(second.replacement === undefined, "the source checkout never reports a replacement");
+    assertTrue(
+      !existsSync(join(repoRoot, ".devboard", "node_modules", "@dsdenes", "devboard")),
+      "the update check installed a harness package into the source checkout",
+    );
     assertTrue(processRunning(sourcePid), "the source server is not restarted by the update check");
     assertEquals(
       dashboardsFor(repoRoot).filter((entry) => entry.port === sourcePort).length,
       1,
-      "the source dashboard keeps one process",
+      "the source dashboard keeps one process, because only a publish request restarts it",
     );
-    step("the canonical checkout refused install and never replaced itself");
+    step("the canonical checkout refused install and never restarted on the update check");
   } finally {
     try {
       process.kill(sourcePid, "SIGTERM");

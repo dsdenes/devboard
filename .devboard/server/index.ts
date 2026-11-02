@@ -1,15 +1,23 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
 import { configuredGiteaToken } from "../lib/forge";
+import {
+  sourceRefreshDirectory,
+  writeAppliedSourceRefresh,
+  type SourceRefreshRequest,
+} from "../lib/source-refresh";
 import { createApp, type FeedbackOptions } from "./app";
 import type { ForgeTarget } from "./forge-pr";
 import { StubForge } from "./fixtures/stub-forge";
 import { openJournal } from "./journal";
 import { sourceCheckoutGiteaUrl } from "./local-gitea";
-import { relaunch } from "./relaunch";
+import { relaunch, relaunchConfirmed } from "./relaunch";
+import { startSourceRefresher } from "./source-refresh";
 import { snapshotStaticDir } from "./static-snapshot";
 import { startUpdater, type Updater } from "./updates";
 import {
+  hostHarnessDir,
   isHarnessSourceCheckout,
   readHarnessVersion,
   runningHarnessDir,
@@ -43,16 +51,45 @@ function isAddressInUse(error: unknown): boolean {
  * replacement starts before the listener stops; if it cannot start, this
  * process keeps serving and the restart error stays recoverable.
  */
+const relaunchSettings = { hostname, port, adrDir, repoDir, goalFile, stateDir };
+
 function restart(server: Dashboard) {
-  relaunch(
-    server,
-    { hostname, port, adrDir, repoDir, goalFile, stateDir },
+  relaunch(server, relaunchSettings, {
+    stop: (current) => current.stop(true),
+    exit: (code) => process.exit(code),
+    beforeStop: () => {
+      server.prepareReplacement();
+    },
+  });
+}
+
+/**
+ * Replaces a source dashboard with the checkout's published revision after a
+ * successful publish wrote its request. The old process stops only once the
+ * replacement has signaled that its code and inputs are ready; a replacement
+ * that never signals leaves this process serving the old bundle.
+ */
+async function replaceFromPublish(request: SourceRefreshRequest): Promise<void> {
+  const running = server;
+  if (running === undefined) throw new Error("the source refresh has no running server");
+  await relaunchConfirmed(
+    running,
+    relaunchSettings,
     {
       stop: (current) => current.stop(true),
       exit: (code) => process.exit(code),
       beforeStop: () => {
-        server.prepareReplacement();
+        running.prepareReplacement();
+        // Recorded before the listener stops: the replacement, and every
+        // later delivery of this revision, must never restart again.
+        writeAppliedSourceRefresh(stateDir, request);
       },
+    },
+    {
+      readyFile: join(
+        sourceRefreshDirectory(stateDir),
+        `ready-${process.pid}-${Date.now()}.json`,
+      ),
     },
   );
 }
@@ -134,6 +171,20 @@ function replaceWithInstalled(version: string): void {
     server.noteReplacementFailure(error);
   }
 }
+// The publish-driven source refresh waits for this marker before the old
+// listener stops. A replacement that never writes it is ended by the parent.
+const replacementReadyFile = process.env.DEVBOARD_REPLACEMENT_READY_FILE;
+if (replacementReadyFile !== undefined && replacementReadyFile.length > 0) {
+  try {
+    mkdirSync(dirname(replacementReadyFile), { recursive: true });
+    writeFileSync(
+      replacementReadyFile,
+      `${JSON.stringify({ pid: process.pid, readyAt: new Date().toISOString() })}\n`,
+    );
+  } catch {
+    // No marker means the parent keeps serving; this process still starts.
+  }
+}
 for (let attempt = 0; ; attempt += 1) {
   try {
     server = createApp({
@@ -148,18 +199,11 @@ for (let attempt = 0; ; attempt += 1) {
       port,
       journal,
       runningVersion,
-      versionState: () =>
-        serverVersion(
-          repoDir,
-          // A source checkout's version is a property of the tree, so a release
-          // created while this process runs is what `running` reports. An
-          // installed prefix keeps reporting the version it loaded until a
-          // restart, which is what makes the reload control appear.
-          isHarnessSourceCheckout(repoDir)
-            ? readHarnessVersion(runningHarnessDir())
-            : runningVersion,
-          updater?.latest() ?? null,
-        ),
+      // `running` is always the version this process loaded. `installed` is
+      // what a restart would load now, so a source checkout turns stale once
+      // its released source version changes, and an installed prefix turns
+      // stale once a newer package sits under the prefix.
+      versionState: () => serverVersion(repoDir, runningVersion, updater?.latest() ?? null),
       latestVersion: () => updater?.latest() ?? null,
       ...(injectedFlow === undefined ? {} : { flow: injectedFlow }),
       ...(injectedFeedback === undefined ? {} : { feedback: injectedFeedback }),
@@ -173,6 +217,26 @@ for (let attempt = 0; ; attempt += 1) {
     if (attempt >= 50 || !isAddressInUse(error)) throw error;
     await Bun.sleep(100);
   }
+}
+
+// Only a publish refresh replaces a source dashboard. The harness that would
+// replace it must be this checkout's own `.devboard`, never another checkout
+// or an installed package.
+const sourceHarness = hostHarnessDir(repoDir);
+if (
+  isHarnessSourceCheckout(repoDir) &&
+  resolve(sourceHarness) === resolve(runningHarnessDir())
+) {
+  startSourceRefresher({
+    stateDir,
+    distDir: join(sourceHarness, "dist"),
+    journal,
+    replace: replaceFromPublish,
+    // A replacement's first check waits one interval, so the process it
+    // replaced has recorded the applied commit before this one can read the
+    // same request. Without this, one publish could replace twice.
+    startImmediately: replacementReadyFile === undefined || replacementReadyFile.length === 0,
+  });
 }
 
 updater = startUpdater({

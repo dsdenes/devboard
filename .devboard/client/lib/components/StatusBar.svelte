@@ -48,14 +48,21 @@
     }),
   );
 
+  /**
+   * A source checkout's second value is the source version a restart would
+   * load, so it is labeled `source`; an installed host keeps `installed` for
+   * the package under its npm prefix.
+   */
+  const installedLabel = $derived(connection.version?.source === true ? "source" : "installed");
+
   const versions = $derived(
-    `running ${connection.version?.running ?? "unknown"} · installed ${
+    `running ${connection.version?.running ?? "unknown"} · ${installedLabel} ${
       connection.version?.installed ?? "unknown"
     }`,
   );
 
   const reloadLabel = $derived(
-    `Restart devboard, running ${connection.version?.running ?? "unknown"}, installed ${
+    `Restart devboard, running ${connection.version?.running ?? "unknown"}, ${installedLabel} ${
       connection.version?.installed ?? "unknown"
     }`,
   );
@@ -125,7 +132,7 @@
         <span class="mono">{connection.version?.running ?? "unknown"}</span>
       </span>
       <span class="status-versions__entry">
-        <span class="status-metric__label">installed</span>
+        <span class="status-metric__label">{installedLabel}</span>
         <span class="mono">{connection.version?.installed ?? "unknown"}</span>
       </span>
     </span>

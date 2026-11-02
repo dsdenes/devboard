@@ -15,6 +15,7 @@
     "adr:queue": "adr queue --dir ../adrs",
     "verify:install": "bun run scripts/verify-install.ts",
     "verify:update": "bun run scripts/verify-update.ts",
+    "verify:source-refresh": "bun run scripts/verify-source-refresh.ts",
     "verify:ui": "bun run scripts/verify-ui.ts",
     "verify:notifications": "bun run scripts/verify-notifications.ts",
     "verify:watchdog": "bun run scripts/verify-watchdog.ts",

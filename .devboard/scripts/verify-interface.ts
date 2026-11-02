@@ -2256,7 +2256,18 @@ try {
     "the status bar leaves an empty tail after its right group",
     statusBar,
   );
-  check(statusBar.versions.includes("running") && statusBar.versions.includes("installed"), "the status bar does not show both versions", statusBar);
+  check(
+    statusBar.versions.includes("running") && statusBar.versions.includes("source"),
+    "the status bar does not show the running version and the source version",
+    statusBar,
+  );
+  check(
+    sourceVersion !== null &&
+      statusBar.versions.includes(`running ${sourceVersion}`) &&
+      statusBar.versions.includes(`source ${INSTALLED_VERSION}`),
+    "the source status bar does not read running <served> and source <source>",
+    { sourceVersion, installed: INSTALLED_VERSION, versions: statusBar.versions },
+  );
   check(statusBar.reload !== null, "the stale reload control is missing");
   check(
     sourceVersion !== null &&
@@ -2295,7 +2306,7 @@ try {
   check(
     statusBar.labels.includes("lanes") &&
       statusBar.labels.filter((label) => label === "running").length === 1 &&
-      statusBar.labels.filter((label) => label === "installed").length === 1,
+      statusBar.labels.filter((label) => label === "source").length === 1,
     "a status metric does not state its meaning",
     statusBar,
   );

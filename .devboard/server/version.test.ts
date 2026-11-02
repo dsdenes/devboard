@@ -71,6 +71,7 @@ describe("serverVersion", () => {
       installed: "0.1.9",
       latest: "0.1.9",
       stale: true,
+      source: true,
     });
   });
 
@@ -87,6 +88,7 @@ describe("serverVersion", () => {
       installed: "0.1.9",
       latest: "0.1.9",
       stale: false,
+      source: true,
     });
   });
 
@@ -100,6 +102,7 @@ describe("serverVersion", () => {
       installed: "0.1.0",
       latest: null,
       stale: false,
+      source: true,
     });
   });
 
@@ -124,6 +127,7 @@ describe("serverVersion", () => {
       installed: "1.0.1",
       latest: "1.0.1",
       stale: false,
+      source: true,
     });
 
     await commit(host, "chore: unreleased change");

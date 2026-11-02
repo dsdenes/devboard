@@ -6,12 +6,17 @@ import { highestReleaseVersion } from "../lib/release";
 export interface ServerVersion {
   /** The harness package version this process loaded at startup. */
   running: string | null;
-  /** The harness package version the host's prefix holds now. */
+  /**
+   * The harness version a restart would load now: the source version on a
+   * source checkout, the package under the host prefix on an installed host.
+   */
   installed: string | null;
   /** The newest release the update check has seen, when it has seen one. */
   latest: string | null;
   /** True when a restart would load different code. */
   stale: boolean;
+  /** True when this process serves a harness source checkout. */
+  source?: boolean;
   /**
    * Present only when an automatic replacement was attempted and could not
    * start. The running process keeps serving; the fallback control retries.
@@ -122,6 +127,16 @@ function isHarnessSource(directory: string): boolean {
 }
 
 /**
+ * True when a directory is an unpacked harness source tree rather than a
+ * packed npm release. A release writes its real version into the packed copy,
+ * so only the checkout's manifest keeps the source marker version.
+ */
+export function isSourceHarness(directory: string): boolean {
+  const manifest = readManifest(directory);
+  return manifest?.name === HARNESS_NAME && manifest.version === SOURCE_VERSION;
+}
+
+/**
  * True when the host serves a harness source checkout rather than an npm
  * prefix: `.devboard/package.json` names the harness package and no installed
  * copy sits in its `node_modules`. The predicate reads no repository name,
@@ -172,5 +187,6 @@ export function serverVersion(
     installed,
     latest,
     stale: running !== null && installed !== null && running !== installed,
+    source: isSourceHarness(runningHarnessDir()),
   };
 }

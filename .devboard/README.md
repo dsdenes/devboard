@@ -351,11 +351,15 @@ project's own name (the last path segment, with a folder mark and the full path 
 and the Providers control: the selected provider with its lowest remaining percentage, or
 `No provider`, whose tooltip names the provider's model and which opens the Providers dialog.
 The right group states the running lane count, the issues worker state with a state dot, the
-watchdog's last action and age, the OS notifications control, and the running and installed
-versions; each metric carries a 10px uppercase label so its meaning never rests on color. The
-reload control (`reload-devboard`) appears only when an automatic replacement could not start;
-its accessible name and title name the running and installed versions, and clicking it retries
-the same launcher. A successful replacement needs no click and reloads every connected page once.
+watchdog's last action and age, the OS notifications control, and the running and second
+version; each metric carries a 10px uppercase label so its meaning never rests on color. On a
+source checkout the second value is labeled `source` and names the source version a restart
+would load; on an installed host it is labeled `installed` and names the package under the npm
+prefix. `running` is always the version the process actually loaded, so the two differ, and
+`stale` is true, only while a restart would load different code. The reload control
+(`reload-devboard`) appears only when a replacement could not start; its accessible name and
+title name both versions, and clicking it retries the same launcher. A successful replacement
+needs no click and reloads every connected page once.
 A mode states its status in its sidebar and workspace, never a second time in the status bar,
 except the issues worker, which is detached from every dashboard and reports through
 `issues-indicator`. The theme toggle and the notification indicator live in the activity bar's
@@ -471,6 +475,36 @@ the copied `prompts/`, `extensions/`, and `lib/` trees, byte-equality of every s
 non-symlinked `.devboard`, and a recorded update failure. Drift in a regular
 `AGENTS.md` is reported without failing the check; every other mismatch exits nonzero. Gitea is
 never required: with no address configured the checks consult npm only.
+
+### Publish-only source refresh
+
+A canonical source checkout — `.devboard/package.json` names `@dsdenes/devboard` and no package
+sits under `.devboard/node_modules/@dsdenes/devboard` — never installs a harness package and never
+replaces itself on an update check. One successful `cd .devboard && bun run publish` is the only
+authorization for that dashboard to replace itself with the published revision. `publish` writes
+the request only after its fast-forward, dependency install, client build, release-workflow wait,
+npm-package check, and Gitea-asset check have all passed; a failed or partial publish writes no
+request.
+
+A request is one JSON file, `<STATE_DIR>/source-refresh/request.json`, written atomically for each
+live dashboard whose `REPO_DIR` is the checkout and whose serving harness is that checkout's
+`.devboard`. It carries the published commit, the released version, and a deterministic SHA-256 of
+the built `.devboard/dist` tree. The dashboard re-reads it on a fixed interval and verifies that
+the current `dist` digests identically; it never runs a second build. A matching request replaces
+the process through the ordinary replacement handoff: the replacement writes a readiness marker,
+the old process stops only once that marker exists, every connected page receives
+`serverRestarting` and reloads once, and the applied commit is recorded in
+`<STATE_DIR>/source-refresh/applied.json` so re-delivering the same publish never restarts again.
+
+The interval is 60,000 ms and is configurable with `DEVBOARD_SOURCE_REFRESH_INTERVAL_MS`; values
+below 1,000 ms are raised to 1,000 ms. An invalid or unreadable request, a digest mismatch, a
+failed replacement spawn, or a replacement that never becomes ready leaves the old process
+serving the old bundle on the original port and journals the failure once per attempt. A valid
+pending request is retried on the interval until it succeeds or a newer publish request
+supersedes it. A new commit, a new release tag, a rebuilt `dist`, an edited source file, a page
+reload, and an npm update check never restart a source dashboard; only a valid publish request or
+the retry of one does. Installed hosts never receive or act on a source refresh request and keep
+their existing automatic-update behavior.
 
 `--host <path>` targets another repository. `DEVBOARD_RELEASE_DIR` points the launcher and the
 server at a local directory of tarballs for offline verification and CI fixtures. `DEVBOARD_NPM`
@@ -3989,6 +4023,7 @@ bun run verify:interface
 bun run verify:providers
 bun run verify:install
 bun run verify:update
+bun run verify:source-refresh
 bun run verify:ui
 bun run verify:issues
 bun run verify:scout
@@ -3998,7 +4033,11 @@ bun run verify:dead-code
 `verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and
 writes its screenshots under `.tmp/interface`. The other `verify:` scripts build fixture releases
 under `.devboard/.tmp`, install them into throwaway hosts, and assert the launcher, update, and
-reload contracts end to end. They never touch a real host.
+reload contracts end to end. They never touch a real host. `verify:source-refresh` starts real
+source dashboards against a throwaway source checkout, delivers a request through the same writer
+`publish` uses, and proves the replacement, the digest check, the applied-request dedupe, the
+failure and never-ready paths, the fixed retry interval, and the two-dashboard delivery without
+running a release or `bun run publish`.
 
 `bun run verify:issues` is the deterministic end-to-end gate. It starts a source dashboard
 against a throwaway checkout with stub `gh` and ACP commands, starts the worker, and proves four

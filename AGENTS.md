@@ -107,15 +107,30 @@ Pause, Resume, Check now, Stop, and settings apply to every live worker of the f
 started by a version that predates this mechanism has no drain command and is never killed
 mid-unit; it is left to finish its unit.
 
-`versionState` reports `running`, `installed`, `latest`, and `stale`. The reload control is
-rendered only when a replacement could not start: the running version keeps serving, its
-accessible name and title name both versions, and clicking it retries the same launcher. Once the
-retry succeeds the page reloads on the installed version. A canonical source checkout, which has
-no package under `.devboard/node_modules/@dsdenes/devboard`, never installs and never replaces
-itself. When npm cannot resolve or serve the artifact and `DEVBOARD_GITEA_URL` is configured,
-install and update fall back to the Gitea release tarball and its `.sha256` for the same version. A
-failed download, checksum, authentication, or install leaves the installed package and the running
-server intact; the journal records the failure and doctor reports it.
+`versionState` reports `running`, `installed`, `latest`, `stale`, and `source`. `running` is the
+version the process actually loaded; `installed` is what a restart would load now — the package
+under the prefix on an installed host, the checkout's source version on a source checkout. The
+status bar labels that second value `installed` on an installed host and `source` on a source
+checkout. The reload control is rendered only when a replacement could not start: the running
+version keeps serving, its accessible name and title name both versions, and clicking it retries
+the same launcher. A canonical source checkout, which has no package under
+`.devboard/node_modules/@dsdenes/devboard`, never installs and never replaces itself on an update
+check. It replaces itself only after one successful `bun run publish`: that path writes a
+source-refresh request into each live dashboard's own `STATE_DIR` only after its fast-forward,
+dependency install, client build, release-workflow wait, npm-package check, and Gitea-asset check
+have all passed. The request names the published commit, the released version, and a SHA-256 of
+the built `.devboard/dist`; the dashboard verifies that digest without a second build, replaces
+itself through the ordinary replacement handoff, and records the applied commit so the same
+publish never restarts it twice. A missing, invalid, or mismatched request, a failed spawn, or a
+replacement that never becomes ready leaves the old process serving and is journaled once per
+attempt; a valid pending request is retried on a fixed interval, 60,000 ms by default and
+configurable with `DEVBOARD_SOURCE_REFRESH_INTERVAL_MS` (minimum 1,000 ms). A new commit, a new
+tag, a rebuilt `dist`, an edited source file, a page reload, and an npm update check never restart
+a source dashboard. Installed hosts never receive or act on a source-refresh request. When npm
+cannot resolve or serve the artifact and `DEVBOARD_GITEA_URL` is configured, install and update
+fall back to the Gitea release tarball and its `.sha256` for the same version. A failed download,
+checksum, authentication, or install leaves the installed package and the running server intact;
+the journal records the failure and doctor reports it.
 
 Harness-owned issue reporting uses only the configured Gitea API. Without `DEVBOARD_GITEA_URL`
 the report controls are not rendered and `POST /api/feedback` answers HTTP 503 naming that
@@ -165,8 +180,8 @@ release workflow by hand: the Release Train owns both.
 Guardrails:
 
 - Never rebuild only a worktree or only the client and call the change done.
-- Never kill, spawn, or relaunch a dashboard server by hand; install, update, and the reload
-  control are the only paths.
+- Never kill, spawn, or relaunch a dashboard server by hand; install, update, the reload control,
+  and the publish-driven source refresh are the only paths.
 - Never copy the harness into a host or symlink a host path to this checkout; install owns the
   host prefix.
 - Stale output is the first suspect, not the last: when the UI behaves like an older revision,
@@ -262,9 +277,10 @@ never hand-edit them.
 - Host mode: host build/tests run; `.devboard/` unchanged.
 - Harness mode: the pushed commit is released by the Release Train, which dispatched and verified
   the release workflow and the npm package and release assets; installed dashboards report the
-  release through `versionState` and restart only from the reload control; the changed entry
-  point runs from the repo root against a supplied host path; no absolute paths or host
-  specifics under `.devboard/`; nothing created outside `.devboard/`.
+  release through `versionState` and keep their update path, while live source dashboards replace
+  themselves from the publish-written request; the changed entry point runs from the repo root
+  against a supplied host path; no absolute paths or host specifics under `.devboard/`; nothing
+  created outside `.devboard/`.
 
 ## Map
 

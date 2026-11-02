@@ -1,6 +1,6 @@
 import { readHarnessVersion, serverVersion } from "../server/version";
 import type { McpContext } from "./context";
-import { dashboardsFor } from "./dashboard";
+import { dashboardCommand, dashboardsFor, type LiveDashboard } from "./dashboard";
 
 /** The deterministic harness status: roots, one live dashboard, version and git state. */
 
@@ -21,7 +21,13 @@ export interface DevboardStatus {
   stateDirectory: string;
   git: DevboardGitState;
   dashboard: { port: number; pid: number } | null;
-  version: { running: string | null; installed: string | null; latest: string | null };
+  version: {
+    running: string | null;
+    installed: string | null;
+    latest: string | null;
+    /** True when the live dashboard serves a harness source checkout. */
+    source: boolean;
+  };
   versionState: "running" | "installed" | "latest" | "stale";
 }
 
@@ -61,10 +67,56 @@ export function gitState(repoDir: string): DevboardGitState {
   return state;
 }
 
-export function devboardStatus(context: McpContext): DevboardStatus {
+interface LiveVersion {
+  running: string | null;
+  installed: string | null;
+  latest: string | null;
+  stale: boolean;
+  source: boolean;
+}
+
+/**
+ * The live dashboard's own version state. `running` is the version that
+ * process loaded, which no file on disk can answer for it; the status tool
+ * therefore agrees with the WebSocket frame rather than recomputing it.
+ */
+async function liveVersion(dashboard: LiveDashboard): Promise<LiveVersion | undefined> {
+  try {
+    const reply = await dashboardCommand(
+      dashboard,
+      { type: "getVersion" },
+      (message) => message.type === "versionState",
+      5_000,
+    );
+    return {
+      running: typeof reply.running === "string" ? reply.running : null,
+      installed: typeof reply.installed === "string" ? reply.installed : null,
+      latest: typeof reply.latest === "string" ? reply.latest : null,
+      stale: reply.stale === true,
+      source: reply.source === true,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function devboardStatus(context: McpContext): Promise<DevboardStatus> {
   const dashboards = dashboardsFor(context);
-  const running = readHarnessVersion(context.harnessDir);
-  const version = serverVersion(context.repoDir, running, null);
+  const dashboard = dashboards.length === 1 ? dashboards[0] : undefined;
+  const live = dashboard === undefined ? undefined : await liveVersion(dashboard);
+  const fallback = serverVersion(
+    context.repoDir,
+    readHarnessVersion(context.harnessDir),
+    null,
+  );
+  const version: LiveVersion =
+    live ?? {
+      running: fallback.running,
+      installed: fallback.installed,
+      latest: fallback.latest,
+      stale: fallback.stale,
+      source: fallback.source === true,
+    };
   const versionState = version.stale
     ? "stale"
     : version.installed !== null && version.running === version.installed
@@ -78,13 +130,12 @@ export function devboardStatus(context: McpContext): DevboardStatus {
     stateDirectory: context.stateDir,
     git: gitState(context.repoDir),
     dashboard:
-      dashboards.length === 1
-        ? { port: dashboards[0]?.port ?? 0, pid: dashboards[0]?.pid ?? 0 }
-        : null,
+      dashboard === undefined ? null : { port: dashboard.port, pid: dashboard.pid },
     version: {
       running: version.running,
       installed: version.installed,
       latest: version.latest,
+      source: version.source,
     },
     versionState,
   };
