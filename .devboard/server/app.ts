@@ -57,7 +57,7 @@ import {
   fileFeedbackIssue,
   parseFeedbackSubmission,
 } from "./feedback";
-import { FlowController, type FlowOptions } from "./flow";
+import { FlowController, type CheckoutBlocker, type FlowOptions } from "./flow";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { suggestGoalSlug } from "./goal-slug";
 import {
@@ -2277,6 +2277,11 @@ export function createApp(options: AppOptions) {
   /** The run's checkout: a clone that never outlives the run that made it. */
   let remoteCheckout: { runId: string; dir: string; target: RemoteRepository } | null = null;
   let discoverCloning: { url: string; target: RemoteRepository } | null = null;
+  /**
+   * True between a finished clone and the run that takes its checkout. The
+   * gap crosses an await, so the checkout is owned even though no run exists.
+   */
+  let discoverStarting = false;
 
   /** True when both sides are absent or name the same lowercased owner/repo. */
   function sameRemoteTarget(
@@ -2296,6 +2301,7 @@ export function createApp(options: AppOptions) {
   function clearRemoteCheckout(): void {
     const checkout = remoteCheckout;
     remoteCheckout = null;
+    discoverStarting = false;
     if (checkout === null) return;
     try {
       rmSync(checkout.dir, { recursive: true, force: true });
@@ -2316,7 +2322,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     agentEnvironment: peerEnvironment,
     journal,
-    goalWorkActive: activeGoalWork,
+    checkoutBlocker: activeCheckoutBlocker,
     harnessVersion: runningVersion,
     instance,
     broadcast: (event) => broadcast(event),
@@ -3163,11 +3169,63 @@ export function createApp(options: AppOptions) {
     return undefined;
   }
 
-  /** Names the Goal Mode work Flow Mode would contend with, if any. */
-  function activeGoalWork(): string | undefined {
-    if (discoverCloning !== null) return "a repository clone";
-    if (remoteCheckout !== null) return "a repository checkout";
-    return goalWorkLabel() ?? (discoverRun === undefined ? undefined : "a Discover run");
+  /**
+   * Releases a remote checkout that no live Discover run, sequence, or clone
+   * owns. A checkout outlives its run only after a failure that skipped
+   * cleanup, and such a checkout must never keep another mode out.
+   */
+  function releaseOrphanedCheckout(): void {
+    if (remoteCheckout === null) return;
+    if (
+      discoverRun !== undefined ||
+      discoverAllActive ||
+      discoverCloning !== null ||
+      discoverStarting
+    ) {
+      return;
+    }
+    clearRemoteCheckout();
+    refreshDiscoverSnapshot();
+    broadcastDiscoverState();
+  }
+
+  /**
+   * Names the mode that holds the checkout and the exact sentence Flow Mode
+   * prints. A Discover checkout or clone carries its project so the operator
+   * knows which run to stop; Goal Mode keeps its own work label.
+   */
+  function activeCheckoutBlocker(): CheckoutBlocker | undefined {
+    releaseOrphanedCheckout();
+    if (discoverCloning !== null) {
+      const target = discoverCloning.target;
+      return {
+        label: `Discover is active on ${target.owner}/${target.repo} (a repository clone)`,
+        start: "Stop it in Discover before starting Flow work.",
+        merge: "Stop it in Discover before starting Flow work.",
+      };
+    }
+    if (remoteCheckout !== null) {
+      const target = remoteCheckout.target;
+      return {
+        label: `Discover is active on ${target.owner}/${target.repo} (a repository checkout)`,
+        start: "Stop it in Discover before starting Flow work.",
+        merge: "Stop it in Discover before starting Flow work.",
+      };
+    }
+    if (discoverRun !== undefined || discoverAllActive) {
+      return {
+        label: "Discover is active (a Discover run)",
+        start: "Stop it in Discover before starting Flow work.",
+        merge: "Stop it in Discover before starting Flow work.",
+      };
+    }
+    const work = goalWorkLabel();
+    if (work === undefined) return undefined;
+    return {
+      label: `Goal Mode is active (${work})`,
+      start: "Stop it before starting Flow work.",
+      merge: "Stop it before merging the Flow pull request.",
+    };
   }
 
   /** What blocks a Discover start, as a sentence the control shows verbatim. */
@@ -3452,13 +3510,15 @@ export function createApp(options: AppOptions) {
 
     discoverCloning = null;
     remoteCheckout = { runId, dir: staging, target };
+    // The next call takes this checkout; no mode may release it in between.
+    discoverStarting = true;
     broadcastDiscoverState();
     return true;
   }
 
   /** True while one agent or a Run all sequence holds the Discover gate. */
   function discoverActive(): boolean {
-    return discoverRun !== undefined || discoverAllActive;
+    return discoverRun !== undefined || discoverAllActive || discoverStarting;
   }
 
   /** The root and project name one command runs against, cloning first if needed. */
@@ -3493,7 +3553,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "Run all is active. Wait for it to finish or stop it.");
       return true;
     }
-    if (discoverRun !== undefined) {
+    if (discoverStarting || discoverRun !== undefined) {
       discoverFailure(ws, "A Discover run is already active.");
       return true;
     }
@@ -3540,6 +3600,15 @@ export function createApp(options: AppOptions) {
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      // The run never began, so nothing owns its checkout. Release it now
+      // rather than letting it block Flow Mode or a later target change.
+      if (remote !== undefined) {
+        discoverStarting = false;
+        discoverAllActive = false;
+        clearRemoteCheckout();
+        refreshDiscoverSnapshot();
+        broadcastDiscoverState();
+      }
       return false;
     }
 
@@ -3566,6 +3635,7 @@ export function createApp(options: AppOptions) {
       error: null,
     });
     discoverRun = run;
+    discoverStarting = false;
     discoverInterrupted = false;
     journal.write("lifecycle", "discover-start");
     broadcast({ type: "discoverStarted", runId, startedAt, agent: id, mode });
@@ -3778,8 +3848,12 @@ export function createApp(options: AppOptions) {
   }
 
   /** Runs the seven agents in the fixed order, publishing each slice as it lands. */
-  async function startDiscoverAll(ws: { send(data: string): unknown }): Promise<void> {
-    if (discoverStartRefusal(ws)) return;
+  async function startDiscoverAll(
+    ws: { send(data: string): unknown },
+    /** The caller already cloned and owns this checkout; skip the start gate. */
+    claimed = false,
+  ): Promise<void> {
+    if (!claimed && discoverStartRefusal(ws)) return;
     const target = await discoverRoot(ws);
     if (target === null) return;
     resetDiscoverStatuses();
@@ -3880,7 +3954,13 @@ export function createApp(options: AppOptions) {
     }
     if (!(await cloneRemoteProject(ws, parsed.repository))) return;
     if (resumed !== undefined) {
-      if (!isDiscoverAgentId(resumed.agent)) return;
+      if (!isDiscoverAgentId(resumed.agent)) {
+        // Nothing will run on this checkout, so it must not outlive the call.
+        clearRemoteCheckout();
+        refreshDiscoverSnapshot();
+        broadcastDiscoverState();
+        return;
+      }
       const target = await discoverRoot(ws);
       if (target === null) return;
       const published = await runDiscoverAgent(
@@ -3894,7 +3974,7 @@ export function createApp(options: AppOptions) {
       return;
     }
     // A repository URL discovers the whole project: Run all, once.
-    await startDiscoverAll(ws);
+    await startDiscoverAll(ws, true);
   }
 
   /** The retained project a submitted URL names, by lowercased owner/repo. */
@@ -3933,6 +4013,8 @@ export function createApp(options: AppOptions) {
   /** Switches to a retained project without cloning, crawling, or networking. */
   function switchDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
     if (remoteUnavailable(ws)) return;
+    // A checkout no run owns must not survive a target change.
+    releaseOrphanedCheckout();
     if (remoteChangeRefusal(ws, "switching projects")) return;
     const retained = retainedProjectFor(url);
     if (retained === null) {
@@ -3948,6 +4030,8 @@ export function createApp(options: AppOptions) {
   /** Deletes exactly one retained project, returning to the host when it was active. */
   function removeDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
     if (remoteUnavailable(ws)) return;
+    // A checkout no run owns must not survive a target change.
+    releaseOrphanedCheckout();
     if (remoteChangeRefusal(ws, "removing a project")) return;
     const retained = retainedProjectFor(url);
     if (retained === null) {
@@ -3974,6 +4058,8 @@ export function createApp(options: AppOptions) {
   /** Returns the Overview to this checkout's own published artifacts. */
   function clearDiscoverRemote(ws: { send(data: string): unknown }) {
     if (remoteUnavailable(ws)) return;
+    // A checkout no run owns must not survive a target change.
+    releaseOrphanedCheckout();
     if (discoverCloning !== null) {
       discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
       return;
