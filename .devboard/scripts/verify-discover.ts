@@ -368,6 +368,8 @@ async function startDashboard(options: {
   logPath: string;
   extraStub?: string[];
   agentCommand?: string;
+  /** The peer's MCP call log; the Discover agents stage through the tools. */
+  toolLogPath?: string;
 }): Promise<Dashboard> {
   await mkdir(options.stateDir, { recursive: true });
   seedVerificationProvider(options.stateDir);
@@ -387,6 +389,9 @@ async function startDashboard(options: {
       STATIC_DIR: join(harnessRoot, "dist"),
       STATE_DIR: options.stateDir,
       AGENT_COMMAND: command,
+      ...(options.toolLogPath === undefined
+        ? {}
+        : { DEVBOARD_TOOL_LOG: options.toolLogPath }),
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -414,6 +419,29 @@ function logPrompts(path: string): string[] {
     .split("\n")
     .filter((line) => line.startsWith("prompt /discover"))
     .map((line) => line.slice("prompt ".length));
+}
+
+/** The MCP calls one peer made, in order, as its tool log records them. */
+function toolCalls(path: string): Array<{ tool: string; ok: boolean }> {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { tool?: unknown; ok?: unknown })
+    .map((entry) => ({ tool: String(entry.tool ?? ""), ok: entry.ok === true }));
+}
+
+/** The staging tools each agent's turn must call, in the order it calls them. */
+function stagingTools(agent: string): string[] {
+  if (agent === "sheet") return ["discover_sheet_stage"];
+  if (agent === "discover-glossary") {
+    return [
+      "discover_glossary_stage",
+      "discover_significance_stage",
+      "discover_skill_stage",
+    ];
+  }
+  return ["discover_skill_stage"];
 }
 
 /** A git host whose `.devboard` makes it a harness source checkout. */
@@ -549,10 +577,12 @@ try {
   const source = await makeSourceHost(root, "source-host");
   const sourceState = join(source, ".devboard", ".tmp", "state");
   const sourceLog = join(root, "source-acp.log");
+  const sourceTools = join(source, ".devboard", ".tmp", "discover-tools.jsonl");
   const dashboard = await startDashboard({
     repoDir: source,
     stateDir: sourceState,
     logPath: sourceLog,
+    toolLogPath: sourceTools,
   });
   pids.push(dashboard.process.pid ?? 0);
 
@@ -778,6 +808,7 @@ try {
       await openCard(devtools, agent.id);
       const before = ompBytes(source);
       const promptsBefore = logPrompts(sourceLog).length;
+      const callsBefore = toolCalls(sourceTools).length;
       await click(devtools, "discover-agent-start");
       // The card still shows the previous success for a moment; the peer's own
       // prompt line is the first proof this trigger started.
@@ -809,6 +840,18 @@ try {
       check(
         !existsSync(stage),
         `the ${agent.id} staging directory survived its publication`,
+      );
+      const calls = toolCalls(sourceTools).slice(callsBefore);
+      check(
+        JSON.stringify(calls.map((call) => call.tool)) ===
+          JSON.stringify(stagingTools(agent.id)),
+        `the ${agent.id} peer did not stage through its MCP tools`,
+        calls,
+      );
+      check(
+        calls.every((call) => call.ok),
+        `the ${agent.id} staging tool call did not succeed`,
+        calls,
       );
     }
     console.log("PASS per-agent-publication");

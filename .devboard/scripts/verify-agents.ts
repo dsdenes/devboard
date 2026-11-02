@@ -361,13 +361,15 @@ async function rows(devtools: Devtools): Promise<
 }
 
 const INSTALLED_PROMPT =
-  "---\ndescription: installed fixture\n---\n\n# Installed Auto Scout prompt\n\nRead-only here.\n";
+  "---\ndescription: installed fixture\n---\n\n## Manifesto\n\nLeave the host with the improvements Auto Scout found.\n\nRead-only here.\n";
 const SOURCE_PROMPT =
-  "---\ndescription: source fixture\n---\n\n# Source Auto Scout prompt\n\nKeep every byte.\n";
-const INSTALLED_DESIGN_PROMPT = "# Installed Design System prompt\n\nRead-only here.\n";
-const SOURCE_DESIGN_PROMPT = "# Source Design System prompt\n\nKeep every byte.\n";
+  "---\ndescription: source fixture\n---\n\n## Manifesto\n\nLeave the host with the improvements Auto Scout found.\n\nKeep every byte.\n";
+const INSTALLED_DESIGN_PROMPT =
+  "## Manifesto\n\nLeave the interface consistent with its documented standard.\n\nRead-only here.\n";
+const SOURCE_DESIGN_PROMPT =
+  "## Manifesto\n\nLeave the interface consistent with its documented standard.\n\nKeep every byte.\n";
 const CHAT_PROPOSAL =
-  "---\ndescription: revised\n---\n\n# Revised Auto Scout prompt\n\nSaved by the gate.\n";
+  "---\ndescription: revised\n---\n\n## Manifesto\n\nLeave the host with the improvements Auto Scout found.\n\nSaved by the gate.\n";
 const SOURCE_ACP = join(import.meta.dir, "..", "tests", "fixtures", "verify-source-acp.ts");
 const SCOUT_STUB_GH = join(import.meta.dir, "..", "tests", "fixtures", "scout-stub-gh.ts");
 
@@ -1583,6 +1585,14 @@ try {
     (await valueOf(devtools, "agent-prompt-editor")) === SOURCE_PROMPT,
     "the editor does not start at the file's bytes",
   );
+  const shownPrompt = await valueOf(devtools, "agent-prompt-editor");
+  const shownBody = shownPrompt.startsWith("---\n")
+    ? shownPrompt.slice(shownPrompt.indexOf("\n---\n", 4) + 5)
+    : shownPrompt;
+  assertTrue(
+    shownBody.trimStart().startsWith("## Manifesto"),
+    "the Auto Scout prompt editor does not show a manifesto first",
+  );
   for (const testid of [
     "agent-prompt-chat",
     "agent-prompt-message",
@@ -1637,7 +1647,14 @@ try {
 
   await click(devtools, "agent-prompt-save");
   await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-notice")) ? true : undefined),
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="save-feedback"][data-scope="agent.prompt.scout"]') !== null`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
     "the prompt save notice",
     15_000,
   );
@@ -1719,7 +1736,14 @@ try {
   await setInput(devtools, "agent-prompt-editor", "design saved\n");
   await click(devtools, "agent-prompt-save");
   await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-notice")) ? true : undefined),
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="save-feedback"][data-scope="agent.prompt.design"]') !== null`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
     "the Design System save notice",
     15_000,
   );

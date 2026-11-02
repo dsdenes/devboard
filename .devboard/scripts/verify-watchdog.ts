@@ -7,14 +7,24 @@
  * newest-cycle summary, the cycle history, the filed-issue table with GitHub
  * state and shipped version, the 60-second background refresh, a failed read
  * that keeps the rows, a later release that fills a blank version, freshness
- * without a reload, and the unchanged footer indicator and popover.
+ * without a reload, and the unchanged footer indicator and popover. Before the
+ * browser starts it proves the record-based deduplication contract: a filed
+ * record reaches the report and ledger without the coordinator filing, a
+ * duplicate record files and comments on nothing, an unrecorded candidate
+ * stays pending, and a recurrence still comments.
  */
 
 import { spawn } from "node:child_process";
 import { chmodSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { saveLedger, type Ledger } from "../watchdog/ledger";
+import type { EvidenceEvent } from "../watchdog/collect";
+import { runCycle, type CycleOptions } from "../watchdog/coordinator";
+import type { Dedup, DedupRequest, DedupRecord } from "../watchdog/dedup";
+import type { WatchdogDelivery } from "../watchdog/delivery";
+import type { Instance } from "../watchdog/discovery";
+import { findingFingerprint } from "../watchdog/findings";
+import { loadLedger, saveLedger, type Ledger } from "../watchdog/ledger";
 import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
 
 const MAX_ISSUES = 10;
@@ -329,6 +339,263 @@ function ledgerFixture(entries: EntryFixture[], pending: string[]): Ledger {
   };
 }
 
+interface DeliveryCalls {
+  creates: string[];
+  comments: string[];
+}
+
+/**
+ * A delivery the cycle can never call for a new issue: the dedup peer files
+ * through its MCP tools now, so `create` is recorded only to prove the
+ * coordinator stayed out of it. Comments still go through here because a
+ * recurrence is the cycle's own action.
+ */
+function deliveryStub(calls: DeliveryCalls): WatchdogDelivery {
+  return {
+    repository: "acme/fixture",
+    async create(input) {
+      calls.creates.push(input.line);
+      return { ok: true, url: "https://github.com/acme/fixture/issues/1" };
+    },
+    async comment(url) {
+      calls.comments.push(url);
+      return { ok: true };
+    },
+    async state() {
+      return "open";
+    },
+  };
+}
+
+/**
+ * A deterministic dedup peer: it appends the records its MCP write tools would
+ * append to the run directory the coordinator hands it. `fingerprint: "*"`
+ * expands to every candidate in the request.
+ */
+function recordStub(
+  records: DedupRecord[],
+  reads = 0,
+): { dedup: Dedup; calls: DedupRequest[] } {
+  const calls: DedupRequest[] = [];
+  const dedup: Dedup = async (request, runDir) => {
+    calls.push(request);
+    const expanded = records.flatMap((record) =>
+      record.fingerprint === "*"
+        ? request.candidates.map((candidate) => ({
+            ...record,
+            fingerprint: candidate.fingerprint,
+          }))
+        : [record],
+    );
+    await mkdir(runDir, { recursive: true });
+    if (expanded.length > 0) {
+      await writeFile(
+        join(runDir, "dedup-records.jsonl"),
+        `${expanded.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      );
+    }
+    await writeFile(join(runDir, "dedup-reads.jsonl"), `${JSON.stringify({ count: reads })}\n`);
+    return "";
+  };
+  return { dedup, calls };
+}
+
+const DEDUP_NOW = new Date("2026-10-24T12:00:00.000Z");
+const DEDUP_LINE = "Synthetic error: the dedup contract check";
+const DEDUP_ISSUE = "https://github.com/acme/fixture/issues/501";
+
+/**
+ * The record-based dedup contract, without a model: the peer files and records
+ * through its own tools, and the cycle reads only those records. Proves a
+ * unique candidate is filed through its record and reaches the report and the
+ * ledger without the coordinator calling delivery, a duplicate is recorded
+ * silently, an unrecorded candidate stays pending, and a recurrence still
+ * comments.
+ */
+async function verifyDedupContract(root: string): Promise<void> {
+  const cycleRoot = join(root, "dedup-cycle");
+  const harness = join(cycleRoot, ".devboard");
+  await mkdir(join(harness, ".tmp", "journal"), { recursive: true });
+  const instance: Instance = {
+    pid: 4999,
+    port: 9393,
+    repoDir: cycleRoot,
+    host: "127.0.0.1",
+    harness,
+    stateDir: join(harness, ".tmp"),
+    journal: join(harness, ".tmp", "journal", "fixture.jsonl"),
+    instrumented: true,
+  };
+  const fingerprint = findingFingerprint("server-error", DEDUP_LINE);
+  const event = (now: Date): EvidenceEvent => ({
+    source: instance.journal,
+    kind: "server-error",
+    ts: new Date(now.getTime() - 60_000).toISOString(),
+    text: DEDUP_LINE,
+    instance,
+  });
+  const cycleFor = (
+    name: string,
+    now: Date,
+    dedup: Dedup,
+    delivery: WatchdogDelivery,
+  ): CycleOptions => ({
+    root: cycleRoot,
+    now,
+    stateDir: join(harness, ".tmp", "watchdog", name),
+    settings: { intervalMinutes: 10, maxPerHour: null, maxPending: null },
+    deps: {
+      discover: () => [instance],
+      collect: () => ({ events: [event(now)], malformed: 0, unattributed: 0 }),
+      gh: () => ({ code: 0, stdout: "", stderr: "" }),
+      dedup,
+      delivery,
+    },
+  });
+  const record = (fields: Partial<DedupRecord>): DedupRecord => ({
+    fingerprint,
+    action: "filed",
+    ...fields,
+  });
+
+  // 1. A filed record becomes the report's issue and the ledger's filing; the
+  //    coordinator never creates an issue itself.
+  const filedCalls: DeliveryCalls = { creates: [], comments: [] };
+  const filed = recordStub(
+    [record({ url: DEDUP_ISSUE, number: 501, title: "[watchdog] server-error" })],
+    2,
+  );
+  const filedCycle = await runCycle(
+    cycleFor("filed", DEDUP_NOW, filed.dedup, deliveryStub(filedCalls)),
+  );
+  assertTrue(
+    filed.calls.length === 1 && filed.calls[0]?.candidates.length === 1,
+    "verify:watchdog: dedup sent no single request over the candidate set",
+  );
+  assertTrue(
+    filed.calls[0]?.candidates[0]?.fingerprint === fingerprint,
+    "verify:watchdog: dedup request carries the wrong candidate",
+  );
+  assertTrue(
+    filedCycle.report.issues.length === 1 &&
+      filedCycle.report.issues[0]?.url === DEDUP_ISSUE &&
+      filedCycle.report.issues[0]?.fingerprint === fingerprint,
+    `verify:watchdog: a filed record did not reach report.issues: ${JSON.stringify(filedCycle.report.issues)}`,
+  );
+  assertTrue(
+    filedCycle.report.action === "filed",
+    `verify:watchdog: a filed record reports action ${filedCycle.report.action}`,
+  );
+  assertTrue(
+    filedCycle.report.deduplication.openIssuesRead === 2,
+    `verify:watchdog: the dedup read count is ${filedCycle.report.deduplication.openIssuesRead}`,
+  );
+  const filedLedger = loadLedger(join(harness, ".tmp", "watchdog", "filed"));
+  assertTrue(
+    filedLedger.findings[fingerprint]?.disposition === `filed:${DEDUP_ISSUE}` &&
+      filedLedger.pendingFiling.length === 0,
+    `verify:watchdog: a filed record left the ledger as ${JSON.stringify(filedLedger.findings[fingerprint])}`,
+  );
+  assertTrue(
+    filedCalls.creates.length === 0 && filedCalls.comments.length === 0,
+    `verify:watchdog: the coordinator filed through delivery: ${JSON.stringify(filedCalls)}`,
+  );
+  console.log("PASS dedup-record-filed");
+
+  // 2. A duplicate record files and comments on nothing.
+  const duplicateCalls: DeliveryCalls = { creates: [], comments: [] };
+  const duplicate = recordStub([record({ action: "duplicate", issue: DEDUP_ISSUE })], 1);
+  const duplicateCycle = await runCycle(
+    cycleFor("duplicate", DEDUP_NOW, duplicate.dedup, deliveryStub(duplicateCalls)),
+  );
+  assertTrue(
+    duplicateCycle.report.issues.length === 0 &&
+      duplicateCalls.creates.length === 0 &&
+      duplicateCalls.comments.length === 0,
+    `verify:watchdog: a duplicate record filed or commented: ${JSON.stringify(duplicateCalls)}`,
+  );
+  const duplicateDecision = duplicateCycle.report.deduplication.decisions[0];
+  assertTrue(
+    duplicateDecision?.decision === "duplicate" && duplicateDecision.issue === DEDUP_ISSUE,
+    `verify:watchdog: a duplicate record is not in the report: ${JSON.stringify(duplicateDecision)}`,
+  );
+  const duplicateLedger = loadLedger(join(harness, ".tmp", "watchdog", "duplicate"));
+  assertTrue(
+    duplicateLedger.findings[fingerprint]?.disposition === `duplicate:${DEDUP_ISSUE}` &&
+      duplicateLedger.findings[fingerprint]?.url === undefined &&
+      duplicateLedger.pendingFiling.length === 0,
+    `verify:watchdog: a duplicate record left the ledger as ${JSON.stringify(duplicateLedger.findings[fingerprint])}`,
+  );
+  console.log("PASS dedup-record-duplicate");
+
+  // 3. A candidate the peer recorded nothing about stays pending, files
+  //    nothing, and is reported as undecided.
+  const missingCalls: DeliveryCalls = { creates: [], comments: [] };
+  const missing = recordStub([], 1);
+  const missingCycle = await runCycle(
+    cycleFor("missing", DEDUP_NOW, missing.dedup, deliveryStub(missingCalls)),
+  );
+  assertTrue(
+    missingCycle.report.issues.length === 0 && missingCalls.creates.length === 0,
+    `verify:watchdog: an unrecorded candidate filed an issue: ${JSON.stringify(missingCalls)}`,
+  );
+  const missingLedger = loadLedger(join(harness, ".tmp", "watchdog", "missing"));
+  assertTrue(
+    missingLedger.pendingFiling.includes(fingerprint) &&
+      missingLedger.findings[fingerprint]?.disposition === "none",
+    `verify:watchdog: an unrecorded candidate is not pending: ${JSON.stringify(missingLedger)}`,
+  );
+  assertTrue(
+    missingCycle.report.deduplication.decisions[0]?.decision === "failed",
+    `verify:watchdog: an unrecorded candidate is not reported undecided: ${JSON.stringify(missingCycle.report.deduplication.decisions)}`,
+  );
+  console.log("PASS dedup-record-missing");
+
+  // 4. A recurrence keeps commenting on the filed issue without re-filing and
+  //    without asking the dedup peer again.
+  const recurrenceState = join(harness, ".tmp", "watchdog", "recurrence");
+  const filedAt = new Date(DEDUP_NOW.getTime() - 25 * 60 * 60_000).toISOString();
+  saveLedger(recurrenceState, {
+    version: 2,
+    findings: {
+      [fingerprint]: {
+        category: "server-error",
+        line: DEDUP_LINE,
+        firstSeen: filedAt,
+        lastSeen: filedAt,
+        count: 1,
+        disposition: `filed:${DEDUP_ISSUE}`,
+        url: DEDUP_ISSUE,
+        filedAt,
+        instances: [],
+      },
+    },
+    pendingFiling: [],
+  });
+  const recurrenceCalls: DeliveryCalls = { creates: [], comments: [] };
+  const recurrence = recordStub([], 0);
+  const recurrenceCycle = await runCycle(
+    cycleFor("recurrence", DEDUP_NOW, recurrence.dedup, deliveryStub(recurrenceCalls)),
+  );
+  assertTrue(
+    recurrence.calls.length === 0,
+    "verify:watchdog: a filed recurrence asked the dedup peer again",
+  );
+  assertTrue(
+    recurrenceCycle.report.action === "commented" &&
+      recurrenceCalls.comments.length === 1 &&
+      recurrenceCalls.comments[0] === DEDUP_ISSUE &&
+      recurrenceCalls.creates.length === 0,
+    `verify:watchdog: a recurrence did not comment: ${JSON.stringify(recurrenceCycle.report.action)} ${JSON.stringify(recurrenceCalls)}`,
+  );
+  assertTrue(
+    loadLedger(recurrenceState).findings[fingerprint]?.lastCommentAt === DEDUP_NOW.toISOString(),
+    "verify:watchdog: a recurrence comment was not recorded in the ledger",
+  );
+  console.log("PASS dedup-recurrence-comment");
+  console.log("PASS dedup-contract");
+}
+
 const GH_STUB = `#!/bin/sh
 set -u
 fixtures="$(cd "$(dirname "$0")/.." && pwd)/gh"
@@ -380,6 +647,7 @@ try {
 
   const host = await makeHost(root, "host");
   run("git", ["-C", host.directory, "remote", "add", "origin", "https://github.com/acme/fixture.git"]);
+  await verifyDedupContract(root);
   const stateDir = join(root, "state");
   const watchdogDir = join(host.directory, ".devboard", ".tmp", "watchdog");
   await mkdir(watchdogDir, { recursive: true });

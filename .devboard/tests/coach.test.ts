@@ -31,23 +31,15 @@ import {
   TRIVIAL_COMMANDS,
   type CoachFamily,
 } from "../coach/families";
+import { familyTag } from "../coach/issue";
 import {
-  familyTag,
-  issueBody,
-  issueTitle,
-  ISSUE_BODY_MAX_BYTES,
-  ISSUE_TITLE_MAX_BYTES,
-  proposedToolName,
-} from "../coach/issue";
-import {
-  parseSynthesisAnswer,
   synthesisPrompt,
   SYNTHESIS_PROMPT_MAX_BYTES,
   synthesizeFamily,
-  type Proposal,
+  type SynthesisPaths,
   type Synthesize,
 } from "../coach/synthesize";
-import { allowlistEntryFor, validateProposal } from "../coach/validate";
+import { readToolLog } from "../lib/tool-log";
 import type { AgentSession, SessionToolCall, SessionToolResult } from "../lib/agent-sessions";
 import type { CoachCollection, CoachJournalRecord } from "../coach/collect";
 import type { CoachDelivery, DeliveryResult } from "../coach/delivery";
@@ -203,47 +195,79 @@ function memoryDelivery(
   };
 }
 
-function toolProposal(
-  family: CoachFamily,
-  index = 1,
-  overrides: Partial<Proposal> = {},
-): Proposal {
-  const base: Proposal = {
-    family: family.key,
-    action: "tool",
-    tool: {
-      name: `coach_tool_${index}`,
-      title: `Coach tool ${index}`,
-      description: "Removes the recurring command with one named capability.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {},
-      },
-      covers: [family.key],
-    },
-    rationale: "The family recurs; one named tool removes the repeated manual command.",
-    acceptance: ["- [ ] The command runs through the named tool."],
-  };
-  const merged = { ...base, ...overrides } as Proposal;
-  if (base.tool !== undefined) merged.tool = overrides.tool ?? base.tool;
-  return merged;
+interface SynthesisCall {
+  key: string;
+  prompt: string;
+  paths: SynthesisPaths;
 }
 
-function synthesisFor(
-  proposals: Map<string, Proposal> | ((family: CoachFamily) => Proposal),
-  calls: Array<{ key: string; prompt: string }> = [],
+type Decision =
+  | { action: "file"; title?: string; number?: number; url?: string }
+  | { action: "skip"; reason?: string }
+  | { action: "fail"; reason: string };
+
+/**
+ * A peer replacement that performs the same MCP writes a real turn would: one
+ * `issue_create` record in the tool log, or one `coach_proposal_skip` record in
+ * the skip log. Nothing reads an answer document.
+ */
+function stubSynthesis(
+  decide: (family: CoachFamily, prompt: string) => Decision,
+  calls: SynthesisCall[] = [],
 ): Synthesize {
-  let index = 0;
-  return async (family, prompt) => {
-    calls.push({ key: family.key, prompt });
-    index += 1;
-    const proposal =
-      typeof proposals === "function"
-        ? proposals(family)
-        : (proposals.get(family.key) ?? toolProposal(family, index));
-    return { ok: true, text: JSON.stringify(proposal), model: "stub", durationMs: 1 };
+  return async (family, prompt, paths) => {
+    calls.push({ key: family.key, prompt, paths });
+    const decision = decide(family, prompt);
+    if (decision.action === "fail") {
+      return { ok: false, model: "stub", durationMs: 1, reason: decision.reason };
+    }
+    if (decision.action === "skip") {
+      await writeFile(
+        paths.skipLogPath,
+        `${JSON.stringify({
+          tool: "coach_proposal_skip",
+          at: NOW.toISOString(),
+          ok: true,
+          value: {
+            family: family.key,
+            status: "skipped",
+            reason: decision.reason ?? "the family needs no proposal",
+          },
+        })}\n`,
+      );
+      return { ok: true, model: "stub", durationMs: 1, text: "" };
+    }
+    const number = decision.number ?? 1;
+    const title = decision.title ?? `[coach] ${family.key}`;
+    const url = decision.url ?? `https://forge.test/acme/fixture/issues/${number}`;
+    await writeFile(
+      paths.toolLogPath,
+      `${JSON.stringify({
+        tool: "issue_create",
+        at: NOW.toISOString(),
+        ok: true,
+        value: { number, url, title, labels: [] },
+      })}\n`,
+    );
+    return { ok: true, model: "stub", durationMs: 1, text: "" };
   };
+}
+
+function filingRoomOf(prompt: string): number {
+  const match = /"filingRoom": (\d+)/.exec(prompt);
+  if (match === null) throw new Error("the prompt carries no filingRoom");
+  return Number(match[1]);
+}
+
+/** Files only when the prompt grants filing room, as the peer rules instruct. */
+function fileWhileRoom(calls: SynthesisCall[] = []): Synthesize {
+  return stubSynthesis((_family, prompt) => {
+    const room = filingRoomOf(prompt);
+    if (room <= 0) {
+      return { action: "skip", reason: "the cycle's filing room is zero" };
+    }
+    return { action: "file" };
+  }, calls);
 }
 
 function threeFamilies(): AgentSession[] {
@@ -739,7 +763,7 @@ describe("Coach synthesis contract and prompt", () => {
     }),
   ])[0]!;
 
-  test("the prompt carries the evidence, catalog, issues, allowlist and stays bounded", () => {
+  test("the prompt opens with the manifesto and states the allowlist, caps, tag, body and tool rules", () => {
     const openIssues: CoachOpenIssue[] = [
       {
         number: 7,
@@ -748,14 +772,48 @@ describe("Coach synthesis contract and prompt", () => {
         url: "https://forge.test/acme/fixture/issues/7",
       },
     ];
-    const settings = { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun "] };
-    const prompt = synthesisPrompt({ family, settings, openIssues });
+    const settings = {
+      ...DEFAULT_COACH_SETTINGS,
+      allowlist: ["bun "],
+      maxIssuesPerCycle: 3,
+      maxPerHour: 4,
+    };
+    const prompt = synthesisPrompt({ family, settings, openIssues, filingRoom: 1 });
+    expect(prompt.startsWith("## Manifesto")).toBe(true);
     expect(prompt).toContain(family.key);
     expect(prompt).toContain("bun run verify:mcp");
     expect(prompt).toContain("https://forge.test/acme/fixture/issues/7");
+    expect(prompt).toContain("Command allowlist:");
     expect(prompt).toContain('"bun "');
-    expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(24 * 1024);
-    expect(synthesisPrompt({ family, settings, openIssues })).toBe(prompt);
+    expect(prompt).toContain('"maxIssuesPerCycle": 3');
+    expect(prompt).toContain('"maxPerHour": 4');
+    expect(prompt).toContain('"filingRoom": 1');
+    expect(prompt).toContain("Limits:");
+    expect(prompt).toContain(`family:${familyTag(family.key)}`);
+    for (const section of [
+      "## Family",
+      "## Evidence",
+      "## Proposed tool",
+      "## Acceptance",
+      "## Rationale",
+    ]) {
+      expect(prompt).toContain(section);
+    }
+    expect(prompt).toContain("issue_create");
+    expect(prompt).toContain("coach_proposal_skip");
+    expect(prompt).toContain("covers");
+    expect(prompt).toContain("no labels");
+    expect(prompt).not.toContain("pendingFiling");
+    expect(prompt).not.toContain("pending queue");
+    expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(SYNTHESIS_PROMPT_MAX_BYTES);
+    expect(synthesisPrompt({ family, settings, openIssues, filingRoom: 1 })).toBe(prompt);
+  });
+
+  test("filingRoom is the cycle cap's remaining allowance for this family", () => {
+    const settings = { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 2, maxPerHour: 10 };
+    const room = synthesisPrompt({ family, settings, openIssues: [], filingRoom: 0 });
+    expect(room).toContain('"filingRoom": 0');
+    expect(room).toContain("only when `filingRoom` is greater than zero");
   });
 
   test("a prompt above the byte budget is cut to the budget", () => {
@@ -775,318 +833,153 @@ describe("Coach synthesis contract and prompt", () => {
       family: huge,
       settings: DEFAULT_COACH_SETTINGS,
       openIssues: [],
+      filingRoom: 1,
     });
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(SYNTHESIS_PROMPT_MAX_BYTES);
-  });
-
-  test("the contract rejects missing, extra, and mistyped fields", () => {
-    const valid = toolProposal(family);
-    expect(parseSynthesisAnswer(JSON.stringify(valid), family.key).action).toBe("tool");
-    expect(() =>
-      parseSynthesisAnswer(JSON.stringify({ ...valid, extra: true }), family.key),
-    ).toThrow("unknown field");
-    expect(() =>
-      parseSynthesisAnswer(JSON.stringify({ ...valid, family: "another" }), family.key),
-    ).toThrow("instead of");
-    expect(() =>
-      parseSynthesisAnswer(JSON.stringify({ ...valid, acceptance: [] }), family.key),
-    ).toThrow("acceptance");
-    expect(() =>
-      parseSynthesisAnswer(JSON.stringify({ ...valid, action: "none" }), family.key),
-    ).toThrow("must not carry a tool");
-    expect(() => parseSynthesisAnswer("```json\n{}\n```", family.key)).toThrow("no JSON object");
-  });
-});
-
-describe("Coach validator", () => {
-  const family = familiesOf([
-    sessionOf({
-      id: "a",
-      startedAt: instant(60),
-      calls: [{ command: "bun run publish", isError: true, text: "ERROR: boom" }],
-    }),
-  ])[0]!;
-  const settings = { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun "] };
-  const openIssues: CoachOpenIssue[] = [];
-
-  const ruleOf = (proposal: Proposal, options: {
-    settings?: typeof settings;
-    openIssues?: CoachOpenIssue[];
-  } = {}): string | undefined => {
-    const result = validateProposal({
-      family,
-      proposal,
-      settings: options.settings ?? settings,
-      openIssues: options.openIssues ?? openIssues,
-    });
-    return result.ok ? undefined : result.rule;
-  };
-
-  test("accepts a closed schema with a family cover and an allowlist entry", () => {
-    const result = validateProposal({
-      family,
-      proposal: toolProposal(family),
-      settings,
-      openIssues,
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.allowlistEntry).toBe("bun ");
-      expect(result.body).toContain("## Proposed tool");
-      expect(proposedToolName(result.body)).toBe(toolProposal(family).tool!.name);
-    }
-  });
-
-  test("the duplicate rule reads the proposed tool name from an issue body, not its title", () => {
-    const existing: CoachOpenIssue[] = [
-      {
-        number: 9,
-        title: "[coach] bun run publish",
-        body: [
-          "## Proposed tool",
-          "",
-          "```json",
-          JSON.stringify({ name: "publish_docs", title: "Publish docs" }, null, 2),
-          "```",
-          "",
-        ].join("\n"),
-        url: "https://forge.test/acme/fixture/issues/9",
-      },
-    ];
-    expect(
-      ruleOf(
-        toolProposal(family, 1, {
-          tool: { ...toolProposal(family).tool!, name: "publish_docs" },
-        }),
-        { openIssues: existing },
-      ),
-    ).toBe("tool-name-duplicate");
-    expect(
-      ruleOf(
-        toolProposal(family, 1, {
-          tool: {
-            ...toolProposal(family).tool!,
-            name: "publish",
-            inputSchema: { type: "object" },
-          },
-        }),
-        { openIssues: existing },
-      ),
-    ).toBe("input-schema");
-  });
-
-  test("rejects every named rule", () => {
-    expect(ruleOf(toolProposal(family, 1, { family: "other" }))).toBe("family-mismatch");
-    expect(
-      ruleOf(
-        toolProposal(family, 1, {
-          tool: { ...toolProposal(family).tool!, name: "goal_get" },
-        }),
-      ),
-    ).toBe("tool-name-duplicate");
-    expect(
-      ruleOf(
-        toolProposal(family, 1, {
-          tool: { ...toolProposal(family).tool!, covers: ["git push"] },
-        }),
-      ),
-    ).toBe("covers-unmatched");
-    expect(
-      ruleOf(
-        toolProposal(family, 1, {
-          tool: {
-            ...toolProposal(family).tool!,
-            covers: ["bun run publish --watch"],
-          },
-        }),
-      ),
-    ).toBe("covers-unmatched");
-    const fragmentFamily: CoachFamily = {
-      ...family,
-      fragments: [{ text: "bun run publish --watch", count: 2 }],
-    };
-    const fragmentResult = validateProposal({
-      family: fragmentFamily,
-      proposal: toolProposal(fragmentFamily, 1, {
-        tool: {
-          ...toolProposal(fragmentFamily).tool!,
-          covers: ["bun run publish --watch"],
-        },
-      }),
-      settings,
-      openIssues,
-    });
-    expect(fragmentResult.ok).toBe(false);
-    if (!fragmentResult.ok) expect(fragmentResult.rule).toBe("covers-requires-family");
-    expect(
-      ruleOf(
-        toolProposal(family, 1, {
-          tool: { ...toolProposal(family).tool!, inputSchema: { type: "object", properties: {} } },
-        }),
-      ),
-    ).toBe("input-schema");
-    expect(
-      ruleOf(toolProposal(family, 1, { acceptance: ["- [ ] ok", "not a box"] })),
-    ).toBe("acceptance");
-    expect(
-      ruleOf(toolProposal(family), { settings: { ...settings, allowlist: [] } }),
-    ).toBe("allowlist-missing");
-    expect(ruleOf(toolProposal(family))).toBeUndefined();
-  });
-
-  test("covers match the family key or a fragment, with a trailing star", () => {
-    const star = toolProposal(family, 1, {
-      tool: { ...toolProposal(family).tool!, covers: ["bun run*"] },
-    });
-    expect(ruleOf(star)).toBeUndefined();
-    const fragment = toolProposal(family, 1, {
-      tool: { ...toolProposal(family).tool!, covers: ["bun run", "bun run publish"] },
-    });
-    expect(ruleOf(fragment)).toBeUndefined();
-    expect(allowlistEntryFor("bun run publish", ["git ", "bun*"])).toBe("bun*");
-  });
-
-  test("a rendered body over 64 KiB is rejected", () => {
-    const fragments = Array.from({ length: 260 }, (_unused, index) => ({
-      text: `${"x".repeat(280)}-${index}`,
-      count: 1,
-    }));
-    const huge: CoachFamily = {
-      ...family,
-      fragments,
-      excerpts: [],
-    };
-    const result = validateProposal({
-      family: huge,
-      proposal: toolProposal(huge),
-      settings: { ...settings, allowlist: ["bun"] },
-      openIssues,
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.rule).toBe("body-size");
-  });
-
-  test("a prompt proposal needs no allowlist and files the instruction", () => {
-    const proposal: Proposal = {
-      family: family.key,
-      action: "prompt",
-      prompt: { instruction: "Always run the publish helper.", target: ".devboard/prompts/x.md" },
-      rationale: "One instruction is enough.",
-      acceptance: ["- [ ] The helper runs."],
-    };
-    const result = validateProposal({ family, proposal, settings, openIssues });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.body).toContain("## Proposed prompt");
-      expect(result.body).toContain("Always run the publish helper.");
-    }
   });
 });
 
 describe("Coach cycle", () => {
-  test("one synthesis call per family, filing the exact tool definition", async () => {
+  test("one synthesis call per family, recording each filed issue from its tool log", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
     const delivery = memoryDelivery();
-    const calls: Array<{ key: string; prompt: string }> = [];
-    const proposals = new Map<string, Proposal>();
-    const families = buildFamilies({ ...collection, repoDir });
-    families.selected.forEach((family, index) => {
-      proposals.set(family.key, toolProposal(family, index + 1));
-    });
+    const calls: SynthesisCall[] = [];
     const result = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: synthesisFor(proposals, calls),
+      synthesize: stubSynthesis(() => ({ action: "file" }), calls),
       settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
+    const families = buildFamilies({ ...collection, repoDir });
     expect(result.report.action).toBe("filed");
-    expect(calls.length).toBe(families.selected.length);
-    expect(delivery.created.length).toBe(families.selected.length);
-    for (const created of delivery.created) {
-      const family = families.selected.find((entry) => created.title === issueTitle(entry, "tool"));
-      expect(family).toBeDefined();
-      const proposal = proposals.get(family!.key)!;
-      expect(created.body).toContain(JSON.stringify(proposal.tool, null, 2));
-      for (const section of [
-        "## Family",
-        "## Evidence",
-        "## Proposed tool",
-        "## Acceptance",
-        "## Rationale",
-      ]) {
-        expect(created.body.split(section).length - 1).toBe(1);
-      }
-      expect(created.body).toContain(`family:${familyTag(family!.key)}`);
-      expect(created.body).toContain(JSON.stringify("bun "));
-      expect(Buffer.byteLength(created.body, "utf8")).toBeLessThan(ISSUE_BODY_MAX_BYTES);
-    }
+    expect(calls.map((call) => call.key).sort()).toEqual(
+      families.selected.map((family) => family.key).sort(),
+    );
     expect(result.report.families).toBeGreaterThanOrEqual(3);
     expect(result.report.selected).toHaveLength(families.selected.length);
+    expect(result.report.issues).toHaveLength(families.selected.length);
+    // Filing is the peer's MCP write; the coordinator never posts through the delivery.
+    expect(delivery.created).toEqual([]);
+    for (const call of calls) {
+      expect(call.prompt.startsWith("## Manifesto")).toBe(true);
+      expect(call.prompt).toContain(`family:${familyTag(call.key)}`);
+      expect(call.prompt).toContain('"filingRoom": 1');
+      const records = readToolLog(call.paths.toolLogPath);
+      expect(records).toHaveLength(1);
+      expect(records[0]?.tool).toBe("issue_create");
+      expect(records[0]?.ok).toBe(true);
+    }
+    for (const issue of result.report.issues) {
+      expect(issue.title).toBe(`[coach] ${issue.family}`);
+      expect(issue.url).toContain("https://forge.test/");
+      expect(issue.kind).toBe("command");
+    }
     expect(result.report.validations.filter((entry) => entry.outcome === "filed")).toHaveLength(
       families.selected.length,
     );
+    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    for (const issue of result.report.issues) {
+      const entry = ledger.families[issue.family];
+      expect(entry?.lastAction).toBe("filed");
+      expect(entry?.lastIssueUrl).toBe(issue.url);
+      expect(entry?.lastTitle).toBe(issue.title);
+    }
   });
 
-  test("a second cycle files nothing for the same families", async () => {
+  test("a cycle whose families record a skip files nothing and keeps the reason", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
     const delivery = memoryDelivery();
-    const synthesize = synthesisFor(new Map());
-    const options = {
+    const calls: SynthesisCall[] = [];
+    const result = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize,
+      synthesize: stubSynthesis(() => ({
+        action: "skip",
+        reason: "the recurrence is expected and needs no change",
+      }), calls),
       settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
-    };
-    const first = await runCycle(options);
-    expect(first.report.action).toBe("filed");
-    const created = delivery.created.length;
-    const second = await runCycle(options);
-    expect(second.report.action).not.toBe("failed");
-    expect(delivery.created.length).toBe(created);
-    expect(second.report.duplicates.length).toBeGreaterThan(0);
+    });
+    expect(result.report.action).toBe("none");
+    expect(result.report.issues).toEqual([]);
+    expect(delivery.created).toEqual([]);
+    expect(result.report.validations).toHaveLength(calls.length);
+    for (const entry of result.report.validations) {
+      expect(entry.outcome).toBe("skipped");
+      expect(entry.rule).toBe("tool");
+      expect(entry.reason).toBe("the recurrence is expected and needs no change");
+    }
+    for (const call of calls) {
+      const records = readToolLog(call.paths.skipLogPath);
+      expect(records).toHaveLength(1);
+      expect(records[0]?.tool).toBe("coach_proposal_skip");
+      expect(records[0]?.ok).toBe(true);
+    }
+    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    expect(Object.values(ledger.families).every((entry) => entry.lastAction === "none")).toBe(true);
   });
 
   test("duplicate detection reads the title and the body family tag", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
     const families = buildFamilies({ ...collection, repoDir });
-    const family = families.selected[0]!;
+    const first = families.selected[0]!;
+    const second = families.selected[1]!;
     const delivery = memoryDelivery([
       {
         number: 1,
-        title: issueTitle(family, "tool"),
+        title: `[coach] ${first.key}`,
         body: "unrelated",
         url: "https://forge.test/acme/fixture/issues/1",
       },
       {
         number: 2,
         title: "Unrelated title",
-        body: `evidence family:${familyTag(family.key)}`,
+        body: `evidence family:${familyTag(second.key)}`,
         url: "https://forge.test/acme/fixture/issues/2",
       },
+      {
+        number: 3,
+        title: "Fix the login page",
+        body: "unrelated to any coach family",
+        url: "https://forge.test/acme/fixture/issues/3",
+      },
     ]);
+    const calls: SynthesisCall[] = [];
     const result = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: synthesisFor((entry) => toolProposal(entry, 1)),
+      synthesize: stubSynthesis(() => ({ action: "file" }), calls),
       settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
-    expect(result.report.duplicates.length).toBeGreaterThan(0);
-    expect(delivery.created.some((entry) => entry.title === issueTitle(family, "tool"))).toBe(false);
+    expect(result.report.action).toBe("filed");
+    for (const call of calls) {
+      // Only the two Coach-relevant open issues reach the prompt.
+      expect(call.prompt).toContain("https://forge.test/acme/fixture/issues/1");
+      expect(call.prompt).toContain("https://forge.test/acme/fixture/issues/2");
+      expect(call.prompt).not.toContain("https://forge.test/acme/fixture/issues/3");
+    }
+    expect(result.report.duplicates.map((entry) => entry.family).sort()).toEqual(
+      [first.key, second.key].sort(),
+    );
+    expect(result.report.issues.map((entry) => entry.family)).not.toContain(first.key);
+    expect(result.report.issues.map((entry) => entry.family)).not.toContain(second.key);
+    expect(
+      result.report.validations.filter((entry) => entry.outcome === "duplicate"),
+    ).toHaveLength(2);
   });
 
-  test("two families proposing one tool name file it once and record the duplicate", async () => {
+  test("two families recording one title file it once and record the duplicate", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
     const selected = buildFamilies({ ...collection, repoDir }).selected;
@@ -1097,45 +990,15 @@ describe("Coach cycle", () => {
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: synthesisFor((entry) => toolProposal(entry, 1)),
+      synthesize: stubSynthesis(() => ({ action: "file", title: "[coach] shared tool" })),
       settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
-    expect(delivery.created).toHaveLength(1);
-    expect(delivery.created[0]?.body).toContain('"name": "coach_tool_1"');
+    expect(result.report.issues).toHaveLength(1);
+    expect(result.report.issues[0]?.title).toBe("[coach] shared tool");
     expect(
-      result.report.validations.filter((entry) => entry.rule === "tool-name-duplicate"),
+      result.report.validations.filter((entry) => entry.outcome === "duplicate"),
     ).toHaveLength(selected.length - 1);
     expect(result.report.validations.filter((entry) => entry.outcome === "filed")).toHaveLength(1);
-  });
-
-  test("none is recorded with its rationale and files nothing", async () => {
-    const { repoDir, stateDir } = await workspace();
-    const collection = collectionOf(threeFamilies());
-    const delivery = memoryDelivery();
-    const result = await runCycle({
-      root: repoDir,
-      stateDir,
-      now: NOW,
-      collect: () => collection,
-      delivery,
-      synthesize: async (family) => ({
-        ok: true,
-        model: "stub",
-        durationMs: 2,
-        text: JSON.stringify({
-          family: family.key,
-          action: "none",
-          rationale: "The recurrence is expected and needs no change.",
-          acceptance: ["- [ ] Nothing changes."],
-        }),
-      }),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
-    });
-    expect(result.report.action).toBe("none");
-    expect(delivery.created).toEqual([]);
-    expect(result.report.validations.every((entry) => entry.outcome === "none")).toBe(true);
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
-    expect(Object.values(ledger.families).every((entry) => entry.lastAction === "none")).toBe(true);
   });
 
   test("a failed synthesis call files nothing and leaves the ledger consistent", async () => {
@@ -1162,7 +1025,7 @@ describe("Coach cycle", () => {
     expect(ledger.pendingFiling).toEqual([]);
   });
 
-  test("a peer proposal that quotes HTTP 401 is not a credential rejection", async () => {
+  test("a peer turn that quotes HTTP 401 is not a credential rejection", async () => {
     const { root, repoDir, stateDir } = await workspace();
     const now = NOW.toISOString();
     saveSubscriptions(stateDir, [
@@ -1177,12 +1040,8 @@ describe("Coach cycle", () => {
       },
     ]);
     const family = familiesOf(threeFamilies())[0]!;
-    const answer: Proposal = {
-      family: family.key,
-      action: "none",
-      rationale: "The command exits 7 whenever the API answers HTTP 401; no change is needed.",
-      acceptance: ["- [ ] Nothing changes."],
-    };
+    const answer =
+      "The command exits 7 whenever the API answers HTTP 401; no change is needed.";
     const script = join(root, "stub-acp.ts");
     await writeFile(
       script,
@@ -1234,7 +1093,7 @@ for await (const chunk of Bun.stdin.stream()) {
     });
     expect(result.ok).toBe(true);
     expect(result.text).toBe(JSON.stringify(answer));
-    expect(parseSynthesisAnswer(result.text!, family.key).action).toBe("none");
+    expect(result.text).toContain("HTTP 401");
   });
 
   test("a peer credential error rotates to the next subscription", async () => {
@@ -1312,47 +1171,35 @@ for await (const chunk of Bun.stdin.stream()) {
     expect(result.text).toContain('"family":"probe"');
   });
 
-  test("one failed synthesis call does not discard the proposals that parsed", async () => {
+  test("one failed synthesis call does not discard the tool records that filed", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
     const families = buildFamilies({ ...collection, repoDir });
     const failed = families.selected[0]!;
     const delivery = memoryDelivery();
-    let tool = 1;
     const result = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: async (family) => {
-        if (family.key === failed.key) {
-          return {
-            ok: false,
-            model: "stub",
-            durationMs: 1,
-            reason: "the synthesizer peer timed out after 5000ms",
-          };
-        }
-        tool += 1;
-        return {
-          ok: true,
-          model: "stub",
-          durationMs: 1,
-          text: JSON.stringify(toolProposal(family, tool)),
-        };
-      },
+      synthesize: stubSynthesis((family) =>
+        family.key === failed.key
+          ? { action: "fail", reason: "the synthesizer peer timed out after 5000ms" }
+          : { action: "file" },
+      ),
       settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
-    expect(delivery.created).toHaveLength(families.selected.length - 1);
-    expect(delivery.created.some((entry) => entry.title === issueTitle(failed, "tool"))).toBe(false);
+    expect(result.report.issues).toHaveLength(families.selected.length - 1);
+    expect(result.report.issues.some((entry) => entry.family === failed.key)).toBe(false);
     expect(result.report.synthesis.filter((entry) => !entry.ok)).toHaveLength(1);
     const ledger = loadLedger(coachDirectory(stateDir)).ledger;
     expect(ledger.families[failed.key]?.lastAction).toBe("failed");
+    expect(ledger.families[failed.key]?.lastIssueUrl).toBeUndefined();
   });
 
-  test("the per-cycle cap holds the excess pending and files it next cycle", async () => {
+  test("maxIssuesPerCycle grants filing room to only that many families", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
     const delivery = memoryDelivery();
@@ -1361,49 +1208,26 @@ for await (const chunk of Bun.stdin.stream()) {
       maxIssuesPerCycle: 1,
       allowlist: ["bun "],
     };
-    const calls: string[] = [];
-    const synthesize: Synthesize = async (family) => {
-      calls.push(family.key);
-      return {
-        ok: true,
-        model: "stub",
-        durationMs: 1,
-        text: JSON.stringify(toolProposal(family, calls.length)),
-      };
-    };
+    const calls: SynthesisCall[] = [];
     const first = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize,
+      synthesize: fileWhileRoom(calls),
       settings,
     });
     expect(first.report.action).toBe("filed");
-    expect(delivery.created).toHaveLength(1);
+    expect(first.report.issues).toHaveLength(1);
+    expect(calls.map((call) => filingRoomOf(call.prompt)).sort()).toEqual([0, 0, 1]);
+    expect(calls.filter((call) => filingRoomOf(call.prompt) > 0)).toHaveLength(1);
     const ledger = loadLedger(coachDirectory(stateDir)).ledger;
-    expect(ledger.pendingFiling).toHaveLength(2);
-    expect(first.report.pending).toBe(2);
-
-    const queued = new Set(ledger.pendingFiling.map((entry) => entry.family));
-    const before = calls.length;
-    const second = await runCycle({
-      root: repoDir,
-      stateDir,
-      now: new Date(NOW.getTime() + 30 * 60_000),
-      collect: () => collection,
-      delivery,
-      synthesize,
-      settings,
-    });
-    expect(delivery.created.length).toBe(2);
-    expect(second.report.pending).toBe(1);
-    expect(calls.length - before).toBeLessThan(3);
-    expect(queued.size).toBe(2);
+    expect(ledger.pendingFiling).toEqual([]);
+    expect(first.report.pending).toBe(0);
   });
 
-  test("the rolling-hour cap stops filings until the hour passes", async () => {
+  test("the rolling-hour cap empties every family's filing room until the hour passes", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
     const delivery = memoryDelivery();
@@ -1413,85 +1237,86 @@ for await (const chunk of Bun.stdin.stream()) {
       maxIssuesPerCycle: 3,
       allowlist: ["bun "],
     };
+    const firstCalls: SynthesisCall[] = [];
     const first = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: synthesisFor(new Map()),
+      synthesize: fileWhileRoom(firstCalls),
       settings,
     });
     expect(first.report.action).toBe("filed");
-    expect(delivery.created).toHaveLength(1);
+    expect(first.report.issues).toHaveLength(1);
+    expect(firstCalls.map((call) => filingRoomOf(call.prompt)).sort()).toEqual([0, 0, 1]);
+
+    const secondCalls: SynthesisCall[] = [];
     const second = await runCycle({
       root: repoDir,
       stateDir,
       now: new Date(NOW.getTime() + 30 * 60_000),
       collect: () => collection,
       delivery,
-      synthesize: synthesisFor(new Map()),
+      synthesize: fileWhileRoom(secondCalls),
       settings,
     });
-    expect(delivery.created).toHaveLength(1);
-    expect(second.report.action).toBe("capped");
+    expect(second.report.action).toBe("none");
+    expect(second.report.issues).toEqual([]);
+    expect(secondCalls.every((call) => filingRoomOf(call.prompt) === 0)).toBe(true);
+
+    const thirdCalls: SynthesisCall[] = [];
     const third = await runCycle({
       root: repoDir,
       stateDir,
       now: new Date(NOW.getTime() + 61 * 60_000),
       collect: () => collection,
       delivery,
-      synthesize: synthesisFor(new Map()),
+      synthesize: fileWhileRoom(thirdCalls),
       settings,
     });
-    expect(delivery.created).toHaveLength(2);
     expect(third.report.action).not.toBe("failed");
+    expect(third.report.issues).toHaveLength(1);
+    expect(thirdCalls.filter((call) => filingRoomOf(call.prompt) > 0)).toHaveLength(1);
   });
 
-  test("a pending entry older than seven days or absent from the window is dropped", async () => {
+  test("a pending queue written by an older revision is dropped and recorded", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
-    const settings = {
-      ...DEFAULT_COACH_SETTINGS,
-      maxIssuesPerCycle: 1,
-      allowlist: ["bun "],
-    };
-    await runCycle({
+    const delivery = memoryDelivery();
+    const now = new Date().toISOString();
+    saveLedger(coachDirectory(stateDir), {
+      version: 3,
+      families: {},
+      pendingFiling: [
+        {
+          family: "bun run publish",
+          kind: "command",
+          title: "[coach] bun run publish",
+          body: "## Family\n\nstored bytes\n",
+          score: 6,
+          createdAt: now,
+        },
+      ],
+    });
+    const result = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       collect: () => collection,
-      delivery: memoryDelivery(),
-      synthesize: synthesisFor(new Map()),
-      settings,
+      delivery,
+      synthesize: stubSynthesis(() => ({ action: "skip", reason: "already covered" })),
+      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
-    expect(ledger.pendingFiling.length).toBeGreaterThan(0);
-    const later = new Date(NOW.getTime() + 8 * 24 * 60 * 60_000);
-    const laterCollection = collectionOf(
-      threeFamilies().map((session) => ({
-        ...session,
-        startedAt: new Date(Date.parse(session.startedAt) + 8 * 24 * 60 * 60_000).toISOString(),
-        calls: session.calls.map((call) => ({
-          ...call,
-          timestamp: new Date(Date.parse(call.timestamp!) + 8 * 24 * 60 * 60_000).toISOString(),
-        })),
-      })),
-    );
-    const result = await runCycle({
-      root: repoDir,
-      stateDir,
-      now: later,
-      collect: () => laterCollection,
-      delivery: memoryDelivery(),
-      synthesize: synthesisFor(new Map()),
-      settings: { ...settings, maxIssuesPerCycle: 20 },
-    });
-    expect(result.report.dropped).toBeGreaterThan(0);
+    expect(result.report.dropped).toBe(1);
     expect(result.report.pending).toBe(0);
-    expect(
-      result.report.validations.some((entry) => entry.outcome === "dropped"),
-    ).toBe(true);
+    expect(result.report.issues).toEqual([]);
+    expect(delivery.created).toEqual([]);
+    const dropped = result.report.validations.filter((entry) => entry.outcome === "dropped");
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]?.rule).toBe("pending-queue-removed");
+    expect(dropped[0]?.family).toBe("bun run publish");
+    expect(loadLedger(coachDirectory(stateDir)).ledger.pendingFiling).toEqual([]);
   });
 
   test("a version-2 ledger is discarded and the report says so", async () => {
@@ -1527,11 +1352,12 @@ for await (const chunk of Bun.stdin.stream()) {
       environment: legacyEnvironment,
       collect: () => collectionOf(threeFamilies()),
       delivery,
-      synthesize: synthesisFor(new Map()),
+      synthesize: stubSynthesis(() => ({ action: "file" })),
       settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
-    expect(delivery.created.length).toBeGreaterThan(0);
+    expect(result.report.issues.length).toBeGreaterThan(0);
+    expect(delivery.created).toEqual([]);
   });
 
   test("the report and status carry the family shapes", async () => {
@@ -1543,7 +1369,7 @@ for await (const chunk of Bun.stdin.stream()) {
       now: NOW,
       collect: () => collectionOf(threeFamilies()),
       delivery,
-      synthesize: synthesisFor(new Map()),
+      synthesize: stubSynthesis(() => ({ action: "file" })),
       settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     const report: CoachReport = result.report;
@@ -1562,9 +1388,7 @@ for await (const chunk of Bun.stdin.stream()) {
       report.selected.map((entry) => entry.key),
     );
     for (const entry of report.validations) {
-      expect(["filed", "pending", "none", "duplicate", "invalid", "dropped", "failed"]).toContain(
-        entry.outcome,
-      );
+      expect(["filed", "duplicate", "skipped", "dropped", "failed"]).toContain(entry.outcome);
     }
     expect(describeCycle(result)).toContain("filed");
     expect(existsSync(join(coachDirectory(stateDir), "runs", report.cycle.replace(/[:.]/g, "-"), "report.json"))).toBe(true);
@@ -1583,118 +1407,36 @@ for await (const chunk of Bun.stdin.stream()) {
     }
   });
 
-  test("a stored proposal is filed with its original bytes", async () => {
+  test("a filed issue keeps the tool record's title and URL verbatim", async () => {
     const { repoDir, stateDir } = await workspace();
     const delivery = memoryDelivery();
-    const now = new Date().toISOString();
-    saveLedger(coachDirectory(stateDir), {
-      version: 3,
-      families: {
-        "bun run publish": {
-          firstSeen: now,
-          lastSeen: now,
-          calls: 3,
-          sessions: 2,
-          kind: "command",
-          lastAction: "capped",
-        },
-      },
-      pendingFiling: [
-        {
-          family: "bun run publish",
-          kind: "command",
-          title: "[coach] bun run publish",
-          body: "## Family\n\nstored bytes\n",
-          score: 6,
-          createdAt: now,
-        },
-      ],
-    });
-    const result = await runCycle({
-      root: repoDir,
-      stateDir,
-      now: NOW,
-      collect: () => collectionOf([
-        sessionOf({
-          id: "a",
-          startedAt: instant(60),
-          calls: [{ command: "bun run publish" }],
-        }),
-      ]),
-      delivery,
-      synthesize: async () => {
-        throw new Error("no synthesis for a queued family");
-      },
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
-    });
-    expect(result.report.action).toBe("filed");
-    expect(delivery.created).toEqual([
-      { title: "[coach] bun run publish", body: "## Family\n\nstored bytes\n" },
-    ]);
-  });
-
-  test("an overlong queued title is bounded and does not block later filing", async () => {
-    const { repoDir, stateDir } = await workspace();
-    const delivery = memoryDelivery();
-    const now = new Date().toISOString();
-    const longKey = `bun run ${"z".repeat(380)}`;
-    saveLedger(coachDirectory(stateDir), {
-      version: 3,
-      families: {
-        [longKey]: {
-          firstSeen: now,
-          lastSeen: now,
-          calls: 3,
-          sessions: 2,
-          kind: "command",
-          lastAction: "capped",
-        },
-      },
-      pendingFiling: [
-        {
-          family: longKey,
-          kind: "command",
-          title: `[coach] ${longKey}`,
-          body: "## Family\n\nstored bytes\n",
-          score: 6,
-          createdAt: now,
-        },
-      ],
-    });
+    const longTitle = `[coach] ${"z".repeat(300)}`;
+    const url = "https://forge.test/acme/fixture/issues/42";
     const result = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       collect: () =>
         collectionOf([
-          sessionOf({ id: "long", startedAt: instant(60), calls: [{ command: longKey }] }),
           sessionOf({
-            id: "short",
-            startedAt: instant(30),
+            id: "a",
+            startedAt: instant(60),
             calls: [{ command: "bun run publish" }],
           }),
         ]),
       delivery,
-      synthesize: synthesisFor((family) =>
-        family.key === longKey
-          ? {
-              family: family.key,
-              action: "none",
-              rationale: "The queued proposal already covers it.",
-              acceptance: ["- [ ] Nothing else is filed for the long family."],
-            }
-          : toolProposal(family),
-      ),
+      synthesize: stubSynthesis(() => ({ action: "file", title: longTitle, number: 42, url })),
       settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
-    expect(delivery.created).toHaveLength(2);
-    const queued = delivery.created[0]!;
-    expect(queued.body).toBe("## Family\n\nstored bytes\n");
-    expect(Buffer.byteLength(queued.title, "utf8")).toBeLessThanOrEqual(ISSUE_TITLE_MAX_BYTES);
-    expect(queued.title).toContain(familyTag(longKey));
-    expect(delivery.created[1]?.title).toBe("[coach] bun run publish");
-    expect(loadLedger(coachDirectory(stateDir)).ledger.pendingFiling).toEqual([]);
+    expect(delivery.created).toEqual([]);
+    expect(result.report.issues).toHaveLength(1);
+    expect(result.report.issues[0]?.title).toBe(longTitle);
+    expect(result.report.issues[0]?.url).toBe(url);
+    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    expect(ledger.families["bun run publish"]?.lastTitle).toBe(longTitle);
+    expect(ledger.families["bun run publish"]?.lastIssueUrl).toBe(url);
+    expect(ledger.pendingFiling).toEqual([]);
   });
 });
 
@@ -1737,75 +1479,7 @@ describe("Coach settings compatibility", () => {
   });
 });
 
-describe("Coach prompt contract details", () => {
-  test("issueTitle bounds a 300- and a 400-character family key to the forge limit", () => {
-    const longCommand = "z".repeat(400);
-    const longQuestion = `Why ${"z".repeat(400)}`;
-    const families = familiesOf(
-      [
-        sessionOf({ id: "long-a", startedAt: instant(60), calls: [{ command: longCommand }] }),
-        sessionOf({ id: "long-b", startedAt: instant(50), calls: [{ command: longCommand }] }),
-      ],
-      [
-        { kind: "question", text: longQuestion, scope: "run-a", ts: instant(40) },
-        { kind: "question", text: longQuestion, scope: "run-b", ts: instant(30) },
-      ],
-    );
-    const commandFamily = families.find((family) => family.kind === "command");
-    const journalFamily = families.find((family) => family.kind === "question");
-    expect(commandFamily?.key.length).toBe(400);
-    expect(journalFamily?.key.length).toBe(300);
-    for (const family of [commandFamily, journalFamily]) {
-      if (family === undefined) throw new Error("expected a long-key family");
-      for (const action of ["tool", "prompt"] as const) {
-        const title = issueTitle(family, action);
-        expect(Buffer.byteLength(title, "utf8")).toBeLessThanOrEqual(ISSUE_TITLE_MAX_BYTES);
-        expect(Buffer.from(title, "utf8").toString("utf8")).toBe(title);
-        expect(title).toContain(familyTag(family.key));
-      }
-      // The full key survives in the body and the tag deduplication reads.
-      const proposal: Proposal = {
-        family: family.key,
-        action: "prompt",
-        prompt: { instruction: "Instruction.", target: "scout" },
-        rationale: "Because.",
-        acceptance: ["- [ ] It holds."],
-      };
-      const body = issueBody({ family, proposal, allowlistEntry: "" });
-      expect(body).toContain(family.key);
-      expect(body).toContain(`family:${familyTag(family.key)}`);
-    }
-  });
-
-  test("issueTitle and issueBody use the family key and tag", () => {
-    const family = familiesOf([
-      sessionOf({
-        id: "a",
-        startedAt: instant(60),
-        calls: [{ command: "bun run publish", isError: true }],
-      }),
-    ])[0]!;
-    expect(issueTitle(family, "tool")).toBe("[coach] bun run publish");
-    expect(issueTitle(family, "prompt")).toBe("[coach] prompt: bun run publish");
-    const proposal: Proposal = {
-      family: family.key,
-      action: "prompt",
-      prompt: { instruction: "Instruction.", target: "scout" },
-      rationale: "Because.",
-      acceptance: ["- [ ] It holds."],
-    };
-    const body = issueBody({ family, proposal, allowlistEntry: "" });
-    for (const section of [
-      "## Family",
-      "## Evidence",
-      "## Proposed prompt",
-      "## Acceptance",
-      "## Rationale",
-    ]) {
-      expect(body.split(section).length - 1).toBe(1);
-    }
-  });
-
+describe("Coach journal families", () => {
   test("the journal path records scopes and writes no comment", async () => {
     const { repoDir, stateDir } = await workspace();
     await mkdir(join(stateDir, "journal"), { recursive: true });
@@ -1829,21 +1503,11 @@ describe("Coach prompt contract details", () => {
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: synthesisFor((family) =>
-        toolProposal(family, 1, {
-          tool: {
-            name: "coach_tool_question",
-            title: "Answer the repeated question",
-            description: "One documented answer for the repeated question.",
-            inputSchema: { type: "object", additionalProperties: false, properties: {} },
-            covers: ["question:"],
-          },
-        }),
-      ),
+      synthesize: stubSynthesis(() => ({ action: "file", title: "[coach] question: Same?" })),
       settings: { ...DEFAULT_COACH_SETTINGS, allowlist: ["question:"] },
     });
     expect(result.report.action).toBe("filed");
-    expect(delivery.created[0]?.title).toBe("[coach] question: Same?");
+    expect(result.report.issues[0]?.title).toBe("[coach] question: Same?");
     expect(result.report.findings[0]?.kind).toBe("question");
   });
 });

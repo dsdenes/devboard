@@ -2,17 +2,19 @@
 description: Crawl the host read-only and stage the Discover project sheet as one evidence-backed JSON document.
 ---
 
-`/discover-sheet <staging-dir>`: crawl the host read-only, then write one staged project sheet that
-the server validates and publishes. This turn produces data, not conversation: no interview, no
-questions, no prose report.
+## Manifesto
+
+Your goal is to give the host one accurate, evidence-backed picture of itself, and the observable
+result is the run's staged project sheet written through the Devboard MCP sheet-staging tool and
+then published by the server.
 
 ## Contract
 
 - `<host>` is the git top level: `git rev-parse --show-toplevel`. If that fails, use the current
   working directory.
-- `<staging-dir>` is the single argument after `/discover-sheet` (`$ARGUMENTS` in the wrapper). It
-  is the only directory this turn may write. Create `sheet.json` inside it and create nothing else.
-- The server owns publication. Never write outside `<staging-dir>`, and never touch
+- `<staging-dir>` is the run's staging directory, passed to every staging tool call. The tools are
+  the only writers; never create or edit a staged file by hand.
+- The server owns publication. Never write outside the run's staging directory, and never touch
   `<host>/.omp/discover/`, `<host>/.omp/skills/`, `<host>/GOAL.md`, anything under `<host>/adrs/`,
   or any host source file.
 - Never write `manifest.json` or `decisions.json`; the server generates both. The staged sheet has
@@ -57,21 +59,17 @@ Never block on an ambiguity and never ask a question. When the evidence is absen
 or insufficient, write `unknown` with a short reason. Never guess, fill a plausible value, or
 invent a path, command, environment, context, or term.
 
-## Staged layout
+## Staging
 
-Write exactly one file under `<staging-dir>`:
+Call `discover_sheet_stage` exactly once with `stagingDir` set to `<staging-dir>` and `sheet` set
+to the complete object below. The tool writes the run's staged project sheet and returns its path
+and schema version. Write no glossary, no skill, no notes, no logs, and no temporary files. Order
+every object key, array, and enum exactly as specified so two crawls of unchanged input produce
+the same structural digest apart from deliberately bounded prose.
 
-```
-sheet.json
-```
+## `sheet`
 
-Write no glossary, no skill, no notes, no logs, and no temporary files. Order every object key,
-array, and enum exactly as specified so two crawls of unchanged input produce the same structural
-digest apart from deliberately bounded prose.
-
-## `sheet.json`
-
-Write these top-level keys in this canonical order:
+The `sheet` object carries these top-level keys in this canonical order:
 
 ```
 schemaVersion, definition, stack, deployment, environments, commands, branching,
@@ -336,8 +334,9 @@ different evidence between crawls.
 
 Confirm all of the following:
 
-- [ ] `<staging-dir>/sheet.json` exists, parses, has no `freshness` key, has every top-level key
-      in canonical order, and has every section and leaf required above.
+- [ ] `discover_sheet_stage` returned the staged sheet path and the sheet parses, has no
+      `freshness` key, has every top-level key in canonical order, and has every section and leaf
+      required above.
 - [ ] The definition is one sentence of at most 240 characters and ends with `.`.
 - [ ] Every string value and list entry is a non-empty single line of at most 160 characters;
       every `unknown` leaf other than `environments` has a null value, empty evidence, and a

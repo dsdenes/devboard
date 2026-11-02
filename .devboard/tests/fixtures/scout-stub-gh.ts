@@ -185,8 +185,27 @@ if (args[0] === "issue" && args[1] === "list") {
         state: issue.state === "closed" ? "CLOSED" : "OPEN",
         createdAt: issue.createdAt,
         body: issue.body,
+        labels: issue.labels,
       })),
     )}\n`,
+  );
+  process.exit(0);
+}
+
+if (args[0] === "issue" && args[1] === "view") {
+  const number = Number(args[2]);
+  const issue = store.issues.find((entry) => entry.number === number);
+  if (issue === undefined) fail(`no issue ${number}`);
+  process.stdout.write(
+    `${JSON.stringify({
+      number: issue.number,
+      title: issue.title,
+      url: issue.url,
+      state: issue.state === "closed" ? "CLOSED" : "OPEN",
+      createdAt: issue.createdAt,
+      body: issue.body,
+      labels: issue.labels,
+    })}\n`,
   );
   process.exit(0);
 }
@@ -197,14 +216,24 @@ if (args[0] === "issue" && args[1] === "create") {
   store.nextNumber += 1;
   const title = valueAfter("--title") ?? "";
   const url = `https://github.com/acme/fixture-scout/issues/${number}`;
+  const labels: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--label" && args[index + 1] !== undefined) labels.push(args[index + 1]!);
+  }
+  const body =
+    bodyPath === "-"
+      ? await Bun.stdin.text()
+      : bodyPath === undefined
+        ? ""
+        : readFileSync(bodyPath, "utf8");
   store.issues.push({
     number,
     title,
     url,
     state: "open",
     createdAt: new Date().toISOString(),
-    body: bodyPath === undefined ? "" : readFileSync(bodyPath, "utf8"),
-    labels: [valueAfter("--label") ?? "scout"],
+    body,
+    labels: labels.length === 0 ? ["scout"] : labels,
   });
   saveStore(store);
   process.stdout.write(`${url}\n`);

@@ -2,7 +2,7 @@ import { FORGE_ISSUE_LIST_MAX, type ForgeIssueState } from "../lib/forge-issues"
 import { boundBytes } from "../lib/text-budget";
 import { issuesFor, type McpContext } from "./context";
 
-/** Issue reads and the one close mutation, through the repository's forge. */
+/** Issue reads and the write mutations, through the repository's forge. */
 
 export const ISSUE_BODY_MAX_BYTES = 64 * 1024;
 /**
@@ -74,4 +74,80 @@ export async function closeIssue(
     state: issue.state,
     url: issue.url,
   };
+}
+
+const ISSUE_TITLE_MAX_BYTES = 255;
+
+function issueTitle(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("A one-line issue title is required.");
+  }
+  const title = value.trim();
+  if (/[\r\n]/.test(title)) throw new Error("The issue title must be one line.");
+  if (Buffer.byteLength(title, "utf8") > ISSUE_TITLE_MAX_BYTES) {
+    throw new Error(`The issue title must be at most ${ISSUE_TITLE_MAX_BYTES} bytes.`);
+  }
+  return title;
+}
+
+function issueLabels(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("labels must be a list of label names.");
+  const labels: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new Error("labels must be a list of non-empty label names.");
+    }
+    const label = entry.trim();
+    if (label.length > 100) throw new Error("A label name is longer than 100 characters.");
+    labels.push(label);
+  }
+  return [...new Set(labels)];
+}
+
+/**
+ * Creates one issue with a full Markdown body and the requested labels. Each
+ * label is ensured first, so a label deleted while an agent runs still lands on
+ * the created issue. The returned identity is the created issue, not an echo.
+ */
+export async function createIssue(
+  context: McpContext,
+  options: { title?: unknown; body?: unknown; labels?: unknown },
+) {
+  const title = issueTitle(options.title);
+  if (typeof options.body !== "string" || options.body.trim().length === 0) {
+    throw new Error("A non-empty Markdown body is required.");
+  }
+  if (Buffer.byteLength(options.body, "utf8") > ISSUE_BODY_MAX_BYTES) {
+    throw new Error(`The issue body must be at most ${ISSUE_BODY_MAX_BYTES} bytes.`);
+  }
+  const labels = issueLabels(options.labels);
+  const forge = issuesFor(context);
+  for (const label of labels) await forge.ensureLabel(label);
+  const issue = await forge.create({ title, body: options.body, labels });
+  return {
+    number: issue.number,
+    url: issue.url,
+    title: issue.title,
+    labels: issue.labels,
+  };
+}
+
+/** Comments on one issue and confirms the target that received it. */
+export async function commentIssue(
+  context: McpContext,
+  options: { number?: unknown; body?: unknown },
+) {
+  if (typeof options.number !== "number" || !Number.isInteger(options.number) || options.number <= 0) {
+    throw new Error("number must be a positive issue number.");
+  }
+  if (typeof options.body !== "string" || options.body.trim().length === 0) {
+    throw new Error("A non-empty comment body is required.");
+  }
+  if (Buffer.byteLength(options.body, "utf8") > ISSUE_BODY_MAX_BYTES) {
+    throw new Error(`The comment body must be at most ${ISSUE_BODY_MAX_BYTES} bytes.`);
+  }
+  const forge = issuesFor(context);
+  await forge.comment(options.number, options.body);
+  return { number: options.number, commented: true };
 }

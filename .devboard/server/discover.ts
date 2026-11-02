@@ -2936,7 +2936,8 @@ export interface PublishInput {
   repoDir: string;
   runId: string;
   facts: HostFacts;
-  staged: AgentStaged;
+  /** The run's staging directory; publication parses it. */
+  stagingDir: string;
   project: string;
   agent: DiscoverAgentId;
 }
@@ -3021,9 +3022,24 @@ function publishSkill(
  * artifact owned by another agent keeps its bytes through this publication.
  */
 export function publishAgentStaged(input: PublishInput): PublishResult {
-  const { repoDir, runId, facts, staged, project, agent } = input;
+  const { repoDir, runId, facts, stagingDir, project, agent } = input;
   const ownership = agentOwnership(agent);
   if (ownership === null) throw new DiscoverValidationError(`unknown Discover agent: ${agent}`);
+  // Publication parses whatever the staging tools wrote and reports a
+  // malformed document as this agent's error. There is no separate post-write
+  // validation phase and no re-ask.
+  const staged = validateAgentStaged(
+    repoDir,
+    stagingDir,
+    {
+      project,
+      commit: facts.commit,
+      dirty: facts.dirty,
+      discoveredAt: new Date().toISOString(),
+      fingerprint: facts.fingerprint,
+    },
+    agent,
+  );
 
   for (const name of ownership.skills) {
     const collision = collisionAt(repoDir, name);

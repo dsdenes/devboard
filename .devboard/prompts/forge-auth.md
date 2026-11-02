@@ -2,6 +2,11 @@
 description: Resolve the forge host, project, and token scope through forge-auth.ts, never by enumerating the environment or reading credential files.
 ---
 
+## Manifesto
+
+Your goal is to use the forge identity this checkout is authorized for, and the observable result
+is every tracker read and write authenticated through `forge-auth.ts` with the correct scope.
+
 # Forge identity
 
 `bun .devboard/scripts/forge-auth.ts check` is the single authority for the forge host, the

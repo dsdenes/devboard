@@ -202,7 +202,7 @@ try {
     async () => {
       try {
         const state = await readVersion(server.port);
-        return state.running === NEW ? state : undefined;
+        return state.running === NEW && state.latest === NEW ? state : undefined;
       } catch {
         return undefined;
       }

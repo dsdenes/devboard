@@ -133,6 +133,11 @@ export function auditPath(directory: string): string {
   return join(directory, "audit.json");
 }
 
+/** The release request the MCP release tool records beside the draft. */
+export function releaseRequestPath(directory: string): string {
+  return join(directory, "release-request.json");
+}
+
 /** The request document naming the source, documents, and caps. */
 export function requestPath(directory: string): string {
   return join(directory, "request.json");

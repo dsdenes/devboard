@@ -281,8 +281,11 @@ describe("prompt chat", () => {
     prompts.dispose();
     const received = readFileSync(capture, "utf8");
     expect(received).toContain(".devboard/prompts/design-system.md");
-    expect(received).toContain("audit.json");
-    expect(received).toContain("DESIGN.md");
+    expect(received).toContain("## Manifesto");
+    expect(received).toContain("issue_create");
+    expect(received).toContain("design_release_request");
+    expect(received).not.toContain("audit.json");
+    expect(received).not.toContain("/design-system-audit");
     expect(received).not.toContain("scout-recommendations.md");
     expect(received).not.toContain("Auto Scout");
     expect(received).toContain(DESIGN_PROMPT);

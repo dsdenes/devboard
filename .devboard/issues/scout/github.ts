@@ -1,4 +1,3 @@
-import type { GhRunner } from "./actions";
 import { ghCommand } from "./preflight";
 import {
   createRepositoryGitHub,
@@ -104,6 +103,14 @@ function parseIssues(text: string): unknown[] | undefined {
   } catch {
     return undefined;
   }
+}
+
+export interface GhRunner {
+  (argv: string[], environment: Record<string, string>): Promise<{
+    code: number;
+    stdout: string;
+    stderr: string;
+  }>;
 }
 
 export interface ScoutGitHubOptions {

@@ -317,7 +317,9 @@ async function exercisePausedRevision(request: string | undefined) {
     });
 
     expect(spawnCount(logPath)).toBe(2);
-    expect(prompts(logPath)[1]?.startsWith("Revise the goal in ")).toBe(true);
+    // The revision prompt now opens with its manifesto; the stub logs the
+    // prompt's first line.
+    expect(prompts(logPath)[1]).toBe("## Manifesto");
     const agentLog = logLines(logPath).join("\n");
     if (request === undefined) {
       expect(agentLog).not.toContain("Guidance:");

@@ -4,7 +4,6 @@ import { collectEvidence, type CoachCollection } from "./collect";
 import {
   createCoachDelivery,
   type CoachDelivery,
-  type DeliveryResult,
 } from "./delivery";
 import {
   buildFamilies,
@@ -12,36 +11,27 @@ import {
   type CoachFamily,
   type FamilyKind,
 } from "./families";
+import { familyTag, type CoachOpenIssue } from "./issue";
 import {
-  boundTitle,
-  familyTag,
-  issueTitle,
-  type CoachOpenIssue,
-} from "./issue";
-import {
-  dropStalePending,
-  enqueuePending,
   loadLedger,
   markFamily,
   recordFamilies,
-  removePending,
   saveLedger,
   type CoachLedger,
 } from "./ledger";
 import { coachDirectory, latestPath, runsDirectory } from "./paths";
 import { readCoachSettings, type CoachSettings } from "./settings";
 import {
-  parseSynthesisAnswer,
   readSynthesisStub,
   synthesisPrompt,
   synthesizeFamily,
   SYNTHESIS_CONCURRENCY,
   SYNTHESIS_STUB_ENV,
-  type Proposal,
+  type SynthesisPaths,
   type SynthesisResult,
   type Synthesize,
 } from "./synthesize";
-import { toolNameTaken, validateProposal } from "./validate";
+import { readToolLog, toolValueNumber, toolValueString } from "../lib/tool-log";
 
 /**
  * One Coach cycle, in order: collect, families, triage, synthesize, validate,
@@ -78,6 +68,7 @@ export type CoachValidationOutcome =
   | "filed"
   | "pending"
   | "none"
+  | "skipped"
   | "duplicate"
   | "invalid"
   | "dropped"
@@ -325,7 +316,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     issues: [],
     duplicates: [],
     dropped: 0,
-    pending: ledger.pendingFiling.length,
+    pending: 0,
     reportPath,
   };
 
@@ -339,23 +330,19 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
   }
 
   const finish = (failure: string | undefined): CycleResult => {
-    report.pending = ledger.pendingFiling.length;
+    report.pending = 0;
     if (failure !== undefined) {
       report.action = "failed";
       report.reason = failure;
     } else if (report.issues.length > 0) {
       report.action = "filed";
       report.reason = `filed ${report.issues.length} issue(s)`;
-    } else if (report.validations.some((entry) => entry.outcome === "pending")) {
-      report.action = "capped";
-      report.reason =
-        `filing cap reached; ${ledger.pendingFiling.length} proposal(s) stay pending`;
     } else if (selection.families.length === 0) {
       report.action = "none";
       report.reason = "no family in the window";
     } else {
       report.action = "none";
-      report.reason = "no proposal passed validation";
+      report.reason = "no family filed a proposal";
     }
     saveLedger(coachDir, ledger);
     mkdirSync(runDir, { recursive: true });
@@ -364,17 +351,6 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     writeFileSync(join(runDir, "report.md"), renderMarkdown(report));
     return { report, exitCode: report.action === "failed" ? 1 : 0, runDir };
   };
-
-  const keys = new Set(selection.families.map((family) => family.key));
-  for (const stale of dropStalePending(ledger, keys, now)) {
-    report.dropped += 1;
-    report.validations.push({
-      family: stale.family,
-      outcome: "dropped",
-      rule: "pending-expired",
-      reason: "older than seven days or absent from the window",
-    });
-  }
 
   let delivery = options.delivery;
   let deliveryFailure: string | undefined;
@@ -395,9 +371,21 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
 
   let openIssues: CoachOpenIssue[] = [];
   let failure: string | undefined;
-  const needsForge =
-    ledger.pendingFiling.length > 0 || selection.selected.length > 0;
-  if (needsForge) {
+  // A queue written by an older revision is discarded, not filed: the
+  // synthesis turn files its own proposal or records why it filed none.
+  if (ledger.pendingFiling.length > 0) {
+    report.dropped += ledger.pendingFiling.length;
+    for (const pending of ledger.pendingFiling) {
+      report.validations.push({
+        family: pending.family,
+        outcome: "dropped",
+        rule: "pending-queue-removed",
+        reason: "the proposal queue is gone; the synthesis turn files directly",
+      });
+    }
+    ledger.pendingFiling = [];
+  }
+  if (selection.selected.length > 0) {
     const active = deliveryFor();
     if (active === undefined) {
       failure = deliveryFailure ?? "the Coach delivery is unavailable";
@@ -446,90 +434,16 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     });
   };
 
-  /*
-   * Pending proposals file before new synthesis. Their body keeps its stored
-   * bytes; the title is bounded, so an entry queued before the bound existed
-   * cannot stall the queue on a forge rejection.
-   */
-  const queue = ledger.pendingFiling
-    .slice()
-    .sort(
-      (left, right) =>
-        right.score - left.score || left.createdAt.localeCompare(right.createdAt),
-    );
-  for (const pending of queue) {
-    if (failure !== undefined) break;
-    const title = boundTitle(pending.title, pending.family);
-    const duplicate = duplicateOf(openIssues, title, pending.family);
-    if (duplicate !== undefined) {
-      report.duplicates.push({ family: pending.family, url: duplicate.url });
-      report.validations.push({
-        family: pending.family,
-        outcome: "duplicate",
-        rule: "open-issue",
-        reason: duplicate.url,
-      });
-      removePending(ledger, pending.family);
-      markFamily(ledger, pending.family, "duplicate", { at: now });
-      handled.add(pending.family);
-      continue;
-    }
-    if (cycleFiled >= settings.maxIssuesPerCycle || room <= 0) {
-      report.validations.push({
-        family: pending.family,
-        outcome: "pending",
-        rule: "cap",
-        reason: "the per-cycle or per-hour cap has no room",
-      });
-      markFamily(ledger, pending.family, "capped", { at: now });
-      continue;
-    }
-    const active = deliveryFor();
-    if (active === undefined) {
-      failure = deliveryFailure ?? "the Coach delivery is unavailable";
-      break;
-    }
-    let filed: DeliveryResult;
-    try {
-      filed = await active.create(title, pending.body);
-    } catch (error) {
-      filed = { ok: false, reason: firstLine(error) };
-    }
-    if (!filed.ok) {
-      failure = filed.reason;
-      report.validations.push({
-        family: pending.family,
-        outcome: "failed",
-        rule: "delivery",
-        reason: filed.reason,
-      });
-      markFamily(ledger, pending.family, "failed", { at: now });
-      break;
-    }
-    removePending(ledger, pending.family);
-    handled.add(pending.family);
-    recordFiling({
-      family: pending.family,
-      title,
-      kind: pending.kind,
-      url: filed.url,
-      body: pending.body,
-    });
-  }
-
-  const queued = new Set(ledger.pendingFiling.map((entry) => entry.family));
-  const toSynthesize = selection.selected.filter(
-    (family) => !queued.has(family.key) && !handled.has(family.key),
-  );
+  const toSynthesize = selection.selected.filter((family) => !handled.has(family.key));
 
   if (failure === undefined && toSynthesize.length > 0) {
     const stubPath = environment[SYNTHESIS_STUB_ENV];
     const run: Synthesize =
       options.synthesize ??
-      ((family, prompt) => {
+      ((family, prompt, paths) => {
         const stub =
           typeof stubPath === "string" && stubPath.length > 0
-            ? readSynthesisStub(stubPath, family.key)
+            ? readSynthesisStub(stubPath, family.key, paths)
             : undefined;
         return synthesizeFamily({
           repoDir: root,
@@ -537,26 +451,52 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
           family,
           prompt,
           environment,
+          toolLogPath: paths.toolLogPath,
+          skipLogPath: paths.skipLogPath,
           ...(stub === undefined ? {} : { run: stub }),
         });
       });
     const coachIssues = openIssues.filter(
       (issue) => issue.title.startsWith("[coach]") || issue.body.includes("family:"),
     );
-    const prompts = toSynthesize.map((family) =>
-      synthesisPrompt({ family, settings, openIssues: coachIssues }),
+    const available = Math.max(
+      0,
+      Math.min(
+        settings.maxIssuesPerCycle - cycleFiled,
+        room === Number.POSITIVE_INFINITY ? toSynthesize.length : room,
+      ),
     );
+    const work = toSynthesize.map((family, index) => {
+      const directory = join(runDir, "families", family.key.replace(/[^a-zA-Z0-9._-]+/g, "-"));
+      mkdirSync(directory, { recursive: true });
+      const paths: SynthesisPaths = {
+        toolLogPath: join(directory, "tool-log.jsonl"),
+        skipLogPath: join(directory, "skips.jsonl"),
+      };
+      return {
+        family,
+        paths,
+        prompt: synthesisPrompt({
+          family,
+          settings,
+          openIssues: coachIssues,
+          filingRoom: index < available ? 1 : 0,
+        }),
+      };
+    });
     const calls = await mapLimit(
-      toSynthesize,
+      work,
       SYNTHESIS_CONCURRENCY,
-      async (family, index): Promise<{ family: CoachFamily; result: SynthesisResult }> => {
+      async (
+        item,
+      ): Promise<{ family: CoachFamily; paths: SynthesisPaths; result: SynthesisResult }> => {
         let result: SynthesisResult;
         try {
-          result = await run(family, prompts[index] ?? "");
+          result = await run(item.family, item.prompt, item.paths);
         } catch (error) {
           result = { ok: false, reason: firstLine(error), model: "", durationMs: 0 };
         }
-        return { family, result };
+        return { family: item.family, paths: item.paths, result };
       },
     );
     for (const call of calls) {
@@ -574,8 +514,8 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
         markFamily(ledger, call.family.key, "failed", { at: now });
       }
       // A partial failure is recorded per family and must not discard the
-      // proposals the peer calls that did succeed returned. Only a cycle in
-      // which every synthesis call failed is a cycle failure.
+      // proposals the peer calls that did succeed filed. Only a cycle in which
+      // every synthesis call failed is a cycle failure.
       if (failedCalls.length === calls.length) {
         return finish(
           `synthesis failed for ${failedCalls.map((call) => call.family.key).join(", ")}: ` +
@@ -584,152 +524,49 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
       }
     }
 
-    interface Candidate {
-      family: CoachFamily;
-      proposal: Proposal;
-      title: string;
-      body: string;
-    }
-    const candidates: Candidate[] = [];
     for (const call of calls) {
-      if (call.result.text === undefined) continue;
-      let proposal: Proposal;
-      try {
-        proposal = parseSynthesisAnswer(call.result.text, call.family.key);
-      } catch (error) {
-        report.validations.push({
+      if (!call.result.ok) continue;
+      const filings = readToolLog(call.paths.toolLogPath).filter(
+        (entry) => entry.tool === "issue_create" && entry.ok === true,
+      );
+      const filed = filings[filings.length - 1];
+      const number = filed === undefined ? undefined : toolValueNumber(filed.value, "number");
+      const title = filed === undefined ? undefined : toolValueString(filed.value, "title");
+      const url = filed === undefined ? undefined : toolValueString(filed.value, "url");
+      if (number !== undefined && title !== undefined && url !== undefined) {
+        const duplicate = duplicateOf(openIssues, title, call.family.key);
+        if (duplicate !== undefined) {
+          report.duplicates.push({ family: call.family.key, url: duplicate.url });
+          report.validations.push({
+            family: call.family.key,
+            outcome: "duplicate",
+            rule: "open-issue",
+            reason: duplicate.url,
+          });
+          markFamily(ledger, call.family.key, "duplicate", { at: now });
+          continue;
+        }
+        recordFiling({
           family: call.family.key,
-          outcome: "invalid",
-          rule: "contract",
-          reason: firstLine(error),
+          title,
+          kind: call.family.kind,
+          url,
+          body: "",
         });
-        markFamily(ledger, call.family.key, "invalid", { at: now });
         continue;
       }
-      if (proposal.action === "none") {
-        report.validations.push({
-          family: call.family.key,
-          outcome: "none",
-          reason: proposal.rationale,
-        });
-        markFamily(ledger, call.family.key, "none", { at: now });
-        continue;
-      }
-      const validation = validateProposal({
-        family: call.family,
-        proposal,
-        settings,
-        openIssues,
+      const skips = readToolLog(call.paths.skipLogPath).filter(
+        (entry) => entry.tool === "coach_proposal_skip" && entry.ok === true,
+      );
+      const skip = skips[skips.length - 1];
+      const reason = skip === undefined ? undefined : toolValueString(skip.value, "reason");
+      report.validations.push({
+        family: call.family.key,
+        outcome: "skipped",
+        rule: reason === undefined ? "no-filing" : "tool",
+        reason: reason ?? "the synthesis turn filed nothing",
       });
-      if (!validation.ok) {
-        report.validations.push({
-          family: call.family.key,
-          outcome: "invalid",
-          rule: validation.rule,
-          reason: validation.detail,
-        });
-        markFamily(ledger, call.family.key, "invalid", { at: now });
-        continue;
-      }
-      const title = issueTitle(call.family, proposal.action);
-      const duplicate = duplicateOf(openIssues, title, call.family.key);
-      if (duplicate !== undefined) {
-        report.duplicates.push({ family: call.family.key, url: duplicate.url });
-        report.validations.push({
-          family: call.family.key,
-          outcome: "duplicate",
-          rule: "open-issue",
-          reason: duplicate.url,
-        });
-        markFamily(ledger, call.family.key, "duplicate", { at: now });
-        continue;
-      }
-      candidates.push({
-        family: call.family,
-        proposal,
-        title,
-        body: validation.body,
-      });
-    }
-
-    for (const candidate of candidates) {
-      if (failure !== undefined) break;
-      const proposed = candidate.proposal.action === "tool" ? candidate.proposal.tool : undefined;
-      if (proposed !== undefined && toolNameTaken(proposed, openIssues)) {
-        report.validations.push({
-          family: candidate.family.key,
-          outcome: "invalid",
-          rule: "tool-name-duplicate",
-          reason: `${proposed.name} is already proposed by a filed or open issue`,
-        });
-        markFamily(ledger, candidate.family.key, "invalid", { at: now });
-        continue;
-      }
-      if (cycleFiled >= settings.maxIssuesPerCycle || room <= 0) {
-        const dropped = enqueuePending(
-          ledger,
-          {
-            family: candidate.family.key,
-            kind: candidate.family.kind,
-            title: candidate.title,
-            body: candidate.body,
-            score: candidate.family.score,
-            createdAt: now.toISOString(),
-          },
-          settings.maxPending,
-        );
-        report.dropped += dropped.length;
-        report.validations.push({
-          family: candidate.family.key,
-          outcome: "pending",
-          rule: "cap",
-          reason: "the per-cycle or per-hour cap has no room",
-        });
-        markFamily(ledger, candidate.family.key, "capped", { at: now });
-        continue;
-      }
-      const active = deliveryFor();
-      if (active === undefined) {
-        failure = deliveryFailure ?? "the Coach delivery is unavailable";
-        markFamily(ledger, candidate.family.key, "failed", { at: now });
-        break;
-      }
-      let filed: DeliveryResult;
-      try {
-        filed = await active.create(candidate.title, candidate.body);
-      } catch (error) {
-        filed = { ok: false, reason: firstLine(error) };
-      }
-      if (!filed.ok) {
-        failure = filed.reason;
-        report.validations.push({
-          family: candidate.family.key,
-          outcome: "failed",
-          rule: "delivery",
-          reason: filed.reason,
-        });
-        enqueuePending(
-          ledger,
-          {
-            family: candidate.family.key,
-            kind: candidate.family.kind,
-            title: candidate.title,
-            body: candidate.body,
-            score: candidate.family.score,
-            createdAt: now.toISOString(),
-          },
-          settings.maxPending,
-        );
-        markFamily(ledger, candidate.family.key, "failed", { at: now });
-        break;
-      }
-      recordFiling({
-        family: candidate.family.key,
-        title: candidate.title,
-        kind: candidate.family.kind,
-        url: filed.url,
-        body: candidate.body,
-      });
+      markFamily(ledger, call.family.key, "none", { at: now });
     }
   }
 

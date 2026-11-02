@@ -7,12 +7,10 @@ import {
   EXCLUDED_ROOTS,
   HOUR_MS,
   SIGNIFICANCE_THRESHOLD,
-  recommendationsPath,
   requestPath,
   scanDirectory,
   scansDirectory,
 } from "./paths";
-import { normalizeTitle } from "./recommendation";
 import { writeAtomic, type ScoutLimits } from "./state";
 
 /**
@@ -25,7 +23,7 @@ import { writeAtomic, type ScoutLimits } from "./state";
 export const SCAN_PROMPT = "/scout-recommendations";
 
 export interface ScanRequest {
-  version: 2;
+  version: 3;
   scanId: string;
   repository: string;
   repositoryPath: string;
@@ -33,11 +31,14 @@ export interface ScanRequest {
   requested: number;
   categories: string[];
   excludedRoots: string[];
-  /** Normalized titles of existing Auto Scout issues and open issues. */
-  knownTitles: string[];
+  /** Every draft-goal heading the scan must not restate. */
   draftGoalHeadings: string[];
   /** Findings below this score are not filed. */
   significanceThreshold: number;
+  /** Configured rolling-hour cap, or null when unlimited. */
+  maxPerHour: number | null;
+  /** Configured open-issue cap, or null when unlimited. */
+  maxPending: number | null;
   createdAt: string;
 }
 
@@ -70,20 +71,22 @@ export function buildRequest(options: {
   repository: string;
   repoDir: string;
   requested: number;
-  knownTitles: string[];
   draftGoalHeadings: string[];
+  maxPerHour: number | null;
+  maxPending: number | null;
 }): ScanRequest {
   return {
-    version: 2,
+    version: 3,
     scanId: options.scan.scanId,
     repository: options.repository,
     repositoryPath: resolve(options.repoDir),
     requested: options.requested,
     categories: [...CATEGORIES],
     excludedRoots: [...EXCLUDED_ROOTS],
-    knownTitles: [...options.knownTitles],
     draftGoalHeadings: [...options.draftGoalHeadings],
     significanceThreshold: SIGNIFICANCE_THRESHOLD,
+    maxPerHour: options.maxPerHour,
+    maxPending: options.maxPending,
     createdAt: options.scan.startedAt,
   };
 }
@@ -157,43 +160,12 @@ export function scanCapacity(options: {
 }
 
 /**
- * Normalized titles the scan must not restate: Auto Scout issues in any state,
- * every open issue, and the draft goal headings. One implementation keeps every
- * scan's dedup identical.
+ * The one turn's prompt. The agent surveys the repository and files its own
+ * accepted recommendations through the MCP issue-creation tool; no answer file
+ * is named and no correction turn exists.
  */
-export function knownTitlesFor(
-  issues: readonly { title: string }[],
-  openTitles: readonly string[],
-  draftGoalHeadings: readonly string[],
-): string[] {
-  const titles = new Set<string>();
-  for (const issue of issues) titles.add(normalizeTitle(issue.title));
-  for (const title of openTitles) titles.add(normalizeTitle(title));
-  for (const heading of draftGoalHeadings) titles.add(normalizeTitle(heading));
-  return [...titles].sort();
-}
-
 export function promptFor(directory: string): string {
   return `${SCAN_PROMPT} ${directory}`;
-}
-
-/**
- * The one correction turn a scan gets after its answer is rejected. It quotes
- * the rejection and restates the two output rules the model most often
- * misses, so a fixable mistake costs a turn instead of the whole finding.
- */
-export function repairPrompt(directory: string, rejection: string): string {
-  return [
-    `Auto Scout rejected the scan answer at ${recommendationsPath(directory)}: ${rejection}`,
-    "",
-    `Rewrite ${recommendationsPath(directory)} so it satisfies the scan prompt's output ` +
-      "contract, changing only what the rejection names.",
-    `Every \`evidence[].path\` and every \`files\` entry is relative to the \`repositoryPath\` ` +
-      `in ${requestPath(directory)}: a file nested under a directory keeps those leading ` +
-      "segments in its path. Each cited path must name an existing regular file and each " +
-      "line span must lie inside that file.",
-    "Never modify the repository and write nothing else. Finish in this turn.",
-  ].join("\n");
 }
 
 /** The `# heading` of every draft under `<REPO_DIR>/.devboard/goal-proposals/`. */

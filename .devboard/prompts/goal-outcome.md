@@ -2,7 +2,10 @@
 description: Turn an optional project brief into one observable end goal, written to GOAL.md.
 ---
 
-`/goal-outcome`: establish one well-defined project goal and write it to `GOAL.md`.
+## Manifesto
+
+Your goal is to settle one well-defined project goal with the developer, and the observable result
+is `<host>/GOAL.md` holding exactly that end goal.
 
 Deliverable: exactly one file, `<host>/GOAL.md`. Its content is only the end result the user wants to observe — never an implementation plan, never an architectural decision. The reply names that path and nothing else.
 

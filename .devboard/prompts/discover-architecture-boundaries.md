@@ -2,18 +2,19 @@
 description: Crawl the host read-only and stage the project's architecture-and-boundaries Discover skill.
 ---
 
-`/discover-architecture-boundaries <staging-dir>`: crawl the host read-only, then write one staged
-Discover skill that records this project's architecture and its boundaries. This turn produces
-data, not conversation: no interview, no questions, no prose report.
+## Manifesto
+
+Your goal is to record this project's architecture and its boundaries, and the observable result
+is the run's staged architecture-and-boundaries Discover skill written through the Devboard MCP
+skill-staging tool and then published by the server.
 
 ## Contract
 
 - `<host>` is the git top level: `git rev-parse --show-toplevel`. If that fails, use the current
   working directory.
-- `<staging-dir>` is the single argument after `/discover-architecture-boundaries` (`$ARGUMENTS`
-  in the wrapper). It is the only directory this turn may write. Write exactly
-  `skills/discover-architecture-boundaries/SKILL.md` inside it and create nothing else.
-- The server owns publication. Never write outside `<staging-dir>`, and never touch
+- `<staging-dir>` is the run's staging directory, passed to every staging tool call. The tools are
+  the only writers; never create or edit a staged file by hand.
+- The server owns publication. Never write outside the run's staging directory, and never touch
   `<host>/.omp/discover/`, `<host>/.omp/skills/`, `<host>/GOAL.md`, anything under `<host>/adrs/`,
   or any host source file.
 - Never write `manifest.json` or `decisions.json`; the server generates both.
@@ -52,23 +53,15 @@ Never block on an ambiguity and never ask a question. When the evidence is absen
 state the boundary the host plainly holds and omit the rest. Never invent a context, an
 integration, a path, or a convention.
 
-## `SKILL.md`
+## Skill
 
-Frontmatter, in this shape:
-
-```yaml
----
-name: discover-architecture-boundaries
-description: One sentence naming the project-specific boundary policy and when to apply it.
-metadata:
-  devboard-managed: "true"
-  devboard-family: "discover"
-  devboard-skill: architecture-boundaries
----
-```
+Call `discover_skill_stage` once with `stagingDir` set to `<staging-dir>`, `name` set to
+`discover-architecture-boundaries`, `description` set to one sentence naming the project-specific
+boundary policy and when to apply it, and `body` set to a `#` heading title followed only by
+imperative bullets. The tool writes the managed frontmatter and the staged skill.
 
 - `name` is exactly `discover-architecture-boundaries`; `description` is non-empty and at most 1024
-  characters. Neither marker may be omitted; `devboard-managed` is the quoted string `"true"`.
+  characters.
 - The body is a `#` heading title followed only by imperative bullets, one directive per bullet.
   Every non-empty, non-heading line starts with `- `. No paragraphs, tables, prose introduction, or
   chat report.
@@ -104,10 +97,9 @@ key. Write no timestamp, run id, fingerprint, or machine-specific value.
 
 Confirm all of the following:
 
-- [ ] `<staging-dir>/skills/discover-architecture-boundaries/SKILL.md` exists and is the only file
-      staged.
-- [ ] The frontmatter carries the exact name, a non-empty description of at most 1024 characters,
-      and both markers with `devboard-family` set to `discover`.
+- [ ] `discover_skill_stage` returned the staged path and no other file was staged.
+- [ ] The staged skill carries the exact name, a non-empty description of at most 1024 characters,
+      and both managed markers with `devboard-family` set to `discover`.
 - [ ] The body is one `#` heading plus imperative `- ` bullets; no bullet names a source, test,
       manifest, or CI path or cites where a rule was observed.
 - [ ] Every context and integration named by the skill is evidenced in the host.

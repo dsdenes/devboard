@@ -8,7 +8,8 @@ import { analyzeEvidence, STALL_MS } from "./findings";
 import { runGh, type GhRun, type IssueInput } from "./github";
 import {
   DEDUP_STUB_ENV,
-  parseDedupAnswer,
+  readDedupReads,
+  readDedupRecords,
   readDedupStub,
   runDedupAgent,
   type Dedup,
@@ -392,6 +393,36 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     candidates.push(fingerprint);
   }
 
+  // Caps: a cap counts new issues per rolling hour and open issues from the
+  // last successful projection; an unavailable projection leaves no room.
+  const capsActive = settings.maxPerHour !== null || settings.maxPending !== null;
+  const filingRoom = (): number => {
+    if (!capsActive) return Number.POSITIVE_INFINITY;
+    const hourStart = now.getTime() - 60 * 60_000;
+    let filedThisHour = 0;
+    for (const candidate of Object.values(ledger.findings)) {
+      if (!candidate.disposition.startsWith("filed:")) continue;
+      const filedAt = Date.parse(candidate.filedAt ?? "");
+      if (Number.isFinite(filedAt) && filedAt > hourStart) filedThisHour += 1;
+    }
+    const projection = readProjection(stateDir);
+    if (projection === undefined || projection.state !== "ok") {
+      report.reason = "a filing cap is set and the GitHub projection is not ok; nothing new was filed";
+      return 0;
+    }
+    const open = projection.issues.filter((issue) => issue.state === "pending").length;
+    const hourlyRoom =
+      settings.maxPerHour === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, settings.maxPerHour - filedThisHour);
+    const openRoom =
+      settings.maxPending === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, settings.maxPending - open);
+    return Math.min(hourlyRoom, openRoom);
+  };
+  const room = filingRoom();
+
   const dedup = report.deduplication;
   dedup.requested = candidates.length;
   dedup.suppressed = suppressed;
@@ -416,6 +447,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
       const request: DedupRequest = {
         repository: delivery.repository,
         window: { start: window.start.toISOString(), end: window.end.toISOString() },
+        filingRoom: Number.isFinite(room) ? Math.max(0, Math.floor(room)) : candidates.length,
         candidates: candidates.map((fingerprint) => {
           const entry = ledger.findings[fingerprint] as LedgerEntry;
           return {
@@ -430,46 +462,90 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
           };
         }),
       };
+      const dedupRunDir = join(context.runDir, "dedup");
+      mkdirSync(dedupRunDir, { recursive: true });
       const stubPath = environment[DEDUP_STUB_ENV];
       const dedupAgent: Dedup =
         deps.dedup ??
         (stubPath !== undefined && stubPath.length > 0
           ? readDedupStub(stubPath)
-          : (value) =>
-              runDedupAgent(value, { root, stateDir: providerStateDir, environment }));
+          : (value, runDir) =>
+              runDedupAgent(value, {
+                root,
+                stateDir: providerStateDir,
+                runDir,
+                environment,
+              }));
       try {
-        // One request over the complete set; no issue is created until this
-        // answer is read and validated.
-        const answer = parseDedupAnswer(await dedupAgent(request), request);
-        dedup.openIssuesRead = answer.openIssues.length;
+        // The peer files each unique candidate and records each duplicate
+        // through its MCP write tools. No answer object is read or validated.
+        await dedupAgent(request, dedupRunDir);
+        const records = readDedupRecords(dedupRunDir);
+        const byFingerprint = new Map<string, (typeof records)[number]>();
+        for (const record of records) byFingerprint.set(record.fingerprint, record);
+        const reads = readDedupReads(dedupRunDir);
+        dedup.openIssuesRead = reads.length === 0 ? 0 : (reads[reads.length - 1] ?? 0);
         for (const fingerprint of candidates) {
           const entry = ledger.findings[fingerprint];
-          const decision = answer.decisions.get(fingerprint);
-          if (entry === undefined || decision === undefined) continue;
-          if (decision.decision === "unique") {
+          if (entry === undefined) continue;
+          const record = byFingerprint.get(fingerprint);
+          if (record === undefined) {
+            const reason = "the deduplication turn recorded no decision";
+            if (room > 0) failure ??= reason;
+            markPending(ledger, fingerprint);
+            dedup.decisions.push({
+              fingerprint,
+              category: entry.category,
+              decision: "failed",
+              reason,
+            });
+            continue;
+          }
+          if (record.action === "filed" && record.url !== undefined) {
             uniqueCandidates.push(fingerprint);
+            markFiled(ledger, fingerprint, record.url, now);
+            saveLedger(context.stateDir, ledger);
+            report.issues.push({
+              url: record.url,
+              category: entry.category,
+              fingerprint,
+              line: entry.line,
+            });
             dedup.decisions.push({
               fingerprint,
               category: entry.category,
               decision: "unique",
             });
+            context.log(`filed ${record.url} for ${entry.category}: ${entry.line}`);
             continue;
           }
-          if (decision.issue !== undefined) {
-            markDuplicate(ledger, fingerprint, decision.issue, now);
-          } else {
-            ledger.pendingFiling = ledger.pendingFiling.filter(
-              (pending) => pending !== fingerprint,
-            );
+          if (record.action === "duplicate") {
+            if (record.issue !== undefined) {
+              markDuplicate(ledger, fingerprint, record.issue, now);
+            } else {
+              ledger.pendingFiling = ledger.pendingFiling.filter(
+                (pending) => pending !== fingerprint,
+              );
+            }
+            dedup.decisions.push({
+              fingerprint,
+              category: entry.category,
+              decision: "duplicate",
+              ...(record.issue === undefined ? {} : { issue: record.issue }),
+              ...(record.representative === undefined
+                ? {}
+                : { representative: record.representative }),
+            });
+            continue;
           }
+          const reason = "the deduplication turn recorded no filed issue";
+          if (room > 0) failure ??= reason;
+          markPending(ledger, fingerprint);
           dedup.decisions.push({
             fingerprint,
             category: entry.category,
-            decision: "duplicate",
-            ...(decision.issue === undefined ? {} : { issue: decision.issue }),
-            ...(decision.representative === undefined
-              ? {}
-              : { representative: decision.representative }),
+            decision: "failed",
+            reason,
           });
         }
         context.log(
@@ -508,77 +584,6 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   });
 
   let commented = 0;
-
-  // Caps: with no cap the queue is filed exactly as before. A cap counts new
-  // issues per rolling hour and open issues from the last successful
-  // projection; an unavailable projection files nothing new.
-  const capsActive = settings.maxPerHour !== null || settings.maxPending !== null;
-  const filingRoom = (): number => {
-    if (!capsActive) return Number.POSITIVE_INFINITY;
-    const hourStart = now.getTime() - 60 * 60_000;
-    let filedThisHour = 0;
-    for (const candidate of Object.values(ledger.findings)) {
-      if (!candidate.disposition.startsWith("filed:")) continue;
-      const filedAt = Date.parse(candidate.filedAt ?? "");
-      if (Number.isFinite(filedAt) && filedAt > hourStart) filedThisHour += 1;
-    }
-    const projection = readProjection(stateDir);
-    if (projection === undefined || projection.state !== "ok") {
-      report.reason = "a filing cap is set and the GitHub projection is not ok; nothing new was filed";
-      return 0;
-    }
-    const open = projection.issues.filter((issue) => issue.state === "pending").length;
-    const hourlyRoom =
-      settings.maxPerHour === null
-        ? Number.POSITIVE_INFINITY
-        : Math.max(0, settings.maxPerHour - filedThisHour);
-    const openRoom =
-      settings.maxPending === null
-        ? Number.POSITIVE_INFINITY
-        : Math.max(0, settings.maxPending - open);
-    return Math.min(hourlyRoom, openRoom);
-  };
-  let room = filingRoom();
-
-  // Pending filings are retried first: a failed `gh` call never loses evidence.
-  for (const fingerprint of gateBlocked ? [] : uniqueCandidates) {
-    if (room <= 0) {
-      markPending(ledger, fingerprint);
-      continue;
-    }
-    const entry = ledger.findings[fingerprint];
-    if (entry === undefined) {
-      ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
-      continue;
-    }
-    const active = deliveryFor();
-    if (active === undefined) {
-      const reason = deliveryFailure ?? "the watchdog delivery is unavailable";
-      failure ??= reason;
-      markPending(ledger, fingerprint);
-      context.log(`filing ${entry.category} failed: ${reason}`);
-      continue;
-    }
-    const filed = await active.create(issueInput(fingerprint, entry));
-    if (filed.ok) {
-      room -= 1;
-      markFiled(ledger, fingerprint, filed.url, now);
-      // Persist each success before the next call: a hard kill after this
-      // point must not refile an issue the forge already accepted.
-      saveLedger(context.stateDir, ledger);
-      report.issues.push({
-        url: filed.url,
-        category: entry.category,
-        fingerprint,
-        line: entry.line,
-      });
-      context.log(`filed ${filed.url} for ${entry.category}: ${entry.line}`);
-      continue;
-    }
-    failure ??= filed.reason;
-    markPending(ledger, fingerprint);
-    context.log(`filing ${entry.category} failed: ${filed.reason}`);
-  }
 
   const filedThisCycle = new Set(report.issues.map((issue) => issue.fingerprint));
   for (const finding of gateBlocked ? [] : findings) {

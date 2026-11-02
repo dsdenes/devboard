@@ -473,23 +473,25 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
       return client.get(number);
     },
     async comment(targetValue, body) {
+      const numeric = typeof targetValue === "number" ? targetValue : undefined;
       const url = typeof targetValue === "string" ? targetValue : String(targetValue);
       if (forge === "gitea") {
         const gitea = await target("write");
-        const number = giteaIssueNumber(gitea, url);
+        const number = numeric ?? giteaIssueNumber(gitea, url);
         if (number === undefined) {
           throw new ForgeIssueError(`not an issue in ${gitea.baseUrl}/${gitea.project}: ${url}`);
         }
         await giteaCommentIssue(gitea, number, body, options.fetchImpl);
         return;
       }
-      const outcome = await github("write", [
-        "issue",
-        "comment",
-        url,
-        "--body-file",
-        "-",
-      ], body);
+      const argv = ["issue", "comment"];
+      if (numeric !== undefined) {
+        argv.push(String(numeric), "--repo", remote.project);
+      } else {
+        argv.push(url);
+      }
+      argv.push("--body-file", "-");
+      const outcome = await github("write", argv, body);
       if (outcome.code !== 0) {
         throw new ForgeIssueError(firstLine(outcome.stderr || outcome.stdout));
       }

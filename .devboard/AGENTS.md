@@ -1,5 +1,26 @@
 # Harness instructions
 
+## Agent flows are prompts plus MCP tools
+
+Every agent flow this harness runs follows four rules, and a change that breaks one is a defect:
+
+1. **The prompt describes the complete flow.** An agent prompt states the whole flow the agent
+   executes: its input, its survey or read steps, its decision rules, and every action it takes.
+   Nothing load-bearing lives only in worker code the agent cannot see.
+2. **Agents act through the Devboard MCP tools.** An agent files an issue, registers a Flow widget,
+   records a steering acknowledgement, checkpoint, or verification, stages a Discover document, or
+   requests a Design System release by calling the matching MCP tool. The tool performs the write
+   and returns the created or recorded identity.
+3. **No rigid answer document.** No flow may require a JSON document, JSON-lines file, or staged
+   document that deterministic code then parses, validates, corrects, or converts into an external
+   action. MCP tools validate their own arguments and confinement; publication and rendering may
+   still parse what is on disk and report a malformed state as an error, but no path asks the same
+   agent to rewrite a rejected answer.
+4. **Manifesto first, no self-reference.** Every prompt file and every prompt assembled in code
+   begins its body with a `## Manifesto` section whose first sentence names the agent's goal and
+   the observable result it produces. No prompt body opens with a backticked or bare slash-command
+   invocation of itself.
+
 ## The source tree is not the installed harness
 
 This checkout builds and releases the harness; hosts run an installed copy.

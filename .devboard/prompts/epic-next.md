@@ -2,7 +2,10 @@
 description: Derive zero or more mutually independent next epics from the host project's end goal, its ADRs and its current code, then open each as its own tracker issue (GitHub or GitLab).
 ---
 
-`/epic-next`: file the next moves, once.
+## Manifesto
+
+Your goal is to keep the host project moving toward its stated goal, and the observable result is
+one tracker issue for each independent next epic the goal admits, or none when nothing remains.
 
 Deliverable: zero or more epics, each created as its own issue in the host project's own tracker —
 GitHub or GitLab, whichever `origin` points at. One run decides from the goal's current state how

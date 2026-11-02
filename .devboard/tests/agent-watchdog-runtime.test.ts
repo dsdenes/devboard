@@ -154,8 +154,15 @@ describe("detached watchdog worker", () => {
     await writeFile(
       dedupStub,
       `${JSON.stringify({
-        read: { open_issues: [] },
-        decisions: [{ fingerprint: "*", action: "unique" }],
+        decisions: [
+          {
+            fingerprint: "*",
+            action: "filed",
+            number: 1,
+            url: "https://github.com/acme/fixture/issues/1",
+            title: "Synthetic finding held by a slow forge call",
+          },
+        ],
       })}\n`,
     );
     const fingerprint = "0123456789abcdef0123456789abcdef";

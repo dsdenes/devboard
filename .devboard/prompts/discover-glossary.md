@@ -2,18 +2,19 @@
 description: Crawl the host read-only and stage the UbiLang glossaries, their significance scores, and the glossary Discover skill.
 ---
 
-`/discover-glossary <staging-dir>`: crawl the host read-only, then write one staged UbiLang glossary
-per detected bounded context, the significance sidecar that scores every term, and the glossary
-Discover skill. This turn produces data, not conversation: no interview, no questions, no prose
-report.
+## Manifesto
+
+Your goal is to name the host's own domain language, and the observable result is the run's
+staged glossaries, significance scores, and glossary skill written through the Devboard MCP
+staging tools and then published by the server.
 
 ## Contract
 
 - `<host>` is the git top level: `git rev-parse --show-toplevel`. If that fails, use the current
   working directory.
-- `<staging-dir>` is the single argument after `/discover-glossary` (`$ARGUMENTS` in the wrapper).
-  It is the only directory this turn may write. Create the layout below and create nothing else.
-- The server owns publication. Never write outside `<staging-dir>`, and never touch
+- `<staging-dir>` is the run's staging directory, passed to every staging tool call. The tools are
+  the only writers; never create or edit a staged file by hand.
+- The server owns publication. Never write outside the run's staging directory, and never touch
   `<host>/.omp/discover/`, `<host>/.omp/skills/`, `<host>/GOAL.md`, anything under `<host>/adrs/`,
   or any host source file.
 - Never write `manifest.json` or `decisions.json`; the server generates both.
@@ -51,26 +52,20 @@ Never block on an ambiguity and never ask a question. When the evidence is absen
 omit the concept or propose it explicitly. Never invent a term, a definition, a grounding path, or
 a bounded context.
 
-## Staged layout
+## Staging
 
-Write exactly this layout under `<staging-dir>`:
-
-```
-glossary/<boundedContext>.glossary.yaml
-glossary/significance.json
-skills/discover-glossary/SKILL.md
-```
-
-- Write at least one glossary file. The file name is the bounded-context id in kebab case; at least
-  one bounded context must be detected.
-- Write exactly one `SKILL.md`, named `discover-glossary`. Write no other skill directory.
-- Write no other files, no notes, no logs, and no temporary files. Order every object key, array,
-  and enum exactly as specified.
+Call `discover_glossary_stage` once per detected bounded context with `stagingDir` set to
+`<staging-dir>`, `context` set to the kebab-case bounded-context id, and `yaml` set to that
+document's complete text. At least one bounded context must be detected. Then call
+`discover_significance_stage` once with the complete significance object, and
+`discover_skill_stage` once with `name` `discover-glossary`, its one-line description, and its
+heading-plus-bullets body. The tools write the run's staged artifacts; write no other file, note,
+log, or temporary file. Order every object key, array, and enum exactly as specified.
 
 ## Glossary (UbiLang)
 
-Write one YAML document per detected bounded context at
-`glossary/<boundedContext>.glossary.yaml`. It must be a complete, parseable UbiLang glossary.
+Pass one YAML document per detected bounded context. It must be a complete, parseable UbiLang
+glossary.
 
 Top-level key order: `boundedContext`, `titles`, `concepts`. `titles` is a list of
 `{language, text}` entries.
@@ -139,7 +134,8 @@ and a domain term named once is significant when the host's model depends on it.
 a one-line reason of at most 160 characters that states the evidence, without a path, a secret, or a
 second sentence.
 
-Stage the scores at `glossary/significance.json`, beside the glossaries, with exactly this shape:
+Pass the scores as the `significance` object to `discover_significance_stage`, beside the
+glossaries, with exactly this shape:
 
 ```json
 {
@@ -161,23 +157,13 @@ Stage the scores at `glossary/significance.json`, beside the glossaries, with ex
   the range, or a rejected reason fails the run, so never stage a partial sidecar.
 - Exclude significance from the glossary YAML: no concept carries a score or a reason field.
 
-## `skills/discover-glossary/SKILL.md`
+## Glossary skill
 
-Frontmatter, in this shape:
-
-```yaml
----
-name: discover-glossary
-description: One sentence naming the project's glossary policy and when to apply it.
-metadata:
-  devboard-managed: "true"
-  devboard-family: "discover"
-  devboard-skill: glossary
----
-```
+Call `discover_skill_stage` with `name` set to `discover-glossary`, `description` set to one
+sentence naming the project's glossary policy and when to apply it, and `body` set to a `#`
+heading title followed only by imperative bullets. The tool writes the managed frontmatter.
 
 - `name` is exactly `discover-glossary`; `description` is non-empty and at most 1024 characters.
-  Neither marker may be omitted; `devboard-managed` is the quoted string `"true"`.
 - The body is a `#` heading title followed only by imperative bullets, one directive per bullet.
   Every non-empty, non-heading line starts with `- `. No paragraphs, tables, prose introduction, or
   chat report.
@@ -197,18 +183,18 @@ metadata:
 
 Confirm all of the following:
 
-- [ ] At least one `glossary/<boundedContext>.glossary.yaml` exists, parses as YAML, has the
+- [ ] Every `discover_glossary_stage` call returned a path; the document parses as YAML, has the
       required top-level and concept keys in order, unique kebab-case ids, at least one concept,
       an English preferred label and definition per concept, and at least one valid grounding per
       concept.
 - [ ] Every concept is `unconfirmed` or `proposed`; every `origin: standard` has a `standardRef`;
       no confirmed, deprecated, or invalidated status appears.
-- [ ] `glossary/significance.json` exists beside the glossaries and every staged glossary concept
-      carries a significance score in it: one integer from `0` to `100` and a one-line reason,
-      with no missing, extra, or unscored entry.
-- [ ] `skills/discover-glossary/SKILL.md` exists with its exact name, a non-empty description of
-      at most 1024 characters, both markers, a heading plus imperative bullets, and one bullet per
-      bounded context naming its published glossary path.
+- [ ] `discover_significance_stage` returned its path, and every staged glossary concept carries a
+      significance score in it: one integer from `0` to `100` and a one-line reason, with no
+      missing, extra, or unscored entry.
+- [ ] `discover_skill_stage` returned its path with the exact name, a non-empty description of
+      at most 1024 characters, a heading plus imperative bullets, and one bullet per bounded
+      context naming its published glossary path.
 - [ ] No staged file contains an absolute path, a secret value, a URL with user info, a paragraph,
       a timestamp, or a run id.
 - [ ] Nothing was written outside `<staging-dir>`; `GOAL.md`, `adrs/`, host source, `.omp/discover`,
