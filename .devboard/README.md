@@ -1766,10 +1766,27 @@ an installed host and never writes on a page open, tab restore, reconnect, or re
 
 Auto Scout and Design System read the effective prompt file their worker command opens:
 `.devboard/prompts/scout-recommendations.md` and `.devboard/prompts/design-system.md`. The Watchdog
-section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no prompt. The
-Coach section contains it too, naming that Coach assembles its prompt from each cycle's findings.
-Both render no other prompt test id, and a prompt command for either is refused with that same
+section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no prompt. Both
+render no other prompt test id, and a prompt command for Watchdog is refused with that same
 descriptor statement and has no effect.
+
+The Coach section contains the one synthesis prompt template instead of an absence: exactly one
+`agent-prompt-template` element whose `agent-prompt-template-text` is the complete template in a
+scrollable monospace region. It is the same text every Coach synthesis call sends, rendered from
+one shared source: the two intro lines, every section heading, every `Rules:` bullet, and the
+`Shape:` line are character-for-character the synthesis prompt's fixed lines. The `Family:`,
+`Fragments:`, and `Excerpts:` sections hold the literal placeholders `<family>`, `<fragments>`,
+and `<excerpts>`, so no family key, session, excerpt, or command occurrence is named and there is
+no per-family or per-kind copy. The live sections carry no snapshot: `MCP catalog:` is the
+`MCP_TOOLS` name/title pairs in catalog order plus every `MCP_COVERS` entry, `Command allowlist:`
+is `JSON.stringify(allowlist, null, 2)` for the allowlist in `<STATE_DIR>/coach/settings.json`
+read on every connect, and `Open Coach issues:` is the dashboard's own open-issue read filtered to
+issues whose title starts with `[coach]` or whose body contains `family:`, as `{number, title,
+url}` objects sorted by number. A successful read with no such issue shows `[]`; before any
+successful read the section states that the open Coach issues could not be read. The template is
+read-only in an installed host and in a harness source checkout: it renders no editor, Save,
+Reset, or chat control, opening, closing, restoring, or reloading it writes no file and starts or
+stops no agent, and every Prompt command for Coach is refused with the descriptor's statement.
 
 When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections'
 closed summary carries the source-only marker (`source-only-badge`, the word `devboard`), and they
@@ -1781,10 +1798,11 @@ error naming that the action requires a harness source checkout; no file changes
 absent or unreadable carries no marker either.
 
 `agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
-served checkout, adds nothing, strips nothing, and writes no other file; success shows the
-`save-feedback` notice and leaves the editor on the saved bytes, and failure shows
-`agent-prompt-error` with the file unchanged. The notice names the run that reads the file next:
-the next scan for Auto Scout and the next cycle for Design System. Only that click writes the file.
+served checkout, adds nothing, strips nothing, and writes no other file; success shows the shared
+`save-feedback` confirmation scoped `agent.prompt.<id>` and leaves the editor on the saved bytes,
+and failure shows `agent-prompt-error` with the file unchanged. The notice names the run that
+reads the file next: the next scan for Auto Scout and the next cycle for Design System. Only that
+click writes the file.
 A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
 proposed complete prompt in the editor without any copy; it writes no file, creates no scan, files
 no issue, and changes no agent state. A failed turn shows `agent-prompt-chat-error` and leaves the
@@ -2151,6 +2169,19 @@ catalog as name/title pairs plus every `covers` entry, every open Coach issue as
 and the configured allowlist; it stays under 24 KiB. A cycle whose synthesis calls all fail records
 the failure and files nothing. A failed call among successful ones is recorded for its family and
 does not discard the proposals the other calls returned.
+
+The Coach page's Prompt disclosure shows that same prompt as one read-only template
+(`agent-prompt-template`, with the text in `agent-prompt-template-text`), not as a prompt file and
+not as an absence. `synthesize.ts` renders both the call's prompt and the template from one fixed
+text and one catalog/allowlist/issue rendering, so the intro, the section headings, the `Rules:`
+bullets, and the `Shape:` line cannot drift apart; a test builds a real prompt for a fixture family
+and asserts the fixed lines are equal. The per-family sections show `<family>`, `<fragments>`, and
+`<excerpts>`; the live sections name the current catalog, read the allowlist from
+`<STATE_DIR>/coach/settings.json` on each connect, and list the dashboard's current open issues
+filtered by `[coach]` title or `family:` body, sorted by number, or state that the open Coach
+issues could not be read before the first successful read. Opening, closing, restoring, or
+reloading the disclosure writes nothing and starts nothing, and no editor, Save, or chat exists
+for Coach.
 
 The peer answers with one JSON object and nothing else:
 `{family, action, tool?, prompt?, rationale, acceptance}`. `action` is `tool`, `prompt`, or `none`;
@@ -3479,13 +3510,18 @@ and persistence, the Watchdog cap, the shared table columns, freshness without a
 mutating command on reload, the timer-blocked state and one-click disable against a stub
 `systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
 detail and persisted settings, and the prompt section: every page renders `agent-prompt` directly
-after `agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach
-show `agent-prompt-absent`; an installed host is read-only, carries no source-only marker, and
-refuses a save with an error while its prompt files stay byte-identical; a source-checkout fixture
-renders the marker on the closed summary and the editor, chat, and save for both file-backed
-agents, opens and closes the disclosure with the marker still one, one chat turn streams a reply
-and changes the editor with the file untouched, Save makes each file byte-equal to its editor and
-a reload puts those bytes back in the editor.
+after `agent-header`; Auto Scout and Design System show their own prompt files and, in a source
+checkout, the source-only marker on their closed summary; Watchdog shows `agent-prompt-absent`;
+Coach shows the one read-only `agent-prompt-template` with the fixed intro, every heading and rule
+line, the three placeholders, every catalog tool name, the seeded allowlist, and the fixture's two
+Coach issues but not its unrelated issue, and renders no editor, Save, or chat and no source-only
+marker; an installed host is read-only, carries no source-only marker, and refuses a save with an
+error while its prompt files stay byte-identical; a reload closes the disclosure, reopening shows
+identical text, and the fixture tree is byte-identical afterwards; editing Coach's settings file
+and reconnecting shows the new allowlist; a source-checkout fixture renders the editor, chat, and
+save for both file-backed agents and the same read-only Coach template, one chat turn streams a
+reply and changes the editor with the file untouched, Save makes each file byte-equal to its
+editor and a reload puts those bytes back in the editor.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

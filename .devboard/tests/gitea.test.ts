@@ -338,6 +338,7 @@ describe("Gitea issues", () => {
         url: "http://gitea.test/acme/fixture/issues/5",
         createdAt: "2026-10-01T00:00:00Z",
         labels: ["goal"],
+        body: "body",
       },
     ]);
   });

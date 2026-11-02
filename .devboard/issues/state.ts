@@ -25,6 +25,8 @@ export interface IssuesIssue {
   url: string;
   createdAt: string;
   labels: string[];
+  /** The issue's Markdown body; absent from a read that did not carry it. */
+  body?: string;
 }
 
 export interface QueuedIssue extends IssuesIssue {
@@ -133,7 +135,8 @@ function isIssue(value: unknown): value is IssuesIssue {
     typeof value.title === "string" &&
     typeof value.url === "string" &&
     typeof value.createdAt === "string" &&
-    (value.labels === undefined || isStringArray(value.labels))
+    (value.labels === undefined || isStringArray(value.labels)) &&
+    (value.body === undefined || typeof value.body === "string")
   );
 }
 

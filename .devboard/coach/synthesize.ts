@@ -77,6 +77,117 @@ function json(value: unknown): string {
 }
 
 /**
+ * Every line the prompt emits outside its six dynamic sections. The synthesis
+ * call and the page's read-only template render this one array, so a wording
+ * change reaches both or neither.
+ */
+const INTRO_LINES: readonly string[] = [
+  "You are the Devboard Coach synthesizer. You do not run tools. Answer with one",
+  "JSON object and nothing else: no prose, no Markdown outside the JSON strings.",
+];
+
+const RULE_LINES: readonly string[] = [
+  "Rules:",
+  "- One issue for this family. Choose \"tool\" when a stable named capability removes",
+  "  the recurrence, \"prompt\" when one instruction is enough, and \"none\" when the",
+  "  family needs no change. Prefer the smaller change.",
+  "- A tool is a capability, not a wrapper around this one command. Never reuse a name",
+  "  from the catalog. `covers` entries are the normalized command prefixes the tool",
+  "  replaces; at least one must match the family key.",
+  "- A prompt names an instruction and a target under `.devboard/prompts/` or an agent id.",
+  "- Acceptance criteria are checkable from the evidence.",
+  "- When action is \"tool\", the family must be covered by the command allowlist.",
+];
+
+const SHAPE_LINE =
+  '{"family":"<key>","action":"tool|prompt|none","tool":{"name":"^[a-z][a-z0-9_]{2,40}$",' +
+  '"title":"...","description":"...","inputSchema":{"type":"object",' +
+  '"additionalProperties":false,"properties":{}},"covers":["<key>"]},' +
+  '"prompt":{"instruction":"...","target":".devboard/prompts/example.md"},' +
+  '"rationale":"...","acceptance":["- [ ] ..."]}';
+
+/** The placeholder a template section carries instead of one family's value. */
+const FAMILY_PLACEHOLDER = "<family>";
+const FRAGMENTS_PLACEHOLDER = "<fragments>";
+const EXCERPTS_PLACEHOLDER = "<excerpts>";
+
+/** What the template states when no successful open-issue read is available. */
+export const COACH_PROMPT_ISSUES_UNAVAILABLE = "Open Coach issues could not be read.";
+
+/** The six values a prompt fills between its fixed lines. */
+interface PromptSections {
+  family: string;
+  fragments: string;
+  excerpts: string;
+  catalog: string;
+  issues: string;
+  allowlist: string;
+}
+
+/** One prompt, fixed lines and dynamic sections in their one order. */
+function promptText(sections: PromptSections): string {
+  return [
+    ...INTRO_LINES,
+    "",
+    "Family:",
+    sections.family,
+    "",
+    "Fragments:",
+    sections.fragments,
+    "",
+    "Excerpts:",
+    sections.excerpts,
+    "",
+    "MCP catalog:",
+    sections.catalog,
+    "",
+    "Open Coach issues:",
+    sections.issues,
+    "",
+    "Command allowlist:",
+    sections.allowlist,
+    "",
+    ...RULE_LINES,
+    "",
+    "Shape:",
+    SHAPE_LINE,
+    "",
+  ].join("\n");
+}
+
+/** The catalog JSON every prompt carries: name/title pairs in catalog order. */
+function catalogJson(): string {
+  return json({
+    tools: MCP_TOOLS.map((tool) => ({ name: tool.name, title: tool.title })),
+    covers: [...MCP_COVERS],
+  });
+}
+
+/** The three fields of one open issue the prompt and the template publish. */
+function issueRows(issues: CoachOpenIssue[]): Array<{
+  number: number;
+  title: string;
+  url: string;
+}> {
+  return issues.map((issue) => ({
+    number: issue.number,
+    title: issue.title,
+    url: issue.url,
+  }));
+}
+
+/**
+ * The open issues one synthesis call sees: a filed Coach issue, or any issue
+ * whose body carries a family tag. The cycle and the page's template share
+ * this filter so the template names exactly the issues the next call receives.
+ */
+export function coachIssues(issues: CoachOpenIssue[]): CoachOpenIssue[] {
+  return issues.filter(
+    (issue) => issue.title.startsWith("[coach]") || issue.body.includes("family:"),
+  );
+}
+
+/**
  * The prompt. It carries one family's summary, fragments, at most five
  * excerpts, the catalog, every open Coach issue, and the configured allowlist.
  * Identical family and settings bytes produce an identical prompt.
@@ -90,12 +201,8 @@ export function synthesisPrompt(input: {
   let excerpts = family.excerpts.slice();
   let issues = input.openIssues.slice().sort((left, right) => left.number - right.number);
   const render = (): string =>
-    [
-      "You are the Devboard Coach synthesizer. You do not run tools. Answer with one",
-      "JSON object and nothing else: no prose, no Markdown outside the JSON strings.",
-      "",
-      "Family:",
-      json({
+    promptText({
+      family: json({
         key: family.key,
         kind: family.kind,
         calls: family.calls,
@@ -104,44 +211,12 @@ export function synthesisPrompt(input: {
         first_at: family.firstAt,
         last_at: family.lastAt,
       }),
-      "",
-      "Fragments:",
-      json(family.fragments),
-      "",
-      "Excerpts:",
-      json(excerpts),
-      "",
-      "MCP catalog:",
-      json({
-        tools: MCP_TOOLS.map((tool) => ({ name: tool.name, title: tool.title })),
-        covers: [...MCP_COVERS],
-      }),
-      "",
-      "Open Coach issues:",
-      json(issues.map((issue) => ({ number: issue.number, title: issue.title, url: issue.url }))),
-      "",
-      "Command allowlist:",
-      json(input.settings.allowlist),
-      "",
-      "Rules:",
-      "- One issue for this family. Choose \"tool\" when a stable named capability removes",
-      "  the recurrence, \"prompt\" when one instruction is enough, and \"none\" when the",
-      "  family needs no change. Prefer the smaller change.",
-      "- A tool is a capability, not a wrapper around this one command. Never reuse a name",
-      "  from the catalog. `covers` entries are the normalized command prefixes the tool",
-      "  replaces; at least one must match the family key.",
-      "- A prompt names an instruction and a target under `.devboard/prompts/` or an agent id.",
-      "- Acceptance criteria are checkable from the evidence.",
-      "- When action is \"tool\", the family must be covered by the command allowlist.",
-      "",
-      "Shape:",
-      '{"family":"<key>","action":"tool|prompt|none","tool":{"name":"^[a-z][a-z0-9_]{2,40}$",' +
-        '"title":"...","description":"...","inputSchema":{"type":"object",' +
-        '"additionalProperties":false,"properties":{}},"covers":["<key>"]},' +
-        '"prompt":{"instruction":"...","target":".devboard/prompts/example.md"},' +
-        '"rationale":"...","acceptance":["- [ ] ..."]}',
-      "",
-    ].join("\n");
+      fragments: json(family.fragments),
+      excerpts: json(excerpts),
+      catalog: catalogJson(),
+      issues: json(issueRows(issues)),
+      allowlist: json(input.settings.allowlist),
+    });
 
   let text = render();
   while (Buffer.byteLength(text, "utf8") >= SYNTHESIS_PROMPT_MAX_BYTES) {
@@ -156,6 +231,35 @@ export function synthesisPrompt(input: {
     text = render();
   }
   return text;
+}
+
+/**
+ * The one read-only template the Coach page shows: the same fixed lines and
+ * live catalog, allowlist, and open-issue sections a synthesis call sends, with
+ * the three per-family sections named as placeholders. It reads nothing, writes
+ * nothing, and starts nothing.
+ */
+export function coachPromptTemplate(input: {
+  settings: CoachSettings;
+  /** The dashboard's open-issue read, or null before a successful one. */
+  openIssues: CoachOpenIssue[] | null;
+}): string {
+  const issues =
+    input.openIssues === null
+      ? COACH_PROMPT_ISSUES_UNAVAILABLE
+      : json(
+          issueRows(
+            coachIssues(input.openIssues).sort((left, right) => left.number - right.number),
+          ),
+        );
+  return promptText({
+    family: FAMILY_PLACEHOLDER,
+    fragments: FRAGMENTS_PLACEHOLDER,
+    excerpts: EXCERPTS_PLACEHOLDER,
+    catalog: catalogJson(),
+    issues,
+    allowlist: json(input.settings.allowlist),
+  });
 }
 
 /** The exact top-level and nested key sets the contract allows. */

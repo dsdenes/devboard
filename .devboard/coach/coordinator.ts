@@ -31,6 +31,7 @@ import {
 import { coachDirectory, latestPath, runsDirectory } from "./paths";
 import { readCoachSettings, type CoachSettings } from "./settings";
 import {
+  coachIssues,
   parseSynthesisAnswer,
   readSynthesisStub,
   synthesisPrompt,
@@ -540,11 +541,9 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
           ...(stub === undefined ? {} : { run: stub }),
         });
       });
-    const coachIssues = openIssues.filter(
-      (issue) => issue.title.startsWith("[coach]") || issue.body.includes("family:"),
-    );
+    const openCoachIssues = coachIssues(openIssues);
     const prompts = toSynthesize.map((family) =>
-      synthesisPrompt({ family, settings, openIssues: coachIssues }),
+      synthesisPrompt({ family, settings, openIssues: openCoachIssues }),
     );
     const calls = await mapLimit(
       toSynthesize,

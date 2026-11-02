@@ -73,6 +73,9 @@ import { TRACKER_SYNC_INTERVAL_MS } from "./issue-sync";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
+import { coachDirectory } from "../coach/paths";
+import { readCoachSettings } from "../coach/settings";
+import { coachPromptTemplate } from "../coach/synthesize";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import { toolListPayload } from "../mcp/catalog";
 import { toolInvocationCounts } from "../mcp/invocations";
@@ -2563,6 +2566,13 @@ export function createApp(options: AppOptions) {
       : TRACKER_SYNC_INTERVAL_MS);
 
   /**
+   * The Coach prompt section is generated from the dashboard's own open-issue
+   * read, so it is republished whenever that read returns a fresh list. The
+   * publisher is bound after the prompt controller exists; the read is async.
+   */
+  let publishPromptTemplates: (() => void) | undefined;
+
+  /**
    * Issues mode reads and commands the detached worker for this checkout. The
    * bridge never owns the worker: starting one is detached, stopping this
    * server leaves it alive, and a replacement attaches to the same state.
@@ -2578,6 +2588,7 @@ export function createApp(options: AppOptions) {
     log: (line) => process.stderr.write(`${line}\n`),
     hasClients: () => clients.size > 0,
     syncMs: issuesSyncMs,
+    onOpenIssues: () => publishPromptTemplates?.(),
     ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
     ...(options.issues?.syncRead === undefined ? {} : { syncRead: options.issues.syncRead }),
     ...(options.issues?.preflightTimeoutMs === undefined
@@ -2731,7 +2742,21 @@ export function createApp(options: AppOptions) {
     harnessDir: runningHarnessDir(),
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
+    templates: {
+      coach: () =>
+        coachPromptTemplate({
+          settings: readCoachSettings(coachDirectory(stateDir)),
+          openIssues:
+            issues.openIssues?.map((issue) => ({
+              number: issue.number,
+              title: issue.title,
+              body: issue.body ?? "",
+              url: issue.url,
+            })) ?? null,
+        }),
+    },
   });
+  publishPromptTemplates = () => prompts.publishTemplates();
 
   /**
    * The prompt half of each Discover card. Each of the seven reads, saves, and

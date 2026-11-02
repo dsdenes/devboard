@@ -52,6 +52,9 @@ import {
   proposedToolName,
 } from "../coach/issue";
 import {
+  COACH_PROMPT_ISSUES_UNAVAILABLE,
+  coachIssues,
+  coachPromptTemplate,
   parseSynthesisAnswer,
   synthesisPrompt,
   SYNTHESIS_PROMPT_MAX_BYTES,
@@ -60,6 +63,7 @@ import {
   type Synthesize,
 } from "../coach/synthesize";
 import { allowlistEntryFor, validateProposal } from "../coach/validate";
+import { MCP_COVERS, MCP_TOOLS } from "../mcp/catalog";
 import type { AgentSession, SessionToolCall, SessionToolResult } from "../lib/agent-sessions";
 import type { CoachCollection, CoachJournalRecord } from "../coach/collect";
 import type { CoachDelivery, DeliveryResult } from "../coach/delivery";
@@ -1204,6 +1208,40 @@ describe("Coach synthesis contract and prompt", () => {
     }),
   ])[0]!;
 
+  /** The six headings whose following lines are a prompt's dynamic sections. */
+  const DYNAMIC_HEADINGS = [
+    "Family:",
+    "Fragments:",
+    "Excerpts:",
+    "MCP catalog:",
+    "Open Coach issues:",
+    "Command allowlist:",
+  ];
+
+  /** One section's value lines, joined; a dynamic value never contains a blank line. */
+  function sectionValue(text: string, heading: string): string {
+    const lines = text.split("\n");
+    const start = lines.indexOf(heading);
+    if (start < 0) return "";
+    const value: string[] = [];
+    for (let index = start + 1; index < lines.length && lines[index] !== ""; index += 1) {
+      value.push(lines[index]!);
+    }
+    return value.join("\n");
+  }
+
+  /** Every line outside the six dynamic sections, in order. */
+  function fixedLines(text: string): string[] {
+    const lines = text.split("\n");
+    return lines.filter((line, index) => {
+      if (DYNAMIC_HEADINGS.includes(line)) return true;
+      for (let back = index - 1; back >= 0 && lines[back] !== ""; back -= 1) {
+        if (DYNAMIC_HEADINGS.includes(lines[back]!)) return false;
+      }
+      return true;
+    });
+  }
+
   test("the prompt carries the evidence, catalog, issues, allowlist and stays bounded", () => {
     const openIssues: CoachOpenIssue[] = [
       {
@@ -1221,6 +1259,85 @@ describe("Coach synthesis contract and prompt", () => {
     expect(prompt).toContain('"bun "');
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(24 * 1024);
     expect(synthesisPrompt({ family, settings, openIssues })).toBe(prompt);
+  });
+
+  test("the page template repeats the prompt's fixed lines character for character", () => {
+    const settings = { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun ", "git "] };
+    const openIssues: CoachOpenIssue[] = [
+      {
+        number: 7,
+        title: "[coach] bun run publish",
+        body: `family:${familyTag(family.key)}`,
+        url: "https://forge.test/acme/fixture/issues/7",
+      },
+    ];
+    const prompt = synthesisPrompt({ family, settings, openIssues });
+    const template = coachPromptTemplate({ settings, openIssues });
+    expect(fixedLines(template)).toEqual(fixedLines(prompt));
+    expect(fixedLines(template)).toContain(
+      "You are the Devboard Coach synthesizer. You do not run tools. Answer with one",
+    );
+    expect(fixedLines(template)).toContain(
+      "JSON object and nothing else: no prose, no Markdown outside the JSON strings.",
+    );
+    expect(fixedLines(template).filter((line) => line.startsWith("- "))).toHaveLength(5);
+    expect(fixedLines(template)).toContain(
+      "- When action is \"tool\", the family must be covered by the command allowlist.",
+    );
+    expect(
+      fixedLines(template).some((line) =>
+        line.startsWith('{"family":"<key>","action":"tool|prompt|none"'),
+      ),
+    ).toBe(true);
+    expect(sectionValue(template, "MCP catalog:")).toBe(sectionValue(prompt, "MCP catalog:"));
+    expect(sectionValue(template, "Command allowlist:")).toBe(
+      JSON.stringify(settings.allowlist, null, 2),
+    );
+    expect(JSON.parse(sectionValue(template, "MCP catalog:"))).toEqual({
+      tools: MCP_TOOLS.map((tool) => ({ name: tool.name, title: tool.title })),
+      covers: [...MCP_COVERS],
+    });
+  });
+
+  test("the template names its three per-family sections with placeholders", () => {
+    const template = coachPromptTemplate({
+      settings: { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun "] },
+      openIssues: [],
+    });
+    expect(sectionValue(template, "Family:")).toBe("<family>");
+    expect(sectionValue(template, "Fragments:")).toBe("<fragments>");
+    expect(sectionValue(template, "Excerpts:")).toBe("<excerpts>");
+    expect(template).not.toContain(family.key);
+    expect(template).not.toContain(family.firstAt);
+    for (const excerpt of family.excerpts) {
+      expect(template).not.toContain(excerpt.command);
+    }
+  });
+
+  test("the open-issue section filters, sorts, and states an unavailable read", () => {
+    const settings = { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun "] };
+    const issues: CoachOpenIssue[] = [
+      { number: 9, title: "unrelated", body: "no tag", url: "https://forge.test/9" },
+      { number: 5, title: "family evidence", body: "see family:abc", url: "https://forge.test/5" },
+      { number: 3, title: "[coach] later", body: "", url: "https://forge.test/3" },
+    ];
+    expect(coachIssues(issues).map((issue) => issue.number)).toEqual([5, 3]);
+    const template = coachPromptTemplate({ settings, openIssues: issues });
+    const value = sectionValue(template, "Open Coach issues:");
+    expect(JSON.parse(value)).toEqual([
+      { number: 3, title: "[coach] later", url: "https://forge.test/3" },
+      { number: 5, title: "family evidence", url: "https://forge.test/5" },
+    ]);
+    expect(value).not.toContain("unrelated");
+    expect(
+      sectionValue(coachPromptTemplate({ settings, openIssues: [] }), "Open Coach issues:"),
+    ).toBe("[]");
+    const unavailable = sectionValue(
+      coachPromptTemplate({ settings, openIssues: null }),
+      "Open Coach issues:",
+    );
+    expect(unavailable).toBe(COACH_PROMPT_ISSUES_UNAVAILABLE);
+    expect(unavailable).not.toBe("[]");
   });
 
   test("a prompt above the byte budget is cut to the budget", () => {

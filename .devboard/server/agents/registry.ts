@@ -197,6 +197,11 @@ export type AgentPromptDescriptor =
       kind: "absent";
       /** Why this agent has no prompt file to show or edit. */
       message: string;
+    }
+  | {
+      kind: "template";
+      /** Why this generated prompt is shown read-only, with no editor or chat. */
+      message: string;
     };
 
 export interface AgentDescriptor {
@@ -291,8 +296,11 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     throw new AgentRegistryError(`${id}: scope must be repository or machine`);
   }
   const prompt = descriptor.prompt;
-  if (!isRecord(prompt) || (prompt.kind !== "file" && prompt.kind !== "absent")) {
-    throw new AgentRegistryError(`${id}: prompt must name its file or its absence`);
+  if (
+    !isRecord(prompt) ||
+    (prompt.kind !== "file" && prompt.kind !== "absent" && prompt.kind !== "template")
+  ) {
+    throw new AgentRegistryError(`${id}: prompt must name its file, its absence, or a template`);
   }
   if (prompt.kind === "file") {
     if (typeof prompt.file !== "string" || !/^[a-z0-9][a-z0-9-]*\.md$/.test(prompt.file)) {
@@ -309,7 +317,7 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
       throw new AgentRegistryError(`${id}: prompt file needs a save notice`);
     }
   } else if (typeof prompt.message !== "string" || prompt.message.trim().length === 0) {
-    throw new AgentRegistryError(`${id}: prompt absence needs its message`);
+    throw new AgentRegistryError(`${id}: prompt absence or template needs its message`);
   }
   if (
     !Array.isArray(descriptor.lifecycle) ||
@@ -702,10 +710,10 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
       "Reviews repeated agent mistakes and manual work and files one improvement issue per pattern.",
     scope: "repository",
     prompt: {
-      kind: "absent",
+      kind: "template",
       message:
-        "Coach assembles its prompt from each cycle's findings, so it has no prompt file to show " +
-        "or edit.",
+        "Coach synthesizes its prompt from each cycle's evidence, so this generated template " +
+        "is read-only.",
     },
     lifecycle: AGENT_LIFECYCLES,
     cadence: {

@@ -35,6 +35,7 @@ import {
   runDetail,
   runFilePath,
   type IssuesAgent,
+  type IssuesIssue,
   type IssuesRunDetail,
   type IssuesLifecycle,
   type IssuesState,
@@ -123,6 +124,8 @@ export interface IssuesBridgeOptions {
   spawnWorker?: (argv: string[], environment: Record<string, string | undefined>) => number | undefined;
   /** Test seam: replace the tracker mutation the close control performs. */
   closeIssue?: (request: CloseIssueRequest) => Promise<void>;
+  /** Called after each fresh open-issue read, never on a failure. */
+  onOpenIssues?: (issues: IssuesIssue[]) => void;
 }
 
 /** The bits of the state a dashboard may safely publish. */
@@ -144,6 +147,7 @@ export class IssuesBridge {
   private readonly preflightTimeoutMs: number;
   private readonly tracker: TrackerSync;
   private readonly hasClients: () => boolean;
+  private readonly onOpenIssues: (issues: IssuesIssue[]) => void;
   /** Runs already told to end because their issue left the tracker. */
   private readonly abandoned = new Set<string>();
 
@@ -186,6 +190,7 @@ export class IssuesBridge {
     this.spawnWorker = options.spawnWorker ?? ((argv, environment) => this.detach(argv, environment));
     this.closeIssueAction = options.closeIssue ?? ((request) => closeTrackerIssue(request));
     this.hasClients = options.hasClients ?? (() => true);
+    this.onOpenIssues = options.onOpenIssues ?? (() => undefined);
     this.tracker = new TrackerSync({
       repoDir: this.repoDir,
       repository: () => this.currentRepository(),
@@ -209,6 +214,11 @@ export class IssuesBridge {
     return this.repository();
   }
 
+  /** The last complete open list from the dashboard's own read, or null. */
+  get openIssues(): IssuesIssue[] | null {
+    return this.tracker.openIssues;
+  }
+
   /** Reads the tracker now when a client is watching; joins an in-flight read. */
   syncNow(): Promise<void> {
     if (!this.hasClients()) return Promise.resolve();
@@ -224,6 +234,7 @@ export class IssuesBridge {
           if (Number.isFinite(startedAt)) {
             this.stopClosedRuns(new Set(result.issues.map((issue) => issue.number)), startedAt);
           }
+          this.onOpenIssues(result.issues);
         }
         this.refresh();
       })

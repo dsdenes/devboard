@@ -4,6 +4,12 @@ import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { settingsPath, statePath } from "../../issues/scout/paths";
 import { emptyState, writeSettings, writeState } from "../../issues/scout/state";
+import { coachDirectory } from "../../coach/paths";
+import { readCoachSettings } from "../../coach/settings";
+import {
+  COACH_PROMPT_ISSUES_UNAVAILABLE,
+  coachPromptTemplate,
+} from "../../coach/synthesize";
 import { agentRegistry } from "./registry";
 import {
   AgentPromptController,
@@ -600,5 +606,97 @@ describe("discover prompt chat", () => {
     expect(frames[0]?.type).toBe("discoverPromptChatError");
     expect(String(frames[0]?.message)).toContain("harness source checkout");
     expect(readFileSync(file, "utf8")).toBe("# sheet\n");
+  });
+});
+
+describe("Coach template prompt", () => {
+  function coachController(
+    root: string,
+    coachDir: string,
+    frames: Array<Record<string, unknown>>,
+  ): AgentPromptController {
+    return new AgentPromptController({
+      registry: agentRegistry,
+      repoDir: root,
+      agentCommand: "definitely-not-an-agent",
+      agentEnvironment: async () => ({ ...process.env }),
+      harnessDir: HARNESS_ROOT,
+      send: (event) => frames.push(event as Record<string, unknown>),
+      templates: {
+        coach: () =>
+          coachPromptTemplate({
+            settings: readCoachSettings(coachDir),
+            openIssues: null,
+          }),
+      },
+    });
+  }
+
+  function coachSettings(root: string, allowlist: string[]): string {
+    const directory = coachDirectory(join(root, ".devboard", ".tmp", "state"));
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "settings.json"), JSON.stringify({ allowlist }));
+    return directory;
+  }
+
+  test("publishes the generated template, not an absence or an editor", async () => {
+    const root = await temporaryRoot("coach-template");
+    const coachDir = coachSettings(root, ["bun "]);
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = coachController(root, coachDir, frames);
+    const prompt = prompts.snapshot("coach");
+    expect(prompt?.absent).toBe(false);
+    expect(prompt?.editable).toBe(false);
+    expect(prompt?.text).toBeNull();
+    expect(prompt?.error).toBeNull();
+    expect(prompt?.template).toContain("<family>");
+    expect(prompt?.template).toContain("<fragments>");
+    expect(prompt?.template).toContain("<excerpts>");
+    expect(prompt?.template).toContain(COACH_PROMPT_ISSUES_UNAVAILABLE);
+    expect(prompt?.template).toContain('"bun "');
+  });
+
+  test("a reconnect shows the current settings file and writes nothing", async () => {
+    const root = await temporaryRoot("coach-template-settings");
+    const coachDir = coachSettings(root, ["bun "]);
+    const settingsFile = join(coachDir, "settings.json");
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = coachController(root, coachDir, frames);
+    expect(prompts.snapshot("coach")?.template).toContain('"bun "');
+    const edited = `${JSON.stringify({ allowlist: ["git status", "bun test"] }, null, 2)}\n`;
+    writeFileSync(settingsFile, edited);
+    prompts.publishTemplates();
+    const published = frames.find(
+      (frame) => frame.type === "agentPromptState" && frame.id === "coach",
+    ) as { prompt?: { template?: string } } | undefined;
+    expect(published?.prompt?.template).toContain('"bun test"');
+    expect(published?.prompt?.template).not.toContain('"bun "');
+    expect(readFileSync(settingsFile, "utf8")).toBe(edited);
+  });
+
+  test("refuses every Coach prompt command without touching a file", async () => {
+    const root = await sourceRoot("coach-template-source");
+    const coachDir = coachSettings(root, ["bun "]);
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = coachController(root, coachDir, frames);
+    const before = readdir(join(root, ".devboard", "prompts"));
+    prompts.save(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "coach",
+      "replacement\n",
+    );
+    await prompts.chat(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "coach",
+      "Change it.",
+      "",
+    );
+    expect(frames[0]?.type).toBe("agentPromptError");
+    const coachPrompt = agentRegistry.require("coach").prompt;
+    expect(frames[0]?.message).toBe(
+      coachPrompt.kind === "template" ? coachPrompt.message : "unexpected descriptor",
+    );
+    expect(frames[1]?.type).toBe("agentPromptChatError");
+    expect(readdir(join(root, ".devboard", "prompts"))).toEqual(before);
   });
 });
