@@ -7494,6 +7494,17 @@ try {
     `[...document.querySelectorAll('[data-testid="issues-run"]')].filter((run) => run.getAttribute("data-status") === "running").length`,
   );
   check(goalRunCount === 3, "the runs page lost a running agent", goalRunCount);
+  const runPadding = await page.eval<{ top: string; right: string }>(`(() => {
+    const row = document.querySelector('[data-testid="issues-run"]');
+    if (row === null) return { top: "", right: "" };
+    const style = getComputedStyle(row);
+    return { top: style.paddingTop, right: style.paddingRight };
+  })()`);
+  check(
+    runPadding.top === "6px" && runPadding.right === "10px",
+    "an issues runs row does not use the design-system dense row padding",
+    runPadding,
+  );
   await page.click('[data-testid="issues-run"]');
   await page.wait(`document.querySelector('[data-testid="issues-run-detail"]') !== null`, "the run detail");
   const runActivity = await page.eval<string>(

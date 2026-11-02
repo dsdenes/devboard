@@ -3391,7 +3391,7 @@ a.code-chip--link:focus-visible {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 12px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   text-align: left;
@@ -3400,7 +3400,6 @@ a.code-chip--link:focus-visible {
 .issues-queue__item {
   grid-template-columns: 44px minmax(0, 1fr) auto;
   border-bottom-color: var(--border-subtle);
-  padding: 6px 10px;
 }
 
 .issues-queue__item:hover {
