@@ -186,9 +186,9 @@ describe("feedback endpoint", () => {
       const response = await submit(
         url,
         report({
-          conversation: [
-            { role: "developer", text: "Why is this button clipped?" },
-            { role: "agent", text: "The flex row has no min-width." },
+          turns: [
+            { role: "DEVELOPER", text: "Why is this button clipped?" },
+            { role: "AGENT", text: "The flex row has no min-width." },
           ],
         }),
       );
@@ -206,19 +206,19 @@ describe("feedback endpoint", () => {
     }
   });
 
-  test("refuses a malformed conversation before reaching Gitea", async () => {
+  test("refuses a malformed turns array before reaching Gitea", async () => {
     const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(
         url,
-        report({ conversation: [{ role: "system", text: "ignored" }] }),
+        report({ turns: [{ role: "system", text: "ignored" }] }),
       );
 
       expect(response.status).toBe(400);
       expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await response.json()).toEqual(
-        problemBody("Bad Request", 400, "conversation[0].role must be developer or agent."),
+        problemBody("Bad Request", 400, "turns[0].role must be DEVELOPER or AGENT."),
       );
       expect(calls).toHaveLength(0);
     } finally {
@@ -226,7 +226,7 @@ describe("feedback endpoint", () => {
     }
   });
 
-  test("refuses an oversized conversation before reaching Gitea", async () => {
+  test("refuses oversized turns before reaching Gitea", async () => {
     const { server, url, calls } = await startServer();
     const turn = "x".repeat(4000);
 
@@ -234,18 +234,18 @@ describe("feedback endpoint", () => {
       const response = await submit(
         url,
         report({
-          conversation: [
-            { role: "developer", text: turn },
-            { role: "agent", text: turn },
-            { role: "developer", text: turn },
-            { role: "agent", text: turn },
+          turns: [
+            { role: "DEVELOPER", text: turn },
+            { role: "AGENT", text: turn },
+            { role: "DEVELOPER", text: turn },
+            { role: "AGENT", text: turn },
           ],
         }),
       );
 
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual(
-        problemBody("Bad Request", 400, "conversation is longer than 12000 characters."),
+        problemBody("Bad Request", 400, "turns is longer than 12000 characters."),
       );
       expect(calls).toHaveLength(0);
     } finally {
@@ -475,13 +475,51 @@ describe("feedback endpoint", () => {
     }
   });
 
+  test("accepts the upper-case report action and developer role", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({
+          action: "REPORT",
+          turns: [{ role: "DEVELOPER", text: "Why is this button clipped?" }],
+        }),
+      );
+
+      expect(response.status).toBe(201);
+      const call = calls[0]!;
+      expect(call.body).toContain("## Operator report");
+      expect(call.body).toContain("**You:**\n\nWhy is this button clipped?");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses the lower-case action value it no longer declares", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(url, report({ action: "report" }));
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "action must be one of REPORT, REMOVE, REDESIGN."),
+      );
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("files a removal request without report text", async () => {
     const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(
         url,
-        report({ action: "remove", report: undefined, selector: "main > section.run" }),
+        report({ action: "REMOVE", report: undefined, selector: "main > section.run" }),
       );
 
       expect(response.status).toBe(201);
@@ -509,7 +547,7 @@ describe("feedback endpoint", () => {
     try {
       const response = await submit(
         url,
-        report({ action: "redesign", report: "ignored operator text" }),
+        report({ action: "REDESIGN", report: "ignored operator text" }),
       );
 
       expect(response.status).toBe(201);
@@ -536,7 +574,7 @@ describe("feedback endpoint", () => {
     try {
       const response = await submit(
         url,
-        report({ action: "remove", report: undefined, selector: "a ".repeat(300) }),
+        report({ action: "REMOVE", report: undefined, selector: "a ".repeat(300) }),
       );
 
       expect(response.status).toBe(201);
@@ -555,7 +593,7 @@ describe("feedback endpoint", () => {
     try {
       const response = await submit(
         url,
-        report({ action: "remove", report: undefined, selector: "" }),
+        report({ action: "REMOVE", report: undefined, selector: "" }),
       );
 
       expect(response.status).toBe(201);
@@ -583,7 +621,7 @@ describe("feedback endpoint", () => {
     const { server, url, calls } = await startServer();
 
     try {
-      const accepted = report({ action: "report", conversation: [] });
+      const accepted = report({ action: "REPORT", turns: [] });
       const refused = await submit(url, { ...accepted, unexpected: 1 });
 
       expect(refused.status).toBe(400);
@@ -596,6 +634,23 @@ describe("feedback endpoint", () => {
       const created = await submit(url, accepted);
       expect(created.status).toBe(201);
       expect(calls).toHaveLength(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses the singular conversation key it no longer accepts", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(url, report({ conversation: [] }));
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "unknown field: conversation."),
+      );
+      expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
     }

@@ -397,7 +397,7 @@
     min-height: 0;
     min-width: 0;
     overflow: hidden;
-    padding: 8px;
+    padding: 16px;
   }
 
   .agent-page__scroll {

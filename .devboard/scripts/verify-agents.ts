@@ -602,18 +602,19 @@ async function columns(devtools: Devtools): Promise<string[]> {
 }
 
 async function rows(devtools: Devtools): Promise<
-  Array<{ url: string; state: string; version: string; title: string }>
+  Array<{ url: string; state: string; tone: string; version: string; title: string }>
 > {
   const value = await devtools.evaluate(`(() => [
     ...document.querySelectorAll('[data-testid="agent-issue"]')
   ].map((row) => ({
     url: row.dataset.url ?? '',
     state: row.dataset.state ?? '',
+    tone: row.querySelector('[data-testid="agent-issue-state"]')?.dataset.tone ?? '',
     version: row.dataset.version ?? '',
     title: row.querySelector('[data-testid="agent-issue-title"]')?.textContent?.trim() ?? '',
   })))()`);
   return Array.isArray(value)
-    ? (value as Array<{ url: string; state: string; version: string; title: string }>)
+    ? (value as Array<{ url: string; state: string; tone: string; version: string; title: string }>)
     : [];
 }
 
@@ -1235,6 +1236,16 @@ try {
   assertTrue(
     (await pageLifecycle(devtools)) === "stopped",
     "Watchdog does not start stopped",
+  );
+  const pagePadding = (await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    if (page === null) return null;
+    const style = getComputedStyle(page);
+    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+  })()`)) as string[] | null;
+  assertTrue(
+    JSON.stringify(pagePadding) === JSON.stringify(["16px", "16px", "16px", "16px"]),
+    `the agent page padding is ${JSON.stringify(pagePadding)}`,
   );
   console.log("PASS shared-page-shape");
 
@@ -1956,8 +1967,12 @@ try {
     `the Auto Scout rows are wrong: ${JSON.stringify(scoutRows)}`,
   );
   assertTrue(
-    scoutRows[1]?.version === "v1.0.0",
-    `the Auto Scout shipped version is wrong: ${JSON.stringify(scoutRows)}`,
+    scoutRows[0]?.version === "" && scoutRows[0]?.tone === "pending",
+    `the pending Auto Scout row is wrong: ${JSON.stringify(scoutRows)}`,
+  );
+  assertTrue(
+    scoutRows[1]?.version === "v1.0.0" && scoutRows[1]?.tone === "success",
+    `the implemented Auto Scout row is wrong: ${JSON.stringify(scoutRows)}`,
   );
   assertTrue(
     (await text(devtools, "agent-issues-count")).startsWith("2 filed"),

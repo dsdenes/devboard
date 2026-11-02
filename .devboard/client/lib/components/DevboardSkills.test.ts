@@ -51,6 +51,26 @@ test("renders one row per installed skill with a name cell and one checkbox", ()
   expect(text).not.toContain("delete");
 });
 
+test("the disclosure is the shared Button primitive and paints a press", async () => {
+  devboard.skills = [
+    { name: "benchmark-methodology", enabled: true, content: "", builtin: false, deletable: false },
+  ];
+  devboard.skillsLoaded = true;
+
+  const { container } = render(DevboardSkills);
+  const disclosure = container.querySelector<HTMLButtonElement>(
+    '[data-testid="skill-disclosure"]',
+  );
+  expect(disclosure?.getAttribute("data-slot")).toBe("button");
+  expect(disclosure?.getAttribute("data-variant")).toBe("bare");
+  expect(disclosure?.type).toBe("button");
+
+  await fireEvent.pointerDown(disclosure!);
+  expect(disclosure?.getAttribute("data-pressed")).toBe("true");
+  await fireEvent.pointerUp(disclosure!);
+  expect(disclosure?.hasAttribute("data-pressed")).toBe(false);
+});
+
 test("clicking a skill row reveals its SKILL.md body and clicking again hides it", async () => {
   devboard.skills = [
     {

@@ -3315,6 +3315,51 @@ try {
     devboardSkillsTable,
   );
 
+  const devboardDisclosurePaint = await page.eval<{
+    slots: string[];
+    variants: string[];
+    resting: string[];
+    pressed: string[];
+    released: string[];
+  }>(`(async () => {
+    const disclosures = [...document.querySelectorAll('[data-testid="skill-disclosure"]')];
+    const settle = async () => {
+      const { promise, resolve } = Promise.withResolvers();
+      setTimeout(resolve, 50);
+      return promise;
+    };
+    const resting = disclosures.map((control) => getComputedStyle(control).backgroundColor);
+    for (const control of disclosures) {
+      control.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    }
+    await settle();
+    const pressed = disclosures.map((control) => getComputedStyle(control).backgroundColor);
+    for (const control of disclosures) {
+      control.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    }
+    await settle();
+    return {
+      slots: disclosures.map((control) => control.getAttribute("data-slot") ?? ""),
+      variants: disclosures.map((control) => control.getAttribute("data-variant") ?? ""),
+      resting,
+      pressed,
+      released: disclosures.map((control) => getComputedStyle(control).backgroundColor),
+    };
+  })()`);
+  check(
+    devboardDisclosurePaint.slots.every((slot) => slot === "button") &&
+      devboardDisclosurePaint.variants.every((variant) => variant === "bare"),
+    "a Skills disclosure is not the shared Button primitive",
+    devboardDisclosurePaint,
+  );
+  check(
+    devboardDisclosurePaint.pressed.every((paint, index) => paint !== devboardDisclosurePaint.resting[index]) &&
+      JSON.stringify(devboardDisclosurePaint.released) ===
+        JSON.stringify(devboardDisclosurePaint.resting),
+    "a Skills disclosure does not paint a pressed fill",
+    devboardDisclosurePaint,
+  );
+
   const devboardFirstSkill = devboardInstalledSkills[0] ?? "";
   const devboardSkillRow = (name: string): string =>
     `[data-testid="skill-row"][data-skill="${name}"]`;
@@ -6761,7 +6806,7 @@ try {
   const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/feedback`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "report", report: "disabled check" }),
+    body: JSON.stringify({ action: "REPORT", report: "disabled check" }),
   });
   const refusal = await refused.text();
   check(
@@ -7039,7 +7084,7 @@ try {
   );
   check(
     feedbackRequests.length === 1 &&
-      feedbackRequests[0]?.action === "report" &&
+      feedbackRequests[0]?.action === "REPORT" &&
       String(feedbackRequests[0]?.report).includes("status bar is clipped"),
     "the report request is wrong",
     feedbackRequests,
@@ -7304,7 +7349,7 @@ try {
     check(call.body.includes("## Captured UI context"), "a removal body lost the captured context", call.body);
     check(call.body.includes("### DOM excerpt"), "a removal body lost the DOM excerpt", call.body);
   }
-  const removalRequests = feedbackRequests.filter((entry) => entry.action === "remove");
+  const removalRequests = feedbackRequests.filter((entry) => entry.action === "REMOVE");
   check(removalRequests.length === 2, "the issue actions did not send two removal requests", feedbackRequests);
   check(
     removalRequests.every(
@@ -7342,7 +7387,7 @@ try {
     check(call.body.includes(redesignInstruction), "a redesign body lost its instruction", call.body);
     check(call.body.includes("## Captured UI context"), "a redesign body lost the captured context", call.body);
   }
-  const redesignRequests = feedbackRequests.filter((entry) => entry.action === "redesign");
+  const redesignRequests = feedbackRequests.filter((entry) => entry.action === "REDESIGN");
   check(redesignRequests.length === 2, "the issue actions did not send two redesign requests", feedbackRequests);
   const redesignStatus = await page.eval<{ text: string; href: string; color: string; foreground: string }>(`(() => {
     const status = document.querySelector('.feedback-result');
@@ -7714,7 +7759,7 @@ try {
   check(transcriptSurface.maxHeight === "180px" && transcriptSurface.overflow === "auto", "the transcript does not scroll inside 180px", transcriptSurface);
   check(transcriptSurface.turns === 4, "the transcript lost a turn", transcriptSurface);
   check(
-    transcriptSurface.roles.join(",") === "developer,agent,developer,agent" &&
+    transcriptSurface.roles.join(",") === "DEVELOPER,AGENT,DEVELOPER,AGENT" &&
       transcriptSurface.who.join(",") === "You,Agent,You,Agent",
     "the transcript does not label who spoke",
     transcriptSurface,
@@ -8474,9 +8519,11 @@ try {
     closeCommand: string;
     runIdText: boolean;
     removed: boolean;
+    padding: string[];
   }>(`(() => {
     const surface = document.querySelector('#workspace-issues [data-testid="issues-agent-focus"]');
     const text = surface?.textContent ?? "";
+    const style = surface === null ? null : getComputedStyle(surface);
     return {
       bars: surface?.querySelectorAll('[data-testid="agent-activity-bar"]').length ?? 0,
       dot: surface?.querySelector('[data-testid="agent-activity-dot"]')?.getAttribute("data-state") ?? "",
@@ -8484,6 +8531,10 @@ try {
       question: surface?.querySelector('[data-testid="issues-agent-focus-question"]')?.textContent ?? "",
       closeCommand: surface?.querySelector('[data-testid="issues-agent-focus-close"]')?.getAttribute("data-command") ?? "",
       runIdText: text.includes("2026-10-27T10-00-01-000Z"),
+      padding:
+        surface === null
+          ? []
+          : [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
       removed:
         surface?.querySelector('[data-testid="issues-agent-focus-status"]') !== null ||
         surface?.querySelector('[data-testid="issues-agent-focus-run"]') !== null ||
@@ -8500,6 +8551,11 @@ try {
     focus,
   );
   check(focus.closeCommand === "tab.close", "the focus tab has no close control", focus);
+  check(
+    JSON.stringify(focus.padding) === JSON.stringify(["16px", "16px", "16px", "16px"]),
+    "the Issues agent focus does not use the page padding",
+    focus,
+  );
   check(!focus.removed, "a removed focus run surface is still rendered", focus);
   check(!focus.runIdText, "the focus tab still renders its run identifier", focus);
   const longFocusTitle = await page.eval<{
@@ -10492,7 +10548,7 @@ try {
   );
   check(
     feedbackRequests.length === 2 &&
-      feedbackRequests.every((request) => request.action === "report") &&
+      feedbackRequests.every((request) => request.action === "REPORT") &&
       String(feedbackRequests[1]?.report).startsWith("Error notification: ") &&
       String(feedbackRequests[1]?.report).includes("Raised at: "),
     "the notification filing request is wrong",

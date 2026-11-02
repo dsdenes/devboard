@@ -10,7 +10,7 @@ import {
 import { acquireLock, liveLockOwners, type LockOwner } from "../issues/lock";
 import type { AcpPeer } from "../issues/worker";
 import { originForge } from "../issues/repository";
-import { releaseVersionAt } from "../lib/commit-gate";
+import { releaseTags, releaseVersionAt } from "../lib/commit-gate";
 import { lowestReleaseVersion } from "../lib/release";
 import {
   giteaReleaseByTag,
@@ -91,7 +91,10 @@ export interface ReleaseRunInput {
   request: ReleaseTrainRequest;
   /** Appends one line to the run's and the family's activity. */
   activity: (line: string) => void;
-  /** The worker's stop flag; a run that sees it must fail rather than release. */
+  /**
+   * The worker's stop flag; a release never starts after it is set, and a run
+   * that has already ended is verified regardless of it.
+   */
   stopping: () => boolean;
   /** The peer the worker closes when Stop arrives. */
   registerPeer: (peer: AcpPeer) => void;
@@ -119,6 +122,8 @@ export interface ReleaseTrainWorkerOptions {
   now?: () => Date;
   gate?: (repoDir: string) => ReleaseTrainGate | Promise<ReleaseTrainGate>;
   runRelease?: RunRelease;
+  /** Test seam: the independent release verification; defaults to `verifyShipped`. */
+  verify?: typeof verifyShipped;
   providerEnvironment?: WorkerProviderEnvironment;
   log?: (line: string) => void;
   onStopped?: () => void;
@@ -373,6 +378,7 @@ export class ReleaseTrainWorker {
   private readonly clock: () => Date;
   private readonly gate: (repoDir: string) => ReleaseTrainGate | Promise<ReleaseTrainGate>;
   private readonly runRelease: RunRelease;
+  private readonly verify: typeof verifyShipped;
   private readonly providerEnvironment: WorkerProviderEnvironment;
   private readonly log: (line: string) => void;
   private readonly onStopped: (() => void) | undefined;
@@ -414,6 +420,7 @@ export class ReleaseTrainWorker {
     this.clock = options.now ?? (() => new Date());
     this.gate = options.gate ?? ((repoDir) => checkReleaseTrain(repoDir));
     this.runRelease = options.runRelease ?? ((input) => this.executeRelease(input));
+    this.verify = options.verify ?? verifyShipped;
     this.providerEnvironment =
       options.providerEnvironment ?? createWorkerProviderEnvironment(this.stateDir, this.environment);
     this.log = options.log ?? ((line) => console.error(line));
@@ -571,12 +578,7 @@ export class ReleaseTrainWorker {
         return;
       }
       if (verdict.state === "nothing") {
-        const retry = this.retryVerdict(verdict);
-        if (retry !== undefined) {
-          this.activity(`retrying the failed release of ${verdict.target.slice(0, 7)}`);
-          await this.execute(retry, now);
-          return;
-        }
+        if (await this.retryFailure(verdict, now)) return;
         this.activity(
           `nothing to release: ${verdict.target.slice(0, 7)} is covered by ` +
             `${verdict.previous?.tag ?? "no release tag"}`,
@@ -592,20 +594,62 @@ export class ReleaseTrainWorker {
     }
   }
 
-  /** A failed range whose tag now exists is retried until a run verifies it. */
-  private retryVerdict(nothing: ReleaseTrainNothing): ReleaseTrainUnreleased | undefined {
+  /**
+   * A recorded failure whose own version tag now exists needs no new agent:
+   * the gate reports nothing because that tag covers the tip, so the release
+   * shipped and only its record is missing. Verify it and record the outcome.
+   */
+  private async retryFailure(verdict: ReleaseTrainNothing, now: Date): Promise<boolean> {
     const failure = this.shared.failure;
-    if (failure === null || failure.version === null) return undefined;
-    if (failure.sha !== nothing.target) return undefined;
-    return {
-      state: "unreleased",
-      target: nothing.target,
-      previous: nothing.previous,
+    if (failure === null || failure.version === null) return false;
+    if (!this.failureIsTagged(failure, verdict.target)) return false;
+    const version = failure.version;
+    const target = failure.sha;
+    const runId = `${now.getTime()}-${randomUUID().slice(0, 8)}`;
+    const run: ReleaseTrainRun = {
+      id: runId,
+      startedAt: now.toISOString(),
+      endedAt: null,
+      state: "running",
       range: failure.range,
-      version: failure.version,
-      commits: [],
-      releaseCommits: [],
+      target,
+      version,
+      url: null,
+      detail: null,
+      commits: null,
     };
+    this.activeRun = run;
+    this.activeActivity = [];
+    this.shared.runs = recordRun(this.shared.runs, run);
+    if (this.worker !== undefined) {
+      this.worker.activeRun = runId;
+      this.worker.lifecycle = "running";
+      this.worker.notice = `verifying ${failure.range}`;
+      this.publishWorker();
+    }
+    this.activity(`verifying the failed release of ${failure.range} as v${version}`);
+    let result: ReleaseRunResult;
+    try {
+      result = await this.verify({
+        repoDir: this.repoDir,
+        target,
+        version,
+        environment: await this.providerEnvironment(),
+        stateDir: this.stateDir,
+        activity: (line) => this.activity(line),
+      });
+    } catch (error) {
+      result = { ok: false, detail: detailOf(error) };
+    }
+    this.settle(run, result, { target, range: failure.range, version }, now);
+    return true;
+  }
+
+  /** Whether the failure's own version tag now exists at or after its commit. */
+  private failureIsTagged(failure: ReleaseTrainFailure, tip: string): boolean {
+    if (failure.version === null) return false;
+    if (releaseVersionAt(this.repoDir, failure.sha) === failure.version) return true;
+    return releaseTags(this.repoDir, tip).some((tag) => tag.version === failure.version);
   }
 
   private async execute(gate: ReleaseTrainUnreleased, now: Date): Promise<void> {
@@ -620,7 +664,6 @@ export class ReleaseTrainWorker {
       version: gate.version,
       url: null,
       detail: null,
-      // A retry verdict verifies an already-tagged range and carries no list.
       commits: gate.releaseCommits.length > 0 ? gate.releaseCommits.length : null,
     };
     this.activeRun = run;
@@ -668,6 +711,16 @@ export class ReleaseTrainWorker {
       this.activePeer = undefined;
     }
 
+    this.settle(run, result, { target: gate.target, range: gate.range, version: gate.version }, now);
+  }
+
+  /** Records one run's verified or failed outcome on the shared state. */
+  private settle(
+    run: ReleaseTrainRun,
+    result: ReleaseRunResult,
+    identity: { target: string; range: string; version: string | null },
+    now: Date,
+  ): void {
     const endedAt = this.clock().toISOString();
     run.endedAt = endedAt;
     if (result.ok) {
@@ -675,8 +728,8 @@ export class ReleaseTrainWorker {
         version: result.version,
         url: result.url,
         at: endedAt,
-        sha: gate.target,
-        range: gate.range,
+        sha: identity.target,
+        range: identity.range,
       };
       this.shared.release = release;
       this.shared.failure = null;
@@ -693,9 +746,9 @@ export class ReleaseTrainWorker {
       const failure: ReleaseTrainFailure = {
         at: endedAt,
         detail: result.detail,
-        sha: gate.target,
-        range: gate.range,
-        version: gate.version,
+        sha: identity.target,
+        range: identity.range,
+        version: identity.version,
       };
       this.shared.failure = failure;
       run.state = "failed";
@@ -892,9 +945,12 @@ export class ReleaseTrainWorker {
     } finally {
       peer.close();
     }
-    if (input.stopping()) return { ok: false, detail: "stopped during the release run" };
+    // A stop or drain never skips the verification: the agent may already have
+    // published, so the record must say whether the release actually shipped.
+    const stopped = input.stopping();
+    if (stopped) input.activity("stopped during the release run; verifying what it shipped");
     const result = readResult(runDir);
-    const verified = await verifyShipped({
+    const verified = await this.verify({
       repoDir: this.repoDir,
       target: input.request.target,
       version: input.request.version,
@@ -915,7 +971,12 @@ export class ReleaseTrainWorker {
       result.detail.trim().length > 0
         ? result.detail.trim()
         : null;
-    const detail = [agentError, reported, verified.detail]
+    const detail = [
+      stopped ? "stopped during the release run" : null,
+      agentError,
+      reported,
+      verified.detail,
+    ]
       .filter((entry): entry is string => entry !== null && entry.length > 0)
       .join("; ");
     return { ok: false, detail };

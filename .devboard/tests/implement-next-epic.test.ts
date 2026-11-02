@@ -331,6 +331,46 @@ describe("distillObjective", () => {
     expect(objective).not.toContain("devboard-epic");
   });
 
+  test("keeps a fenced block and the criteria that follow it", () => {
+    const body = [
+      "## Objective",
+      "Ship it.",
+      "",
+      "## Verification",
+      "",
+      "```bash",
+      "# run the suite",
+      "bun test",
+      "```",
+      "- suite green",
+      "",
+      "## Boundaries",
+      "Touch src/.",
+    ].join("\n");
+    const objective = distillObjective("T", body);
+    expect(objective).toContain(
+      "## Verification\n```bash\n# run the suite\nbun test\n```\n- suite green",
+    );
+    expect(objective).toContain("## Boundaries\nTouch src/.");
+  });
+
+  test("keeps a subheading and the lines after it inside its section", () => {
+    const body = [
+      "## Objective",
+      "Ship it.",
+      "",
+      "## Success criteria",
+      "### Export",
+      "- one",
+      "",
+      "## Boundaries",
+      "Touch src/.",
+    ].join("\n");
+    const objective = distillObjective("T", body);
+    expect(objective).toContain("## Success criteria\n### Export\n- one");
+    expect(objective).toContain("## Boundaries\nTouch src/.");
+  });
+
   test("falls back to the whole body when no expected section exists", () => {
     expect(distillObjective("Title", "Plain body\n")).toBe("Title\n\nPlain body");
   });

@@ -207,33 +207,6 @@ export function unknownText(leaf: Leaf): string {
     : "unknown";
 }
 
-export interface RecordColumn {
-  key: string;
-  label: string;
-}
-
-/** One table column per field any record carries, in first-seen order. */
-export function recordColumns(records: Array<Record<string, unknown>>): RecordColumn[] {
-  const columns = new Map<string, string>();
-  for (const record of records) {
-    for (const [key, value] of Object.entries(record)) {
-      if (value === null || value === undefined || value === "") continue;
-      if (Array.isArray(value) && value.length === 0) continue;
-      if (!columns.has(key)) columns.set(key, humanize(key));
-    }
-  }
-  return [...columns].map(([key, label]) => ({ key, label }));
-}
-
-export function recordColumnValues(record: Record<string, unknown>, key: string): string[] {
-  const value = record[key];
-  if (Array.isArray(value)) {
-    return value.map((item) => scalarText(item)).filter((text) => text.length > 0);
-  }
-  const text = scalarText(value);
-  return text.length > 0 ? [text] : [];
-}
-
 export interface PyramidTier {
   level: string;
   tests: string;

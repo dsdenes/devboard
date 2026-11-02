@@ -33,7 +33,7 @@ const MAX_CONVERSATION_TURN = 4000;
 const MAX_CONVERSATION_TEXT = 12_000;
 
 /** What the operator asked for when they picked an element. */
-export type FeedbackAction = "report" | "remove" | "redesign";
+export type FeedbackAction = "REPORT" | "REMOVE" | "REDESIGN";
 
 /**
  * The instruction a removal issue carries. It is fixed, so the implementation
@@ -50,19 +50,19 @@ export const REDESIGN_INSTRUCTION =
   "Use the project UI/UX skill (devboard-ui-ux) and this repository's " +
   "DESIGN.md and design/tokens.json as the normative design system.";
 
-const ACTION_ERROR = "action must be one of report, remove, redesign.";
+const ACTION_ERROR = "action must be one of REPORT, REMOVE, REDESIGN.";
 
 /** One visible turn of the element-scoped Ask conversation. */
 export interface FeedbackTurn {
-  role: "developer" | "agent";
+  role: "DEVELOPER" | "AGENT";
   text: string;
 }
 
 export interface FeedbackSubmission {
   action: FeedbackAction;
   report: string;
-  /** The Ask conversation the operator had about this element, if any. */
-  conversation: FeedbackTurn[];
+  /** The visible Ask turns the operator had about this element, if any. */
+  turns: FeedbackTurn[];
   route: string;
   url: string;
   selector: string;
@@ -152,8 +152,8 @@ function field(
 
 function feedbackAction(value: unknown): FeedbackAction {
   // An absent action keeps the original free-text report contract.
-  if (value === undefined || value === null) return "report";
-  if (value === "report" || value === "remove" || value === "redesign") return value;
+  if (value === undefined || value === null) return "REPORT";
+  if (value === "REPORT" || value === "REMOVE" || value === "REDESIGN") return value;
   throw new FeedbackRequestError(400, ACTION_ERROR);
 }
 
@@ -196,7 +196,7 @@ const CAPTURED_KEYS: readonly string[] = [
 export const FEEDBACK_BODY_KEYS: readonly string[] = [
   "action",
   "report",
-  "conversation",
+  "turns",
   ...CAPTURED_KEYS,
 ];
 
@@ -223,42 +223,42 @@ export function parseReportText(value: unknown): string {
 }
 
 /**
- * Validates the Ask conversation. A submission without one carries no turns,
+ * Validates the Ask turns. A submission without them carries no turns,
  * so an older client keeps filing reports unchanged.
  */
-export function parseConversation(value: unknown): FeedbackTurn[] {
+export function parseTurns(value: unknown): FeedbackTurn[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new FeedbackRequestError(400, "conversation must be an array.");
+    throw new FeedbackRequestError(400, "turns must be an array.");
   }
   if (value.length > MAX_CONVERSATION_TURNS) {
     throw new FeedbackRequestError(
       400,
-      `conversation has more than ${MAX_CONVERSATION_TURNS} turns.`,
+      `turns has more than ${MAX_CONVERSATION_TURNS} turns.`,
     );
   }
   const turns: FeedbackTurn[] = [];
   let total = 0;
   for (const [index, entry] of value.entries()) {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      throw new FeedbackRequestError(400, `conversation[${index}] must be an object.`);
+      throw new FeedbackRequestError(400, `turns[${index}] must be an object.`);
     }
     const source = entry as Record<string, unknown>;
     const role = source.role;
-    if (role !== "developer" && role !== "agent") {
+    if (role !== "DEVELOPER" && role !== "AGENT") {
       throw new FeedbackRequestError(
         400,
-        `conversation[${index}].role must be developer or agent.`,
+        `turns[${index}].role must be DEVELOPER or AGENT.`,
       );
     }
-    const text = field(source.text, `conversation[${index}].text`, MAX_CONVERSATION_TURN, true);
+    const text = field(source.text, `turns[${index}].text`, MAX_CONVERSATION_TURN, true);
     total += text.length;
     turns.push({ role, text });
   }
   if (total > MAX_CONVERSATION_TEXT) {
     throw new FeedbackRequestError(
       400,
-      `conversation is longer than ${MAX_CONVERSATION_TEXT} characters.`,
+      `turns is longer than ${MAX_CONVERSATION_TEXT} characters.`,
     );
   }
   return turns;
@@ -276,8 +276,8 @@ export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
     action,
     // The one-click shortcuts use a fixed instruction, so any text the client
     // still sends is ignored rather than validated or filed.
-    report: action === "report" ? parseReportText(source.report) : "",
-    conversation: parseConversation(source.conversation),
+    report: action === "REPORT" ? parseReportText(source.report) : "",
+    turns: parseTurns(source.turns),
     ...parseCapturedFields(source),
   };
 }
@@ -304,8 +304,8 @@ function firstLine(value: string): string {
 
 /** One-line issue title for the submission's action. */
 export function feedbackTitle(submission: FeedbackSubmission): string {
-  if (submission.action !== "report") {
-    const label = submission.action === "remove" ? "Remove element" : "Redesign element";
+  if (submission.action !== "REPORT") {
+    const label = submission.action === "REMOVE" ? "Remove element" : "Redesign element";
     const selector = submission.selector.replace(/\s+/g, " ").trim();
     if (selector.length === 0) return `${TITLE_PREFIX}${label}`;
     return truncate(`${TITLE_PREFIX}${label}: ${selector}`, MAX_TITLE);
@@ -322,10 +322,10 @@ export function feedbackTitle(submission: FeedbackSubmission): string {
  * The Ask conversation as Markdown: one labelled block per visible turn. It is
  * empty when the operator filed without asking the agent anything.
  */
-export function conversationSection(conversation: FeedbackTurn[]): string[] {
+export function conversationSection(turns: FeedbackTurn[]): string[] {
   const lines: string[] = [];
-  for (const turn of conversation) {
-    lines.push("", `**${turn.role === "developer" ? "You" : "Agent"}:**`, "", turn.text.trim());
+  for (const turn of turns) {
+    lines.push("", `**${turn.role === "DEVELOPER" ? "You" : "Agent"}:**`, "", turn.text.trim());
   }
   if (lines.length === 0) return [];
   return ["## Ask conversation", ...lines];
@@ -334,9 +334,9 @@ export function conversationSection(conversation: FeedbackTurn[]): string[] {
 /** The ticket body: the request first, then the conversation and captured context. */
 export function feedbackBody(submission: FeedbackSubmission): string {
   const request =
-    submission.action === "remove"
+    submission.action === "REMOVE"
       ? ["## Removal request", "", REMOVAL_INSTRUCTION]
-      : submission.action === "redesign"
+      : submission.action === "REDESIGN"
         ? ["## Redesign request", "", REDESIGN_INSTRUCTION]
         : ["## Operator report", "", submission.report.trim()];
   const lines = [...request, ""];
@@ -366,8 +366,8 @@ export function feedbackBody(submission: FeedbackSubmission): string {
     context.push("", "### DOM excerpt", "", `${fence}html`, dom, fence);
   }
 
-  const conversation = conversationSection(submission.conversation);
-  if (conversation.length > 0) lines.push(...conversation, "");
+  const askTurns = conversationSection(submission.turns);
+  if (askTurns.length > 0) lines.push(...askTurns, "");
 
   lines.push("## Captured UI context", "");
   lines.push(...(context.length === 0 ? ["No page context was captured."] : context));

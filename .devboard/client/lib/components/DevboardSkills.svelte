@@ -5,6 +5,7 @@
   import { connection } from "../connection.svelte";
   import { devboard } from "../devboard.svelte";
   import { renderSkillDocument } from "../skill-document";
+  import Button from "./ui/button.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
   const count = $derived(devboard.skills.length);
@@ -69,8 +70,8 @@
             }}
           >
             <td class="skills-table__name">
-              <button
-                type="button"
+              <Button
+                bare
                 class="skills-table__disclosure"
                 data-testid="skill-disclosure"
                 aria-expanded={open}
@@ -81,7 +82,7 @@
                   <ChevronRight size={12} aria-hidden="true" />
                 </span>
                 {skill.name}
-              </button>
+              </Button>
               {#if skill.builtin}
                 <span
                   class="skills-table__managed"
@@ -186,14 +187,14 @@
     font-weight: 600;
     letter-spacing: 0.03em;
     line-height: 1.3;
-    padding: 6px 12px;
+    padding: 5px 8px;
     text-align: left;
     text-transform: uppercase;
   }
 
   .skills-table td {
     border-bottom: 1px solid var(--border-subtle);
-    padding: 5px 12px;
+    padding: 5px 8px;
   }
 
   .skills-table tbody tr:last-child td {
@@ -212,25 +213,6 @@
   .skills-table__row:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: -2px;
-  }
-
-  .skills-table__disclosure {
-    align-items: center;
-    background: none;
-    border: 0;
-    color: inherit;
-    cursor: pointer;
-    display: inline-flex;
-    font: inherit;
-    gap: 6px;
-    margin: 0;
-    padding: 0;
-    text-align: left;
-  }
-
-  .skills-table__disclosure:focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 2px;
   }
 
   .skills-table__chevron {

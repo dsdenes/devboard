@@ -59,9 +59,9 @@
   }: { phase?: Phase; action?: Action | null } = $props();
 
   const HINTS: Record<Action, string> = {
-    report: "Click an element · Esc cancels",
-    remove: "Click an element to remove · Esc cancels",
-    redesign: "Click an element to redesign · Esc cancels",
+    REPORT: "Click an element · Esc cancels",
+    REMOVE: "Click an element to remove · Esc cancels",
+    REDESIGN: "Click an element to redesign · Esc cancels",
   };
 
   let target = $state<Element | null>(null);
@@ -274,7 +274,7 @@
   }
 
   /** The Ask conversation bounded to the server's limits; the newest turns win. */
-  function conversationPayload(): Array<{ role: AskTurn["role"]; text: string }> {
+  function turnsPayload(): Array<{ role: AskTurn["role"]; text: string }> {
     const turns = transcript
       .slice(-MAX_CONVERSATION_TURNS)
       .map((turn) => ({ role: turn.role, text: truncate(turn.text, MAX_CONVERSATION_TURN) }));
@@ -324,7 +324,7 @@
     // The question now lives in the transcript: clear the composer at once so
     // the next message never starts from the previous one.
     askedQuestion = question;
-    transcript = [...transcript, { role: "developer", text: question }];
+    transcript = [...transcript, { role: "DEVELOPER", text: question }];
     report = "";
     focusComposer();
   }
@@ -347,10 +347,10 @@
       const text = typeof message.text === "string" ? message.text : "";
       if (text.length === 0 || !askPending) return;
       const last = transcript[transcript.length - 1];
-      if (last !== undefined && last.role === "agent") {
+      if (last !== undefined && last.role === "AGENT") {
         last.text += text;
       } else {
-        transcript = [...transcript, { role: "agent", text }];
+        transcript = [...transcript, { role: "AGENT", text }];
       }
       return;
     }
@@ -390,7 +390,7 @@
     dragging = false;
     report = "";
     errorMessage = null;
-    action = "report";
+    action = "REPORT";
     phase = "composing";
     document.body.style.cursor = "";
     queueMicrotask(() => textarea?.focus());
@@ -458,15 +458,15 @@
   }
 
   export function startPicking(): void {
-    arm("report");
+    arm("REPORT");
   }
 
   export function startRemoving(): void {
-    arm("remove");
+    arm("REMOVE");
   }
 
   export function startRedesigning(): void {
-    arm("redesign");
+    arm("REDESIGN");
   }
 
   /** The activity-bar controls: the active action cancels, any other arms. */
@@ -480,7 +480,7 @@
   }
 
   export function toggleReport(): void {
-    toggleAction("report");
+    toggleAction("REPORT");
   }
 
   function onPointerMove(event: MouseEvent): void {
@@ -502,11 +502,11 @@
     event.preventDefault();
     event.stopPropagation();
     if (sending) return;
-    if (action === "report") {
+    if (action === "REPORT") {
       openPanel(element);
       return;
     }
-    if (action === "remove" || action === "redesign") {
+    if (action === "REMOVE" || action === "REDESIGN") {
       void fileShortcut(action, element);
     }
   }
@@ -565,13 +565,13 @@
   }
 
   /** Files a removal or redesign issue for one element and stays armed. */
-  async function fileShortcut(kind: "remove" | "redesign", element: Element): Promise<void> {
+  async function fileShortcut(kind: "REMOVE" | "REDESIGN", element: Element): Promise<void> {
     selector = describeTarget(element);
     marker = null;
     dismissToast();
     phase = "sending";
     const response = await post({ action: kind, report: "", ...captured(element) });
-    const noun = kind === "remove" ? "Removal" : "Redesign";
+    const noun = kind === "REMOVE" ? "Removal" : "Redesign";
     if (response.ok) {
       showToast({ ok: true, text: `${noun} issue filed.`, url: response.url });
     } else {
@@ -630,7 +630,7 @@
     dismissToast();
     const response = await postGoal({
       report,
-      conversation: conversationPayload(),
+      turns: turnsPayload(),
       ...captured(element),
     });
     if (attempt !== generation) return;
@@ -644,7 +644,7 @@
     const text = `Goal proposed: ${response.path}`;
     issues.refreshDrafts();
     // Stay in selection mode so the next draft starts with one click.
-    arm("report");
+    arm("REPORT");
     showToast({ ok: true, text });
   }
 
@@ -656,9 +656,9 @@
     phase = "sending";
     errorMessage = null;
     const response = await post({
-      action: "report",
+      action: "REPORT",
       report,
-      conversation: conversationPayload(),
+      turns: turnsPayload(),
       ...captured(element),
     });
     if (attempt !== generation) return;
@@ -669,7 +669,7 @@
       return;
     }
     // Stay in selection mode so the next report starts with one click.
-    arm("report");
+    arm("REPORT");
     showToast({ ok: true, text: "Report filed.", url: response.url });
   }
 
@@ -758,12 +758,12 @@
         {#each transcript as turn, index (index)}
           <li class="feedback-message" data-role={turn.role}>
             <span class="feedback-message__who" aria-hidden="true">
-              {turn.role === "developer" ? "You" : "Agent"}
+              {turn.role === "DEVELOPER" ? "You" : "Agent"}
             </span>
             <p
               class="feedback-turn"
-              class:feedback-turn--developer={turn.role === "developer"}
-              class:feedback-turn--agent={turn.role === "agent"}
+              class:feedback-turn--developer={turn.role === "DEVELOPER"}
+              class:feedback-turn--agent={turn.role === "AGENT"}
             >{turn.text}</p>
           </li>
         {/each}
@@ -1071,12 +1071,12 @@
     max-width: 92%;
   }
 
-  .feedback-message[data-role="developer"] {
+  .feedback-message[data-role="DEVELOPER"] {
     align-items: flex-end;
     align-self: flex-end;
   }
 
-  .feedback-message[data-role="agent"] {
+  .feedback-message[data-role="AGENT"] {
     align-items: flex-start;
     align-self: flex-start;
   }

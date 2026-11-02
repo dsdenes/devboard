@@ -1,13 +1,19 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { acquireLock } from "../issues/lock";
 import { agentRegistry } from "../server/agents/registry";
 import { ReleaseTrainActivity } from "../server/release-train";
 import {
   DEFAULT_INTERVAL_MINUTES,
   readSettings,
 } from "../release-train/settings";
-import { releaseTrainDirectory, runDirectory } from "../release-train/paths";
+import {
+  releaseTrainDirectory,
+  runDirectory,
+  versionedControlDirectory,
+  versionedLockPath,
+} from "../release-train/paths";
 import {
   emptyState,
   writeState,
@@ -58,36 +64,51 @@ function workspace(name: string): Workspace {
   return { root, repoDir, stateDir, directory: releaseTrainDirectory(stateDir) };
 }
 
+function gitIn(repoDir: string, args: string[]): string {
+  const result = Bun.spawnSync({
+    cmd: [
+      "git",
+      "-c",
+      "user.name=Train Test",
+      "-c",
+      "user.email=train@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "init.defaultBranch=main",
+      ...args,
+    ],
+    cwd: repoDir,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  return result.stdout.toString().trim();
+}
+
 /** A repository with one tagged commit, the shape a released run leaves. */
 function releasedRepository(name: string, tag = "v1.0.1"): { repoDir: string; head: string } {
   const repoDir = join(workspace(name).root, "repo");
   mkdirSync(repoDir, { recursive: true });
-  const run = (args: string[]): string => {
-    const result = Bun.spawnSync({
-      cmd: [
-        "git",
-        "-c",
-        "user.name=Train Test",
-        "-c",
-        "user.email=train@example.test",
-        "-c",
-        "commit.gpgsign=false",
-        "-c",
-        "init.defaultBranch=main",
-        ...args,
-      ],
-      cwd: repoDir,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-    return result.stdout.toString().trim();
-  };
-  run(["init", "-q"]);
-  run(["commit", "--allow-empty", "-q", "-m", "fix: the release"]);
-  const head = run(["rev-parse", "HEAD"]);
-  run(["tag", tag, head]);
+  gitIn(repoDir, ["init", "-q"]);
+  gitIn(repoDir, ["commit", "--allow-empty", "-q", "-m", "fix: the release"]);
+  const head = gitIn(repoDir, ["rev-parse", "HEAD"]);
+  gitIn(repoDir, ["tag", tag, head]);
   return { repoDir, head };
+}
+
+/** Two commits with `v1.0.1` naming either the first or the tip. */
+function taggedRepository(
+  repoDir: string,
+  tagAtTip: boolean,
+): { first: string; tip: string } {
+  gitIn(repoDir, ["init", "-q"]);
+  gitIn(repoDir, ["commit", "--allow-empty", "-q", "-m", "fix: the release"]);
+  const first = gitIn(repoDir, ["rev-parse", "HEAD"]);
+  gitIn(repoDir, ["commit", "--allow-empty", "-q", "-m", "fix: the next change"]);
+  const tip = gitIn(repoDir, ["rev-parse", "HEAD"]);
+  gitIn(repoDir, ["tag", "v1.0.1", tagAtTip ? tip : first]);
+  return { first, tip };
 }
 
 function unreleased(target = "a".repeat(40), version = "1.0.1"): ReleaseTrainUnreleased {
@@ -107,6 +128,7 @@ function workerAt(
   options: {
     gate: (repoDir: string) => ReleaseTrainGate | Promise<ReleaseTrainGate>;
     runRelease?: (input: ReleaseRunInput) => Promise<ReleaseRunResult>;
+    verify?: typeof verifyShipped;
     now?: () => Date;
     harnessVersion?: string | null;
     ownerStateDir?: string;
@@ -121,6 +143,7 @@ function workerAt(
     now: options.now ?? (() => new Date("2026-11-02T10:00:00.000Z")),
     gate: options.gate,
     runRelease: options.runRelease ?? (async () => ({ ok: true, version: "1.0.1", url: "https://forge.test/releases/tag/v1.0.1" })),
+    ...(options.verify === undefined ? {} : { verify: options.verify }),
     log: () => undefined,
   });
 }
@@ -479,41 +502,121 @@ describe("Release Train family", () => {
     }
   });
 
-  test("a failed run whose tag now exists is retried on the next tick", async () => {
-    const workspaceValue = workspace("retry-after-tag");
-    const now = { value: Date.parse("2026-11-02T10:00:00.000Z") };
-    const target = "c".repeat(40);
-    let phase = 0;
-    let runs = 0;
+  test("a stop after the agent published still records the release", async () => {
+    const workspaceValue = workspace("stopped-published");
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let sawStopping = false;
     const worker = workerAt(workspaceValue, {
-      now: () => new Date(now.value),
-      gate: () =>
-        phase === 0
-          ? unreleased(target)
-          : {
-              state: "nothing",
-              target,
-              previous: { tag: "v1.0.1", version: "1.0.1" },
-              range: `v1.0.1..${target}`,
-            },
-      runRelease: async () => {
-        runs += 1;
-        return runs === 1
-          ? { ok: false, detail: "the Gitea release v1.0.1 is missing devboard-1.0.1.tgz" }
-          : { ok: true, version: "1.0.1", url: "https://forge.test/releases/tag/v1.0.1" };
+      gate: () => unreleased(),
+      runRelease: async (input) => {
+        started.resolve();
+        await release.promise;
+        sawStopping = input.stopping();
+        return { ok: true, version: "1.0.1", url: "https://forge.test/releases/tag/v1.0.1" };
+      },
+    });
+    expect(worker.begin(false)).toBe(true);
+    const tick = worker.tickNow();
+    await started.promise;
+    const stop = worker.stop();
+    release.resolve();
+    await tick;
+    await stop;
+    expect(sawStopping).toBe(true);
+    expect(worker.currentState.release?.version).toBe("1.0.1");
+    expect(worker.currentState.failure).toBeNull();
+  });
+
+  test("a recorded failure whose version tag now exists is verified, not re-released", async () => {
+    for (const tagAtTip of [false, true]) {
+      const workspaceValue = workspace(`repair-tag-${tagAtTip ? "tip" : "first"}`);
+      const { first, tip } = taggedRepository(workspaceValue.repoDir, tagAtTip);
+      const range = `v1.0.0..${first}`;
+      writeState(workspaceValue.directory, {
+        ...emptyState({ repo: "", root: workspaceValue.repoDir }),
+        failure: {
+          at: "2026-11-02T09:00:00.000Z",
+          detail: "the release workflow concluded failure",
+          sha: first,
+          range,
+          version: "1.0.1",
+        },
+      });
+      const verifications: Array<{ target: string; version: string }> = [];
+      let runs = 0;
+      const worker = workerAt(workspaceValue, {
+        gate: () => ({
+          state: "nothing",
+          target: tip,
+          previous: { tag: "v1.0.1", version: "1.0.1" },
+          range: `v1.0.1..${tip}`,
+        }),
+        runRelease: async () => {
+          runs += 1;
+          return { ok: true, version: "9.9.9", url: "https://forge.test/releases/tag/v9.9.9" };
+        },
+        verify: async (options) => {
+          verifications.push({ target: options.target, version: options.version });
+          return {
+            ok: true,
+            version: options.version,
+            url: "https://forge.test/releases/tag/v1.0.1",
+          };
+        },
+      });
+      expect(worker.begin(false)).toBe(true);
+      try {
+        await worker.tickNow();
+        expect(runs).toBe(0);
+        expect(verifications).toEqual([{ target: first, version: "1.0.1" }]);
+        expect(worker.currentState.release).toEqual({
+          version: "1.0.1",
+          url: "https://forge.test/releases/tag/v1.0.1",
+          at: "2026-11-02T10:00:00.000Z",
+          sha: first,
+          range,
+        });
+        expect(worker.currentState.failure).toBeNull();
+        expect(worker.currentState.runs[0]?.state).toBe("released");
+      } finally {
+        await worker.stop();
+      }
+    }
+  });
+
+  test("a failure whose own version tag is absent is never verified", async () => {
+    const workspaceValue = workspace("repair-untagged");
+    const { first, tip } = taggedRepository(workspaceValue.repoDir, false);
+    writeState(workspaceValue.directory, {
+      ...emptyState({ repo: "", root: workspaceValue.repoDir }),
+      failure: {
+        at: "2026-11-02T09:00:00.000Z",
+        detail: "the release workflow concluded failure",
+        sha: first,
+        range: `v1.0.0..${first}`,
+        version: "2.0.0",
+      },
+    });
+    let verifications = 0;
+    const worker = workerAt(workspaceValue, {
+      gate: () => ({
+        state: "nothing",
+        target: tip,
+        previous: { tag: "v1.0.1", version: "1.0.1" },
+        range: `v1.0.1..${tip}`,
+      }),
+      verify: async (options) => {
+        verifications += 1;
+        return { ok: true, version: options.version, url: "https://forge.test/v2.0.0" };
       },
     });
     expect(worker.begin(false)).toBe(true);
     try {
       await worker.tickNow();
-      expect(runs).toBe(1);
-      expect(worker.currentState.failure?.version).toBe("1.0.1");
-      phase = 1;
-      now.value += 10 * 60_000;
-      await worker.tickNow();
-      expect(runs).toBe(2);
-      expect(worker.currentState.release?.version).toBe("1.0.1");
-      expect(worker.currentState.failure).toBeNull();
+      expect(verifications).toBe(0);
+      expect(worker.currentState.release).toBeNull();
+      expect(worker.currentState.failure?.version).toBe("2.0.0");
     } finally {
       await worker.stop();
     }
@@ -638,5 +741,218 @@ describe("Release Train page", () => {
   test("a repository with no release yet lists an empty history", () => {
     const workspaceValue = workspace("page-empty");
     expect(activityAt(workspaceValue).snapshot().releases).toEqual([]);
+  });
+});
+
+describe("Release Train takeover", () => {
+  /**
+   * Start refuses a repository that is not a checkout root, so the takeover
+   * fixtures are real repositories rather than bare directories.
+   */
+  function checkout(name: string): Workspace {
+    const workspaceValue = workspace(name);
+    const result = Bun.spawnSync({
+      cmd: ["git", "init", "-q"],
+      cwd: workspaceValue.repoDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return workspaceValue;
+  }
+
+  /** The harness version a host would start next, read from its prefix. */
+  function hostHarnessVersion(workspaceValue: Workspace, version: string): void {
+    writeFileSync(
+      join(workspaceValue.repoDir, ".devboard", "package.json"),
+      JSON.stringify({ name: "@dsdenes/devboard", version }),
+    );
+  }
+
+  /** A live worker of one harness version, as an older dashboard left it. */
+  function liveOwner(workspaceValue: Workspace, version: string): { release: () => void } {
+    const result = acquireLock(versionedLockPath(workspaceValue.directory, version), {
+      repo: workspaceValue.repoDir,
+      stateDir: workspaceValue.stateDir,
+      harnessVersion: version,
+      argv: [],
+    });
+    if (!result.acquired) throw new Error("the fixture worker lock was not acquired");
+    return { release: result.release };
+  }
+
+  function commandsIn(directory: string): unknown[] {
+    let names: string[];
+    try {
+      names = readdirSync(directory);
+    } catch {
+      return [];
+    }
+    return names
+      .sort()
+      .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as unknown);
+  }
+
+  interface TakeoverOptions {
+    runningVersion: string;
+    spawnWorker: (
+      argv: string[],
+      environment: Record<string, string | undefined>,
+    ) => number | undefined;
+  }
+
+  function trainAt(workspaceValue: Workspace, options: TakeoverOptions): ReleaseTrainActivity {
+    return new ReleaseTrainActivity({
+      descriptor: agentRegistry.require("release-train"),
+      repoDir: workspaceValue.repoDir,
+      stateDir: workspaceValue.stateDir,
+      harnessDir: harnessRoot,
+      runningVersion: options.runningVersion,
+      environment: {},
+      log: () => undefined,
+      spawnWorker: options.spawnWorker,
+    });
+  }
+
+  test("Start takes over an older live worker and drains it", async () => {
+    const workspaceValue = checkout("takeover-start");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const older = liveOwner(workspaceValue, "0.0.9");
+    const spawned: string[][] = [];
+    const environments: Record<string, string | undefined>[] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv, environment) => {
+        spawned.push(argv);
+        environments.push(environment);
+        return 4242;
+      },
+    });
+    try {
+      expect(await activity.start()).toEqual({ ok: true });
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.join(" ")).toContain(join("release-train", "main.ts"));
+      expect(spawned[0]!.join(" ")).toContain(`--state-dir ${workspaceValue.stateDir}`);
+      expect(environments[0]?.DEVBOARD_HARNESS_VERSION).toBe("1.0.0");
+      expect(commandsIn(versionedControlDirectory(workspaceValue.directory, "0.0.9"))).toEqual([
+        { type: "drain" },
+      ]);
+    } finally {
+      older.release();
+    }
+  });
+
+  test("pressing Start twice spawns exactly one worker", async () => {
+    const workspaceValue = checkout("takeover-twice");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const older = liveOwner(workspaceValue, "0.0.9");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      expect(await activity.start()).toEqual({ ok: true });
+      expect(await activity.start()).toEqual({ ok: true });
+      expect(spawned).toHaveLength(1);
+      expect(commandsIn(versionedControlDirectory(workspaceValue.directory, "0.0.9"))).toEqual([
+        { type: "drain" },
+      ]);
+    } finally {
+      older.release();
+    }
+  });
+
+  test("Start reports success without spawning when this version's worker is live", async () => {
+    const workspaceValue = checkout("takeover-same-version");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const live = liveOwner(workspaceValue, "1.0.0");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      expect(await activity.start()).toEqual({ ok: true });
+      expect(spawned).toHaveLength(0);
+    } finally {
+      live.release();
+    }
+  });
+
+  test("Start never claims success when only an older version's worker is live and takeover is not allowed", async () => {
+    const workspaceValue = checkout("takeover-refused");
+    // The host prefix already holds a newer harness than this process.
+    hostHarnessVersion(workspaceValue, "1.0.1");
+    const older = liveOwner(workspaceValue, "0.0.9");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      const result = await activity.start();
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain("0.0.9");
+      expect(result.message).toContain("1.0.1");
+      expect(spawned).toHaveLength(0);
+      expect(commandsIn(versionedControlDirectory(workspaceValue.directory, "0.0.9"))).toEqual([]);
+    } finally {
+      older.release();
+    }
+  });
+
+  test("begin takes over an older live worker without an operator", async () => {
+    const workspaceValue = checkout("takeover-begin");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const older = liveOwner(workspaceValue, "0.0.9");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      activity.begin();
+      await activity.settled();
+      expect(spawned).toHaveLength(1);
+      expect(commandsIn(versionedControlDirectory(workspaceValue.directory, "0.0.9"))).toEqual([
+        { type: "drain" },
+      ]);
+    } finally {
+      activity.dispose();
+      older.release();
+    }
+  });
+
+  test("begin starts nothing when no worker is live", async () => {
+    const workspaceValue = checkout("takeover-begin-idle");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      activity.begin();
+      await activity.settled();
+      expect(spawned).toHaveLength(0);
+    } finally {
+      activity.dispose();
+    }
   });
 });

@@ -50,7 +50,7 @@
     filing = item.id;
     failed = { ...failed, [item.id]: "" };
     const payload = {
-      action: "report",
+      action: "REPORT",
       report: notificationReport(item),
       route: window.location.pathname,
       url: window.location.href,

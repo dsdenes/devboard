@@ -129,6 +129,7 @@ function resetStores(): void {
   issues.draftRuns = {};
   issues.drafts = [];
   flow.status = "none";
+  flow.checkpoints = [];
   flow.question = null;
   agents.snapshots = {};
   layout.mode = "goal";
@@ -567,4 +568,25 @@ test("each background-agent entry follows its own lifecycle and no Discover run"
     const button = document.querySelector(`[data-testid="open-devboard-${descriptor.id}"]`);
     expect(button?.getAttribute("data-run-state")).toBe(lifecycles[String(agents.lifecycle(descriptor.id))]);
   }
+});
+
+test("a checkpoint badge names its verification tone", async () => {
+  const verifications = ["not-run", "passed", "failed"] as const;
+  flow.checkpoints = verifications.map((verification, index) => ({
+    id: `cp-${index}`,
+    timestamp: "2026-11-01T00:00:00.000Z",
+    summary: `Checkpoint ${index}`,
+    files: 1,
+    commit: `c${index}`.padEnd(12, "0"),
+    verification,
+  }));
+  layout.mode = "flow";
+  mount();
+  await tick();
+  const tones = verifications.map((_, index) =>
+    document
+      .querySelector(`[data-command="flow.checkpoint.open.cp-${index}"] .badge`)
+      ?.getAttribute("data-tone"),
+  );
+  expect(tones).toEqual(["warning", "success", "error"]);
 });

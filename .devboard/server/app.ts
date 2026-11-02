@@ -2258,6 +2258,25 @@ async function gzipStaticFile(
 }
 
 /**
+ * The path one static request selects, relative to the static root, or null
+ * when the request path is not normalized.
+ *
+ * A raw path that carries a percent-encoded separator, and a decoded path that
+ * carries an empty, `.` or `..` segment or a trailing slash outside the root,
+ * is refused before any file is resolved.
+ */
+function staticRelativePath(rawPathname: string, pathname: string): string | null {
+  if (/%2f|%5c/i.test(rawPathname)) return null;
+  if (pathname === "/") return "index.html";
+  if (!pathname.startsWith("/") || pathname.endsWith("/")) return null;
+  const segments = pathname.slice(1).split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return null;
+  }
+  return segments.join("/");
+}
+
+/**
  * The method, host, origin, size, and JSON guards shared by the mutating
  * browser endpoints. A request for another host, or a cross-origin page, must
  * never reach a handler with a side effect; the body is bounded before it is
@@ -7661,6 +7680,11 @@ export function createApp(options: AppOptions) {
       }
 
       if (url.pathname === "/ws") {
+        // Only a GET can carry a WebSocket handshake: any other method is a
+        // method error, and never reaches the upgrade.
+        if (request.method !== "GET") {
+          return problemResponse(405, "This path serves GET only.", { Allow: "GET" });
+        }
         const refusal = requestRefusal(request, url, allowedHostnames);
         if (refusal !== null) {
           return problemResponse(
@@ -7671,7 +7695,9 @@ export function createApp(options: AppOptions) {
           );
         }
         if (server.upgrade(request)) return;
-        return problemResponse(426, "This path upgrades to a WebSocket.");
+        return problemResponse(426, "This path upgrades to a WebSocket.", {
+          Upgrade: "websocket",
+        });
       }
 
 
@@ -7682,7 +7708,11 @@ export function createApp(options: AppOptions) {
         return problemResponse(400, "The request path is not valid percent-encoding.");
       }
 
-      const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+      const relative = staticRelativePath(url.pathname, pathname);
+      if (relative === null) {
+        return problemResponse(404, "The requested file was not found.");
+      }
+
       const filePath = resolve(staticRoot, relative);
       if (filePath !== staticRoot && !filePath.startsWith(staticRoot + sep)) {
         return problemResponse(404, "The requested file was not found.");

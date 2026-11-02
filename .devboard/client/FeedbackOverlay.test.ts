@@ -122,7 +122,7 @@ async function openPanel() {
   startPicking();
   await tick();
   expect(snapshot.phase).toBe("picking");
-  expect(snapshot.action).toBe("report");
+  expect(snapshot.action).toBe("REPORT");
   expect(document.body.style.cursor).toBe("crosshair");
 
   const target = document.createElement("button");

@@ -14,6 +14,7 @@ describe("status tone", () => {
     expect(statusTone("merged")).toBe("success");
     expect(statusTone("handled")).toBe("success");
     expect(statusTone("accepted")).toBe("success");
+    expect(statusTone("implemented")).toBe("success");
   });
 
   test("marks failures as error", () => {

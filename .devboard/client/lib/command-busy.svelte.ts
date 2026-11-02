@@ -53,7 +53,12 @@ export class CommandBusy<E> {
   #active = $state(false);
   #expired = $state(false);
   #dismissed = $state(false);
-  #baseline: E | undefined = undefined;
+  /**
+   * The evidence captured at activation. Reactive, so a second dispatch that
+   * changes only the latch — the previous answer already released the label —
+   * still re-renders the busy word; `raw` keeps an object evidence's identity.
+   */
+  #baseline: E | undefined = $state.raw(undefined);
   #timer: ReturnType<typeof setTimeout> | null = null;
   readonly #label: () => string;
   readonly #evidence: () => E;

@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -550,6 +551,54 @@ describe("createApp", () => {
     }
   });
 
+  test("refuses a non-normalized static path instead of resolving it", async () => {
+    const { server, url, root } = await startServer();
+
+    try {
+      await mkdir(join(root, "static", "assets"), { recursive: true });
+      await writeFile(join(root, "static", "assets", "app.js"), "console.log(1);\n");
+
+      // `fetch` normalizes a request path before sending it, so the raw
+      // request line is the only way to observe how the server treats one.
+      const rawStatus = (path: string): Promise<number> => {
+        const { promise, resolve: resolveStatus, reject: rejectStatus } =
+          Promise.withResolvers<number>();
+        const [host, port] = url.split(":");
+        const socket = connect({ host, port: Number(port) });
+        let response = "";
+        socket.setEncoding("utf8");
+        socket.on("connect", () => {
+          socket.write(`GET ${path} HTTP/1.1\r\nHost: ${url}\r\nConnection: close\r\n\r\n`);
+        });
+        socket.on("data", (chunk) => {
+          response += chunk;
+        });
+        socket.on("end", () => {
+          resolveStatus(Number.parseInt(response.split(" ")[1] ?? "", 10));
+        });
+        socket.on("error", rejectStatus);
+        return promise;
+      };
+
+      for (const path of [
+        "//index.html",
+        "/index.html/",
+        "/assets%2Fapp.js",
+        "/assets%5Capp.js",
+        "/assets//app.js",
+      ]) {
+        expect(await rawStatus(path)).toBe(404);
+      }
+
+      const asset = await fetch(`http://${url}/assets/app.js`);
+      expect(asset.status).toBe(200);
+      expect(asset.headers.get("content-type")).toContain("javascript");
+      expect(await asset.text()).toBe("console.log(1);\n");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("answers a non-GET static request with Problem JSON", async () => {
     const { server, url } = await startServer();
 
@@ -659,6 +708,52 @@ describe("createApp", () => {
       socket.onerror = () => resolve(false);
       socket.onclose = () => resolve(false);
       expect(await promise).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a non-GET upgrade with 405 and Allow: GET", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      for (const method of ["POST", "DELETE", "PATCH", "HEAD"]) {
+        const refused = await fetch(`http://${url}/ws`, {
+          method,
+          // A usable handshake still earns the method error: the method is
+          // refused before the upgrade is attempted.
+          headers: {
+            Upgrade: "websocket",
+            Connection: "Upgrade",
+            "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+            "Sec-WebSocket-Version": "13",
+          },
+        });
+        expect(refused.status).toBe(405);
+        expect(refused.headers.get("allow")).toBe("GET");
+        expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+        if (method !== "HEAD") {
+          expect(await refused.json()).toEqual(
+            problemBody("Method Not Allowed", 405, "This path serves GET only."),
+          );
+        }
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a GET without a WebSocket handshake answers 426 naming the upgrade", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const refused = await fetch(`http://${url}/ws`);
+      expect(refused.status).toBe(426);
+      expect(refused.headers.get("upgrade")).toBe("websocket");
+      expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await refused.json()).toEqual(
+        problemBody("Upgrade Required", 426, "This path upgrades to a WebSocket."),
+      );
     } finally {
       server.stop(true);
     }

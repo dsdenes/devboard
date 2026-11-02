@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { createCommandBusy } from "./command-busy.svelte";
 import { connection } from "./connection.svelte";
 import { IssuesStore } from "./issues.svelte";
+import { notifications } from "./notifications.svelte";
 import type { QueuedIssue } from "./types";
 
 interface FakeEnvelope {
@@ -169,4 +171,97 @@ test("a reopened close request is not revived by a queue that still lists the is
 
   expect(store.closing).toEqual([]);
   expect(store.canClose(42)).toBe(true);
+});
+
+/** A snapshot that still lists the given issues in the queue. */
+function state(queue: QueuedIssue[]): Record<string, unknown> {
+  return {
+    type: "issuesState",
+    root: "/repo",
+    lifecycle: "running",
+    enabled: true,
+    queue,
+    runs: [],
+    agents: [],
+  };
+}
+
+test("a refused close releases the row's label on the frame that carries its reason", () => {
+  wire();
+  const socket = reconnect();
+  socket.deliver(state([queuedIssue(42)]));
+
+  // The row's Close control latches the issue's close answer as its evidence.
+  const control = createCommandBusy({ label: "Close", evidence: () => store.closeRevision(42) });
+  control.start();
+  store.closeIssue(42);
+  expect(control.busy).toBe(true);
+  expect(control.word).toBe("Closing…");
+  expect(socket.sent.at(-1)).toContain('"closeIssue"');
+
+  socket.deliver({
+    type: "issuesClosed",
+    number: 42,
+    ok: false,
+    message: "the forge refused the close",
+  });
+
+  // The refusal is an answer: the label rests at once and claims no silence.
+  expect(control.busy).toBe(false);
+  expect(control.notice).toBeNull();
+  expect(store.closing).toEqual([]);
+  expect(store.canClose(42)).toBe(true);
+  const newest = notifications.live[0];
+  expect(newest?.severity).toBe("error");
+  expect(newest?.text).toBe("the forge refused the close");
+
+  // The refused issue stays in the queue, and the row takes a retry at once.
+  expect(store.snapshot?.queue.map((issue) => issue.number)).toEqual([42]);
+  store.closeIssue(42);
+  expect(store.closing).toEqual([42]);
+
+  control.dismiss();
+});
+
+test("an accepted close releases the label but stays disabled until the queue drops the issue", () => {
+  wire();
+  const socket = reconnect();
+  socket.deliver(state([queuedIssue(42)]));
+
+  const control = createCommandBusy({ label: "Close", evidence: () => store.closeRevision(42) });
+  control.start();
+  store.closeIssue(42);
+
+  socket.deliver({ type: "issuesClosed", number: 42, ok: true });
+
+  expect(control.busy).toBe(false);
+  expect(control.notice).toBeNull();
+  expect(store.canClose(42)).toBe(false);
+
+  socket.deliver(state([]));
+  expect(store.canClose(42)).toBe(true);
+
+  control.dismiss();
+});
+
+test("a close answer for one issue leaves another row's label pending", () => {
+  wire();
+  const socket = reconnect();
+  socket.deliver(state([queuedIssue(42), queuedIssue(43)]));
+
+  const control = createCommandBusy({ label: "Close", evidence: () => store.closeRevision(42) });
+  control.start();
+  store.closeIssue(42);
+
+  socket.deliver({
+    type: "issuesClosed",
+    number: 43,
+    ok: false,
+    message: "the forge refused the close",
+  });
+
+  expect(control.busy).toBe(true);
+  expect(store.closing).toEqual([42]);
+
+  control.dismiss();
 });

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Inbox from "lucide-svelte/icons/inbox";
   import { sortAgentIssues } from "../../../server/agents/registry";
+  import { statusTone } from "../status-tone";
   import type { AgentIssueRow } from "../types";
 
   interface Props {
@@ -79,11 +80,7 @@
               <td>
                 <span
                   class="badge"
-                  data-tone={row.state === "pending"
-                    ? "accent"
-                    : row.state === "implemented"
-                      ? "success"
-                      : undefined}
+                  data-tone={statusTone(row.state)}
                   data-testid="agent-issue-state"
                 >
                   {row.state}
