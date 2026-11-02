@@ -280,6 +280,19 @@ describe("contribution document validation", () => {
     refusal(noEvidence, /install\.evidence.*must ground a known fact/);
   });
 
+  test("refuses an unknown fact without its one-line reason", () => {
+    const current = staged("unknown-no-reason-");
+    current.write();
+    const value = document();
+    (value.testing as Array<Record<string, unknown>>)[0] = {
+      key: "suite",
+      evidence: [],
+      confidence: "unknown",
+    };
+    current.writeDocument(value);
+    refusal(current, /testing\.suite\.reason: must be a string/);
+  });
+
   test("refuses an unknown fact that carries a value", () => {
     const current = staged("unknown-value-");
     current.write();
