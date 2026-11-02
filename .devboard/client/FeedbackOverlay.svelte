@@ -922,7 +922,6 @@
   .feedback-marker {
     border: 2px solid var(--accent);
     border-radius: 3px;
-    box-shadow: 0 0 0 2px rgb(0 0 0 / 0.12);
     pointer-events: none;
     position: fixed;
     z-index: 2147483646;
