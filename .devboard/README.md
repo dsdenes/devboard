@@ -1805,6 +1805,13 @@ component that dispatches it.
 - The gate starts exactly one `omp acp` release agent only for a non-empty range and hands it the
   whole range. At most one run exists per repository: a second worker of the same harness version
   refuses to start, and a cadence tick during an active run starts nothing.
+- A worker writes the shared state as a merge with a fresh read taken under the family's run
+  lease, never as a whole-object overwrite of the snapshot it read at start. A takeover starts the
+  newer version's worker while the drained one is still settling, so the two writers overlap by
+  design: runs union by id, newest first and bounded, activity keeps every line both workers
+  wrote, and the release, failure, and gate records come from whichever side is newer by their own
+  timestamp. A release the draining worker just verified therefore survives the new worker's first
+  tick.
 - One run batches every non-merge commit since the newest tag into one release. The runner on the
   repository's registered Gitea `act_runner` — never a hosted runner and never a fallback — builds
   the client, runs the harness suite and typecheck, packs the complete public package, publishes

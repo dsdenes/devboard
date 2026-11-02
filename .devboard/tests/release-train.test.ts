@@ -16,6 +16,7 @@ import {
 } from "../release-train/paths";
 import {
   emptyState,
+  readState,
   writeState,
   type ReleaseTrainRun,
 } from "../release-train/state";
@@ -670,6 +671,55 @@ describe("Release Train family", () => {
       expect(readSettings(directory).intervalMinutes).toBe(10);
     } finally {
       await worker.stop();
+    }
+  });
+
+  test("a takeover tick keeps the release the draining worker recorded", async () => {
+    const workspaceValue = workspace("takeover-merge");
+    const older = workerAt(workspaceValue, {
+      harnessVersion: "0.0.9",
+      now: () => new Date("2026-11-02T10:00:00.000Z"),
+      gate: () => unreleased(),
+      runRelease: async (input) => {
+        input.activity("the older worker published the release");
+        return { ok: true, version: "1.0.1", url: "https://forge.test/releases/tag/v1.0.1" };
+      },
+    });
+    const newer = workerAt(workspaceValue, {
+      harnessVersion: "0.1.0",
+      now: () => new Date("2026-11-02T10:00:05.000Z"),
+      gate: () => ({
+        state: "nothing",
+        target: "b".repeat(40),
+        previous: { tag: "v1.0.1", version: "1.0.1" },
+        range: `v1.0.1..${"b".repeat(40)}`,
+      }),
+    });
+    // Both workers read the shared state before either writes it: this is the
+    // takeover overlap, where the newer version starts while the older drains.
+    expect(older.begin(false)).toBe(true);
+    expect(newer.begin(false)).toBe(true);
+    try {
+      await older.tickNow();
+      const released = older.currentState.runs[0];
+      expect(released?.state).toBe("released");
+      const releasedId = released?.id ?? "";
+      expect(newer.currentState.runs).toHaveLength(0);
+
+      await newer.tickNow();
+
+      const reloaded = readState(workspaceValue.directory);
+      expect(reloaded?.release?.version).toBe("1.0.1");
+      const row = reloaded?.runs.find((entry) => entry.id === releasedId);
+      expect(row?.state).toBe("released");
+      expect(row?.url).toBe("https://forge.test/releases/tag/v1.0.1");
+      const activity = reloaded?.activity.join("\n") ?? "";
+      expect(activity).toContain("released v1.0.1: https://forge.test/releases/tag/v1.0.1");
+      expect(activity).toContain("the older worker published the release");
+      expect(activity).toContain("nothing to release");
+    } finally {
+      await older.stop();
+      await newer.stop();
     }
   });
 });

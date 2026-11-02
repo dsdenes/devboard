@@ -227,9 +227,8 @@ export function recordRun(
   return [run, ...runs.filter((entry) => entry.id !== run.id)].slice(0, RUN_HISTORY_LIMIT);
 }
 
-/** Appends one activity line, trimming the oldest entries and bytes. */
-export function appendActivity(lines: string[], text: string): string[] {
-  lines.push(text);
+/** Trims the oldest entries and bytes of one activity list in place. */
+function trimActivity(lines: string[]): string[] {
   while (lines.length > ACTIVITY_MAX_ENTRIES) lines.shift();
   let bytes = lines.reduce((total, line) => total + Buffer.byteLength(line, "utf8"), 0);
   while (bytes > ACTIVITY_MAX_BYTES && lines.length > 1) {
@@ -237,6 +236,60 @@ export function appendActivity(lines: string[], text: string): string[] {
     bytes -= removed === undefined ? 0 : Buffer.byteLength(removed, "utf8");
   }
   return lines;
+}
+
+/** Appends one activity line, trimming the oldest entries and bytes. */
+export function appendActivity(lines: string[], text: string): string[] {
+  lines.push(text);
+  return trimActivity(lines);
+}
+
+/** The newer of two timestamped records; an absent one loses, a tie keeps `mine`. */
+function newerRecord<T extends { at: string }>(mine: T | null, disk: T | null): T | null {
+  if (mine === null) return disk;
+  if (disk === null) return mine;
+  return Date.parse(disk.at) > Date.parse(mine.at) ? disk : mine;
+}
+
+/**
+ * The union of this worker's shared state with what another live worker wrote
+ * after this worker read its snapshot. Every worker version runs its tick under
+ * the family's one run lease, but a takeover starts the new version's worker
+ * while the drained one is still settling its release, so a whole-object write
+ * from the stale snapshot would erase that release. Runs therefore union by id
+ * and stay newest first and bounded, `appended` carries only the activity lines
+ * written since the last persist, and the release, failure, and gate records
+ * come from whichever side is newer by their own timestamp.
+ */
+export function mergeState(
+  mine: ReleaseTrainState,
+  disk: ReleaseTrainState,
+  appended: readonly string[] = [],
+): ReleaseTrainState {
+  const runs = new Map<string, ReleaseTrainRun>();
+  for (const run of disk.runs) runs.set(run.id, run);
+  for (const run of mine.runs) runs.set(run.id, run);
+  const ordered = [...runs.values()]
+    .sort(
+      (left, right) =>
+        Date.parse(right.startedAt) - Date.parse(left.startedAt) ||
+        right.id.localeCompare(left.id),
+    )
+    .slice(0, RUN_HISTORY_LIMIT);
+  const release = newerRecord(mine.release, disk.release);
+  let failure = newerRecord(mine.failure, disk.failure);
+  // A release recorded after a failure clears it, whichever worker wrote it.
+  if (release !== null && failure !== null && Date.parse(release.at) > Date.parse(failure.at)) {
+    failure = null;
+  }
+  return {
+    ...mine,
+    release,
+    failure,
+    gate: newerRecord(mine.gate, disk.gate),
+    runs: ordered,
+    activity: trimActivity([...disk.activity, ...appended]),
+  };
 }
 
 export interface ReleaseTrainWorkerRecord {

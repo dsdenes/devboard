@@ -49,6 +49,7 @@ import {
 import {
   appendActivity,
   emptyState,
+  mergeState,
   readState,
   readWorkerState,
   recordRun,
@@ -388,6 +389,8 @@ export class ReleaseTrainWorker {
   private readonly versionWorkerPath: string;
 
   private shared: ReleaseTrainState;
+  /** Activity lines written since the last shared-state persist, for the merge. */
+  private pendingActivity: string[] = [];
   private settings: ReleaseTrainSettings;
   private worker: ReleaseTrainWorkerRecord | undefined;
   private lock: { release: () => void } | undefined;
@@ -801,6 +804,7 @@ export class ReleaseTrainWorker {
 
   private activity(line: string): void {
     this.shared.activity = appendActivity(this.shared.activity, line);
+    this.pendingActivity = appendActivity(this.pendingActivity, line);
     if (this.activeRun !== undefined) {
       this.activeActivity = appendActivity(this.activeActivity, line);
       writeRunActivity(runDirectory(this.directory, this.activeRun.id), this.activeActivity);
@@ -808,10 +812,22 @@ export class ReleaseTrainWorker {
     this.persistShared();
   }
 
+  /**
+   * Writes this worker's shared state as a merge with a fresh read, so a newer
+   * version's worker settling a release during a takeover is never erased by
+   * the draining worker's snapshot, and the reverse. Every caller runs inside a
+   * tick that holds the family's run lease, so the read and the write cannot
+   * interleave with another worker's.
+   */
   private persistShared(): void {
     this.shared.updatedAt = this.clock().toISOString();
     try {
-      writeState(this.directory, this.shared);
+      const disk = readState(this.directory);
+      const next =
+        disk === undefined ? this.shared : mergeState(this.shared, disk, this.pendingActivity);
+      writeState(this.directory, next);
+      this.shared = next;
+      this.pendingActivity = [];
     } catch (error) {
       this.log(`could not write the Release Train state: ${detailOf(error)}`);
     }
