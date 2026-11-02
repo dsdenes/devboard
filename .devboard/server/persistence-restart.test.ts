@@ -24,6 +24,8 @@ const temporaryDirectories: string[] = [];
 const testRoot = join(resolve(import.meta.dir, ".."), ".tmp");
 const SERVER = join(import.meta.dir, "index.ts");
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
+/** The credential the spawned dashboard requires, and the test presents. */
+const DASHBOARD_TOKEN = "persistence-test-token";
 const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
 /** The offline release the fixture serves; the stub `gh` never answers a release query. */
 const FIXTURE_RELEASE_VERSION = "0.0.0";
@@ -196,6 +198,7 @@ async function startProcess(
       GOAL_FILE: fixture.goalFile,
       STATIC_DIR: fixture.staticDir,
       STATE_DIR: fixture.stateDir,
+      DEVBOARD_DASHBOARD_TOKEN: DASHBOARD_TOKEN,
       ...verificationProviderUsageEnv(),
       AGENT_COMMAND: [
         `bun ${STUB_AGENT}`,
@@ -306,7 +309,9 @@ async function connect(url: string): Promise<TestClient> {
   const deadline = Date.now() + 20_000;
   for (;;) {
     const { promise, resolve: settle, reject } = Promise.withResolvers<TestClient>();
-    const socket = new WebSocket(`ws://${url}/ws`);
+    const socket = new WebSocket(`ws://${url}/ws`, {
+      headers: { authorization: `Bearer ${DASHBOARD_TOKEN}` },
+    } as unknown as string[]);
     const events: Record<string, unknown>[] = [];
     const buffered: Record<string, unknown>[] = [];
     const waiters: {

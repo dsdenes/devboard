@@ -27,7 +27,13 @@ import {
 import { readSettings, readState, type ScoutState } from "../issues/scout/state";
 import { readHarnessVersion } from "../server/version";
 import { pickEntryPoint } from "../lib/entry-point";
-import { freePort, run, waitFor, websocketCommand } from "./verification";
+import {
+  dashboardSocket,
+  freePort,
+  run,
+  waitFor,
+  websocketCommand,
+} from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
 const harnessRoot = resolve(import.meta.dir, "..");
@@ -397,7 +403,7 @@ class Socket {
   readonly messages: SocketMessage[] = [];
 
   constructor(port: number) {
-    this.socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    this.socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   }
 
   async open(): Promise<void> {

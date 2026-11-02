@@ -26,7 +26,13 @@ import {
 } from "../server/providers";
 import { stateFile } from "../server/state";
 import { runCleanup } from "../watchdog/cleanup";
-import { freePort, makeRoot, run, waitFor } from "./verification";
+import {
+  dashboardSocket,
+  freePort,
+  makeRoot,
+  run,
+  waitFor,
+} from "./verification";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const stubPeer = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
@@ -278,7 +284,7 @@ interface TestSocket {
 }
 
 async function connect(url: string): Promise<TestSocket> {
-  const socket = new WebSocket(url);
+  const socket = dashboardSocket(url);
   const events: Array<Record<string, unknown>> = [];
   const waiters: Array<{
     predicate: (message: Record<string, unknown>) => boolean;

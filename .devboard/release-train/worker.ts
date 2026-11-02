@@ -49,6 +49,7 @@ import {
 import {
   appendActivity,
   emptyState,
+  mergeState,
   readState,
   readWorkerState,
   recordRun,
@@ -388,6 +389,8 @@ export class ReleaseTrainWorker {
   private readonly versionWorkerPath: string;
 
   private shared: ReleaseTrainState;
+  /** Activity lines written since the last shared-state persist, for the merge. */
+  private pendingActivity: string[] = [];
   private settings: ReleaseTrainSettings;
   private worker: ReleaseTrainWorkerRecord | undefined;
   private lock: { release: () => void } | undefined;
@@ -509,9 +512,9 @@ export class ReleaseTrainWorker {
     return 0;
   }
 
-  /** Test seam: one forced tick against the injected gate. */
-  async tickNow(): Promise<void> {
-    await this.tick(true);
+  /** Test seam: one tick against the injected gate, forced unless `force` is false. */
+  async tickNow(force = true): Promise<void> {
+    await this.tick(force);
   }
 
   /** Stops this worker and closes any active peer. */
@@ -779,7 +782,11 @@ export class ReleaseTrainWorker {
 
   private finishTick(now: Date): void {
     this.lastRunAt = now.toISOString();
-    this.nextRunAtMs = now.getTime() + Math.max(60_000, this.settings.intervalMinutes * 60_000);
+    // The cadence runs from the tick's end, not its start: a run that outlasts
+    // the interval still earns a full gap before the next tick is due.
+    const endedAtMs = this.clock().getTime();
+    this.nextRunAtMs =
+      endedAtMs + Math.max(60_000, this.settings.intervalMinutes * 60_000);
     if (this.worker !== undefined) {
       this.worker.lastRunAt = this.lastRunAt;
       this.worker.nextRunAt = new Date(this.nextRunAtMs).toISOString();
@@ -797,6 +804,7 @@ export class ReleaseTrainWorker {
 
   private activity(line: string): void {
     this.shared.activity = appendActivity(this.shared.activity, line);
+    this.pendingActivity = appendActivity(this.pendingActivity, line);
     if (this.activeRun !== undefined) {
       this.activeActivity = appendActivity(this.activeActivity, line);
       writeRunActivity(runDirectory(this.directory, this.activeRun.id), this.activeActivity);
@@ -804,10 +812,22 @@ export class ReleaseTrainWorker {
     this.persistShared();
   }
 
+  /**
+   * Writes this worker's shared state as a merge with a fresh read, so a newer
+   * version's worker settling a release during a takeover is never erased by
+   * the draining worker's snapshot, and the reverse. Every caller runs inside a
+   * tick that holds the family's run lease, so the read and the write cannot
+   * interleave with another worker's.
+   */
   private persistShared(): void {
     this.shared.updatedAt = this.clock().toISOString();
     try {
-      writeState(this.directory, this.shared);
+      const disk = readState(this.directory);
+      const next =
+        disk === undefined ? this.shared : mergeState(this.shared, disk, this.pendingActivity);
+      writeState(this.directory, next);
+      this.shared = next;
+      this.pendingActivity = [];
     } catch (error) {
       this.log(`could not write the Release Train state: ${detailOf(error)}`);
     }

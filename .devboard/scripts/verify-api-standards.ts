@@ -23,7 +23,15 @@ import {
 } from "node:fs";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { assertTrue, freePort, harnessRoot, makeRoot, run, waitFor } from "./verification";
+import {
+  assertTrue,
+  dashboardSocket,
+  freePort,
+  harnessRoot,
+  makeRoot,
+  run,
+  waitFor,
+} from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 import {
   API_STANDARDS_LABEL,
@@ -699,7 +707,7 @@ try {
   /* 3. Start → starting → running, one cycle, and the MUST finding's provenance. */
   // The server's own lifecycle frames are the authoritative sequence: a
   // page may coalesce a short state, but the bridge publishes each one.
-  const lifecycleSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const lifecycleSocket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   const lifecycleStates: string[] = [];
   lifecycleSocket.onmessage = (event) => {
     let frame: { type?: string; agent?: { id?: string; lifecycle?: string } };
@@ -746,7 +754,7 @@ try {
   const beforeStarts = readFileSync(acpLog, "utf8")
     .split("\n")
     .filter((line) => line.startsWith("start ")).length;
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const ws = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   const opened = Promise.withResolvers<void>();
   ws.onopen = () => opened.resolve();
   ws.onerror = () => opened.resolve();

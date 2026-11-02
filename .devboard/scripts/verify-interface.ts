@@ -36,7 +36,15 @@ import { recordToolInvocation } from "../mcp/invocations";
 import { stateFile } from "../server/state";
 import { statePath } from "../issues/scout/paths";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
-import { dashboardsFor, freePort, processRunning, run, waitFor } from "./verification";
+import {
+  VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardSocket,
+  dashboardsFor,
+  freePort,
+  processRunning,
+  run,
+  waitFor,
+} from "./verification";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
@@ -1331,7 +1339,7 @@ async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
 }
 
 async function seedDiscover(port: number): Promise<void> {
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   const events: Array<Record<string, unknown>> = [];
   socket.onmessage = (event) => {
     try {
@@ -1571,7 +1579,7 @@ const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
 /** Waits on the server's own snapshot until no Discover run is active. */
 async function waitDiscoverIdle(port: number, timeoutMs = 120_000): Promise<void> {
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   await new Promise<void>((settle, reject) => {
     socket.onopen = () => settle();
     socket.onerror = () => reject(new Error("verify:interface: discover idle socket failed"));
@@ -6805,7 +6813,7 @@ try {
   );
   const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/feedback`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...VERIFY_DASHBOARD_AUTHORIZATION },
     body: JSON.stringify({ action: "REPORT", report: "disabled check" }),
   });
   const refusal = await refused.text();

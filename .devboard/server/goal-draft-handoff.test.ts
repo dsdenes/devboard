@@ -23,8 +23,17 @@ const testRoot = join(harnessRoot, ".tmp");
 const SERVER = join(import.meta.dir, "index.ts");
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
 const UPDATE_VERSION = "0.0.0";
+/** The credential the spawned dashboard requires, and the test presents. */
+const DASHBOARD_TOKEN = "handoff-test-token";
 const temporaryDirectories: string[] = [];
 const startedRepos: string[] = [];
+
+/** Opens one socket with the credential the spawned dashboard requires. */
+function dashboardSocket(url: string): WebSocket {
+  return new WebSocket(url, {
+    headers: { authorization: `Bearer ${DASHBOARD_TOKEN}` },
+  } as unknown as string[]);
+}
 
 afterAll(async () => {
   for (const repo of startedRepos) {
@@ -148,6 +157,7 @@ function spawnDashboard(
       GOAL_FILE: join(fixture.repo, "GOAL.md"),
       STATIC_DIR: join(fixture.root, "dist"),
       STATE_DIR: fixture.stateDir,
+      DEVBOARD_DASHBOARD_TOKEN: DASHBOARD_TOKEN,
       AGENT_COMMAND: `bun ${STUB_AGENT} --log=${fixture.log} --goal-draft`,
       DEVBOARD_RELEASE_DIR: join(fixture.root, "releases"),
       DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
@@ -167,7 +177,7 @@ async function waitForEndpoint(fixture: Fixture, timeoutMs = 10_000): Promise<bo
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const { promise, resolve } = Promise.withResolvers<boolean>();
-    const socket = new WebSocket(`ws://${fixture.url}/ws`);
+    const socket = dashboardSocket(`ws://${fixture.url}/ws`);
     const timer = setTimeout(() => {
       try {
         socket.close();
@@ -304,7 +314,7 @@ async function connect(url: string): Promise<Client> {
   const deadline = Date.now() + 20_000;
   for (;;) {
     try {
-      const socket = new WebSocket(`ws://${url}/ws`);
+      const socket = dashboardSocket(`ws://${url}/ws`);
       const opened = Promise.withResolvers<void>();
       socket.onopen = () => opened.resolve();
       socket.onerror = () => opened.reject(new Error("websocket error"));
@@ -381,7 +391,7 @@ async function connect(url: string): Promise<Client> {
 /** One fresh `getGoalDrafts` replay; never a broadcast buffered earlier. */
 async function readRuns(fixture: Fixture, timeoutMs = 15_000): Promise<Record<string, unknown>[]> {
   const { promise, resolve: settle, reject } = Promise.withResolvers<Record<string, unknown>[]>();
-  const socket = new WebSocket(`ws://${fixture.url}/ws`);
+  const socket = dashboardSocket(`ws://${fixture.url}/ws`);
   const timer = setTimeout(() => {
     try {
       socket.close();

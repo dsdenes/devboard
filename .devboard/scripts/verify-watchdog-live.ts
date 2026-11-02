@@ -33,6 +33,7 @@ import { findingFingerprint } from "../watchdog/findings";
 import { readWorkerState } from "../watchdog/worker-state";
 import {
   assertTrue,
+  dashboardSocket,
   freePort,
   harnessRoot,
   makeHost,
@@ -385,7 +386,7 @@ exit 0
     30_000,
   );
 
-  socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   const opened = Promise.withResolvers<void>();
   socket.onopen = () => opened.resolve();
   socket.onerror = () => opened.reject(new Error("verify:watchdog-live: websocket failed"));

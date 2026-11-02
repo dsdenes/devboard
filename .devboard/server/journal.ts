@@ -48,7 +48,10 @@ export interface JournalRecord {
   pid: number;
   kind: JournalKind;
   text: string;
-  /** Logical run, lane, or peer the record belongs to, when one is known. */
+  /**
+   * Logical run, lane, peer, or request call flow the record belongs to, when
+   * one is known.
+   */
   scope?: string;
 }
 

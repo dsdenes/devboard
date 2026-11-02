@@ -26,7 +26,17 @@ import {
 } from "node:fs";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
+import {
+  VERIFY_DASHBOARD_TOKEN,
+  assertTrue,
+  dashboardSocket,
+  freePort,
+  harnessRoot,
+  makeHost,
+  makeRoot,
+  run,
+  waitFor,
+} from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 import { createApp } from "../server/app";
 import { testProviderService } from "../server/fixtures/test-providers";
@@ -1815,6 +1825,7 @@ try {
       agentCommand: `${process.execPath} ${stubAcp} --log=${surviveLog} --discover --discover-no-exit --delay-ms=60000`,
       tracker: async () => undefined,
       restart: () => undefined,
+      token: VERIFY_DASHBOARD_TOKEN,
     } as const;
     const surviveFirst = createApp(surviveOptions);
     interface DiscoverClient {
@@ -1826,7 +1837,7 @@ try {
       close(): void;
     }
     const connectDiscover = async (port: number): Promise<DiscoverClient> => {
-      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      const socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
       const frames: Record<string, unknown>[] = [];
       const waiters: Array<{
         predicate: (frame: Record<string, unknown>) => boolean;

@@ -25,6 +25,29 @@ export const repoRoot = resolve(harnessRoot, "..");
 export const launcherBin = join(harnessRoot, "bin", "devboard.mjs");
 export const templateAgents = join(harnessRoot, "templates", "host-AGENTS.md");
 
+/**
+ * The credential every verification dashboard requires. The variable is put
+ * back into the environment so every spawned dashboard inherits it, and a
+ * programmatic socket or fetch presents the same value as a bearer token.
+ */
+export const VERIFY_DASHBOARD_TOKEN =
+  process.env.DEVBOARD_DASHBOARD_TOKEN?.trim() || "verify-dashboard-token";
+process.env.DEVBOARD_DASHBOARD_TOKEN = VERIFY_DASHBOARD_TOKEN;
+export const VERIFY_DASHBOARD_AUTHORIZATION = {
+  authorization: `Bearer ${VERIFY_DASHBOARD_TOKEN}`,
+};
+
+/**
+ * Opens a dashboard socket with the verification credential. Bun's WebSocket
+ * takes handshake headers, but the DOM declaration that `lib.dom` supplies has
+ * only the protocols argument, so this is the one place the extension is cast.
+ */
+export function dashboardSocket(url: string): WebSocket {
+  return new WebSocket(url, {
+    headers: VERIFY_DASHBOARD_AUTHORIZATION,
+  } as unknown as string[]);
+}
+
 export interface CommandResult {
   code: number;
   stdout: string;
@@ -285,7 +308,7 @@ export function websocketCommand(
   timeoutMs = 10_000,
 ): Promise<Record<string, unknown>> {
   const { promise, resolve: settle, reject } = Promise.withResolvers<Record<string, unknown>>();
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   const timer = setTimeout(() => {
     try {
       socket.close();

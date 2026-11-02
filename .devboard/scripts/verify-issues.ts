@@ -30,7 +30,12 @@ import { readState, type IssuesState } from "../issues/state";
 import { issuesIndicatorTitle, issuesLabel, versionLabel } from "../client/lib/issues-label";
 import { pollStatus } from "../client/lib/poll-status";
 import type { IssuesSnapshot as ClientIssuesSnapshot } from "../client/lib/types";
-import { freePort, run, waitFor } from "./verification";
+import {
+  dashboardSocket,
+  freePort,
+  run,
+  waitFor,
+} from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
 const harnessRoot = resolve(import.meta.dir, "..");
@@ -315,7 +320,7 @@ class Socket {
   readonly messages: SocketMessage[] = [];
 
   constructor(port: number) {
-    this.socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    this.socket = dashboardSocket(`ws://127.0.0.1:${port}/ws`);
   }
 
   async open(): Promise<void> {
@@ -1315,7 +1320,7 @@ try {
     console.log(`verify:issues: takeover: the live ${oldVersion} worker holds issue #1`);
     const fleetDashboard = await startDashboard(fleetRepo, tools, tools.marker);
     startedDashboards.push(fleetDashboard);
-    const fleetSocket = new WebSocket(`ws://127.0.0.1:${fleetDashboard.port}/ws`);
+    const fleetSocket = dashboardSocket(`ws://127.0.0.1:${fleetDashboard.port}/ws`);
     const fleetReplies: Array<Record<string, unknown>> = [];
     fleetSocket.onmessage = (event) => {
       try {

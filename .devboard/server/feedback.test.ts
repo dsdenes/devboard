@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createApp, type FeedbackOptions } from "./app";
 import { REDESIGN_INSTRUCTION } from "./feedback";
+import { MAX_FLOW_ID } from "./flow-id";
 import { testProviderService } from "./fixtures/test-providers";
 import type { Journal, JournalKind } from "./journal";
 import { PROBLEM_CONTENT_TYPE, problemBody } from "./fixtures/problem-body";
@@ -28,6 +29,7 @@ interface RecordedCall {
   url: string;
   method: string;
   authorization: string;
+  flowId: string | null;
   title: string;
   body: string;
 }
@@ -64,6 +66,7 @@ async function startServer(options: StartOptions = {}) {
       method: request.method ?? "GET",
       authorization:
         new Headers(request.headers).get("authorization") ?? "",
+      flowId: new Headers(request.headers).get("x-flow-id"),
       title: typeof payload.title === "string" ? payload.title : "",
       body: typeof payload.body === "string" ? payload.body : "",
     });
@@ -113,12 +116,37 @@ async function startServer(options: StartOptions = {}) {
 }
 
 /** Captures the journal records a server would write. */
-function journalRecorder(): { journal: Journal; records: Array<[JournalKind, string]> } {
-  const records: Array<[JournalKind, string]> = [];
+function journalRecorder(): {
+  journal: Journal;
+  records: Array<[JournalKind, string, string?]>;
+} {
+  const records: Array<[JournalKind, string, string?]> = [];
   return {
     records,
-    journal: { path: "test", write: (kind, text) => records.push([kind, text]) },
+    journal: {
+      path: "test",
+      write: (kind, text, scope) =>
+        records.push(scope === undefined ? [kind, text] : [kind, text, scope]),
+    },
   };
+}
+
+/**
+ * A feedback configuration whose token accessor throws. The token is read
+ * inside the guarded block, so it stands for any unexpected exception there.
+ */
+function failingTokenFeedback(): FeedbackOptions {
+  const feedback: FeedbackOptions = {
+    baseUrl: "https://gitea.example",
+    repo: "dsdenes/devboard",
+    timeoutMs: 5_000,
+  };
+  Object.defineProperty(feedback, "token", {
+    get(): string {
+      throw new Error("gitea token secret-token is unusable");
+    },
+  });
+  return feedback;
 }
 
 function submit(
@@ -155,6 +183,7 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report());
 
       expect(response.status).toBe(201);
+      expect(response.headers.get("x-flow-id")).toBeNull();
       expect(await response.json()).toEqual({
         title: "[ui] The Start button is clipped on narrow windows.",
         links: { issue: { href: ISSUE_URL } },
@@ -165,6 +194,7 @@ describe("feedback endpoint", () => {
       expect(call.method).toBe("POST");
       expect(call.url).toBe("https://gitea.example/api/v1/repos/dsdenes/devboard/issues");
       expect(call.authorization).toBe("token secret-token");
+      expect(call.flowId).toBeNull();
       expect(call.title).toBe("[ui] The Start button is clipped on narrow windows.");
       expect(call.body).toContain("## Operator report");
       expect(call.body).toContain("The Start button is clipped on narrow windows.");
@@ -174,6 +204,64 @@ describe("feedback endpoint", () => {
       expect(call.body).toContain("### DOM excerpt");
       expect(call.body).toContain('<button class="start-button">Start</button>');
       expect(call.body).not.toContain("## Ask conversation");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("forwards the request's flow id and echoes it on the response", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(url, report(), { "x-flow-id": "4d1c" });
+
+      expect(response.status).toBe(201);
+      expect(response.headers.get("x-flow-id")).toBe("4d1c");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.flowId).toBe("4d1c");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a malformed flow id before reaching Gitea", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(url, report(), {
+        "x-flow-id": "x".repeat(MAX_FLOW_ID + 1),
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody(
+          "Bad Request",
+          400,
+          `X-Flow-ID is longer than ${MAX_FLOW_ID} characters.`,
+        ),
+      );
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("names the request's flow id in the journal record of a failed request", async () => {
+    const { journal, records } = journalRecorder();
+    const { server, url } = await startServer({ feedback: failingTokenFeedback(), journal });
+
+    try {
+      const response = await submit(url, report(), { "x-flow-id": "4d1c" });
+
+      expect(response.status).toBe(500);
+      expect(records).toEqual([
+        [
+          "server-error",
+          "POST /feedback: gitea token secret-token is unusable",
+          "4d1c",
+        ],
+      ]);
     } finally {
       server.stop(true);
     }
@@ -396,20 +484,12 @@ describe("feedback endpoint", () => {
 
   test("answers an unexpected failure with a fixed detail and journals the exception", async () => {
     const { journal, records } = journalRecorder();
-    // The token is read inside the guarded block, so a throwing accessor stands
-    // for any unexpected exception there: the response must carry no exception
-    // text, and the journal must hold the detail.
-    const feedback: FeedbackOptions = {
-      baseUrl: "https://gitea.example",
-      repo: "dsdenes/devboard",
-      timeoutMs: 5_000,
-    };
-    Object.defineProperty(feedback, "token", {
-      get(): string {
-        throw new Error("gitea token secret-token is unusable");
-      },
+    // The response must carry no exception text, and the journal must hold the
+    // detail.
+    const { server, url } = await startServer({
+      feedback: failingTokenFeedback(),
+      journal,
     });
-    const { server, url } = await startServer({ feedback, journal });
 
     try {
       const response = await submit(url, report());

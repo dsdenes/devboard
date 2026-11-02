@@ -16,6 +16,7 @@ import {
 } from "../release-train/paths";
 import {
   emptyState,
+  readState,
   writeState,
   type ReleaseTrainRun,
 } from "../release-train/state";
@@ -473,16 +474,22 @@ describe("Release Train family", () => {
 
   test("a failed run leaves the range for the next due tick, which runs again", async () => {
     const workspaceValue = workspace("retry");
-    const now = { value: Date.parse("2026-11-02T10:00:00.000Z") };
+    const start = Date.parse("2026-11-02T10:00:00.000Z");
+    const now = { value: start };
+    let gateReads = 0;
     let runs = 0;
     const worker = workerAt(workspaceValue, {
-      gate: () => unreleased(),
+      gate: () => {
+        gateReads += 1;
+        return unreleased();
+      },
       now: () => new Date(now.value),
       runRelease: async () => {
         runs += 1;
-        return runs === 1
-          ? { ok: false, detail: "the release workflow concluded failure" }
-          : { ok: true, version: "1.0.1", url: "https://forge.test/v1.0.1" };
+        if (runs > 1) return { ok: true, version: "1.0.1", url: "https://forge.test/v1.0.1" };
+        // A failing run that outlasts the cadence must still earn a full gap.
+        now.value += 12 * 60_000;
+        return { ok: false, detail: "the release workflow concluded failure" };
       },
     });
     expect(worker.begin(false)).toBe(true);
@@ -491,9 +498,17 @@ describe("Release Train family", () => {
       expect(runs).toBe(1);
       expect(worker.currentState.release).toBeNull();
       expect(worker.currentState.failure?.detail).toContain("concluded failure");
-      // The cadence is due again ten minutes later, with no operator action.
-      now.value += 10 * 60_000;
-      await worker.tickNow();
+      const endedAt = start + 12 * 60_000;
+      expect(Date.parse(worker.currentWorker?.nextRunAt ?? "")).toBe(endedAt + 10 * 60_000);
+      // Inside the interval after the end: not due, so no gate read and no agent.
+      now.value = endedAt + 9 * 60_000;
+      await worker.tickNow(false);
+      expect(gateReads).toBe(1);
+      expect(runs).toBe(1);
+      // The cadence is due again a full interval after the end, with no operator action.
+      now.value = endedAt + 10 * 60_000;
+      await worker.tickNow(false);
+      expect(gateReads).toBe(2);
       expect(runs).toBe(2);
       expect(worker.currentState.release?.version).toBe("1.0.1");
       expect(worker.currentState.failure).toBeNull();
@@ -656,6 +671,55 @@ describe("Release Train family", () => {
       expect(readSettings(directory).intervalMinutes).toBe(10);
     } finally {
       await worker.stop();
+    }
+  });
+
+  test("a takeover tick keeps the release the draining worker recorded", async () => {
+    const workspaceValue = workspace("takeover-merge");
+    const older = workerAt(workspaceValue, {
+      harnessVersion: "0.0.9",
+      now: () => new Date("2026-11-02T10:00:00.000Z"),
+      gate: () => unreleased(),
+      runRelease: async (input) => {
+        input.activity("the older worker published the release");
+        return { ok: true, version: "1.0.1", url: "https://forge.test/releases/tag/v1.0.1" };
+      },
+    });
+    const newer = workerAt(workspaceValue, {
+      harnessVersion: "0.1.0",
+      now: () => new Date("2026-11-02T10:00:05.000Z"),
+      gate: () => ({
+        state: "nothing",
+        target: "b".repeat(40),
+        previous: { tag: "v1.0.1", version: "1.0.1" },
+        range: `v1.0.1..${"b".repeat(40)}`,
+      }),
+    });
+    // Both workers read the shared state before either writes it: this is the
+    // takeover overlap, where the newer version starts while the older drains.
+    expect(older.begin(false)).toBe(true);
+    expect(newer.begin(false)).toBe(true);
+    try {
+      await older.tickNow();
+      const released = older.currentState.runs[0];
+      expect(released?.state).toBe("released");
+      const releasedId = released?.id ?? "";
+      expect(newer.currentState.runs).toHaveLength(0);
+
+      await newer.tickNow();
+
+      const reloaded = readState(workspaceValue.directory);
+      expect(reloaded?.release?.version).toBe("1.0.1");
+      const row = reloaded?.runs.find((entry) => entry.id === releasedId);
+      expect(row?.state).toBe("released");
+      expect(row?.url).toBe("https://forge.test/releases/tag/v1.0.1");
+      const activity = reloaded?.activity.join("\n") ?? "";
+      expect(activity).toContain("released v1.0.1: https://forge.test/releases/tag/v1.0.1");
+      expect(activity).toContain("the older worker published the release");
+      expect(activity).toContain("nothing to release");
+    } finally {
+      await older.stop();
+      await newer.stop();
     }
   });
 });

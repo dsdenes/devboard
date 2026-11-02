@@ -31,10 +31,13 @@ const GITEA_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * Cancellation for one API call. Aborting cancels it, and an already-aborted
- * signal sends no request at all.
+ * signal sends no request at all. `flowId` joins the call to the dashboard
+ * request that caused it.
  */
 export interface GiteaCallOptions {
   signal?: AbortSignal;
+  /** The caller's `X-Flow-ID`, sent on the request so both sides correlate. */
+  flowId?: string;
 }
 
 export interface GiteaTarget {
@@ -169,10 +172,16 @@ function headers(target: GiteaTarget, accept = "application/json"): Record<strin
   };
 }
 
-function requestInit(target: GiteaTarget, init: RequestInit | undefined, accept?: string): RequestInit {
+function requestInit(
+  target: GiteaTarget,
+  init: RequestInit | undefined,
+  accept?: string,
+  flowId?: string,
+): RequestInit {
   const method = init?.method ?? "GET";
   const headers = new Headers(init?.headers);
   headers.set("Accept", accept ?? "application/json");
+  if (flowId !== undefined) headers.set("X-Flow-ID", flowId);
   if (target.token !== undefined && target.token.length > 0) {
     headers.set("Authorization", `token ${target.token}`);
   }
@@ -243,6 +252,7 @@ export async function giteaRequest(
     target,
     options.signal === undefined ? init : { ...init, signal: options.signal },
     accept,
+    options.flowId,
   );
   const pending = fetchImpl(apiUrl(target, path), request);
   const response = signal === undefined ? await pending : await racedWith(pending, signal);
