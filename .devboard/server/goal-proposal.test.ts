@@ -13,6 +13,7 @@ import {
 } from "./goal-proposal";
 import { testProviderService } from "./fixtures/test-providers";
 import type { Journal, JournalKind } from "./journal";
+import { PROBLEM_CONTENT_TYPE, problemBody } from "./fixtures/problem-body";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -213,7 +214,9 @@ describe("goal proposal drafts", () => {
 
       const blank = await propose(url, { report: " \n\t " });
       expect(blank.status).toBe(400);
-      expect(await blank.json()).toEqual({ error: "report must not be empty." });
+      expect(await blank.json()).toEqual(
+        problemBody("Bad Request", 400, "report must not be empty."),
+      );
       expect(await drafts(root)).toEqual([
         "the-draft-goals-page-should-create.md",
       ]);
@@ -336,11 +339,16 @@ describe("goal proposal drafts", () => {
     try {
       const missing = await propose(url, proposal({ report: undefined }));
       expect(missing.status).toBe(400);
-      expect(await missing.json()).toEqual({ error: "report is required." });
+      expect(missing.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await missing.json()).toEqual(
+        problemBody("Bad Request", 400, "report is required."),
+      );
 
       const blank = await propose(url, proposal({ report: " \n\t " }));
       expect(blank.status).toBe(400);
-      expect(await blank.json()).toEqual({ error: "report must not be empty." });
+      expect(await blank.json()).toEqual(
+        problemBody("Bad Request", 400, "report must not be empty."),
+      );
 
       expect(await drafts(root)).toEqual([]);
     } finally {
@@ -384,9 +392,9 @@ describe("goal proposal drafts", () => {
       const response = await propose(url, proposal(), { host, origin: `http://${host}` });
 
       expect(response.status).toBe(403);
-      expect(await response.json()).toEqual({
-        error: "The request host is not served by this dashboard.",
-      });
+      expect(await response.json()).toEqual(
+        problemBody("Forbidden", 403, "The request host is not served by this dashboard."),
+      );
       expect(await drafts(root)).toEqual([]);
     } finally {
       server.stop(true);
@@ -413,6 +421,10 @@ describe("goal proposal drafts", () => {
       const response = await fetch(`http://${url}/goal-proposals`);
       expect(response.status).toBe(405);
       expect(response.headers.get("allow")).toBe("POST");
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Method Not Allowed", 405, "This endpoint accepts POST only."),
+      );
     } finally {
       server.stop(true);
     }
@@ -443,7 +455,10 @@ describe("goal proposal drafts", () => {
       const response = await propose(url, proposal());
 
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({ error: "An internal error occurred." });
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Internal Server Error", 500, "An internal error occurred."),
+      );
       // The exception text reaches the journal and never the response.
       expect(records).toHaveLength(1);
       const [kind, text] = records[0]!;
@@ -609,7 +624,9 @@ describe("goal proposal naming and body", () => {
       const response = await propose(url, proposal(), { "idempotency-key": "" });
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ error: "Idempotency-Key must not be empty." });
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "Idempotency-Key must not be empty."),
+      );
       expect(await drafts(root)).toEqual([]);
     } finally {
       server.stop(true);

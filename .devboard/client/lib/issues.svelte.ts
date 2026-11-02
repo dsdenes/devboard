@@ -323,12 +323,12 @@ export class IssuesStore {
       });
       const body = (await response.json().catch(() => null)) as {
         path?: unknown;
-        error?: unknown;
+        detail?: unknown;
       } | null;
       if (!response.ok || typeof body?.path !== "string") {
         this.draftCreateError =
-          typeof body?.error === "string"
-            ? body.error
+          typeof body?.detail === "string"
+            ? body.detail
             : `The server refused the draft (${response.status}).`;
         return false;
       }

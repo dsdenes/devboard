@@ -3563,8 +3563,11 @@ endpoint answers HTTP 503 naming `DEVBOARD_GITEA_URL` and performs no request. A
 failing request is reported in the filing toast and creates nothing. The endpoint accepts only
 same-origin `POST` requests, bounds the body to 64 KB, and gives the request 60 seconds.
 
-An unexpected exception in either mutating endpoint answers
-`500 { "error": "An internal error occurred." }`: `POST /feedback` and
+Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
+`title`, `status`, and `detail`, so a client reads one media type and one body shape.
+
+An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
+detail "An internal error occurred.": `POST /feedback` and
 `POST /goal-proposals` share that one fixed detail, record the exception text as a
 `server-error` journal record prefixed with the endpoint, and never return the text to the
 client.
