@@ -530,6 +530,8 @@ export class ReleaseTrainWorker {
       version: gate.version,
       url: null,
       detail: null,
+      // A retry verdict verifies an already-tagged range and carries no list.
+      commits: gate.releaseCommits.length > 0 ? gate.releaseCommits.length : null,
     };
     this.activeRun = run;
     this.activeActivity = [];

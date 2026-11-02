@@ -160,3 +160,25 @@ test("the sidebar count matches the filed rows, not the pending-filing queue", (
   expect(store.count("scout")).toBe(2);
   expect(store.count("missing")).toBe(0);
 });
+
+test("the Release Train count follows its release history, not its empty issue list", () => {
+  installGlobals();
+  const store = new AgentsStore();
+  connection.onMessage((message) => store.handleEvent(message as Record<string, unknown>));
+  connection.connect();
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+  socket.open();
+
+  const releaseTrain = {
+    ...filed(0, 0),
+    id: "release-train",
+    label: "Release Train",
+    releases: [
+      { at: "2026-11-02T10:00:00.000Z", version: "1.1.0", commits: 4, url: null },
+      { at: "2026-11-01T10:00:00.000Z", version: "1.0.0", commits: 2, url: null },
+    ],
+  } as unknown as AgentSnapshot;
+  socket.deliver({ type: "agentState", agent: releaseTrain });
+  expect(store.count("release-train")).toBe(2);
+});
