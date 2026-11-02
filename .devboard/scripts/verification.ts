@@ -498,10 +498,15 @@ export async function declaredMcpTools(
   if (server === undefined || typeof server.command !== "string") {
     throw new Error("the installed .omp/mcp.json declares no devboard server");
   }
+  // The installed server must resolve from the host's own prefix, never from
+  // the verifying process's agent directory or a source-checkout override.
+  const environment: Record<string, string | undefined> = { ...process.env };
+  delete environment.PI_CODING_AGENT_DIR;
+  delete environment.DEVBOARD_HARNESS_DIR;
   const child = spawn(server.command, server.args ?? [], {
     cwd: host,
     env: {
-      ...process.env,
+      ...environment,
       REPO_DIR: host,
       STATE_DIR: join(prefix, ".tmp"),
       HOME: host,

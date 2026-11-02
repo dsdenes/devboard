@@ -1,8 +1,8 @@
 <script lang="ts">
   import { discoverAgent } from "../../../server/agents/registry";
   import { discover } from "../discover.svelte";
-  import { relativeTime } from "../discover-format";
   import SaveFeedback from "./SaveFeedback.svelte";
+  import SourceOnlyBadge from "./SourceOnlyBadge.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -24,13 +24,10 @@
   const promptError = $derived(discover.promptError[agent] ?? (prompt?.error ?? null));
   const chatError = $derived(discover.promptChatError[agent] ?? null);
   const status = $derived(card?.state ?? "idle");
-  const startedAt = $derived(card?.startedAt ?? null);
-  const endedAt = $derived(card?.endedAt ?? null);
 
   let editor = $state("");
   let lastText = $state<string | null>(null);
   let message = $state("");
-  let now = $state(Date.now());
 
   // The editor adopts the file's bytes on first render and whenever the file
   // changes elsewhere, but never replaces text the operator is editing.
@@ -49,11 +46,6 @@
     if (value === null) return;
     editor = value.text;
     discover.consumeProposal(agent);
-  });
-
-  $effect(() => {
-    const timer = setInterval(() => (now = Date.now()), 15_000);
-    return () => clearInterval(timer);
   });
 
   function send(): void {
@@ -75,56 +67,6 @@
     <header class="discover-page__header discover-agent__header">
       <div class="discover-page__heading">
         <h1 class="discover-page__title">{descriptorLabel}</h1>
-      </div>
-      <div class="discover-agent__actions">
-        <span
-          class="discover-agent__state"
-          data-state={status}
-          data-testid="discover-agent-status"
-          title={endedAt ?? startedAt ?? ""}
-        >
-          {#if status === "running" && startedAt !== null}
-            running · started {relativeTime(startedAt, now)}
-          {:else if status === "succeeded" && endedAt !== null}
-            succeeded · {relativeTime(endedAt, now)}
-          {:else if status === "failed"}
-            failed
-          {:else}
-            idle
-          {/if}
-        </span>
-        {#if running}
-          <div
-            class="discover-run-tag"
-            data-testid="discover-agent-run-tag"
-            role="status"
-            aria-live="polite"
-          >
-            <span class="discover-run__dot" aria-hidden="true"></span>
-            <strong>{descriptorLabel} run in progress</strong>
-            <button
-              type="button"
-              class="discover-run__stop"
-              data-testid="discover-agent-stop"
-              data-command={`discover.agent.stop.${agent}`}
-              title="Stop this discovery agent"
-              onclick={() => discover.stop()}
-            >
-              Stop
-            </button>
-          </div>
-        {:else}
-          <Button
-            variant="default"
-            data-command={`discover.agent.start.${agent}`}
-            data-testid="discover-agent-start"
-            disabled={discover.agentStartDisabled(agent)}
-            title={discover.agentStartTitle(agent)}
-            onclick={() => discover.startAgent(agent)}
-          >
-            {status === "idle" ? "Start" : "Re-run"}
-          </Button>
-        {/if}
       </div>
     </header>
 
@@ -168,9 +110,11 @@
     <section class="panel discover-agent__prompt" aria-label="Agent prompt">
       <div class="panel__header">
         <h2 class="panel__title">Prompt</h2>
-        <span class="panel__subtitle">
-          {editable ? "Editable in this source checkout" : "Read-only here"}
-        </span>
+        {#if editable}
+          <SourceOnlyBadge />
+        {:else}
+          <span class="panel__subtitle">Read-only here</span>
+        {/if}
       </div>
       <div class="panel__body stack-sm">
         {#if promptError !== null}

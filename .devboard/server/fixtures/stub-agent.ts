@@ -13,6 +13,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
 import { frontmatterStatus, isPendingStatus, setFrontmatterStatus } from "./adr-source";
 import { GOAL_SLUG_PROMPT_MARKER } from "../goal-slug";
+import type { McpContext } from "../../mcp/context";
 
 /**
  * A deterministic ACP peer for the interface's browser verification and tests.
@@ -1495,7 +1496,8 @@ function discoverSignificanceSidecar(
 
 interface DiscoverSkill {
   name: string;
-  role: string;
+  /** The level-one heading the staged skill body opens with. */
+  title: string;
   description: string;
   body: string[];
 }
@@ -1505,7 +1507,7 @@ function discoverSkills(): DiscoverSkill[] {
   return [
     {
       name: "discover-testing-strategy",
-      role: "testing-strategy",
+      title: "Testing strategy",
       description:
         "Apply the observed unit-test level and the project's recorded test command before requesting review.",
       body: [
@@ -1517,7 +1519,7 @@ function discoverSkills(): DiscoverSkill[] {
     },
     {
       name: "discover-naming-conventions",
-      role: "naming-conventions",
+      title: "Naming conventions",
       description:
         "Name code after the grounded glossary terms and keep the observed casing across the project.",
       body: [
@@ -1529,7 +1531,7 @@ function discoverSkills(): DiscoverSkill[] {
     },
     {
       name: "discover-coding-conventions",
-      role: "coding-conventions",
+      title: "Coding conventions",
       description:
         "Keep typed, explicit code that reuses the dependencies the manifest already records.",
       body: [
@@ -1541,7 +1543,7 @@ function discoverSkills(): DiscoverSkill[] {
     },
     {
       name: "discover-architecture-boundaries",
-      role: "architecture-boundaries",
+      title: "Architecture and boundaries",
       description:
         "Keep domain behavior inside its bounded context and preserve the observed dependency direction.",
       body: [
@@ -1553,7 +1555,7 @@ function discoverSkills(): DiscoverSkill[] {
     },
     {
       name: "discover-glossary",
-      role: "glossary",
+      title: "Glossary",
       description:
         "Use the canonical glossary, honor human decisions, and propose new terms explicitly.",
       body: [
@@ -1565,22 +1567,6 @@ function discoverSkills(): DiscoverSkill[] {
       ],
     },
   ];
-}
-
-function discoverSkillText(skill: DiscoverSkill): string {
-  return [
-    "---",
-    `name: ${skill.name}`,
-    `description: ${skill.description}`,
-    "metadata:",
-    '  devboard-managed: "true"',
-    '  devboard-family: "discover"',
-    `  devboard-skill: ${skill.role}`,
-    "---",
-    "",
-    ...skill.body,
-    "",
-  ].join("\n");
 }
 
 /** Marker a closed-unmerged fixture body carries; no artifact may quote it. */
@@ -1880,7 +1866,7 @@ function contributionSkill(): DiscoverSkill {
       : ["# Author a pull request this repository accepts", ...bullets, ...exemplars];
   return {
     name: "discover-contribution",
-    role: "contribution",
+    title: "Contribution",
     description:
       "Author a pull request that matches the merged pull requests this repository accepts.",
     body,
@@ -1893,8 +1879,36 @@ function discoverSkillFor(agent: string): DiscoverSkill | undefined {
   return discoverSkills().find((skill) => skill.name === agent);
 }
 
-function stagedSkillText(skill: DiscoverSkill): string {
-  return discoverSkillText(skill);
+/**
+ * The context the peer's staging tools run under. The peer is spawned in the
+ * crawl root, so that root is the repository the tools write into; the harness
+ * and state roots only matter to tools this peer never calls.
+ */
+function discoverToolContext(): McpContext {
+  const repoDir = process.cwd();
+  return {
+    repoDir,
+    harnessDir: join(repoDir, ".devboard"),
+    stateDir: process.env.STATE_DIR ?? join(repoDir, ".devboard", ".tmp"),
+    environment: process.env,
+  };
+}
+
+/** Calls one staging tool and fails the turn when it refuses the call. */
+async function stageDiscoverFile(
+  context: McpContext,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<void> {
+  // Loaded lazily on purpose: every non-Discover fixture spawns this peer many
+  // times, and a static import would make each flow peer load the whole MCP
+  // module graph before its handshake.
+  const { callTool } = await import("../../mcp/tools");
+  const result = await callTool(context, tool, args);
+  if (result.error !== undefined) {
+    process.stderr.write(`stub: ${tool} failed: ${result.error}\n`);
+    process.exit(2);
+  }
 }
 
 async function runDiscoverAgent(agent: string, staging: string) {
@@ -1908,27 +1922,44 @@ async function runDiscoverAgent(agent: string, staging: string) {
     process.exit(1);
   }
 
+  const context = discoverToolContext();
   mkdirSync(staging, { recursive: true });
   if (agent === "sheet") {
-    writeFileSync(join(staging, "sheet.json"), `${JSON.stringify(discoverSheet(), null, 2)}\n`);
+    await stageDiscoverFile(context, "discover_sheet_stage", {
+      stagingDir: staging,
+      sheet: discoverSheet(),
+    });
   } else if (agent === "discover-glossary") {
-    mkdirSync(join(staging, "glossary"), { recursive: true });
     const glossary = discoverGlossary();
-    writeFileSync(join(staging, "glossary", "orders.glossary.yaml"), glossary.yaml);
+    await stageDiscoverFile(context, "discover_glossary_stage", {
+      stagingDir: staging,
+      context: "orders",
+      yaml: glossary.yaml,
+    });
     if (discoverSignificance !== "missing") {
-      const sidecar =
-        discoverSignificance === "invalid"
-          ? "{ not json"
-          : discoverSignificance === "array"
-            ? "[]"
-            : `${JSON.stringify(discoverSignificanceSidecar(glossary.concepts), null, 2)}\n`;
-      writeFileSync(join(staging, "glossary", "significance.json"), sidecar);
+      if (discoverSignificance === "invalid" || discoverSignificance === "array") {
+        // The tool refuses a non-object sidecar, so the malformed-document
+        // drill writes its bytes directly and proves publication reports them.
+        mkdirSync(join(staging, "glossary"), { recursive: true });
+        writeFileSync(
+          join(staging, "glossary", "significance.json"),
+          discoverSignificance === "invalid" ? "{ not json" : "[]",
+        );
+      } else {
+        await stageDiscoverFile(context, "discover_significance_stage", {
+          stagingDir: staging,
+          significance: discoverSignificanceSidecar(glossary.concepts),
+        });
+      }
     }
     const skill = discoverSkillFor("discover-glossary");
     if (skill !== undefined) {
-      const directory = join(staging, "skills", skill.name);
-      mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, "SKILL.md"), stagedSkillText(skill));
+      await stageDiscoverFile(context, "discover_skill_stage", {
+        stagingDir: staging,
+        name: skill.name,
+        description: skill.description,
+        body: (skill.body[0]?.startsWith("# ") ? skill.body : [`# ${skill.title}`, "", ...skill.body]).join("\n"),
+      });
     }
   } else {
     const skill = discoverSkillFor(agent);
@@ -1937,12 +1968,18 @@ async function runDiscoverAgent(agent: string, staging: string) {
       process.exit(2);
     }
     if (agent === "discover-contribution" && discoverContributionInvalid !== "missing-file") {
-      writeFileSync(join(staging, "contribution.json"), `${JSON.stringify(contributionDoc(), null, 2)}\n`);
+      await stageDiscoverFile(context, "discover_contribution_stage", {
+        stagingDir: staging,
+        contribution: contributionDoc(),
+      });
     }
     if (!discoverMissingArtifact) {
-      const directory = join(staging, "skills", skill.name);
-      mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, "SKILL.md"), stagedSkillText(skill));
+      await stageDiscoverFile(context, "discover_skill_stage", {
+        stagingDir: staging,
+        name: skill.name,
+        description: skill.description,
+        body: (skill.body[0]?.startsWith("# ") ? skill.body : [`# ${skill.title}`, "", ...skill.body]).join("\n"),
+      });
     }
   }
 
@@ -2106,11 +2143,12 @@ async function promptTurn(params: unknown) {
     await runFlowWidget(firstLine.slice("/flow-widget ".length).trim());
     return;
   }
+  const revising = reviseGoal && text !== undefined && text.includes("Revise the goal");
   if (
     flowWidget &&
     text !== undefined &&
     !firstLine.startsWith("/") &&
-    !firstLine.startsWith("Revise the goal")
+    !revising
   ) {
     log(`flow-conversation ${firstLine}`);
     stream(`Developer: ${firstLine}`);
@@ -2136,7 +2174,6 @@ async function promptTurn(params: unknown) {
   }
 
   const creating = createGoal && firstLine === "/goal-outcome";
-  const revising = reviseGoal && firstLine.startsWith("Revise the goal");
   log(`prompt ${firstLine}`);
   if (revising) log(`request ${text ?? ""}`);
 

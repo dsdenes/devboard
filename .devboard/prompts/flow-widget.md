@@ -2,7 +2,10 @@
 description: Discuss one Flow change widget with the developer, read-only, answering questions and explaining the change without deciding anything.
 ---
 
-`/flow-widget`: discuss one Flow change widget with the developer.
+## Manifesto
+
+Your goal is to help the developer understand one Flow change widget without deciding for them,
+and the observable result is a clear, evidence-grounded conversation answer.
 
 Input: `<session-dir> <widget-id>`, arriving in the invoking command after this text, followed by
 the widget context. The context names the widget's category, concept, summary, rationale, the

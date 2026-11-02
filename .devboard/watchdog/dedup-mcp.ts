@@ -1,14 +1,23 @@
 import { createForgeIssues, ForgeIssueError, type ForgeIssues } from "../lib/forge-issues";
 import { redactSecrets } from "../lib/secret-redaction";
+import { join } from "node:path";
+import type { McpContext } from "../mcp/context";
+import { createIssue } from "../mcp/issues";
+import {
+  recordWatchdogDuplicate,
+  recordWatchdogFiling,
+  recordWatchdogRead,
+} from "../mcp/watchdog";
 
 /**
- * The watchdog deduplication peer's read-only MCP server.
+ * The watchdog deduplication peer's MCP server.
  *
- * It exposes exactly two tools, `issues_list` for the repository's open issues
- * and `issue_get` for one issue's full text, and no create, comment, close,
- * label, or edit tool at all. The peer starts it through its generated agent
- * directory, so the deduplication pass can read the tracker but can never
- * mutate it.
+ * It exposes the repository's open issues for reading, one issue-creation tool
+ * for the candidates the turn finds unique, and one disposition tool for the
+ * candidates it finds duplicate. It has no close, label, edit, control, or
+ * verification tool. The peer starts it through its generated agent directory,
+ * so the deduplication pass can read the tracker and perform only those two
+ * writes.
  *
  * Only JSON-RPC messages reach stdout; diagnostics go to stderr.
  */
@@ -41,6 +50,42 @@ export const DEDUP_TOOLS = [
       additionalProperties: false,
       properties: { number: { type: "integer", minimum: 1 } },
       required: ["number"],
+    },
+  },
+  {
+    name: "issue_create",
+    title: "File one candidate issue",
+    description:
+      "Creates the unique candidate's implementation issue with the candidate's " +
+      "fingerprint, title, full Markdown body, and labels. The created issue's " +
+      "number and URL are recorded for the cycle and returned.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        fingerprint: { type: "string" },
+        title: { type: "string" },
+        body: { type: "string" },
+        labels: { type: "array", items: { type: "string" }, maxItems: 20 },
+      },
+      required: ["fingerprint", "title", "body"],
+    },
+  },
+  {
+    name: "watchdog_duplicate_record",
+    title: "Record a duplicate candidate",
+    description:
+      "Records that one candidate duplicates an open issue or another candidate " +
+      "in this set. A duplicate creates and comments on nothing.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        fingerprint: { type: "string" },
+        issue: { type: "string" },
+        representative: { type: "string" },
+      },
+      required: ["fingerprint"],
     },
   },
 ] as const;
@@ -78,6 +123,7 @@ function toolText(value: unknown, environment: Record<string, string | undefined
 
 async function callDedupTool(
   issues: ForgeIssues,
+  context: McpContext,
   name: string,
   args: Json,
 ): Promise<{ value: unknown; error?: string }> {
@@ -90,6 +136,7 @@ async function callDedupTool(
       return { value: undefined, error: "issues_list limit must be 1..200" };
     }
     const issues_ = await issues.list("open", limit);
+    recordWatchdogRead(context, issues_.length);
     return { value: { issues: issues_ } };
   }
   if (name === "issue_get") {
@@ -103,12 +150,54 @@ async function callDedupTool(
     }
     return { value: issue };
   }
+  if (name === "issue_create") {
+    try {
+      const created = await createIssue(context, {
+        title: args.title,
+        body: args.body,
+        labels: args.labels,
+      });
+      const fingerprint = args.fingerprint;
+      if (typeof fingerprint !== "string" || fingerprint.length === 0) {
+        return { value: undefined, error: "issue_create needs the candidate fingerprint" };
+      }
+      recordWatchdogFiling(context, {
+        fingerprint,
+        number: created.number,
+        url: created.url,
+        title: created.title,
+      });
+      return { value: { ...created, fingerprint } };
+    } catch (error) {
+      return {
+        value: undefined,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  if (name === "watchdog_duplicate_record") {
+    try {
+      return {
+        value: recordWatchdogDuplicate(context, {
+          fingerprint: args.fingerprint,
+          issue: args.issue,
+          representative: args.representative,
+        }),
+      };
+    } catch (error) {
+      return {
+        value: undefined,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
   return { value: undefined, error: `Unknown tool: ${name}` };
 }
 
 async function handle(
   line: string,
   issues: () => ForgeIssues,
+  context: McpContext,
   environment: Record<string, string | undefined>,
 ): Promise<string | undefined> {
   let parsed: unknown;
@@ -148,7 +237,7 @@ async function handle(
     }
     const args = record(params.arguments) ?? {};
     try {
-      const result = await callDedupTool(issues(), name, args);
+      const result = await callDedupTool(issues(), context, name, args);
       if (result.error !== undefined) {
         return response(id, {
           content: [{ type: "text", text: toolText({ error: result.error }, environment) }],
@@ -181,6 +270,13 @@ export async function startDedupStdio(options: DedupStdioOptions = {}): Promise<
     if (issues === undefined) issues = createForgeIssues({ repoDir, environment });
     return issues;
   };
+  const context: McpContext = {
+    repoDir,
+    harnessDir: join(repoDir, ".devboard"),
+    stateDir: environment.STATE_DIR ?? join(repoDir, ".devboard", ".tmp"),
+    environment,
+    ...(options.issues === undefined ? {} : { forgeIssues: options.issues }),
+  };
   const input = options.input ?? Bun.stdin.stream();
   const output = options.output ?? process.stdout;
   const diagnostics = options.diagnostics ?? {
@@ -196,14 +292,14 @@ export async function startDedupStdio(options: DedupStdioOptions = {}): Promise<
       const line = buffer.slice(0, newline).trim();
       buffer = buffer.slice(newline + 1);
       if (line.length === 0) continue;
-      const reply = await handle(line, store, environment);
+      const reply = await handle(line, store, context, environment);
       if (reply !== undefined) output.write(reply);
     }
     if (final) {
       const line = buffer.trim();
       buffer = "";
       if (line.length > 0) {
-        const reply = await handle(line, store, environment);
+        const reply = await handle(line, store, context, environment);
         if (reply !== undefined) output.write(reply);
       }
     }

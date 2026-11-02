@@ -132,3 +132,50 @@ export function repositoryRelative(repoDir: string, path: string): string {
   const local = relative(resolve(repoDir), resolve(path));
   return local.length === 0 || local.startsWith("..") ? resolve(path) : local.split(sep).join("/");
 }
+
+/**
+ * Resolves a path argument that may be absolute or root-relative, refusing any
+ * target whose real location leaves `root`. Agent prompts receive absolute
+ * working directories, so the write tools accept them while keeping the same
+ * confinement as the repository-relative tools.
+ */
+export function resolveWithin(
+  root: string,
+  value: unknown,
+  label: string,
+  options: { mustExist?: boolean } = {},
+): { absolute: string; relative: string } {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new PathRefusal(`${label} must be a non-empty path.`);
+  }
+  const normalized = value.replace(/\\/g, "/");
+  if (normalized.split("/").includes("..")) {
+    throw new PathRefusal(`${label} must not contain "..": ${normalized}`);
+  }
+  const absoluteRoot = resolve(root);
+  const absolute = resolve(isAbsolute(normalized) ? normalized : resolve(absoluteRoot, normalized));
+  if (!inside(absoluteRoot, absolute)) {
+    throw new PathRefusal(`${label} leaves its root: ${normalized}`);
+  }
+  const rootReal = real(absoluteRoot);
+  if (rootReal === undefined) {
+    throw new PathRefusal(`${label} root does not exist: ${absoluteRoot}`);
+  }
+  let probe = absolute;
+  for (;;) {
+    const realProbe = real(probe);
+    if (realProbe !== undefined) {
+      if (!inside(rootReal, realProbe)) {
+        throw new PathRefusal(`${label} resolves outside its root: ${normalized}`);
+      }
+      break;
+    }
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  if (options.mustExist === true && real(absolute) === undefined) {
+    throw new PathRefusal(`${label} does not exist: ${normalized}`);
+  }
+  return { absolute, relative: relative(absoluteRoot, absolute).split(sep).join("/") };
+}

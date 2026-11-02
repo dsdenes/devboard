@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AcpConnection } from "../server/acp";
 import { openCodePeerBindings } from "../server/providers/peers";
@@ -50,26 +50,23 @@ export interface DedupRequest {
   repository: string;
   window: DedupWindow;
   candidates: DedupCandidate[];
+  /** How many unique candidates this cycle may file, after the caps. */
+  filingRoom: number;
 }
 
-export interface ResolvedDedupDecision {
+/** One record the dedup peer's MCP write tools append. */
+export interface DedupRecord {
   fingerprint: string;
-  decision: "unique" | "duplicate";
-  /** The open issue the candidate duplicates, when the chain ends at one. */
+  action: "filed" | "duplicate";
   issue?: string;
-  /** The candidate the agent named as the representative, when it named one. */
   representative?: string;
-}
-
-export interface DedupAnswer {
-  /** Every open issue URL the agent reported reading. */
-  openIssues: string[];
-  openIssueNumbers: number[];
-  decisions: Map<string, ResolvedDedupDecision>;
+  number?: number;
+  url?: string;
+  title?: string;
 }
 
 /** The agent turn. Tests and verification inject a deterministic replacement. */
-export type Dedup = (request: DedupRequest) => Promise<string>;
+export type Dedup = (request: DedupRequest, runDir: string) => Promise<string>;
 
 function promptPath(): string {
   return resolve(import.meta.dir, "..", "prompts", "watchdog-dedup.md");
@@ -83,6 +80,7 @@ export function dedupPrompt(request: DedupRequest): string {
   // captured log line as substitution patterns and corrupt the prompt.
   return template
     .replace("{{repository}}", () => request.repository)
+    .replace("{{filingRoom}}", () => String(request.filingRoom))
     .replace("{{candidates}}", () => JSON.stringify(request.candidates, null, 2));
 }
 
@@ -115,179 +113,79 @@ export function issueNumberInRepository(
   return path.endsWith(suffix) ? number : undefined;
 }
 
-interface RawDecision {
-  action: "unique" | "duplicate";
-  issue?: string;
-  representative?: string;
-}
-
 /**
- * Parses and validates one agent answer. Every rejection is a fail-closed
- * reason: a missing candidate, an unknown candidate, an unknown action, a
- * matched issue that was not reported open, or a representative cycle.
+ * Reads the records the dedup peer's MCP write tools appended. A candidate
+ * with neither a filing nor a duplicate record stays pending; there is no
+ * coverage object to validate.
  */
-export function parseDedupAnswer(text: string, request: DedupRequest): DedupAnswer {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    throw new Error("the deduplication agent returned no JSON object");
-  }
-  let parsed: unknown;
+export function readDedupRecords(runDir: string): DedupRecord[] {
+  let text: string;
   try {
-    parsed = JSON.parse(text.slice(start, end + 1));
+    text = readFileSync(join(runDir, "dedup-records.jsonl"), "utf8");
   } catch {
-    throw new Error("the deduplication agent returned invalid JSON");
+    return [];
   }
-  const document = asRecord(parsed);
-  if (document === undefined) throw new Error("the deduplication agent returned no JSON object");
-
-  const read = asRecord(document["read"]);
-  const listed = read?.["open_issues"];
-  if (!Array.isArray(listed)) {
-    throw new Error("the deduplication agent reported no open-issue read");
-  }
-  const openIssues: string[] = [];
-  const openIssueNumbers: number[] = [];
-  for (const entry of listed) {
-    if (typeof entry !== "string") {
-      throw new Error("the deduplication agent reported a non-string open issue");
-    }
-    const number = issueNumberInRepository(entry, request.repository);
-    if (number === undefined) {
-      throw new Error(
-        `the deduplication agent reported an open issue that is not in ` +
-          `${request.repository}: ${entry}`,
-      );
-    }
-    openIssues.push(entry);
-    openIssueNumbers.push(number);
-  }
-
-  const raw = document["decisions"];
-  if (!Array.isArray(raw)) {
-    throw new Error("the deduplication agent returned no decisions array");
-  }
-  const known = new Set(request.candidates.map((candidate) => candidate.fingerprint));
-  const openNumbers = new Set(openIssueNumbers);
-  const decided = new Map<string, RawDecision>();
-  for (const entry of raw) {
-    const decision = asRecord(entry);
-    const fingerprint = decision?.["fingerprint"];
-    if (typeof fingerprint !== "string" || !known.has(fingerprint)) {
-      throw new Error(
-        `the deduplication agent decided an unknown candidate: ${String(fingerprint)}`,
-      );
-    }
-    if (decided.has(fingerprint)) {
-      throw new Error(`the deduplication agent decided ${fingerprint} twice`);
-    }
-    const action = decision?.["action"];
-    if (action !== "unique" && action !== "duplicate") {
-      throw new Error(`the deduplication agent returned an unknown action for ${fingerprint}`);
-    }
-    if (action === "unique") {
-      decided.set(fingerprint, { action });
+  const records: DedupRecord[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
       continue;
     }
-    const issue = decision?.["issue"];
-    const representative = decision?.["representative"];
-    const hasIssue = issue !== undefined;
-    const hasRepresentative = representative !== undefined;
-    if (hasIssue === hasRepresentative) {
-      throw new Error(
-        `the deduplication agent marked ${fingerprint} a duplicate without exactly one ` +
-          "matched issue or representative",
-      );
-    }
-    if (hasIssue) {
-      if (typeof issue !== "string") {
-        throw new Error(`the deduplication agent returned a non-string issue for ${fingerprint}`);
-      }
-      const number = issueNumberInRepository(issue, request.repository);
-      if (number === undefined || !openNumbers.has(number)) {
-        throw new Error(
-          `the deduplication agent named an issue that is not open in ` +
-            `${request.repository}: ${issue}`,
-        );
-      }
-      decided.set(fingerprint, { action, issue });
-      continue;
-    }
-    if (typeof representative !== "string" || !known.has(representative)) {
-      throw new Error(
-        `the deduplication agent named an unknown representative for ${fingerprint}: ` +
-          String(representative),
-      );
-    }
-    if (representative === fingerprint) {
-      throw new Error(`the deduplication agent marked ${fingerprint} a duplicate of itself`);
-    }
-    decided.set(fingerprint, { action, representative });
-  }
-  for (const candidate of request.candidates) {
-    if (!decided.has(candidate.fingerprint)) {
-      throw new Error(`the deduplication agent did not decide ${candidate.fingerprint}`);
-    }
-  }
-
-  // Resolve representative chains once. A cycle, or a chain longer than the
-  // set, is an invalid answer, never a partial filing.
-  const resolved = new Map<string, ResolvedDedupDecision>();
-  for (const candidate of request.candidates) {
-    const fingerprint = candidate.fingerprint;
-    const first = decided.get(fingerprint);
-    if (first === undefined) {
-      throw new Error(`the deduplication agent did not decide ${fingerprint}`);
-    }
-    if (first.action === "unique") {
-      resolved.set(fingerprint, { fingerprint, decision: "unique" });
-      continue;
-    }
-    if (first.issue !== undefined) {
-      resolved.set(fingerprint, { fingerprint, decision: "duplicate", issue: first.issue });
-      continue;
-    }
-    let current = first.representative as string;
-    const seen = new Set<string>([fingerprint, current]);
-    let rootIssue: string | undefined;
-    for (;;) {
-      const decision = decided.get(current);
-      if (decision === undefined) {
-        throw new Error(`the deduplication agent did not decide ${current}`);
-      }
-      if (decision.action === "unique") break;
-      if (decision.issue !== undefined) {
-        rootIssue = decision.issue;
-        break;
-      }
-      const next = decision.representative as string;
-      if (seen.has(next)) {
-        throw new Error(
-          `the deduplication agent described a representative cycle through ${fingerprint}`,
-        );
-      }
-      seen.add(next);
-      if (seen.size > request.candidates.length + 1) {
-        throw new Error(
-          `the deduplication agent described a representative chain longer than the set ` +
-            `through ${fingerprint}`,
-        );
-      }
-      current = next;
-    }
-    resolved.set(fingerprint, {
+    const record = asRecord(parsed);
+    if (record === undefined) continue;
+    const fingerprint = record["fingerprint"];
+    const action = record["action"];
+    if (typeof fingerprint !== "string") continue;
+    if (action !== "filed" && action !== "duplicate") continue;
+    records.push({
       fingerprint,
-      decision: "duplicate",
-      representative: first.representative,
-      ...(rootIssue === undefined ? {} : { issue: rootIssue }),
+      action,
+      ...(typeof record["issue"] === "string" ? { issue: record["issue"] } : {}),
+      ...(typeof record["representative"] === "string"
+        ? { representative: record["representative"] }
+        : {}),
+      ...(typeof record["number"] === "number" ? { number: record["number"] } : {}),
+      ...(typeof record["url"] === "string" ? { url: record["url"] } : {}),
+      ...(typeof record["title"] === "string" ? { title: record["title"] } : {}),
     });
   }
-  return { openIssues, openIssueNumbers, decisions: resolved };
+  return records;
 }
 
-/** Reads a deterministic agent answer from a JSON file on every call. */
+/** Counts of open issues each dedup turn read, oldest first. */
+export function readDedupReads(runDir: string): number[] {
+  let text: string;
+  try {
+    text = readFileSync(join(runDir, "dedup-reads.jsonl"), "utf8");
+  } catch {
+    return [];
+  }
+  const counts: number[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (typeof parsed === "object" && parsed !== null && "count" in parsed) {
+        const count = parsed.count;
+        if (typeof count === "number" && Number.isInteger(count) && count >= 0) {
+          counts.push(count);
+        }
+      }
+    } catch {
+      // A torn line is diagnostic.
+    }
+  }
+  return counts;
+}
+
+/** Reads the verification stub and performs its tool writes deterministically. */
 export function readDedupStub(path: string): Dedup {
-  return async (request) => {
+  return async (request, runDir) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -298,22 +196,27 @@ export function readDedupStub(path: string): Dedup {
     const document = asRecord(parsed);
     if (document === undefined) throw new Error("the deduplication agent stub is not an object");
     if (typeof document.error === "string") throw new Error(document.error);
-    const read = asRecord(document.read);
-    const openIssues = Array.isArray(read?.open_issues) ? read.open_issues : [];
     const decisions = Array.isArray(document.decisions) ? document.decisions : [];
-    const expanded: unknown[] = [];
+    const records: unknown[] = [];
     for (const entry of decisions) {
       const decision = asRecord(entry);
       if (decision === undefined) continue;
       if (decision.fingerprint === "*") {
         for (const candidate of request.candidates) {
-          expanded.push({ ...decision, fingerprint: candidate.fingerprint });
+          records.push({ ...decision, fingerprint: candidate.fingerprint });
         }
         continue;
       }
-      expanded.push(decision);
+      records.push(decision);
     }
-    return JSON.stringify({ read: { open_issues: openIssues }, decisions: expanded });
+    mkdirSync(runDir, { recursive: true });
+    if (records.length > 0) {
+      appendFileSync(
+        join(runDir, "dedup-records.jsonl"),
+        `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      );
+    }
+    return "";
   };
 }
 
@@ -321,6 +224,8 @@ export interface DedupRunOptions {
   root: string;
   /** The dashboard STATE_DIR whose `providers/` holds the selected key. */
   stateDir: string;
+  /** The cycle's run directory the write tools record into. */
+  runDir: string;
   environment?: Record<string, string | undefined>;
   command?: string;
   timeoutMs?: number;
@@ -354,6 +259,7 @@ async function runDedupPeer(run: {
   command: string;
   root: string;
   stateDir: string;
+  runDir: string;
   prompt: string;
   timeoutMs: number;
 }): Promise<string> {
@@ -364,7 +270,12 @@ async function runDedupPeer(run: {
   connection = new AcpConnection({
     command: run.command,
     cwd: run.root,
-    env: { ...run.binding.env, REPO_DIR: run.root, STATE_DIR: run.stateDir },
+    env: {
+      ...run.binding.env,
+      REPO_DIR: run.root,
+      STATE_DIR: run.stateDir,
+      DEVBOARD_DEDUP_RUN_DIR: run.runDir,
+    },
     permissionPolicy: "read-only",
     onActivity: () => undefined,
     onText: (chunk) => {
@@ -430,6 +341,7 @@ export async function runDedupAgent(
         command,
         root: options.root,
         stateDir: options.stateDir,
+        runDir: options.runDir,
         prompt,
         timeoutMs,
       });

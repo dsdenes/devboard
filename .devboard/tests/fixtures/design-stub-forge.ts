@@ -66,6 +66,8 @@ const server = Bun.serve({
 
     if (path === "/admin/health") return json({ ok: true });
     if (path === "/admin/state") return json(load());
+    if (path === "/api/v1/user") return json({ id: 1, login: "fixture", is_admin: false });
+    if (path === "/api/v1/version") return json({ version: "1.22.0" });
     if (path === "/admin/seed" && request.method === "POST") {
       const state = load();
       const input = (await request.json()) as {

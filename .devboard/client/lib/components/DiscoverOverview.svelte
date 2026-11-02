@@ -19,6 +19,7 @@
   import { discover } from "../discover.svelte";
   import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
+  import SourceOnlyBadge from "./SourceOnlyBadge.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -289,19 +290,6 @@
   }
 </script>
 
-{#snippet startControl()}
-  <Button
-    variant="default"
-    data-command="discover.start"
-    data-testid="discover-start"
-    disabled={discover.startDisabled}
-    title={discover.startTitle}
-    onclick={() => discover.start()}
-  >
-    {discover.hasArtifacts ? "Re-discover" : "Discover project"}
-  </Button>
-{/snippet}
-
 {#snippet questionPanel()}
   {#if discover.question !== null}
     <section class="panel discover-question" data-testid="discover-question">
@@ -558,6 +546,7 @@
       <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
         <div class="panel__header">
           <h2 class="panel__title">Manual testing target</h2>
+          <SourceOnlyBadge />
           {#if discover.retained.length > 0}
             <span class="panel__subtitle">{discover.retained.length} retained</span>
           {/if}
@@ -684,7 +673,6 @@
         {#if discover.busy !== null}
           <span class="muted">{discover.busy}</span>
         {/if}
-        {@render startControl()}
       </div>
     </div>
 

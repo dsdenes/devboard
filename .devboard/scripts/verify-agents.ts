@@ -9,8 +9,9 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
 import {
@@ -29,6 +30,7 @@ import { readHarnessVersion } from "../server/version";
 import { writeProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
 import { coachDirectory } from "../coach/paths";
+import { MCP_TOOLS } from "../mcp/catalog";
 import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
@@ -172,6 +174,14 @@ async function stateOf(devtools: Devtools, testid: string): Promise<string> {
   return typeof value === "string" ? value : "";
 }
 
+/** The scope of the one visible save confirmation, or the empty string. */
+async function saveNoticeScope(devtools: Devtools): Promise<string> {
+  const value = await devtools.evaluate(
+    `document.querySelector('[data-testid="save-feedback"]')?.dataset.scope ?? ''`,
+  );
+  return typeof value === "string" ? value : "";
+}
+
 async function valueOf(devtools: Devtools, testid: string): Promise<string> {
   const value = await devtools.evaluate(
     `document.querySelector('[data-testid="${testid}"]')?.value ?? null`,
@@ -186,36 +196,150 @@ async function countOf(devtools: Devtools, testid: string): Promise<number> {
   return typeof value === "number" ? value : 0;
 }
 
+/** An element's exact text, preserving whitespace, or the empty string. */
+async function rawText(devtools: Devtools, testid: string): Promise<string> {
+  const value = await devtools.evaluate(
+    `document.querySelector('[data-testid="${testid}"]')?.textContent ?? null`,
+  );
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * One digest of every file under a fixture tree, excluding `.git`: a prompt
+ * sequence that writes anything changes it, and an identical sequence does not.
+ * A connected dashboard's provider refresh rewrites `selection.json` with a
+ * fresh `checkedAt` on any connection, so that one timestamp is normalized
+ * away; every other byte of the selection, and every other file, is compared.
+ * The dashboard also rewrites its own `runs/<id>/lease.json` heartbeat every
+ * second for as long as it serves, which no prompt action causes.
+ */
+async function treeEntries(root: string): Promise<Map<string, string>> {
+  const entries = new Map<string, string>();
+  const walk = async (relative: string): Promise<void> => {
+    for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
+      if (relative === "" && entry.name === ".git") continue;
+      const path = relative === "" ? entry.name : `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(path);
+      } else if (entry.isFile()) {
+        if (path.includes("/runs/") && path.endsWith("/lease.json")) continue;
+        const bytes = await readFile(join(root, path), "utf8");
+        let content = bytes;
+        if (path.endsWith("/providers/selection.json")) {
+          try {
+            const selection = JSON.parse(bytes) as Record<string, unknown>;
+            delete selection["checkedAt"];
+            content = JSON.stringify(selection);
+          } catch {
+            content = bytes;
+          }
+        }
+        entries.set(path, createHash("sha256").update(content).digest("hex"));
+      }
+    }
+  };
+  await walk("");
+  return entries;
+}
+
+function treeDigest(entries: Map<string, string>): string {
+  const lines = [...entries.entries()].map(([path, digest]) => `${path}:${digest}`).sort();
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
+
+async function treeHash(root: string): Promise<string> {
+  return treeDigest(await treeEntries(root));
+}
+
+/** The paths whose digest or presence differ between two tree reads. */
+function changedPaths(before: Map<string, string>, after: Map<string, string>): string[] {
+  const paths = new Set([...before.keys(), ...after.keys()]);
+  return [...paths].filter((path) => before.get(path) !== after.get(path)).sort();
+}
+
+/** The tree digest once two reads a moment apart agree, so reads may settle. */
+async function settledTreeHash(root: string): Promise<string> {
+  let previous = await treeHash(root);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await Bun.sleep(500);
+    const next = await treeHash(root);
+    if (next === previous) return next;
+    previous = next;
+  }
+  return previous;
+}
+
 /** The prompt disclosure's state: one closed-by-default element per page. */
 async function promptDisclosure(devtools: Devtools): Promise<{
   present: boolean;
   open: boolean;
   summary: string;
   contentHidden: boolean;
+  badgeCount: number;
+  badgeText: string;
+  badgeTitle: string | null;
 }> {
   const value = await devtools.evaluate(`(() => {
     const all = document.querySelectorAll('[data-testid="agent-prompt"]');
     const details = all[0] ?? null;
     const summary = document.querySelector('[data-testid="agent-prompt-summary"]');
     const body = document.querySelector('[data-testid="agent-prompt-body"]');
+    const badges = summary === null
+      ? []
+      : [...summary.querySelectorAll('[data-testid="source-only-badge"]')];
     return {
       present: all.length === 1 && details !== null,
       open: details !== null && details.open === true,
-      summary: summary === null ? '' : (summary.textContent ?? '').trim(),
+      summary:
+        summary?.querySelector('.agent-prompt__title')?.textContent?.trim() ?? '',
       contentHidden:
         body === null
           ? true
           : typeof body.checkVisibility === "function"
             ? !body.checkVisibility()
             : body.getBoundingClientRect().height === 0,
+      badgeCount: badges.length,
+      badgeText: (badges[0]?.textContent ?? '').trim(),
+      badgeTitle: badges[0]?.getAttribute('title') ?? null,
     };
   })()`);
-  return (value ?? { present: false, open: false, summary: "", contentHidden: false }) as {
+  return (value ?? {
+    present: false,
+    open: false,
+    summary: "",
+    contentHidden: false,
+    badgeCount: 0,
+    badgeText: "",
+    badgeTitle: null,
+  }) as {
     present: boolean;
     open: boolean;
     summary: string;
     contentHidden: boolean;
+    badgeCount: number;
+    badgeText: string;
+    badgeTitle: string | null;
   };
+}
+
+/** The summary is the only marker site: none or exactly the one shared word. */
+async function assertPromptMarker(
+  devtools: Devtools,
+  page: string,
+  expected: boolean,
+): Promise<void> {
+  const disclosure = await promptDisclosure(devtools);
+  assertTrue(disclosure.present, `${page} renders no single agent-prompt disclosure`);
+  assertTrue(
+    disclosure.badgeCount === (expected ? 1 : 0),
+    `${page} carries ${disclosure.badgeCount} source-only markers`,
+  );
+  if (!expected) return;
+  assertTrue(disclosure.badgeText === "devboard", `${page} marker is ${disclosure.badgeText}`);
+  assertTrue(
+    disclosure.badgeTitle === "Only available when Devboard serves a harness source checkout",
+    `${page} marker tooltip is ${String(disclosure.badgeTitle)}`,
+  );
 }
 
 async function assertPromptClosed(devtools: Devtools, page: string): Promise<void> {
@@ -321,11 +445,15 @@ async function setInput(devtools: Devtools, testid: string, value: string): Prom
 }
 
 const CORE_IDS = [
-  "agent-header",
-  "agent-lifecycle",
-  "agent-sync-at",
+  "agent-activity-bar",
+  "agent-activity-toggle",
+  "agent-activity-dot",
+  "agent-activity-last",
+  "agent-activity-control",
   "agent-start",
   "agent-stop",
+  "agent-header",
+  "agent-sync-at",
   "agent-cadence",
   "agent-last-run",
   "agent-next-run",
@@ -335,12 +463,74 @@ const CORE_IDS = [
   "agent-save-limits",
   "agent-issues-count",
   "agent-issues",
-  "agent-detail",
 ];
+
+async function pageLifecycle(devtools: Devtools): Promise<string> {
+  const value = await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const id = page?.dataset.agent ?? '';
+    return id.length === 0
+      ? ''
+      : document.querySelector('[data-testid="agent-state-' + id + '"]')?.dataset.state ?? '';
+  })()`);
+  return typeof value === "string" ? value : "";
+}
+
+async function agentLast(devtools: Devtools): Promise<string> {
+  const value = await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    return page?.querySelector('[data-testid="agent-activity-last"]')?.textContent?.trim() ?? '';
+  })()`);
+  return typeof value === "string" ? value : "";
+}
+
+async function barLog(devtools: Devtools): Promise<string> {
+  const expanded = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]')?.getAttribute('aria-expanded') === 'true'`,
+  );
+  if (expanded !== true) {
+    await devtools.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]');
+      if (button === null) return false;
+      button.click();
+      return true;
+    })()`);
+  }
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (
+      (await devtools.evaluate(
+        `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-log"]') !== null`,
+      )) === true
+    ) {
+      break;
+    }
+    await Bun.sleep(100);
+  }
+  const shape = await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const toggle = page?.querySelector('[data-testid="agent-activity-toggle"]');
+    return {
+      agent: page?.getAttribute('data-agent') ?? '',
+      toggles: page?.querySelectorAll('[data-testid="agent-activity-toggle"]').length ?? 0,
+      expanded: toggle?.getAttribute('aria-expanded') ?? '',
+      log: page?.querySelector('[data-testid="agent-activity-log"]') !== null,
+    };
+  })()`);
+  if ((shape as { log?: boolean }).log !== true) {
+    throw new Error(`the activity bar log never opened: ${JSON.stringify(shape)}`);
+  }
+  const value = await devtools.evaluate(`(() => {
+    const element = document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-log"]');
+    return element === null ? "" : (element.textContent ?? '').trim();
+  })()`);
+  return typeof value === "string" ? value : "";
+}
 
 async function coreSequence(devtools: Devtools): Promise<string[]> {
   const value = await devtools.evaluate(`(() => {
-    const all = [...document.querySelectorAll('[data-testid]')]
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const all = [...(page?.querySelectorAll('[data-testid]') ?? [])]
       .map((element) => element.getAttribute('data-testid') ?? '');
     const core = ${JSON.stringify(CORE_IDS)};
     return all.filter((id) => core.includes(id));
@@ -400,19 +590,46 @@ async function updateGhStore(
 }
 
 const INSTALLED_PROMPT =
-  "---\ndescription: installed fixture\n---\n\n# Installed Auto Scout prompt\n\nRead-only here.\n";
+  "---\ndescription: installed fixture\n---\n\n## Manifesto\n\nLeave the host with the improvements Auto Scout found.\n\nRead-only here.\n";
 const SOURCE_PROMPT =
-  "---\ndescription: source fixture\n---\n\n# Source Auto Scout prompt\n\nKeep every byte.\n";
-const INSTALLED_DESIGN_PROMPT = "# Installed Design System prompt\n\nRead-only here.\n";
-const SOURCE_DESIGN_PROMPT = "# Source Design System prompt\n\nKeep every byte.\n";
+  "---\ndescription: source fixture\n---\n\n## Manifesto\n\nLeave the host with the improvements Auto Scout found.\n\nKeep every byte.\n";
+const INSTALLED_DESIGN_PROMPT =
+  "## Manifesto\n\nLeave the interface consistent with its documented standard.\n\nRead-only here.\n";
+const SOURCE_DESIGN_PROMPT =
+  "## Manifesto\n\nLeave the interface consistent with its documented standard.\n\nKeep every byte.\n";
 const CHAT_PROPOSAL =
-  "---\ndescription: revised\n---\n\n# Revised Auto Scout prompt\n\nSaved by the gate.\n";
+  "---\ndescription: revised\n---\n\n## Manifesto\n\nLeave the host with the improvements Auto Scout found.\n\nSaved by the gate.\n";
 const SOURCE_ACP = join(import.meta.dir, "..", "tests", "fixtures", "verify-source-acp.ts");
 const SCOUT_STUB_GH = join(import.meta.dir, "..", "tests", "fixtures", "scout-stub-gh.ts");
 
 const ISSUE_URLS = [
   "https://github.com/acme/fixture/issues/101",
   "https://github.com/acme/fixture/issues/102",
+];
+
+/** The Coach settings the template's allowlist section must show live. */
+const COACH_ALLOWLIST = ["gh pr merge", "systemctl restart devboard"];
+
+/** The dashboard's open-issue read for the fixture: two Coach and one unrelated. */
+const COACH_ISSUES = [
+  {
+    number: 201,
+    title: "[coach] bun run publish",
+    body: "family:aaaaaaaaaaaa",
+    url: "https://github.com/acme/fixture/issues/201",
+  },
+  {
+    number: 202,
+    title: "[coach] prompt: retry loop",
+    body: "family:bbbbbbbbbbbb",
+    url: "https://github.com/acme/fixture/issues/202",
+  },
+  {
+    number: 203,
+    title: "Unrelated fixture issue",
+    body: "Nothing to do with the Coach.",
+    url: "https://github.com/acme/fixture/issues/203",
+  },
 ];
 
 function ledger(entries: Array<{ category: string; line: string; url: string; filedAt: string }>): Ledger {
@@ -442,6 +659,20 @@ const GH_STUB = `#!/bin/sh
 set -u
 args="$*"
 case "$args" in
+  *"repos/acme/fixture/issues?state=open"*)
+    printf 'HTTP/2.0 200 OK\\ncontent-type: application/json\\netag: "fixture"\\n\\n'
+${COACH_ISSUES.map(
+  (issue) =>
+    `    printf '%s\\n' '${JSON.stringify({
+      number: issue.number,
+      title: issue.title,
+      url: issue.url,
+      createdAt: "2026-10-01T00:00:00Z",
+      labels: ["coach"],
+      body: issue.body,
+    })}'`,
+).join("\n")}
+    ;;
   *"repos/acme/fixture --jq .permissions.push"*) echo true ;;
   *"repos/acme/fixture/issues"*"--json"*) echo "HTTP 500: fixture read failure" >&2; exit 1 ;;
   *"repos/acme/fixture/releases"*) echo "HTTP 500: fixture read failure" >&2; exit 1 ;;
@@ -517,6 +748,16 @@ try {
   await mkdir(stateDir, { recursive: true });
   const watchdogDir = watchdogDirectory(host.directory);
   await mkdir(watchdogDir, { recursive: true });
+  const seededCoachDir = coachDirectory(stateDir);
+  await mkdir(seededCoachDir, { recursive: true });
+  await writeFile(
+    join(seededCoachDir, "settings.json"),
+    `${JSON.stringify(
+      { allowlist: COACH_ALLOWLIST, maxPerHour: null, maxPending: null },
+      null,
+      2,
+    )}\n`,
+  );
 
   seedVerificationProvider(stateDir);
   const port = await freePort();
@@ -821,7 +1062,8 @@ try {
   );
   assertTrue(scoutPage === "scout", `the Auto Scout page names ${String(scoutPage)}`);
   assertTrue(await present(devtools, "agent-issues-empty"), "Auto Scout has no empty table");
-  assertTrue(await present(devtools, "scout-activity"), "Auto Scout has no activity panel");
+  assertTrue(!(await present(devtools, "agent-detail")), "Auto Scout still renders the detail panel");
+  assertTrue(!(await present(devtools, "agent-lifecycle")), "Auto Scout still renders a lifecycle badge");
   const scoutCore = await coreSequence(devtools);
   assertTrue(
     JSON.stringify(scoutCore.filter((id) => id !== "agent-stop")) ===
@@ -840,7 +1082,8 @@ try {
   );
   assertTrue(designPage === "design", `the Design System page names ${String(designPage)}`);
   assertTrue(await present(devtools, "agent-issues-empty"), "Design System has no empty table");
-  assertTrue(await present(devtools, "design-activity"), "Design System has no activity panel");
+  assertTrue(!(await present(devtools, "agent-detail")), "Design System still renders the detail panel");
+  assertTrue(!(await present(devtools, "agent-lifecycle")), "Design System still renders a lifecycle badge");
   const designCore = await coreSequence(devtools);
   assertTrue(
     JSON.stringify(designCore.filter((id) => id !== "agent-stop")) ===
@@ -859,8 +1102,8 @@ try {
   );
   assertTrue(watchdogPage === "watchdog", `the Watchdog page names ${String(watchdogPage)}`);
   assertTrue(await present(devtools, "agent-issues-empty"), "Watchdog has no empty table");
-  assertTrue(await present(devtools, "watchdog-cycles"), "Watchdog has no cycle history");
-  assertTrue(await present(devtools, "watchdog-cycles-empty"), "Watchdog has no empty history");
+  assertTrue(!(await present(devtools, "agent-detail")), "Watchdog still renders the detail panel");
+  assertTrue((await agentLast(devtools)) === "No activity yet.", "Watchdog has no empty bar activity");
   const watchdogCore = await coreSequence(devtools);
   assertTrue(
     JSON.stringify(watchdogCore.filter((id) => id !== "agent-stop")) ===
@@ -868,7 +1111,7 @@ try {
     `the Watchdog core ids differ: ${JSON.stringify(watchdogCore)}`,
   );
   assertTrue(
-    (await text(devtools, "agent-lifecycle")).includes("stopped"),
+    (await pageLifecycle(devtools)) === "stopped",
     "Watchdog does not start stopped",
   );
   console.log("PASS shared-page-shape");
@@ -884,8 +1127,8 @@ try {
   );
   assertTrue(coachPage === "coach", `the Coach page names ${String(coachPage)}`);
   assertTrue(await present(devtools, "agent-issues-empty"), "Coach has no empty table");
-  assertTrue(await present(devtools, "watchdog-cycles"), "Coach has no cycle history");
-  assertTrue(await present(devtools, "watchdog-cycles-empty"), "Coach has no empty history");
+  assertTrue(!(await present(devtools, "agent-detail")), "Coach still renders the detail panel");
+  assertTrue((await agentLast(devtools)) === "No activity yet.", "Coach has no empty bar activity");
   const coachCore = await coreSequence(devtools);
   assertTrue(
     JSON.stringify(coachCore.filter((id) => id !== "agent-stop")) ===
@@ -893,7 +1136,7 @@ try {
     `the Coach core ids differ: ${JSON.stringify(coachCore)}`,
   );
   assertTrue(
-    (await text(devtools, "agent-lifecycle")).includes("stopped"),
+    (await pageLifecycle(devtools)) === "stopped",
     "Coach does not start stopped",
   );
   await waitFor(
@@ -902,15 +1145,101 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Coach");
+  await assertPromptMarker(devtools, "Coach", false);
+  const coachTemplate = await waitFor(
+    async () => {
+      const body = await rawText(devtools, "agent-prompt-template-text");
+      return body.includes(COACH_ISSUES[0]!.url) ? body : undefined;
+    },
+    "the Coach template's live open-issue section",
+    30_000,
+  );
+  const treeBefore = await settledTreeHash(host.directory);
+  const treeBeforeEntries = await treeEntries(host.directory);
   await openPrompt(devtools, "Coach");
-  await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
-    "the Coach prompt absence",
-    10_000,
+  assertTrue(
+    (await countOf(devtools, "agent-prompt-template")) === 1,
+    "the Coach template is not rendered exactly once",
   );
   assertTrue(
-    (await text(devtools, "agent-prompt-absent")).includes("Coach"),
-    "the Coach absence does not name its promptless behavior",
+    (await countOf(devtools, "agent-prompt-absent")) === 0,
+    "the Coach prompt still states an absence",
+  );
+  for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-chat",
+    "agent-prompt-message",
+    "agent-prompt-send",
+    "agent-prompt-save",
+  ]) {
+    assertTrue(
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered on the Coach page`,
+    );
+  }
+  for (const line of [
+    "## Manifesto",
+    "You are the Devboard Coach synthesizer for one family. Your goal is to remove the recurring",
+    "Family:",
+    "<family>",
+    "Fragments:",
+    "<fragments>",
+    "Excerpts:",
+    "<excerpts>",
+    "MCP catalog:",
+    "Open Coach issues:",
+    "Command allowlist:",
+    "Limits:",
+    "Rules:",
+    "- File with `issue_create` and no labels. Its returned number and URL are the record.",
+    "- When the family needs no change, a duplicate exists, a cap leaves no room, or filing",
+  ]) {
+    assertTrue(coachTemplate.includes(line), `the Coach template is missing ${line}`);
+  }
+  for (const tool of MCP_TOOLS) {
+    assertTrue(
+      coachTemplate.includes(`"name": "${tool.name}"`),
+      `the Coach template omits the ${tool.name} tool`,
+    );
+  }
+  assertTrue(
+    coachTemplate.includes(`Command allowlist:\n${JSON.stringify(COACH_ALLOWLIST, null, 2)}`),
+    "the Coach template does not show the live allowlist",
+  );
+  for (const issue of COACH_ISSUES.slice(0, 2)) {
+    assertTrue(
+      coachTemplate.includes(`"title": "${issue.title}"`),
+      `the Coach template omits ${issue.title}`,
+    );
+    assertTrue(coachTemplate.includes(issue.url), `the Coach template omits ${issue.url}`);
+  }
+  assertTrue(
+    !coachTemplate.includes(COACH_ISSUES[2]!.title),
+    "the Coach template lists an unrelated issue",
+  );
+
+  await devtools.send("Page.reload");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
+    "the reloaded Coach prompt section",
+    30_000,
+  );
+  await assertPromptClosed(devtools, "Coach");
+  await openPrompt(devtools, "Coach");
+  await waitFor(
+    async () =>
+      (await rawText(devtools!, "agent-prompt-template-text")) === coachTemplate
+        ? true
+        : undefined,
+    "the reloaded Coach template",
+    30_000,
+  );
+  const treeAfterEntries = await treeEntries(host.directory);
+  assertTrue(
+    treeDigest(treeAfterEntries) === treeBefore,
+    `opening and reloading the Coach template changed the fixture tree: ${JSON.stringify(
+      changedPaths(treeBeforeEntries, treeAfterEntries),
+    )}`,
   );
   console.log("PASS coach-page");
 
@@ -922,6 +1251,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Auto Scout");
+  await assertPromptMarker(devtools, "Auto Scout", false);
   const installedLayout = await promptLayout(devtools);
   assertTrue(
     installedLayout.one &&
@@ -975,6 +1305,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Design System");
+  await assertPromptMarker(devtools, "Design System", false);
   await openPrompt(devtools, "Design System");
   assertTrue(
     (await countOf(devtools, "agent-prompt-absent")) === 0,
@@ -999,6 +1330,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Watchdog");
+  await assertPromptMarker(devtools, "Watchdog", false);
   await openPrompt(devtools, "Watchdog");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
@@ -1207,8 +1539,10 @@ try {
     window.__lifecycles = [];
     clearInterval(window.__lifecycleTimer);
     window.__lifecycleTimer = setInterval(() => {
-      const element = document.querySelector('[data-testid="agent-lifecycle"]');
-      const state = element?.dataset.state ?? '';
+      const id = document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? '';
+      const state = id.length === 0
+        ? ''
+        : document.querySelector('[data-testid="agent-state-' + id + '"]')?.dataset.state ?? '';
       const seen = window.__lifecycles[window.__lifecycles.length - 1];
       if (state.length > 0 && state !== seen) window.__lifecycles.push(state);
     }, 5);
@@ -1216,7 +1550,7 @@ try {
   })()`);
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the running lifecycle",
     10_000,
   );
@@ -1229,7 +1563,7 @@ try {
   assertTrue(!(await present(devtools, "agent-start")), "Start is still rendered while running");
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped lifecycle",
     10_000,
   );
@@ -1248,13 +1582,13 @@ try {
   );
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the running Auto Scout",
     10_000,
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped Auto Scout",
     10_000,
   );
@@ -1421,7 +1755,10 @@ try {
     "the Coach sidebar count does not match its filed rows",
   );
   await waitFor(
-    async () => ((await present(devtools!, "watchdog-cycle")) ? true : undefined),
+    async () => {
+      const log = await barLog(devtools!);
+      return log.includes("filed") ? log : undefined;
+    },
     "the Coach cycle detail",
     10_000,
   );
@@ -1455,6 +1792,37 @@ try {
     "the reloaded Coach settings",
     30_000,
   );
+  /* The template's allowlist section is the settings file's live value. */
+  const savedSettings = JSON.parse(
+    readFileSync(join(coachDir, "settings.json"), "utf8"),
+  ) as Record<string, unknown>;
+  const nextAllowlist = ["gh pr review", "systemctl status devboard"];
+  await writeFile(
+    join(coachDir, "settings.json"),
+    `${JSON.stringify({ ...savedSettings, allowlist: nextAllowlist }, null, 2)}\n`,
+  );
+  await devtools.send("Page.reload");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
+    "the Coach page after the settings edit",
+    30_000,
+  );
+  await openPrompt(devtools, "Coach");
+  await waitFor(
+    async () =>
+      (await rawText(devtools!, "agent-prompt-template-text")).includes(
+        JSON.stringify(nextAllowlist, null, 2),
+      )
+        ? true
+        : undefined,
+    "the reconnected Coach template allowlist",
+    30_000,
+  );
+  assertTrue(
+    !(await rawText(devtools, "agent-prompt-template-text")).includes(COACH_ALLOWLIST[0]!),
+    "the Coach template kept a stale allowlist entry",
+  );
+  console.log("PASS coach-template-settings");
   console.log("PASS coach-detail");
   console.log("PASS freshness-and-table");
 
@@ -1505,7 +1873,7 @@ try {
   );
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the capped Watchdog",
     10_000,
   );
@@ -1525,7 +1893,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped capped Watchdog",
     10_000,
   );
@@ -1624,6 +1992,7 @@ try {
     15_000,
   );
   await assertPromptClosed(devtools, "source Auto Scout");
+  await assertPromptMarker(devtools, "source Auto Scout", true);
   const sourceLayout = await promptLayout(devtools);
   assertTrue(
     sourceLayout.one &&
@@ -1633,6 +2002,7 @@ try {
     `the source prompt section is misplaced: ${JSON.stringify(sourceLayout)}`,
   );
   await openPrompt(devtools, "source Auto Scout");
+  await assertPromptMarker(devtools, "open source Auto Scout", true);
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-editor")) ? true : undefined),
     "the source prompt editor",
@@ -1648,6 +2018,14 @@ try {
   assertTrue(
     (await valueOf(devtools, "agent-prompt-editor")) === SOURCE_PROMPT,
     "the editor does not start at the file's bytes",
+  );
+  const shownPrompt = await valueOf(devtools, "agent-prompt-editor");
+  const shownBody = shownPrompt.startsWith("---\n")
+    ? shownPrompt.slice(shownPrompt.indexOf("\n---\n", 4) + 5)
+    : shownPrompt;
+  assertTrue(
+    shownBody.trimStart().startsWith("## Manifesto"),
+    "the Auto Scout prompt editor does not show a manifesto first",
   );
   for (const testid of [
     "agent-prompt-chat",
@@ -1703,7 +2081,8 @@ try {
 
   await click(devtools, "agent-prompt-save");
   await waitFor(
-    async () => ((await present(devtools!, "save-feedback")) ? true : undefined),
+    async () =>
+      (await saveNoticeScope(devtools!)) === "agent.prompt.scout" ? true : undefined,
     "the prompt save notice",
     15_000,
   );
@@ -1729,6 +2108,57 @@ try {
   );
   console.log("PASS prompt-save");
 
+  /* The source checkout's Coach prompt is the same read-only template. */
+  await click(devtools, "open-devboard-coach");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-prompt"]')?.dataset.agent === "coach"`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the source Coach prompt section",
+    15_000,
+  );
+  await assertPromptClosed(devtools, "source Coach");
+  await assertPromptMarker(devtools, "source Coach", false);
+  await openPrompt(devtools, "source Coach");
+  const sourceTemplate = await waitFor(
+    async () => {
+      const body = await rawText(devtools!, "agent-prompt-template-text");
+      return body.includes("<family>") ? body : undefined;
+    },
+    "the source Coach template",
+    15_000,
+  );
+  assertTrue(
+    (await countOf(devtools, "agent-prompt-template")) === 1,
+    "the source Coach template is not rendered exactly once",
+  );
+  assertTrue(
+    (await countOf(devtools, "agent-prompt-absent")) === 0,
+    "the source Coach prompt states an absence",
+  );
+  for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-chat",
+    "agent-prompt-message",
+    "agent-prompt-send",
+    "agent-prompt-save",
+  ]) {
+    assertTrue(
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered on the source Coach page`,
+    );
+  }
+  assertTrue(
+    sourceTemplate.includes("## Manifesto") && sourceTemplate.includes("You are the Devboard Coach synthesizer for one family."),
+    "the source Coach template is missing its intro",
+  );
+  console.log("PASS coach-template-source");
+
   /* 11. The source checkout's Design System prompt is the same editable surface. */
   await click(devtools, "open-devboard-design");
   await waitFor(
@@ -1744,6 +2174,7 @@ try {
     15_000,
   );
   await assertPromptClosed(devtools, "source Design System");
+  await assertPromptMarker(devtools, "source Design System", true);
   const designLayout = await promptLayout(devtools);
   assertTrue(
     designLayout.one &&
@@ -1753,6 +2184,7 @@ try {
     `the source Design System prompt section is misplaced: ${JSON.stringify(designLayout)}`,
   );
   await openPrompt(devtools, "source Design System");
+  await assertPromptMarker(devtools, "open source Design System", true);
   await waitFor(
     async () =>
       (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === SOURCE_DESIGN_PROMPT
@@ -1785,7 +2217,8 @@ try {
   await setInput(devtools, "agent-prompt-editor", "design saved\n");
   await click(devtools, "agent-prompt-save");
   await waitFor(
-    async () => ((await present(devtools!, "save-feedback")) ? true : undefined),
+    async () =>
+      (await saveNoticeScope(devtools!)) === "agent.prompt.design" ? true : undefined,
     "the Design System save notice",
     15_000,
   );
@@ -1819,7 +2252,7 @@ try {
   });
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the retrying Auto Scout",
     15_000,
   );
@@ -1970,7 +2403,7 @@ try {
   /* A permanent failure appears on the first attempt, and a success clears it. */
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped retrying Auto Scout",
     15_000,
   );
@@ -1980,7 +2413,7 @@ try {
   });
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the permanently failing Auto Scout",
     15_000,
   );
@@ -2023,7 +2456,7 @@ try {
   console.log("PASS sync-retry-permanent-clears");
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped verified Auto Scout",
     15_000,
   );

@@ -4,12 +4,12 @@
   import { flow } from "./lib/flow.svelte";
   import { layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
-  import { statusTone, verificationTone } from "./lib/status-tone";
+  import { verificationTone } from "./lib/status-tone";
   import type { FlowFile, FlowWidget, RunQuestion } from "./lib/types";
+  import AgentActivityBar from "./lib/components/AgentActivityBar.svelte";
   import DetailSplit from "./lib/components/DetailSplit.svelte";
   import MonacoEditor from "./lib/components/MonacoEditor.svelte";
   import SaveFeedback from "./lib/components/SaveFeedback.svelte";
-  import Terminal from "./lib/components/Terminal.svelte";
   import Button from "./lib/components/ui/button.svelte";
 
   interface Props {
@@ -34,6 +34,28 @@
   );
   const conversationWidget = $derived(
     flow.conversation === null ? null : flow.widget(flow.conversation.widgetId),
+  );
+  const overviewBarState = $derived(
+    flow.goalCreation !== null
+      ? ("running" as const)
+      : flow.status === "running"
+        ? ("running" as const)
+        : flow.status === "stopped"
+          ? ("stopped" as const)
+          : ("idle" as const),
+  );
+  const overviewBarActivity = $derived(
+    flow.goalCreation === null ? flow.activity : flow.goalCreation.activity,
+  );
+  const overviewBarQuestion = $derived(
+    flow.goalCreation === null ? flow.question : flow.goalCreation.question,
+  );
+  const overviewBarStartedAt = $derived(
+    overviewBarState !== "running"
+      ? null
+      : flow.goalCreation !== null
+        ? flow.goalCreationStartedAt
+        : flow.implementationStartedAt,
   );
 
   function openWidget(entry: FlowWidget): void {
@@ -432,13 +454,6 @@
       <section class="panel" data-testid="flow-goal-active">
         <div class="panel__header"><h2 class="panel__title">Goal interview</h2></div>
         <div class="panel__body stack-sm">
-          <div class="flow-goal-activity">
-            <Terminal
-              lines={creation.activity}
-              data-testid="flow-goal-activity"
-              label="Flow goal creation activity"
-            />
-          </div>
           {#if creation.question !== null}
             {@render questionPanel(creation.question, "goal", "flow-goal-question")}
           {/if}
@@ -449,32 +464,6 @@
     <section class="panel" data-testid="flow-session">
       <div class="panel__header">
         <h2 class="panel__title">Session</h2>
-        <div class="row-sm">
-          {#if flow.status !== "none"}
-            <span class="badge" data-testid="flow-status" data-status={flow.status}>
-              {flow.status}
-            </span>
-          {/if}
-          <Button
-            variant="default"
-            data-command="flow.start"
-            data-testid="start-flow-implementation"
-            title={flow.startDisabled ? "A flow goal and an idle session are required." : undefined}
-            disabled={flow.startDisabled}
-            onclick={() => flow.startImplementation()}
-          >
-            Start implementation
-          </Button>
-          <Button
-            variant="destructive"
-            data-command="flow.stop"
-            data-testid="stop-flow-implementation"
-            disabled={flow.stopDisabled}
-            onclick={() => flow.stopImplementation()}
-          >
-            Stop implementation
-          </Button>
-        </div>
       </div>
       <div class="panel__body">
         <dl class="kv-grid">
@@ -640,28 +629,50 @@
         </div>
       </section>
     {/if}
-
-    <section class="panel flow-activity-panel" data-testid="flow-activity-section">
-      <div class="panel__header">
-        <h2 class="panel__title">Implementation activity</h2>
-        {#if flow.status !== "none"}
-          <span class="badge" data-tone={statusTone(flow.status)}>
-            {flow.status}
-          </span>
-        {/if}
-      </div>
-      <div class="panel__body flow-activity-body">
-        <Terminal
-          lines={flow.activity}
-          data-testid="flow-activity"
-          label="Implementation activity"
-        />
-      </div>
-    </section>
   </div>
 {/snippet}
 
 <div class="flow-mode mode-body" data-testid="flow-view" data-status={flow.status}>
+  {#if tab?.kind === "overview"}
+    <AgentActivityBar
+      identity={`${layout.mode}:${tab.id}`}
+      label="Flow implementation"
+      status={overviewBarState}
+      activity={overviewBarActivity}
+      startedAt={overviewBarStartedAt}
+      waiting={overviewBarQuestion !== null}
+    >
+      {#snippet control()}
+        <Button
+          variant="default"
+          data-command="flow.start"
+          data-testid="start-flow-implementation"
+          title={flow.startDisabled ? "A flow goal and an idle session are required." : undefined}
+          disabled={flow.startDisabled}
+          onclick={() => flow.startImplementation()}
+        >
+          Start implementation
+        </Button>
+        <Button
+          variant="destructive"
+          data-command="flow.stop"
+          data-testid="stop-flow-implementation"
+          disabled={flow.stopDisabled}
+          onclick={() => flow.stopImplementation()}
+        >
+          Stop implementation
+        </Button>
+      {/snippet}
+    </AgentActivityBar>
+  {:else if tab?.kind === "conversation" && flow.conversation !== null}
+    <AgentActivityBar
+      identity={`${layout.mode}:${tab.id}`}
+      label="Widget conversation"
+      status="idle"
+      activity={flow.conversation.activity}
+      waiting={flow.conversation.question !== null}
+    />
+  {/if}
   {#if flow.errorMessage !== null}
     <p class="message" data-testid="flow-error" data-severity="error" role="alert">
       {flow.errorMessage}
@@ -952,13 +963,6 @@
                 {:else}
                   <p class="empty">No messages yet.</p>
                 {/each}
-              </div>
-              <div style="height: 140px;">
-                <Terminal
-                  lines={convo.activity}
-                  data-testid="flow-conversation-activity"
-                  label="Conversation activity"
-                />
               </div>
               {#if convo.question !== null}
                 {@render questionPanel(convo.question, "conversation", "flow-conversation-question")}

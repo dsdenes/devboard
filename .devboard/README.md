@@ -70,8 +70,8 @@ The width survives a reload.
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
 surface that holds the same facts. The Flow overview opens with the flow-goal editor, which takes
 the full page height; while a goal interview is running the editor collapses to its header and the
-interview takes the next block. The overview ends with the implementation activity console, which
-also takes a full page height so agent output never shrinks to a thumbnail.
+interview takes the next block. The implementation activity moves to the pinned activity bar, so
+the overview keeps the goal editor, session facts, widgets, files, blockers, and verification.
 
 ### Workspace page
 
@@ -97,6 +97,61 @@ A reload restores the active mode, each mode's open page, sidebar and split size
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
 before Devboard existed still restores every stored mode and page; Devboard starts on its default
 `MCP tools` page.
+
+### Single-agent activity bar
+
+Every page whose work is exactly one agent leads its workspace with the same pinned bar. It is
+the first element of the page, outside every scrolling region, spans the workspace width with the
+standard 8px horizontal padding, and stays fully visible while the page content scrolls. Switching
+tabs or modes replaces its content with the new page's agent and collapses it.
+
+The surfaces are the four background-agent pages (`agent-page` for `scout`, `watchdog`, `design`,
+and `coach`), the Discover agent pages (`discover-agent`), the Discover run pages
+(`discover-panel` for overview, glossary, skill, and warnings), the Goal lane page
+(`lane-header`), the Goal single-record page (`record-header`), the Issues focus tab
+(`issues-agent-focus`), the Flow overview (`flow-view` overview), and a Flow conversation
+(`flow-conversation`). Pages that can host several agents at once — the Goal implementation
+overview, the Issues overview, the Issues Agents grid, Drafts, the Queue, and Runs — keep their
+current fleet controls and render no bar. The Goal decision-records, document, and skills pages,
+the MCP tools page, and the Flow decision board, checkpoint, and file pages also render none, and
+a page with no attached agent renders none.
+
+Collapsed, the bar is one row. `data-testid="agent-activity-dot"` carries no visible text and
+`data-state` `running`, `idle`, `succeeded`, `failed`, or `stopped`;
+`data-testid="agent-activity-last"` shows the newest non-empty activity line on one line with an
+ellipsis and the complete line in its `title`, or the muted `No activity yet.`;
+`data-testid="agent-activity-toggle"` carries `aria-expanded`; `data-testid="agent-activity-control"`
+holds at most one existing start/stop control; and `data-testid="agent-activity-question"` appears
+only while the page's agent waits for an answer. The collapsed row never shows a run identifier,
+`Run in progress`, `Running`, `started …`, or a lifecycle badge.
+
+While running, the dot uses the accent token and a continuous 1.8-second pulse, and hovering or
+focusing it reveals the current run's ISO 8601 start time in the `title` and the accessible name.
+Any other state uses the muted-foreground token and does not animate; no start time is claimed
+while idle. Under `prefers-reduced-motion: reduce` the pulse is removed while the running color and
+`data-state` remain.
+
+Activating `data-testid="agent-activity-toggle"` expands an inline
+`data-testid="agent-activity-log"` below the row, inside the same docked region and above the page
+content. It holds every retained activity line, newest last, in a scrollable region that follows
+the newest line only while the operator is at the bottom. Activating the toggle again collapses it;
+another tab, mode, or a reload starts collapsed. The expanded panel never contains a run identifier.
+
+Each existing control moved into `data-testid="agent-activity-control"` keeps its test id, command,
+label, disabled conditions, title, and effect, and the page no longer renders a second copy:
+`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` for Discover
+run pages, `discover-agent-start`/`discover-agent-stop` for Discover agent pages, the Goal record
+`start`, and `start-flow-implementation`/`stop-flow-implementation` for the Flow overview. The
+Goal lane, the Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal`
+remains a page action. Moving a control never adds a backend command or a per-agent Stop.
+
+The removed page content is `discover-run-tag`, `discover-agent-run-tag`, `discover-agent-status`,
+`agent-lifecycle`, `agent-detail`, `issues-agent-focus-run`, `issues-agent-focus-run-id`,
+`issues-agent-focus-run-started`, `issues-agent-focus-activity`, `lane-status`, `lane-activity`,
+`flow-status`, `flow-activity-section`, `flow-goal-activity`, and `flow-conversation-activity`.
+Titles, identity, questions and answer forms, errors, notices, interrupted banners, agent settings,
+filed issues, record facts, Flow messages and conclusions, and Discover artifact warnings stay in
+the page. The left mode rail and the footer status bar are unchanged.
 
 ### Split panes
 
@@ -154,6 +209,18 @@ terminal output, and IDs are monospace, one-line data rows are at most 32 CSS px
 data rows stay within 120 CSS px. The shell uses
 the full viewport with no application max-width.
 
+### Source-only marker
+
+A control that exists only while Devboard serves its own harness source checkout carries one
+shared marker: `data-testid="source-only-badge"`, the word `devboard`, the tooltip
+`Only available when Devboard serves a harness source checkout`, the `.badge` primitive with no
+tone, and `SourceOnlyBadge.svelte` as its only implementation. It is a child of its region header
+immediately after the title, and a trailing count or subtitle stays on the header's trailing edge.
+
+Four surfaces carry it: each of the six Discover agent prompt headers, Discover's manual-testing
+target panel header, and the Auto Scout and Design System prompt summaries. An installed host
+renders no marker anywhere and keeps the read-only prompt state unchanged.
+
 ### Editors and terminals
 
 Monaco Editor provides the Goal document (`goal-text`), Flow goal (`flow-goal-text`), Flow
@@ -172,11 +239,10 @@ renders; it replaces the previous confirmation and clears itself after three sec
 appears only after the server confirms the exact value it persisted; a refused or invalid save
 keeps its existing inline error or alert and shows no confirmation.
 
-xterm.js renders read-only agent output for Goal current activity and history, lane current
-activity and history, Flow goal creation, implementation activity, conversation activity, and
-Discover activity. Terminals preserve ANSI output, are selectable and copyable, auto-scroll
-unless the developer scrolls away, keep a bounded scrollback, and expose their full buffer to
-assistive technology.
+xterm.js renders read-only Goal current activity and history. Every single-agent page instead
+shows its activity through the shared activity bar. Terminals preserve ANSI output, are
+selectable and copyable, auto-scroll unless the developer scrolls away, keep a bounded
+scrollback, and expose their full buffer to assistive technology.
 
 ### Notifications and status bar
 
@@ -638,11 +704,13 @@ requires a non-empty goal and starts `/flow-implement`; `stopFlowImplementation`
 reports the session `stopped`. A session whose pull request has merged cannot be restarted: create
 a new goal.
 
-The implementation commits each coherent unit itself and never pushes. The server reads its
-commits, records the checkpoints, follows the diff, and runs the change analyst whenever the
-diff changes. The developer watches activity, answers implementation questions, accepts or refuses
-widgets, and writes steering notes and decisions while it works. A refused widget becomes a
-steering note telling the agent to abandon that change and implement another solution.
+The implementation commits each coherent unit itself, records the unit's verification through
+`flow_verification_record`, and appends one checkpoint through `flow_checkpoint_record`; it never
+pushes. The server reads its commits, reconciles the recorded checkpoints, follows the diff, and
+runs the change analyst whenever the diff changes. The developer watches activity, answers
+implementation questions, accepts or refuses widgets, and writes steering notes and decisions while
+it works. A refused widget becomes a steering note telling the agent to abandon that change and
+implement another solution.
 
 ### Session state
 
@@ -657,15 +725,15 @@ never committed and never written into the host.
 |`goal.md`|The goal text `/flow-goal` wrote, or the text the developer saved.|
 |`decisions.md`|The decision board: developer text plus appended timestamped sections.|
 |`steering.jsonl`|Append-only developer steering notes.|
-|`steering-ack.jsonl`|The ids of steering notes the implementation consumed.|
-|`checkpoints.jsonl`|One JSON line per commit: id, time, summary, files, sha, verification.|
-|`verification.json`|Latest test, lint, or build result: command, status, timestamp, output.|
+|`steering-ack.jsonl`|The ids of steering notes the implementation acknowledged through `flow_steering_ack`.|
+|`checkpoints.jsonl`|One JSON line per commit recorded through `flow_checkpoint_record`: id, time, summary, files, sha, verification.|
+|`verification.json`|Latest result recorded through `flow_verification_record`: command, status, timestamp, output.|
 |`changes.json`|The current changed files with status, insertion and deletion counts, and diffs.|
 |`accepted.json`|The widget signatures the developer accepted.|
 |`blockers.jsonl`|One JSON line per distinct `DEVBOARD-BLOCKED:` marker text an implementation printed.|
 |`session.json`|Machine state: ids, status, worktree, branch, base, widgets, checkpoints, PR.|
 |`request.json`|Analyst input: goal, decisions, changed files and diffs, previous widgets.|
-|`widgets.json`|The change analyst's complete widget list.|
+|`widgets.json`|The complete widget list the change analyst registered through `flow_widgets_register`.|
 
 `goal.md`, `decisions.md`, `verification.json`, and `checkpoints.jsonl` are re-read on restore,
 so text a developer or agent changed while the server was down is the text the replacement uses.
@@ -674,9 +742,11 @@ changed files, blockers, and the pull request.
 
 ### Change widgets
 
-The change analyst groups every changed file into one or more widgets and writes the complete list
-to `widgets.json`. Each widget has a fixed category, a concept, a summary, a rationale, and the
-files it covers. The seven categories are:
+The change analyst groups every changed file into one or more widgets and registers the complete
+list through the Devboard MCP `flow_widgets_register` tool, which writes `widgets.json`. The prompt
+describes the complete classification and the tool returns the recorded path and count; no answer
+file is requested or parsed. Each widget has a fixed category, a concept, a summary, a rationale,
+and the files it covers. The seven categories are:
 
 - `contract` — an interface another part of the system or an external caller depends on.
 - `entity` — the identity, lifecycle, or ownership of a domain object.
@@ -705,11 +775,12 @@ dropped from `accepted.json`. Every file left unnamed by the analyst is still sh
 ### Steering and the decision board
 
 `sendFlowSteering` appends a timestamped note to `steering.jsonl`; the feed is append-only and
-never rewritten. Notes carry `new` until the implementation appends the consumed ids to
-`steering-ack.jsonl`, after which the server reports them `read`. The implementation reads only
-the lines it has not consumed, appends the ids it acted on, and applies every direction before
-its next checkpoint. Refusing a widget records the refusal as a steering note, and concluding a
-widget conversation appends its conclusion to the decision board and adds one steering note.
+never rewritten. Notes carry `new` until the implementation calls the Devboard MCP
+`flow_steering_ack` tool with the consumed ids, after which the server reports them `read`. The
+implementation reads only the lines it has not consumed, acknowledges the ids it acted on, and
+applies every direction before its next checkpoint; the tool appends each id once and returns the
+ids it wrote and skipped. Refusing a widget records the refusal as a steering note, and concluding
+a widget conversation appends its conclusion to the decision board and adds one steering note.
 
 The decision board is `<session-dir>/decisions.md`. The developer's `Save decisions` replaces
 the document and is authoritative: it is exactly the text the agent reads next. Sections the
@@ -834,12 +905,16 @@ another agent's question.
 | Glossary Agent | `discover-glossary` | `/discover-glossary` | `.devboard/prompts/discover-glossary.md` |
 
 Seven command wrappers under `.devboard/omp/commands/` carry the same seven names. No two agents
-share a prompt file, and each staged turn writes only its own slice; a prompt may name
-`.omp/discover/sheet.json` and `.omp/discover/glossary/` as optional reference, but no agent needs
-another agent's artifact to succeed.
+share a prompt file, and each turn stages only its own slice through the Devboard MCP staging
+tools: `discover_sheet_stage`, `discover_contribution_stage`, `discover_glossary_stage`,
+`discover_significance_stage`, and `discover_skill_stage`. Each tool writes the same staged path
+the server publishes and returns the path and identity it wrote; no prompt asks for a staged file
+written by hand. A prompt may name `.omp/discover/sheet.json` and `.omp/discover/glossary/` as
+optional reference it reads, but no agent needs another agent's artifact to succeed.
 
-When the dashboard serves a harness source checkout, every card renders an editor initialized
-to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
+When the dashboard serves a harness source checkout, every card's Prompt header carries the
+source-only marker (`source-only-badge`) and renders an editor initialized to the prompt file's
+bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
 (`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
 `discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
 `discover-agent-prompt-save`. One chat turn streams one visible reply; a turn that revises the
@@ -847,7 +922,8 @@ prompt replaces the editor text with a complete replacement. Chat never writes a
 starts an agent. Save writes exactly the editor's UTF-8 bytes to that one agent's prompt file and
 no other file, and the next trigger of that agent reads those bytes. An installed host has no
 prompt view and renders no editor, chat, or save; `saveDiscoverPrompt` and `chatDiscoverPrompt`
-are refused there with an error naming the harness source checkout.
+are refused there with an error naming the harness source checkout, and the header carries no
+marker while its `Read-only here` subtitle stays.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
@@ -925,10 +1001,11 @@ order with `id`, `label`, `command`, `state`, `startedAt`, `endedAt`, `error`, a
 `discoverQuestion`, `discoverActivity`, and `discoverStopped` carry `agent`; a question also
 carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
 
-When the peer exits, the server validates only the triggered agent's staged slice and publishes
-only the artifacts that agent owns. A failure, stop, invalid, unreadable, or incomplete slice
+When the peer exits, the server publishes only the triggered agent's slice. Publication parses the
+staged documents itself and publishes only the artifacts that agent owns; there is no separate
+post-write validation phase and no re-ask. A failure, stop, invalid, unreadable, or incomplete slice
 publishes nothing: its staging is removed, one `discoverError` names the reason, and the agent's
-previous artifacts and every other artifact stay byte-identical. Validation reads only the staged
+previous artifacts and every other artifact stay byte-identical. Parsing reads only the staged
 slice, the human decisions the glossary merge requires, and the live-skill state that agent owns;
 it never requires another agent's sheet, glossary, or skill to exist, so a host with no published
 artifacts can publish any one slice and the Overview, Glossary, and skill pages render their absent
@@ -1404,9 +1481,10 @@ client still receives it before its own command replies.
 
 While `remoteAvailable` is true the Overview renders a manual-testing target panel as its first
 region, above the project header and the sheet or the empty state. The panel header states the
-title and, with retained projects, their count. Its body separates the two scopes: a `Retained
-project` toolbar pairs its label with a dropdown (`data-testid="discover-remote-select"`) whose
-options are the retained URLs, newest first, with the active project selected and no host option;
+title, carries the source-only marker, and, with retained projects, their count on the trailing
+edge. Its body separates the two scopes: a `Retained project` toolbar pairs its label with a
+dropdown (`data-testid="discover-remote-select"`) whose options are the retained URLs, newest
+first, with the active project selected and no host option;
 a bordered list carries one 28px row per retained project with the URL and a remove control
 (`data-testid="discover-remote-remove"`, carrying the URL in `data-url`), the active row taking the
 accent surface, a 2px accent edge, and an `Active` badge; a surface-raised block labelled
@@ -1769,23 +1847,52 @@ an installed host and never writes on a page open, tab restore, reconnect, or re
 
 Auto Scout and Design System read the effective prompt file their worker command opens:
 `.devboard/prompts/scout-recommendations.md` and `.devboard/prompts/design-system.md`. The Watchdog
-section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no prompt. The
-Coach section contains it too, naming that Coach assembles its prompt from each cycle's findings.
-Both render no other prompt test id, and a prompt command for either is refused with that same
-descriptor statement and has no effect.
+section contains `agent-prompt-absent`, naming that Watchdog runs no editable prompt; its
+deduplication turn is assembled from `prompts/watchdog-dedup.md` at run time. The Coach section
+contains it too, naming that Coach assembles its prompt from each cycle's findings. Both render no
+other prompt test id, and a prompt command for either is refused with that same descriptor
+statement and has no effect.
 
-When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections render
-`agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
+Every prompt file and every prompt assembled in code begins its body with a `## Manifesto` section
+whose first sentence names the agent's goal and the observable result it produces, and no prompt
+body opens with a backticked or bare slash-command invocation of itself. The flow prompts describe
+the complete flow and act through the Devboard MCP tools; no prompt asks for a JSON, JSON-lines, or
+staged answer document for deterministic code to parse or correct. The chat prompts preserve those
+rules when they propose a revision.
+
+The Coach section contains the one synthesis prompt template instead of an absence: exactly one
+`agent-prompt-template` element whose `agent-prompt-template-text` is the complete template in a
+scrollable monospace region. It is the same text every Coach synthesis call sends, rendered from
+one shared source: the manifesto, every section heading, every `Rules:` bullet, and the limits are
+character-for-character the synthesis prompt's fixed lines. The `Family:`,
+`Fragments:`, and `Excerpts:` sections hold the literal placeholders `<family>`, `<fragments>`,
+and `<excerpts>`, so no family key, session, excerpt, or command occurrence is named and there is
+no per-family or per-kind copy. The live sections carry no snapshot: `MCP catalog:` is the
+`MCP_TOOLS` name/title pairs in catalog order plus every `MCP_COVERS` entry, `Command allowlist:`
+is `JSON.stringify(allowlist, null, 2)` for the allowlist in `<STATE_DIR>/coach/settings.json`
+read on every connect, and `Open Coach issues:` is the dashboard's own open-issue read filtered to
+issues whose title starts with `[coach]` or whose body contains `family:`, as `{number, title,
+url}` objects sorted by number. A successful read with no such issue shows `[]`; before any
+successful read the section states that the open Coach issues could not be read. The template is
+read-only in an installed host and in a harness source checkout: it renders no editor, Save,
+Reset, or chat control, opening, closing, restoring, or reloading it writes no file and starts or
+stops no agent, and every Prompt command for Coach is refused with the descriptor's statement.
+
+When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections'
+closed summary carries the source-only marker (`source-only-badge`, the word `devboard`), and they
+render `agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
 `agent-prompt-chat-log` (present only once the chat has a turn), `agent-prompt-message`,
-`agent-prompt-send`, and `agent-prompt-save`. In every other host those three controls are absent
-and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action
-requires a harness source checkout; no file changes.
+`agent-prompt-send`, and `agent-prompt-save`. In every other host the summary carries no marker,
+those three controls are absent, and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an
+error naming that the action requires a harness source checkout; no file changes. A prompt that is
+absent or unreadable carries no marker either.
 
 `agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
-served checkout, adds nothing, strips nothing, and writes no other file; success shows the
-`save-feedback` notice and leaves the editor on the saved bytes, and failure shows
-`agent-prompt-error` with the file unchanged. The notice names the run that reads the file next:
-the next scan for Auto Scout and the next cycle for Design System. Only that click writes the file.
+served checkout, adds nothing, strips nothing, and writes no other file; success shows the shared
+`save-feedback` confirmation scoped `agent.prompt.<id>` and leaves the editor on the saved bytes,
+and failure shows `agent-prompt-error` with the file unchanged. The notice names the run that
+reads the file next: the next scan for Auto Scout and the next cycle for Design System. Only that
+click writes the file.
 A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
 proposed complete prompt in the editor without any copy; it writes no file, creates no scan, files
 no issue, and changes no agent state. A failed turn shows `agent-prompt-chat-error` and leaves the
@@ -1849,24 +1956,26 @@ and the harness `index.html` entry) against the repository-relative documents `D
 `DESIGN_TOKEN_DOCUMENT`). The documents are normative: a client value, state treatment, wording,
 spacing, or placement they do not cover is a divergence.
 
-Each cycle writes its input and request under `<REPO_DIR>/.devboard/.tmp/design/cycles/<id>/`,
-runs one ACP turn, and validates the answer before acting. A finding becomes an issue only in one
-of `color`, `typography`, `spacing`, `wording`, `state`, or `placement`, with a documented
-principle or token and its quoted passage, exact evidence paths with line ranges and quotes, every
-affected file, a proposed change, and binary acceptance criteria. Anything else is dropped and
-recorded in activity, never filed. Filed issues carry the exact `design` label and no title
-prefix, and never repeat the normalized title of an existing open issue or any existing `design`
-issue in any state.
+Each cycle writes its input and request under `<REPO_DIR>/.devboard/.tmp/design/cycles/<id>/` and
+runs one ACP turn. The prompt describes the complete audit and the agent files each admissible
+divergence itself through the Devboard MCP `issue_create` tool with the exact `design` label. A
+finding is admissible only in one of `color`, `typography`, `spacing`, `wording`, `state`, or
+`placement`, with a documented principle or token and its quoted passage, exact evidence paths
+with line ranges and quotes, every affected file, a proposed change, and binary acceptance
+criteria. The worker reads the tool's records and re-reads the forge; it never reads, parses, or
+corrects an `audit.json` answer, and a tool error is recorded in activity. Filed issues carry the
+exact `design` label and no title prefix, and the prompt forbids repeating the normalized title of
+an existing open issue or any existing `design` issue in any state.
 
-Filing uses the shared `agent-limit-hour` and `agent-limit-pending`: the hourly cap counts every
-`design` issue created in the last rolling 60 minutes in any state, the pending cap counts every
-open `design` issue, and one cycle files no more than the smaller room or 100. Zero room files
-nothing and records each skip in activity; clearing a cap resumes filing on the next cycle. A
-transient forge read failure files nothing, keeps the last known rows, and retries on the
-shared schedule; a permanent failure or a rate limit files nothing and shows its reason at once.
-Age alone never blocks filing: a read that succeeded before the cycle keeps filing even when the
-audit outlasts the sync interval.
-Caps never block an audit, a documentation change, or its release.
+The prompt receives the shared `agent-limit-hour` and `agent-limit-pending` values as `issueRoom`:
+the hourly cap counts every `design` issue created in the last rolling 60 minutes in any state, the
+pending cap counts every open `design` issue, and one cycle files no more than the smaller room or
+100. The agent enforces the room by reading the issue list through the MCP read tools and files
+nothing when it is zero, recording the skip in activity; clearing a cap resumes filing on the next
+cycle. A transient forge read failure keeps the last known rows and retries on the shared schedule;
+a permanent failure or a rate limit shows its reason at once. Age alone never blocks filing: a read
+that succeeded before the cycle keeps filing even when the audit outlasts the sync interval. Caps
+never block an audit, a documentation change, or its release.
 
 A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
 distinct interface surfaces or by an internal contradiction inside the documents. It may change
@@ -1877,15 +1986,16 @@ document to record a single literal and never legalizes a drift it reported. A d
 this contract is refused and recorded in activity without releasing and without an operator-facing
 error; only a failed push, workflow, publish, or asset check is reported as a cycle failure.
 
-An admitted edit is released autonomously: one worktree under `<REPO_DIR>/.worktree/`, a commit
-limited to the two documents, a fetch and integration of `main` with every conflict resolved and
-every check rerun, a non-force push to `main`, the release workflow wait, the integration
-checkout's fast-forward without discarding uncommitted work, and `cd .devboard && bun run publish`
-(exit 0, npm package, Gitea fallback tarball, and `.sha256`). The released version and URL are
-recorded in activity, then the worktree and branch are removed. A cycle with no admissible
-decision makes no commit, push, workflow wait, or publish. A failed push, workflow, publish, or
-asset check leaves the pushed commit intact, never force-pushes, never reverts, and reports the
-failing step in `agent-error` and activity.
+An admitted edit is released autonomously after the agent records the decision through the
+Devboard MCP `design_release_request` tool with the release summary and rationale: the worker
+creates one worktree under `<REPO_DIR>/.worktree/`, commits only the two documents, fetches and
+integrates `main` with every conflict resolved and every check rerun, pushes to `main` without
+force, waits for the release workflow, fast-forwards the integration checkout without discarding
+uncommitted work, and runs `cd .devboard && bun run publish` (exit 0, npm package, Gitea fallback
+tarball, and `.sha256`). The released version and URL are recorded in activity, then the worktree
+and branch are removed. A cycle with no release request makes no commit, push, workflow wait, or
+publish. A failed push, workflow, publish, or asset check leaves the pushed commit intact, never
+force-pushes, never reverts, and reports the failing step in `agent-error` and activity.
 
 The `/design-system-audit` prompt states this contract in its `Release` section: the agent edits
 only its cycle draft, the worker releases an admitted edit from one isolated worktree under
@@ -1986,14 +2096,16 @@ create call. The request carries the repository identity and, for every candidat
 fingerprint, normalized line, first and last seen times, count, contributing instances, and the
 cycle window. It never carries an open-issue list, snapshot, or summary.
 
-The agent reads the repository's currently open issues itself through the read-only
-`devboard` MCP server (`issues_list` and `issue_get` only; no create, comment, close, label, or
-edit tool exists for it). It answers, for every candidate, `unique`, `duplicate` of an open issue
-URL, or `duplicate` of another candidate that represents the same failure. The cycle validates
-that the answer covers exactly the candidate set and that every named issue was reported open. A
-duplicate of an open issue is suppressed silently: no issue, no comment. Its ledger entry records
-`duplicate:<url>` with no `filed:` disposition, so it is never treated as filed and never takes a
-24-hour recurrence comment.
+The agent reads the repository's currently open issues itself through the Devboard MCP read tools
+(`issues_list` and `issue_get`). It files each unique candidate itself through the MCP
+`issue_create` tool and records each duplicate disposition, against an open issue URL or another
+candidate's fingerprint, through the MCP `watchdog_duplicate_record` tool. A duplicate creates and
+comments on nothing. The tools write `<run-dir>/dedup-records.jsonl`; the cycle reads those records
+and never asks for, parses, or validates an answer object. A candidate with no record stays
+pending, so a failed tool call files nothing and the next cycle retries it. A duplicate of an open
+issue is suppressed silently: no issue, no comment. Its ledger entry records `duplicate:<url>` with
+no `filed:` disposition, so it is never treated as filed and never takes a 24-hour recurrence
+comment.
 
 Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
 that issue is closed, the next cycle that observes the same evidence sends the candidate to the
@@ -2002,18 +2114,18 @@ duplicates of one another produce at most one issue for the group, named by its 
 `report.json`. Filing caps are applied after deduplication, so only unique candidates consume
 room; previously filed entries keep their dispositions and their recurrence comments.
 
-The gate fails closed. If the agent cannot be started, exits nonzero, times out, returns
-malformed output, omits a candidate, names an unknown candidate, names an issue that is not open
-in the repository, or describes a representative cycle, the cycle creates no issue and makes no
-comment, keeps every candidate pending, records the reason in `report.json`, and exits nonzero.
-The next cycle retries the same candidates through the agent.
+The gate fails closed. If the agent cannot be started, exits nonzero, or times out, the cycle
+creates no issue and makes no comment, keeps every candidate pending, records the reason in
+`report.json`, and exits nonzero. A candidate whose tool call failed has no record and stays
+pending. The next cycle retries the same candidates through the agent. There is no whole-answer
+coverage check and no re-ask for a rewritten answer.
 
 `report.json` carries a `deduplication` section with the number of candidates requested, the
-number of open issues the agent reported reading, every candidate's decision (`unique`,
-`duplicate` with `issue` and/or `representative`, or `failed` with `reason`), and the candidates
-suppressed because their matched issue is still open. The existing `action`, `reason`, `findings`,
-`issues`, and `pending` fields keep their meaning, and `/api/watchdog`, the Watchdog page, and the
-footer indicator are unchanged.
+number of open issues the agent read, every candidate's disposition (`unique`, `duplicate` with
+`issue` and/or `representative`, or `failed` with `reason`), and the candidates suppressed because
+their matched issue is still open. The existing `action`, `reason`, `findings`, `issues`, and
+`pending` fields keep their meaning, and `/api/watchdog`, the Watchdog page, and the footer
+indicator are unchanged.
 
 ### State-directory cleanup
 
@@ -2065,8 +2177,9 @@ System route through the same shared interface.
 ## Coach
 
 Coach is the `coach` descriptor in the shared background-agent contract: label `Coach`, scope
-`repository`, cadence default 60 minutes, at most 2 issues per cycle, 10 filings per rolling hour,
-and a 20-entry pending queue. Its page is the shared `agent-page` with `data-agent="coach"` and every
+`repository`, cadence default 60 minutes, at most 2 issues per cycle, and 10 filings per rolling
+hour. `maxPending` remains a visible setting but no proposal is queued: the synthesis turn files
+directly or records a skip. Its page is the shared `agent-page` with `data-agent="coach"` and every
 shared core id; `agent-detail` renders the shared cycle history. Opening, selecting, restoring, or
 reloading the page starts nothing. Start and Stop command one detached worker per repository state
 directory.
@@ -2146,67 +2259,66 @@ key and otherwise by the operator's list order, pinned to
 does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes, so it
 follows `selection.json` instead. A credential rejection the peer reports in its ACP error frame or
 stderr rotates to the next enabled Go subscription and, when none is left, fails closed; a 401 or
-"unauthorized" quoted inside the assistant's proposal text never rotates. The
-prompt carries the family summary, every fragment with its count, at most five excerpts, the MCP
-catalog as name/title pairs plus every `covers` entry, every open Coach issue as number/title/URL,
-and the configured allowlist; it stays under 24 KiB. A cycle whose synthesis calls all fail records
-the failure and files nothing. A failed call among successful ones is recorded for its family and
-does not discard the proposals the other calls returned.
+"unauthorized" quoted inside assistant text never rotates. The prompt starts with a `## Manifesto`,
+carries the family summary, every fragment with its count, at most five excerpts, the MCP catalog
+as name/title pairs plus every `covers` entry, every open Coach issue as number/title/URL, the
+configured allowlist, `maxIssuesPerCycle`, the rolling-hour room, the family tag, and the exact
+body sections; it stays under 24 KiB. A cycle whose synthesis calls all fail records the failure
+and files nothing. A failed call among successful ones is recorded for its family and does not
+discard what the other calls filed.
 
-The peer answers with one JSON object and nothing else:
-`{family, action, tool?, prompt?, rationale, acceptance}`. `action` is `tool`, `prompt`, or `none`;
-`family` equals the requested key; `tool` appears only for `tool` and carries `name`
-(`^[a-z][a-z0-9_]{2,40}$`), `title`, `description`, a closed `inputSchema`, and 1 to 12 `covers`
-entries; `prompt` appears only for `prompt` and carries a bounded `instruction` and a `target`
-under `.devboard/prompts/` or an agent id; `rationale` is 1 to 1,000 characters; `acceptance` is 1
-to 5 lines, each starting `- [ ] `. A missing field, an extra field, or a wrong type makes the
-proposal invalid.
+The agent reads the open Coach issues through the MCP read tools and files at most one proposal
+itself through the MCP `issue_create` tool, or records why it filed nothing through
+`coach_proposal_skip`. There is no synthesis answer object, no deterministic proposal validator,
+and no `pendingFiling` queue. A proposal the agent does not file is recorded as `skipped` with its
+reason; the next cycle reconsiders the family. The tool records are the only filing evidence, and
+a tool error is recorded for that family.
 
-A deterministic validator, not a model, then rejects a proposal when its family differs from the
-request; the tool name exists in `MCP_TOOLS` or in the `## Proposed tool` JSON block of an open
-issue body, compared as an exact name (a title never carries it); a `covers` entry is
-neither the family key nor a prefix of it or of a fragment (a trailing `*` is allowed); no `covers`
-entry matches the family key; the schema lacks `type: "object"`, `additionalProperties: false`, or
-`properties`; an acceptance line is malformed; the rendered body reaches 64 KiB; or a `tool`
-proposal has no allowlist entry covering the family. Every rejection records its rule and files
-nothing. `action: none` is recorded with its rationale and files nothing.
+The Coach page's Prompt disclosure shows that same prompt as one read-only template
+(`agent-prompt-template`, with the text in `agent-prompt-template-text`), not as a prompt file and
+not as an absence. `synthesize.ts` renders both the call's prompt and the template from one fixed
+text and one catalog/allowlist/limit/issue rendering, so the manifesto, the section headings, and
+the `Rules:` bullets cannot drift apart; a test builds a real prompt for a fixture family and
+asserts the fixed lines are equal. The per-family sections show `<family>`, `<fragments>`, and
+`<excerpts>`; the live sections name the current catalog, read the allowlist and limits from
+`<STATE_DIR>/coach/settings.json` on each connect, and list the dashboard's current open issues
+filtered by `[coach]` title or `family:` body, sorted by number, or state that the open Coach
+issues could not be read before the first successful read. Opening, closing, restoring, or
+reloading the disclosure writes nothing and starts nothing, and no editor, Save, or chat exists
+for Coach.
 
 ### Filing, caps, and the ledger
 
 A tool proposal files `[coach] <family key>`; a prompt proposal files
 `[coach] prompt: <family key>`. The body carries exactly one `## Family`, `## Evidence`,
 `## Proposed tool` or `## Proposed prompt`, `## Acceptance`, and `## Rationale` section in that
-order. The tool section holds a fenced JSON block byte-identical to the validated tool object, its
-covers list, and the exact allowlist entry the implementer must add. The body carries
+order. The tool section holds a fenced JSON block of the proposed tool, its covers list, and the
+exact allowlist entry the implementer must add. The body carries
 `family:<first 12 hex of SHA-256 over the key>`. Every title, body, and failure reason is redacted
 before the bytes leave the process: against the worker environment, against every API key
 registered in the Providers store, and against the GitHub, Gitea, GitLab, npm, OpenCode Go, and
 OpenRouter token shapes.
 
-Before filing, the cycle reads the repository's open issues. A family is skipped when an open issue
+Before filing, the agent reads the repository's open issues. A family is skipped when an open issue
 has the exact computed title or its body contains `family:<tag>`; the skip is recorded as
-`duplicate` with the existing URL. A tool proposal whose name an earlier filing of the same cycle
-already declared is rejected with `tool-name-duplicate`, and a filed issue joins the same list with
-its own body. There is no suppression, no cooldown, and no recurrence comment.
+`duplicate` with the existing URL. There is no suppression, no cooldown, and no recurrence comment.
 
-`maxIssuesPerCycle` (1 to 20, default 2) caps filings per cycle, highest score first, and
-`maxPerHour` caps filings per rolling hour. A validated proposal that exceeds a cap is stored in
-the ledger's `pendingFiling` queue, bounded by `maxPending` and ordered by score. Pending proposals
-file before new synthesis in a later cycle and carry their original bytes. A pending entry older
-than seven days or whose family no longer appears in the window is dropped and reported. The
-allowlist is an array of at most 50 command prefixes, each at most 200 characters; a tool proposal
-is filed only when one entry covers its family.
+`maxIssuesPerCycle` (1 to 20, default 2) caps filings per cycle, and `maxPerHour` caps filings per
+rolling hour. Each family's prompt receives a `filingRoom` of 0 or 1 after the caps and the already
+filed count, and the agent files only when it is 1. Nothing is queued: a family that does not file
+records its skip reason, and `pending` stays 0.
 
 `<STATE_DIR>/coach/state.json` is version 3:
 `{version: 3, families: {<key>: {firstSeen, lastSeen, calls, sessions, kind, lastAction,
-lastIssueUrl?, lastTitle?, lastFiledAt?}}, pendingFiling: [...]}`. It is written atomically after
-every filing or queue change. A version-2 ledger is discarded on load, the report states
-`ledgerReset: true`, and deduplication relies on the forge. `report.json` and `report.md` carry the
-window, session and journal counts, total family count, selected keys with scores, omitted count,
-each synthesis call's model and duration, each validator outcome with its rule, filed URLs,
-duplicate skips, dropped and pending depth. The dashboard's `CoachStatus` exposes `cycle`, `action`
-(`filed`, `none`, `capped`, `failed`), `reason`, `families`, `selected`, `filed`, `dropped`,
-`pending`, `issues`, and `cycles`.
+lastIssueUrl?, lastTitle?, lastFiledAt?}}, pendingFiling: []}`. The field stays in the format for
+compatibility but is always empty; a queue written by an older revision is discarded and reported
+as `dropped`, never filed. It is written atomically after every filing. A version-2 ledger is
+discarded on load, the report states `ledgerReset: true`, and deduplication relies on the forge.
+`report.json` and `report.md` carry the window, session and journal counts, total family count,
+selected keys with scores, omitted count, each synthesis call's model and duration, each recorded
+outcome with its rule or skip reason, filed URLs, duplicate skips, dropped count, and `pending: 0`.
+The dashboard's `CoachStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`, `failed`),
+`reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`, and `cycles`.
 
 A cycle edits no prompt, wrapper, source, session file, or journal record, and writes only
 `<STATE_DIR>/coach/` plus the generated provider agent directory the synthesizer peer needs. The
@@ -2294,8 +2406,28 @@ from those headers and parses only the matching file, so one read does not cost 
   draft under `.devboard/goal-proposals/`. It ensures the exact `goal` label, files the spec's bytes
   as the issue body, reads the issue back, verifies the label and byte equality, and only then
   removes the named draft. A failure names the step and keeps the draft.
+- `issue_create` creates one issue with a one-line title, a full Markdown body, and an optional
+  label list. It ensures each label before filing and returns the created number, URL, title, and
+  labels. `issue_comment` appends one Markdown comment to an existing issue and returns the
+  number that received it. Both use the shared forge client and its credential and timeout rules.
+- `flow_widgets_register` replaces one Flow session's `widgets.json` with the supplied widget list
+  and returns the recorded path and count. `flow_steering_ack` appends the consumed steering ids
+  once each to `steering-ack.jsonl` and returns the written and already-recorded ids.
+  `flow_checkpoint_record` appends one checkpoint to `checkpoints.jsonl` and returns its id and
+  commit, and `flow_verification_record` replaces `verification.json` and returns the recorded
+  status. The session directory must sit under `<STATE_DIR>/flow/`.
+- `discover_sheet_stage`, `discover_contribution_stage`, `discover_glossary_stage`,
+  `discover_significance_stage`, and `discover_skill_stage` write one Discover agent's staged slice
+  under `<REPO_DIR>/.omp/discover/staging/` and return the path and identity. Publication reads
+  exactly those paths.
+- `design_release_request` records one cycle's release summary and rationale as
+  `<cycle>/release-request.json`; the Design System worker still performs the commit, push, release
+  workflow wait, and publish.
+- `watchdog_duplicate_record` records one watchdog candidate's duplicate disposition for the
+  cycle, and `coach_proposal_skip` records why one Coach family filed nothing. Neither creates or
+  comments on an issue.
 - `issue_close` closes one issue through the repository's forge as `completed` or `not planned` and
-  returns the resulting state. Every issue read and this close share one bounded forge client: a
+  returns the resulting state. Every issue read and write shares one bounded forge client: a
   credential probe or forge command that outlives its deadline (60 seconds by default) fails the
   call with a retryable timeout message instead of leaving it pending.
 - `verification_run` runs only `test`, `check`, `build`, `typecheck`, or a `verify:<name>` present
@@ -2326,14 +2458,17 @@ Every path argument resolves inside `REPO_DIR`, `STATE_DIR`, or the one director
 Absolute paths, `..`, and symlinks leaving those roots are refused. The server never executes an
 arbitrary shell command, never prints a known secret environment value or a token-shaped string,
 never edits a prompt, command wrapper, or source file, never creates a worktree, branch, commit,
-merge, or push, and never applies a label other than the exact `goal` label `goal_draft_file`
-requires. Read-only tools leave every file byte-identical, a refused call has no side effect, and an
-identical call on unchanged state returns identical JSON except for live timestamps.
+merge, or push, and never applies a label the caller did not name. Read-only tools leave every file
+byte-identical, a refused call has no side effect, and an identical call on unchanged state returns
+identical JSON except for live timestamps. Every write tool validates its own arguments against the
+catalog schema before acting and returns the created or recorded identity; no tool asks an agent
+for an answer document to parse later.
 
 `verify:mcp` starts a source dashboard against a throwaway host with a stub forge, stub ACP command,
 and seeded sessions, journal, goals, drafts, and issues; speaks JSON-RPC over the declared command;
-and proves the catalog, every read, work, and control tool, the refusals, the caps, the generated
-peer registration, the installed-package server, and secret redaction.
+and proves the catalog, every read, work, write, and control tool, the expected written paths, the
+refusals, the caps, the generated peer registration, the installed-package server, and secret
+redaction.
 
 
 ## Issues mode
@@ -2772,11 +2907,14 @@ shared lifecycle, last-read clock, cadence, limits, filed-issues table, and deta
 above, plus `scout-activity` for the current or newest scan. The page also shows `agent-error` for
 the last error and `agent-sync-error` for a failed forge read.
 
-There is no review path. While a worker runs, a scan whose items score at least 4 files each
-accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no
-dashboard command, click, approval, or draft. `approveScout`, `draftScoutGoal`, and `rejectScout`
-are not accepted commands. Stop keeps the filed rows and the limits; the next Start reads the
-forge and scans again.
+There is no review path. While a worker runs, each scan turn describes the complete survey and lets
+the agent file its own accepted items: every recommendation scored 4 or 5 is created as a GitHub
+issue in the host `origin` through the Devboard MCP `issue_create` tool with the exact `scout`
+label, in the same turn. The worker reads the tool's records and re-reads the forge; it never asks
+for, reads, parses, or corrects a `recommendations.json` answer, and a tool error is recorded in
+scan activity without a second turn. `approveScout`, `draftScoutGoal`, and `rejectScout` are not
+accepted commands. Stop keeps the filed rows and the limits; the next Start reads the forge and
+scans again.
 
 Auto Scout's Start preflight uses the same 20-second deadline as Issues mode: a `gh` permission
 probe that does not settle is killed at the deadline, Start answers a bounded refusal naming it,
@@ -2789,44 +2927,51 @@ issue whose creation time is inside a rolling 60-minute window, in any state; `m
 every open `scout` issue. One scan requests at most the smaller room, or 100 when both are
 unlimited. A zero batch starts no scan; the next attempt is the earlier of the next 60-second read
 and the moment the oldest hourly entry expires. A scan that files fewer items than requested is a
-normal shortfall, recorded in scan activity, never a failure. Immediately before filing, the
-worker reads every `scout` issue again; a failed read files nothing, keeps the last known rows,
-and blocks filing until a read succeeds. The 60-second read and its 30-second bound are unchanged.
+normal shortfall, recorded in scan activity, never a failure. The scan prompt states both caps and
+the requested count, and the agent enforces them by reading the issue list through the MCP read
+tools. After the turn the worker re-reads every `scout` issue; a failed read keeps the last known
+rows and blocks filing until a read succeeds. The 60-second read and its 30-second bound are
+unchanged.
 
 ### Significance and provenance
 
 Every recommendation carries an integer `significance` from 1 to 5 and a non-empty
-`significanceReason`. Items scoring below 4 are dropped before filing and recorded in scan
-activity. Each filed issue carries the exact `scout` label, no title prefix, and a body with
-category, summary, impact, significance, evidence, proposed change, files, and acceptance
-criteria. Detection, validation, dedupe, fingerprinting, titles, bodies, labels, ledger
-dispositions, and existing issue URLs are unchanged by the shared control plane.
+`significanceReason`. The prompt states the rubric, and the agent files only items scoring 4 or 5.
+Each filed issue carries the exact `scout` label, no title prefix, and a body with category,
+summary, impact, significance, evidence, proposed change, files, and acceptance criteria.
+Detection, dedupe, title normalization, bodies, labels, ledger dispositions, and existing issue
+URLs are unchanged by the shared control plane. No scan answer file is requested or written.
 
 A scan never files a title whose normalized form matches any existing Auto Scout issue in any
-state, any open issue title, or any draft goal heading. A duplicate is dropped, recorded in
-activity, and consumes no cap slot.
+state, any open issue title, or any draft goal heading. The agent reads those titles through
+`issues_list` and `issue_get`; a duplicate is skipped and consumes no cap slot.
 
 An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
-reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the commit that shipped it — the close entry's commit when present, otherwise the `commit_ref`
-entries of earlier commits whose message names the issue, otherwise every 7–40 character hex token
-of the newest comments, most recent first — to one unambiguous full commit through the checkout or
-the forge. Each candidate is verified rather than trusted: comment prose carries fingerprints,
-process ids, and epoch stamps that look like a SHA, so a candidate the forge reports as no such
-commit is skipped and the next one is tried, up to twelve candidates per issue. The first commit
-that resolves and appears in a published release decides the version. It then selects the earliest
-published release tag whose history contains that commit, ordered by `publishedAt` and breaking
-ties by tag name. A tag the checkout already carries answers containment offline; a release the
-checkout has not fetched is compared on the forge, so a host without local release tags still
-reports the version. A closed issue that names no commit at all — an API close records none, and a
-commit message that omits the issue number leaves the timeline empty — reports the release
-published closest to its close: the newest release published at or before the close, restricted to
-releases published after the issue was filed, and otherwise the earliest release published after
-the close. That fallback is an approximation: an issue closed long after the release that fixed it
-reports the newest release published before that close. The row shows `—` when a resolved commit
-has no published release yet, or when no commit resolves and no release falls after the filing;
-a release published later fills a blank version on the next read. A commit message names its issue
-with a trailing `(#<number>)` to give the forge the exact link.
+reopened issue returns to `pending` on the next read. For an implemented issue the worker first
+reads the checkout: every commit whose landed subject ends with `(#<number>)` names the issue, and
+the earliest published release containing any of them is the exact shipped version. That local
+answer outranks the forge and is re-read on every sync while the version is blank, so a release
+published later fills the row without waiting out the negative backoff. When the checkout names
+none, the worker resolves the commit that shipped it from the forge — the close entry's commit
+when present, otherwise the `commit_ref` entries of earlier commits whose message names the issue,
+otherwise every 7–40 character hex token of the newest comments, most recent first — to one
+unambiguous full commit through the checkout or the forge. Each candidate is verified rather than
+trusted: comment prose carries fingerprints, process ids, and epoch stamps that look like a SHA, so
+a candidate the forge reports as no such commit is skipped and the next one is tried, up to twelve
+candidates per issue. The first commit that resolves and appears in a published release decides
+the version. It then selects the earliest published release tag whose history contains that
+commit, ordered by `publishedAt` and breaking ties by tag name. A tag the checkout already carries
+answers containment offline; a release the checkout has not fetched is compared on the forge, so a
+host without local release tags still reports the version. A closed issue that names no commit at
+all — an API close records none, and a commit message that omits the issue number leaves the
+timeline empty — reports the release published closest to its close: the newest release published
+at or before the close, restricted to releases published after the issue was filed, and otherwise
+the earliest release published after the close. That fallback is an approximation: an issue closed
+long after the release that fixed it reports the newest release published before that close. The
+row shows `—` when a resolved commit has no published release yet, or when no commit resolves and
+no release falls after the filing; a release published later fills a blank version on the next
+read. A commit message names its issue with a trailing `(#<number>)`, which is both the forge's
+exact link and the checkout's landed reference.
 
 ### Periodic check
 
@@ -3480,12 +3625,18 @@ and persistence, the Watchdog cap, the shared table columns, freshness without a
 mutating command on reload, the timer-blocked state and one-click disable against a stub
 `systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
 detail and persisted settings, and the prompt section: every page renders `agent-prompt` directly
-after `agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach
-show `agent-prompt-absent`; an installed host is read-only and refuses a save with an error while
-its prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save
-for both file-backed agents, one chat turn streams a reply and changes the editor with the file
-untouched, Save makes each file byte-equal to its editor and a reload puts those bytes back in the
-editor.
+after `agent-header`; Auto Scout and Design System show their own prompt files and, in a source
+checkout, the source-only marker on their closed summary; Watchdog shows `agent-prompt-absent`;
+Coach shows the one read-only `agent-prompt-template` with the fixed intro, every heading and rule
+line, the three placeholders, every catalog tool name, the seeded allowlist, and the fixture's two
+Coach issues but not its unrelated issue, and renders no editor, Save, or chat and no source-only
+marker; an installed host is read-only, carries no source-only marker, and refuses a save with an
+error while its prompt files stay byte-identical; a reload closes the disclosure, reopening shows
+identical text, and the fixture tree is byte-identical afterwards; editing Coach's settings file
+and reconnecting shows the new allowlist; a source-checkout fixture renders the editor, chat, and
+save for both file-backed agents and the same read-only Coach template, one chat turn streams a
+reply and changes the editor with the file untouched, Save makes each file byte-equal to its
+editor and a reload puts those bytes back in the editor.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

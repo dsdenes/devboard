@@ -30,13 +30,7 @@ import {
 } from "../issues/scout/paths";
 import { hostHarnessDir, readHarnessVersion } from "./version";
 import { preflightScout, scoutCommandPaths, stateInsideRepository } from "../issues/scout/preflight";
-import {
-  categoryFromBody,
-  checkEvidencePath,
-  normalizeTitle,
-  parseScanResult,
-  recommendationId,
-} from "../issues/scout/recommendation";
+import { categoryFromBody } from "../issues/scout/recommendation";
 import {
   buildRequest,
   createScanDirectory,
@@ -146,14 +140,6 @@ function commandsIn(directory: string): unknown[] {
 }
 
 describe("recommendation identity", () => {
-  test("the same finding keeps its id and a different category does not", () => {
-    const id = recommendationId("clarity", ["src/b.ts", "src/a.ts"], "  A  Title ");
-    expect(id).toMatch(/^[0-9a-f]{16}$/);
-    expect(recommendationId("clarity", ["src/a.ts", "src/b.ts"], "a title")).toBe(id);
-    expect(recommendationId("structure", ["src/a.ts", "src/b.ts"], "a title")).not.toBe(id);
-    expect(normalizeTitle("  A  Title ")).toBe("a title");
-  });
-
   test("the category is read from an issue body, or null when absent", () => {
     expect(categoryFromBody("## Category\n\nrobustness\n\n## Summary\n\nx")).toBe("robustness");
     expect(categoryFromBody("## Summary\n\nx")).toBeNull();
@@ -162,202 +148,8 @@ describe("recommendation identity", () => {
   });
 });
 
-describe("scan result validation", () => {
-  test("accepts at most the requested count and derives ids and scores", async () => {
-    const root = await repository();
-    const result = parseScanResult(scanDocument(items(3)), { requested, repoDir: root });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items).toHaveLength(3);
-    expect(result.items[0]?.id).toMatch(/^[0-9a-f]{16}$/);
-    expect(result.items[0]?.significance).toBe(5);
-    expect(result.items[0]?.significanceReason).toContain("third nested branch");
-    expect(result.shortfall).toBeNull();
-  });
-
-  test("refuses more recommendations than requested", async () => {
-    const root = await repository();
-    const result = parseScanResult(scanDocument(items(6)), { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("6 recommendations");
-    expect(result.error).toContain(`${requested} requested`);
-  });
-
-  test("a missing significance score fails the whole answer", async () => {
-    const root = await repository();
-    const document = scanDocument([recommendation(1)]);
-    delete (document.recommendations as Record<string, unknown>[])[0]!.significance;
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("significance score from 1 to 5");
-  });
-
-  test("an out-of-range significance score fails the whole answer", async () => {
-    const root = await repository();
-    for (const value of [0, 6, 1.5, "4"]) {
-      const document = scanDocument([recommendation(1)]);
-      (document.recommendations as Record<string, unknown>[])[0]!.significance = value;
-      const result = parseScanResult(document, { requested, repoDir: root });
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error).toContain("significance score");
-    }
-  });
-
-  test("a missing significance reason fails the whole answer", async () => {
-    const root = await repository();
-    const document = scanDocument([recommendation(1)]);
-    delete (document.recommendations as Record<string, unknown>[])[0]!.significanceReason;
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("significance reason");
-  });
-
-  test("a malformed item names itself", async () => {
-    const root = await repository();
-    const document = scanDocument(items(2));
-    const first = (document.recommendations as Record<string, unknown>[])[0]!;
-    delete first.category;
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain('item 1 ("Simplify module 1 control flow")');
-    expect(result.error).toContain("category");
-  });
-
-  test("a title that spans more than one line is refused", async () => {
-    const root = await repository();
-    const document = scanDocument([recommendation(1)]);
-    (document.recommendations as Record<string, unknown>[])[0]!.title = "One line\nand another";
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("more than one line");
-  });
-
-  test("a path that escapes the repository is refused", async () => {
-    const root = await repository();
-    const document = scanDocument([recommendation(1)]);
-    (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
-      { path: "../outside.ts", lines: "1" },
-    ];
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("escapes the repository");
-  });
-
-  test("a path under node_modules is refused", async () => {
-    const root = await repository();
-    const document = scanDocument([recommendation(1)]);
-    (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
-      { path: "node_modules/pkg/index.js", lines: "1" },
-    ];
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("excluded tree");
-  });
-
-  test("a duplicate id inside one result is refused", async () => {
-    const root = await repository();
-    const first = recommendation(1);
-    const document = scanDocument([first, { ...first }]);
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("repeats the id of item 1");
-    expect(result.error).toContain(recommendationId("clarity", ["src/module-1.ts"], first.title));
-  });
-
-  test("an out-of-range line span is refused", async () => {
-    const root = await repository();
-    const document = scanDocument([recommendation(1)]);
-    (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
-      { path: "src/module-1.ts", lines: "18-999" },
-    ];
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("outside the file's 20 line(s)");
-  });
-
-  test("a file list entry the evidence does not cite is refused", async () => {
-    const root = await repository();
-    const document = scanDocument([recommendation(1)]);
-    (document.recommendations as Record<string, unknown>[])[0]!.files = ["src/module-2.ts"];
-    const result = parseScanResult(document, { requested, repoDir: root });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("which its evidence does not cite");
-  });
-
-  test("a non-empty shortfall is preserved and an empty one is dropped", async () => {
-    const root = await repository();
-    const withReason = parseScanResult(scanDocument(items(1), "Only one real gap."), {
-      requested,
-      repoDir: root,
-    });
-    expect(withReason.ok && withReason.shortfall).toBe("Only one real gap.");
-    const empty = parseScanResult(scanDocument(items(1), "   "), {
-      requested,
-      repoDir: root,
-    });
-    expect(empty.ok && empty.shortfall).toBeNull();
-  });
-});
-
-describe("evidence path containment", () => {
-  async function linkedCheckout(): Promise<{ root: string; linked: string }> {
-    const root = await temporaryDirectory("scout-checkout");
-    await mkdir(join(root, "src"), { recursive: true });
-    await writeFile(join(root, "src", "module.ts"), "one\ntwo\nthree\n");
-    const linked = join(await temporaryDirectory("scout-link"), "checkout");
-    await symlink(root, linked);
-    return { root, linked };
-  }
-
-  test("a checkout reached through a symlink accepts its own files", async () => {
-    const { linked } = await linkedCheckout();
-    expect(checkEvidencePath(linked, "src/module.ts", "2")).toEqual({
-      ok: true,
-      path: "src/module.ts",
-    });
-  });
-
-  test("a scan against a symlinked checkout passes validation", async () => {
-    const root = await repository();
-    const linked = join(await temporaryDirectory("scout-link"), "checkout");
-    await symlink(root, linked);
-    const result = parseScanResult(scanDocument(items(2)), { requested, repoDir: linked });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items).toHaveLength(2);
-  });
-
-  test("a symlinked root still refuses a path containing ..", async () => {
-    const { linked } = await linkedCheckout();
-    const refusal = checkEvidencePath(linked, "../outside.ts", "1");
-    expect(refusal.ok).toBe(false);
-    expect(refusal.detail).toContain("escapes the repository");
-  });
-
-  test("a symlink whose real target leaves the root is still refused", async () => {
-    const { root } = await linkedCheckout();
-    const outside = await temporaryDirectory("scout-outside");
-    await writeFile(join(outside, "secret.ts"), "one\n");
-    await symlink(join(outside, "secret.ts"), join(root, "outside.ts"));
-    const refusal = checkEvidencePath(root, "outside.ts", "1");
-    expect(refusal.ok).toBe(false);
-    expect(refusal.detail).toContain("escapes the repository");
-  });
-});
-
 describe("scan request", () => {
-  test("carries the requested batch, excluded roots, known titles, and headings", async () => {
+  test("carries the requested batch, excluded roots, caps, and headings", async () => {
     const root = await repository();
     await mkdir(join(root, ".devboard", "goal-proposals"), { recursive: true });
     await writeFile(
@@ -370,8 +162,9 @@ describe("scan request", () => {
       repository: "acme/fixture",
       repoDir: root,
       requested: 3,
-      knownTitles: ["open issue", "existing scout issue"],
       draftGoalHeadings: readDraftGoalHeadings(root),
+      maxPerHour: 5,
+      maxPending: 4,
     });
     expect(request.requested).toBe(3);
     expect(request.significanceThreshold).toBe(4);
@@ -379,11 +172,12 @@ describe("scan request", () => {
     expect(request.repositoryPath).toBe(root);
     expect(request.excludedRoots).toContain("node_modules");
     expect(request.categories).toContain("correctness");
-    expect(request.knownTitles).toEqual(["open issue", "existing scout issue"]);
+    expect(request.maxPerHour).toBe(5);
+    expect(request.maxPending).toBe(4);
     expect(request.draftGoalHeadings).toEqual(["Proposed goal: Merge the two trackers"]);
     writeRequest(scan.directory, request);
     const written = JSON.parse(readFileSync(join(scan.directory, "request.json"), "utf8"));
-    expect(written.version).toBe(2);
+    expect(written.version).toBe(3);
     expect(written.requested).toBe(3);
     expect(promptFor(scan.directory)).toBe(`/scout-recommendations ${scan.directory}`);
   });
@@ -459,6 +253,76 @@ describe("shipped version", () => {
       [release("v1.1.0", "2026-02-01T00:00:00Z"), release("v1.0.0", "2026-01-01T00:00:00Z")],
     );
     expect(version).toBe("v1.0.0");
+  });
+
+  test("a landed commit answers when the forge names no closing commit", async () => {
+    const commit = "c".repeat(40);
+    const client = fakeGitHub({
+      closingCommit: async () => null,
+      landedCommits: () => [commit],
+      resolveCommit: async () => commit,
+      containingReleaseTags: async () => ["v1.0.0"],
+    });
+    const resolution = await resolveShippedVersion(
+      {
+        number: 4,
+        state: "closed",
+        createdAt: "2026-01-01T00:00:00Z",
+        closedAt: "2026-03-01T00:00:00Z",
+      },
+      client,
+      [release("v1.0.0", "2026-02-01T00:00:00Z")],
+    );
+    expect(resolution).toEqual({ version: "v1.0.0", error: null, inferred: false });
+  });
+
+  test("the earliest release containing any landed commit wins", async () => {
+    const older = "a".repeat(40);
+    const newer = "b".repeat(40);
+    const client = fakeGitHub({
+      closingCommit: async () => null,
+      landedCommits: () => [newer, older],
+      resolveCommit: async (short) => short,
+      containingReleaseTags: async (commit) => (commit === older ? ["v2.0.0"] : ["v1.0.0"]),
+    });
+    const version = await shippedVersion(
+      {
+        number: 4,
+        state: "closed",
+        createdAt: "2026-01-01T00:00:00Z",
+        closedAt: "2026-03-01T00:00:00Z",
+      },
+      client,
+      [
+        release("v1.0.0", "2026-01-15T00:00:00Z"),
+        release("v2.0.0", "2026-02-15T00:00:00Z"),
+      ],
+    );
+    expect(version).toBe("v1.0.0");
+  });
+
+  test("a landed commit no release contains is never replaced by the close fallback", async () => {
+    const commit = "c".repeat(40);
+    const resolution = await resolveShippedVersion(
+      {
+        number: 4,
+        state: "closed",
+        createdAt: "2026-01-01T00:00:00Z",
+        closedAt: "2026-03-01T00:00:00Z",
+      },
+      fakeGitHub({
+        closingCommit: async () => null,
+        landedCommits: () => [commit],
+        resolveCommit: async () => commit,
+        containingReleaseTags: async () => [],
+      }),
+      [release("v1.0.0", "2026-02-01T00:00:00Z")],
+    );
+    expect(resolution).toEqual({
+      version: null,
+      error: `no published release contains ${commit}`,
+      inferred: false,
+    });
   });
 
   test("a blank version is the answer when nothing resolves", async () => {

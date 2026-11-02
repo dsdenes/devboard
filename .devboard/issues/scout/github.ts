@@ -1,4 +1,3 @@
-import type { GhRunner } from "./actions";
 import { ghCommand } from "./preflight";
 import {
   createRepositoryGitHub,
@@ -63,6 +62,8 @@ export interface ScoutGitHubClient {
   closingCommit(issueNumber: number): Promise<string | null>;
   /** Every candidate for that commit, newest first, for verification. */
   closingCommits?(issueNumber: number): Promise<string[]>;
+  /** The checkout's own commits whose landed subject ends with `(#<number>)`. */
+  landedCommits?(issueNumber: number): string[];
   /** One unambiguous full commit, through the checkout or GitHub, or null. */
   resolveCommit(short: string): Promise<string | null>;
   /** The published release tags whose history contains `commit`. */
@@ -107,6 +108,14 @@ function parseIssues(text: string): unknown[] | undefined {
   } catch {
     return undefined;
   }
+}
+
+export interface GhRunner {
+  (argv: string[], environment: Record<string, string>): Promise<{
+    code: number;
+    stdout: string;
+    stderr: string;
+  }>;
 }
 
 export interface ScoutGitHubOptions {
@@ -179,6 +188,8 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
     closingCommit: (issueNumber) => version.closingCommit(issueNumber),
 
     closingCommits: (issueNumber) => version.closingCommits(issueNumber),
+
+    landedCommits: (issueNumber) => version.landedCommits(issueNumber),
 
     resolveCommit: (short) => version.resolveCommit(short),
 
@@ -302,6 +313,8 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
     async closingCommits(issueNumber: number): Promise<string[]> {
       return await repositoryGitHub.closingCommits(issueNumber);
     },
+
+    landedCommits: (issueNumber) => repositoryGitHub.landedCommits(issueNumber),
 
     async resolveCommit(short: string): Promise<string | null> {
       return await repositoryGitHub.resolveCommit(short);

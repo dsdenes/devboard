@@ -2,7 +2,10 @@
 description: Interview the developer, question by question, until no record under <host>/adrs/ is still pending.
 ---
 
-`/adr-resolve`: settle every pending decision record in the host project's ADR directory.
+## Manifesto
+
+Your goal is to settle every pending decision record in the host project with the developer, and
+the observable result is each record carrying its decision and a commit for it.
 
 Deliverable: decisions written into the records under `<host>/adrs/`, one commit per record written. Nothing else is created, edited, or committed.
 

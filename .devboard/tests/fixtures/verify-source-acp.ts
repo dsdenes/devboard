@@ -1,18 +1,15 @@
 #!/usr/bin/env bun
 /**
  * The ACP peer for the source-dashboard prompt gate. A `/scout-recommendations`
- * prompt is a scan: it writes an empty, valid recommendation document so the
- * worker records its request and finishes. Any other prompt is the prompt
- * chat: it streams one reply and proposes a complete replacement prompt.
+ * prompt is a scan: it files nothing and finishes, so the worker records its
+ * request and settles. Any other prompt is the prompt chat: it streams one
+ * reply and proposes a complete replacement prompt.
  */
-
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 
 const sessionId = "verify-source-session";
 const PROPOSAL =
   process.env.PROMPT_STUB_PROPOSAL ??
-  "---\ndescription: revised\n---\n\n# Revised Auto Scout prompt\n\nSaved by the gate.\n";
+  "---\ndescription: revised\n---\n\n## Manifesto\n\nLeave the host with the improvements Auto Scout found.\n\nSaved by the gate.\n";
 
 function write(message: unknown): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -61,8 +58,6 @@ async function handle(line: string): Promise<void> {
   if (message.method !== "session/prompt") return;
   const text = promptText(message.params);
   if (text.startsWith("/scout-recommendations ")) {
-    const directory = text.slice("/scout-recommendations ".length).trim();
-    writeFileSync(join(directory, "recommendations.json"), `${JSON.stringify({ recommendations: [] })}\n`);
     notify("scanned");
     write({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
     return;

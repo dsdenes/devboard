@@ -1852,7 +1852,8 @@ export class FlowController {
       ),
       "",
       "The same data is in request.json in the session directory.",
-      "Write the complete widget list to widgets.json in the session directory.",
+      "Register the complete widget list with the flow_widgets_register MCP tool, using this " +
+        "session directory and the complete widgets array.",
     ].join("\n");
 
     const started = Date.now();

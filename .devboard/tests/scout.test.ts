@@ -5,7 +5,14 @@ import { basename, dirname, join } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { ScoutBridge } from "../server/scout";
 import { agentRegistry } from "../server/agents/registry";
-import { fileScoutIssue, issueBody, type GhRunner } from "../issues/scout/actions";
+import { callTool, type ToolResult } from "../mcp/tools";
+import type { McpContext } from "../mcp/context";
+import type {
+  CreateForgeIssueInput,
+  ForgeIssueDocument,
+  ForgeIssueSummary,
+  ForgeIssues,
+} from "../lib/forge-issues";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
 import { liveScanClaim } from "../issues/scout/claims";
 import { versionLockPath } from "../issues/lock";
@@ -28,16 +35,12 @@ import {
 import { ghCommand } from "../issues/scout/preflight";
 import { readScanFile, readSettings, type ScoutState } from "../issues/scout/state";
 import { RESOLUTION_RETRY_MS, ScoutWorker } from "../issues/scout/worker";
-import type { ScoutRecommendation } from "../issues/scout/recommendation";
 import type { AcpPeer, IssuesPeerOptions } from "../issues/worker";
 import {
   createdDirectories,
   makeRepository,
-  recommendation,
-  scanDocument,
   sourceFiles,
   temporaryDirectory,
-  type DraftRecommendation,
 } from "./fixtures/scout-helpers";
 
 /**
@@ -75,17 +78,8 @@ class ControlledPeer implements AcpPeer {
   readonly pid = undefined;
   readonly argv = ["stub-scout-acp"];
   readonly prompts: string[] = [];
-  /** Correction turns sent after a rejected answer. */
-  readonly corrections: string[] = [];
-  /** When false, a correction is refused so a rejected scan settles at once. */
-  correctionEnabled = false;
   closed = false;
   private settled = false;
-  private correction: {
-    promise: Promise<unknown>;
-    resolve: (value: unknown) => void;
-    reject: (error: Error) => void;
-  } | null = null;
   private readonly resolveRun: (value: unknown) => void;
   private readonly rejectRun: (error: Error) => void;
   private readonly options: IssuesPeerOptions;
@@ -105,21 +99,6 @@ class ControlledPeer implements AcpPeer {
     return this.promise;
   }
 
-  prompt(prompt: string): Promise<unknown> {
-    this.corrections.push(prompt);
-    if (!this.correctionEnabled) {
-      return Promise.reject(new Error("the stub peer does not answer corrections"));
-    }
-    this.correction = Promise.withResolvers<unknown>();
-    return this.correction.promise;
-  }
-
-  /** Ends the pending correction turn. */
-  resolveCorrection(): void {
-    this.correction?.resolve({});
-    this.correction = null;
-  }
-
   answer(id: number | string, value: string): boolean {
     this.emit(`answered ${String(id)} ${value}`);
     return true;
@@ -131,8 +110,6 @@ class ControlledPeer implements AcpPeer {
       this.settled = true;
       this.rejectRun(new Error("Agent process exited before answering."));
     }
-    this.correction?.reject(new Error("Agent process exited before answering."));
-    this.correction = null;
   }
 
   emit(text: string, append = false): void {
@@ -195,6 +172,8 @@ class FakeGitHub implements ScoutGitHubClient {
   readonly closing = new Map<number, string | null>();
   readonly commits = new Map<string, string>();
   readonly containing = new Map<string, string[]>();
+  readonly landed = new Map<number, string[]>();
+  landedCalls = 0;
   failIssues = false;
   /** Replaces the generic issue-read failure when set. */
   issuesError: string | null = null;
@@ -243,6 +222,11 @@ class FakeGitHub implements ScoutGitHubClient {
     return this.closing.get(issueNumber) ?? null;
   }
 
+  landedCommits(issueNumber: number): string[] {
+    this.landedCalls += 1;
+    return this.landed.get(issueNumber) ?? [];
+  }
+
   async resolveCommit(short: string): Promise<string | null> {
     return this.commits.get(short) ?? null;
   }
@@ -284,31 +268,107 @@ class StalledResolutionGitHub extends FakeGitHub {
   }
 }
 
-/** The injected `gh issue create`: records the issue and mirrors it on GitHub. */
-function fakeFiling(f: Fixture): typeof fileScoutIssue {
-  return async (request) => {
-    if (f.failingIssue !== null) throw new Error(f.failingIssue.message);
-    const number = f.github.nextNumber++;
+/**
+ * The forge the `issue_create` tool writes through in these tests. It mirrors
+ * every created issue into the same `FakeGitHub` the worker reads, so the scan
+ * reconciles exactly what the tool filed.
+ */
+class FakeForge implements ForgeIssues {
+  readonly forge = "github" as const;
+  readonly repository = "acme/fixture";
+  readonly created: Array<{
+    number: number;
+    title: string;
+    body: string;
+    labels: string[];
+  }> = [];
+  readonly labels = new Set<string>();
+  readonly comments: Array<{ target: number | string; body: string }> = [];
+  readonly closed: Array<{ number: number; reason: string }> = [];
+  /** Replaces the generic creation failure when set. */
+  createError: string | null = null;
+  private readonly labelsByNumber = new Map<number, string[]>();
+
+  constructor(
+    private readonly github: FakeGitHub,
+    private readonly now: () => Date,
+  ) {}
+
+  private issue(number: number): ScoutGitHubIssue {
+    const issue = this.github.issues.find((row) => row.number === number);
+    if (issue === undefined) throw new Error(`no forge issue #${number}`);
+    return issue;
+  }
+
+  private document(issue: ScoutGitHubIssue): ForgeIssueDocument {
+    return {
+      number: issue.number,
+      title: issue.title,
+      body: issue.body,
+      state: issue.state,
+      labels: this.labelsByNumber.get(issue.number) ?? [],
+      url: issue.url,
+      createdAt: issue.createdAt,
+    };
+  }
+
+  private summary(issue: ScoutGitHubIssue): ForgeIssueSummary {
+    return {
+      number: issue.number,
+      title: issue.title,
+      state: issue.state,
+      labels: this.labelsByNumber.get(issue.number) ?? [],
+      url: issue.url,
+      createdAt: issue.createdAt,
+    };
+  }
+
+  async list(state: "open" | "closed" | "all", limit = 100): Promise<ForgeIssueSummary[]> {
+    return this.github.issues
+      .filter((issue) => state === "all" || issue.state === state)
+      .map((issue) => this.summary(issue))
+      .slice(0, limit);
+  }
+
+  async get(number: number): Promise<ForgeIssueDocument> {
+    return this.document(this.issue(number));
+  }
+
+  async ensureLabel(name: string): Promise<void> {
+    this.labels.add(name);
+  }
+
+  async create(input: CreateForgeIssueInput): Promise<ForgeIssueDocument> {
+    if (this.createError !== null) throw new Error(this.createError);
+    const number = this.github.nextNumber++;
     const issue: ScoutGitHubIssue = {
       number,
-      title: request.recommendation.title,
+      title: input.title,
       url: `https://github.com/acme/fixture/issues/${number}`,
       state: "open",
-      createdAt: f.clock.now.toISOString(),
-      body: issueBody(request.recommendation),
+      createdAt: this.now().toISOString(),
+      body: input.body,
     };
-    f.github.issues.push(issue);
-    f.github.openTitles.push(issue.title);
-    f.filed.push({
-      id: request.recommendation.id,
-      number,
-      title: request.recommendation.title,
-      repository: request.repository,
-      body: issue.body,
-      significance: request.recommendation.significance,
-    });
-    return { url: issue.url, number };
-  };
+    this.github.issues.push(issue);
+    this.github.openTitles.push(issue.title);
+    const labels = [...(input.labels ?? [])];
+    this.labelsByNumber.set(number, labels);
+    this.created.push({ number, title: input.title, body: input.body, labels });
+    return this.document(issue);
+  }
+
+  async comment(target: number | string, body: string): Promise<void> {
+    this.comments.push({ target, body });
+  }
+
+  async close(number: number, reason: "completed" | "not planned"): Promise<ForgeIssueDocument> {
+    const issue = this.issue(number);
+    issue.state = "closed";
+    const index = this.github.openTitles.indexOf(issue.title);
+    if (index >= 0) this.github.openTitles.splice(index, 1);
+    this.closed.push({ number, reason });
+    return this.document(issue);
+  }
 }
 
 /** The scan directory a prompt names. */
@@ -328,13 +388,6 @@ async function waitSettled(root: string, prompt: string, description = "the scan
   );
 }
 
-function writeRecommendations(scanDirectoryPath: string, document: unknown): void {
-  writeFileSync(
-    join(scanDirectoryPath, "recommendations.json"),
-    `${JSON.stringify(document, null, 2)}\n`,
-  );
-}
-
 function readRequest(scanDirectoryPath: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(scanDirectoryPath, "request.json"), "utf8"));
 }
@@ -347,24 +400,28 @@ function activityOf(scanDirectoryPath: string): string {
   }
 }
 
-function uniqueItems(from: number, count: number): DraftRecommendation[] {
-  return Array.from({ length: count }, (_value, index) => recommendation(from + index));
+/** One finding a scan files through the MCP issue tool. */
+interface FiledItem {
+  title: string;
+  body?: string;
+}
+
+function bodyFor(title: string): string {
+  return `## Summary\n\n${title} names a real failure mode.\n\n## Significance\n\n5/5\n\nA named defect.\n`;
+}
+
+function items(from: number, count: number): FiledItem[] {
+  return Array.from({ length: count }, (_value, index) => ({
+    title: `Improve module ${from + index} behavior`,
+  }));
 }
 
 interface Fixture {
   root: string;
   stateDir: string;
   github: FakeGitHub;
+  forge: FakeForge;
   peers: ControlledPeer[];
-  filed: Array<{
-    id: string;
-    number: number;
-    title: string;
-    repository: string;
-    body: string;
-    significance: number;
-  }>;
-  failingIssue: { message: string } | null;
   clock: { now: Date };
   state: () => ScoutState;
   worker: ScoutWorker;
@@ -383,7 +440,6 @@ async function fixture(options: {
   harnessVersion?: string;
   now?: Date;
   draftHeading?: string;
-  fileIssue?: typeof fileScoutIssue;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label ?? "scout");
   const root = await makeRepository({
@@ -406,16 +462,15 @@ async function fixture(options: {
 
   const peers: ControlledPeer[] = [];
   const github = options.github ?? new FakeGitHub();
-  const filed: Fixture["filed"] = [];
   const clock = { now: options.now ?? new Date("2026-10-27T10:00:00.000Z") };
+  const forge = new FakeForge(github, () => clock.now);
 
   const f = {
     root,
     stateDir,
     github,
+    forge,
     peers,
-    filed,
-    failingIssue: null as { message: string } | null,
     clock,
     state: () => worker.currentState,
     get worker(): ScoutWorker {
@@ -440,7 +495,6 @@ async function fixture(options: {
       peers.push(peer);
       return peer;
     },
-    fileIssue: options.fileIssue ?? fakeFiling(f),
   });
   workers.push(worker);
   expect(worker.start("acme/fixture")).toBe(true);
@@ -449,15 +503,35 @@ async function fixture(options: {
 
 const startClock = new Date("2026-10-27T10:00:00.000Z");
 
-/** Runs one scan: waits for its peer, writes the document, and settles it. */
-async function scan(
-  f: Fixture,
-  index: number,
-  items: DraftRecommendation[],
-  shortfall?: string,
-): Promise<ControlledPeer> {
+/** The MCP context a scan's peer would use: the log sits in its scan dir. */
+function toolContext(f: Fixture, scanPath: string): McpContext {
+  return {
+    repoDir: f.root,
+    harnessDir: join(f.root, ".devboard"),
+    stateDir: f.stateDir,
+    environment: {
+      DEVBOARD_TOOL_LOG: join(scanPath, "tool-log.jsonl"),
+      REPO_DIR: f.root,
+      STATE_DIR: f.stateDir,
+    },
+    forgeIssues: f.forge,
+  };
+}
+
+/** Files one finding through the real tool, exactly as the prompt asks. */
+async function fileItem(f: Fixture, scanPath: string, item: FiledItem): Promise<ToolResult> {
+  return await callTool(toolContext(f, scanPath), "issue_create", {
+    title: item.title,
+    body: item.body ?? bodyFor(item.title),
+    labels: ["scout"],
+  });
+}
+
+/** Runs one scan: waits for its peer, files through the tool, and settles it. */
+async function scan(f: Fixture, index: number, findings: FiledItem[]): Promise<ControlledPeer> {
   const peer = await waitFor(() => f.peers[index], `scan peer ${index + 1}`);
-  writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(items, shortfall));
+  const scanPath = scanDirectoryOf(peer.prompts[0]!);
+  for (const item of findings) await fileItem(f, scanPath, item);
   peer.succeed();
   await waitSettled(f.root, peer.prompts[0]!, `scan ${index + 1} to settle`);
   return peer;
@@ -473,31 +547,34 @@ async function tickAt(f: Fixture, instant: number): Promise<void> {
   await f.worker.tickNow();
 }
 
-describe("direct filing", () => {
-  test("a scan files every significant item with no command", async () => {
+describe("tool-driven filing", () => {
+  test("a scan files through issue_create with the scout label and records it", async () => {
     const f = await fixture({ label: "auto-file" });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
       const scanPath = scanDirectoryOf(peer.prompts[0]!);
       const request = readRequest(scanPath);
+      expect(request.version).toBe(3);
       expect(request.requested).toBe(Math.min(10, 5));
-      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 2)));
+      const result = await fileItem(f, scanPath, {
+        title: "Improve module 1 behavior",
+        body: "## Summary\n\nA named defect.\n\n## Significance\n\n5/5\n\nA named defect.\n",
+      });
+      expect(result).toEqual({ value: expect.objectContaining({ number: 100 }) });
+      expect(f.forge.labels.has("scout")).toBe(true);
+      expect(f.forge.created[0]?.labels).toEqual(["scout"]);
       peer.succeed();
       const settled = await waitFor(
-        () => (f.filed.length === 2 ? f.state() : undefined),
-        "the two filed issues",
+        () => (f.state().issues.length === 1 ? f.state() : undefined),
+        "the filed issue",
       );
-      expect(settled.issues).toHaveLength(2);
-      expect(settled.issues.map((row) => row.state)).toEqual(["pending", "pending"]);
-      expect(settled.issues[0]?.category).toBe("clarity");
-      expect(settled.notice).toBe("Filed 2 issues in acme/fixture: #100, #101");
-      expect(f.filed[0]?.repository).toBe("acme/fixture");
-      expect(f.filed[0]?.body).toContain("## Significance");
-      expect(f.filed[0]?.body).toContain("5/5");
-      expect(f.filed[0]?.body).toContain("third nested branch");
+      expect(settled.issues).toHaveLength(1);
+      expect(settled.issues[0]?.state).toBe("pending");
+      expect(settled.notice).toBe("Filed #100 “Improve module 1 behavior”");
       const scanFile = readScanFile(scanDirectory(f.root, basename(scanPath)));
       expect(scanFile?.status).toBe("succeeded");
-      expect(scanFile?.filed).toBe(2);
+      expect(scanFile?.filed).toBe(1);
+      expect(scanFile?.shortfall).toBe("filed 1 of the 5 requested");
       expect(activityOf(scanPath)).toContain("filed #100");
       expect(settled.lifecycle).toBe("idle");
     } finally {
@@ -505,185 +582,70 @@ describe("direct filing", () => {
     }
   });
 
-  test("items below significance 4 are dropped and recorded", async () => {
-    const f = await fixture({ label: "significance-drop" });
+  test("a failed tool call leaves the scan failed and sends no rewrite request", async () => {
+    const f = await fixture({ label: "tool-error" });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      const low = { ...recommendation(2), significance: 3, significanceReason: "A latent cleanup." };
-      writeRecommendations(
-        scanDirectoryOf(peer.prompts[0]!),
-        scanDocument([recommendation(1), low]),
-      );
-      peer.succeed();
-      await waitSettled(f.root, peer.prompts[0]!);
-      const settled = f.state();
-      expect(f.filed).toHaveLength(1);
-      expect(f.filed[0]?.significance).toBe(5);
-      expect(settled.issues).toHaveLength(1);
-      expect(settled.notice).toBe("Filed #100 “Simplify module 1 control flow”");
-      expect(settled.lastError).toBeNull();
-      expect(activityOf(scanDirectoryOf(peer.prompts[0]!))).toContain(
-        "significance 3/5 is below 4",
-      );
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a rejected answer gets one correction turn and the repaired file is filed", async () => {
-    const f = await fixture({ label: "correction" });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      peer.correctionEnabled = true;
       const scanPath = scanDirectoryOf(peer.prompts[0]!);
-      const document = scanDocument([recommendation(1)]);
-      (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
-        { path: "server/app.ts", lines: "1" },
-      ];
-      writeRecommendations(scanPath, document);
-      peer.succeed();
-      await waitFor(
-        () => (peer.corrections.length === 1 ? true : undefined),
-        "the correction prompt",
-      );
-      expect(peer.corrections[0]).toContain("server/app.ts does not exist");
-      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 1)));
-      peer.resolveCorrection();
-      const settled = await waitSettled(f.root, peer.prompts[0]!);
-      expect(settled.status).toBe("succeeded");
-      expect(f.filed.map((entry) => entry.title)).toEqual(["Simplify module 1 control flow"]);
-      expect(f.state().lastError).toBeNull();
-      expect(peer.corrections).toHaveLength(1);
-      const activity = activityOf(scanPath);
-      expect(activity).toContain("server/app.ts does not exist");
-      expect(activity).toContain("asked the agent to correct the answer");
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a still-rejected answer after the correction turn fails the scan once", async () => {
-    const f = await fixture({ label: "correction-failed" });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      peer.correctionEnabled = true;
-      const scanPath = scanDirectoryOf(peer.prompts[0]!);
-      const document = scanDocument([recommendation(1)]);
-      (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
-        { path: "server/app.ts", lines: "1" },
-      ];
-      writeRecommendations(scanPath, document);
-      peer.succeed();
-      await waitFor(
-        () => (peer.corrections.length === 1 ? true : undefined),
-        "the correction prompt",
-      );
-      peer.resolveCorrection();
-      const failed = await waitFor(
-        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
-        "the refused scan",
-      );
-      expect(peer.corrections).toHaveLength(1);
-      expect(f.filed).toEqual([]);
-      expect(failed.lastError).toContain("server/app.ts does not exist");
-      expect(peer.closed).toBe(true);
-      const failedScan = readScanFile(scanDirectory(f.root, basename(scanPath)));
-      expect(failedScan?.status).toBe("failed");
-      expect(failedScan?.error).toContain("server/app.ts does not exist");
-      // The peer closed before the record was written, so no failed scan
-      // leaves a live child for startup recovery to terminate.
-      expect(failedScan?.acp).toBeNull();
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a scan with no answer file gets a correction turn before it fails", async () => {
-    const f = await fixture({ label: "correction-missing" });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      peer.correctionEnabled = true;
-      const scanPath = scanDirectoryOf(peer.prompts[0]!);
-      peer.succeed();
-      await waitFor(
-        () => (peer.corrections.length === 1 ? true : undefined),
-        "the correction prompt",
-      );
-      expect(peer.corrections[0]).toContain("wrote no recommendations.json");
-      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 1)));
-      peer.resolveCorrection();
-      const settled = await waitSettled(f.root, peer.prompts[0]!);
-      expect(settled.status).toBe("succeeded");
-      expect(f.filed).toHaveLength(1);
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a missing score fails the whole scan atomically and files nothing", async () => {
-    const f = await fixture({ label: "missing-score" });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      const document = scanDocument(uniqueItems(1, 3));
-      delete (document.recommendations as Record<string, unknown>[])[1]!.significance;
-      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), document);
+      f.forge.createError = "the forge refused the issue";
+      const result = await fileItem(f, scanPath, { title: "Improve module 1 behavior" });
+      expect(result.error).toContain("the forge refused the issue");
       peer.succeed();
       const failed = await waitFor(
         () => (f.state().lifecycle === "failed" ? f.state() : undefined),
-        "the refused scan",
+        "the failed scan",
       );
-      expect(f.filed).toEqual([]);
+      expect(f.forge.created).toEqual([]);
       expect(failed.issues).toEqual([]);
-      expect(failed.lastError).toContain("significance score from 1 to 5");
-      expect(readScanFile(scanDirectory(f.root, basename(scanDirectoryOf(peer.prompts[0]!))))?.status).toBe(
-        "failed",
-      );
+      expect(failed.lastError).toContain("the forge refused the issue");
+      expect(failed.notice).toContain("Scan failed");
+      const scanFile = readScanFile(scanDirectory(f.root, basename(scanPath)));
+      expect(scanFile?.status).toBe("failed");
+      expect(scanFile?.filed).toBe(0);
+      expect(scanFile?.error).toContain("the forge refused the issue");
+      // One peer turn only: a tool error never buys a correction turn.
+      expect(peer.prompts).toHaveLength(1);
+      expect(activityOf(scanPath)).toContain("failed: the forge refused the issue");
     } finally {
       await f.worker.stop();
     }
   });
 
-  test("duplicate titles against closed issues, open issues, and drafts are dropped", async () => {
-    const github = new FakeGitHub();
-    github.add({
-      number: 5,
-      title: "Old closed finding",
-      state: "closed",
-      createdAt: "2026-10-01T00:00:00.000Z",
-      body: "## Category\n\nclarity\n",
-    });
-    github.add({ number: 6, title: "Open finding", createdAt: "2026-10-01T00:00:00.000Z" });
-    const f = await fixture({
-      label: "duplicates",
-      github,
-      draftHeading: "Proposed goal: Draft finding",
-    });
+  test("a scan that files nothing records zero filed and the shortfall", async () => {
+    const f = await fixture({ label: "no-findings" });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
       const scanPath = scanDirectoryOf(peer.prompts[0]!);
-      const request = readRequest(scanPath);
-      expect(request.knownTitles).toContain("old closed finding");
-      expect(request.knownTitles).toContain("open finding");
-      expect(request.knownTitles).toContain("proposed goal: draft finding");
-      writeRecommendations(
-        scanPath,
-        scanDocument([
-          { ...recommendation(1), title: "Old closed finding" },
-          { ...recommendation(2), title: "Open finding" },
-          { ...recommendation(3), title: "Proposed goal: draft finding" },
-          recommendation(4),
-        ]),
-      );
       peer.succeed();
-      await waitSettled(f.root, peer.prompts[0]!);
+      const settled = await waitSettled(f.root, peer.prompts[0]!);
+      expect(settled.status).toBe("succeeded");
+      expect(settled.filed).toBe(0);
+      expect(settled.requested).toBe(5);
+      expect(settled.shortfall).toContain("filed 0 of the 5 requested");
+      expect(f.state().issues).toEqual([]);
+      expect(f.state().lastError).toBeNull();
+      expect(activityOf(scanPath)).toContain("shortfall: filed 0 of the 5 requested");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a filed issue appears in state.issues after the scan reconciles the forge", async () => {
+    const f = await fixture({ label: "state-reconcile" });
+    try {
+      await scan(f, 0, [
+        { title: "Improve module 1 behavior" },
+        { title: "Improve module 2 behavior" },
+      ]);
       const settled = f.state();
-      expect(f.filed.map((entry) => entry.title)).toEqual(["Simplify module 4 control flow"]);
-      // The two seeded issues are Auto Scout issues too, so the table holds them.
-      expect(settled.issues).toHaveLength(3);
-      const activity = activityOf(scanPath);
-      expect(activity).toContain("dropped duplicate “Old closed finding”");
-      expect(activity).toContain("dropped duplicate “Open finding”");
-      expect(activity).toContain("dropped duplicate “Proposed goal: draft finding”");
+      expect(settled.issues.map((row) => row.title)).toEqual([
+        "Improve module 2 behavior",
+        "Improve module 1 behavior",
+      ]);
+      expect(settled.issues.every((row) => row.state === "pending")).toBe(true);
+      expect(settled.issues.map((row) => row.number)).toEqual([101, 100]);
+      expect(settled.notice).toBe("Filed 2 issues in acme/fixture: #100, #101");
+      expect(settled.lifecycle).toBe("idle");
     } finally {
       await f.worker.stop();
     }
@@ -715,8 +677,11 @@ describe("caps", () => {
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
       const request = readRequest(scanDirectoryOf(peer.prompts[0]!));
+      expect(request.version).toBe(3);
       // window 3, open 1: min(10 - 3, 5 - 1) = 4
       expect(request.requested).toBe(4);
+      expect(request.maxPerHour).toBe(10);
+      expect(request.maxPending).toBe(5);
     } finally {
       await f.worker.stop();
     }
@@ -753,8 +718,8 @@ describe("caps", () => {
     });
     let resumed: ScoutWorker | undefined;
     try {
-      await scan(f, 0, uniqueItems(1, 2));
-      expect(f.filed).toHaveLength(2);
+      await scan(f, 0, items(1, 2));
+      expect(f.forge.created).toHaveLength(2);
       await f.worker.beginScan();
       expect(f.peers).toHaveLength(1);
 
@@ -765,7 +730,6 @@ describe("caps", () => {
         syncMs: 900_000,
         now: () => new Date(f.clock.now),
         github: f.github,
-        fileIssue: fakeFiling(f),
         connect: (peerOptions) => {
           const peer = new ControlledPeer(peerOptions);
           f.peers.push(peer);
@@ -780,20 +744,20 @@ describe("caps", () => {
       );
       await resumed.beginScan();
       expect(f.peers).toHaveLength(1);
-      expect(f.filed).toHaveLength(2);
+      expect(f.forge.created).toHaveLength(2);
 
       f.clock.now = new Date(startClock.getTime() + 61 * 60_000);
       await resumed.refresh();
       await resumed.beginScan();
-      await waitFor(() => f.peers[1], "the scan after the window opens", 4000);
-      const request = readRequest(scanDirectoryOf(f.peers[1]!.prompts[0]!));
+      const peer = await waitFor(() => f.peers[1], "the scan after the window opens", 4000);
+      const request = readRequest(scanDirectoryOf(peer.prompts[0]!));
       expect(request.requested).toBe(2);
-      writeRecommendations(
-        scanDirectoryOf(f.peers[1]!.prompts[0]!),
-        scanDocument(uniqueItems(3, 2)),
+      for (const item of items(3, 2)) await fileItem(f, scanDirectoryOf(peer.prompts[0]!), item);
+      peer.succeed();
+      await waitFor(
+        () => (f.forge.created.length === 4 ? true : undefined),
+        "the next two filings",
       );
-      f.peers[1]!.succeed();
-      await waitFor(() => (f.filed.length === 4 ? true : undefined), "the next two filings");
     } finally {
       await f.worker.stop();
       await resumed?.stop().catch(() => undefined);
@@ -807,8 +771,8 @@ describe("caps", () => {
       now: startClock,
     });
     try {
-      await scan(f, 0, uniqueItems(1, 1));
-      expect(f.filed).toHaveLength(1);
+      await scan(f, 0, items(1, 1));
+      expect(f.forge.created).toHaveLength(1);
       await f.worker.beginScan();
       expect(f.peers).toHaveLength(1);
 
@@ -817,15 +781,11 @@ describe("caps", () => {
       f.github.openTitles.length = 0;
       await f.worker.refresh();
       const peer = await waitFor(() => f.peers[1], "the scan after the close");
-      writeRecommendations(
-        scanDirectoryOf(peer.prompts[0]!),
-        scanDocument([recommendation(2)]),
-      );
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      await fileItem(f, scanPath, { title: "Improve module 2 behavior" });
       peer.succeed();
-      await waitFor(
-        () => (f.filed.length === 2 ? f.state() : undefined),
-        "the second filing",
-      );
+      await waitSettled(f.root, peer.prompts[0]!, "the second filing");
+      expect(f.forge.created).toHaveLength(2);
       expect(f.state().issues.filter((row) => row.state === "pending")).toHaveLength(1);
     } finally {
       await f.worker.stop();
@@ -961,6 +921,41 @@ describe("periodic reads and state mapping", () => {
     }
   });
 
+  test("a landed commit is re-resolved on every read without waiting out the backoff", async () => {
+    const github = new FakeGitHub();
+    github.add({
+      number: 12,
+      title: "Landed after the close",
+      state: "closed",
+      createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    const f = await fixture({ label: "landed-every-read", github, now: startClock });
+    try {
+      const first = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      expect(first.issues[0]?.versionError).toBe("no closing commit was found");
+
+      const commit = "e".repeat(40);
+      github.landed.set(12, [commit]);
+      github.commits.set(commit, commit);
+      github.containing.set(commit, []);
+      await f.worker.refresh();
+
+      const second = await waitFor(
+        () =>
+          f.state().issues[0]?.versionError === `no published release contains ${commit}`
+            ? f.state()
+            : undefined,
+        "the landed retry",
+      );
+      expect(second.issues[0]?.version).toBeNull();
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
   test("a second sync resolves no already-attempted closed issue and still scans", async () => {
     const github = new UnresolvableGitHub();
     for (let index = 1; index <= 20; index += 1) {
@@ -1088,7 +1083,6 @@ describe("periodic reads and state mapping", () => {
       const peer = await waitFor(() => f.peers[0], "the scan after a good read");
       expect(f.state().sync.state).toBe("ok");
       expect(f.state().sync.at).not.toBeNull();
-      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument([]));
       peer.succeed();
       await waitSettled(f.root, peer.prompts[0]!);
     } finally {
@@ -1325,46 +1319,45 @@ describe("periodic reads and state mapping", () => {
     }
   });
 
-  test("the fresh read before filing files nothing when it fails", async () => {
+  test("a failed reconcile after the turn leaves no rows and fails the scan", async () => {
     const f = await fixture({ label: "fresh-failure" });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      await fileItem(f, scanPath, { title: "Improve module 1 behavior" });
       f.github.failIssues = true;
       f.github.issuesError = "gh: HTTP 401: Bad credentials";
-      writeRecommendations(
-        scanDirectoryOf(peer.prompts[0]!),
-        scanDocument(uniqueItems(1, 3)),
-      );
       peer.succeed();
       const failed = await waitFor(
         () => (f.state().sync.state === "error" ? f.state() : undefined),
-        "the failed pre-filing read",
+        "the failed post-turn read",
       );
-      expect(f.filed).toEqual([]);
+      expect(f.state().issues).toEqual([]);
       expect(failed.lastError).toContain("Bad credentials");
       expect(failed.sync.error).toContain("Bad credentials");
+      const scanFile = readScanFile(scanDirectory(f.root, basename(scanPath)));
+      expect(scanFile?.status).toBe("failed");
+      expect(scanFile?.filed).toBe(0);
     } finally {
       await f.worker.stop();
     }
   });
 
-  test("a rate-limited fresh read files nothing and raises no error", async () => {
+  test("a rate-limited reconcile files nothing into state and raises no error", async () => {
     const f = await fixture({ label: "fresh-rate-limited" });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      await fileItem(f, scanPath, { title: "Improve module 1 behavior" });
       f.github.failIssues = true;
       f.github.issuesError = RATE_LIMIT_ERROR;
-      writeRecommendations(
-        scanDirectoryOf(peer.prompts[0]!),
-        scanDocument(uniqueItems(1, 3)),
-      );
       peer.succeed();
       // Wait for the scan to settle: `finishScan` runs after the sync failure.
       const failed = await waitFor(
         () => (f.state().lifecycle === "failed" ? f.state() : undefined),
-        "the rate-limited pre-filing read",
+        "the rate-limited post-turn read",
       );
-      expect(f.filed).toEqual([]);
+      expect(f.state().issues).toEqual([]);
       expect(failed.sync.error).toContain("API rate limit exceeded");
       expect(failed.lastError).toBeNull();
     } finally {
@@ -1420,10 +1413,7 @@ describe("migration", () => {
         harnessVersion: null,
         argv: [],
       },
-      staged: [
-        { ...recommendation(1), id: "one", stagedAt: "2026-01-01T00:00:00.000Z" },
-        { ...recommendation(2), id: "two", stagedAt: "2026-01-01T00:00:00.000Z" },
-      ],
+      staged: [{ id: "one" }, { id: "two" }],
       scan: null,
       newestScanId: "scan-old",
       shortfall: { staged: 2, missing: 7, reason: "Only two.", at: "2026-01-01T00:00:00.000Z" },
@@ -1449,9 +1439,6 @@ describe("migration", () => {
         peers.push(peer);
         return peer;
       },
-      fileIssue: async () => {
-        throw new Error("nothing may be filed from a migrated recommendation");
-      },
     });
     workers.push(worker);
     try {
@@ -1462,7 +1449,6 @@ describe("migration", () => {
       expect(worker.currentState.worker?.pid).toBe(process.pid);
       expect(worker.currentState.notice).toContain("Discarded 2 staged recommendations");
       const peer = await waitFor(() => peers[0], "the post-migration scan");
-      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument([]));
       peer.succeed();
       await waitSettled(root, peer.prompts[0]!, "the post-migration scan to settle");
       expect(worker.currentState.issues).toEqual([]);
@@ -1477,7 +1463,7 @@ describe("lifecycle", () => {
     const f = await fixture({ label: "stop-start" });
     let resumed: ScoutWorker | undefined;
     try {
-      await scan(f, 0, uniqueItems(1, 1));
+      await scan(f, 0, items(1, 1));
       const before = f.state();
       const rows = before.issues.map((row) => row.number);
       const lock = versionLockPath(lockPath(f.root), before.worker?.harnessVersion ?? null);
@@ -1554,7 +1540,7 @@ describe("lifecycle", () => {
   test("stale scans are left under the checkout, never the state directory", async () => {
     const f = await fixture({ label: "scan-paths" });
     try {
-      await scan(f, 0, uniqueItems(1, 1));
+      await scan(f, 0, items(1, 1));
       const scans = readdirSync(scansDirectory(f.root));
       expect(scans).toHaveLength(1);
       expect(scanDirectory(f.root, scans[0]!).startsWith(f.root)).toBe(true);
@@ -1586,7 +1572,6 @@ describe("version takeover", () => {
           newerPeers.push(peer);
           return peer;
         },
-        fileIssue: fakeFiling(f),
       });
       workers.push(newer);
       expect(newer.start("acme/fixture")).toBe(true);
@@ -1610,7 +1595,10 @@ describe("version takeover", () => {
 
       // The old worker's in-flight scan finishes after the drain, then it
       // exits on its own and releases its versioned lock.
-      writeRecommendations(scanDirectoryOf(oldPeer.prompts[0]!), scanDocument(uniqueItems(1, 1)));
+      await fileItem(f, scanDirectoryOf(oldPeer.prompts[0]!), {
+        title: "Older worker takeover finding",
+        body: "## Summary\n\nA finding.\n",
+      });
       oldPeer.succeed();
       await waitSettled(f.root, oldPeer.prompts[0]!, "the old worker's in-flight scan");
       await waitFor(
@@ -1625,7 +1613,10 @@ describe("version takeover", () => {
       const claim = liveScanClaim(f.root);
       expect(claim?.harnessVersion).toBe("0.1.0");
       expect(claim?.scanId).not.toBe(oldScanId);
-      writeRecommendations(scanDirectoryOf(nextPeer.prompts[0]!), scanDocument(uniqueItems(2, 1)));
+      await fileItem(f, scanDirectoryOf(nextPeer.prompts[0]!), {
+        title: "Newer worker takeover finding",
+        body: "## Summary\n\nA finding.\n",
+      });
       nextPeer.succeed();
       await waitSettled(f.root, nextPeer.prompts[0]!, "the newer worker's scan");
     } finally {
@@ -1701,7 +1692,7 @@ describe("dashboard bridge", () => {
   test("a reload replays the rows and limits without starting a worker", async () => {
     const f = await fixture({ label: "replay" });
     try {
-      await scan(f, 0, uniqueItems(1, 1));
+      await scan(f, 0, items(1, 1));
       let spawned = 0;
       const bridge = new ScoutBridge({
         descriptor: agentRegistry.require("scout"),
@@ -1735,7 +1726,7 @@ describe("dashboard bridge", () => {
   test("a connect-time replay reaches the clients that were already attached", async () => {
     const f = await fixture({ label: "replay-shared" });
     try {
-      await scan(f, 0, uniqueItems(1, 1));
+      await scan(f, 0, items(1, 1));
       const scanId = readdirSync(scansDirectory(f.root))[0]!;
       const activityFile = join(scanDirectory(f.root, scanId), "activity.json");
       writeFileSync(activityFile, JSON.stringify(["first"]));
@@ -1875,134 +1866,7 @@ describe("dashboard bridge", () => {
   });
 });
 
-describe("filing actions", () => {
-  const authExec = async (
-    command: string,
-    args: string[],
-  ): Promise<{ stdout: string; stderr: string; code: number }> => {
-    if (command !== "gh") return { stdout: "", stderr: "unexpected", code: 1 };
-    if (args[0] === "auth" && args[1] === "status") {
-      return {
-        stdout: JSON.stringify({
-          hosts: { "github.com": [{ login: "acme-bot", active: true, state: "success" }] },
-        }),
-        stderr: "",
-        code: 0,
-      };
-    }
-    if (args[0] === "auth" && args[1] === "token") {
-      return { stdout: "stub-token\n", stderr: "", code: 0 };
-    }
-    if (args[0] === "api" && args.includes(".permissions")) {
-      return { stdout: JSON.stringify({ push: true }), stderr: "", code: 0 };
-    }
-    return { stdout: "", stderr: "unexpected", code: 1 };
-  };
 
-  function preparedItem(): ScoutRecommendation {
-    return {
-      ...recommendation(1),
-      id: "0123456789abcdef",
-    };
-  }
-
-  test("filing one item creates the label when absent and returns its number", async () => {
-    const root = await makeRepository({ files: sourceFiles(2), origin: "acme/fixture" });
-    const calls: string[][] = [];
-    let labelPresent = false;
-    const run: GhRunner = async (argv) => {
-      calls.push(argv);
-      if (argv[0] === "api" && argv[1] === "repos/acme/fixture/labels/scout") {
-        return labelPresent
-          ? { code: 0, stdout: '{"name":"scout"}', stderr: "" }
-          : { code: 1, stdout: "", stderr: "HTTP 404: Not Found" };
-      }
-      if (argv[0] === "label" && argv[1] === "create") {
-        labelPresent = true;
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      if (argv[0] === "issue" && argv[1] === "create") {
-        return { code: 0, stdout: "https://github.com/acme/fixture/issues/42\n", stderr: "" };
-      }
-      return { code: 1, stdout: "", stderr: "unexpected" };
-    };
-
-    const result = await fileScoutIssue({
-      repoDir: root,
-      repository: "acme/fixture",
-      recommendation: preparedItem(),
-      environment: { HOME: root, PATH: process.env.PATH ?? "" },
-      exec: authExec,
-      run,
-    });
-    expect(result).toEqual({
-      url: "https://github.com/acme/fixture/issues/42",
-      number: 42,
-    });
-    expect(calls.map((argv) => argv.slice(0, 2).join(" "))).toEqual([
-      "api repos/acme/fixture/labels/scout",
-      "label create",
-      "issue create",
-    ]);
-    const create = calls[2]!;
-    expect(create[create.indexOf("--label") + 1]).toBe("scout");
-    const body = readFileSync(create[create.indexOf("--body-file") + 1]!, "utf8");
-    expect(body).toContain("## Category");
-    expect(body).toContain("## Significance");
-    expect(body).toContain("5/5");
-    expect(body).toContain("third nested branch");
-    expect(body).toContain("## Proposed change");
-    expect(body).toContain("## Files");
-    expect(body).toContain("## Acceptance criteria");
-  });
-
-  test("an existing scout label is not created again", async () => {
-    const root = await makeRepository({ files: sourceFiles(2), origin: "acme/fixture" });
-    const calls: string[][] = [];
-    const run: GhRunner = async (argv) => {
-      calls.push(argv);
-      if (argv[0] === "api") return { code: 0, stdout: '{"name":"scout"}', stderr: "" };
-      return { code: 0, stdout: "https://github.com/acme/fixture/issues/7", stderr: "" };
-    };
-    const result = await fileScoutIssue({
-      repoDir: root,
-      repository: "acme/fixture",
-      recommendation: preparedItem(),
-      environment: { HOME: root, PATH: process.env.PATH ?? "" },
-      exec: authExec,
-      run,
-    });
-    expect(result.number).toBe(7);
-    expect(calls.some((argv) => argv[0] === "label")).toBe(false);
-    expect(calls.filter((argv) => argv[0] === "issue")).toHaveLength(1);
-  });
-
-  test("the issue body names the significance score and reason", () => {
-    const body = issueBody(preparedItem());
-    expect(body).toContain("## Significance\n\n5/5\n\n");
-    expect(body).toContain("third nested branch");
-  });
-
-  test("a failed filing leaves the rows unchanged and reports the reason", async () => {
-    const f = await fixture({ label: "file-failure" });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      f.failingIssue = { message: "the label does not exist" };
-      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 2)));
-      peer.succeed();
-      const failed = await waitFor(
-        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
-        "the filing failure",
-      );
-      expect(f.filed).toEqual([]);
-      expect(failed.issues).toEqual([]);
-      expect(failed.lastError).toContain("the label does not exist");
-      expect(failed.notice).toContain("Scan failed");
-    } finally {
-      await f.worker.stop();
-    }
-  });
-});
 
 describe("bounded commands", () => {
   test("a periodic read that never resolves releases the worker and is retried", async () => {
@@ -2099,19 +1963,16 @@ describe("bounded commands", () => {
     );
   });
 
-  test("a filing that never resolves fails the scan at the deadline and clears it", async () => {
-    const f = await fixture({
-      label: "filing-deadline",
-      timeoutMs: 1000,
-      fileIssue: async () => await new Promise<never>(() => undefined),
-    });
+  test("a post-turn forge read that stalls fails the scan at the deadline", async () => {
+    const github = new HangingGitHub();
+    github.hanging = false;
+    const f = await fixture({ label: "settle-deadline", github, timeoutMs: 1000 });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      const scanPath = scanDirectoryOf(peer.prompts[0]!);
-      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 1)));
+      github.hanging = true;
       const started = Date.now();
       peer.succeed();
-      const settled = await waitSettled(f.root, peer.prompts[0]!, "the filing deadline");
+      const settled = await waitSettled(f.root, peer.prompts[0]!, "the settle deadline");
       expect(Date.now() - started).toBeLessThan(5000);
       expect(settled.status).toBe("failed");
       expect(settled.error).toContain("timed out while reading and filing");
@@ -2120,7 +1981,6 @@ describe("bounded commands", () => {
       expect(state.scan).toBeNull();
       expect(state.lastError).toContain("timed out while reading and filing");
       expect(f.worker.scanning).toBe(false);
-      expect(f.filed).toEqual([]);
     } finally {
       await f.worker.stop();
     }
@@ -2138,7 +1998,9 @@ describe("bounded commands", () => {
       }
       expect(f.state().lifecycle).toBe("scanning");
 
-      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 1)));
+      await fileItem(f, scanDirectoryOf(peer.prompts[0]!), {
+        title: "Improve module 1 behavior",
+      });
       peer.succeed();
       const settled = await waitSettled(f.root, peer.prompts[0]!);
       expect(settled.status).toBe("succeeded");
@@ -2162,10 +2024,13 @@ describe("bounded commands", () => {
       }
       expect(f.state().lifecycle).toBe("scanning");
 
-      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 1)));
+      await fileItem(f, scanDirectoryOf(peer.prompts[0]!), {
+        title: "Improve module 1 behavior",
+      });
       peer.succeed();
       const settled = await waitSettled(f.root, peer.prompts[0]!);
       expect(settled.status).toBe("succeeded");
+      expect(settled.filed).toBe(1);
       expect(f.state().lastError).toBeNull();
     } finally {
       await f.worker.stop();
@@ -2191,14 +2056,19 @@ describe("bounded commands", () => {
 });
 
 describe("scan prompt", () => {
-  test("the prompt states the significance rubric and the threshold", () => {
+  test("the prompt states the significance rubric, threshold, and caps", () => {
     const prompt = readFileSync(
       join(import.meta.dir, "..", "prompts", "scout-recommendations.md"),
       "utf8",
     );
-    expect(prompt).toContain("`significance` from 1 to 5");
+    expect(prompt).toContain("an integer significance from 1 to 5");
     expect(prompt).toContain("4 or 5 requires a named, observable impact");
     expect(prompt).toContain("polishing code that is already correct");
     expect(prompt).toContain("significanceThreshold");
+    expect(prompt).toContain("File at most `requested` issues");
+    expect(prompt).toContain("`maxPerHour` and `maxPending`");
+    expect(prompt).toContain("`labels`: exactly `[\"scout\"]`");
+    expect(prompt).toContain("`issue_create`");
+    expect(prompt).toContain("never rewrite an answer");
   });
 });

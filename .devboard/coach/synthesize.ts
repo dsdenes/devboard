@@ -5,6 +5,7 @@ import type { PeerBinding } from "../server/providers/selection";
 import { MCP_COVERS, MCP_TOOLS } from "../mcp/catalog";
 import type { CoachFamily } from "./families";
 import type { CoachOpenIssue } from "./issue";
+import { familyTag } from "./issue";
 import { openCodePeers } from "./providers";
 import type { CoachSettings } from "./settings";
 
@@ -12,36 +13,15 @@ import type { CoachSettings } from "./settings";
  * One ACP peer call per selected family. The peer is `AGENT_COMMAND` (default
  * `omp acp`) built from every enabled OpenCode Go subscription in the
  * operator's list order, pinned to the same model as every other agent;
- * permission and elicitation requests are denied. It receives one family's
- * evidence bundle and must answer one JSON object. Nothing here decides
- * whether a proposal is acceptable: the deterministic validator does that.
+ * permission and elicitation requests are denied. It reads open Coach issues
+ * through the MCP server and files at most one proposal itself, or records why
+ * it filed nothing. There is no answer object and no deterministic proposal
+ * validator.
  */
 
 export const SYNTHESIS_TIMEOUT_MS = 120_000;
 export const SYNTHESIS_CONCURRENCY = 4;
 export const SYNTHESIS_PROMPT_MAX_BYTES = 24 * 1024;
-
-export interface ProposedTool {
-  name: string;
-  title: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  covers: string[];
-}
-
-export interface ProposedPrompt {
-  instruction: string;
-  target: string;
-}
-
-export interface Proposal {
-  family: string;
-  action: "tool" | "prompt" | "none";
-  tool?: ProposedTool;
-  prompt?: ProposedPrompt;
-  rationale: string;
-  acceptance: string[];
-}
 
 export interface SynthesisResult {
   ok: boolean;
@@ -51,8 +31,15 @@ export interface SynthesisResult {
   reason?: string;
 }
 
+export interface SynthesisPaths {
+  /** The MCP tool log for this family's issue-creation calls. */
+  toolLogPath: string;
+  /** The MCP skip log for this family's recorded no-proposal reason. */
+  skipLogPath: string;
+}
+
 /** The coordinator injects a deterministic stub in tests. */
-export type Synthesize = (family: CoachFamily, prompt: string) => Promise<SynthesisResult>;
+export type Synthesize = (family: CoachFamily, prompt: string, paths: SynthesisPaths) => Promise<SynthesisResult>;
 
 export interface SynthesizeOptions {
   repoDir: string;
@@ -62,40 +49,145 @@ export interface SynthesizeOptions {
   environment?: Record<string, string | undefined>;
   command?: string;
   timeoutMs?: number;
+  toolLogPath?: string;
+  skipLogPath?: string;
   /** Test seam: replaces the ACP peer with a deterministic function. */
   run?: (prompt: string) => Promise<string>;
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 function json(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+const PROPOSAL_TOOL_RULES = [
+  "- A tool proposal names a capability, not a wrapper around this one command. Never reuse a",
+  "  name from the catalog. `covers` entries are the normalized command prefixes the tool",
+  "  replaces; at least one must match the family key. The family must be covered by the",
+  "  command allowlist; the body carries the exact allowlist entry to add.",
+  "- A prompt proposal names one instruction and a target under `.devboard/prompts/` or an",
+  "  agent id.",
+];
+
+interface PromptSections {
+  family: string;
+  fragments: string;
+  excerpts: string;
+  catalog: string;
+  issues: string;
+  allowlist: string;
+  limits: string;
+}
+
+/** Every fixed line and dynamic section of the one synthesis prompt. */
+function promptText(sections: PromptSections): string {
+  return [
+    "## Manifesto",
+    "",
+    "You are the Devboard Coach synthesizer for one family. Your goal is to remove the recurring",
+    "friction this family evidences, and your observable result is at most one proposal issue",
+    "filed through the Devboard MCP issue tool, or one recorded reason the family needs no issue.",
+    "",
+    "Read this family's evidence, read the open Coach issues yourself, then act. Never answer",
+    "with a JSON document, fragment, diff, or summary.",
+    "",
+    "Family:",
+    sections.family,
+    "",
+    "Fragments:",
+    sections.fragments,
+    "",
+    "Excerpts:",
+    sections.excerpts,
+    "",
+    "MCP catalog:",
+    sections.catalog,
+    "",
+    "Open Coach issues:",
+    sections.issues,
+    "",
+    "Command allowlist:",
+    sections.allowlist,
+    "",
+    "Limits:",
+    sections.limits,
+    "",
+    "Rules:",
+    "- Read the open issues with `issues_list` and `issue_get`. A proposal duplicates an open",
+    "  issue when that issue carries this family's tag or the same title. A duplicate files and",
+    "  comments on nothing.",
+    "- File at most one issue for this family, and only when `filingRoom` is greater than zero.",
+    "- Prefer the smaller change: \"tool\" when a stable named capability removes the recurrence,",
+    "  \"prompt\" when one instruction is enough.",
+    ...PROPOSAL_TOOL_RULES,
+    "- The issue title is exactly `[coach] <family key>` for a tool proposal or",
+    "  `[coach] prompt: <family key>` for a prompt proposal.",
+    "- The issue body has exactly these level-two sections in order: `## Family`,",
+    "  `## Evidence`, `## Proposed tool` or `## Proposed prompt`, `## Acceptance`, `## Rationale`.",
+    "  `## Family` states the key, kind, call and session counts, first and last timestamps,",
+    "  and the family tag. `## Evidence` carries the fragments and the excerpts. `## Acceptance`",
+    "  carries one to five `- [ ]` criteria checkable from the evidence.",
+    "- File with `issue_create` and no labels. Its returned number and URL are the record.",
+    "- When the family needs no change, a duplicate exists, a cap leaves no room, or filing",
+    "  fails, call `coach_proposal_skip` with the family key and one reason sentence. Call either",
+    "  `issue_create` or `coach_proposal_skip` for this family, never both.",
+    "",
+  ].join("\n");
+}
+
+/** The catalog JSON every prompt carries: name/title pairs in catalog order. */
+function catalogJson(): string {
+  return json({
+    tools: MCP_TOOLS.map((tool) => ({ name: tool.name, title: tool.title })),
+    covers: [...MCP_COVERS],
+  });
+}
+
+/** The three fields of one open issue the prompt and the template publish. */
+function issueRows(issues: CoachOpenIssue[]): Array<{
+  number: number;
+  title: string;
+  url: string;
+}> {
+  return issues.map((issue) => ({
+    number: issue.number,
+    title: issue.title,
+    url: issue.url,
+  }));
+}
+
+/** The open issues one synthesis call sees. */
+export function coachIssues(issues: CoachOpenIssue[]): CoachOpenIssue[] {
+  return issues.filter(
+    (issue) => issue.title.startsWith("[coach]") || issue.body.includes("family:"),
+  );
+}
+
+/** What the template states when no successful open-issue read is available. */
+export const COACH_PROMPT_ISSUES_UNAVAILABLE = "Open Coach issues could not be read.";
+
+const FAMILY_PLACEHOLDER = "<family>";
+const FRAGMENTS_PLACEHOLDER = "<fragments>";
+const EXCERPTS_PLACEHOLDER = "<excerpts>";
+const FILING_ROOM_PLACEHOLDER = "<filingRoom>";
+
 /**
  * The prompt. It carries one family's summary, fragments, at most five
- * excerpts, the catalog, every open Coach issue, and the configured allowlist.
- * Identical family and settings bytes produce an identical prompt.
+ * excerpts, the catalog, every open Coach issue, the configured allowlist, and
+ * the cycle's filing room. Identical family and settings bytes produce an
+ * identical prompt.
  */
 export function synthesisPrompt(input: {
   family: CoachFamily;
   settings: CoachSettings;
   openIssues: CoachOpenIssue[];
+  filingRoom: number;
 }): string {
   const family = input.family;
   let excerpts = family.excerpts.slice();
   let issues = input.openIssues.slice().sort((left, right) => left.number - right.number);
   const render = (): string =>
-    [
-      "You are the Devboard Coach synthesizer. You do not run tools. Answer with one",
-      "JSON object and nothing else: no prose, no Markdown outside the JSON strings.",
-      "",
-      "Family:",
-      json({
+    promptText({
+      family: json({
         key: family.key,
         kind: family.kind,
         calls: family.calls,
@@ -103,45 +195,20 @@ export function synthesisPrompt(input: {
         days: family.days,
         first_at: family.firstAt,
         last_at: family.lastAt,
+        tag: `family:${familyTag(family.key)}`,
       }),
-      "",
-      "Fragments:",
-      json(family.fragments),
-      "",
-      "Excerpts:",
-      json(excerpts),
-      "",
-      "MCP catalog:",
-      json({
-        tools: MCP_TOOLS.map((tool) => ({ name: tool.name, title: tool.title })),
-        covers: [...MCP_COVERS],
+      fragments: json(family.fragments),
+      excerpts: json(excerpts),
+      catalog: catalogJson(),
+      issues: json(issueRows(issues)),
+      allowlist: json(input.settings.allowlist),
+      limits: json({
+        maxIssuesPerCycle: input.settings.maxIssuesPerCycle,
+        maxPerHour: input.settings.maxPerHour,
+        maxPending: input.settings.maxPending,
+        filingRoom: input.filingRoom,
       }),
-      "",
-      "Open Coach issues:",
-      json(issues.map((issue) => ({ number: issue.number, title: issue.title, url: issue.url }))),
-      "",
-      "Command allowlist:",
-      json(input.settings.allowlist),
-      "",
-      "Rules:",
-      "- One issue for this family. Choose \"tool\" when a stable named capability removes",
-      "  the recurrence, \"prompt\" when one instruction is enough, and \"none\" when the",
-      "  family needs no change. Prefer the smaller change.",
-      "- A tool is a capability, not a wrapper around this one command. Never reuse a name",
-      "  from the catalog. `covers` entries are the normalized command prefixes the tool",
-      "  replaces; at least one must match the family key.",
-      "- A prompt names an instruction and a target under `.devboard/prompts/` or an agent id.",
-      "- Acceptance criteria are checkable from the evidence.",
-      "- When action is \"tool\", the family must be covered by the command allowlist.",
-      "",
-      "Shape:",
-      '{"family":"<key>","action":"tool|prompt|none","tool":{"name":"^[a-z][a-z0-9_]{2,40}$",' +
-        '"title":"...","description":"...","inputSchema":{"type":"object",' +
-        '"additionalProperties":false,"properties":{}},"covers":["<key>"]},' +
-        '"prompt":{"instruction":"...","target":".devboard/prompts/example.md"},' +
-        '"rationale":"...","acceptance":["- [ ] ..."]}',
-      "",
-    ].join("\n");
+    });
 
   let text = render();
   while (Buffer.byteLength(text, "utf8") >= SYNTHESIS_PROMPT_MAX_BYTES) {
@@ -158,148 +225,34 @@ export function synthesisPrompt(input: {
   return text;
 }
 
-/** The exact top-level and nested key sets the contract allows. */
-const PROPOSAL_KEYS: ReadonlySet<string> = new Set([
-  "family",
-  "action",
-  "tool",
-  "prompt",
-  "rationale",
-  "acceptance",
-]);
-const TOOL_KEYS: ReadonlySet<string> = new Set([
-  "name",
-  "title",
-  "description",
-  "inputSchema",
-  "covers",
-]);
-const PROMPT_KEYS: ReadonlySet<string> = new Set(["instruction", "target"]);
-const TOOL_NAME = /^[a-z][a-z0-9_]{2,40}$/;
-const AGENT_TARGET = /^[a-z][a-z0-9-]{1,40}$/;
-
-function exactKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
-  return Object.keys(value).every((key) => allowed.has(key));
-}
-
-function acceptanceOf(value: unknown): string[] | undefined {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 5) return undefined;
-  const lines: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string") return undefined;
-    if (!entry.startsWith("- [ ] ") || entry.length < 7) return undefined;
-    if (entry.length > 400) return undefined;
-    lines.push(entry);
-  }
-  return lines;
-}
-
-function toolOf(value: unknown): ProposedTool | undefined {
-  const tool = record(value);
-  if (tool === undefined || !exactKeys(tool, TOOL_KEYS)) return undefined;
-  const name = tool["name"];
-  const title = tool["title"];
-  const description = tool["description"];
-  const inputSchema = record(tool["inputSchema"]);
-  const covers = tool["covers"];
-  if (typeof name !== "string" || !TOOL_NAME.test(name)) return undefined;
-  if (typeof title !== "string" || title.length < 1 || title.length > 120) return undefined;
-  if (
-    typeof description !== "string" ||
-    description.length < 1 ||
-    description.length > 600
-  ) {
-    return undefined;
-  }
-  if (inputSchema === undefined) return undefined;
-  if (!Array.isArray(covers) || covers.length < 1 || covers.length > 12) return undefined;
-  const entries: string[] = [];
-  for (const entry of covers) {
-    if (typeof entry !== "string" || entry.length < 1 || entry.length > 120) return undefined;
-    entries.push(entry);
-  }
-  return {
-    name,
-    title,
-    description,
-    inputSchema,
-    covers: entries,
-  };
-}
-
-function promptOf(value: unknown): ProposedPrompt | undefined {
-  const prompt = record(value);
-  if (prompt === undefined || !exactKeys(prompt, PROMPT_KEYS)) return undefined;
-  const instruction = prompt["instruction"];
-  const target = prompt["target"];
-  if (
-    typeof instruction !== "string" ||
-    instruction.length < 1 ||
-    instruction.length > 1_200
-  ) {
-    return undefined;
-  }
-  if (typeof target !== "string" || target.length < 1 || target.length > 200) return undefined;
-  if (!target.startsWith(".devboard/prompts/") && !AGENT_TARGET.test(target)) return undefined;
-  return { instruction, target };
-}
-
 /**
- * Parses the peer's answer. The answer is one JSON object and nothing else;
- * any missing field, extra field, or wrong type throws.
+ * The one read-only template the Coach page shows: the same fixed lines and
+ * live catalog, allowlist, limits, and open-issue sections a synthesis call
+ * sends, with the per-family sections named as placeholders. It reads nothing,
+ * writes nothing, and starts nothing.
  */
-export function parseSynthesisAnswer(text: string, familyKey: string): Proposal {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
-    throw new Error("the synthesizer returned no JSON object");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    throw new Error("the synthesizer returned invalid JSON");
-  }
-  const document = record(parsed);
-  if (document === undefined) throw new Error("the synthesizer returned no JSON object");
-  if (!exactKeys(document, PROPOSAL_KEYS)) {
-    throw new Error("the synthesizer returned an unknown field");
-  }
-  const family = document["family"];
-  const action = document["action"];
-  const rationale = document["rationale"];
-  if (family !== familyKey) {
-    throw new Error(`the synthesizer answered for ${String(family)} instead of ${familyKey}`);
-  }
-  if (action !== "tool" && action !== "prompt" && action !== "none") {
-    throw new Error("the synthesizer returned an unknown action");
-  }
-  if (typeof rationale !== "string" || rationale.length < 1 || rationale.length > 1_000) {
-    throw new Error("the synthesizer returned no usable rationale");
-  }
-  const acceptance = acceptanceOf(document["acceptance"]);
-  if (acceptance === undefined) {
-    throw new Error("the synthesizer returned malformed acceptance criteria");
-  }
-  if (action === "tool") {
-    if (document["prompt"] !== undefined) {
-      throw new Error("a tool proposal must not carry a prompt");
-    }
-    const tool = toolOf(document["tool"]);
-    if (tool === undefined) throw new Error("the synthesizer returned an invalid tool");
-    return { family, action, tool, rationale, acceptance };
-  }
-  if (action === "prompt") {
-    if (document["tool"] !== undefined) {
-      throw new Error("a prompt proposal must not carry a tool");
-    }
-    const prompt = promptOf(document["prompt"]);
-    if (prompt === undefined) throw new Error("the synthesizer returned an invalid prompt");
-    return { family, action, prompt, rationale, acceptance };
-  }
-  if (document["tool"] !== undefined || document["prompt"] !== undefined) {
-    throw new Error("a none proposal must not carry a tool or a prompt");
-  }
-  return { family, action, rationale, acceptance };
+export function coachPromptTemplate(input: {
+  settings: CoachSettings;
+  openIssues: CoachOpenIssue[] | null;
+}): string {
+  const issues =
+    input.openIssues === null
+      ? COACH_PROMPT_ISSUES_UNAVAILABLE
+      : json(issueRows(coachIssues(input.openIssues).sort((left, right) => left.number - right.number)));
+  return promptText({
+    family: FAMILY_PLACEHOLDER,
+    fragments: FRAGMENTS_PLACEHOLDER,
+    excerpts: EXCERPTS_PLACEHOLDER,
+    catalog: catalogJson(),
+    issues,
+    allowlist: json(input.settings.allowlist),
+    limits: json({
+      maxIssuesPerCycle: input.settings.maxIssuesPerCycle,
+      maxPerHour: input.settings.maxPerHour,
+      maxPending: input.settings.maxPending,
+      filingRoom: FILING_ROOM_PLACEHOLDER,
+    }),
+  });
 }
 
 /** Verification seam: a JSON file that answers every synthesis call. */
@@ -309,6 +262,21 @@ interface SynthesisStub {
   families?: Record<string, unknown>;
   default?: unknown;
   error?: string;
+}
+
+interface StubAnswer {
+  action?: unknown;
+  title?: unknown;
+  body?: unknown;
+  reason?: unknown;
+  number?: unknown;
+  url?: unknown;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function substitute(value: unknown, family: string): unknown {
@@ -324,10 +292,14 @@ function substitute(value: unknown, family: string): unknown {
   return value;
 }
 
-/** Reads the stub file and returns the peer replacement it describes. */
+/**
+ * Reads the verification stub and returns a peer replacement that performs the
+ * same tool writes a real peer would: one issue record or one skip record.
+ */
 export function readSynthesisStub(
   path: string,
   family: string,
+  paths: SynthesisPaths,
 ): (prompt: string) => Promise<string> {
   let parsed: unknown;
   try {
@@ -337,13 +309,45 @@ export function readSynthesisStub(
   }
   const document = record(parsed) as SynthesisStub | undefined;
   if (document === undefined) throw new Error("the synthesis stub is not an object");
-  const answer =
-    document.families?.[family] ??
-    (document.families === undefined ? document.default : undefined);
+  const answer = document.families?.[family] ?? document.default;
   return async () => {
     if (typeof document.error === "string") throw new Error(document.error);
     if (answer === undefined) throw new Error("the synthesis stub has no answer for the family");
-    return JSON.stringify(substitute(answer, family));
+    const entry = substitute(answer, family) as StubAnswer;
+    if (entry.action === "tool" || entry.action === "prompt") {
+      const title = typeof entry.title === "string" ? entry.title : `[coach] ${family}`;
+      const body = typeof entry.body === "string" ? entry.body : "";
+      const number =
+        typeof entry.number === "number" && Number.isInteger(entry.number) ? entry.number : 1;
+      const url =
+        typeof entry.url === "string"
+          ? entry.url
+          : `https://forge.test/fixture/fixture/issues/${number}`;
+      await Bun.write(
+        paths.toolLogPath,
+        `${JSON.stringify({
+          tool: "issue_create",
+          at: new Date().toISOString(),
+          ok: true,
+          value: { number, url, title, labels: [] },
+        })}\n`,
+      );
+      return "";
+    }
+    const reason =
+      typeof entry.reason === "string" && entry.reason.length > 0
+        ? entry.reason
+        : "the family needs no proposal";
+    await Bun.write(
+      paths.skipLogPath,
+      `${JSON.stringify({
+        tool: "coach_proposal_skip",
+        at: new Date().toISOString(),
+        ok: true,
+        value: { family, status: "skipped", reason },
+      })}\n`,
+    );
+    return "";
   };
 }
 
@@ -394,6 +398,8 @@ export async function synthesizeFamily(options: SynthesizeOptions): Promise<Synt
         repoDir: options.repoDir,
         prompt: options.prompt,
         timeoutMs: options.timeoutMs ?? SYNTHESIS_TIMEOUT_MS,
+        toolLogPath: options.toolLogPath,
+        skipLogPath: options.skipLogPath,
       });
       text = answer;
       break;
@@ -426,6 +432,8 @@ interface SynthesisPeerRun {
   repoDir: string;
   prompt: string;
   timeoutMs: number;
+  toolLogPath?: string;
+  skipLogPath?: string;
 }
 
 /** One peer turn. Returns the assistant text and always closes the process. */
@@ -434,10 +442,13 @@ async function runSynthesisPeer(run: SynthesisPeerRun): Promise<string> {
   const aborted = Promise.withResolvers<never>();
   let text = "";
   let stderr = "";
+  const extra: Record<string, string> = {};
+  if (run.toolLogPath !== undefined) extra.DEVBOARD_TOOL_LOG = run.toolLogPath;
+  if (run.skipLogPath !== undefined) extra.DEVBOARD_COACH_SKIP_LOG = run.skipLogPath;
   connection = new AcpConnection({
     command: run.command,
     cwd: run.repoDir,
-    env: run.binding.env,
+    env: { ...run.binding.env, ...extra },
     permissionPolicy: "deny",
     onActivity: () => undefined,
     onText: (chunk) => {

@@ -24,7 +24,6 @@ import { closeIssue } from "../server/issue-close";
 import { listIssues } from "../mcp/issues";
 import { fakeGiteaPull } from "../server/fixtures/fake-gitea-pull";
 import { CommandFlowForge } from "../server/forge-pr";
-import { fileScoutIssue } from "../issues/scout/actions";
 import { createWatchdogDelivery } from "../watchdog/delivery";
 import { createForgeIssueReader } from "../server/agents/forge-reader";
 
@@ -60,7 +59,7 @@ function repository(): string {
   return directory;
 }
 
-function committedRepository(): { directory: string; commit: string } {
+function committedRepository(subject = "shipped"): { directory: string; commit: string } {
   const directory = repository();
   const git = (args: string[]): string => {
     const result = Bun.spawnSync({
@@ -80,13 +79,13 @@ function committedRepository(): { directory: string; commit: string } {
     "--allow-empty",
     "-q",
     "-m",
-    "shipped",
+    subject,
   ]);
   return { directory, commit: git(["rev-parse", "HEAD"]) };
 }
 
-function taggedRepository(tag: string): { directory: string; commit: string } {
-  const { directory, commit } = committedRepository();
+function taggedRepository(tag: string, subject?: string): { directory: string; commit: string } {
+  const { directory, commit } = committedRepository(subject);
   const result = Bun.spawnSync({
     cmd: ["git", "-C", directory, "tag", tag],
     stdout: "pipe",
@@ -338,6 +337,7 @@ describe("Gitea issues", () => {
         url: "http://gitea.test/acme/fixture/issues/5",
         createdAt: "2026-10-01T00:00:00Z",
         labels: ["goal"],
+        body: "body",
       },
     ]);
   });
@@ -658,96 +658,6 @@ describe("Gitea Flow pull requests", () => {
   });
 });
 
-describe("Gitea scout filing", () => {
-  test("creates the scout label and files the issue through the API", async () => {
-    const calls: Recorded[] = [];
-    const result = await fileScoutIssue({
-      repoDir: repository(),
-      repository: "acme/fixture",
-      environment: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
-      giteaFetch: fakeGitea(calls),
-      recommendation: {
-        id: "0123456789abcdef",
-        category: "reliability",
-        title: "Keep the poll bounded",
-        summary: "A poll can outlive its interval.",
-        impact: "",
-        evidence: [{ path: "issues/tracker.ts", lines: "1-20" }],
-        proposedChange: "Bound the poll.",
-        files: ["issues/tracker.ts"],
-        acceptanceCriteria: ["The poll settles."],
-        significance: 4,
-        significanceReason: "It blocks every other read.",
-      },
-    });
-    expect(result).toEqual({ url: "http://gitea.test/acme/fixture/issues/12", number: 12 });
-    expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/labels"))).toBe(true);
-  });
-
-  test("aborting the settle signal cancels an in-flight Gitea request", async () => {
-    const controller = new AbortController();
-    const started = Promise.withResolvers<AbortSignal | undefined>();
-    const filing = fileScoutIssue({
-      repoDir: repository(),
-      repository: "acme/fixture",
-      environment: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
-      giteaFetch: (_input, init) => {
-        started.resolve(init?.signal ?? undefined);
-        return new Promise<Response>(() => {});
-      },
-      signal: controller.signal,
-      recommendation: {
-        id: "0123456789abcdef",
-        category: "reliability",
-        title: "Keep the poll bounded",
-        summary: "A poll can outlive its interval.",
-        impact: "",
-        evidence: [{ path: "issues/tracker.ts", lines: "1-20" }],
-        proposedChange: "Bound the poll.",
-        files: ["issues/tracker.ts"],
-        acceptanceCriteria: ["The poll settles."],
-        significance: 4,
-        significanceReason: "It blocks every other read.",
-      },
-    });
-    const seen = await started.promise;
-    controller.abort();
-    await expect(filing).rejects.toThrow();
-    expect(seen?.aborted).toBe(true);
-  });
-
-  test("a filing whose signal is already aborted sends no request", async () => {
-    const controller = new AbortController();
-    controller.abort();
-    let requests = 0;
-    const filing = fileScoutIssue({
-      repoDir: repository(),
-      repository: "acme/fixture",
-      environment: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
-      giteaFetch: () => {
-        requests += 1;
-        return Promise.reject(new Error("no request expected"));
-      },
-      signal: controller.signal,
-      recommendation: {
-        id: "0123456789abcdef",
-        category: "reliability",
-        title: "Keep the poll bounded",
-        summary: "A poll can outlive its interval.",
-        impact: "",
-        evidence: [{ path: "issues/tracker.ts", lines: "1-20" }],
-        proposedChange: "Bound the poll.",
-        files: ["issues/tracker.ts"],
-        acceptanceCriteria: ["The poll settles."],
-        significance: 4,
-        significanceReason: "It blocks every other read.",
-      },
-    });
-    await expect(filing).rejects.toThrow();
-    expect(requests).toBe(0);
-  });
-});
-
 describe("Gitea watchdog delivery", () => {
   test("files and comments through the API instead of a hardcoded repository", async () => {
     const calls: Recorded[] = [];
@@ -1031,6 +941,91 @@ describe("Gitea watchdog activity", () => {
         state: "implemented",
         version: "v1.0.0",
       },
+    ]);
+  });
+
+  test("reads the landed commit the checkout carries when the forge names none", async () => {
+    const tagged = taggedRepository("v1.0.0", "fix(agents): settle the row (#5)");
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (/\/issues\/5$/.test(url.pathname)) return Response.json({ state: "closed" });
+      if (url.pathname.endsWith("/issues/5/timeline")) {
+        return Response.json([{ type: "close", ref_commit_sha: "" }]);
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/5"])).toEqual([
+      {
+        url: "http://gitea.test/acme/fixture/issues/5",
+        state: "implemented",
+        version: "v1.0.0",
+      },
+    ]);
+    expect(calls.some((call) => call.includes("/timeline"))).toBe(false);
+  });
+
+  test("a landed commit outside every release stays unresolved instead of inferring", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const committed = Bun.spawnSync({
+      cmd: [
+        "git",
+        "-C",
+        tagged.directory,
+        "-c",
+        "user.name=Devboard Tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "fix(agents): land after the release (#5)",
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(committed.exitCode).toBe(0);
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      if (/\/issues\/5$/.test(url.pathname)) {
+        return Response.json({
+          state: "closed",
+          created_at: "2026-08-01T00:00:00Z",
+          closed_at: "2026-10-01T00:00:00Z",
+        });
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/5"])).toEqual([
+      { url: "http://gitea.test/acme/fixture/issues/5", state: "implemented", version: null },
     ]);
   });
 

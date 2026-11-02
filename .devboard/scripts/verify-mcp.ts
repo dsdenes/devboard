@@ -525,6 +525,157 @@ try {
   assertTrue(closed.state === "closed", "verify:mcp: issue_close did not close the issue");
   console.log("PASS mcp-work-tools");
 
+  /* 3b. Every write tool writes the path the server reads. */
+  const flowSession = join(stateDir, "flow", "verify-session");
+  await mkdir(flowSession, { recursive: true });
+  await writeFile(join(flowSession, "session.json"), "{}\n");
+  const widgets = await client.call("flow_widgets_register", {
+    sessionDir: flowSession,
+    widgets: [
+      {
+        category: "contract",
+        concept: "One route",
+        summary: "One route was added.",
+        rationale: "The diff adds one route.",
+        files: ["src/route.ts"],
+      },
+    ],
+  });
+  assertTrue(widgets.widgets === 1, "verify:mcp: flow widgets were not registered");
+  assertTrue(
+    existsSync(join(flowSession, "widgets.json")),
+    "verify:mcp: flow widgets.json was not written",
+  );
+  const ack = await client.call("flow_steering_ack", {
+    sessionDir: flowSession,
+    ids: ["steer-one"],
+  });
+  assertTrue(
+    Array.isArray(ack.acknowledged) && (ack.acknowledged as unknown[]).length === 1,
+    "verify:mcp: flow steering was not acknowledged",
+  );
+  const checkpoint = await client.call("flow_checkpoint_record", {
+    sessionDir: flowSession,
+    commit: "abcdef123456",
+    summary: "One unit",
+    files: 2,
+    verification: "passed",
+  });
+  assertTrue(checkpoint.id === "checkpoint-abcdef1", "verify:mcp: checkpoint id is wrong");
+  const verificationRecord = await client.call("flow_verification_record", {
+    sessionDir: flowSession,
+    command: "bun test",
+    status: "passed",
+    output: "ok",
+  });
+  assertTrue(verificationRecord.status === "passed", "verify:mcp: flow verification is wrong");
+  const refusedSession = await client.callRaw("flow_widgets_register", {
+    sessionDir: join(host, "outside-session"),
+    widgets: [],
+  });
+  assertTrue(refusedSession.error, "verify:mcp: a Flow session outside the state root was accepted");
+
+  const staging = join(host, ".omp", "discover", "staging", "run-verify");
+  await mkdir(staging, { recursive: true });
+  const stagedSheet = await client.call("discover_sheet_stage", {
+    stagingDir: staging,
+    sheet: { schemaVersion: 1 },
+  });
+  assertTrue(
+    existsSync(join(staging, "sheet.json")),
+    `verify:mcp: discover sheet was not staged: ${JSON.stringify(stagedSheet)}`,
+  );
+  const stagedGlossary = await client.call("discover_glossary_stage", {
+    stagingDir: staging,
+    context: "verify",
+    yaml: "boundedContext: verify\nconcepts: []\n",
+  });
+  assertTrue(
+    existsSync(join(staging, "glossary", "verify.glossary.yaml")),
+    `verify:mcp: glossary was not staged: ${JSON.stringify(stagedGlossary)}`,
+  );
+  const stagedSignificance = await client.call("discover_significance_stage", {
+    stagingDir: staging,
+    significance: { schemaVersion: 1, contexts: {} },
+  });
+  assertTrue(
+    existsSync(join(staging, "glossary", "significance.json")),
+    `verify:mcp: significance was not staged: ${JSON.stringify(stagedSignificance)}`,
+  );
+  const stagedSkill = await client.call("discover_skill_stage", {
+    stagingDir: staging,
+    name: "discover-glossary",
+    description: "Use the project glossary for domain terms.",
+    body: "# Glossary\n\n- Use the project glossary.",
+  });
+  assertTrue(
+    existsSync(join(staging, "skills", "discover-glossary", "SKILL.md")),
+    `verify:mcp: skill was not staged: ${JSON.stringify(stagedSkill)}`,
+  );
+  const refusedStaging = await client.callRaw("discover_sheet_stage", {
+    stagingDir: join(host, "outside-staging"),
+    sheet: {},
+  });
+  assertTrue(refusedStaging.error, "verify:mcp: a staging directory outside the root was accepted");
+
+  const cycle = join(host, ".devboard", ".tmp", "design", "cycles", "cycle-verify");
+  await mkdir(cycle, { recursive: true });
+  const release = await client.call("design_release_request", {
+    cycleDir: cycle,
+    summary: "Document the accent rule",
+    rationale: "Two surfaces already follow it.",
+  });
+  assertTrue(
+    existsSync(join(cycle, "release-request.json")),
+    `verify:mcp: design release request was not written: ${JSON.stringify(release)}`,
+  );
+
+  const labelBefore = JSON.parse(readFileSync(store, "utf8")).issues.length as number;
+  const createdIssue = await client.call("issue_create", {
+    title: "An MCP-created issue",
+    body: "## Summary\n\nCreated through the tool.\n",
+    labels: ["scout"],
+  });
+  assertTrue(
+    typeof createdIssue.number === "number" && String(createdIssue.url).includes("/issues/"),
+    "verify:mcp: issue_create returned no identity",
+  );
+  assertTrue(
+    (createdIssue.labels as string[]).includes("scout"),
+    "verify:mcp: issue_create lost its label",
+  );
+  const storedAfterCreate = JSON.parse(readFileSync(store, "utf8")) as {
+    issues: Array<{ number: number; title: string; labels: string[] }>;
+  };
+  assertTrue(
+    storedAfterCreate.issues.length === labelBefore + 1,
+    "verify:mcp: issue_create did not reach the forge",
+  );
+  await client.call("issue_comment", { number: Number(createdIssue.number), body: "A comment." });
+  const storedAfterComment = JSON.parse(readFileSync(store, "utf8")) as {
+    comments: Array<{ url: string; body: string }>;
+  };
+  assertTrue(
+    storedAfterComment.comments.some((entry) => entry.body === "A comment."),
+    "verify:mcp: issue_comment did not reach the forge",
+  );
+  const beforeInvalid = JSON.parse(readFileSync(store, "utf8")).issues.length as number;
+  const invalidCreate = await client.callRaw("issue_create", { title: "No body" });
+  assertTrue(invalidCreate.error, "verify:mcp: issue_create accepted a missing body");
+  const afterInvalid = JSON.parse(readFileSync(store, "utf8")).issues.length as number;
+  assertTrue(
+    afterInvalid === beforeInvalid,
+    "verify:mcp: an invalid issue_create had a side effect",
+  );
+  const duplicate = await client.callRaw("watchdog_duplicate_record", {
+    fingerprint: "abc",
+    issue: "https://github.com/acme/fixture/issues/1",
+  });
+  assertTrue(duplicate.error, "verify:mcp: a duplicate record without a run directory was accepted");
+  const skip = await client.callRaw("coach_proposal_skip", { family: "docs:build" });
+  assertTrue(skip.error, "verify:mcp: a coach skip without a reason was accepted");
+  console.log("PASS mcp-write-tools");
+
   /* 4. verification_run allowlisting and the output cap. */
   const spam = join(harnessRoot, ".tmp", "verify-mcp-spam.test.ts");
   await writeFile(

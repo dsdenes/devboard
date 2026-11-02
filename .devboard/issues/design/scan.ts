@@ -3,9 +3,9 @@ import { join, resolve } from "node:path";
 import {
   CYCLE_VERSION,
   DESIGN_CATEGORIES,
-  auditPath,
   cycleDirectory,
   draftDocumentPath,
+  releaseRequestPath,
   requestPath,
   type DesignConfig,
 } from "./paths";
@@ -105,8 +105,45 @@ export function promptFor(directory: string): string {
   return `/design-system-audit ${directory}`;
 }
 
-export function readAuditText(directory: string): string {
-  return readFileSync(auditPath(directory), "utf8");
+export interface ReleaseRequest {
+  version: 1;
+  summary: string;
+  rationale: string;
+  requestedAt: string;
+}
+
+/**
+ * Reads the release request the MCP release tool recorded. A missing or
+ * malformed request means the turn requested no release; it is never a reason
+ * to ask the agent to rewrite anything.
+ */
+export function readReleaseRequest(directory: string): ReleaseRequest | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(releaseRequestPath(directory), "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  if (
+    !("summary" in parsed) ||
+    typeof parsed.summary !== "string" ||
+    parsed.summary.trim().length === 0 ||
+    !("rationale" in parsed) ||
+    typeof parsed.rationale !== "string" ||
+    parsed.rationale.trim().length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    summary: parsed.summary.trim(),
+    rationale: parsed.rationale.trim(),
+    requestedAt:
+      "requestedAt" in parsed && typeof parsed.requestedAt === "string"
+        ? parsed.requestedAt
+        : "",
+  };
 }
 
 export function readDraftDocument(directory: string, document: string): string {
