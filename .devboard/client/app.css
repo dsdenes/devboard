@@ -494,6 +494,153 @@ kbd {
   width: 100%;
 }
 
+/* The one pinned bar every single-agent page shares. It never scrolls: the
+   page below it owns the scrolling region. */
+.agent-activity-bar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.agent-activity-bar__row {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  min-height: 30px;
+  min-width: 0;
+  padding: 3px 8px;
+}
+
+.agent-activity-bar__dot-wrap {
+  align-items: center;
+  border-radius: 50%;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 16px;
+  justify-content: center;
+  outline: none;
+  width: 16px;
+}
+
+.agent-activity-bar__dot-wrap:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.agent-activity-bar__dot {
+  background: var(--muted-foreground);
+  border-radius: 50%;
+  display: block;
+  height: 8px;
+  width: 8px;
+}
+
+.agent-activity-bar__dot[data-state="running"] {
+  animation: agent-activity-pulse 1.8s ease-in-out infinite;
+  background: var(--accent);
+}
+
+@keyframes agent-activity-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.agent-activity-bar__last {
+  color: var(--foreground);
+  flex: 1 1 auto;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity-bar__last--empty {
+  color: var(--muted-foreground);
+}
+
+.agent-activity-bar__question {
+  border: 1px solid var(--warning);
+  border-radius: 999px;
+  color: var(--warning);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  text-transform: uppercase;
+}
+
+.agent-activity-bar__toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  font-size: 11px;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 6px;
+  text-align: left;
+}
+
+.agent-activity-bar__toggle:hover,
+.agent-activity-bar__toggle:focus-visible {
+  background: var(--secondary);
+  color: var(--foreground);
+  outline: none;
+}
+
+.agent-activity-bar__toggle:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.agent-activity-bar__control {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.agent-activity-bar__panel {
+  background: var(--background);
+  border-top: 1px solid var(--border);
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px 10px;
+}
+
+.agent-activity-bar__line {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-activity-bar__empty {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-activity-bar__dot[data-state="running"] {
+    animation: none;
+  }
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -3756,18 +3903,29 @@ a.code-chip--link:focus-visible {
 }
 
 .issues-agent-focus {
+  gap: 8px;
   min-height: 0;
   overflow: hidden;
+  padding: 8px;
 }
 
-.issues-agent-focus > .panel {
-  flex: 1;
+.issues-agent-focus__scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 8px;
+}
+
+.issues-agent-focus__scroll > .panel {
+  flex: 0 0 auto;
   min-height: 0;
 }
 
-.issues-agent-focus > .panel > .panel__body {
+.issues-agent-focus__scroll > .panel > .panel__body {
   display: flex;
-  flex: 1;
   flex-direction: column;
   min-height: 0;
 }

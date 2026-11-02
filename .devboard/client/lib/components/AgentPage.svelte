@@ -2,10 +2,9 @@
   import { agentRegistry } from "../../../server/agents/registry";
   import { agents } from "../agents.svelte";
   import { connection } from "../connection.svelte";
-  import { statusTone } from "../status-tone";
-  import type { AgentDocumentationEntry, AgentIssueRow } from "../types";
-  import AgentActivityPanel from "./AgentActivityPanel.svelte";
-  import AgentCyclesPanel from "./AgentCyclesPanel.svelte";
+  import { layout } from "../layout.svelte";
+  import type { AgentCycle, AgentDocumentationEntry, AgentIssueRow } from "../types";
+  import AgentActivityBar from "./AgentActivityBar.svelte";
   import AgentDocumentationPanel from "./AgentDocumentationPanel.svelte";
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
   import AgentPromptSection from "./AgentPromptSection.svelte";
@@ -23,7 +22,6 @@
   const descriptor = $derived(agentRegistry.get(agentId));
   const snapshot = $derived(agents.snapshot(agentId));
   const lifecycle = $derived(snapshot?.lifecycle ?? "stopped");
-  const lifecycleTone = $derived(statusTone(lifecycle));
   const sync = $derived(snapshot?.sync ?? { state: "stale", at: null, error: null });
   const issues = $derived<AgentIssueRow[]>(snapshot?.issues ?? []);
   const documentation = $derived<AgentDocumentationEntry[]>(snapshot?.documentation ?? []);
@@ -34,10 +32,34 @@
       (snapshot.lifecycle === "running" || snapshot.lifecycle === "stopping"),
   );
   const activity = $derived(agents.activity[agentId] ?? []);
-  const activityScanId = $derived(
-    agents.activityScan[agentId] ??
-      (snapshot?.detail.panel === "activity" ? snapshot.detail.scanId : null),
+  const barState = $derived(
+    lifecycle === "running" || lifecycle === "starting" || lifecycle === "stopping"
+      ? ("running" as const)
+      : lifecycle === "failed"
+        ? ("failed" as const)
+        : lifecycle === "stopped"
+          ? ("stopped" as const)
+          : ("idle" as const),
   );
+  const barStartedAt = $derived(
+    barState === "running" ? (snapshot?.cadence.lastRunAt ?? null) : null,
+  );
+  const cycles = $derived(detail?.panel === "cycles" ? detail.cycles : []);
+  // A Watchdog or Coach page follows cycles instead of a scan log; the bar's
+  // expansion is the one place either history renders.
+  const barActivity = $derived(
+    detail?.panel === "cycles" ? cycles.slice().reverse().map(cycleLine) : activity,
+  );
+
+  function cycleLine(cycle: AgentCycle): string {
+    const parts = [cycle.at, cycle.action];
+    const window = `${cycle.window.start ?? "—"} – ${cycle.window.end ?? "—"}`;
+    parts.push(window);
+    parts.push(`${cycle.findings} finding(s)`);
+    if (cycle.reason !== undefined) parts.push(cycle.reason);
+    if (cycle.issues.length > 0) parts.push(cycle.issues.join(", "));
+    return parts.join(" · ");
+  }
 
   // Opening this page asks for one fresh read instead of waiting for the next
   // cadence. The tracked connection state sends it if the socket was still
@@ -121,42 +143,14 @@
   </section>
 {:else}
   <section class="agent-page" data-testid="agent-page" data-agent={agentId} aria-label={descriptor.label}>
-    <PageHeader
-      title={descriptor.label}
-      subtitle={descriptor.description}
-      layout="bar"
-      testid="agent-header"
+    <AgentActivityBar
+      identity={`${layout.mode}:${agentId}`}
+      label={descriptor.label}
+      status={barState}
+      activity={barActivity}
+      startedAt={barStartedAt}
     >
-      {#snippet meta()}
-        <span class="badge" data-tone={lifecycleTone} data-testid="agent-lifecycle" data-state={lifecycle}>
-          {lifecycle}
-        </span>
-        {#if snapshot !== null && snapshot.workers.length > 0}
-          <span class="agent-workers" data-testid="agent-workers" aria-label="Live workers">
-            {#each snapshot.workers as worker (worker.pid)}
-              <span
-                class="mono agent-worker"
-                data-testid="agent-worker"
-                data-version={worker.version ?? "unknown"}
-                data-pid={worker.pid}
-              >
-                {worker.version ?? "unknown"}
-              </span>
-            {/each}
-          </span>
-        {/if}
-        <span class="agent-sync-at">
-          Last read
-          <span class="mono" data-testid="agent-sync-at" title={sync.at ?? "never"}>
-            {#if sync.at === null}
-              never
-            {:else}
-              <time datetime={sync.at}>{stamp(sync.at)}</time>
-            {/if}
-          </span>
-        </span>
-      {/snippet}
-      {#snippet actions()}
+      {#snippet control()}
         {#if showStop}
           <Button
             variant="default"
@@ -182,6 +176,41 @@
             Start
           </Button>
         {/if}
+      {/snippet}
+    </AgentActivityBar>
+
+    <div class="agent-page__scroll">
+    <PageHeader
+      title={descriptor.label}
+      subtitle={descriptor.description}
+      layout="bar"
+      testid="agent-header"
+    >
+      {#snippet meta()}
+        {#if snapshot !== null && snapshot.workers.length > 0}
+          <span class="agent-workers" data-testid="agent-workers" aria-label="Live workers">
+            {#each snapshot.workers as worker (worker.pid)}
+              <span
+                class="mono agent-worker"
+                data-testid="agent-worker"
+                data-version={worker.version ?? "unknown"}
+                data-pid={worker.pid}
+              >
+                {worker.version ?? "unknown"}
+              </span>
+            {/each}
+          </span>
+        {/if}
+        <span class="agent-sync-at">
+          Last read
+          <span class="mono" data-testid="agent-sync-at" title={sync.at ?? "never"}>
+            {#if sync.at === null}
+              never
+            {:else}
+              <time datetime={sync.at}>{stamp(sync.at)}</time>
+            {/if}
+          </span>
+        </span>
       {/snippet}
       {#snippet footer()}
         <div class="agent-settings" role="group" aria-label="Cadence and filing limits">
@@ -325,14 +354,7 @@
           </div>
         </section>
       </div>
-
-      <div class="agent-page__detail" data-testid="agent-detail">
-        {#if detail?.panel === "cycles"}
-          <AgentCyclesPanel cycles={detail.cycles} />
-        {:else}
-          <AgentActivityPanel agentId={agentId} lines={activity} scanId={activityScanId} />
-        {/if}
-      </div>
+    </div>
     </div>
   </section>
 {/if}
@@ -341,12 +363,23 @@
   .agent-page {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     height: 100%;
     min-height: 0;
     min-width: 0;
+    overflow: hidden;
+    padding: 8px;
+  }
+
+  .agent-page__scroll {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    min-width: 0;
     overflow: auto;
-    padding: 16px;
+    padding: 0 8px 8px;
   }
 
   .agent-page__alerts {
@@ -429,15 +462,16 @@
   }
 
   .agent-page__main {
-    display: grid;
+    display: flex;
     flex: 1 1 auto;
+    flex-direction: column;
     gap: 12px;
-    grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.9fr);
     min-height: 0;
   }
 
   .agent-page__column {
     display: flex;
+    flex: 1 1 auto;
     flex-direction: column;
     gap: 12px;
     min-height: 0;
@@ -448,25 +482,15 @@
     flex: 1 1 auto;
   }
 
-  .agent-page__issues,
-  .agent-page__detail {
-    min-height: 0;
-    min-width: 0;
-  }
-
   .agent-page__issues {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    min-width: 0;
   }
 
   .agent-page__issues :global(.panel__body) {
     flex: 1 1 auto;
     min-height: 0;
-  }
-
-  @media (max-width: 1100px) {
-    .agent-page__main {
-      grid-template-columns: minmax(0, 1fr);
-    }
   }
 </style>

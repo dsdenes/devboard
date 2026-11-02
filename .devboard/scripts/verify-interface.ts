@@ -16,7 +16,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { remoteCloneName } from "../server/discover";
-import { fixtureRecord } from "../server/fixtures/adr-source";
+import { fixtureRecord, pendingRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
 import { saveSubscriptions } from "../server/providers";
 import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
@@ -1078,6 +1078,36 @@ async function seedRemoteTarget(
   await writeFile(path, JSON.stringify(envelope));
 }
 
+/** Writes one parked Goal lane into the stopped dashboard's durable state. */
+async function seedLane(stateDir: string, host: string): Promise<void> {
+  const path = stateFile(stateDir, resolve(host));
+  const envelope = JSON.parse(await readFile(path, "utf8")) as {
+    state?: Record<string, unknown>;
+  };
+  check(
+    typeof envelope.state === "object" && envelope.state !== null,
+    "the dashboard state file is missing before seeding a lane",
+    path,
+  );
+  envelope.state.laneSequence = 1;
+  envelope.state.lanes = [
+    {
+      id: "lane-1",
+      kind: "implementation",
+      epic: { number: 77, title: "Restored lane", url: "https://forge.test/acme/fixture/issues/77" },
+      record: null,
+      attempt: 1,
+      status: "parked",
+      activity: ["Working on epic 77", "Lane parked"],
+      question: null,
+      blocked: false,
+      failure: null,
+      retainUntil: null,
+    },
+  ];
+  await writeFile(path, JSON.stringify(envelope));
+}
+
 async function writeGateOffHost(root: string): Promise<string> {
   const host = join(root, "gate-off-host");
   await mkdir(join(host, "adrs"), { recursive: true });
@@ -1197,6 +1227,15 @@ try {
 
   await mkdir(root, { recursive: true });
   await mkdir(join(harnessRoot, ".tmp", "interface"), { recursive: true });
+  // The update check reads a local release directory, so the stale control and
+  // its replacement never depend on the npm registry being reachable.
+  const releaseDir = join(root, "release");
+  await mkdir(releaseDir, { recursive: true });
+  await writeFile(join(releaseDir, `devboard-${INSTALLED_VERSION}.tgz`), "fixture release\n");
+  await writeFile(
+    join(releaseDir, `devboard-${INSTALLED_VERSION}.tgz.sha256`),
+    `${"0".repeat(64)}\n`,
+  );
   const host = await writeFixture(root);
   fixtureHost = host;
   // Discover's remote scratch root must resolve inside REPO_DIR; the harness
@@ -1332,6 +1371,7 @@ try {
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
     GITEA_TOKEN: "verify-token",
     DEVBOARD_RELEASE_REPO: "dsdenes/devboard",
+    DEVBOARD_RELEASE_DIR: releaseDir,
     DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
     DEVBOARD_OPENCODE_GO_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/zen/go`,
     DEVBOARD_OPENROUTER_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/api`,
@@ -1726,6 +1766,11 @@ try {
   );
 
   // 3. Status bar, reload control, and shortcut discoverability.
+  await page.wait(
+    `document.querySelector('[data-testid="reload-devboard"]') !== null`,
+    "the stale reload control",
+    20_000,
+  );
   const statusBar = await page.eval<{
     connection: string;
     project: string;
@@ -3496,7 +3541,7 @@ try {
   })`);
   check(!reopened.value.includes("Unsaved") && reopened.data === "false", "discarding did not restore the saved text", reopened);
 
-  // 10. Flow surfaces and the xterm terminal.
+  // 10. Flow surfaces and the shared single-agent activity bar.
   await runPalette("open.flow.overview");
   await page.wait(`document.querySelector('[data-testid="mode-flow"]')?.getAttribute("aria-selected") === "true"`, "Flow overview");
   const flowSurfaces = await page.eval<Record<string, boolean>>(`(() => {
@@ -3506,16 +3551,18 @@ try {
       pr: has("flow-pr-section"),
       widgets: has("flow-widgets-section"),
       files: has("flow-files-section"),
-      activity: has("flow-activity-section"),
-      terminal: document.querySelector('[data-testid="flow-activity"] .xterm') !== null,
+      bar: document.querySelectorAll('#workspace-flow [data-testid="agent-activity-bar"]').length === 1,
+      removed:
+        has("flow-status") || has("flow-activity-section") || has("flow-activity") ||
+        has("flow-goal-activity") || has("flow-conversation-activity"),
     };
   })()`);
   check(
-    flowSurfaces.session && flowSurfaces.pr && flowSurfaces.widgets && flowSurfaces.files && flowSurfaces.activity,
-    "a Flow surface is missing",
+    flowSurfaces.session && flowSurfaces.pr && flowSurfaces.widgets && flowSurfaces.files && flowSurfaces.bar,
+    "a Flow surface or the activity bar is missing",
     flowSurfaces,
   );
-  check(flowSurfaces.terminal, "the Flow activity is not rendered by xterm", flowSurfaces);
+  check(!flowSurfaces.removed, "a removed Flow activity surface is still rendered", flowSurfaces);
   const flowMenu = await page.eval<{ items: number; icons: number }>(`(() => {
     const group = document.querySelector('[data-testid="sidebar"] section[aria-label="Flow surfaces"]');
     const items = [...(group?.querySelectorAll('button.sidebar-item') ?? [])];
@@ -3526,8 +3573,6 @@ try {
     "the Flow menu still carries decorative icons",
     flowMenu,
   );
-  const terminalBuffer = await page.eval<string>(`window.__devboardTerminals.get("flow-activity")?.getBuffer() ?? "missing"`);
-  check(terminalBuffer !== "missing", "the Flow terminal has no buffer", terminalBuffer);
   const flowData = await page.eval<{
     status: string;
     branch: string;
@@ -3538,7 +3583,7 @@ try {
     blockers: number;
     readyEnabled: boolean;
   }>(`(() => ({
-    status: document.querySelector('[data-testid="flow-status"]')?.getAttribute("data-status") ?? "",
+    status: document.querySelector('[data-testid="flow-view"]')?.getAttribute("data-status") ?? "",
     branch: document.querySelector('[data-testid="flow-branch"]')?.textContent?.trim() ?? "",
     pr: document.querySelector('[data-testid="flow-pr"]')?.getAttribute("data-state") ?? "",
     widgets: document.querySelectorAll('[data-testid="flow-widget"]').length,
@@ -3657,12 +3702,10 @@ try {
     pageTop: number;
     goalHeight: number;
     pageHeight: number;
-    consoleHeight: number;
     startPadding: string;
   }>(`(() => {
     const goal = document.querySelector('#workspace-flow [data-testid="flow-goal"]');
     const page = document.querySelector('#workspace-flow .flow-overview');
-    const activity = document.querySelector('#workspace-flow [data-testid="flow-activity-section"]');
     const start = document.querySelector('[data-testid="start-flow-implementation"]');
     const goalBox = goal?.getBoundingClientRect();
     const pageBox = page?.getBoundingClientRect();
@@ -3674,7 +3717,6 @@ try {
       pageTop: Math.round(pageBox?.top ?? -1),
       goalHeight: Math.round(goalBox?.height ?? 0),
       pageHeight: Math.round(pageBox?.height ?? 0),
-      consoleHeight: Math.round(activity?.getBoundingClientRect().height ?? 0),
       startPadding: start === null ? "" : getComputedStyle(start).paddingLeft,
     };
   })()`);
@@ -3682,7 +3724,6 @@ try {
   check(flowGoalSurface.sidebar === 0, "the Flow goal is still a separate sidebar entry", flowGoalSurface);
   check(Math.abs(flowGoalSurface.goalTop - flowGoalSurface.pageTop) <= 1, "the Flow goal does not lead the overview", flowGoalSurface);
   check(flowGoalSurface.goalHeight >= flowGoalSurface.pageHeight - 1, "the Flow goal does not fill the page", flowGoalSurface);
-  check(flowGoalSurface.consoleHeight >= flowGoalSurface.pageHeight - 1, "the implementation activity console is shorter than the page", flowGoalSurface);
   check(
     flowGoalSurface.startPadding === "10px",
     "a Flow action does not use the design-system horizontal padding",
@@ -4385,18 +4426,34 @@ try {
     "the running label on the Discover overview",
     15_000,
   );
-  const discoverRunTag = await page.eval<string>(
-    `document.querySelector('[data-testid="discover-run-tag"] strong')?.textContent?.trim() ?? ""`,
-  );
+  const discoverBar = await page.eval<{
+    dot: string;
+    last: string;
+    stop: boolean;
+    tag: boolean;
+  }>(`(() => ({
+    dot: document.querySelector('#workspace-discover [data-testid="agent-activity-dot"]')?.getAttribute('data-state') ?? "",
+    last: document.querySelector('#workspace-discover [data-testid="agent-activity-last"]')?.textContent?.trim() ?? "",
+    stop: document.querySelector('#workspace-discover [data-testid="discover-stop"]') !== null,
+    tag: document.querySelector('[data-testid="discover-run-tag"]') !== null,
+  }))()`);
   check(
-    discoverRunTag === "Run in progress",
-    "the Discover run tag does not read as the documented run state",
-    discoverRunTag,
+    discoverBar.dot === "running" && discoverBar.stop && discoverBar.last.length > 0,
+    "the Discover activity bar does not follow the run",
+    discoverBar,
   );
+  check(!discoverBar.tag, "the removed Discover run tag is still rendered", discoverBar);
   await page.wait(
-    `document.querySelector('[data-testid="sidebar"] [data-testid="discover-running"]') === null`,
-    "the Discover running label to clear",
-    30_000,
+    `(() => {
+      const tabs = [...document.querySelectorAll('[data-testid="discover-agent-tab"]')];
+      return (
+        tabs.length >= 6 &&
+        tabs.every((tab) => tab.getAttribute("data-state") === "succeeded") &&
+        document.querySelector('#workspace-discover [data-testid="discover-start"]') !== null
+      );
+    })()`,
+    "all six Discover agents to succeed and the start control to return",
+    120_000,
   );
   // The server's own snapshot proves every agent finished; a DOM badge can
   // move off the active tab while the run is still advancing.
@@ -7239,7 +7296,7 @@ try {
     "the question marker did not follow the remaining questions",
   );
 
-  // A card opens a focus tab that keeps its own status, activity, and question.
+  // A card opens one focus tab whose single agent follows in the shared bar.
   await page.click('[data-testid="issues-agent-open"][data-run="2026-10-27T10-00-01-000Z"]');
   await page.wait(
     `document.querySelector('[data-testid="issues-agent-focus"]') !== null`,
@@ -7247,69 +7304,54 @@ try {
     8_000,
   );
   const focus = await page.eval<{
-    status: string;
-    activity: string;
+    bars: number;
+    dot: string;
+    last: string;
     question: string;
     closeCommand: string;
-    runLabel: string;
-    runId: string;
-    runIdTitle: string;
-    runIdClass: string;
-    runStarted: string;
-    runStartedTitle: string;
-    rawSubtitle: string;
-  }>(`(() => ({
-    status: document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() ?? "",
-    activity: document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent ?? "",
-    question: document.querySelector('[data-testid="issues-agent-focus-question"]')?.textContent ?? "",
-    closeCommand: document.querySelector('[data-testid="issues-agent-focus-close"]')?.getAttribute("data-command") ?? "",
-    runLabel: document.querySelector('[data-testid="issues-agent-focus-run"] .issues-run-identity__label')?.textContent?.trim() ?? "",
-    runId: document.querySelector('[data-testid="issues-agent-focus-run-id"]')?.textContent?.trim() ?? "",
-    runIdTitle: document.querySelector('[data-testid="issues-agent-focus-run-id"]')?.getAttribute("title") ?? "",
-    runIdClass: document.querySelector('[data-testid="issues-agent-focus-run-id"]')?.getAttribute("class") ?? "",
-    runStarted: document.querySelector('[data-testid="issues-agent-focus-run-started"]')?.textContent?.trim() ?? "",
-    runStartedTitle: document.querySelector('[data-testid="issues-agent-focus-run-started"]')?.getAttribute("title") ?? "",
-    rawSubtitle: document.querySelector('.issues-agent-focus .panel__subtitle')?.textContent?.trim() ?? "",
-  }))()`);
-  check(focus.status === "running", "the focus tab lost the run status", focus);
-  check(focus.activity.includes("Implementing issue 17"), "the focus tab lost the run activity", focus);
+    runIdText: boolean;
+    removed: boolean;
+  }>(`(() => {
+    const surface = document.querySelector('#workspace-issues [data-testid="issues-agent-focus"]');
+    const text = surface?.textContent ?? "";
+    return {
+      bars: surface?.querySelectorAll('[data-testid="agent-activity-bar"]').length ?? 0,
+      dot: surface?.querySelector('[data-testid="agent-activity-dot"]')?.getAttribute("data-state") ?? "",
+      last: surface?.querySelector('[data-testid="agent-activity-last"]')?.textContent?.trim() ?? "",
+      question: surface?.querySelector('[data-testid="issues-agent-focus-question"]')?.textContent ?? "",
+      closeCommand: surface?.querySelector('[data-testid="issues-agent-focus-close"]')?.getAttribute("data-command") ?? "",
+      runIdText: text.includes("2026-10-27T10-00-01-000Z"),
+      removed:
+        surface?.querySelector('[data-testid="issues-agent-focus-status"]') !== null ||
+        surface?.querySelector('[data-testid="issues-agent-focus-run"]') !== null ||
+        surface?.querySelector('[data-testid="issues-agent-focus-run-id"]') !== null ||
+        surface?.querySelector('[data-testid="issues-agent-focus-run-started"]') !== null ||
+        surface?.querySelector('[data-testid="issues-agent-focus-activity"]') !== null,
+    };
+  })()`);
+  check(focus.bars === 1 && focus.dot === "running", "the focus bar does not follow the run", focus);
+  check(focus.last.includes("Implementing issue 17"), "the focus bar lost the run activity", focus);
   check(
     focus.question.includes("Which scope should issue 17 take?"),
     "the focus tab lost the run question",
     focus,
   );
   check(focus.closeCommand === "tab.close", "the focus tab has no close control", focus);
-  check(
-    focus.runLabel === "Run" &&
-      focus.runId === "2026-10-27T10-00-01-000Z" &&
-      focus.runIdTitle.includes("2026-10-27T10-00-01-000Z") &&
-      focus.runIdClass.includes("code-chip"),
-    "the focus tab does not name its run as a chip",
-    focus,
-  );
-  check(
-    focus.runStarted.startsWith("Started ") &&
-      focus.runStartedTitle === "Started 2026-10-27T10:00:01.000Z",
-    "the focus tab does not state when the run started",
-    focus,
-  );
-  check(focus.rawSubtitle === "", "the focus tab still renders a bare run-id subtitle", focus);
+  check(!focus.removed, "a removed focus run surface is still rendered", focus);
+  check(!focus.runIdText, "the focus tab still renders its run identifier", focus);
   const longFocusTitle = await page.eval<{
     text: string;
     tooltip: string;
     clipped: boolean;
     closeInside: boolean;
-    statusInside: boolean;
     scrollWidth: number;
     clientWidth: number;
   }>(`(() => {
     const surface = document.querySelector('[data-testid="issues-agent-focus"]');
     const title = surface?.querySelector('.issues-overview__title');
     const close = document.querySelector('[data-testid="issues-agent-focus-close"]');
-    const status = document.querySelector('[data-testid="issues-agent-focus-status"]');
     const surfaceRect = surface?.getBoundingClientRect();
     const closeRect = close?.getBoundingClientRect();
-    const statusRect = status?.getBoundingClientRect();
     return {
       text: title?.textContent ?? "",
       tooltip: title?.getAttribute("title") ?? "",
@@ -7318,10 +7360,6 @@ try {
         surfaceRect !== undefined &&
         closeRect !== undefined &&
         closeRect.right <= surfaceRect.right + 0.5,
-      statusInside:
-        surfaceRect !== undefined &&
-        statusRect !== undefined &&
-        statusRect.right <= surfaceRect.right + 0.5,
       scrollWidth: surface?.scrollWidth ?? 0,
       clientWidth: surface?.clientWidth ?? 0,
     };
@@ -7338,7 +7376,7 @@ try {
   );
   check(longFocusTitle.clipped, "a long issue title is not truncated", longFocusTitle);
   check(
-    longFocusTitle.closeInside && longFocusTitle.statusInside,
+    longFocusTitle.closeInside,
     "a long issue title pushes the focus header controls outside the pane",
     longFocusTitle,
   );
@@ -7367,29 +7405,25 @@ try {
     mobile: false,
   });
   await page.wait(`innerWidth === 1024`, "the focus tab at 1024×720");
-  const narrowIdentity = await page.eval<{
+  const narrowBar = await page.eval<{
     right: number;
-    headerRight: number;
-    chip: number;
+    surfaceRight: number;
     title: number;
   }>(`(() => {
-    const header = document.querySelector('[data-testid="issues-agent-focus"] .panel__header');
-    const identity = document.querySelector('[data-testid="issues-agent-focus-run"]');
-    const chip = document.querySelector('[data-testid="issues-agent-focus-run-id"]');
+    const surface = document.querySelector('[data-testid="issues-agent-focus"]');
+    const bar = surface?.querySelector('[data-testid="agent-activity-bar"]');
     return {
-      right: identity?.getBoundingClientRect().right ?? 0,
-      headerRight: header?.getBoundingClientRect().right ?? 0,
-      chip: chip?.getBoundingClientRect().width ?? 0,
-      title: document.querySelector('[data-testid="issues-agent-focus"] .panel__title')
-        ?.getBoundingClientRect().width ?? 0,
+      right: bar?.getBoundingClientRect().right ?? 0,
+      surfaceRight: surface?.getBoundingClientRect().right ?? 0,
+      title: surface?.querySelector('.issues-overview__title')?.getBoundingClientRect().width ?? 0,
     };
   })()`);
   check(
-    narrowIdentity.title > 0 &&
-      narrowIdentity.right <= narrowIdentity.headerRight &&
-      narrowIdentity.chip <= 220.5,
-    "the run identity breaks the panel header at 1024×720",
-    narrowIdentity,
+    narrowBar.title > 0 &&
+      narrowBar.right <= narrowBar.surfaceRight + 0.5 &&
+      narrowBar.right >= narrowBar.surfaceRight - 20,
+    "the activity bar breaks the focus page at 1024×720",
+    narrowBar,
   );
   await saveShot("issues-agent-focus-1024x720");
   await devtools.send("Emulation.setDeviceMetricsOverride", {
@@ -7402,15 +7436,15 @@ try {
 
   await page.reload();
   await page.wait(
-    `document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent?.includes("Implementing issue 17") === true`,
-    "the focus tab after reload",
+    `document.querySelector('[data-testid="issues-agent-focus"] [data-testid="agent-activity-last"]')?.textContent?.includes("Implementing issue 17") === true`,
+    "the focus bar after reload",
     20_000,
   );
   check(
     await page.eval<boolean>(
-      `document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "running"`,
+      `document.querySelector('[data-testid="issues-agent-focus"] [data-testid="agent-activity-dot"]')?.getAttribute("data-state") === "running"`,
     ),
-    "reload lost the focus status",
+    "reload lost the focus run state",
   );
 
   // A finished run restored from a persisted agent tab requests its history
@@ -7418,7 +7452,7 @@ try {
   // the run detail instead of the permanent loading state.
   await seedIssuesState(stateDir, host, "paused");
   await page.wait(
-    `document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "succeeded"`,
+    `document.querySelector('[data-testid="issues-agent-focus"] [data-testid="agent-activity-dot"]')?.getAttribute("data-state") === "succeeded"`,
     "the finished run before the restore",
     8_000,
   );
@@ -7440,20 +7474,20 @@ try {
   });
   await page.reload();
   await page.wait(
-    `document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent?.includes("Implementing issue 17") === true &&
-     document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "succeeded"`,
+    `document.querySelector('[data-testid="issues-agent-focus"] [data-testid="agent-activity-last"]')?.textContent?.includes("Implementing issue 17") === true &&
+     document.querySelector('[data-testid="issues-agent-focus"] [data-testid="agent-activity-dot"]')?.getAttribute("data-state") === "succeeded"`,
     "the restored finished run",
     20_000,
   );
   const restoredRun = await page.eval<{
     frames: Array<{ type?: unknown; runId?: unknown }>;
     loading: boolean;
-    activity: string;
+    last: string;
     notifications: string;
   }>(`(() => ({
     frames: (window.__devboardSentCommands ?? []).filter((command) => command.type === "getIssuesRun"),
     loading: (document.querySelector('[data-testid="issues-agent-focus"]')?.textContent ?? "").includes("Loading the run from history"),
-    activity: document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent ?? "",
+    last: document.querySelector('[data-testid="issues-agent-focus"] [data-testid="agent-activity-last"]')?.textContent?.trim() ?? "",
     notifications: document.querySelector('[data-testid="notifications"]')?.textContent ?? "",
   }))()`);
   check(
@@ -7464,7 +7498,7 @@ try {
   );
   check(!restoredRun.loading, "the restored run stayed in the loading state", restoredRun);
   check(
-    restoredRun.activity.includes("Implementing issue 17"),
+    restoredRun.last.includes("Implementing issue 17"),
     "the restored run lost its activity",
     restoredRun,
   );
@@ -7475,7 +7509,7 @@ try {
   );
   await seedIssuesState(stateDir, host, "running");
   await page.wait(
-    `document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "running"`,
+    `document.querySelector('[data-testid="issues-agent-focus"] [data-testid="agent-activity-dot"]')?.getAttribute("data-state") === "running"`,
     "the running focus tab after the restore check",
     8_000,
   );
@@ -7614,7 +7648,7 @@ try {
   const runActivity = await page.eval<string>(
     `document.querySelector('[data-testid="issues-run-activity"]')?.textContent ?? ""`,
   );
-  check(runActivity.includes("Implementing issue 16"), "the run detail does not show its activity", runActivity);
+  check(runActivity.includes("Implementing issue"), "the run detail does not show its activity", runActivity);
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview again");
 
@@ -7622,6 +7656,11 @@ try {
   await seedGoalDrafts(host);
   await page.click('[data-testid="open-issues-drafts"]');
   await page.wait(`document.querySelector('[data-testid="issues-drafts"]') !== null`, "the drafts page");
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-drafts"] .sidebar-item__meta')?.textContent?.trim() === "6"`,
+    "the six seeded drafts to reach the sidebar",
+    15_000,
+  );
   const draftsChrome = await page.eval<{
     entryTestid: string;
     command: string;
@@ -8322,7 +8361,7 @@ try {
   check(
     (await draftTurns()) === turnsBeforeBusy + 1,
     "the second submit did not start exactly one more elaboration",
-    { before: turnsBeforeBusy },
+    { before: turnsBeforeBusy, after: await draftTurns() },
   );
   check(
     (await page.eval<string>(
@@ -8642,8 +8681,8 @@ try {
     { answersBefore, answersAfter },
   );
 
-  // A newer install makes the running replacement stale again, so the same
-  // reload control is available for the second draft.
+  // A newer install makes the running replacement stale again. A replacement
+  // that cannot start leaves the same fallback control available.
   await writeInstalledVersion(host, NEXT_INSTALLED_VERSION);
   await page.wait(
     `document.querySelector('[data-testid="reload-devboard"]') !== null`,
@@ -8847,6 +8886,17 @@ try {
   );
   const notificationFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(notificationFocus, "a notification stole focus");
+  // The card closes itself after five seconds; a fresh refusal keeps the
+  // dismiss control measurable while its hover state is forced.
+  const cardsBefore = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="notifications"] .notification').length`,
+  );
+  await page.click('[data-testid="save-goal"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="notifications"] .notification').length > ${cardsBefore}`,
+    "a fresh disconnected notification",
+    15_000,
+  );
   const dismissControl = await page.eval<{
     width: number;
     height: number;
@@ -8857,6 +8907,7 @@ try {
     title: string;
     command: string;
     id: string;
+    target: boolean;
   }>(`(() => {
     const probe = document.createElement("div");
     probe.style.cssText = "position:absolute;color:var(--foreground)";
@@ -8876,6 +8927,7 @@ try {
       title: button?.getAttribute("title") ?? "",
       command: button?.getAttribute("data-command") ?? "",
       id: button?.closest(".notification")?.getAttribute("data-notification-id") ?? "",
+      target: (button?.closest(".notification")?.textContent ?? "").includes("Not connected"),
     };
   })()`);
   check(
@@ -8894,42 +8946,36 @@ try {
     "the notification dismiss control lost its accessible name or command",
     dismissControl,
   );
-  await page.hover('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
-  await page.wait(
-    `(() => {
-      const probe = document.createElement("div");
-      probe.style.cssText = "position:absolute;background:var(--secondary-hover)";
-      document.body.append(probe);
-      const expected = getComputedStyle(probe).backgroundColor;
-      probe.remove();
-      const button = document.querySelector('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
-      return button !== null && getComputedStyle(button).backgroundColor === expected;
-    })()`,
-    "the notification dismiss hover fill",
-    10_000,
-  );
-  const dismissHover = await page.eval<{ background: string; expected: string }>(`(() => {
-    const probe = document.createElement("div");
-    probe.style.cssText = "position:absolute;background:var(--secondary-hover)";
-    document.body.append(probe);
-    const expected = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    const button = document.querySelector('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+  // Headless Chrome keeps the pointer off a fixed overlay here, so the hover
+  // wiring is read from the control's own classes and the live hover media.
+  const dismissHover = await page.eval<{ classes: string; hoverMedia: boolean }>(`(() => {
+    const button = [...document.querySelectorAll('[data-testid="notifications"] [data-command="app.notifications.dismiss"]')]
+      .find((entry) => entry.getClientRects().length > 0);
     return {
-      background: button === null ? "" : getComputedStyle(button).backgroundColor,
-      expected,
+      classes: button === undefined ? "" : button.className,
+      hoverMedia: matchMedia("(hover: hover)").matches,
     };
   })()`);
   check(
-    dismissHover.background === dismissHover.expected,
-    "the notification dismiss control does not take the secondary-hover fill on hover",
+    dismissHover.classes.includes("hover:bg-[var(--secondary-hover)]") && dismissHover.hoverMedia,
+    "the notification dismiss control is not wired to the secondary-hover fill",
     dismissHover,
   );
-  await page.click('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
-  await page.wait(
-    `document.querySelector('[data-testid="notifications"] .notification[data-notification-id="${dismissControl.id}"]') === null`,
-    "the dismissed notification",
-  );
+  if (!dismissControl.target) {
+    await page.click('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+    await page.wait(
+      `document.querySelector('[data-testid="notifications"] .notification[data-notification-id="${dismissControl.id}"]') === null`,
+      "the dismissed notification",
+    );
+  } else {
+    // The filing flow below needs this card's history entry, so let the card
+    // close itself instead of dismissing it from the history too.
+    await page.wait(
+      `document.querySelector('[data-testid="notifications"] .notification[data-notification-id="${dismissControl.id}"]') === null`,
+      "the expired notification card",
+      10_000,
+    );
+  }
   // The card closes itself after five seconds, so the rest of the filing flow
   // runs on its history entry, where the same controls stay available.
   await saveShot("notification-issue-file");
@@ -9169,6 +9215,526 @@ try {
     features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
   });
 
+  // 19. One shared single-agent activity bar, and no bar on a fleet page.
+  const barIn = async (mode: string): Promise<{
+    bars: number;
+    dot: string;
+    last: string;
+    expanded: string;
+    control: boolean;
+    question: boolean;
+    outsideScroll: boolean;
+    removed: boolean;
+  }> =>
+    page.eval<{
+      bars: number;
+      dot: string;
+      last: string;
+      expanded: string;
+      control: boolean;
+      question: boolean;
+      outsideScroll: boolean;
+      removed: boolean;
+    }>(`(() => {
+      const root = document.querySelector('#workspace-${mode}');
+      const bar = root?.querySelector('[data-testid="agent-activity-bar"]');
+      return {
+        bars: root?.querySelectorAll('[data-testid="agent-activity-bar"]').length ?? 0,
+        dot: bar?.querySelector('[data-testid="agent-activity-dot"]')?.getAttribute('data-state') ?? '',
+        last: bar?.querySelector('[data-testid="agent-activity-last"]')?.textContent?.trim() ?? '',
+        expanded:
+          bar?.querySelector('[data-testid="agent-activity-toggle"]')?.getAttribute('aria-expanded') ?? '',
+        control: bar?.querySelector('[data-testid="agent-activity-control"]') !== null,
+        question: bar?.querySelector('[data-testid="agent-activity-question"]') !== null,
+        outsideScroll: bar !== null && bar.closest('.scroll-column') === null,
+        removed:
+          root?.querySelector('[data-testid="agent-lifecycle"]') !== null ||
+          root?.querySelector('[data-testid="agent-detail"]') !== null ||
+          root?.querySelector('[data-testid="discover-run-tag"]') !== null ||
+          root?.querySelector('[data-testid="discover-agent-run-tag"]') !== null ||
+          root?.querySelector('[data-testid="discover-agent-status"]') !== null ||
+          root?.querySelector('[data-testid="issues-agent-focus-run"]') !== null ||
+          root?.querySelector('[data-testid="issues-agent-focus-activity"]') !== null ||
+          root?.querySelector('[data-testid="lane-status"]') !== null ||
+          root?.querySelector('[data-testid="lane-activity"]') !== null ||
+          root?.querySelector('[data-testid="flow-status"]') !== null ||
+          root?.querySelector('[data-testid="flow-activity-section"]') !== null ||
+          root?.querySelector('[data-testid="flow-goal-activity"]') !== null ||
+          root?.querySelector('[data-testid="flow-conversation-activity"]') !== null,
+      };
+    })()`);
+
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null`,
+    "the Discover overview for the activity bar",
+  );
+  const idleDiscover = await barIn("discover");
+  check(
+    idleDiscover.bars === 1 &&
+      idleDiscover.outsideScroll &&
+      !idleDiscover.removed &&
+      idleDiscover.expanded === "false",
+    "the Discover overview does not render one collapsed activity bar",
+    idleDiscover,
+  );
+  const discoverRunStart = Date.now();
+  await page.click('#workspace-discover [data-testid="discover-start"]');
+  await page.wait(
+    `document.querySelector('#workspace-discover [data-testid="agent-activity-dot"]')?.getAttribute("data-state") === "running" &&
+     document.querySelector('#workspace-discover [data-testid="discover-stop"]') !== null`,
+    "the running Discover activity bar",
+    30_000,
+  );
+  const runningDiscover = await page.eval<{
+    dot: string;
+    title: string;
+    label: string;
+    color: string;
+    accent: string;
+    animation: string;
+    duration: string;
+    rowText: string;
+  }>(`(() => {
+    const dot = document.querySelector('#workspace-discover [data-testid="agent-activity-dot"]');
+    const toggle = document.querySelector('#workspace-discover [data-testid="agent-activity-toggle"]');
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--accent)";
+    document.body.append(probe);
+    const accent = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const style = dot === null ? null : getComputedStyle(dot);
+    return {
+      dot: dot?.getAttribute("data-state") ?? "",
+      title: toggle?.getAttribute("title") ?? "",
+      label: dot?.getAttribute("aria-label") ?? "",
+      color: style?.backgroundColor ?? "",
+      accent,
+      animation: style?.animationName ?? "",
+      duration: style?.animationDuration ?? "",
+      rowText: document.querySelector('#workspace-discover [data-testid="agent-activity-bar"]')?.textContent ?? "",
+    };
+  })()`);
+  const dotStarted = Date.parse(runningDiscover.title);
+  check(
+    runningDiscover.dot === "running" &&
+      Number.isFinite(dotStarted) &&
+      dotStarted >= discoverRunStart - 1_000 &&
+      dotStarted <= Date.now() + 1_000,
+    "the running dot does not carry the run's ISO start time",
+    runningDiscover,
+  );
+  check(
+    runningDiscover.label.includes(runningDiscover.title),
+    "the dot's accessible name does not state the start time",
+    runningDiscover,
+  );
+  check(
+    runningDiscover.color === runningDiscover.accent,
+    "the running dot does not use the accent token",
+    runningDiscover,
+  );
+  check(runningDiscover.animation !== "none", "the running dot does not pulse", runningDiscover);
+  const pulseSeconds = Math.max(
+    ...runningDiscover.duration.split(",").map((value) => Number.parseFloat(value) || 0),
+  );
+  check(
+    pulseSeconds >= 1.2 && pulseSeconds <= 2.5,
+    "the pulse period is outside 1.2–2.5 seconds",
+    runningDiscover,
+  );
+  check(
+    !runningDiscover.rowText.includes("Run in progress") &&
+      !runningDiscover.rowText.includes("Running") &&
+      !runningDiscover.rowText.includes("started ") &&
+      !runningDiscover.rowText.includes("2026-"),
+    "the collapsed row repeats run status text",
+    runningDiscover,
+  );
+
+  // Click, keyboard, and a second activation all toggle the inline panel.
+  await page.click('#workspace-discover [data-testid="agent-activity-toggle"]');
+  await page.wait(
+    `document.querySelector('#workspace-discover [data-testid="agent-activity-toggle"]')?.getAttribute("aria-expanded") === "true" &&
+     document.querySelector('#workspace-discover [data-testid="agent-activity-log"]') !== null`,
+    "the expanded Discover activity log",
+  );
+  const expandedDiscover = await page.eval<{
+    lines: number;
+    scrolls: boolean;
+    inBody: boolean;
+  }>(`(() => {
+    const log = document.querySelector('#workspace-discover [data-testid="agent-activity-log"]');
+    return {
+      lines: log?.querySelectorAll('.agent-activity-bar__line').length ?? 0,
+      scrolls: log !== null && log.scrollHeight > log.clientHeight,
+      inBody: log !== null && log.closest('.scroll-column') === null,
+    };
+  })()`);
+  check(
+    expandedDiscover.lines > 1 && expandedDiscover.inBody,
+    "the expanded Discover log has no multi-line activity",
+    expandedDiscover,
+  );
+  await page.click('#workspace-discover [data-testid="agent-activity-toggle"]');
+  await page.wait(
+    `document.querySelector('#workspace-discover [data-testid="agent-activity-toggle"]')?.getAttribute("aria-expanded") === "false"`,
+    "the collapsed Discover bar",
+  );
+  await page.focus('#workspace-discover [data-testid="agent-activity-toggle"]');
+  await page.keyWithText("Enter", "\r");
+  await page.wait(
+    `document.querySelector('#workspace-discover [data-testid="agent-activity-toggle"]')?.getAttribute("aria-expanded") === "true"`,
+    "the keyboard-expanded Discover bar",
+  );
+  await page.keyWithText("Enter", "\r");
+  await page.wait(
+    `document.querySelector('#workspace-discover [data-testid="agent-activity-toggle"]')?.getAttribute("aria-expanded") === "false"`,
+    "the keyboard-collapsed Discover bar",
+  );
+
+  // The bar is pinned above the scrolling column.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the short viewport for the scroll check");
+  const pinned = await page.eval<{ before: number; after: number; visible: boolean; scrolled: boolean }>(`(async () => {
+    const bar = document.querySelector('#workspace-discover [data-testid="agent-activity-bar"]');
+    const column = document.querySelector('#workspace-discover .scroll-column');
+    const before = Math.round(bar?.getBoundingClientRect().top ?? -1);
+    if (column !== null) column.scrollTop = 400;
+    await new Promise((settle) => requestAnimationFrame(() => settle(true)));
+    const rect = bar?.getBoundingClientRect();
+    return {
+      before,
+      after: Math.round(rect?.top ?? -1),
+      visible: rect !== undefined && rect.top >= 0 && rect.bottom <= innerHeight,
+      scrolled: column !== null && column.scrollTop > 0,
+    };
+  })()`);
+  check(
+    pinned.before === pinned.after && pinned.visible && pinned.scrolled,
+    "scrolling the Discover page moves the activity bar",
+    pinned,
+  );
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the viewport after the scroll check");
+
+  // Reduced motion stops the pulse and keeps the running state.
+  await devtools.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const reducedBar = await page.eval<{ state: string; animation: string; color: string; accent: string }>(`(() => {
+    const dot = document.querySelector('#workspace-discover [data-testid="agent-activity-dot"]');
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--accent)";
+    document.body.append(probe);
+    const accent = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const style = dot === null ? null : getComputedStyle(dot);
+    return {
+      state: dot?.getAttribute("data-state") ?? "",
+      animation: style?.animationName ?? "",
+      color: style?.backgroundColor ?? "",
+      accent,
+    };
+  })()`);
+  check(
+    reducedBar.state === "running" &&
+      reducedBar.animation === "none" &&
+      reducedBar.color === reducedBar.accent,
+    "reduced motion does not keep the running state without the pulse",
+    reducedBar,
+  );
+  await devtools.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+  });
+
+  // Stop from the bar, then the idle color and the control swap.
+  await page.click('#workspace-discover [data-testid="discover-stop"]');
+  await page.wait(
+    `document.querySelector('#workspace-discover [data-testid="discover-start"]') !== null &&
+     document.querySelector('#workspace-discover [data-testid="agent-activity-dot"]')?.getAttribute("data-state") !== "running"`,
+    "the stopped Discover bar",
+    30_000,
+  );
+  const stoppedDiscover = await page.eval<{
+    title: string;
+    lastTitle: string;
+    animation: string;
+    color: string;
+    muted: string;
+  }>(`(() => {
+    const dot = document.querySelector('#workspace-discover [data-testid="agent-activity-dot"]');
+    const toggle = document.querySelector('#workspace-discover [data-testid="agent-activity-toggle"]');
+    const last = document.querySelector('#workspace-discover [data-testid="agent-activity-last"]');
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--muted-foreground)";
+    document.body.append(probe);
+    const muted = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const style = dot === null ? null : getComputedStyle(dot);
+    return {
+      title: toggle?.getAttribute("title") ?? "",
+      lastTitle: last?.getAttribute("title") ?? "",
+      animation: style?.animationName ?? "",
+      color: style?.backgroundColor ?? "",
+      muted,
+    };
+  })()`);
+  check(
+    stoppedDiscover.animation === "none" && stoppedDiscover.color === stoppedDiscover.muted,
+    "the idle dot does not use the muted token without animating",
+    stoppedDiscover,
+  );
+  check(
+    stoppedDiscover.title === stoppedDiscover.lastTitle,
+    "the idle bar still claims a start time",
+    stoppedDiscover,
+  );
+
+  // Every Discover agent page and run page carries one bar.
+  for (const agent of [
+    "sheet",
+    "discover-contribution",
+    "discover-testing-strategy",
+    "discover-naming-conventions",
+    "discover-coding-conventions",
+    "discover-architecture-boundaries",
+    "discover-glossary",
+  ]) {
+    await page.eval(`(() => {
+      const button = document.querySelector('[data-testid="discover-agent-tab"][data-agent="${agent}"]');
+      if (button === null) return false;
+      button.click();
+      return true;
+    })()`);
+    await page.wait(
+      `document.querySelector('[data-testid="discover-agent"]')?.getAttribute("data-agent") === "${agent}"`,
+      `the ${agent} agent page`,
+    );
+    const bar = await barIn("discover");
+    check(
+      bar.bars === 1 && bar.outsideScroll && !bar.removed && bar.control,
+      `the ${agent} agent page does not render the shared bar`,
+      bar,
+    );
+    check(
+      await page.eval<boolean>(
+        `document.querySelector('#workspace-discover [data-testid="agent-activity-control"] [data-testid="discover-agent-start"]') !== null`,
+      ),
+      `the ${agent} Start control is outside the activity bar`,
+    );
+  }
+  for (const command of [
+    "discover.tab.glossary",
+    "discover.tab.testing-strategy",
+    "open.discover.warnings",
+  ]) {
+    await runPalette(command);
+    await page.wait(
+      `document.querySelector('#workspace-discover [data-testid="agent-activity-bar"]') !== null`,
+      `the activity bar for ${command}`,
+    );
+    const bar = await barIn("discover");
+    check(bar.bars === 1 && bar.outsideScroll && !bar.removed, `the ${command} page lost the bar`, bar);
+  }
+
+  // Background agents keep their settings and move Start/Stop into the bar.
+  for (const [command, id] of [
+    ["open.devboard.scout", "scout"],
+    ["open.devboard.watchdog", "watchdog"],
+    ["open.devboard.design", "design"],
+    ["open.devboard.coach", "coach"],
+  ]) {
+    await runPalette(command);
+    await page.wait(
+      `document.querySelector('[data-testid="agent-page"]')?.getAttribute("data-agent") === "${id}"`,
+      `the ${id} page`,
+    );
+    const bar = await barIn("devboard");
+    check(
+      bar.bars === 1 && bar.outsideScroll && !bar.removed && bar.control,
+      `the ${id} page does not render the shared bar`,
+      bar,
+    );
+    check(
+      await page.eval<boolean>(`(() => {
+        const bar = document.querySelector('#workspace-devboard [data-testid="agent-activity-bar"]');
+        const control = bar?.querySelector('[data-testid="agent-activity-control"]');
+        const starts = document.querySelectorAll('#workspace-devboard [data-testid="agent-start"]').length;
+        return control?.querySelector('[data-testid="agent-start"]') !== null && starts === 1;
+      })()`),
+      `the ${id} Start control is outside the activity bar`,
+    );
+    check(
+      await page.eval<boolean>(
+        `document.querySelector('[data-testid="agent-cadence"]') !== null && document.querySelector('[data-testid="agent-sync-at"]') !== null`,
+      ),
+      `the ${id} page lost its settings`,
+    );
+  }
+
+  // The Goal single-record page moves its Start control into the bar. Earlier
+  // goal work resolves the seeded records, so a pending one is written and the
+  // reconnect read publishes it before the page opens.
+  await writeFile(
+    join(host, "adrs", "0010-bar-pending.md"),
+    pendingRecord("0010-bar-pending.md", "Bar pending record", "Bar context", "Bar decision"),
+  );
+  await page.reload();
+  await page.wait(
+    `document.readyState === "complete" && document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reloaded dashboard with the pending record",
+    30_000,
+  );
+  await page.click('[data-testid="mode-goal"]');
+  await page.wait(
+    `document.querySelector('[data-testid="sidebar-adr"][data-file="0010-bar-pending.md"]') !== null`,
+    "the pending record in the sidebar",
+    15_000,
+  );
+  await runPalette("goal.adr.open.0010-bar-pending.md");
+  await page.wait(`document.querySelector('[data-testid="record-header"]') !== null`, "the pending record page");
+  const recordBar = await barIn("goal");
+  check(
+    recordBar.bars === 1 && recordBar.outsideScroll && !recordBar.removed && recordBar.control,
+    "the Goal record page does not render the shared bar",
+    recordBar,
+  );
+  const recordControl = await page.eval<{
+    start: boolean;
+    starts: number;
+    inControl: boolean;
+    pending: boolean;
+    control: boolean;
+    file: string;
+    status: string;
+  }>(`(() => {
+    const root = document.querySelector('#workspace-goal');
+    const control = root?.querySelector('[data-testid="agent-activity-control"]');
+    const start = root?.querySelector('[data-testid="start"]');
+    return {
+      start: start !== null && start !== undefined,
+      starts: root?.querySelectorAll('[data-testid="start"]').length ?? 0,
+      inControl: control?.querySelector('[data-testid="start"]') !== null,
+      pending: document.querySelector('[data-testid="record-action"]') !== null,
+      control: control !== null,
+      file: document.querySelector('[data-testid="record-file"]')?.textContent?.trim() ?? "",
+      status: document.querySelector('[data-testid="record-status"]')?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    recordControl.start && recordControl.starts === 1 && recordControl.inControl,
+    "the Goal record Start control is outside the activity bar",
+    recordControl,
+  );
+
+  // An Issues focus tab follows its run in the bar, keeps its question in the
+  // page, and offers no control.
+  await runPalette("open.issues.agents");
+  await page.wait(`document.querySelector('[data-testid="issues-agent-open"]') !== null`, "the Issues agents grid");
+  await page.click('[data-testid="issues-agent-open"]');
+  await page.wait(`document.querySelector('[data-testid="issues-agent-focus"]') !== null`, "the Issues focus tab");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agent-focus"] [data-testid="agent-activity-last"]')?.textContent?.trim().length > 0`,
+    "the Issues focus activity",
+    15_000,
+  );
+  const focusBar = await barIn("issues");
+  check(
+    focusBar.bars === 1 &&
+      focusBar.outsideScroll &&
+      !focusBar.removed &&
+      !focusBar.control &&
+      focusBar.dot === "running",
+    "the Issues focus bar is not a control-free running bar",
+    focusBar,
+  );
+  check(
+    await page.eval<boolean>(
+      `document.querySelector('[data-testid="issues-agent-focus-question"]') !== null && document.querySelector('#workspace-issues [data-testid="agent-activity-question"]') !== null`,
+    ),
+    "the Issues question is not kept in the page beside the bar marker",
+  );
+  await page.click('#workspace-issues [data-testid="agent-activity-toggle"]');
+  await page.wait(
+    `(document.querySelector('#workspace-issues [data-testid="agent-activity-log"]')?.querySelectorAll('.agent-activity-bar__line').length ?? 0) > 1`,
+    "the Issues multi-line activity log",
+  );
+
+  // The Flow overview moves Start/Stop into the bar, keeps its goal launcher,
+  // and gives a conversation its own activity bar.
+  await runPalette("open.flow.overview");
+  await page.wait(`document.querySelector('[data-testid="flow-goal"]') !== null`, "the Flow overview");
+  const flowBar = await barIn("flow");
+  check(
+    flowBar.bars === 1 && flowBar.outsideScroll && !flowBar.removed,
+    "the Flow overview does not render the shared bar",
+    flowBar,
+  );
+  check(
+    await page.eval<boolean>(`(() => {
+      const bar = document.querySelector('#workspace-flow [data-testid="agent-activity-bar"]');
+      return (
+        bar?.querySelector('[data-testid="agent-activity-control"] [data-testid="start-flow-implementation"]') !== null &&
+        bar?.querySelector('[data-testid="agent-activity-control"] [data-testid="stop-flow-implementation"]') !== null &&
+        document.querySelectorAll('[data-testid="start-flow-implementation"]').length === 1 &&
+        document.querySelector('[data-testid="create-flow-goal"]') !== null
+      );
+    })()`),
+    "the Flow implementation controls are not exclusive to the bar, or the goal launcher moved",
+  );
+  await page.click('[data-testid="flow-widget-discuss"]');
+  await page.wait(`document.querySelector('[data-testid="flow-conversation"]') !== null`, "the widget conversation", 20_000);
+  await page.wait(
+    `document.querySelector('#workspace-flow [data-testid="agent-activity-last"]')?.textContent?.trim().length > 0`,
+    "the conversation activity in the bar",
+    20_000,
+  );
+  const conversationBar = await barIn("flow");
+  check(
+    conversationBar.bars === 1 &&
+      conversationBar.outsideScroll &&
+      !conversationBar.control &&
+      !conversationBar.removed,
+    "the Flow conversation does not render one control-free bar",
+    conversationBar,
+  );
+  await page.click('[data-testid="close-flow-conversation"]');
+  await page.wait(`document.querySelector('[data-testid="flow-conversation"]') === null`, "the closed conversation");
+
+  // Fleet and agentless pages keep their surfaces and render no bar.
+  for (const [command, mode] of [
+    ["open.goal.overview", "goal"],
+    ["goal.adrs.open", "goal"],
+    ["goal.document.open", "goal"],
+    ["open.goal.skills", "goal"],
+    ["open.issues.overview", "issues"],
+    ["open.issues.agents", "issues"],
+    ["open.issues.drafts", "issues"],
+    ["open.issues.issues", "issues"],
+    ["open.issues.runs", "issues"],
+    ["devboard.tab.tools", "devboard"],
+    ["open.discover.contribution", "discover"],
+    ["open.flow.decisions", "flow"],
+    ["flow.checkpoint.open.cp-1", "flow"],
+    ["flow.file.open.src/order.ts", "flow"],
+  ]) {
+    await runPalette(command);
+    await delay(120);
+    const bar = await barIn(mode);
+    check(bar.bars === 0, `the ${command} page still renders an activity bar`, bar);
+  }
+
   // 19. Palette mirroring after many tabs opened, then screenshots.
   await page.key("k", 2);
   await page.wait(`document.querySelector('[data-testid="command-palette"]') !== null`, "the final palette");
@@ -9199,6 +9765,53 @@ try {
   await saveShot("flow-overview");
   await page.key("1", 1);
   await saveShot("goal-final");
+
+  // 20. A Goal lane follows its own activity in the bar, without a control or
+  // a status badge. The lane is seeded in durable state, so the server is
+  // restarted before opening it.
+  expectedReloadFailures = true;
+  await stopServer();
+  await seedLane(stateDir, host);
+  startServer();
+  await waitForHttp(baseUrl);
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reconnection after the lane restart",
+    30_000,
+  );
+  await delay(2_000);
+  expectedReloadFailures = false;
+  await page.wait(
+    `document.querySelector('[data-testid="lane-tab"][data-lane="lane-1"]') !== null`,
+    "the restored lane entry",
+    30_000,
+  );
+  await page.eval(`(() => {
+    const button = document.querySelector('[data-testid="lane-tab"][data-lane="lane-1"]');
+    if (button === null) return false;
+    button.click();
+    return true;
+  })()`);
+  await page.wait(`document.querySelector('[data-testid="lane-header"]') !== null`, "the lane page");
+  const laneBar = await barIn("goal");
+  check(
+    laneBar.bars === 1 &&
+      laneBar.outsideScroll &&
+      !laneBar.control &&
+      !laneBar.removed &&
+      laneBar.last.includes("Lane parked"),
+    "the Goal lane does not follow its activity in one control-free bar",
+    laneBar,
+  );
+  check(
+    await page.eval<boolean>(
+      `document.querySelector('[data-testid="lane-status"]') === null && document.querySelector('[data-testid="lane-activity"]') === null`,
+    ),
+    "the Goal lane still renders its status badge or activity panel",
+  );
+  await runPalette("open.goal.overview");
+  await delay(120);
+  check((await barIn("goal")).bars === 0, "the Goal implementation page rendered an activity bar");
 
   // 20. No runtime failures or overflow.
   const runtime = await page.eval<{ exceptions: string[]; overflow: number[] }>(`(() => {
