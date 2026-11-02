@@ -230,11 +230,6 @@ export function nextActivity(
   }
 }
 
-/** True when the peer rejected a prompt because its previous turn is still running. */
-export function isSessionBusy(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === -32003;
-}
-
 /**
  * A minimal ACP client: JSON-RPC 2.0 over newline-delimited JSON on the child's
  * stdio. It starts a session, sends one prompt, relays session updates as
