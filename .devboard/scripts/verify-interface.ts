@@ -4222,6 +4222,137 @@ try {
   );
   check(!discoverChrome.versions, "the Platform rail still repeats the runtime versions", discoverChrome);
 
+  // Every existing checkout path the Overview renders hands off to VS Code.
+  const overviewLinks = await page.eval<{
+    file: string;
+    manifest: string;
+    directory: string;
+    anchors: number;
+    hrefs: string[];
+    stackLinks: number;
+    stackHrefs: Array<string | null>;
+    plainKernel: boolean;
+    kernelHasHref: boolean;
+    commandAnchors: number;
+    boundaryAnchors: number;
+    levelAnchors: number;
+    directionAnchors: number;
+    location: string;
+  }>(`(() => {
+    const panel = document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"]');
+    const links = [...panel.querySelectorAll('a[href^="vscode://"]')];
+    const mapped = (text) => {
+      const anchor = links.find((entry) => entry.textContent.trim() === text);
+      if (anchor === undefined) return "";
+      const href = anchor.getAttribute("href") ?? "";
+      return href.startsWith("vscode://file/")
+        ? decodeURIComponent(href.slice("vscode://file/".length))
+        : "";
+    };
+    const kernels = panel.querySelector('[data-testid="discover-shared-kernels"]');
+    const kernel = kernels === null
+      ? null
+      : [...kernels.querySelectorAll(".code-chip")].find((chip) => chip.textContent.trim() === "src/shared") ?? null;
+    const stack = panel.querySelector('[data-field="stack"]');
+    const anchorsIn = (selector) => {
+      const scope = panel.querySelector(selector);
+      return scope === null ? 0 : scope.querySelectorAll('a[href^="vscode://"]').length;
+    };
+    return {
+      file: mapped("src/checkout/flow.ts"),
+      manifest: mapped("package.json"),
+      directory: mapped("src"),
+      anchors: links.length,
+      hrefs: links.map((entry) => entry.getAttribute("href")),
+      stackLinks: stack === null ? 0 : stack.querySelectorAll("a.code-chip--link").length,
+      stackHrefs: stack === null
+        ? []
+        : [...stack.querySelectorAll("a.code-chip--link")].map((entry) => entry.getAttribute("href")),
+      plainKernel: kernel !== null && kernel.tagName === "CODE",
+      kernelHasHref: kernel !== null && kernel.hasAttribute("href"),
+      commandAnchors: anchorsIn('[data-field="commands"]'),
+      boundaryAnchors: anchorsIn('[data-field="external-boundaries"]'),
+      levelAnchors: anchorsIn('[data-field="testing"]'),
+      directionAnchors: panel.querySelectorAll('[data-field="architecture"] .discover-facts a[href^="vscode://"]').length,
+      location: location.href,
+    };
+  })()`);
+  const fixtureCheckout = resolve(host);
+  check(
+    overviewLinks.file === join(fixtureCheckout, "src", "checkout", "flow.ts"),
+    "the Overview entry point does not hand off its file to VS Code",
+    overviewLinks,
+  );
+  check(
+    overviewLinks.manifest === join(fixtureCheckout, "package.json"),
+    "the Overview manifest does not hand off its file to VS Code",
+    overviewLinks,
+  );
+  check(
+    overviewLinks.directory === join(fixtureCheckout, "src"),
+    "the Overview entry point does not hand off its directory to VS Code",
+    overviewLinks,
+  );
+  check(
+    overviewLinks.anchors === 3,
+    "the Overview links a reference that is not an existing checkout path",
+    overviewLinks.hrefs,
+  );
+  check(
+    overviewLinks.stackLinks === 1 &&
+      (overviewLinks.stackHrefs[0] ?? "").startsWith("https://github.com/"),
+    "a stack chip lost its repository link",
+    overviewLinks,
+  );
+  check(
+    overviewLinks.plainKernel && !overviewLinks.kernelHasHref,
+    "the missing shared kernel renders as a link",
+    overviewLinks,
+  );
+  check(
+    overviewLinks.commandAnchors === 0 &&
+      overviewLinks.boundaryAnchors === 0 &&
+      overviewLinks.levelAnchors === 0 &&
+      overviewLinks.directionAnchors === 0,
+    "a command, boundary, level, or dependency-direction value became a link",
+    overviewLinks,
+  );
+  // Activating the link would raise Chrome's external-protocol prompt, which
+  // owns the window and makes the page inert for the rest of this gate. The
+  // capture listener records the URL the click requests and cancels the OS
+  // handoff; the operator walkthrough proves that handoff opens VS Code.
+  const activation = await page.eval<{
+    requested: string;
+    target: string;
+    location: string;
+  }>(`(() => {
+    const link = [...document.querySelectorAll('#workspace-discover [data-tab="overview"] a[href^="vscode://"]')]
+      .find((entry) => entry.textContent.trim() === "src/checkout/flow.ts");
+    if (link === undefined) return { requested: "missing", target: "missing", location: location.href };
+    let requested = "";
+    const capture = (event) => {
+      requested = event.target instanceof Element
+        ? event.target.getAttribute("href") ?? ""
+        : "";
+      event.preventDefault();
+    };
+    document.addEventListener("click", capture, { capture: true, once: true });
+    link.click();
+    document.removeEventListener("click", capture, { capture: true });
+    return { requested, target: link.getAttribute("href") ?? "", location: location.href };
+  })()`);
+  check(
+    activation.requested === activation.target &&
+      activation.requested.startsWith("vscode://file/"),
+    "activating a file link did not request its VS Code URL",
+    activation,
+  );
+  check(
+    activation.location === overviewLinks.location,
+    "activating a file link navigated the dashboard away",
+    activation,
+  );
+
   // The command count discloses every slot, including the ones not found.
   const collapsedCommands = await page.eval<number>(
     `document.querySelectorAll('[data-testid="discover-command-list"] tbody tr').length`,
@@ -4308,19 +4439,38 @@ try {
     mobile: false,
   });
   await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the 1024×720 viewport for the scroll check");
-  const discoverScrollBefore = await page.eval<{ top: number; scroll: number; client: number }>(`(() => {
+  const discoverScrollBefore = await page.eval<{
+    top: number;
+    scroll: number;
+    client: number;
+    clipped: number;
+    overflow: number[];
+  }>(`(() => {
     const scroller = document.querySelector('#workspace-discover .scroll-column');
-    if (scroller === null) return { top: 0, scroll: 0, client: 0 };
+    if (scroller === null) return { top: 0, scroll: 0, client: 0, clipped: 0, overflow: [0, 0] };
     scroller.scrollTop = 160;
+    const bounds = scroller.getBoundingClientRect();
+    const clipped = [...scroller.querySelectorAll('a[href^="vscode://"]')].filter((link) => {
+      const rect = link.getBoundingClientRect();
+      return rect.width > 0 && (rect.right > bounds.right + 0.5 || rect.left < bounds.left - 0.5);
+    }).length;
     return {
       top: Math.round(scroller.scrollTop),
       scroll: scroller.scrollHeight,
       client: scroller.clientHeight,
+      clipped,
+      overflow: [document.documentElement.scrollWidth, document.documentElement.clientWidth],
     };
   })()`);
   check(
     discoverScrollBefore.top > 0,
     "the Discover page does not scroll",
+    discoverScrollBefore,
+  );
+  check(
+    discoverScrollBefore.clipped === 0 &&
+      discoverScrollBefore.overflow[0]! <= discoverScrollBefore.overflow[1]!,
+    "a Discover file link overflows its page at 1024×720",
     discoverScrollBefore,
   );
   await page.click('[data-testid="mode-goal"]');
@@ -5143,6 +5293,22 @@ try {
     "the Discover head does not name the restored repository",
     retainedTitle,
   );
+  // A retained remote publishes bytes for no live tree, so its references stay text.
+  const retainedLinks = await page.eval<{ anchors: number; plain: boolean; texts: string[] }>(`(() => {
+    const panel = document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"]');
+    const chips = [...panel.querySelectorAll(".code-chip")];
+    const entry = chips.find((chip) => chip.textContent.trim() === "src/checkout/flow.ts") ?? null;
+    return {
+      anchors: panel.querySelectorAll('a[href^="vscode://"]').length,
+      plain: entry !== null && entry.tagName === "CODE",
+      texts: chips.map((chip) => chip.textContent.trim()),
+    };
+  })()`);
+  check(
+    retainedLinks.anchors === 0 && retainedLinks.plain,
+    "the retained remote Overview linked one of its path references",
+    retainedLinks,
+  );
   const retainedBoundaries = await page.eval<{ text: string; bands: number }>(`(() => {
     const block = document.querySelector('#workspace-discover [data-testid="discover-external-boundaries"]');
     return {
@@ -5344,6 +5510,29 @@ try {
   }))()`);
   check(cleared.input === "", "clearing did not empty the URL field", cleared);
   check(!cleared.clear, "the clear control survived the host target", cleared);
+  // Returning to the host restores the links without a reload.
+  await page.wait(
+    `document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] a[href^="vscode://"]').length === 3`,
+    "the host links after clearing the remote target",
+    20_000,
+  );
+  const restoredLinks = await page.eval<{ file: string; anchors: number }>(`(() => {
+    const links = [...document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] a[href^="vscode://"]')];
+    const anchor = links.find((entry) => entry.textContent.trim() === "src/checkout/flow.ts");
+    const href = anchor?.getAttribute("href") ?? "";
+    return {
+      anchors: links.length,
+      file: href.startsWith("vscode://file/")
+        ? decodeURIComponent(href.slice("vscode://file/".length))
+        : "",
+    };
+  })()`);
+  check(
+    restoredLinks.anchors === 3 &&
+      restoredLinks.file === join(resolve(host), "src", "checkout", "flow.ts"),
+    "returning to the host did not restore the Overview links",
+    restoredLinks,
+  );
   check(
     JSON.stringify(cleared.options) === JSON.stringify([helloUrl]),
     "clearing removed a retained project",
@@ -5378,6 +5567,110 @@ try {
     JSON.stringify(scratchAfterInvalid.sort()) === JSON.stringify(["octocat~hello-world"]),
     "an invalid URL created or removed a retained project",
     scratchAfterInvalid,
+  );
+
+  // A published-sheet value that is absolute is refused by the sheet schema, so
+  // it never reaches the page; the parent-escaping values pass the schema and
+  // must still render as plain text rather than a link.
+  const containmentSheetPath = join(host, ".omp", "discover", "sheet.json");
+  const publishedSheet = await readFile(containmentSheetPath, "utf8");
+  const seededSheet = JSON.parse(publishedSheet) as {
+    architecture?: { contexts?: { value?: Array<Record<string, unknown>> } };
+  };
+  const seededContexts = seededSheet.architecture?.contexts?.value;
+  const escapees = ["../outside.ts", "src/../../escape.ts"];
+  const seededEntries = seededContexts?.[0]?.entryPoints;
+  check(
+    Array.isArray(seededEntries),
+    "the fixture sheet carries no entry point to seed",
+    containmentSheetPath,
+  );
+  (seededEntries as string[]).push("/etc/passwd", ...escapees);
+  await writeFile(containmentSheetPath, `${JSON.stringify(seededSheet, null, 2)}\n`);
+  await page.navigate(baseUrl);
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reconnection after seeding the absolute reference",
+    30_000,
+  );
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null`,
+    "the Overview with the seeded absolute reference",
+  );
+  const absoluteRefusal = await page.eval<{ anchors: number; error: string }>(`(() => {
+    const panel = document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"]');
+    return {
+      anchors: panel.querySelectorAll('a[href^="vscode://"]').length,
+      error: document.querySelector('[data-testid="discover-error"]')?.textContent ?? "",
+    };
+  })()`);
+  check(
+    absoluteRefusal.anchors === 0 &&
+      absoluteRefusal.error.includes("must not be an absolute path"),
+    "an absolute sheet value was not refused before it could become a link",
+    absoluteRefusal,
+  );
+
+  const escapeSheet = JSON.parse(publishedSheet) as {
+    architecture?: { contexts?: { value?: Array<Record<string, unknown>> } };
+  };
+  const escapeEntries = escapeSheet.architecture?.contexts?.value?.[0]?.entryPoints;
+  check(
+    Array.isArray(escapeEntries),
+    "the fixture sheet carries no entry point to seed",
+    containmentSheetPath,
+  );
+  (escapeEntries as string[]).push(...escapees);
+  await writeFile(containmentSheetPath, `${JSON.stringify(escapeSheet, null, 2)}\n`);
+  await page.navigate(baseUrl);
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reconnection after seeding the escaping references",
+    30_000,
+  );
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null`,
+    "the Overview with the seeded escaping references",
+  );
+  await page.wait(
+    `[...document.querySelectorAll('#workspace-discover [data-tab="overview"] .code-chip')].some((chip) => chip.textContent.trim() === ${JSON.stringify(escapees[0])})`,
+    "the seeded escaping reference text",
+    20_000,
+  );
+  const containment = await page.eval<{ anchors: number; rendered: string[]; linked: string[] }>(`(() => {
+    const panel = document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"]');
+    const escapees = ${JSON.stringify(escapees)};
+    const chips = [...panel.querySelectorAll(".code-chip")];
+    return {
+      anchors: panel.querySelectorAll('a[href^="vscode://"]').length,
+      rendered: chips
+        .map((chip) => chip.textContent.trim())
+        .filter((text) => escapees.includes(text)),
+      linked: [...panel.querySelectorAll('a[href^="vscode://"]')]
+        .map((entry) => entry.textContent.trim()),
+    };
+  })()`);
+  check(
+    containment.rendered.length === escapees.length &&
+      containment.anchors === 3 &&
+      containment.linked.every((text) => !escapees.includes(text)),
+    "a sheet value that escapes the checkout became a link",
+    containment,
+  );
+  await writeFile(containmentSheetPath, publishedSheet);
+  await page.navigate(baseUrl);
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reconnection after restoring the fixture sheet",
+    30_000,
+  );
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] a[href^="vscode://"]').length === 3`,
+    "the restored Overview links",
+    20_000,
   );
 
   // The installed gate renders none of the remote controls.

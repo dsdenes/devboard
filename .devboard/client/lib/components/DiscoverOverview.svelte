@@ -178,7 +178,7 @@
           name: scalarText(record.name).trim(),
           path,
           responsibility: scalarText(record.responsibility).trim(),
-          entryPoints: [...new Set(entryPoints)].filter((entry) => entry !== path),
+          entryPoints: [...new Set(entryPoints)],
         };
       })
       .filter((row) => row.name.length > 0 || row.path.length > 0),
@@ -340,6 +340,22 @@
   {/if}
 {/snippet}
 
+{#snippet factValue(key: string, leaf: Leaf)}
+  {#if key === "manifests"}
+    {#each leafLines(leaf.value) as line, index (index)}
+      {@const href = discover.pathLink(line)}
+      {#if index > 0}, {/if}
+      {#if href === null}
+        <span>{line}</span>
+      {:else}
+        <a class="code-chip code-chip--link" href={href} title="Open in VS Code">{line}</a>
+      {/if}
+    {/each}
+  {:else}
+    {factText(key, leaf)}
+  {/if}
+{/snippet}
+
 {#snippet factList(section: Record<string, unknown>)}
   {@const facts = knownFacts(section)}
   {#if facts.length === 0}
@@ -349,7 +365,7 @@
       {#each facts as [key, leaf] (key)}
         <div class="discover-fact">
           <dt>{humanize(key)}</dt>
-          <dd class:discover-mono={MONO_FIELDS.has(key)}>{factText(key, leaf)}</dd>
+          <dd class:discover-mono={MONO_FIELDS.has(key)}>{@render factValue(key, leaf)}</dd>
         </div>
       {/each}
     </dl>
@@ -381,6 +397,19 @@
   <div class="discover-chips" data-testid={testid}>
     {#each lines as line (line)}
       <code class="code-chip">{line}</code>
+    {/each}
+  </div>
+{/snippet}
+
+{#snippet pathChips(lines: string[], testid: string | undefined = undefined)}
+  <div class="discover-chips" data-testid={testid}>
+    {#each lines as line, index (index)}
+      {@const href = discover.pathLink(line)}
+      {#if href === null}
+        <code class="code-chip">{line}</code>
+      {:else}
+        <a class="code-chip code-chip--link" href={href} title="Open in VS Code">{line}</a>
+      {/if}
     {/each}
   </div>
 {/snippet}
@@ -512,7 +541,7 @@
           {#if sharedKernelsLeaf.confidence === "unknown"}
             <p class="empty">{unknownText(sharedKernelsLeaf)}</p>
           {:else if sharedKernelValues.length > 0}
-            {@render plainChips(sharedKernelValues, "discover-shared-kernels")}
+            {@render pathChips(sharedKernelValues, "discover-shared-kernels")}
           {:else}
             <p class="empty">No shared kernel was detected.</p>
           {/if}
@@ -836,7 +865,7 @@
                       {#if context.entryPoints.length > 0}
                         <div class="discover-context__entries">
                           <span class="discover-context__label">Entry points</span>
-                          {@render plainChips(context.entryPoints)}
+                          {@render pathChips(context.entryPoints)}
                         </div>
                       {/if}
                     </li>

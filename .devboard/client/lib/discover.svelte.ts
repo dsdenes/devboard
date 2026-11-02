@@ -209,6 +209,16 @@ export class DiscoverStore {
     return this.repositories[name] ?? this.repositories[name.toLowerCase()] ?? null;
   }
 
+  /**
+   * The server's VS Code handoff for one Overview path reference, or null when
+   * the value stays plain text: a missing path, an absolute or outside-checkout
+   * path, or any reference of a retained remote target.
+   */
+  pathLink(reference: string): string | null {
+    const href = this.state?.overviewLinks?.[reference.trim()];
+    return typeof href === "string" && href.startsWith("vscode://file/") ? href : null;
+  }
+
   get contribution(): Contribution | null {
     return this.state?.contribution ?? null;
   }

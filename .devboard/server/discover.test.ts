@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
@@ -18,6 +19,8 @@ import {
   confirmGlossaryTerm,
   declaredCommandAliases,
   DiscoverValidationError,
+  overviewPathLink,
+  overviewPathLinks,
   readArtifacts,
   rejectGlossaryTerm,
 } from "./discover";
@@ -2377,6 +2380,103 @@ describe("declared command aliases", () => {
     expect(declaredCommandAliases(root)).toEqual([]);
     writeFileSync(join(root, "package.json"), `${JSON.stringify({ scripts: [] })}\n`);
     expect(declaredCommandAliases(root)).toEqual([]);
+  });
+});
+
+describe("Overview path links", () => {
+  /** A checkout with one entry point, one manifest, and a name that needs escaping. */
+  function overviewCheckout(name: string): string {
+    const root = testDirectory(name);
+    mkdirSync(join(root, "src", "checkout"), { recursive: true });
+    writeFileSync(join(root, "package.json"), "{}\n");
+    writeFileSync(join(root, "src", "checkout", "flow.ts"), "export {};\n");
+    writeFileSync(join(root, "src", "a b#c?.ts"), "export {};\n");
+    return root;
+  }
+
+  function pathOf(href: string): string {
+    return decodeURIComponent(href.slice("vscode://file/".length));
+  }
+
+  function leaf(value: unknown): Record<string, unknown> {
+    return { value, evidence: ["."], confidence: "observed" };
+  }
+
+  test("hands an existing file and an existing directory to VS Code", () => {
+    const root = overviewCheckout("links-existing");
+    const file = overviewPathLink(root, "src/checkout/flow.ts");
+    expect(file?.startsWith("vscode://file/")).toBe(true);
+    expect(pathOf(file ?? "")).toBe(join(root, "src", "checkout", "flow.ts"));
+    const directory = overviewPathLink(root, "src");
+    expect(pathOf(directory ?? "")).toBe(join(root, "src"));
+    const manifest = overviewPathLink(root, " package.json ");
+    expect(pathOf(manifest ?? "")).toBe(join(root, "package.json"));
+  });
+
+  test("escapes a name so the URL decodes to the exact absolute path", () => {
+    const root = overviewCheckout("links-escaped");
+    const href = overviewPathLink(root, "src/a b#c?.ts");
+    expect(href).not.toBeNull();
+    expect(href?.includes(" ")).toBe(false);
+    expect(href?.includes("#")).toBe(false);
+    expect(pathOf(href ?? "")).toBe(join(root, "src", "a b#c?.ts"));
+  });
+
+  test("refuses a missing path, an absolute path, and a parent segment", () => {
+    const root = overviewCheckout("links-refused");
+    expect(overviewPathLink(root, "src/shared")).toBeNull();
+    expect(overviewPathLink(root, "/etc/passwd")).toBeNull();
+    expect(overviewPathLink(root, "../outside.ts")).toBeNull();
+    expect(overviewPathLink(root, "src/../../escape.ts")).toBeNull();
+  });
+
+  test("refuses a path that resolves outside the checkout even when it exists", () => {
+    const root = overviewCheckout("links-symlink");
+    const outside = join(root, "..", `outside-${process.pid}.ts`);
+    writeFileSync(outside, "export {};\n");
+    try {
+      symlinkSync(outside, join(root, "linked.ts"));
+      expect(overviewPathLink(root, "linked.ts")).toBeNull();
+    } finally {
+      rmSync(outside, { force: true });
+    }
+  });
+
+  test("links nothing on a retained remote target", () => {
+    const root = overviewCheckout("links-remote");
+    const sheet = { architecture: { contexts: leaf([{ entryPoints: ["src"] }]) } };
+    expect(overviewPathLink(root, "src", { host: false })).toBeNull();
+    expect(overviewPathLinks(root, sheet, { host: false })).toEqual({});
+  });
+
+  test("collects the entry points, manifests, and kernels the Overview renders", () => {
+    const root = overviewCheckout("links-sheet");
+    const sheet = {
+      architecture: {
+        contexts: leaf([
+          { name: "Checkout", entryPoints: ["src/checkout/flow.ts", "src"] },
+          { name: "Orders", entryPoints: ["src/shared"] },
+        ]),
+        sharedKernels: leaf(["src/checkout", "none detected"]),
+      },
+      runtime: { manifests: leaf(["package.json", "missing.json"]) },
+    };
+    const links = overviewPathLinks(root, sheet);
+    expect(Object.keys(links).sort()).toEqual([
+      "package.json",
+      "src",
+      "src/checkout",
+      "src/checkout/flow.ts",
+    ]);
+    expect(pathOf(links["package.json"] ?? "")).toBe(join(root, "package.json"));
+    expect(pathOf(links["src"] ?? "")).toBe(join(root, "src"));
+    expect(pathOf(links["src/checkout"] ?? "")).toBe(join(root, "src", "checkout"));
+    expect(pathOf(links["src/checkout/flow.ts"] ?? "")).toBe(
+      join(root, "src", "checkout", "flow.ts"),
+    );
+    expect(links["src/shared"]).toBeUndefined();
+    expect(links["missing.json"]).toBeUndefined();
+    expect(overviewPathLinks(root, null)).toEqual({});
   });
 });
 

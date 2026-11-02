@@ -1018,9 +1018,10 @@ artifact, and spawns no peer. `getDiscover` asks for the current snapshot and is
 `discoverPromptState`; it never sends `activity`, `question`,
 `error`, `runStarted`, or `runStopped` for Discover. `discoverState` keeps the active and interrupt
 flags, staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
-repository links for installed packages, `contribution` (the published contribution document or
-`null`), glossaries, per-concept usage and examples measured from the host's documentation and
-source, `glossarySignificance` keyed by bounded context and then concept id with
+repository links for installed packages, the VS Code handoff for each Overview path reference
+(`overviewLinks`, keyed by the displayed text), `contribution` (the published contribution
+document or `null`), glossaries, per-concept usage and examples measured from the host's
+documentation and source, `glossarySignificance` keyed by bounded context and then concept id with
 `{ score, reason }` values, decisions, and every published skill with baseline text, live text,
 hashes, and state. It adds `activeAgent`, `runningAll`, and `agents`: the seven cards in sidebar
 order with `id`, `label`, `command`, `state`, `startedAt`, `endedAt`, `error`, and `prompt`
@@ -1148,6 +1149,19 @@ duplicate name collapses to one chip; the sheet's stored values stay unchanged. 
 `unknown` here and is not listed. The delivery section, the deployment pipeline sources, and the
 runtime `versions` fact stay hidden. A sheet with no observed test level and a glossary with no
 matching term keep an explicit empty state.
+
+Every Overview reference that resolves to an existing file or directory in the host checkout is a
+link: its text is the displayed repository-relative path and its `href` is a `vscode://file/` URL
+carrying that path's absolute location, so activating it — by click or by Tab and Enter — opens
+the file or folder in the developer's local VS Code while the dashboard page stays on Discover →
+Overview. The rule covers the bounded-context entry points, the `manifests` fact, and the shared
+kernels. A reference that names no existing path stays its plain `.code-chip` text with no anchor
+and no `href`, and a value that is absolute, carries a `..` segment, or resolves outside the
+checkout — including through a symlink — never becomes a link. The sheet's own string rule already
+refuses an absolute value, so one never reaches the page at all. A retained remote project publishes
+bytes for no live tree, so its Overview renders no path links. Stack, command, external-boundary,
+test-level, and dependency-direction values never link; a stack chip keeps its `https://` package
+repository link.
 
 ### Contribution sheet and contribution skill
 

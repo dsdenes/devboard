@@ -92,6 +92,7 @@ import {
   claimScratchEntry,
   cleanupRemoteScratch,
   listRetainedProjects,
+  overviewPathLinks,
   publishAgentStaged,
   readArtifacts,
   readRetainedProject,
@@ -3234,6 +3235,13 @@ export function createApp(options: AppOptions) {
         artifacts === null || artifacts.sheet === null
           ? {}
           : dependencyRepositories(root, artifacts.sheet),
+      // A path reference on this checkout opens in the developer's editor. A
+      // retained remote project's published bytes name no live tree, so its
+      // references stay plain text.
+      overviewLinks:
+        artifacts === null || artifacts.sheet === null || shownRemote !== undefined
+          ? {}
+          : overviewPathLinks(root, artifacts.sheet, { host: true }),
       glossaries: artifacts?.glossaries ?? [],
       contribution: artifacts?.contribution ?? null,
       glossaryUsage: artifacts?.usage ?? {},

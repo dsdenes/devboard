@@ -11,6 +11,7 @@ import {
   readSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmdirSync,
   rmSync,
@@ -4718,6 +4719,96 @@ export function dependencyRepositories(
     const url =
       packageRepository(repoDir, name) ?? packageRepository(repoDir, name.toLowerCase());
     if (url !== null) links[name] = url;
+  }
+  return links;
+}
+
+/** The scheme every Overview file reference hands off to the local editor. */
+export const VSCODE_FILE_SCHEME = "vscode://file/";
+
+/** A value that names a location of its own: absolute, or a drive path. */
+const ABSOLUTE_REFERENCE = /^(?:[\\/]|[A-Za-z]:[\\/])/;
+
+/**
+ * The VS Code handoff for one repository-relative reference the Overview
+ * renders, or null when the page keeps it plain text. A reference that is
+ * absolute or carries a `..` segment is refused before it is resolved, and a
+ * path that resolves outside the checkout — including through a symlink — is
+ * refused even when a file exists there. `host: false` is a retained remote
+ * project: its published bytes name no live tree, so nothing links.
+ *
+ * Every segment is encoded on its own, so a name carrying a space, `#`, `?`, or
+ * `%` yields a URL that decodes back to the exact absolute path.
+ */
+export function overviewPathLink(
+  root: string,
+  reference: unknown,
+  options: { host?: boolean } = {},
+): string | null {
+  if (options.host === false) return null;
+  const value = typeof reference === "string" ? reference.trim() : "";
+  if (value.length === 0 || ABSOLUTE_REFERENCE.test(value)) return null;
+  if (value.split(/[\\/]/).includes("..")) return null;
+  const checkout = resolve(root);
+  const absolute = resolve(checkout, value);
+  if (absolute !== checkout && !absolute.startsWith(`${checkout}${sep}`)) return null;
+  let realCheckout: string;
+  let real: string;
+  try {
+    realCheckout = realpathSync(checkout);
+    real = realpathSync(absolute);
+  } catch {
+    // A reference that names no existing file or directory stays text.
+    return null;
+  }
+  if (real !== realCheckout && !real.startsWith(`${realCheckout}${sep}`)) return null;
+  return `${VSCODE_FILE_SCHEME}${absolute.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/** Every reference the Overview renders as a path: entry points, manifests, kernels. */
+function overviewReferences(sheet: Record<string, unknown>): string[] {
+  const architecture = isRecord(sheet.architecture) ? sheet.architecture : {};
+  const runtime = isRecord(sheet.runtime) ? sheet.runtime : {};
+  const contexts =
+    isRecord(architecture.contexts) && Array.isArray(architecture.contexts.value)
+      ? architecture.contexts.value
+      : [];
+  const kernels =
+    isRecord(architecture.sharedKernels) && Array.isArray(architecture.sharedKernels.value)
+      ? architecture.sharedKernels.value
+      : [];
+  const manifests =
+    isRecord(runtime.manifests) && Array.isArray(runtime.manifests.value)
+      ? runtime.manifests.value
+      : [];
+  const references: string[] = [];
+  for (const context of contexts) {
+    if (!isRecord(context) || !Array.isArray(context.entryPoints)) continue;
+    for (const entry of context.entryPoints) {
+      if (typeof entry === "string") references.push(entry.trim());
+    }
+  }
+  for (const value of [...kernels, ...manifests]) {
+    if (typeof value === "string") references.push(value.trim());
+  }
+  return references.filter((reference) => reference.length > 0);
+}
+
+/**
+ * The handoff for every path reference the Overview renders, keyed by the text
+ * the page shows. A reference the rule refuses has no entry, so the page draws
+ * its existing plain chip and the payload carries no link for it.
+ */
+export function overviewPathLinks(
+  root: string,
+  sheet: Sheet | Record<string, unknown> | null,
+  options: { host?: boolean } = {},
+): Record<string, string> {
+  if (sheet === null || options.host === false) return {};
+  const links: Record<string, string> = {};
+  for (const reference of [...new Set(overviewReferences(sheet))].sort()) {
+    const href = overviewPathLink(root, reference, options);
+    if (href !== null) links[reference] = href;
   }
   return links;
 }

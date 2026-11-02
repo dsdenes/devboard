@@ -66,6 +66,7 @@ function discoverState(remoteAvailable: boolean): DiscoverStatePayload {
     freshness: null,
     sheet: null,
     dependencyRepositories: {},
+    overviewLinks: {},
     contribution: null,
     glossaries: [],
     glossaryUsage: {},

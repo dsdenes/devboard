@@ -528,6 +528,8 @@ export interface DiscoverStatePayload {
   /** The manifest's invocations for the commands the sheet recorded. */
   commandAliases?: Array<{ command: string; alias: string }>;
   dependencyRepositories: Record<string, string>;
+  /** The VS Code handoff for each Overview path reference that resolves. */
+  overviewLinks: Record<string, string>;
   /** Null until the contribution agent publishes, or when its file is unreadable. */
   contribution: Contribution | null;
   glossaries: Glossary[];

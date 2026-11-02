@@ -136,6 +136,30 @@ describe("dependency routes", () => {
   });
 });
 
+describe("architecture entry points", () => {
+  function contextEntryPoints(entryPoints: string[]): unknown {
+    const raw = sheet();
+    const contexts = (raw.architecture as {
+      contexts: { value: Array<Record<string, unknown>> };
+    }).contexts;
+    contexts.value[0]!.entryPoints = entryPoints;
+    const architecture = normalizeSheet(raw, FRESHNESS).architecture as {
+      contexts: { value: Array<{ entryPoints: string[] }> };
+    };
+    return architecture.contexts.value[0]!.entryPoints;
+  }
+
+  test("refuses an absolute entry point before the page can render it", () => {
+    expect(() => contextEntryPoints(["/etc/passwd"])).toThrow(
+      "must not be an absolute path",
+    );
+  });
+
+  test("publishes a parent-escaping entry point, which the Overview keeps plain", () => {
+    expect(contextEntryPoints(["../outside.ts"])).toEqual(["../outside.ts"]);
+  });
+});
+
 describe("architecture dependencies", () => {
   test("publishes directed edges sorted by both endpoints", () => {
     const architecture = normalize(
