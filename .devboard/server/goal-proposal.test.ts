@@ -257,7 +257,7 @@ describe("goal proposal drafts", () => {
       const response = await propose(
         url,
         proposal({
-          conversation: [
+          turns: [
             { role: "DEVELOPER", text: "Why is this button clipped?" },
             { role: "AGENT", text: "The flex row has no min-width." },
           ],
@@ -360,7 +360,7 @@ describe("goal proposal drafts", () => {
     const { server, root, url } = await startServer();
 
     try {
-      const accepted = proposal({ conversation: [] });
+      const accepted = proposal({ turns: [] });
       const refused = await propose(url, { ...accepted, unexpected: 1 });
 
       expect(refused.status).toBe(400);
@@ -373,6 +373,23 @@ describe("goal proposal drafts", () => {
       const created = await propose(url, accepted);
       expect(created.status).toBe(201);
       expect((await drafts(root)).length).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses the singular conversation key it no longer accepts", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const response = await propose(url, proposal({ conversation: [] }));
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "unknown field: conversation."),
+      );
+      expect(await drafts(root)).toEqual([]);
     } finally {
       server.stop(true);
     }

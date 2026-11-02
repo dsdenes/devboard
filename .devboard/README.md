@@ -3496,8 +3496,8 @@ other value is refused with HTTP 400. A panel without a conversation produces no
 a conversation is never resumed from storage.
 
 `Goal` turns the composer text into a raw proposed goal instead of an issue. With non-whitespace
-text it posts `report`, the Ask conversation when the panel has one, and the same captured element
-context to `POST /goal-proposals`; the server writes one Markdown draft under
+text it posts `report`, the Ask turns as `turns` when the panel has one, and the same captured
+element context to `POST /goal-proposals`; the server writes one Markdown draft under
 `<REPO_DIR>/.devboard/goal-proposals/` and answers
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
@@ -3555,7 +3555,7 @@ without a model in the loop.
 Every request carries an `action` of `REPORT`, `REMOVE`, or `REDESIGN`; an absent `action` means
 `REPORT`, the only action that requires report text, and any other value — including a lower-case
 spelling — is refused with HTTP 400 before the Gitea request. Both endpoints are strict about their
-body: `POST /feedback` accepts `action`, `report`, `conversation`, `route`, `url`, `selector`,
+body: `POST /feedback` accepts `action`, `report`, `turns`, `route`, `url`, `selector`,
 `dom_excerpt`, `visible_text`, `viewport`, and `captured_at`, `POST /goal-proposals` accepts the
 same set without `action`, and any other top-level key is refused with HTTP 400 naming the first
 unknown key before any Gitea request or draft write. Harness-owned reporting uses only the Gitea

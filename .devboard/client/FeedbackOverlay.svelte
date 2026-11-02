@@ -274,7 +274,7 @@
   }
 
   /** The Ask conversation bounded to the server's limits; the newest turns win. */
-  function conversationPayload(): Array<{ role: AskTurn["role"]; text: string }> {
+  function turnsPayload(): Array<{ role: AskTurn["role"]; text: string }> {
     const turns = transcript
       .slice(-MAX_CONVERSATION_TURNS)
       .map((turn) => ({ role: turn.role, text: truncate(turn.text, MAX_CONVERSATION_TURN) }));
@@ -630,7 +630,7 @@
     dismissToast();
     const response = await postGoal({
       report,
-      conversation: conversationPayload(),
+      turns: turnsPayload(),
       ...captured(element),
     });
     if (attempt !== generation) return;
@@ -658,7 +658,7 @@
     const response = await post({
       action: "REPORT",
       report,
-      conversation: conversationPayload(),
+      turns: turnsPayload(),
       ...captured(element),
     });
     if (attempt !== generation) return;

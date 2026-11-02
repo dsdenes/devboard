@@ -61,8 +61,8 @@ export interface FeedbackTurn {
 export interface FeedbackSubmission {
   action: FeedbackAction;
   report: string;
-  /** The Ask conversation the operator had about this element, if any. */
-  conversation: FeedbackTurn[];
+  /** The visible Ask turns the operator had about this element, if any. */
+  turns: FeedbackTurn[];
   route: string;
   url: string;
   selector: string;
@@ -196,7 +196,7 @@ const CAPTURED_KEYS: readonly string[] = [
 export const FEEDBACK_BODY_KEYS: readonly string[] = [
   "action",
   "report",
-  "conversation",
+  "turns",
   ...CAPTURED_KEYS,
 ];
 
@@ -223,42 +223,42 @@ export function parseReportText(value: unknown): string {
 }
 
 /**
- * Validates the Ask conversation. A submission without one carries no turns,
+ * Validates the Ask turns. A submission without them carries no turns,
  * so an older client keeps filing reports unchanged.
  */
-export function parseConversation(value: unknown): FeedbackTurn[] {
+export function parseTurns(value: unknown): FeedbackTurn[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new FeedbackRequestError(400, "conversation must be an array.");
+    throw new FeedbackRequestError(400, "turns must be an array.");
   }
   if (value.length > MAX_CONVERSATION_TURNS) {
     throw new FeedbackRequestError(
       400,
-      `conversation has more than ${MAX_CONVERSATION_TURNS} turns.`,
+      `turns has more than ${MAX_CONVERSATION_TURNS} turns.`,
     );
   }
   const turns: FeedbackTurn[] = [];
   let total = 0;
   for (const [index, entry] of value.entries()) {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      throw new FeedbackRequestError(400, `conversation[${index}] must be an object.`);
+      throw new FeedbackRequestError(400, `turns[${index}] must be an object.`);
     }
     const source = entry as Record<string, unknown>;
     const role = source.role;
     if (role !== "DEVELOPER" && role !== "AGENT") {
       throw new FeedbackRequestError(
         400,
-        `conversation[${index}].role must be DEVELOPER or AGENT.`,
+        `turns[${index}].role must be DEVELOPER or AGENT.`,
       );
     }
-    const text = field(source.text, `conversation[${index}].text`, MAX_CONVERSATION_TURN, true);
+    const text = field(source.text, `turns[${index}].text`, MAX_CONVERSATION_TURN, true);
     total += text.length;
     turns.push({ role, text });
   }
   if (total > MAX_CONVERSATION_TEXT) {
     throw new FeedbackRequestError(
       400,
-      `conversation is longer than ${MAX_CONVERSATION_TEXT} characters.`,
+      `turns is longer than ${MAX_CONVERSATION_TEXT} characters.`,
     );
   }
   return turns;
@@ -277,7 +277,7 @@ export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
     // The one-click shortcuts use a fixed instruction, so any text the client
     // still sends is ignored rather than validated or filed.
     report: action === "REPORT" ? parseReportText(source.report) : "",
-    conversation: parseConversation(source.conversation),
+    turns: parseTurns(source.turns),
     ...parseCapturedFields(source),
   };
 }
@@ -322,9 +322,9 @@ export function feedbackTitle(submission: FeedbackSubmission): string {
  * The Ask conversation as Markdown: one labelled block per visible turn. It is
  * empty when the operator filed without asking the agent anything.
  */
-export function conversationSection(conversation: FeedbackTurn[]): string[] {
+export function conversationSection(turns: FeedbackTurn[]): string[] {
   const lines: string[] = [];
-  for (const turn of conversation) {
+  for (const turn of turns) {
     lines.push("", `**${turn.role === "DEVELOPER" ? "You" : "Agent"}:**`, "", turn.text.trim());
   }
   if (lines.length === 0) return [];
@@ -366,8 +366,8 @@ export function feedbackBody(submission: FeedbackSubmission): string {
     context.push("", "### DOM excerpt", "", `${fence}html`, dom, fence);
   }
 
-  const conversation = conversationSection(submission.conversation);
-  if (conversation.length > 0) lines.push(...conversation, "");
+  const askTurns = conversationSection(submission.turns);
+  if (askTurns.length > 0) lines.push(...askTurns, "");
 
   lines.push("## Captured UI context", "");
   lines.push(...(context.length === 0 ? ["No page context was captured."] : context));

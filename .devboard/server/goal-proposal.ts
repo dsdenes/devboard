@@ -17,8 +17,8 @@ import {
   GOAL_PROPOSAL_BODY_KEYS,
   conversationSection,
   parseCapturedFields,
-  parseConversation,
   parseReportText,
+  parseTurns,
   rejectUnknownFields,
   type CapturedFields,
   type FeedbackTurn,
@@ -42,8 +42,8 @@ const MAX_NAME_ATTEMPTS = 1000;
 
 export interface GoalProposalSubmission extends CapturedFields {
   report: string;
-  /** The Ask conversation the operator had about this element, if any. */
-  conversation: FeedbackTurn[];
+  /** The visible Ask turns the operator had about this element, if any. */
+  turns: FeedbackTurn[];
 }
 
 export interface GoalProposal {
@@ -60,7 +60,7 @@ export function parseGoalProposalSubmission(value: unknown): GoalProposalSubmiss
   rejectUnknownFields(source, GOAL_PROPOSAL_BODY_KEYS);
   return {
     report: parseReportText(source.report),
-    conversation: parseConversation(source.conversation),
+    turns: parseTurns(source.turns),
     ...parseCapturedFields(source),
   };
 }
@@ -184,7 +184,7 @@ function capturedContext(submission: GoalProposalSubmission): string[] {
  * that.
  */
 export function goalProposalBody(submission: GoalProposalSubmission): string {
-  const conversation = conversationSection(submission.conversation);
+  const askTurns = conversationSection(submission.turns);
   const context = capturedContext(submission);
   // A draft typed straight into the Draft goals page carries no captured
   // element. Only that context-free body states what it is; a proposal with
@@ -196,7 +196,7 @@ export function goalProposalBody(submission: GoalProposalSubmission): string {
     ...(notice ? [UNPROCESSED_NOTICE, ""] : []),
     submission.report,
     "",
-    ...(conversation.length === 0 ? [] : [...conversation, ""]),
+    ...(askTurns.length === 0 ? [] : [...askTurns, ""]),
     "## Captured UI context",
     "",
     ...context,
