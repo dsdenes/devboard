@@ -183,8 +183,3 @@ export function recommendationsPath(directory: string): string {
 export function scanFilePath(directory: string): string {
   return join(directory, "scan.json");
 }
-
-/** Scratch directory for issue bodies the worker hands to `gh`. */
-export function issueBodyDirectory(repoDir: string): string {
-  return join(workDirectory(repoDir), "issue-bodies");
-}
