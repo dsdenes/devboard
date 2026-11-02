@@ -176,10 +176,6 @@ export function requestPath(directory: string): string {
   return join(directory, "request.json");
 }
 
-export function recommendationsPath(directory: string): string {
-  return join(directory, "recommendations.json");
-}
-
 export function scanFilePath(directory: string): string {
   return join(directory, "scan.json");
 }
