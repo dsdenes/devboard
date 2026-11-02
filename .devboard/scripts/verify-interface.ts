@@ -3529,134 +3529,102 @@ try {
   })`);
   check(!reopenedPanel.table && reopenedPanel.detail && reopenedPanel.tabs === 0, "a surface no longer replaces the open page", reopenedPanel);
 
-  // The Goal sidebar has one Skills entry that discloses the prepared skills.
+  // The Goal sidebar has one Skills entry that opens the prepared-skills table.
   const goalSkills = await page.eval<{
     sections: number;
-    toggle: null | { expanded: string; disclosure: boolean };
-    menu: boolean;
+    entry: null | { expanded: string; menu: boolean; label: string; command: string };
   }>(`(() => {
-    const toggle = document.querySelector('[data-testid="goal-skills-toggle"]');
+    const entry = document.querySelector('[data-testid="goal-skills-open"]');
     return {
       sections: document.querySelectorAll('[data-testid="sidebar"] section[aria-label="Skills"]').length,
-      toggle: toggle === null ? null : {
-        expanded: toggle.getAttribute("aria-expanded") ?? "",
-        disclosure: document.querySelector('[data-testid="goal-skills-disclosure"]') !== null,
+      entry: entry === null ? null : {
+        expanded: entry.getAttribute("aria-expanded") ?? "",
+        menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
+        label: entry.querySelector(".sidebar-item__label")?.textContent?.trim() ?? "",
+        command: entry.getAttribute("data-command") ?? "",
       },
-      menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
     };
   })()`);
   check(
     goalSkills.sections === 0 &&
-      goalSkills.toggle !== null &&
-      goalSkills.toggle.expanded === "false" &&
-      !goalSkills.toggle.disclosure &&
-      !goalSkills.menu,
-    "the Goal sidebar still splits the skills toggle from its disclosure",
+      goalSkills.entry !== null &&
+      goalSkills.entry.expanded === "" &&
+      !goalSkills.entry.menu &&
+      goalSkills.entry.label === "Skills" &&
+      goalSkills.entry.command === "goal.skills.open",
+    "the Goal sidebar does not open the skills table from one Skills entry",
     goalSkills,
   );
-  await page.click('[data-testid="goal-skills-toggle"]');
-  await page.wait(`document.querySelector('[data-testid="goal-skills-menu"]') !== null`, "the prepared skills disclosure");
-  const goalSkillNames = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="goal-skill"]')].map((item) => item.getAttribute("data-name") ?? "")`);
-  check(goalSkillNames.length >= 5 && goalSkillNames.every((name) => name.length > 0), "the skills disclosure is empty", goalSkillNames);
+  await page.click('[data-testid="goal-skills-open"]');
+  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the sidebar entry");
+  const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
+  check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
+  const skillsTable = await page.eval<{ table: boolean; rows: number; names: string[]; descriptions: string[] }>(`(() => {
+    const table = document.querySelector('[data-testid="skills-table"]');
+    const rows = [...(table?.querySelectorAll('[data-testid="skill"]') ?? [])];
+    return {
+      table: table !== null,
+      rows: rows.length,
+      names: rows.map((row) => row.getAttribute("data-name") ?? ""),
+      descriptions: rows.map((row) => row.querySelector(".skill-table__description")?.textContent?.trim() ?? ""),
+    };
+  })()`);
+  check(
+    skillsTable.table &&
+      skillsTable.rows >= 5 &&
+      skillsTable.descriptions.every((description) => description.length > 0),
+    "the prepared skills table does not list every skill with its description",
+    skillsTable,
+  );
   const clickedSkill = await page.eval<string>(`(() => {
-    const item = document.querySelector('[data-testid="goal-skill"]');
+    const item = document.querySelector('[data-testid="skill"]');
     item?.click();
     return item?.getAttribute("data-name") ?? "";
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="goal-skill-content"]') !== null`,
-    "the skill content inside the sidebar list",
+    `document.querySelector('[data-testid="skill"][data-selected="true"]')?.getAttribute("aria-expanded") === "true"`,
+    "the expanded skill row",
   );
-  const sidebarSkill = await page.eval<{
-    name: string;
-    expanded: string;
-    text: string;
-    path: string;
-    blocks: number;
-    frontmatter: boolean;
-    overlay: boolean;
-    page: boolean;
-  }>(`(() => {
-    const content = document.querySelector('[data-testid="goal-skill-content"]');
-    const text = content?.querySelector('[data-testid="goal-skill-content-text"]');
-    const row = document.querySelector('[data-testid="goal-skill"][data-name="${clickedSkill}"]');
-    return {
-      name: content?.getAttribute("data-name") ?? "",
-      expanded: row?.getAttribute("aria-expanded") ?? "",
-      text: text?.textContent?.trim() ?? "",
-      path: content?.querySelector('.sidebar-skill__path')?.textContent?.trim() ?? "",
-      blocks: text?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
-      frontmatter: (text?.textContent ?? "").includes("devboard-managed"),
-      overlay: document.querySelector('[data-testid="skills-overlay"]') !== null,
-      page: document.querySelector('[data-testid="goal-skills-page"]') !== null,
-    };
-  })()`);
-  check(
-    sidebarSkill.name === clickedSkill &&
-      sidebarSkill.expanded === "true" &&
-      sidebarSkill.text.length > 0 &&
-      sidebarSkill.blocks > 0 &&
-      !sidebarSkill.frontmatter,
-    "expanding a sidebar skill does not show its rendered document",
-    { clickedSkill, sidebarSkill },
-  );
-  check(
-    sidebarSkill.path === `.omp/skills/${clickedSkill}/SKILL.md`,
-    "the sidebar skill document does not name its file",
-    sidebarSkill,
-  );
-  check(
-    !sidebarSkill.overlay && sidebarSkill.page,
-    "a sidebar skill expands content without opening the Skills page",
-    sidebarSkill,
-  );
-  await page.click('[data-testid="goal-skills-page"]');
-  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the sidebar list");
-  const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
-  check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
   const goalSkillSurface = await page.eval<{
     selected: string;
     current: string;
     expanded: string;
-    description: boolean;
+    description: string;
+    collapsed: number;
   }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     return {
       selected: item?.getAttribute("data-name") ?? "",
       current: item?.getAttribute("aria-current") ?? "",
       expanded: item?.getAttribute("aria-expanded") ?? "",
-      description: item?.querySelector(".skill__description") !== null,
+      description: item?.querySelector(".skill-table__description")?.textContent?.trim() ?? "",
+      collapsed: document.querySelectorAll('[data-testid="skill"][aria-expanded="false"]').length,
     };
   })()`);
   check(
     goalSkillSurface.selected === clickedSkill &&
       goalSkillSurface.current === "true" &&
-      goalSkillSurface.expanded === "true",
-    "clicking a prepared skill does not expand it",
+      goalSkillSurface.expanded === "true" &&
+      goalSkillSurface.description.length > 0 &&
+      goalSkillSurface.collapsed === skillsTable.rows - 1,
+    "clicking a prepared skill does not expand it in the table",
     { clickedSkill, goalSkillSurface },
-  );
-  check(
-    !goalSkillSurface.description,
-    "the prepared skill row still shows its description",
-    goalSkillSurface,
   );
   const skillDocument = await page.eval<{
     name: string;
     text: string;
     inline: boolean;
-    description: boolean;
     blocks: number;
     path: string;
     frontmatter: boolean;
   }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
-    const detail = item?.closest("li")?.querySelector('[data-testid="skill-content"]') ?? null;
+    const detail = item?.nextElementSibling?.querySelector('[data-testid="skill-content"]') ?? null;
     const doc = detail?.querySelector('[data-testid="skill-content-text"]') ?? null;
     return {
       name: detail?.getAttribute("data-name") ?? "",
       text: doc?.textContent?.trim() ?? "",
       inline: detail !== null,
-      description: detail?.querySelector(".muted") !== null,
       blocks: doc?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
       path: detail?.querySelector('.skill__path')?.textContent?.trim() ?? "",
       frontmatter: (doc?.textContent ?? "").includes("devboard-managed"),
@@ -3666,13 +3634,13 @@ try {
     skillDocument.inline &&
       skillDocument.name === clickedSkill &&
       skillDocument.text.length > 0 &&
-      !skillDocument.description,
-    "expanding a prepared skill does not show its document in the list without a description",
+      skillDocument.blocks > 0,
+    "expanding a prepared skill does not show its whole document in the table",
     { clickedSkill, skillDocument },
   );
   check(
-    skillDocument.blocks > 0 && !skillDocument.frontmatter,
-    "the skill document is not rendered as a document without its frontmatter",
+    !skillDocument.frontmatter,
+    "the skill document is rendered with its frontmatter",
     skillDocument,
   );
   check(
@@ -3713,7 +3681,7 @@ try {
   const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="skill"]')];
     const controls = rows
-      .map((row) => row.closest("li")?.querySelector('[data-testid="delete-skill"]')?.getAttribute("data-name") ?? "")
+      .map((row) => row.closest("tr")?.querySelector('[data-testid="delete-skill"]')?.getAttribute("data-name") ?? "")
       .filter((name) => name.length > 0);
     return {
       rows: rows.length,
@@ -3721,7 +3689,7 @@ try {
       discoverControls: rows.filter(
         (row) =>
           (row.getAttribute("data-name") ?? "").startsWith("discover-") &&
-          row.closest("li")?.querySelector('[data-testid="delete-skill"]') !== null,
+          row.closest("tr")?.querySelector('[data-testid="delete-skill"]') !== null,
       ).length,
     };
   })()`);
@@ -10794,32 +10762,22 @@ try {
     page.eval<number>(`(window.__viFrames ?? []).length`);
 
   // Goal: the Skills row and Implementation read only the Goal store, and
-  // opening or expanding a menu entry sends nothing.
+  // opening a menu entry sends nothing.
   check(
     (await runStateOf('[data-testid="open-implementation"]')) === "idle" &&
-      (await runStateOf('[data-testid="goal-skills-toggle"]')) === "idle",
+      (await runStateOf('[data-testid="goal-skills-open"]')) === "idle",
     "the idle Goal entries are not idle",
   );
   const menuFrames = await framesNow();
   await page.click('[data-testid="open-implementation"]');
-  await page.click('[data-testid="goal-skills-toggle"]');
+  await page.click('[data-testid="goal-skills-open"]');
   await delay(200);
   check((await framesNow()) === menuFrames, "opening a Goal sidebar entry sent a frame");
-  await page.click('[data-testid="goal-skills-toggle"]');
-
-  await page.click('[data-testid="goal-skills-toggle"]');
-  await page.wait(
-    `document.querySelector('[data-testid="goal-skills-page"]') !== null`,
-    "the Skills submenu",
-    20_000,
-  );
-  await page.click('[data-testid="goal-skills-page"]');
   await page.wait(
     `document.querySelector('[data-testid="prepare-skills-overlay"]') !== null`,
     "the Skills page prepare control",
     20_000,
   );
-  await page.click('[data-testid="goal-skills-toggle"]');
   await page.wait(
     `(() => {
       const button = document.querySelector('[data-testid="prepare-skills-overlay"]');
@@ -10830,8 +10788,8 @@ try {
   );
   await pageCommand({ type: "prepareSkills" });
   await page.wait(
-    `document.querySelector('[data-testid="goal-skills-toggle"]')?.getAttribute("data-run-state") === "running"`,
-    "the running Skills toggle",
+    `document.querySelector('[data-testid="goal-skills-open"]')?.getAttribute("data-run-state") === "running"`,
+    "the running Skills entry",
     20_000,
   );
   check(
@@ -10839,9 +10797,9 @@ try {
     "skills preparation marked the Implementation entry",
   );
   const skillsBadge = await page.eval<string>(
-    `document.querySelector('[data-testid="goal-skills-toggle"] [data-testid="run-state-badge"]')?.textContent?.trim() ?? ""`,
+    `document.querySelector('[data-testid="goal-skills-open"] [data-testid="run-state-badge"]')?.textContent?.trim() ?? ""`,
   );
-  check(skillsBadge === "running", "the Skills toggle has no running badge", skillsBadge);
+  check(skillsBadge === "running", "the Skills entry has no running badge", skillsBadge);
   await page.wait(
     `document.querySelector('[data-testid="choice"]') !== null`,
     "the preparation question",
@@ -10849,7 +10807,7 @@ try {
   );
   await page.click('[data-testid="choice"]');
   await page.wait(
-    `document.querySelector('[data-testid="goal-skills-toggle"]')?.getAttribute("data-run-state") === "idle"`,
+    `document.querySelector('[data-testid="goal-skills-open"]')?.getAttribute("data-run-state") === "idle"`,
     "the finished skills preparation",
     30_000,
   );
@@ -10875,8 +10833,8 @@ try {
     20_000,
   );
   check(
-    (await runStateOf('[data-testid="goal-skills-toggle"]')) === "idle",
-    "a manual run marked the Skills toggle",
+    (await runStateOf('[data-testid="goal-skills-open"]')) === "idle",
+    "a manual run marked the Skills entry",
   );
   const implementationMeta = await page.eval<string>(
     `document.querySelector('[data-testid="open-implementation"] .sidebar-item__meta')?.textContent?.trim() ?? ""`,
