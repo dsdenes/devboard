@@ -225,10 +225,10 @@ export interface AppOptions {
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<
     ScoutBridgeOptions,
-    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker"
+    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker" | "reader"
   >;
   /** Design System's test seams; production uses the detached worker itself. */
-  design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "reader">;
   /** Coach's test seams; production reads its worker's state and ledger. */
   coach?: Pick<
     CoachActivityOptions,
@@ -2628,6 +2628,8 @@ export function createApp(options: AppOptions) {
       : { preflightTimeoutMs: options.scout.preflightTimeoutMs }),
     ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),
     ...(options.scout?.spawnWorker === undefined ? {} : { spawnWorker: options.scout.spawnWorker }),
+    ...(options.scout?.reader === undefined ? {} : { reader: options.scout.reader }),
+    hasClients: () => clients.size > 0,
   });
 
   /**
@@ -2658,6 +2660,7 @@ export function createApp(options: AppOptions) {
     ...(options.watchdog?.systemctl === undefined
       ? {}
       : { systemctl: options.watchdog.systemctl }),
+    hasClients: () => clients.size > 0,
   });
 
   /**
@@ -2680,6 +2683,8 @@ export function createApp(options: AppOptions) {
     ...(options.design?.spawnWorker === undefined
       ? {}
       : { spawnWorker: options.design.spawnWorker }),
+    ...(options.design?.reader === undefined ? {} : { reader: options.design.reader }),
+    hasClients: () => clients.size > 0,
   });
 
   /**
@@ -2708,6 +2713,7 @@ export function createApp(options: AppOptions) {
     ...(options.coach?.spawnWorker === undefined
       ? {}
       : { spawnWorker: options.coach.spawnWorker }),
+    hasClients: () => clients.size > 0,
   });
 
   /** The shared control plane every background agent answers through. */

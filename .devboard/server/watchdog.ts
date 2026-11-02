@@ -3,31 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { liveLockOwners, type LockOwner } from "../issues/lock";
 import { ghCommand } from "../issues/scout/preflight";
-import { findOnPath, rootProblem } from "../issues/repository";
-import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
-import { ForgeReadRetry, classifyForgeReadFailure } from "../lib/forge-read-retry";
-import {
-  giteaJson,
-  giteaListReleases,
-  giteaOrigin,
-  giteaRepository,
-  repoPath,
-  type FetchLike,
-  type GiteaTarget,
-} from "../lib/gitea";
-import { createGiteaVersionClient } from "../lib/gitea-release";
-import { originForge } from "../issues/repository";
-import {
-  createRepositoryGitHub,
-  shippedVersion,
-  type GitHubCommandRunner,
-  type GitHubRelease,
-  type RepositoryGitHub,
-} from "../lib/github-release";
+import { configuredGiteaToken, giteaBaseUrl } from "../lib/forge";
+import { giteaRepository } from "../lib/gitea";
+import { findOnPath, originForge, rootProblem } from "../issues/repository";
 import type { WatchdogCycle } from "../watchdog/history";
 import { readWatchdogStatus, type WatchdogIssue } from "../watchdog/status";
 import { writeWatchdogCommand } from "../watchdog/control";
-import { readProjection, writeProjection } from "../watchdog/projection";
+import { writeProjection } from "../watchdog/projection";
 import {
   controlDirectory,
   lockPath,
@@ -35,11 +17,7 @@ import {
   versionedWorkerDirectory,
   watchdogDirectory,
 } from "../watchdog/paths";
-import {
-  readWatchdogSettings,
-  writeWatchdogSettings,
-  type WatchdogSettings,
-} from "../watchdog/settings";
+import { readWatchdogSettings, writeWatchdogSettings } from "../watchdog/settings";
 import {
   readNewestWorkerState,
   readWorkerState,
@@ -47,7 +25,13 @@ import {
   type WatchdogWorkerState,
 } from "../watchdog/worker-state";
 import { hostHarnessDir, readHarnessVersion } from "./version";
-import type { AgentDescriptor, AgentSnapshotInput } from "./agents/registry";
+import { AgentForgeState } from "./agents/forge-state";
+import {
+  createForgeIssueReader,
+  type ForgeIssueReader,
+  type ForgeIssueState,
+} from "./agents/forge-reader";
+import type { AgentDescriptor, AgentSnapshotInput, AgentSync } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 
 /**
@@ -58,20 +42,9 @@ import type { AgentAdapter, AgentCommandResult } from "./agents/types";
  * issue instead of inventing one.
  */
 
-export type WatchdogIssueState = "pending" | "implemented";
-export type WatchdogSyncState = "ok" | "error" | "stale";
-
-export interface WatchdogSync {
-  state: WatchdogSyncState;
-  /** The last successful GitHub read, or null before one. */
-  at: string | null;
-  /** Why the last read failed, or null after a success. */
-  error: string | null;
-}
-
 export interface WatchdogIssueRow extends WatchdogIssue {
-  /** `null` until a GitHub read has answered for this issue. */
-  state: WatchdogIssueState | null;
+  /** `null` until a forge read has answered for this issue. */
+  state: ForgeIssueState | null;
   /** The earliest published release that shipped the closing commit. */
   version: string | null;
 }
@@ -84,189 +57,7 @@ export interface WatchdogSnapshot {
   issues: WatchdogIssueRow[];
   pending: number;
   cycles: WatchdogCycle[];
-  sync: WatchdogSync;
-}
-
-export interface WatchdogFacts {
-  url: string;
-  state: WatchdogIssueState;
-  version: string | null;
-}
-
-/** Reads every issue's GitHub facts; rejection means the read failed. */
-export interface WatchdogReader {
-  project(urls: string[]): Promise<WatchdogFacts[]>;
-}
-
-/** At most one GitHub projection refresh starts per interval. */
-export const WATCHDOG_REFRESH_MS = 60_000;
-/** A success older than this, with no later failure, reads as stale. */
-export const WATCHDOG_STALE_MS = 120_000;
-
-/** One issue URL, split into the repository it belongs to and its number. */
-export function issueLocator(url: string): { repository: string; number: number } | null {
-  const match =
-    /^https?:\/\/([^/?#]+)\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/([0-9]+)(?:[/?#].*)?$/.exec(
-      url.trim(),
-    );
-  if (match === null) return null;
-  const host = (match[1] ?? "").toLowerCase();
-  if (host.includes("gitlab")) return null;
-  const number = Number(match[4]);
-  if (!Number.isInteger(number) || number <= 0) return null;
-  return { repository: `${match[2]}/${match[3]}`, number };
-}
-
-function firstLine(text: string): string {
-  return (
-    text
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.length > 0) ?? "no diagnostic"
-  );
-}
-
-export interface WatchdogGitHubReaderOptions {
-  /** The checkout that resolves commits and release containment locally. */
-  repoDir: string;
-  environment?: Record<string, string | undefined>;
-  /** Injectable forge command; defaults to the operator's `gh`. */
-  run?: GitHubCommandRunner;
-  /** Injectable transport for the Gitea API. */
-  fetchImpl?: FetchLike;
-}
-
-/**
- * Whether a ledger URL belongs to the issues the Gitea reader can serve:
- * another forge's URL is skipped instead of read by number.
- */
-function servedBy(value: string, baseUrl: string): boolean {
-  const issue = giteaOrigin(value);
-  return issue !== undefined && issue === giteaOrigin(baseUrl);
-}
-
-function createWatchdogGiteaReader(
-  options: WatchdogGitHubReaderOptions,
-  remote: ForgeRemote,
-): WatchdogReader {
-  const environment = options.environment ?? process.env;
-  const baseUrl = giteaBaseUrl(remote, environment);
-  const token = configuredGiteaToken(environment);
-
-  return {
-    async project(urls: string[]): Promise<WatchdogFacts[]> {
-      if (baseUrl === undefined || baseUrl.length === 0) {
-        throw new Error("the watchdog activity needs DEVBOARD_GITEA_URL for a Gitea origin");
-      }
-      const facts: WatchdogFacts[] = [];
-      // Releases are a per-repository read: one scan serves every closed issue
-      // of that repository, and a second repository gets its own scan.
-      const releases = new Map<string, GitHubRelease[]>();
-      for (const url of urls) {
-        // An issue filed through another forge cannot be read here; the row
-        // stays without a state instead of failing the whole projection.
-        if (!servedBy(url, baseUrl)) continue;
-        const locator = issueLocator(url);
-        if (locator === null) throw new Error(`not a supported issue URL: ${url}`);
-        const target: GiteaTarget = {
-          baseUrl,
-          project: locator.repository,
-          ...(token === undefined ? {} : { token }),
-        };
-        const issue = await giteaJson<unknown>(
-          target,
-          `${repoPath(target)}/issues/${locator.number}`,
-          undefined,
-          options.fetchImpl,
-        );
-        const record = (typeof issue === "object" && issue !== null ? issue : {}) as Record<
-          string,
-          unknown
-        >;
-        const createdAt =
-          typeof record.created_at === "string" && record.created_at.length > 0
-            ? record.created_at
-            : null;
-        const closedAt =
-          typeof record.closed_at === "string" && record.closed_at.length > 0
-            ? record.closed_at
-            : null;
-        if (record.state !== "closed") {
-          facts.push({ url, state: "pending", version: null });
-          continue;
-        }
-        let published = releases.get(locator.repository);
-        if (published === undefined) {
-          published = await giteaListReleases(target, options.fetchImpl);
-          releases.set(locator.repository, published);
-        }
-        const version = await shippedVersion(
-          { number: locator.number, state: "closed", createdAt, closedAt },
-          createGiteaVersionClient(target, options.repoDir, options.fetchImpl),
-          published,
-        );
-        facts.push({ url, state: "implemented", version });
-      }
-      return facts;
-    },
-  };
-}
-
-/**
- * The live reader. Each issue's repository is taken from its own URL, so the
- * page stays correct when the ledger names issues outside the host origin.
- */
-export function createWatchdogGitHubReader(
-  options: WatchdogGitHubReaderOptions,
-): WatchdogReader {
-  const remote = originForge(options.repoDir, options.environment);
-  if (remote?.forge === "gitea") return createWatchdogGiteaReader(options, remote);
-  const run = options.run ?? ((argv, environment) => ghCommand(argv, environment));
-  const clients = new Map<string, RepositoryGitHub>();
-
-  function client(repository: string): RepositoryGitHub {
-    const existing = clients.get(repository);
-    if (existing !== undefined) return existing;
-    const created = createRepositoryGitHub({
-      repository,
-      repoDir: options.repoDir,
-      run,
-      ...(options.environment === undefined ? {} : { environment: options.environment }),
-    });
-    clients.set(repository, created);
-    return created;
-  }
-
-  return {
-    async project(urls: string[]): Promise<WatchdogFacts[]> {
-      const releases = new Map<string, GitHubRelease[]>();
-      const facts: WatchdogFacts[] = [];
-      for (const url of urls) {
-        const locator = issueLocator(url);
-        if (locator === null) {
-          throw new Error(`not a GitHub issue URL: ${url}`);
-        }
-        const github = client(locator.repository);
-        const { state, createdAt, closedAt } = await github.issueTimes(locator.number);
-        if (state === "open") {
-          facts.push({ url, state: "pending", version: null });
-          continue;
-        }
-        let published = releases.get(locator.repository);
-        if (published === undefined) {
-          published = await github.listReleases();
-          releases.set(locator.repository, published);
-        }
-        const version = await shippedVersion(
-          { number: locator.number, state: "closed", createdAt, closedAt },
-          github,
-          published,
-        );
-        facts.push({ url, state: "implemented", version });
-      }
-      return facts;
-    },
-  };
+  sync: AgentSync;
 }
 
 /** A systemd command result, injectable for the timer gate's tests. */
@@ -288,7 +79,9 @@ export interface WatchdogActivityOptions {
   /** The harness version this dashboard loaded, for parallel-worker takeover. */
   runningVersion?: string | null;
   send: (event: unknown, except?: { send(data: string): unknown }) => void;
-  reader?: WatchdogReader;
+  reader?: ForgeIssueReader;
+  /** True while at least one dashboard client is connected. */
+  hasClients?: () => boolean;
   now?: () => number;
   intervalMs?: number;
   staleAfterMs?: number;
@@ -359,27 +152,16 @@ export class WatchdogActivity implements AgentAdapter {
   /** The harness version this dashboard loaded, for parallel-worker takeover. */
   private readonly runningVersion: string | null;
   private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
-  private readonly reader: WatchdogReader;
+  private readonly forge: AgentForgeState;
   private readonly now: () => number;
-  private readonly intervalMs: number;
-  private readonly staleAfterMs: number;
   private readonly environment: Record<string, string | undefined>;
   private readonly log: (line: string) => void;
   private readonly preflight: NonNullable<WatchdogActivityOptions["preflight"]>;
   private readonly spawnWorker: NonNullable<WatchdogActivityOptions["spawnWorker"]>;
   private readonly systemctl: NonNullable<WatchdogActivityOptions["systemctl"]>;
 
-  private readonly facts = new Map<string, { state: WatchdogIssueState; version: string | null }>();
-  private lastStarted: number | null = null;
-  private lastSuccess: number | null = null;
-  private lastFailure: string | null = null;
-  /** When the next projection read is due; null means the normal cadence. */
-  private nextAttemptAt: number | null = null;
-  /** The consecutive transient failures of the projection read. */
-  private readonly retry = new ForgeReadRetry();
-  private inFlight: Promise<void> | null = null;
-  private timer: Timer | undefined;
   private timerGate: AgentSnapshotInput["timer"] = null;
+  private timer: Timer | undefined;
   private timerReadAt = 0;
   private timerReading = false;
   private starting = false;
@@ -401,17 +183,26 @@ export class WatchdogActivity implements AgentAdapter {
     this.harnessDir = options.harnessDir;
     this.runningVersion = options.runningVersion ?? null;
     this.send = options.send;
-    this.reader =
-      options.reader ??
-      createWatchdogGitHubReader({
-        repoDir: this.repoDir,
-        ...(options.environment === undefined ? {} : { environment: options.environment }),
-      });
     this.now = options.now ?? (() => Date.now());
-    this.intervalMs = Math.max(1, options.intervalMs ?? WATCHDOG_REFRESH_MS);
-    this.staleAfterMs = Math.max(0, options.staleAfterMs ?? WATCHDOG_STALE_MS);
     this.environment = options.environment ?? process.env;
     this.log = options.log ?? (() => undefined);
+    this.forge = new AgentForgeState({
+      reader:
+        options.reader ??
+        createForgeIssueReader({
+          repoDir: this.repoDir,
+          ...(options.environment === undefined ? {} : { environment: options.environment }),
+        }),
+      urls: () => readWatchdogStatus(this.watchdogDir).issues.map((issue) => issue.url),
+      hasClients: options.hasClients ?? (() => false),
+      now: this.now,
+      ...(options.intervalMs === undefined ? {} : { intervalMs: options.intervalMs }),
+      ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
+      onRead: () => {
+        if (this.shouldPersistProjection()) this.persistProjection();
+      },
+      log: this.log,
+    });
     this.preflight = options.preflight ?? ((request) => preflightWatchdog(request));
     this.spawnWorker =
       options.spawnWorker ??
@@ -440,9 +231,9 @@ export class WatchdogActivity implements AgentAdapter {
   begin(): void {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => {
-      this.schedule();
       void this.refreshTimer(false);
-    }, Math.max(50, Math.min(this.intervalMs, 1_000)));
+    }, Math.max(50, Math.min(TIMER_REFRESH_MS, 1_000)));
+    this.forge.begin();
     void this.refreshTimer(true);
     void this.takeoverOldWorkers();
   }
@@ -452,6 +243,7 @@ export class WatchdogActivity implements AgentAdapter {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    this.forge.dispose();
     this.clearStopProof();
   }
 
@@ -560,62 +352,16 @@ export class WatchdogActivity implements AgentAdapter {
 
   /** Awaits the background projection refresh a snapshot scheduled. */
   settled(): Promise<void> {
-    return this.inFlight ?? Promise.resolve();
+    return this.forge.settled();
   }
 
   replay(_target: { send(data: string): unknown }): void {
     // Watchdog activity is the retained cycle history carried by the snapshot.
   }
 
-  private schedule(): void {
-    if (this.inFlight !== null) return;
-    const now = this.now();
-    if (this.lastStarted !== null) {
-      const due = this.nextAttemptAt ?? this.lastStarted + this.intervalMs;
-      if (now < due) return;
-    }
-    this.lastStarted = now;
-    this.nextAttemptAt = null;
-    this.inFlight = this.refresh().finally(() => {
-      this.inFlight = null;
-    });
-  }
-
-  private async refresh(): Promise<void> {
-    const status = readWatchdogStatus(this.watchdogDir);
-    try {
-      const urls = status.issues.map((issue) => issue.url);
-      const facts = urls.length === 0 ? [] : await this.reader.project(urls);
-      const next = new Map<string, { state: WatchdogIssueState; version: string | null }>();
-      for (const fact of facts) {
-        const previous = this.facts.get(fact.url);
-        const version =
-          fact.state === "implemented"
-            ? fact.version ?? (previous?.state === "implemented" ? previous.version : null)
-            : null;
-        next.set(fact.url, { state: fact.state, version });
-      }
-      this.facts.clear();
-      for (const [url, value] of next) this.facts.set(url, value);
-      this.lastSuccess = this.now();
-      this.lastFailure = null;
-      this.nextAttemptAt = null;
-      this.retry.succeed();
-    } catch (error) {
-      const reason = firstLineOf(error instanceof Error ? error.message : String(error));
-      const kind = classifyForgeReadFailure(reason);
-      const delay = this.retry.record(kind);
-      if (kind === "transient" && delay !== null) {
-        // The retry window is not an alert: the last known rows and read time
-        // stay, and the sync reads `stale` with no reason.
-        this.lastFailure = null;
-        this.nextAttemptAt = this.now() + delay;
-      } else {
-        this.lastFailure = reason;
-        this.nextAttemptAt = null;
-      }
-    }
-    if (this.shouldPersistProjection()) this.persistProjection();
+  /** A view opened this agent: read the forge now when the cadence allows. */
+  requestSync(): void {
+    this.forge.requestSync();
   }
 
   /**
@@ -630,14 +376,14 @@ export class WatchdogActivity implements AgentAdapter {
 
   /** The worker enforces caps from this file; a failed read keeps the rows. */
   private persistProjection(): void {
-    const sync = this.sync();
+    const sync = this.forge.sync;
     try {
       writeProjection(this.watchdogDir, {
         version: 1,
         state: sync.state,
         at: sync.at,
         error: sync.error,
-        issues: [...this.facts.entries()].map(([url, fact]) => ({
+        issues: [...this.forge.entries()].map(([url, fact]) => ({
           url,
           state: fact.state,
           version: fact.version,
@@ -652,22 +398,8 @@ export class WatchdogActivity implements AgentAdapter {
     }
   }
 
-  private sync(): WatchdogSync {
-    const now = this.now();
-    const at = this.lastSuccess === null ? null : new Date(this.lastSuccess).toISOString();
-    if (this.lastFailure !== null) {
-      return { state: "error", at, error: this.lastFailure };
-    }
-    if (this.retry.failures > 0) return { state: "stale", at, error: null };
-    if (this.lastSuccess === null) return { state: "stale", at: null, error: null };
-    if (now - this.lastSuccess > this.staleAfterMs) {
-      return { state: "stale", at, error: null };
-    }
-    return { state: "ok", at, error: null };
-  }
-
   snapshot(): AgentSnapshotInput {
-    this.schedule();
+    this.forge.requestSync();
     const owners = this.owners();
     const own = owners.filter((owner) => !this.foreignOwner(owner));
     const foreign = owners.find((owner) => this.foreignOwner(owner));
@@ -725,14 +457,16 @@ export class WatchdogActivity implements AgentAdapter {
             : newest?.lifecycle === "failed"
               ? "failed"
               : "stopped";
-    const issues: WatchdogIssueRow[] = status.issues.map((issue) => ({
-      ...issue,
-      state: this.facts.get(issue.url)?.state ?? null,
-      version:
-        this.facts.get(issue.url)?.state === "implemented"
-          ? (this.facts.get(issue.url)?.version ?? null)
-          : null,
-    }));
+    const issues: WatchdogIssueRow[] = status.issues
+      .filter((issue) => this.forge.reported(issue.url))
+      .map((issue) => {
+        const fact = this.forge.fact(issue.url);
+        return {
+          ...issue,
+          state: fact?.state ?? null,
+          version: fact?.version ?? null,
+        };
+      });
     const lastRunAt =
       states
         .map((state) => state.lastRunAt)
@@ -771,7 +505,7 @@ export class WatchdogActivity implements AgentAdapter {
         version: issue.version,
       })),
       pending: status.pending,
-      sync: this.sync(),
+      sync: this.forge.sync,
       detail: { panel: "cycles", cycles: status.cycles },
       notice: active?.notice ?? this.notice,
       error: this.startError ?? active?.lastError ?? null,
@@ -818,8 +552,7 @@ export class WatchdogActivity implements AgentAdapter {
         this.startError = "the Watchdog worker could not be started";
         return { ok: false, message: this.startError };
       }
-      this.lastStarted = null;
-      this.schedule();
+      this.forge.requestSync();
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

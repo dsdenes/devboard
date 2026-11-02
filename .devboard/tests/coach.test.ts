@@ -9,7 +9,7 @@ import { saveSubscriptions, writeSelectionSnapshot } from "../server/providers";
 import { OPENCODE_GO_MODEL } from "../server/providers/catalog";
 import { openCodePeers } from "../coach/providers";
 import { CoachActivity, preflightCoach } from "../server/coach";
-import type { WatchdogReader } from "../server/watchdog";
+import type { ForgeIssueReader } from "../server/agents/forge-reader";
 import {
   coachDirectory,
   controlDirectory,
@@ -259,7 +259,7 @@ function seedCoachIssue(stateDir: string, url: string): void {
   saveLedger(coachDirectory(stateDir), ledger);
 }
 
-interface CoachRetryReader extends WatchdogReader {
+interface CoachRetryReader extends ForgeIssueReader {
   calls: number;
   /** One queued failure per attempt, consumed in order. */
   failures: string[];
@@ -285,7 +285,7 @@ function coachRetryReader(): CoachRetryReader {
 function coachActivity(options: {
   repoDir: string;
   stateDir: string;
-  reader: WatchdogReader;
+  reader: ForgeIssueReader;
   now: () => number;
 }): CoachActivity {
   return new CoachActivity({
@@ -295,6 +295,7 @@ function coachActivity(options: {
     harnessDir: harnessRoot,
     send: () => undefined,
     reader: options.reader,
+    hasClients: () => true,
     now: options.now,
     intervalMs: 60_000,
     staleAfterMs: 120_000,
@@ -2344,7 +2345,7 @@ describe("Coach synthesizer provider order", () => {
 describe("Coach periodic read retries", () => {
   const ISSUE_URL = "https://github.com/acme/fixture/issues/41";
 
-  async function seededActivity(reader: WatchdogReader, now: () => number) {
+  async function seededActivity(reader: ForgeIssueReader, now: () => number) {
     const { repoDir, stateDir } = await workspace();
     seedCoachIssue(stateDir, ISSUE_URL);
     return coachActivity({ repoDir, stateDir, reader, now });
@@ -2509,7 +2510,7 @@ describe("Coach periodic read retries", () => {
   test("never runs two projection reads at once", async () => {
     const gate = Promise.withResolvers<void>();
     let calls = 0;
-    const reader: WatchdogReader = {
+    const reader: ForgeIssueReader = {
       async project(urls: string[]) {
         calls += 1;
         await gate.promise;

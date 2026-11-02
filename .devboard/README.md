@@ -1709,6 +1709,24 @@ queue.
 
 ### Periodic forge reads
 
+All four filed-issues tables — Auto Scout, Watchdog, Design System, and Coach — obtain, age, and
+fail their issue state through one shared read (`server/agents/forge-state.ts`) that names, for
+each row it lists, the issue's current forge state and its shipping release. The read runs in
+the dashboard and never depends on the agent's worker: a stopped agent's table reflects a
+closure in the origin forge within one interval, with no Start, no worker restart, no browser
+reload, and no reconnect. An open issue reads `pending` and a closed one reads `implemented`.
+A closed issue whose shipping release cannot be resolved still reads `implemented` with `—` in
+the Shipped cell and stays listed. A successful read is authoritative for its rows: a filed
+issue the answer no longer names leaves the table on the next publish, and `agent-issues-count`
+and the sidebar `agent-count-<id>` count exactly the rendered rows.
+
+While at least one dashboard client is connected, each table is read at most once every 60
+seconds, and one read per table is in flight at a time. Opening a page whose last read is older
+than 60 seconds starts exactly one read immediately; repeated opens inside the interval start
+none. With no client connected the dashboard makes no read for these tables. The read only
+reads: it starts no worker, writes no worker state, and runs no agent turn. The Issues Open
+list keeps its own reader and its own 30-second cadence.
+
 All four periodic reads share one failure policy. A transport failure — a timeout, a refused or
 reset connection, a 5xx answer, or an unclassified error — keeps the last known filed rows, the
 last successful read time in `agent-sync-at`, and the lifecycle. The page reads `stale` with no
@@ -2746,12 +2764,13 @@ agent leaves the queue on the next poll.
 
 Auto Scout is the `scout` descriptor in the shared background-agent contract. The Devboard sidebar
 entry `open-devboard-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
-selecting, restoring, or reloading a tab starts no worker, scan, or lock. Opening the page asks
-an already attached worker for one fresh forge read instead of waiting for the next interval; a
-stopped worker is left stopped and receives no command. The page shows the shared lifecycle,
-last-read clock, cadence, limits, filed-issues table, and detail panel described above, plus
-`scout-activity` for the current or newest scan. The page also shows `agent-error` for the last
-error and `agent-sync-error` for a failed forge read.
+selecting, restoring, or reloading a tab starts no worker, scan, or lock. Opening the page reads
+the forge through the shared dashboard reader, so a closure reaches the table within the
+60-second interval even while the worker is stopped, and asks an already attached worker for its
+own fresh read; a stopped worker is left stopped and receives no command. The page shows the
+shared lifecycle, last-read clock, cadence, limits, filed-issues table, and detail panel described
+above, plus `scout-activity` for the current or newest scan. The page also shows `agent-error` for
+the last error and `agent-sync-error` for a failed forge read.
 
 There is no review path. While a worker runs, a scan whose items score at least 4 files each
 accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no
@@ -2828,9 +2847,11 @@ permanent failure (unusable credentials, a missing repository, a malformed answe
 configuration) surfaces on the first attempt. The reason clears on the next successful read, and a
 failed read names the forge, never GitHub, so a Gitea failure never claims a GitHub read. Opening
 the page retries at
-once: each open asks the attached worker for a read, shared across clients inside a five-second
-window, so a recovery no longer waits out the 60-second interval; Start still reads immediately,
-and a stopped worker is never started by a page. Filing stays blocked until a read succeeds. A
+once: each open reads the forge through the shared dashboard reader when its interval allows and
+asks the attached worker for its own read, shared across clients inside a five-second window, so a
+recovery no longer waits out the 60-second interval; Start still reads immediately, and a stopped
+worker is never started by a page yet its table still shows a closure. Filing stays blocked until a
+read succeeds. A
 GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse detection, or HTTP
 429) is a failed read like any other: it keeps the rows and blocks filing, and its reason stays in
 the sync banner on the first answer without a retry. Because the operator's credential is shared
@@ -3091,9 +3112,11 @@ The client sends:
   `agentState` with one; a connect replays `agentsState` and Auto Scout's newest scan as
   `agentActivity` before any reply to the client's own commands. Every command carries `id`;
   an unknown id is refused with an error naming it and spawns nothing. `refreshAgent` is the
-  page-open read: it asks an attached worker for one fresh forge read (Auto Scout shares one
-  request per five seconds across clients) and answers `agentState`; a stopped worker is left
-  stopped, takes no lock, and receives no command. `startAgent` runs the
+  page-open read: it asks the shared dashboard reader for one fresh forge read when the
+  60-second interval allows and answers `agentState`; an attached Auto Scout worker is also
+  asked for its own read, shared across clients inside five seconds. A stopped worker is left
+  stopped, takes no lock, and receives no command, while the dashboard read still refreshes
+  its table. `startAgent` runs the
   agent's preflight and spawns or attaches; `stopAgent` writes one stop command and persists
   `enabled: false`; `setAgentSettings` accepts `{ minutes, maxPerHour, maxPending }`, requires
   `minutes` from 1 through 1440 and each limit empty or 1–100, and writes `settings.json` once;

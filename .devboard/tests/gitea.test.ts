@@ -26,7 +26,7 @@ import { fakeGiteaPull } from "../server/fixtures/fake-gitea-pull";
 import { CommandFlowForge } from "../server/forge-pr";
 import { fileScoutIssue } from "../issues/scout/actions";
 import { createWatchdogDelivery } from "../watchdog/delivery";
-import { createWatchdogGitHubReader } from "../server/watchdog";
+import { createForgeIssueReader } from "../server/agents/forge-reader";
 
 /**
  * Gitea is a first-class forge: resolution, issue polling and closing, Flow's
@@ -879,7 +879,7 @@ describe("Gitea watchdog activity", () => {
   };
 
   test("reads only the issues its own instance serves", async () => {
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: repository(),
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
@@ -895,7 +895,7 @@ describe("Gitea watchdog activity", () => {
   });
 
   test("treats loopback aliases as the same instance", async () => {
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: repository(),
       environment: { DEVBOARD_GITEA_URL: "http://127.0.0.1:3001" },
       run: noGh,
@@ -910,7 +910,7 @@ describe("Gitea watchdog activity", () => {
   test("reads a shipped version from a release page behind the response cap", async () => {
     const tagged = taggedRepository("v1.0.0");
     const calls: string[] = [];
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: tagged.directory,
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
@@ -951,7 +951,7 @@ describe("Gitea watchdog activity", () => {
       }
       return Response.json({ message: `unexpected ${url}` });
     };
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: tagged.directory,
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
@@ -1018,7 +1018,7 @@ describe("Gitea watchdog activity", () => {
       }
       return Response.json({ message: `unexpected ${url}` });
     };
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: tagged.directory,
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
@@ -1070,7 +1070,7 @@ describe("Gitea watchdog activity", () => {
       }
       return Response.json({ message: `unexpected ${url}` }, 404);
     };
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: checkout.directory,
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
@@ -1091,7 +1091,7 @@ describe("Gitea watchdog activity", () => {
   test("scans a repository's releases once for all of its closed issues", async () => {
     const tagged = taggedRepository("v1.0.0");
     const calls: string[] = [];
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: tagged.directory,
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
@@ -1110,7 +1110,7 @@ describe("Gitea watchdog activity", () => {
   test("scans each repository's releases once when the ledger names two", async () => {
     const tagged = taggedRepository("v1.0.0");
     const calls: string[] = [];
-    const reader = createWatchdogGitHubReader({
+    const reader = createForgeIssueReader({
       repoDir: tagged.directory,
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
