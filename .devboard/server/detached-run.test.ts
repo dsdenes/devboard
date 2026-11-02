@@ -1,12 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pidAlive } from "../issues/lock";
 import {
   DetachedPeer,
   beginDetachedHandoff,
   detachedRunDirectory,
+  detachedRunLeasePath,
   endDetachedHandoff,
   readDetachedRunActivity,
   readDetachedRunState,
@@ -136,6 +137,46 @@ describe("detached runs", () => {
     await waitFor(() => second.ownerPid !== undefined);
     expect(second.ownerPid).toBe(ownerPid);
     second.close();
+  }, 30_000);
+
+  test("a foreign dashboard lease never ends a run its own live launcher supervises", async () => {
+    const { repoDir, stateDir } = await fixture();
+    // Another dashboard serves the same repository and holds its shared lease
+    // with a live process while this process started and supervises the run.
+    // The child blocks on its stdin, so it stays alive without a wall-clock
+    // delay until the test kills it.
+    const foreign = Bun.spawn([process.execPath, "-e", "await Bun.stdin.text()"], {
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    try {
+      const leasePath = detachedRunLeasePath(stateDir, repoDir);
+      await mkdir(dirname(leasePath), { recursive: true });
+      await writeFile(
+        leasePath,
+        JSON.stringify({ pid: foreign.pid, instance: "other", updatedAt: Date.now() }),
+      );
+      const peer = new DetachedPeer({
+        repoDir,
+        stateDir,
+        kind: "discover",
+        key: "contribution",
+        instance: "mine",
+        command: `${process.execPath} ${stub}`,
+        cwd: repoDir,
+        env: { ...process.env, SLOW_STUB_MS: "600" },
+        onActivity: () => undefined,
+        onQuestion: () => undefined,
+      });
+      await peer.run("work");
+      const state = readDetachedRunState(
+        detachedRunDirectory(stateDir, repoDir, "discover", "contribution"),
+      );
+      expect(state?.status).toBe("succeeded");
+      expect(state?.error).toBeNull();
+    } finally {
+      foreign.kill();
+      await foreign.exited;
+    }
   }, 30_000);
 
   test("Stop reaches the same owner and ends the run", async () => {

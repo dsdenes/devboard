@@ -285,18 +285,30 @@ class Owner {
   }
 
   /**
-   * Keeps the peer alive across a dashboard replacement. A lease from a live
-   * dashboard wins; otherwise the process that started this run still counts,
-   * and a handoff marker grants a bounded wait for its replacement.
+   * Keeps the peer alive across a dashboard replacement. The process that
+   * started this run supervises it for as long as it lives; several dashboards
+   * can serve one repository and share its lease, and the one that holds it
+   * did not start this run. Once that process exits, a lease from its
+   * replacement and a handoff marker decide the run.
    */
   #checkSupervisor(): void {
     const lease = readDetachedLease(this.#stateDir, this.#repoDir);
+    if (this.#launcherPid !== null && pidAlive(this.#launcherPid)) {
+      // A successor dashboard in this same process takes the lease and adopts
+      // the run without a handoff.
+      if (
+        lease !== null &&
+        lease.pid === this.#launcherPid &&
+        lease.instance !== this.#state.instance
+      ) {
+        this.#state.instance = lease.instance;
+        this.#persist();
+      }
+      this.#handoffDeadline = undefined;
+      return;
+    }
     if (lease !== null && pidAlive(lease.pid)) {
-      if (lease.instance === this.#state.instance || lease.pid === this.#launcherPid) {
-        if (lease.instance !== this.#state.instance) {
-          this.#state.instance = lease.instance;
-          this.#persist();
-        }
+      if (lease.instance === this.#state.instance) {
         this.#handoffDeadline = undefined;
         return;
       }
@@ -316,7 +328,6 @@ class Owner {
       this.#finish("failed", DETACHED_RUN_INTERRUPTED);
       return;
     }
-    if (this.#launcherPid !== null && pidAlive(this.#launcherPid)) return;
     const handoff = readDetachedHandoff(this.#stateDir, this.#repoDir);
     if (handoff !== null) {
       this.#handoffDeadline ??= handoff.at + DETACHED_HANDOFF_GRACE_MS;
