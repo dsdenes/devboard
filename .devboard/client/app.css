@@ -447,6 +447,14 @@ kbd {
   color: var(--accent);
 }
 
+/* A task's owning harness version: always visible text, beside its run. */
+.issues-version {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .workspace-region {
   display: flex;
   flex: 1;

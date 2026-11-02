@@ -51,6 +51,18 @@ export function versionedControlDirectory(
   return join(repoStateDirectory(stateDir, repoDir), "workers", workerVersionKey(version), "control");
 }
 
+/**
+ * The dashboard's proof that it drained one version's worker automatically,
+ * beside that version's state and control directory.
+ */
+export function drainMarkerPath(
+  stateDir: string,
+  repoDir: string,
+  version: string | null,
+): string {
+  return join(repoStateDirectory(stateDir, repoDir), "workers", workerVersionKey(version), "drain.json");
+}
+
 /** Every versioned worker directory under one repository state. */
 export function workerStateDirectories(stateDir: string, repoDir: string): string[] {
   const root = join(repoStateDirectory(stateDir, repoDir), "workers");

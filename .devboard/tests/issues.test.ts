@@ -929,8 +929,14 @@ describe("lifecycle", () => {
     const f = await fixture({ issues: [issue(1), issue(2), goalIssue(3)] });
     try {
       await waitFor(() => (f.peers.length === 3 ? true : undefined), "three peers");
+      const workerVersion = f.state().worker?.harnessVersion ?? null;
+      const liveRuns = f.state().runs.filter((run) => run.status === "running");
+      expect(liveRuns).toHaveLength(3);
+      expect(liveRuns.every((run) => run.harnessVersion === workerVersion)).toBe(true);
+      expect(liveRuns.every((run) => run.workerPid === f.state().worker?.pid)).toBe(true);
       writeCommand(controlDirectory(f.stateDir, f.root), { type: "pause" });
       await waitFor(() => (f.state().lifecycle === "pausing" ? true : undefined), "pausing");
+      expect(f.state().pauseSource).toBe("operator");
       expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
       f.peers[0]!.succeed();
       expect(f.state().lifecycle).toBe("pausing");
@@ -2249,12 +2255,24 @@ describe("parallel version workers", () => {
         expect(b.state().agents.map((agent) => agent.issueNumber)).toEqual([2]);
 
         writeCommand(versionedControlDirectory(stateDir, root, "0.1.A"), { type: "drain" });
+        await waitFor(
+          () => (a.state().pauseSource === "drain" ? true : undefined),
+          "the drained A worker to record its provenance",
+        );
+        // The in-flight unit is untouched and stays attributed to its own
+        // worker version throughout the takeover.
+        expect(a.state().lifecycle).toBe("pausing");
+        const drainingRuns = a.state().runs.filter((run) => run.status === "running");
+        expect(drainingRuns.map((run) => run.harnessVersion)).toEqual(["0.1.A"]);
         a.peers[0]!.succeed();
         await waitFor(
           () => (a.state().lifecycle === "stopped" ? true : undefined),
           "the A worker to drain",
         );
         expect(a.peers).toHaveLength(1);
+        const settled = a.state().runs.find((run) => run.issueNumbers.includes(1));
+        expect(settled?.status).toBe("succeeded");
+        expect(settled?.harnessVersion).toBe("0.1.A");
         expect(liveLockOwner(lockPath(root))).toBeUndefined();
         expect(existsSync(versionedStatePath(stateDir, root, "0.1.A"))).toBe(true);
         expect(existsSync(versionedStatePath(stateDir, root, "0.1.B"))).toBe(true);
@@ -2268,6 +2286,9 @@ describe("parallel version workers", () => {
           handled: Record<string, unknown>;
         };
         expect(Object.keys(ledger.handled).sort()).toEqual(["1", "2"]);
+        expect(
+          b.state().runs.find((run) => run.issueNumbers.includes(2))?.harnessVersion,
+        ).toBe("0.1.B");
       } finally {
         await stop(b);
       }

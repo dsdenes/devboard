@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { IssuesSnapshot } from "./types";
+import { issuesIndicatorTitle, issuesLabel, versionLabel } from "./issues-label";
 import { pollAge, pollInterval, pollStatus } from "./poll-status";
 
 const AT = Date.parse("2026-10-27T14:03:24.000Z");
@@ -158,5 +159,86 @@ describe("poll status", () => {
       tone: "idle",
       text: "Starting up",
     });
+  });
+});
+
+describe("issues labels", () => {
+  function run(runId: string, version: string): IssuesSnapshot["runs"][number] {
+    return {
+      runId,
+      status: "running",
+      startedAt: "2026-10-27T14:00:00.000Z",
+      finishedAt: null,
+      exitCode: null,
+      issueNumbers: [17],
+      activity: 0,
+      firstStderrLine: null,
+      harnessVersion: version,
+    };
+  }
+
+  function agent(runId: string, issueNumber: number, version: string): IssuesSnapshot["agents"][number] {
+    return {
+      runId,
+      issueNumber,
+      startedAt: "2026-10-27T14:00:00.000Z",
+      question: null,
+      acp: null,
+      harnessVersion: version,
+    };
+  }
+
+  // One older worker draining while a newer worker runs: the aggregate view
+  // is the family's work, never the older member's shutdown.
+  const takeover = snapshot({
+    lifecycle: "running",
+    paused: false,
+    agents: [agent("old-run", 17, "0.1.900"), agent("new-run", 18, "0.2.0")],
+    runs: [run("old-run", "0.1.900"), run("new-run", "0.2.0")],
+    workers: [
+      { pid: 101, version: "0.1.900", stateDir: "/fixture/state", lifecycle: "pausing" },
+      { pid: 102, version: "0.2.0", stateDir: "/fixture/state", lifecycle: "running" },
+    ],
+  });
+
+  test("names the family's running work while an older worker drains", () => {
+    expect(issuesLabel(takeover.lifecycle, takeover.agents.length)).toBe("issues working (2)");
+    const title = issuesIndicatorTitle({
+      repo: takeover.repo,
+      lifecycle: takeover.lifecycle,
+      agents: takeover.agents.length,
+      workerPid: 102,
+      lastError: null,
+    });
+    expect(title).not.toMatch(/pausing|draining|drain/i);
+    expect(pollStatus(takeover, AT)).toMatchObject({
+      tone: "active",
+      text: "Every 2s · checked 1s ago",
+    });
+  });
+
+  test("attributes each running task to the version that owns it", () => {
+    expect(takeover.agents.map((entry) => [entry.issueNumber, entry.harnessVersion])).toEqual([
+      [17, "0.1.900"],
+      [18, "0.2.0"],
+    ]);
+    expect(takeover.runs.map((entry) => entry.harnessVersion)).toEqual(["0.1.900", "0.2.0"]);
+    for (const entry of takeover.agents) expect(versionLabel(entry.harnessVersion)).not.toBe("unknown");
+  });
+
+  test("keeps the operator's Pause text unchanged", () => {
+    const paused = snapshot({
+      lifecycle: "pausing",
+      paused: true,
+      agents: [agent("only-run", 17, "0.2.0")],
+    });
+    expect(issuesLabel(paused.lifecycle, paused.agents.length)).toBe("issues pausing");
+    expect(pollStatus(paused, AT)).toMatchObject({ tone: "idle", text: "Polling paused" });
+  });
+
+  test("renders a missing version as unknown and a known one verbatim", () => {
+    expect(versionLabel("0.2.0")).toBe("0.2.0");
+    expect(versionLabel(null)).toBe("unknown");
+    expect(versionLabel(undefined)).toBe("unknown");
   });
 });
