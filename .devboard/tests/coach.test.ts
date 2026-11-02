@@ -590,6 +590,108 @@ describe("Coach registration and lifecycle", () => {
     adapter.dispose();
   });
 
+  test("a slow prerequisite check is not charged to the worker's publication", async () => {
+    const { repoDir, stateDir } = await workspace();
+    const coachDir = coachDirectory(stateDir);
+    const version = "test-version";
+    let clock = 1_000_000;
+    const preflight = Promise.withResolvers<{ ok: true }>();
+    const adapter = new CoachActivity({
+      descriptor: agentRegistry.require("coach"),
+      repoDir,
+      stateDir,
+      harnessDir: harnessRoot,
+      send: () => undefined,
+      now: () => clock,
+      preflight: () => preflight.promise,
+      spawnWorker: (argv) => {
+        writeOwnerLock(versionedLockPath(coachDir, version), {
+          pid: process.pid,
+          repoDir,
+          stateDir,
+          harnessVersion: version,
+        });
+        writeWorkerState(versionedWorkerDirectory(coachDir, version), {
+          version: 1,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          root: repoDir,
+          stateDir,
+          lifecycle: "running",
+          enabled: true,
+          harnessVersion: version,
+          argv,
+          lastRunAt: null,
+          nextRunAt: null,
+          lastError: null,
+          notice: null,
+          updatedAt: new Date().toISOString(),
+        });
+        return process.pid;
+      },
+    });
+    const pending = adapter.start();
+    // No worker exists yet: the forge's answer is not the worker's failure.
+    clock += 30_000;
+    const waiting = adapter.snapshot();
+    expect(waiting.lifecycle).toBe("starting");
+    expect(waiting.error).toBeNull();
+    preflight.resolve({ ok: true });
+    expect((await pending).ok).toBe(true);
+    const running = adapter.snapshot();
+    expect(running.lifecycle).toBe("running");
+    expect(running.error).toBeNull();
+    adapter.dispose();
+  });
+
+  test("a start proof that expired clears once the worker publishes", async () => {
+    const { repoDir, stateDir } = await workspace();
+    const coachDir = coachDirectory(stateDir);
+    const version = "test-version";
+    let clock = 1_000_000;
+    const adapter = new CoachActivity({
+      descriptor: agentRegistry.require("coach"),
+      repoDir,
+      stateDir,
+      harnessDir: harnessRoot,
+      send: () => undefined,
+      now: () => clock,
+      preflight: async () => ({ ok: true }),
+      spawnWorker: () => 999_999,
+    });
+    expect((await adapter.start()).ok).toBe(true);
+    clock += 6_000;
+    const expired = adapter.snapshot();
+    expect(expired.error).toBe("the Coach worker did not publish its state within 5 seconds");
+    expect(expired.lifecycle).toBe("stopped");
+    writeOwnerLock(versionedLockPath(coachDir, version), {
+      pid: process.pid,
+      repoDir,
+      stateDir,
+      harnessVersion: version,
+    });
+    writeWorkerState(versionedWorkerDirectory(coachDir, version), {
+      version: 1,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      root: repoDir,
+      stateDir,
+      lifecycle: "running",
+      enabled: true,
+      harnessVersion: version,
+      argv: [],
+      lastRunAt: null,
+      nextRunAt: null,
+      lastError: null,
+      notice: null,
+      updatedAt: new Date().toISOString(),
+    });
+    const running = adapter.snapshot();
+    expect(running.lifecycle).toBe("running");
+    expect(running.error).toBeNull();
+    adapter.dispose();
+  });
+
   test("a refused preflight writes no state and spawns nothing", async () => {
     const { repoDir, stateDir } = await workspace();
     let spawned = 0;

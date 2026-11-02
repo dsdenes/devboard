@@ -275,6 +275,9 @@ export class CoachActivity implements AgentAdapter {
       this.starting = false;
       this.startingSince = null;
     }
+    // A worker that published is proof the start succeeded: a proof that
+    // expired while it was still warming up must not outlive it.
+    if (attached) this.startError = null;
     if (
       this.starting &&
       this.startingSince !== null &&
@@ -390,7 +393,10 @@ export class CoachActivity implements AgentAdapter {
   /** Spawns the newest harness's worker after the Start preflight. */
   private async spawn(): Promise<AgentCommandResult> {
     this.starting = true;
-    this.startingSince = this.now();
+    // The proof measures the worker's own publication, so its clock starts
+    // when the worker is spawned. The prerequisite check before that is a
+    // forge round trip, not the worker, and must not be charged to it.
+    this.startingSince = null;
     this.startError = null;
     this.notice = null;
     try {
@@ -412,6 +418,7 @@ export class CoachActivity implements AgentAdapter {
         "--state-dir",
         this.stateDir,
       ];
+      this.startingSince = this.now();
       const pid = this.spawnWorker(argv, {
         ...this.environment,
         REPO_DIR: this.repoDir,
