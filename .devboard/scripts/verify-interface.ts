@@ -2489,7 +2489,7 @@ try {
   const ids = new Set(palette.items.map((item) => item.id));
   const requiredCommands = [
     "view.mode.goal", "view.mode.issues", "view.mode.flow", "view.mode.discover",
-    "view.mode.devboard", "devboard.tab.tools",
+    "view.mode.devboard", "devboard.tab.tools", "devboard.tab.skills",
     "issues.start", "issues.pause", "issues.resume", "issues.stop", "issues.check",
     "open.issues.overview", "open.issues.agents", "open.issues.issues", "open.issues.runs",
     "open.issues.drafts",
@@ -2642,12 +2642,6 @@ try {
     description,
     invocations: expectedInvocations[name] ?? 0,
   }));
-  const layoutBeforeDevboard = await page.eval<string>(
-    `localStorage.getItem("devboard.layout.v1") ?? ""`,
-  );
-  const framesBeforeDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
-  );
   await page.click('[data-testid="mode-devboard"]');
   await page.wait(
     `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
@@ -2790,8 +2784,8 @@ try {
   const devboardSidebar = await page.eval<{
     entries: number;
     items: number;
-    label: string;
-    command: string;
+    labels: string[];
+    commands: string[];
     agentLabels: string[];
     agentCommands: string[];
     toolNames: string[];
@@ -2803,8 +2797,10 @@ try {
     return {
       entries: entries.length,
       items: sidebar?.querySelectorAll('.sidebar-item').length ?? 0,
-      label: entries[0]?.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
-      command: entries[0]?.getAttribute("data-command") ?? "",
+      labels: entries.map(
+        (entry) => entry.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
+      ),
+      commands: entries.map((entry) => entry.getAttribute("data-command") ?? ""),
       agentLabels: agents.map(
         (button) =>
           button.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
@@ -2816,8 +2812,8 @@ try {
     };
   })()`);
   check(
-    devboardSidebar.entries === 1 &&
-      devboardSidebar.items === 6 &&
+    devboardSidebar.entries === 2 &&
+      devboardSidebar.items === 7 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify(["Auto Scout", "Watchdog", "Design System", "Coach", "Release Train"]) &&
       JSON.stringify(devboardSidebar.agentCommands) ===
@@ -2828,16 +2824,191 @@ try {
           "open.devboard.coach",
           "open.devboard.release-train",
         ]),
-    "the Devboard sidebar does not carry the background agents beside the MCP tools entry",
+    "the Devboard sidebar does not carry the background agents beside the two page entries",
     devboardSidebar,
   );
   check(
-    devboardSidebar.label === "MCP tools" && devboardSidebar.command === "devboard.tab.tools",
-    "the Devboard sidebar entry is not the MCP tools entry",
+    JSON.stringify(devboardSidebar.labels) === JSON.stringify(["MCP tools", "Skills"]) &&
+      JSON.stringify(devboardSidebar.commands) ===
+        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills"]),
+    "the Devboard sidebar entries are not the MCP tools and Skills pages",
     devboardSidebar,
   );
   check(devboardSidebar.toolNames.length === 0, "a tool name leaked into the sidebar", devboardSidebar);
   check((await sourceOnlyMarkers(page)) === 0, "the Devboard MCP tools page renders a source-only marker");
+
+  // 5c. The Skills page lists the fixture host's installed skills, one entry
+  // opens it, and the checkbox mirrors and writes the project-level exclusion.
+  async function showSkills(): Promise<void> {
+    await page.click('[data-testid="mode-devboard"]');
+    await page.wait(
+      `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
+      "the Devboard mode before the Skills page",
+    );
+    await page.click('[data-testid="devboard-tab"][data-command="devboard.tab.skills"]');
+    await page.wait(`document.querySelector('[data-testid="skills-table"]') !== null`, "the Skills table");
+  }
+
+  await showSkills();
+
+  const skillsTable = await page.eval<{
+    tables: number;
+    columns: number;
+    controls: string[];
+    names: string[];
+    checked: boolean[];
+    cells: number[];
+    text: string;
+  }>(`(() => {
+    const table = document.querySelector('[data-testid="skills-table"]');
+    const rows = [...document.querySelectorAll('[data-testid="skill-row"]')];
+    return {
+      tables: document.querySelectorAll('[data-testid="skills-table"] table, [data-testid="skills-table"]').length,
+      columns: table?.rows[0]?.cells.length ?? -1,
+      controls: [...(table?.querySelectorAll('button, input, select, textarea, a, [role="button"]') ?? [])].map(
+        (control) => control.getAttribute("data-testid") ?? control.tagName,
+      ),
+      names: rows.map((row) => row.getAttribute("data-skill") ?? ""),
+      checked: rows.map((row) => row.querySelector('[data-testid="skill-enabled"]')?.checked === true),
+      cells: rows.map((row) => row.querySelectorAll("td").length),
+      text: table?.textContent ?? "",
+    };
+  })()`);
+  const installedSkills = readdirSync(join(host, ".omp", "skills")).sort();
+  check(skillsTable.tables === 1, "the Skills page does not render one table", skillsTable);
+  check(skillsTable.columns === 2, "the Skills table does not have two columns", skillsTable);
+  check(
+    JSON.stringify(skillsTable.names) === JSON.stringify(installedSkills),
+    "the Skills rows do not equal the installed directories",
+    { rendered: skillsTable.names, installed: installedSkills },
+  );
+  check(
+    skillsTable.cells.every((cells) => cells === 2) &&
+      skillsTable.controls.every((control) => control === "skill-enabled"),
+    "a Skills row does not hold exactly one checkbox beside its name",
+    skillsTable,
+  );
+  check(
+    skillsTable.checked.every((checked) => checked),
+    "an installed skill does not start checked",
+    skillsTable,
+  );
+  check(
+    !/devboard-managed|devboard-family|Delete|description/i.test(skillsTable.text),
+    "the Skills table renders skill content, family, or an action",
+    skillsTable,
+  );
+
+  const settingsFile = join(host, ".omp", "settings.json");
+  const skillCheckbox = (name: string): string =>
+    `[data-testid="skill-row"][data-skill="${name}"] [data-testid="skill-enabled"]`;
+  const firstSkill = installedSkills[0] ?? "";
+  await page.click(skillCheckbox(firstSkill));
+  await page.wait(
+    `document.querySelector('${skillCheckbox(firstSkill)}')?.checked === false`,
+    "the unchecked skill",
+  );
+  const ignoredAfterUncheck = (): unknown =>
+    JSON.parse(readFileSync(settingsFile, "utf8")).skills?.ignoredSkills;
+  await waitFor(() => {
+    try {
+      const ignored = ignoredAfterUncheck();
+      return Array.isArray(ignored) && ignored.length === 1 && ignored[0] === firstSkill
+        ? true
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }, "the unchecked skill in the project OMP settings");
+  await page.click(skillCheckbox(firstSkill));
+  await page.wait(
+    `document.querySelector('${skillCheckbox(firstSkill)}')?.checked === true`,
+    "the rechecked skill",
+  );
+  await waitFor(() => {
+    try {
+      const ignored = ignoredAfterUncheck();
+      return Array.isArray(ignored) && !ignored.includes(firstSkill) && ignored.length === 0
+        ? true
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }, "the rechecked skill removed from the project OMP settings");
+
+  const extraSkill = join(host, ".omp", "skills", "extra-skill");
+  await mkdir(extraSkill, { recursive: true });
+  await writeFile(
+    join(extraSkill, "SKILL.md"),
+    "---\nname: extra-skill\ndescription: Extra fixture guidance.\n---\n\n# Extra skill\n",
+  );
+  await page.reload();
+  await showSkills();
+  await page.wait(
+    `document.querySelectorAll('[data-testid="skill-row"]').length === ${installedSkills.length + 1}`,
+    "the added skill row",
+  );
+  const withExtra = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
+  );
+  check(
+    JSON.stringify(withExtra) === JSON.stringify([...installedSkills, "extra-skill"].sort()),
+    "an added skill directory does not add exactly its row",
+    withExtra,
+  );
+  const sidebarAfterAdd = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="sidebar"] [data-testid="devboard-tab"]').length`,
+  );
+  check(sidebarAfterAdd === 2, "a skill directory changed the sidebar entry count", sidebarAfterAdd);
+  await rm(extraSkill, { recursive: true, force: true });
+  await page.reload();
+  await showSkills();
+  await page.wait(
+    `document.querySelectorAll('[data-testid="skill-row"]').length === ${installedSkills.length}`,
+    "the removed skill row",
+  );
+
+  await writeFile(settingsFile, `${JSON.stringify({ skills: { ignoredSkills: ["ghost-skill"] } })}\n`);
+  await page.reload();
+  await showSkills();
+  const ghostRows = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
+  );
+  check(
+    JSON.stringify(ghostRows) === JSON.stringify(installedSkills) && !ghostRows.includes("ghost-skill"),
+    "an exclusion name without a directory produced a row",
+    ghostRows,
+  );
+
+  await page.click(skillCheckbox(firstSkill));
+  await page.wait(
+    `document.querySelector('${skillCheckbox(firstSkill)}')?.checked === false`,
+    "the unchecked skill before a reload",
+  );
+  await page.reload();
+  await showSkills();
+  await page.wait(
+    `document.querySelector('${skillCheckbox(firstSkill)}')?.checked === false`,
+    "the unchecked skill after a reload",
+  );
+  await rm(settingsFile, { force: true });
+  await page.click(skillCheckbox(firstSkill));
+  await page.wait(
+    `document.querySelector('${skillCheckbox(firstSkill)}')?.checked === true`,
+    "the rechecked skill after the persistence check",
+  );
+  await page.click('[data-testid="devboard-tab"][data-command="devboard.tab.tools"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="mcp-tool"]').length === ${catalog.length}`,
+    "the MCP tool list after the Skills page",
+  );
+
+  const layoutBeforeDevboard = await page.eval<string>(
+    `localStorage.getItem("devboard.layout.v1") ?? ""`,
+  );
+  const framesBeforeDevboard = await page.eval<string[]>(
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools") && !String(frame).includes("getInstalledSkills"))`,
+  );
 
   await page.key("1", 1);
   await page.wait(
@@ -2890,7 +3061,7 @@ try {
     "Devboard from the palette",
   );
   const framesAfterDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools") && !String(frame).includes("getInstalledSkills"))`,
   );
   check(
     JSON.stringify(framesAfterDevboard) === JSON.stringify(framesBeforeDevboard),
@@ -10143,6 +10314,7 @@ try {
     ["open.issues.issues", "issues"],
     ["open.issues.runs", "issues"],
     ["devboard.tab.tools", "devboard"],
+    ["devboard.tab.skills", "devboard"],
     ["open.discover.contribution", "discover"],
     ["open.flow.decisions", "flow"],
     ["flow.checkpoint.open.cp-1", "flow"],

@@ -15,9 +15,16 @@ export interface DevboardSidebarEntry {
   id: string;
   label: string;
   command: string;
+  tab: WorkspaceTab;
 }
 
-/** The mode's only page; the sidebar entry and the palette command open it. */
+/** One row of the Skills page: an installed skill and whether OMP loads it. */
+export interface DevboardSkillRow {
+  name: string;
+  enabled: boolean;
+}
+
+/** The read-only MCP catalog page. */
 export const DEVBOARD_TAB: WorkspaceTab = {
   id: "tools",
   kind: "mcp-tools",
@@ -25,9 +32,35 @@ export const DEVBOARD_TAB: WorkspaceTab = {
   title: "MCP tools",
 };
 
+/** Every skill installed under the repository's `.omp/skills` root. */
+export const DEVBOARD_SKILLS_TAB: WorkspaceTab = {
+  id: "devboard-skills",
+  kind: "devboard-skills",
+  resourceId: "devboard-skills",
+  title: "Skills",
+};
+
 export const DEVBOARD_SIDEBAR: readonly DevboardSidebarEntry[] = [
-  { id: "tools", label: "MCP tools", command: "devboard.tab.tools" },
+  { id: "tools", label: "MCP tools", command: "devboard.tab.tools", tab: DEVBOARD_TAB },
+  { id: "skills", label: "Skills", command: "devboard.tab.skills", tab: DEVBOARD_SKILLS_TAB },
 ];
+
+/**
+ * The server's installed skills in the order it sent them. A malformed row is
+ * dropped rather than rendered with a name the filesystem never had.
+ */
+export function skillRows(value: unknown): DevboardSkillRow[] {
+  if (!Array.isArray(value)) return [];
+  const rows: DevboardSkillRow[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry as Record<string, unknown>;
+    if (typeof row.name !== "string" || row.name.length === 0) continue;
+    if (typeof row.enabled !== "boolean") continue;
+    rows.push({ name: row.name, enabled: row.enabled });
+  }
+  return rows;
+}
 
 /**
  * Invocation counts keyed by tool name. A missing or malformed entry is
@@ -75,15 +108,41 @@ export function toolRows(
 export class DevboardStore {
   tools = $state<McpToolRow[]>([]);
   loaded = $state(false);
+  skills = $state<DevboardSkillRow[]>([]);
+  skillsLoaded = $state(false);
 
   request(): void {
     connection.send({ type: "getMcpTools" });
   }
 
+  requestSkills(): void {
+    connection.send({ type: "getInstalledSkills" });
+  }
+
+  /**
+   * Flips one row immediately and asks the server to persist the same state.
+   * The server's authoritative frame replaces the guess; a frame that never
+   * arrives still leaves the checkbox usable for the next click.
+   */
+  setSkillEnabled(name: string, enabled: boolean): void {
+    const previous = this.skills;
+    this.skills = this.skills.map((row) =>
+      row.name === name ? { name: row.name, enabled } : row,
+    );
+    if (!connection.send({ type: "setInstalledSkillEnabled", name, enabled })) {
+      this.skills = previous;
+    }
+  }
+
   handleEvent(message: Record<string, unknown>): void {
-    if (message.type !== "mcpTools") return;
-    this.tools = toolRows(message.tools, message.invocations);
-    this.loaded = true;
+    if (message.type === "mcpTools") {
+      this.tools = toolRows(message.tools, message.invocations);
+      this.loaded = true;
+      return;
+    }
+    if (message.type !== "installedSkills") return;
+    this.skills = skillRows(message.skills);
+    this.skillsLoaded = true;
   }
 }
 

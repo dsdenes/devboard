@@ -10,7 +10,7 @@
     runStateTone,
     type RunState,
   } from "../run-state";
-  import { DEVBOARD_SIDEBAR, DEVBOARD_TAB } from "../devboard.svelte";
+  import { DEVBOARD_SIDEBAR } from "../devboard.svelte";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
@@ -844,10 +844,11 @@
           <Button
             bare
             class="sidebar-item"
-            aria-current={isActive(DEVBOARD_TAB.id)}
+            aria-current={isActive(entry.tab.id)}
             data-testid="devboard-tab"
             data-command={entry.command}
-            onclick={() => open("devboard", DEVBOARD_TAB.id, DEVBOARD_TAB.kind, DEVBOARD_TAB.resourceId, DEVBOARD_TAB.title)}
+            onclick={() =>
+              open("devboard", entry.tab.id, entry.tab.kind, entry.tab.resourceId, entry.tab.title)}
           >
             <span class="sidebar-item__label">{entry.label}</span>
           </Button>

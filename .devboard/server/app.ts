@@ -130,6 +130,7 @@ import {
   STATE_VERSION,
   terminateRecordedChildren,
   trimActivity,
+  writeFileAtomically,
   writeStateFile,
   type RecordedChild,
 } from "./state";
@@ -615,6 +616,8 @@ type ClientMessage =
   | { type: "getProject" }
   | { type: "getVersion" }
   | { type: "getMcpTools" }
+  | { type: "getInstalledSkills" }
+  | { type: "setInstalledSkillEnabled"; name?: unknown; enabled?: unknown }
   | { type: "getIssues" }
   | { type: "getIssuesRun"; runId?: unknown }
   | { type: "startIssues" }
@@ -732,6 +735,14 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getVersion" };
     case "getMcpTools":
       return { type: "getMcpTools" };
+    case "getInstalledSkills":
+      return { type: "getInstalledSkills" };
+    case "setInstalledSkillEnabled":
+      return {
+        type: "setInstalledSkillEnabled",
+        name: "name" in value ? value.name : undefined,
+        enabled: "enabled" in value ? value.enabled : undefined,
+      };
     case "getIssues":
       return { type: "getIssues" };
     case "getIssuesRun":
@@ -1354,6 +1365,108 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
   // skills only: a project-specific Discover directive cannot fail it.
   const contradictions = findContradictions([...prepare.values(), ...unmanaged.values()]);
   return { skills: summaries, managed, prepare, discover, unmanaged, errors, contradictions };
+}
+
+/** One installed skill and whether a fresh OMP session at the root loads it. */
+interface InstalledSkill {
+  name: string;
+  enabled: boolean;
+}
+
+/** The project-level settings file OMP reads at the repository root. */
+const PROJECT_SETTINGS_FILE = "settings.json";
+/** The OMP array of skill-name glob patterns a session must not load. */
+const SKILL_EXCLUSION_SETTING = "ignoredSkills";
+
+/**
+ * Every directory under the skills root OMP can load: a real directory or a
+ * symlink to one holding a readable `SKILL.md`. A name only the published
+ * Discover manifest carries contributes no row; the filesystem is the source.
+ */
+async function installedSkillNames(root: string): Promise<string[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (!(await skillEntryIsDirectory(root, entry))) continue;
+    if ((await readSkillAt(root, entry.name)) === undefined) continue;
+    names.push(entry.name);
+  }
+  names.sort((left, right) => left.localeCompare(right));
+  return names;
+}
+
+/**
+ * The project-level OMP settings document, or an empty one when the file does
+ * not exist. Every other key is returned untouched so a toggle never rewrites
+ * a setting this page does not own.
+ */
+async function readProjectSettings(path: string): Promise<Record<string, unknown>> {
+  let source: string;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  if (source.trim().length === 0) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    throw new Error("The project OMP settings are not valid JSON.");
+  }
+  const document = asObject(parsed);
+  if (document === undefined) {
+    throw new Error("The project OMP settings are not a JSON object.");
+  }
+  return document;
+}
+
+function projectIgnoredSkills(document: Record<string, unknown>): unknown[] {
+  const skills = asObject(document.skills);
+  if (skills === undefined) return [];
+  const ignored = skills[SKILL_EXCLUSION_SETTING];
+  return Array.isArray(ignored) ? ignored : [];
+}
+
+/**
+ * The array the setting takes when one skill toggles, or null when it already
+ * holds the requested state. Entries the dashboard did not write are kept as
+ * they are, so only the named skill changes.
+ */
+function nextIgnoredSkills(
+  current: readonly unknown[],
+  name: string,
+  enabled: boolean,
+): unknown[] | null {
+  if (enabled) {
+    if (!current.includes(name)) return null;
+    return current.filter((value) => value !== name);
+  }
+  if (current.includes(name)) return null;
+  return [...current, name];
+}
+
+async function writeSkillExclusion(path: string, name: string, enabled: boolean): Promise<void> {
+  const document = await readProjectSettings(path);
+  const skills = document.skills;
+  if (skills !== undefined && asObject(skills) === undefined) {
+    throw new Error("The project OMP skills setting is not an object.");
+  }
+  const ignored = asObject(skills)?.[SKILL_EXCLUSION_SETTING];
+  if (ignored !== undefined && !Array.isArray(ignored)) {
+    throw new Error("The project OMP skill exclusion is not an array.");
+  }
+  const next = nextIgnoredSkills(projectIgnoredSkills(document), name, enabled);
+  if (next === null) return;
+  document.skills = { ...(asObject(skills) ?? {}), [SKILL_EXCLUSION_SETTING]: next };
+  await writeFileAtomically(path, `${JSON.stringify(document, null, 2)}\n`);
 }
 
 function describeContradictions(
@@ -2079,6 +2192,9 @@ export function createApp(options: AppOptions) {
   // getGoal keeps using the configured goal file.
   const creationGoalFile = defaultGoalPath(repoDir);
   const skillsDir = join(repoDir, ".omp", "skills");
+  // OMP merges this project-level file into the settings a plain session reads
+  // at the repository root, so an exclusion here reaches every peer.
+  const projectSettingsPath = join(repoDir, ".omp", PROJECT_SETTINGS_FILE);
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
   // A draft name is chosen by an LLM; any failure falls back to the
   // deterministic slug inside `writeGoalProposal`.
@@ -4451,6 +4567,70 @@ export function createApp(options: AppOptions) {
         type: "error",
         message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
       });
+    }
+  }
+
+  /** Every installed skill with the state a fresh OMP session at the root sees. */
+  async function readInstalledSkills(): Promise<InstalledSkill[]> {
+    const document = await readProjectSettings(projectSettingsPath);
+    const patterns = projectIgnoredSkills(document).filter(
+      (value): value is string => typeof value === "string",
+    );
+    const names = await installedSkillNames(skillsDir);
+    return names.map((name) => ({
+      name,
+      enabled: !patterns.some((pattern) => new Bun.Glob(pattern).match(name)),
+    }));
+  }
+
+  async function sendInstalledSkills(target: { send(data: string): unknown }): Promise<void> {
+    try {
+      send(target, { type: "installedSkills", skills: await readInstalledSkills() });
+    } catch (error) {
+      send(target, {
+        type: "error",
+        message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  /**
+   * Adds or removes one installed skill's name in the project-level OMP
+   * exclusion. The skill's bytes are never touched, and no run is started,
+   * stopped, or altered: sessions started afterwards read the new setting.
+   */
+  async function setInstalledSkillEnabled(
+    target: { send(data: string): unknown },
+    name: unknown,
+    enabled: unknown,
+  ): Promise<void> {
+    if (typeof name !== "string" || typeof enabled !== "boolean") {
+      send(target, { type: "error", message: "A skill change needs its name and enabled value." });
+      return;
+    }
+    if (!SKILL_NAME_PATTERN.test(name) || name.length > SKILL_NAME_MAX) {
+      send(target, { type: "error", message: "Choose an installed skill to change." });
+      return;
+    }
+
+    try {
+      const names = await installedSkillNames(skillsDir);
+      if (!names.includes(name)) {
+        send(target, { type: "error", message: `No skill named "${name}" is installed.` });
+        await sendInstalledSkills(target);
+        return;
+      }
+      await writeSkillExclusion(projectSettingsPath, name, enabled);
+      const skills = await readInstalledSkills();
+      // No run holds this state, so every client gets the authoritative rows
+      // without persisting dashboard state or disturbing an active run.
+      sendAll({ type: "installedSkills", skills });
+    } catch (error) {
+      send(target, {
+        type: "error",
+        message: `Could not save the skill setting: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      await sendInstalledSkills(target);
     }
   }
 
@@ -7288,6 +7468,7 @@ export function createApp(options: AppOptions) {
           command.type === "getProject" ||
           command.type === "getVersion" ||
           command.type === "getMcpTools" ||
+          command.type === "getInstalledSkills" ||
           command.type === "getIssues" ||
           command.type === "getIssuesRun" ||
           command.type === "getGoalDrafts" ||
@@ -7321,6 +7502,10 @@ export function createApp(options: AppOptions) {
               tools: catalog.tools,
               invocations: toolInvocationCounts(stateDir, repoDir),
             });
+          } else if (command.type === "getInstalledSkills") {
+            await sendInstalledSkills(ws);
+          } else if (command.type === "setInstalledSkillEnabled") {
+            await setInstalledSkillEnabled(ws, command.name, command.enabled);
           } else if (command.type === "getIssues") {
             issues.replay(ws);
           } else if (command.type === "getIssuesRun") {
