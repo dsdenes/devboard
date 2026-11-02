@@ -1347,7 +1347,7 @@ kbd {
 .choice__description {
   color: var(--muted-foreground);
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .choice__recommended {
@@ -2654,7 +2654,7 @@ a.code-chip--link:focus-visible {
 .discover-warning {
   border-bottom: 1px solid var(--border-subtle);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.45;
   margin: 0;
   padding: 8px 10px;
 }
@@ -3012,7 +3012,7 @@ a.code-chip--link:focus-visible {
 .skill__document {
   color: var(--foreground);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.45;
   max-width: 940px;
   overflow-wrap: anywhere;
 }
@@ -4136,7 +4136,7 @@ a.code-chip--link:focus-visible {
 .issues-draft-detail__prose {
   color: var(--foreground);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.45;
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
