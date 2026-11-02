@@ -1,12 +1,3 @@
-<script module lang="ts">
-  export type AgentActivityState =
-    | "running"
-    | "idle"
-    | "succeeded"
-    | "failed"
-    | "stopped";
-</script>
-
 <script lang="ts">
   import type { Snippet } from "svelte";
   import Button from "./ui/button.svelte";
