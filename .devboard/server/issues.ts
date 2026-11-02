@@ -155,7 +155,11 @@ export class IssuesBridge {
   private syncTimer: Timer | undefined;
   private lastSignature = "";
   private lastActivities = new Map<string, string[]>();
-  private stopping: { pid: number; timer: Timer; killTimer?: Timer } | undefined;
+  /**
+   * One proof per stopped pid. A proof belongs to its own pid alone, so
+   * stopping a second owner never clears the first owner's timers.
+   */
+  private readonly stopping = new Map<number, { timer: Timer; killTimer?: Timer }>();
   private startTask:
     | Promise<{ ok: true; attached: boolean } | { ok: false; message: string }>
     | undefined;
@@ -371,7 +375,7 @@ export class IssuesBridge {
       clearInterval(this.syncTimer);
       this.syncTimer = undefined;
     }
-    if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
+    this.clearStopProof();
   }
 
   private detach(argv: string[], environment: Record<string, string | undefined>): number | undefined {
@@ -707,19 +711,20 @@ export class IssuesBridge {
         };
       }
       // A live owner that this bridge has told to stop is not attachable: the
-      // worker is already ending, so report its state only after it has exited
-      // and the new spawn holds the lock.
-      const stopping = this.stopping;
-      const live = owners.filter((owner) => stopping === undefined || stopping.pid !== owner.pid);
+      // worker is already ending, so report its state only after every stopped
+      // owner has exited and the new spawn holds the lock.
+      const live = owners.filter((owner) => !this.stopping.has(owner.pid));
       if (live.length > 0) {
         this.refresh();
         return { ok: true, attached: true };
       }
-      if (!(await this.waitForStop(stopping?.pid ?? owners[0]!.pid))) {
+      const stopping = owners.map((owner) => owner.pid);
+      const waits = await Promise.all(stopping.map((pid) => this.waitForStop(pid)));
+      if (waits.some((stopped) => !stopped)) {
         return {
           ok: false,
           message:
-            `the previous issues worker (pid ${stopping?.pid ?? owners[0]!.pid}) is still stopping; ` +
+            `the previous issues worker (pid ${stopping.join(", ")}) is still stopping; ` +
             "press Start once it has exited.",
         };
       }
@@ -875,8 +880,10 @@ export class IssuesBridge {
    * process the table proves is this checkout's worker is signalled.
    */
   private scheduleStopProof(pid: number): void {
-    if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
-    const timer = setTimeout(() => {
+    this.clearStopProof(pid);
+    const prove = (): void => {
+      const proof = this.stopping.get(pid);
+      if (proof === undefined) return;
       if (!pidAlive(pid) || !this.provesWorker(pid)) {
         this.clearStopProof(pid);
         return;
@@ -890,6 +897,7 @@ export class IssuesBridge {
       // The stop is still pending until the grace ends, so Start must keep
       // waiting for this pid through it rather than report it attached.
       const killTimer = setTimeout(() => {
+        if (this.stopping.get(pid) !== proof) return;
         if (!pidAlive(pid) || !this.provesWorker(pid)) {
           this.clearStopProof(pid);
           return;
@@ -902,19 +910,27 @@ export class IssuesBridge {
         }
       }, STOP_KILL_GRACE_MS);
       killTimer.unref?.();
-      if (this.stopping !== undefined && this.stopping.pid === pid) {
-        this.stopping.killTimer = killTimer;
-      }
-    }, STOP_PROOF_MS);
+      proof.killTimer = killTimer;
+    };
+    const timer = setTimeout(prove, STOP_PROOF_MS);
     timer.unref?.();
-    this.stopping = { pid, timer };
+    this.stopping.set(pid, { timer });
   }
 
-  private clearStopProof(pid: number): void {
-    if (this.stopping === undefined || this.stopping.pid !== pid) return;
-    clearTimeout(this.stopping.timer);
-    clearTimeout(this.stopping.killTimer);
-    this.stopping = undefined;
+  private clearStopProof(pid?: number): void {
+    if (pid === undefined) {
+      for (const proof of this.stopping.values()) {
+        clearTimeout(proof.timer);
+        clearTimeout(proof.killTimer);
+      }
+      this.stopping.clear();
+      return;
+    }
+    const proof = this.stopping.get(pid);
+    if (proof === undefined) return;
+    clearTimeout(proof.timer);
+    clearTimeout(proof.killTimer);
+    this.stopping.delete(pid);
   }
 
   private provesWorker(pid: number): boolean {

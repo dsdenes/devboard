@@ -123,7 +123,11 @@ export class ScoutBridge implements AgentAdapter {
   private timer: Timer | undefined;
   private lastActivityScanId: string | null = null;
   private lastActivity: string[] = [];
-  private stopping: { pid: number; timer: Timer; killTimer?: Timer } | undefined;
+  /**
+   * One proof per stopped pid. A proof belongs to its own pid alone, so
+   * stopping a second owner never clears the first owner's timers.
+   */
+  private readonly stopping = new Map<number, { timer: Timer; killTimer?: Timer }>();
   private starting = false;
   private startingSince: number | null = null;
   private stopRequested = false;
@@ -232,7 +236,7 @@ export class ScoutBridge implements AgentAdapter {
       this.timer = undefined;
     }
     this.forge.dispose();
-    if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
+    this.clearStopProof();
   }
 
   private detach(argv: string[], environment: Record<string, string | undefined>): number | undefined {
@@ -626,18 +630,21 @@ export class ScoutBridge implements AgentAdapter {
         return { ok: true, notice: this.notice };
       }
       // A live worker of any version occupies the family: Start spawns nothing
-      // while one exists. A live owner that this bridge has told to stop is not
-      // attachable, so report its state only after it has exited.
-      const stopping = this.stopping;
-      if (stopping === undefined || !owners.some((owner) => owner.pid === stopping.pid)) {
+      // while one exists. Every live owner this bridge has told to stop is not
+      // attachable, so report its state only after all of them have exited.
+      const stopping = owners
+        .map((owner) => owner.pid)
+        .filter((pid) => this.stopping.has(pid));
+      if (stopping.length === 0) {
         this.refresh();
         return { ok: true };
       }
-      if (!(await this.waitForStop(stopping.pid))) {
+      const waits = await Promise.all(stopping.map((pid) => this.waitForStop(pid)));
+      if (waits.some((stopped) => !stopped)) {
         return {
           ok: false,
           message:
-            `the previous Auto Scout worker (pid ${stopping.pid}) is still stopping; ` +
+            `the previous Auto Scout worker (pid ${stopping.join(", ")}) is still stopping; ` +
             "press Start once it has exited.",
         };
       }
@@ -816,8 +823,10 @@ export class ScoutBridge implements AgentAdapter {
    * process the table proves is this checkout's scout is signalled.
    */
   private scheduleStopProof(pid: number): void {
-    if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
-    const timer = setTimeout(() => {
+    this.clearStopProof(pid);
+    const prove = (): void => {
+      const proof = this.stopping.get(pid);
+      if (proof === undefined) return;
       if (!pidAlive(pid) || !this.provesWorker(pid)) {
         this.clearStopProof(pid);
         return;
@@ -831,6 +840,7 @@ export class ScoutBridge implements AgentAdapter {
       // The stop is still pending until the grace ends, so Start must keep
       // waiting for this pid through it rather than report it attached.
       const killTimer = setTimeout(() => {
+        if (this.stopping.get(pid) !== proof) return;
         if (!pidAlive(pid) || !this.provesWorker(pid)) {
           this.clearStopProof(pid);
           return;
@@ -843,19 +853,27 @@ export class ScoutBridge implements AgentAdapter {
         }
       }, STOP_KILL_GRACE_MS);
       killTimer.unref?.();
-      if (this.stopping !== undefined && this.stopping.pid === pid) {
-        this.stopping.killTimer = killTimer;
-      }
-    }, STOP_PROOF_MS);
+      proof.killTimer = killTimer;
+    };
+    const timer = setTimeout(prove, STOP_PROOF_MS);
     timer.unref?.();
-    this.stopping = { pid, timer };
+    this.stopping.set(pid, { timer });
   }
 
-  private clearStopProof(pid: number): void {
-    if (this.stopping === undefined || this.stopping.pid !== pid) return;
-    clearTimeout(this.stopping.timer);
-    clearTimeout(this.stopping.killTimer);
-    this.stopping = undefined;
+  private clearStopProof(pid?: number): void {
+    if (pid === undefined) {
+      for (const proof of this.stopping.values()) {
+        clearTimeout(proof.timer);
+        clearTimeout(proof.killTimer);
+      }
+      this.stopping.clear();
+      return;
+    }
+    const proof = this.stopping.get(pid);
+    if (proof === undefined) return;
+    clearTimeout(proof.timer);
+    clearTimeout(proof.killTimer);
+    this.stopping.delete(pid);
   }
 
   private provesWorker(pid: number): boolean {

@@ -909,6 +909,96 @@ describe("bridge", () => {
     }
   });
 
+  test("Stop proves every live worker, not only the last one", async () => {
+    const root = await repository();
+    const stateDir = join(root, ".devboard", ".tmp", "state");
+    const script = join(root, "fixture", "scout", "worker.ts");
+    await mkdir(dirname(script), { recursive: true });
+    await writeFile(
+      script,
+      "process.on('SIGTERM', () => undefined);\n" +
+        "console.log('ready');\nsetInterval(() => undefined, 1000);\n",
+    );
+    const spawnFixtureWorker = async () => {
+      const worker = Bun.spawn({
+        cmd: [process.execPath, script, root],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "ignore",
+        stdin: "ignore",
+      });
+      const reader = worker.stdout.getReader();
+      const ready = await reader.read();
+      reader.releaseLock();
+      expect(new TextDecoder().decode(ready.value)).toContain("ready");
+      return worker;
+    };
+    const first = await spawnFixtureWorker();
+    const second = await spawnFixtureWorker();
+    const writeOwner = async (path: string, pid: number, version: string | null) => {
+      await writeFile(
+        path,
+        JSON.stringify({
+          pid,
+          startedAt: new Date().toISOString(),
+          repo: root,
+          stateDir,
+          harnessVersion: version,
+          argv: [script, root],
+        }),
+      );
+    };
+    await mkdir(dirname(lockPath(root)), { recursive: true });
+    await writeOwner(lockPath(root), first.pid, null);
+    await writeOwner(versionLockPath(lockPath(root), "0.1.0"), second.pid, "0.1.0");
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflight: async () => ({ ok: true, repository: "acme/fixture" }),
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      expect(bridge.stop()).toEqual({ ok: true });
+      // Both workers ignore SIGTERM, so each proof must run its own grace and
+      // both workers exit rather than only the last one scheduled.
+      vi.advanceTimersByTime(3000);
+      vi.advanceTimersByTime(2000);
+      vi.useRealTimers();
+      // SIGKILL delivery is the platform clock, not the fake one, so the wait
+      // for both exits is bounded; the bound costs time only on failure.
+      const exits = Promise.all([first.exited, second.exited]).then(() => "exited" as const);
+      const { promise: timedOut, resolve: boundElapsed } = Promise.withResolvers<"alive">();
+      const bound = setTimeout(() => boundElapsed("alive"), 5000);
+      const outcome = await Promise.race([exits, timedOut]);
+      clearTimeout(bound);
+      expect(outcome).toBe("exited");
+      expect(bridge.snapshot().lifecycle).not.toBe("stopping");
+      expect(await bridge.start()).toEqual({ ok: true });
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.join(" ")).toContain(join("scout", "worker.ts"));
+    } finally {
+      vi.useRealTimers();
+      bridge.dispose();
+      first.kill("SIGKILL");
+      second.kill("SIGKILL");
+      await Promise.all([first.exited, second.exited]);
+      await rm(lockPath(root), { force: true });
+      await rm(versionLockPath(lockPath(root), "0.1.0"), { force: true });
+    }
+  }, 20_000);
+
   test("a newer worker starts automatically and drains an older live worker", async () => {
     const root = await repository();
     const stateDir = join(root, ".devboard", ".tmp", "state");

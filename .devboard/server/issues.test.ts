@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test, vi } from "bun:test";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { IssuesBridge } from "./issues";
-import { acquireLock } from "../issues/lock";
+import { acquireLock, versionLockPath } from "../issues/lock";
 import { controlDirectory, lockPath, statePath } from "../issues/paths";
 import { recordClosedByRun } from "../issues/self-close";
 import { emptyState, readState, writeState, type IssuesAgent, type IssuesIssue } from "../issues/state";
@@ -195,6 +195,94 @@ describe("issues bridge commands", () => {
       worker.kill("SIGKILL");
       await worker.exited;
       await rm(lockPath(root), { force: true });
+    }
+  }, 20_000);
+
+  test("Stop proves every live worker, not only the last one", async () => {
+    const root = await temporaryDirectory("issues-bridge-two-owners");
+    const stateDir = join(root, "state");
+    const script = join(root, "fixture", "issues", "worker.ts");
+    await mkdir(dirname(script), { recursive: true });
+    await writeFile(
+      script,
+      "process.on('SIGTERM', () => undefined);\n" +
+        "console.log('ready');\nsetInterval(() => undefined, 1000);\n",
+    );
+    const spawnFixtureWorker = async () => {
+      const worker = Bun.spawn({
+        cmd: [process.execPath, script, root],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "ignore",
+        stdin: "ignore",
+      });
+      const reader = worker.stdout.getReader();
+      const ready = await reader.read();
+      reader.releaseLock();
+      expect(new TextDecoder().decode(ready.value)).toContain("ready");
+      return worker;
+    };
+    const first = await spawnFixtureWorker();
+    const second = await spawnFixtureWorker();
+    const writeOwner = async (path: string, pid: number, version: string | null) => {
+      await writeFile(
+        path,
+        JSON.stringify({
+          pid,
+          startedAt: new Date().toISOString(),
+          repo: root,
+          stateDir,
+          harnessVersion: version,
+          argv: [script, root],
+        }),
+      );
+    };
+    await mkdir(dirname(lockPath(root)), { recursive: true });
+    await writeOwner(lockPath(root), first.pid, null);
+    await writeOwner(versionLockPath(lockPath(root), "0.1.0"), second.pid, "0.1.0");
+    const spawned: string[][] = [];
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflight: async () => ({ ok: true, repository: "acme/fixture" }),
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      expect(subject.command({ type: "stop" })).toEqual({ ok: true });
+      // Both workers ignore SIGTERM, so each proof must run its own grace and
+      // both workers exit rather than only the last one scheduled.
+      vi.advanceTimersByTime(3000);
+      vi.advanceTimersByTime(2000);
+      vi.useRealTimers();
+      // SIGKILL delivery is the platform clock, not the fake one, so the wait
+      // for both exits is bounded; the bound costs time only on failure.
+      const exits = Promise.all([first.exited, second.exited]).then(() => "exited" as const);
+      const { promise: timedOut, resolve: boundElapsed } = Promise.withResolvers<"alive">();
+      const bound = setTimeout(() => boundElapsed("alive"), 5000);
+      const outcome = await Promise.race([exits, timedOut]);
+      clearTimeout(bound);
+      expect(outcome).toBe("exited");
+      expect(await subject.start()).toEqual({ ok: true, attached: false });
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.join(" ")).toContain(join("issues", "worker.ts"));
+    } finally {
+      vi.useRealTimers();
+      subject.dispose();
+      first.kill("SIGKILL");
+      second.kill("SIGKILL");
+      await Promise.all([first.exited, second.exited]);
+      await rm(lockPath(root), { force: true });
+      await rm(versionLockPath(lockPath(root), "0.1.0"), { force: true });
     }
   }, 20_000);
 
