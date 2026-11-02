@@ -73,10 +73,25 @@ export type CloseReason = "completed" | "not planned";
  */
 export const FORGE_ISSUE_LIST_MAX = 201;
 
+/**
+ * The row ceiling one `listAll` read may reach on GitHub, where a page is one
+ * `gh issue list --limit` call and the limit doubles until a short page proves
+ * the end. A repository holding more rows than this is reported by the
+ * dead-code guard's compared count instead of paging forever.
+ */
+const FORGE_ISSUE_ALL_MAX = 100_000;
+
 export interface ForgeIssues {
   readonly forge: "github" | "gitea";
   readonly repository: string;
+  /** The newest `limit` rows across the requested state; one bounded page. */
   list(state: "open" | "closed" | "all", limit?: number): Promise<ForgeIssueSummary[]>;
+  /**
+   * Every issue in the requested state, read page by page. The dead-code
+   * duplicate guard compares against all of them, so a closed finding older
+   * than one `list` page still suppresses a refile.
+   */
+  listAll(state: "open" | "closed" | "all"): Promise<ForgeIssueSummary[]>;
   get(number: number): Promise<ForgeIssueDocument>;
   ensureLabel(name: string): Promise<void>;
   create(input: CreateForgeIssueInput): Promise<ForgeIssueDocument>;
@@ -310,71 +325,111 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     };
   };
 
+  const summaryOf = (issue: GiteaIssueDocument): ForgeIssueSummary => ({
+    number: issue.number,
+    title: issue.title,
+    state: issue.state,
+    labels: issue.labels,
+    url: issue.url,
+    createdAt: issue.createdAt,
+  });
+
+  /** One `gh issue list` page for one state, up to `limit` rows. */
+  const githubRows = async (
+    current: "open" | "closed",
+    limit: number,
+  ): Promise<ForgeIssueSummary[]> => {
+    const outcome = await github("read", [
+      "issue",
+      "list",
+      "--repo",
+      remote.project,
+      "--state",
+      current,
+      "--limit",
+      String(limit),
+      "--json",
+      "number,title,state,labels,url,createdAt",
+    ]);
+    if (outcome.code !== 0) {
+      throw new ForgeIssueError(firstLine(outcome.stderr || outcome.stdout));
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(outcome.stdout);
+    } catch {
+      throw new ForgeIssueError("gh issue list returned invalid JSON");
+    }
+    if (!Array.isArray(parsed)) throw new ForgeIssueError("gh issue list returned no array");
+    const rows: ForgeIssueSummary[] = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.number !== "number" || typeof record.title !== "string") continue;
+      rows.push({
+        number: record.number,
+        title: record.title,
+        state: stateOf(record.state),
+        labels: labelsOf(record.labels),
+        url: typeof record.url === "string" ? record.url : "",
+        createdAt: typeof record.createdAt === "string" ? record.createdAt : null,
+      });
+    }
+    return rows;
+  };
+
+  const newestUnique = (rows: ForgeIssueSummary[]): ForgeIssueSummary[] => {
+    const seen = new Set<number>();
+    return rows
+      .filter((row) => {
+        if (seen.has(row.number)) return false;
+        seen.add(row.number);
+        return true;
+      })
+      .sort(newestFirst);
+  };
+
   const client: ForgeIssues = {
     forge,
     repository: remote.project,
     async list(state, limit = 100) {
       if (forge === "gitea") {
         const issues = await giteaListIssues(await target("read"), state, options.fetchImpl);
-        issues.sort(newestFirst);
-        return issues.slice(0, limit).map((issue) => ({
-          number: issue.number,
-          title: issue.title,
-          state: issue.state,
-          labels: issue.labels,
-          url: issue.url,
-          createdAt: issue.createdAt,
-        }));
+        return issues.sort(newestFirst).slice(0, limit).map(summaryOf);
       }
       const states: Array<"open" | "closed"> =
         state === "all" ? ["open", "closed"] : [state];
       const rows: ForgeIssueSummary[] = [];
       for (const current of states) {
-        const outcome = await github("read", [
-          "issue",
-          "list",
-          "--repo",
-          remote.project,
-          "--state",
-          current,
-          "--limit",
-          String(Math.max(1, Math.min(limit, FORGE_ISSUE_LIST_MAX))),
-          "--json",
-          "number,title,state,labels,url,createdAt",
-        ]);
-        if (outcome.code !== 0) {
-          throw new ForgeIssueError(firstLine(outcome.stderr || outcome.stdout));
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(outcome.stdout);
-        } catch {
-          throw new ForgeIssueError("gh issue list returned invalid JSON");
-        }
-        if (!Array.isArray(parsed)) throw new ForgeIssueError("gh issue list returned no array");
-        for (const entry of parsed) {
-          if (typeof entry !== "object" || entry === null) continue;
-          const record = entry as Record<string, unknown>;
-          if (typeof record.number !== "number" || typeof record.title !== "string") continue;
-          rows.push({
-            number: record.number,
-            title: record.title,
-            state: stateOf(record.state),
-            labels: labelsOf(record.labels),
-            url: typeof record.url === "string" ? record.url : "",
-            createdAt: typeof record.createdAt === "string" ? record.createdAt : null,
-          });
+        rows.push(
+          ...(await githubRows(
+            current,
+            Math.max(1, Math.min(limit, FORGE_ISSUE_LIST_MAX)),
+          )),
+        );
+      }
+      return newestUnique(rows).slice(0, limit);
+    },
+    async listAll(state) {
+      if (forge === "gitea") {
+        const issues = await giteaListIssues(await target("read"), state, options.fetchImpl);
+        return issues.sort(newestFirst).map(summaryOf);
+      }
+      const states: Array<"open" | "closed"> =
+        state === "all" ? ["open", "closed"] : [state];
+      const rows = new Map<number, ForgeIssueSummary>();
+      for (const current of states) {
+        // `gh issue list` has no offset flag, so a full page means "ask for
+        // twice as many" until a short page proves the state is exhausted.
+        let limit = FORGE_ISSUE_LIST_MAX;
+        while (true) {
+          const page = await githubRows(current, limit);
+          for (const row of page) rows.set(row.number, row);
+          if (page.length < limit || limit >= FORGE_ISSUE_ALL_MAX) break;
+          limit = Math.min(limit * 2, FORGE_ISSUE_ALL_MAX);
         }
       }
-      const seen = new Set<number>();
-      return rows
-        .filter((row) => {
-          if (seen.has(row.number)) return false;
-          seen.add(row.number);
-          return true;
-        })
-        .sort(newestFirst)
-        .slice(0, limit);
+      return [...rows.values()].sort(newestFirst);
     },
     async get(number) {
       if (!Number.isInteger(number) || number <= 0) {

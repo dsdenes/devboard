@@ -1896,6 +1896,9 @@ describe("deduplication gate", () => {
       list: async () => [
         { number: 501, title: "open", state: "open", labels: [], url: ISSUE_URL, createdAt: null },
       ],
+      listAll: async () => [
+        { number: 501, title: "open", state: "open", labels: [], url: ISSUE_URL, createdAt: null },
+      ],
       get: async (number) => ({
         number,
         title: "open",

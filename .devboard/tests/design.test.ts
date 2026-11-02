@@ -242,6 +242,18 @@ function fakeDesignForge(firstNumber = 1): FakeDesignForge {
           createdAt: issue.createdAt,
         }));
     },
+    async listAll(state: "open" | "closed" | "all"): Promise<ForgeIssueSummary[]> {
+      return issues
+        .filter((issue) => state === "all" || issue.state === state)
+        .map((issue) => ({
+          number: issue.number,
+          title: issue.title,
+          state: issue.state,
+          labels: issue.labels,
+          url: issue.url,
+          createdAt: issue.createdAt,
+        }));
+    },
     async get(number: number): Promise<ForgeIssueDocument> {
       const issue = issues.find((candidate) => candidate.number === number);
       if (issue === undefined) throw new Error(`no issue ${number}`);

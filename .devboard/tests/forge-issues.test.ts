@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { ForgeTimeoutError, type Exec } from "../lib/forge-auth.ts";
 import { createForgeIssues, FORGE_ISSUE_LIST_MAX, type ForgeRunner } from "../lib/forge-issues.ts";
 import type { FetchLike } from "../lib/gitea.ts";
-import { ISSUE_LIST_MAX, listIssues } from "../mcp/issues";
+import { createIssue, ISSUE_LIST_MAX, listIssues } from "../mcp/issues";
 
 /**
  * Both forges answer `list("all", limit)` from two different transports: `gh
@@ -18,6 +18,7 @@ interface CorpusIssue {
   state: "open" | "closed";
   url: string;
   createdAt: string;
+  labels?: string[];
 }
 
 const testRoot = join(import.meta.dir, "..", ".tmp", "forge-issues-tests");
@@ -130,7 +131,7 @@ function gitea(issues: CorpusIssue[]): FetchLike {
           title: issue.title,
           body: "",
           state: issue.state,
-          labels: [],
+          labels: (issue.labels ?? []).map((name) => ({ name })),
           html_url: issue.url,
           created_at: issue.createdAt,
         })),
@@ -279,5 +280,99 @@ describe("forge issue deadlines", () => {
     const started = Date.now();
     await expect(forge.list("open")).rejects.toBeInstanceOf(ForgeTimeoutError);
     expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
+describe("dead-code duplicate guard coverage", () => {
+  /**
+   * A 400-issue corpus whose only closed `dead-code` finding is the oldest
+   * issue, plus one open issue inside the newest 201 rows whose title matches.
+   * One `list` page cannot see the oldest finding; `listAll` must.
+   */
+  function guardCorpus(): CorpusIssue[] {
+    const issues = corpus(400);
+    issues[0] = {
+      ...issues[0]!,
+      title: "Remove the ancient dead parser",
+      state: "closed",
+      labels: ["dead-code"],
+    };
+    issues[399] = {
+      ...issues[399]!,
+      title: "Remove the recent dead parser",
+      state: "open",
+      labels: [],
+    };
+    return issues;
+  }
+
+  test("suppresses a closed finding older than one page and reports the compared width", async () => {
+    const page = gitea(guardCorpus());
+    const requests: string[] = [];
+    let creates = 0;
+    const fetchImpl: FetchLike = async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      if (url.pathname.endsWith("/issues")) {
+        if (method === "POST") creates += 1;
+        else requests.push(`${url.searchParams.get("state")}:${url.searchParams.get("page")}`);
+      }
+      return await page(input, init);
+    };
+    const repoDir = repository("ssh://git@localhost:2223/acme/fixture.git");
+    const forge = createForgeIssues({
+      repoDir,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      fetchImpl,
+    });
+    const context = {
+      repoDir,
+      harnessDir: repoDir,
+      stateDir: repoDir,
+      environment: {},
+      forgeIssues: forge,
+    };
+
+    // Only issue #1 matches, and it sits 399 rows behind the newest page.
+    await expect(
+      createIssue(context, {
+        title: "Remove the ancient dead parser",
+        body: "## Category\n\nunreferenced-file\n",
+        labels: ["dead-code"],
+      }),
+    ).rejects.toThrow("The guard compared 201 issue titles");
+    expect(creates).toBe(0);
+    expect(requests.length).toBeGreaterThan(1);
+
+    // A matching open title among the newest 201 still throws.
+    await expect(
+      createIssue(context, {
+        title: "remove  the RECENT dead parser",
+        body: "## Category\n\nunreferenced-file\n",
+        labels: ["dead-code"],
+      }),
+    ).rejects.toThrow("already exists");
+    expect(creates).toBe(0);
+  });
+
+  test("pages GitHub until a short page and keeps every row", async () => {
+    const issues = corpus(500);
+    const stub = github(issues);
+    const requested: number[] = [];
+    const forge = createForgeIssues({
+      repoDir: repository("https://github.com/acme/fixture.git"),
+      environment: {},
+      exec: stub.exec,
+      run: async (argv) => {
+        requested.push(Number(argv[argv.indexOf("--limit") + 1]));
+        return await stub.run(argv, "", {});
+      },
+    });
+
+    const all = await forge.listAll("all");
+
+    expect(requested).toEqual([201, 402, 201, 402]);
+    expect(all).toHaveLength(500);
+    expect(new Set(all.map((issue) => issue.number)).size).toBe(500);
   });
 });

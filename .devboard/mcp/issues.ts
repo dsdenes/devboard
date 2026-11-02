@@ -140,13 +140,15 @@ export async function createIssue(
   const forge = issuesFor(context);
   // A dead-code finding is a claim about absence, so an already known title is
   // never filed again: the guard covers every dead-code issue in any state,
-  // every open issue, and every draft-goal heading.
+  // every open issue, and every draft-goal heading. It reads the forge page by
+  // page instead of the newest `issues_list` window, because a closed finding
+  // older than that window is exactly the duplicate this guard exists for.
   if (labels.includes(DEAD_CODE_LABEL)) {
     if ([...title].length > 200) {
       throw new Error("A dead-code title must be at most 200 characters.");
     }
     const known = new Set<string>();
-    for (const issue of await forge.list("all", FORGE_ISSUE_LIST_MAX)) {
+    for (const issue of await forge.listAll("all")) {
       if (issue.state === "open" || issue.labels.includes(DEAD_CODE_LABEL)) {
         known.add(normalizeIssueTitle(issue.title));
       }
@@ -156,7 +158,8 @@ export async function createIssue(
     }
     if (known.has(normalizeIssueTitle(title))) {
       throw new Error(
-        `A dead-code finding titled "${title}" already exists; nothing was filed.`,
+        `A dead-code finding titled "${title}" already exists; nothing was filed. ` +
+          `The guard compared ${known.size} issue titles.`,
       );
     }
   }

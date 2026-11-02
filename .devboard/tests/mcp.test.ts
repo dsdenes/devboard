@@ -121,6 +121,11 @@ function fakeForge(): ForgeIssues & { labels: Set<string> } {
         .slice(0, limit)
         .map((issue) => ({ ...issue }));
     },
+    async listAll(state: "open" | "closed" | "all") {
+      return issues
+        .filter((issue) => state === "all" || issue.state === state)
+        .map((issue) => ({ ...issue }));
+    },
     async get(number: number) {
       const issue = issues.find((candidate) => candidate.number === number);
       if (issue === undefined) throw new Error(`no issue ${number}`);

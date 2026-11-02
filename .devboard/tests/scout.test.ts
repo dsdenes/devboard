@@ -330,6 +330,12 @@ class FakeForge implements ForgeIssues {
       .slice(0, limit);
   }
 
+  async listAll(state: "open" | "closed" | "all"): Promise<ForgeIssueSummary[]> {
+    return this.github.issues
+      .filter((issue) => state === "all" || issue.state === state)
+      .map((issue) => this.summary(issue));
+  }
+
   async get(number: number): Promise<ForgeIssueDocument> {
     return this.document(this.issue(number));
   }
