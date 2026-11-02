@@ -200,6 +200,24 @@ try {
   const restarting = websocketCommand(server.port, { type: "getVersion" }, "serverRestarting", 30_000);
   await waitForInstalledVersion(prefix, NEW);
   await assertInstalledMcp(host);
+  // The package lands before the host copies are synced; wait for the skill
+  // tree instead of reading the window between the two writes.
+  await waitFor(
+    () => {
+      try {
+        const harness = installedPackage(join(host, ".devboard"));
+        return MANAGED_SKILLS.every((name) =>
+          treesMatch(join(harness, "omp", "skills", name), join(host, ".omp", "skills", name)),
+        )
+          ? true
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "the automatic update to sync the package skills",
+    30_000,
+  );
   await assertInstalledSkills(host);
   assertTrue(
     readFileSync(join(hostSkill, "SKILL.md"), "utf8").includes("name: house-style"),

@@ -17,8 +17,8 @@ afterEach(() => {
 
 test("renders one row per installed skill with a name cell and one checkbox", () => {
   devboard.skills = [
-    { name: "benchmark-methodology", enabled: true, content: "" },
-    { name: "wire-format-conformance", enabled: false, content: "" },
+    { name: "benchmark-methodology", enabled: true, content: "", builtin: false, deletable: false },
+    { name: "wire-format-conformance", enabled: false, content: "", builtin: false, deletable: false },
   ];
   devboard.skillsLoaded = true;
 
@@ -34,7 +34,7 @@ test("renders one row per installed skill with a name cell and one checkbox", ()
 
   for (const row of rows) {
     const cells = [...row.querySelectorAll("td")];
-    expect(cells.length).toBe(2);
+    expect(cells.length).toBe(3);
     expect(cells[0]?.textContent?.trim() ?? null).toBe(row.getAttribute("data-skill"));
     const controls = cells[1]?.querySelectorAll(
       'button, input, select, textarea, a, [role="button"]',
@@ -43,6 +43,7 @@ test("renders one row per installed skill with a name cell and one checkbox", ()
     const checkbox = cells[1]?.querySelector<HTMLInputElement>('[data-testid="skill-enabled"]');
     expect(checkbox?.type).toBe("checkbox");
     expect(checkbox?.checked).toBe(row.getAttribute("data-skill") === "benchmark-methodology");
+    expect(cells[2]?.querySelector('[data-testid="delete-skill"]')).toBeNull();
   }
 
   const text = container.textContent ?? "";
@@ -66,6 +67,8 @@ test("clicking a skill row reveals its SKILL.md body and clicking again hides it
         "- Measure first.",
         "",
       ].join("\n"),
+      builtin: false,
+      deletable: false,
     },
   ];
   devboard.skillsLoaded = true;
@@ -96,4 +99,53 @@ test("clicking a skill row reveals its SKILL.md body and clicking again hides it
     container.querySelector('[data-testid="skill-enabled"]')!,
   );
   expect(container.querySelectorAll('[data-testid="skill-content"]').length).toBe(1);
+});
+
+test("built-in rows carry Managed and no delete; prepared rows carry one delete control", () => {
+  devboard.skills = [
+    {
+      name: "devboard-ui-ux",
+      enabled: true,
+      content: "",
+      builtin: true,
+      deletable: false,
+    },
+    {
+      name: "tidy-commits",
+      enabled: true,
+      content: "",
+      builtin: false,
+      deletable: true,
+    },
+    {
+      name: "house-style",
+      enabled: true,
+      content: "",
+      builtin: false,
+      deletable: false,
+    },
+    {
+      name: "discover-testing-strategy",
+      enabled: true,
+      content: "",
+      builtin: false,
+      deletable: false,
+    },
+  ];
+  devboard.skillsLoaded = true;
+
+  const { container } = render(DevboardSkills);
+  const builtin = container.querySelector('[data-skill="devboard-ui-ux"]');
+  expect(builtin?.querySelector('[data-testid="skill-managed"]')?.textContent?.trim()).toBe("Managed");
+  expect(builtin?.querySelector('[data-testid="delete-skill"]')).toBeNull();
+
+  const prepared = container.querySelector('[data-skill="tidy-commits"]');
+  const controls = prepared?.querySelectorAll('[data-testid="delete-skill"]');
+  expect(controls?.length).toBe(1);
+  expect(controls?.[0]?.getAttribute("aria-label")).toBe("Delete tidy-commits");
+
+  for (const name of ["house-style", "discover-testing-strategy"]) {
+    expect(container.querySelector(`[data-skill="${name}"] [data-testid="delete-skill"]`)).toBeNull();
+    expect(container.querySelector(`[data-skill="${name}"] [data-testid="skill-managed"]`)).toBeNull();
+  }
 });

@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process";
 import type { Server } from "bun";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { remoteCloneName } from "../server/discover";
@@ -578,24 +578,48 @@ async function writeFixture(root: string): Promise<string> {
 
   // One prepare-family managed skill, so the Goal skills panel has a row the
   // delete control owns; the six Discover skills are managed by Discover.
+  const prepareSkill = [
+    "---",
+    "name: fixture-conventions",
+    "description: Conventions every fixture implementation agent follows.",
+    "metadata:",
+    '  devboard-managed: "true"',
+    "  devboard-family: prepare",
+    "---",
+    "",
+    "# Fixture conventions",
+    "",
+    "- Prefer the smallest observable change.",
+    "",
+  ].join("\n");
   await mkdir(join(host, ".omp", "skills", "fixture-conventions"), { recursive: true });
+  await writeFile(join(host, ".omp", "skills", "fixture-conventions", "SKILL.md"), prepareSkill);
+  // The Devboard Skills page deletes this prepare-family skill in one click;
+  // fixture-conventions stays for the Goal page's confirming delete.
+  await mkdir(join(host, ".omp", "skills", "fixture-deletable"), { recursive: true });
   await writeFile(
-    join(host, ".omp", "skills", "fixture-conventions", "SKILL.md"),
-    [
-      "---",
-      "name: fixture-conventions",
-      "description: Conventions every fixture implementation agent follows.",
-      "metadata:",
-      '  devboard-managed: "true"',
-      "  devboard-family: prepare",
-      "---",
-      "",
-      "# Fixture conventions",
-      "",
-      "- Prefer the smallest observable change.",
-      "",
-    ].join("\n"),
+    join(host, ".omp", "skills", "fixture-deletable", "SKILL.md"),
+    prepareSkill
+      .replaceAll("fixture-conventions", "fixture-deletable")
+      .replace("Prefer the smallest observable change.", "Delete this prepared fixture skill."),
   );
+  // A hand-authored skill and a symlinked skill are never deletable, and a
+  // shipped built-in is rendered with its Managed marker.
+  await mkdir(join(host, ".omp", "skills", "fixture-handwritten"), { recursive: true });
+  await writeFile(
+    join(host, ".omp", "skills", "fixture-handwritten", "SKILL.md"),
+    "---\nname: fixture-handwritten\ndescription: The fixture developer's own policy.\n---\n\n# House style\n\n- Keep it.\n",
+  );
+  await symlink("fixture-conventions", join(host, ".omp", "skills", "fixture-linked"));
+  for (const name of [
+    "devboard-ui-ux",
+    "devboard-restful-api-implementation",
+    "devboard-single-responsibility-principle",
+  ]) {
+    await cp(join(harnessRoot, "omp", "skills", name), join(host, ".omp", "skills", name), {
+      recursive: true,
+    });
+  }
   await git(host, ["init", "-q"]);
   await git(host, ["add", "-A"]);
   await git(host, ["commit", "-q", "-m", "fixture"]);
@@ -3184,10 +3208,12 @@ try {
   const devboardSkillsTable = await page.eval<{
     tables: number;
     columns: number;
-    controls: string[];
     names: string[];
     checked: boolean[];
     cells: number[];
+    managed: string[];
+    deletables: Array<{ name: string; label: string }>;
+    perRowControls: string[][];
     text: string;
   }>(`(() => {
     const table = document.querySelector('[data-testid="skills-table"]');
@@ -3195,33 +3221,48 @@ try {
     return {
       tables: document.querySelectorAll('[data-testid="skills-table"] table, [data-testid="skills-table"]').length,
       columns: table?.rows[0]?.cells.length ?? -1,
-      controls: [...(table?.querySelectorAll('button, input, select, textarea, a, [role="button"]') ?? [])].map(
-        (control) => control.getAttribute("data-testid") ?? control.tagName,
-      ),
       names: rows.map((row) => row.getAttribute("data-skill") ?? ""),
       checked: rows.map((row) => row.querySelector('[data-testid="skill-enabled"]')?.checked === true),
       cells: rows.map((row) => row.querySelectorAll("td").length),
+      managed: rows
+        .filter((row) => row.querySelector('[data-testid="skill-managed"]') !== null)
+        .map((row) => row.getAttribute("data-skill") ?? ""),
+      deletables: rows
+        .map((row) => ({
+          name: row.getAttribute("data-skill") ?? "",
+          label: row.querySelector('[data-testid="delete-skill"]')?.getAttribute("aria-label") ?? "",
+        }))
+        .filter((entry) => entry.label.length > 0),
+      perRowControls: rows.map((row) =>
+        [...row.querySelectorAll('button, input, select, textarea, a, [role="button"]')].map(
+          (control) => control.getAttribute("data-testid") ?? control.tagName,
+        ),
+      ),
       text: table?.textContent ?? "",
     };
   })()`);
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
+  const devboardBuiltins = [
+    "devboard-restful-api-implementation",
+    "devboard-single-responsibility-principle",
+    "devboard-ui-ux",
+  ];
   check(devboardSkillsTable.tables === 1, "the Skills page does not render one table", devboardSkillsTable);
-  check(devboardSkillsTable.columns === 2, "the Skills table does not have two columns", devboardSkillsTable);
+  check(devboardSkillsTable.columns === 3, "the Skills table does not have three columns", devboardSkillsTable);
   check(
     JSON.stringify(devboardSkillsTable.names) === JSON.stringify(devboardInstalledSkills),
     "the Skills rows do not equal the installed directories",
     { rendered: devboardSkillsTable.names, installed: devboardInstalledSkills },
   );
   check(
-    devboardSkillsTable.cells.every((cells) => cells === 2) &&
-      devboardSkillsTable.controls.every(
-        (control) => control === "skill-disclosure" || control === "skill-enabled",
-      ) &&
-      devboardSkillsTable.controls.filter((control) => control === "skill-disclosure").length ===
-        devboardInstalledSkills.length &&
-      devboardSkillsTable.controls.filter((control) => control === "skill-enabled").length ===
-        devboardInstalledSkills.length,
-    "a Skills row does not hold exactly one disclosure beside its checkbox",
+    devboardSkillsTable.cells.every((cells) => cells === 3) &&
+      devboardSkillsTable.perRowControls.every(
+        (controls) =>
+          controls.filter((control) => control === "skill-disclosure").length === 1 &&
+          controls.filter((control) => control === "skill-enabled").length === 1 &&
+          controls.filter((control) => control !== "skill-disclosure" && control !== "skill-enabled" && control !== "delete-skill").length === 0,
+      ),
+    "a Skills row does not hold one disclosure, one checkbox, and at most one delete",
     devboardSkillsTable,
   );
   check(
@@ -3230,8 +3271,23 @@ try {
     devboardSkillsTable,
   );
   check(
-    !/devboard-managed|devboard-family|Delete|description/i.test(devboardSkillsTable.text),
-    "the Skills table renders skill content, family, or an action",
+    JSON.stringify(devboardSkillsTable.managed) === JSON.stringify(devboardBuiltins),
+    "the Managed marker does not belong to exactly the three built-in rows",
+    devboardSkillsTable,
+  );
+  check(
+    JSON.stringify(devboardSkillsTable.deletables) ===
+      JSON.stringify([
+        { name: "fixture-conventions", label: "Delete fixture-conventions" },
+        { name: "fixture-deletable", label: "Delete fixture-deletable" },
+      ]),
+    "the delete control does not belong to exactly the prepare-family rows",
+    devboardSkillsTable,
+  );
+  check(
+    devboardSkillsTable.text.includes("Managed") &&
+      !/devboard-managed|devboard-family|description/i.test(devboardSkillsTable.text),
+    "the Skills table renders skill content, family, or the wrong marker",
     devboardSkillsTable,
   );
 
@@ -3380,6 +3436,117 @@ try {
     `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === true`,
     "the rechecked skill after the persistence check",
   );
+  // Every owner but the prepare family is refused by the server itself, and
+  // the refusal leaves the directory, the link, and the settings untouched.
+  const refusalSettings = `${JSON.stringify({
+    skills: { ignoredSkills: ["kept-entry"] },
+    unrelated: { keep: true },
+  })}\n`;
+  await writeFile(devboardSettingsFile, refusalSettings);
+  const refusals = await page.eval<Array<{ name: string; message: string }>>(`(async () => {
+    const socket = new WebSocket(
+      (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws",
+    );
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", reject, { once: true });
+    });
+    const names = [
+      "devboard-ui-ux",
+      "discover-testing-strategy",
+      "fixture-handwritten",
+      "fixture-linked",
+      "not-installed",
+    ];
+    const results = [];
+    for (const name of names) {
+      const message = await new Promise((resolve) => {
+        const onMessage = (event) => {
+          let frame;
+          try {
+            frame = JSON.parse(String(event.data));
+          } catch {
+            return;
+          }
+          if (frame.type !== "error") return;
+          socket.removeEventListener("message", onMessage);
+          resolve(String(frame.message));
+        };
+        socket.addEventListener("message", onMessage);
+        socket.send(JSON.stringify({ type: "deleteSkill", name }));
+      });
+      results.push({ name, message });
+    }
+    socket.close();
+    return results;
+  })()`);
+  check(
+    refusals.length === 5 &&
+      refusals[0]?.message === '"devboard-ui-ux" is a built-in skill and cannot be deleted.' &&
+      refusals.slice(1).every(
+        (entry) => entry.message === `No prepared skill named "${entry.name}" is installed.`,
+      ),
+    "the server did not refuse the built-in, Discover, hand-authored, symlinked, and unknown names",
+    refusals,
+  );
+  for (const name of ["devboard-ui-ux", "fixture-handwritten", "fixture-conventions"]) {
+    check(existsSync(join(host, ".omp", "skills", name)), `the refused ${name} directory was removed`);
+  }
+  check(
+    lstatSync(join(host, ".omp", "skills", "fixture-linked")).isSymbolicLink(),
+    "the refused symlink was removed",
+  );
+  check(
+    readFileSync(devboardSettingsFile, "utf8") === refusalSettings,
+    "a refused delete rewrote the project settings",
+  );
+
+  // One click removes the prepare-family directory with no confirmation and
+  // clears exactly its exclusion entry, and the row stays gone after a reload.
+  const deleteSettings = {
+    modelRoles: { commit: "provider/model" },
+    skills: { includeSkills: ["kept"], ignoredSkills: ["fixture-deletable", "kept-pattern"] },
+    unrelated: { keep: true },
+  };
+  await writeFile(devboardSettingsFile, `${JSON.stringify(deleteSettings)}\n`);
+  await page.reload();
+  await showDevboardSkills();
+  check(
+    (await page.eval<number>(
+      `document.querySelectorAll('[data-testid="delete-skill"][data-name="fixture-deletable"]').length`,
+    )) === 1,
+    "the prepare-family delete control is missing",
+  );
+  check(
+    existsSync(join(host, ".omp", "skills", "fixture-deletable")),
+    "the deletable fixture skill is missing before the click",
+  );
+  await page.click('[data-testid="delete-skill"][data-name="fixture-deletable"]');
+  await page.wait(
+    `document.querySelector('[data-testid="skill-row"][data-skill="fixture-deletable"]') === null`,
+    "the deleted prepared skill row",
+  );
+  check(
+    !existsSync(join(host, ".omp", "skills", "fixture-deletable")),
+    "one click did not remove the prepared skill directory",
+  );
+  check(
+    JSON.stringify(JSON.parse(readFileSync(devboardSettingsFile, "utf8"))) ===
+      JSON.stringify({
+        modelRoles: { commit: "provider/model" },
+        skills: { includeSkills: ["kept"], ignoredSkills: ["kept-pattern"] },
+        unrelated: { keep: true },
+      }),
+    "deleting a prepared skill did not remove exactly its ignored name",
+    readFileSync(devboardSettingsFile, "utf8"),
+  );
+  await page.reload();
+  await showDevboardSkills();
+  await page.wait(
+    `document.querySelectorAll('[data-testid="skill-row"][data-skill="fixture-deletable"]').length === 0`,
+    "the deleted prepared skill row after a reload",
+  );
+
   await page.click('[data-testid="devboard-tab"][data-command="devboard.tab.tools"]');
   await page.wait(
     `document.querySelectorAll('[data-testid="mcp-tool"]').length === ${catalog.length}`,

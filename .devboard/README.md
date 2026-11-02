@@ -132,15 +132,27 @@ five seconds, so counts follow calls a peer makes without a reload.
 ### Skills page
 
 The `Skills` sidebar entry opens the Devboard mode's other page. It renders one
-`data-testid="skills-table"` table with exactly two columns. Each row carries `data-testid="skill-row"`
-and `data-skill="<name>"`; its first cell holds one `data-testid="skill-disclosure"` button naming
-the skill installed under the repository's `.omp/skills` root verbatim, and its second cell holds
-exactly one `data-testid="skill-enabled"` checkbox. No description, family, state, or delete
-control appears. The rows come from that directory and nothing else: a skill directory holding a
-`SKILL.md` appears whether hand-authored, prepared, Discover-generated, or reached through a
-symlink, while a name only a Discover manifest carries and no directory backs produces no row.
-Creating or deleting a directory changes the rows after the next page load, and the sidebar entry
-count never changes.
+`data-testid="skills-table"` table with three columns: skill, enabled, and actions. Each row
+carries `data-testid="skill-row"` and `data-skill="<name>"`; its first cell holds one
+`data-testid="skill-disclosure"` button naming the skill installed under the repository's
+`.omp/skills` root verbatim, its second cell holds exactly one `data-testid="skill-enabled"`
+checkbox, and its third holds at most one delete control. A built-in `devboard-*` row carries a
+visible `Managed` label, and a prepare-family row carries one
+`data-testid="delete-skill"` control with accessible name `Delete <skill>`. Built-in,
+Discover-generated, hand-authored, and symlinked rows carry no delete control, and no row carries
+a description or family text. The rows come from that directory and nothing else: a skill
+directory holding a `SKILL.md` appears whether hand-authored, prepared, Discover-generated, or
+reached through a symlink, while a name only a Discover manifest carries and no directory backs
+produces no row.
+
+One click on a prepare-family row's delete control removes the whole `.omp/skills/<name>/`
+directory with no confirmation dialog. The row leaves without a reload, and a reload keeps it
+gone. Deleting removes exactly that skill's name from `skills.ignoredSkills` when it is there and
+writes no other settings key or exclusion entry; deleting an enabled skill writes no settings
+entry at all. The server refuses the command for a built-in, Discover, hand-authored, symlinked,
+or non-installed name, and for every name while Goal or Flow work is active; a refusal leaves the
+directory, the settings file, and the row unchanged. Creating a directory still adds its row
+after the next page load, and the sidebar entry count never changes.
 
 Rows are collapsible. Clicking a row anywhere outside the checkbox, clicking its disclosure
 button, or focusing the row and pressing Enter or Space expands it: one
@@ -534,9 +546,15 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 |`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
 |`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs.|
 
+Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
+Devboard mode's Skills page renders that marker as a visible `Managed` label and never renders a
+delete control for the row. Only a prepare-family skill directory — one the `/prepare-skills`
+command created with `metadata.devboard-managed: "true"` — is deletable, so a built-in skill can
+never be removed from the table.
+
 A plain `omp` session started at the host root discovers them at project scope; `omp skill list`
 prints one line per skill. `.devboard/install.sh`, `install`, `update`, and the automatic
-replacement path all write the same bytes.
+replacement path all write the same bytes, marker included.
 
 The name prefix is the ownership marker, and the marked namespace is reserved for the package:
 

@@ -24,6 +24,10 @@ export interface DevboardSkillRow {
   enabled: boolean;
   /** The whole SKILL.md; empty when an older server sends no content. */
   content: string;
+  /** The package ships this skill; the row shows `Managed` and no delete. */
+  builtin: boolean;
+  /** The server would accept a delete command for this prepare-family row. */
+  deletable: boolean;
 }
 
 /** The read-only MCP catalog page. */
@@ -63,6 +67,8 @@ export function skillRows(value: unknown): DevboardSkillRow[] {
       name: row.name,
       enabled: row.enabled,
       content: typeof row.content === "string" ? row.content : "",
+      builtin: row.builtin === true,
+      deletable: row.deletable === true,
     });
   }
   return rows;
@@ -138,6 +144,15 @@ export class DevboardStore {
     if (!connection.send({ type: "setInstalledSkillEnabled", name, enabled })) {
       this.skills = previous;
     }
+  }
+
+  /**
+   * Asks the server to delete one prepare-family skill. The row leaves when
+   * the server's authoritative frame arrives, so a refused command leaves it
+   * in place instead of hiding a skill that still exists.
+   */
+  deleteSkill(name: string): void {
+    connection.send({ type: "deleteSkill", name });
   }
 
   handleEvent(message: Record<string, unknown>): void {

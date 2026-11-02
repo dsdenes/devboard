@@ -1,6 +1,8 @@
 ---
 name: devboard-restful-api-implementation
 description: Apply Zalando's RESTful API Guidelines when designing, specifying, or implementing an HTTP API - resources, URLs, JSON payloads, HTTP methods, status codes, headers, hypermedia, performance, pagination, compatibility, and deprecation. Use when writing or reviewing an API specification or API code.
+metadata:
+  devboard-builtin: "true"
 ---
 
 # RESTful API Implementation
