@@ -172,11 +172,13 @@ another tab, mode, or a reload starts collapsed. The expanded panel never contai
 
 Each existing control moved into `data-testid="agent-activity-control"` keeps its test id, command,
 label, disabled conditions, title, and effect, and the page no longer renders a second copy:
-`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` for Discover
-run pages, `discover-agent-start`/`discover-agent-stop` for Discover agent pages, the Goal record
+`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` on the
+Discover Overview, `discover-agent-start`/`discover-agent-stop` for a Discover agent card and for
+the Glossary and skill pages, which start and stop the agent that owns them, the Goal record
 `start`, and `start-flow-implementation`/`stop-flow-implementation` for the Flow overview. The
-Goal lane, the Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal`
-remains a page action. Moving a control never adds a backend command or a per-agent Stop.
+Discover warnings page follows the seven-agent suite and carries no control. The Goal lane, the
+Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal` remains a page
+action. Moving a control never adds a backend command or a per-agent Stop.
 
 The removed page content is `discover-run-tag`, `discover-agent-run-tag`, `discover-agent-status`,
 `agent-lifecycle`, `agent-detail`, `issues-agent-focus-run`, `issues-agent-focus-run-id`,
@@ -1063,13 +1065,19 @@ work is active, and the title names the reason. A start never happens on page lo
 switch, or page switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge
 account; it is accepted on a host with a dirty tree and no goal document.
 
-**One at a time.** A card's Start sends `discoverAgent { agent }`. The server starts exactly one ACP
-peer whose working directory is the active target root, whose prompt is exactly
-`<that agent's command> <staging-dir>`, and whose staging directory is
-`<target>/.omp/discover/staging/<run-id>/`. No other agent starts. While any discovery agent or Run
-all is active, every other Start control is disabled with a title naming the reason, and a
-programmatic `discoverAgent` for another agent is refused with one `discoverError` and spawns no
-peer. **Run all** runs the seven in this fixed order: `sheet`, `discover-glossary`,
+The Glossary page and every skill page carry the same bar for the one agent that produced them:
+the Glossary Agent on the Glossary page, and the agent that owns the skill on its skill page. Their
+bar shows only that agent's run state, activity, and pending question, and its control starts or
+stops that one agent — never the seven-agent Run all. The warnings page follows the seven-agent
+suite and carries no start or stop control.
+
+**One at a time.** A card's Start, the Glossary page's control, and a skill page's control each
+send `discoverAgent { agent }`. The server starts exactly one ACP peer whose working directory is
+the active target root, whose prompt is exactly `<that agent's command> <staging-dir>`, and whose
+staging directory is `<target>/.omp/discover/staging/<run-id>/`. No other agent starts. While any
+discovery agent or Run all is active, every other Start control is disabled with a title naming the
+reason, and a programmatic `discoverAgent` for another agent is refused with one `discoverError`
+and spawns no peer. **Run all** runs the seven in this fixed order: `sheet`, `discover-glossary`,
 `discover-testing-strategy`, `discover-naming-conventions`, `discover-coding-conventions`,
 `discover-architecture-boundaries`, `discover-contribution`. The agents run one at a time, and
 each successful agent publishes its slice before the next starts. The first failure or stop halts the sequence: the

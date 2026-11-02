@@ -1030,13 +1030,33 @@ try {
       if (tab === "contribution") {
         check(tabBar.bars === 0, "the contribution page renders an activity bar", tabBar);
       } else {
+        // Only the Overview runs all seven agents; an artifact page starts the
+        // one agent that produced it.
+        const expected = tab === "overview" ? "discover-start" : "discover-agent-start";
         check(
-          tabBar.bars === 1 && tabBar.control === "discover-start" && !tabBar.removed,
-          `the ${tab} page does not render the activity bar with its control`,
+          tabBar.bars === 1 && tabBar.control === expected && !tabBar.removed,
+          `the ${tab} page does not render its own activity-bar control`,
           tabBar,
         );
       }
     }
+    // The Contribution skill page starts the Contribution Agent alone; it never
+    // sends the seven-agent Run all.
+    const skillPromptsBefore = logPrompts(sourceLog).length;
+    await click(devtools, "discover-agent-start");
+    await waitFor(
+      async () =>
+        logPrompts(sourceLog).length === skillPromptsBefore + 1 ? true : undefined,
+      "the contribution skill page's peer to receive its prompt",
+      30_000,
+    );
+    const skillPrompts = logPrompts(sourceLog).slice(skillPromptsBefore);
+    check(
+      skillPrompts.length === 1 && skillPrompts[0]?.startsWith("/discover-contribution "),
+      "the contribution skill page did not start the Contribution Agent alone",
+      skillPrompts,
+    );
+    await waitStatus(devtools, "discover-contribution", "succeeded");
     console.log("PASS run-all-order");
   }
 
