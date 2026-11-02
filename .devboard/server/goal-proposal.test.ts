@@ -93,7 +93,7 @@ function propose(
   payload: unknown,
   headers: Record<string, string> = {},
 ): Promise<Response> {
-  return fetch(`http://${url}/api/goal-proposals`, {
+  return fetch(`http://${url}/goal-proposals`, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(payload),
@@ -410,7 +410,7 @@ describe("goal proposal drafts", () => {
     const { server, url } = await startServer();
 
     try {
-      const response = await fetch(`http://${url}/api/goal-proposals`);
+      const response = await fetch(`http://${url}/goal-proposals`);
       expect(response.status).toBe(405);
       expect(response.headers.get("allow")).toBe("POST");
     } finally {
@@ -448,8 +448,8 @@ describe("goal proposal drafts", () => {
       expect(records).toHaveLength(1);
       const [kind, text] = records[0]!;
       expect(kind).toBe("server-error");
-      expect(text.startsWith("POST /api/goal-proposals: ")).toBe(true);
-      expect(text.length).toBeGreaterThan("POST /api/goal-proposals: ".length);
+      expect(text.startsWith("POST /goal-proposals: ")).toBe(true);
+      expect(text.length).toBeGreaterThan("POST /goal-proposals: ".length);
       expect(await readFile(join(root, ".devboard"), "utf8")).toBe("not a directory\n");
       expect(await drafts(root)).toEqual([]);
     } finally {

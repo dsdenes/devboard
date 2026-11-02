@@ -151,7 +151,7 @@ test("a goal answer that lands after Close leaves the overlay idle and unarmed",
 
   fireEvent.click(view.getByTestId("feedback-goal"));
   await tick();
-  expect(pending.map((request) => request.url)).toEqual(["/api/goal-proposals"]);
+  expect(pending.map((request) => request.url)).toEqual(["/goal-proposals"]);
 
   fireEvent.click(view.getByLabelText("Close"));
   await tick();
@@ -172,7 +172,7 @@ test("a report answer that lands after Close leaves the overlay idle and unarmed
 
   fireEvent.click(view.getByRole("button", { name: "File issue" }));
   await tick();
-  expect(pending.map((request) => request.url)).toEqual(["/api/feedback"]);
+  expect(pending.map((request) => request.url)).toEqual(["/feedback"]);
   expect(snapshot.phase).toBe("sending");
 
   fireEvent.click(view.getByLabelText("Close"));

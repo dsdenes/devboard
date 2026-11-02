@@ -338,7 +338,7 @@ async function choosePort(preferred) {
  */
 async function readyPid(port) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/ready`, {
+    const response = await fetch(`http://127.0.0.1:${port}/ready`, {
       method: "GET",
       signal: AbortSignal.timeout(2000),
     });

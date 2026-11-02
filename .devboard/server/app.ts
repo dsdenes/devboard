@@ -2165,6 +2165,59 @@ function requestRefusal(
 }
 
 /**
+ * Whether an `Accept-Encoding` header admits a gzip response.
+ *
+ * The header is a comma-separated list of codings, each with an optional
+ * quality; an explicit `gzip` entry decides, and `*` covers every coding the
+ * request does not name.
+ */
+function acceptsGzip(header: string | null): boolean {
+  if (header === null) return false;
+  let wildcard: boolean | undefined;
+  for (const entry of header.split(",")) {
+    const parts = entry.split(";");
+    const name = (parts[0] ?? "").trim().toLowerCase();
+    if (name === "") continue;
+    let quality = 1;
+    for (const parameter of parts.slice(1)) {
+      const separator = parameter.indexOf("=");
+      if (separator < 0) continue;
+      if (parameter.slice(0, separator).trim().toLowerCase() !== "q") continue;
+      const parsed = Number.parseFloat(parameter.slice(separator + 1).trim());
+      quality = Number.isFinite(parsed) ? parsed : 0;
+    }
+    if (name === "gzip") return quality > 0;
+    if (name === "*") wildcard = quality > 0;
+  }
+  return wildcard ?? false;
+}
+
+/**
+ * The gzip-encoded body of one static file, computed once per file revision.
+ *
+ * Static assets are served on every page load, so an unchanged body is reused
+ * instead of compressed again; the file's mtime and size identify its
+ * revision.
+ */
+const gzipStaticCache = new Map<
+  string,
+  { mtimeMs: number; size: number; body: Uint8Array<ArrayBuffer> }
+>();
+
+async function gzipStaticFile(
+  path: string,
+  fileStat: { mtimeMs: number; size: number },
+): Promise<Uint8Array<ArrayBuffer>> {
+  const cached = gzipStaticCache.get(path);
+  if (cached !== undefined && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
+    return cached.body;
+  }
+  const body = Bun.gzipSync(await Bun.file(path).arrayBuffer());
+  gzipStaticCache.set(path, { mtimeMs: fileStat.mtimeMs, size: fileStat.size, body });
+  return body;
+}
+
+/**
  * The method, host, origin, size, and JSON guards shared by the mutating
  * browser endpoints. A request for another host, or a cross-origin page, must
  * never reach a handler with a side effect; the body is bounded before it is
@@ -7531,7 +7584,7 @@ export function createApp(options: AppOptions) {
       if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
         return Response.json({ error: error.message }, { status: error.status });
       }
-      return internalErrorResponse("POST /api/feedback", error);
+      return internalErrorResponse("POST /feedback", error);
     }
   }
 
@@ -7556,7 +7609,7 @@ export function createApp(options: AppOptions) {
       if (error instanceof FeedbackRequestError) {
         return Response.json({ error: error.message }, { status: error.status });
       }
-      return internalErrorResponse("POST /api/goal-proposals", error);
+      return internalErrorResponse("POST /goal-proposals", error);
     }
   }
 
@@ -7567,13 +7620,13 @@ export function createApp(options: AppOptions) {
     async fetch(request, server) {
       const url = new URL(request.url);
 
-      if (url.pathname === "/api/feedback") {
+      if (url.pathname === "/feedback") {
         return handleFeedbackRequest(request, url);
       }
 
       // Readiness for the launcher that owns this process: the pid proves that
       // this dashboard, and not another server on the port, answered.
-      if (url.pathname === "/api/ready") {
+      if (url.pathname === "/ready") {
         if (request.method !== "GET" && request.method !== "HEAD") {
           return new Response("Method Not Allowed", {
             status: 405,
@@ -7585,7 +7638,7 @@ export function createApp(options: AppOptions) {
         return request.method === "HEAD" ? new Response(null, { headers: ready.headers }) : ready;
       }
 
-      if (url.pathname === "/api/goal-proposals") {
+      if (url.pathname === "/goal-proposals") {
         return handleGoalProposalRequest(request, url);
       }
 
@@ -7601,13 +7654,6 @@ export function createApp(options: AppOptions) {
         }
         if (server.upgrade(request)) return;
         return new Response("Expected a WebSocket upgrade", { status: 426 });
-      }
-
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        return new Response("Method Not Allowed", {
-          status: 405,
-          headers: { Allow: "GET, HEAD" },
-        });
       }
 
       let pathname: string;
@@ -7633,9 +7679,28 @@ export function createApp(options: AppOptions) {
         return new Response("Not Found", { status: 404 });
       }
 
-      return new Response(request.method === "HEAD" ? null : file, {
-        headers: { "Content-Type": file.type },
-      });
+      // A method the static fallback cannot serve is refused only for a file
+      // that exists: an unknown path is a 404 on every method.
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method Not Allowed", {
+          status: 405,
+          headers: { Allow: "GET, HEAD" },
+        });
+      }
+
+      // The body differs by Accept-Encoding, so a shared cache must key on it.
+      const headers: Record<string, string> = {
+        "Content-Type": file.type,
+        Vary: "Accept-Encoding",
+      };
+      const head = request.method === "HEAD";
+      if (!acceptsGzip(request.headers.get("accept-encoding"))) {
+        return new Response(head ? null : file, { headers });
+      }
+      headers["Content-Encoding"] = "gzip";
+      // A HEAD response keeps the negotiated headers without paying for a body
+      // it never carries.
+      return new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers });
     },
 
     websocket: {

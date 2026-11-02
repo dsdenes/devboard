@@ -316,7 +316,7 @@ export class IssuesStore {
     this.draftCreating = true;
     this.draftCreateError = null;
     try {
-      const response = await fetch("/api/goal-proposals", {
+      const response = await fetch("/goal-proposals", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ report }),

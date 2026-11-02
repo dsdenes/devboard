@@ -61,7 +61,7 @@ would restate the specification rather than decide anything. Step 4 decision: re
 | Check | Viewport | Evidence | Result |
 |---|---|---|---|
 | An error notification shows an enabled `File issue` with an accessible name | 1440×900 | `notification-issue-file-1440x900.png`, `verify:interface` assertions | pass |
-| One click files exactly one issue through `/api/feedback` with the notification text, severity, timestamp, route, selector, visible text, and DOM excerpt | 1440×900 | `verify:interface` feedback stub record and captured request | pass |
+| One click files exactly one issue through `/feedback` with the notification text, severity, timestamp, route, selector, visible text, and DOM excerpt | 1440×900 | `verify:interface` feedback stub record and captured request | pass |
 | The filed title is `[ui] Error notification: <text>` and the body carries `## Operator report` plus the captured context | 1440×900 | `verify:interface` assertions on the stub call | pass |
 | Success replaces the button with an `Open issue` link to the returned URL | 1440×900 | `notification-issue-filed-1440x900.png`, `verify:interface` assertions | pass |
 | A failed filing shows `Issue not filed: <message>` and returns the button for a retry | 1440×900 | `verify:interface` failure-mode stub and assertions | pass |

@@ -125,7 +125,7 @@ function submit(
   payload: unknown,
   headers: Record<string, string> = {},
 ): Promise<Response> {
-  return fetch(`http://${url}/api/feedback`, {
+  return fetch(`http://${url}/feedback`, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(payload),
@@ -386,7 +386,7 @@ describe("feedback endpoint", () => {
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ error: "An internal error occurred." });
       expect(records).toEqual([
-        ["server-error", "POST /api/feedback: gitea token secret-token is unusable"],
+        ["server-error", "POST /feedback: gitea token secret-token is unusable"],
       ]);
     } finally {
       server.stop(true);

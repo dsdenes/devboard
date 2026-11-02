@@ -538,7 +538,7 @@
     { ok: true; url: string } | { ok: false; error: string }
   > {
     try {
-      const response = await fetch("/api/feedback", {
+      const response = await fetch("/feedback", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
@@ -586,7 +586,7 @@
     payload: Record<string, unknown>,
   ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
     try {
-      const response = await fetch("/api/goal-proposals", {
+      const response = await fetch("/goal-proposals", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),

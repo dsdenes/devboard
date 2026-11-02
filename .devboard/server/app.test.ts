@@ -12,6 +12,7 @@ import {
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 import type { Server } from "bun";
 import { createApp, projectLabel, type InstallerHooks } from "./app";
 import {
@@ -466,23 +467,97 @@ describe("createApp", () => {
     }
   });
 
-  test("answers /api/ready for GET and HEAD and refuses every other method", async () => {
+  test("negotiates gzip for a static file and keeps the identity response", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const source = await readFile(join(root, "static", "index.html"));
+
+      const compressed = await fetch(`http://${url}/index.html`, {
+        headers: { "accept-encoding": "gzip" },
+        // Read the wire bytes so the assertion covers the encoded body itself.
+        decompress: false,
+      });
+      expect(compressed.status).toBe(200);
+      expect(compressed.headers.get("content-encoding")).toBe("gzip");
+      expect(compressed.headers.get("vary")).toBe("Accept-Encoding");
+      expect(gunzipSync(Buffer.from(await compressed.arrayBuffer()))).toEqual(source);
+
+      const identity = await fetch(`http://${url}/index.html`, {
+        headers: { "accept-encoding": "identity" },
+      });
+      expect(identity.status).toBe(200);
+      expect(identity.headers.get("content-encoding")).toBeNull();
+      expect(Buffer.from(await identity.arrayBuffer())).toEqual(source);
+
+      const refused = await fetch(`http://${url}/index.html`, {
+        headers: { "accept-encoding": "gzip;q=0, identity" },
+      });
+      expect(refused.headers.get("content-encoding")).toBeNull();
+      expect(Buffer.from(await refused.arrayBuffer())).toEqual(source);
+
+      const head = await fetch(`http://${url}/index.html`, {
+        method: "HEAD",
+        headers: { "accept-encoding": "gzip" },
+      });
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-encoding")).toBe("gzip");
+      expect(await head.text()).toBe("");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers /ready for GET and HEAD and refuses every other method", async () => {
     const { server, url } = await startServer();
 
     try {
-      const ready = await fetch(`http://${url}/api/ready`);
+      const ready = await fetch(`http://${url}/ready`);
       expect(ready.status).toBe(200);
       expect(await ready.json()).toEqual({ pid: process.pid });
 
-      const head = await fetch(`http://${url}/api/ready`, { method: "HEAD" });
+      const head = await fetch(`http://${url}/ready`, { method: "HEAD" });
       expect(head.status).toBe(200);
       expect(head.headers.get("content-type")).toContain("application/json");
       expect(await head.text()).toBe("");
 
-      const post = await fetch(`http://${url}/api/ready`, { method: "POST" });
+      const post = await fetch(`http://${url}/ready`, { method: "POST" });
       expect(post.status).toBe(405);
       expect(post.headers.get("allow")).toBe("GET, HEAD");
       expect(await post.text()).toBe("Method Not Allowed");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("serves no /api prefix", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      expect((await fetch(`http://${url}/api/ready`)).status).toBe(404);
+      for (const path of ["/api/feedback", "/api/goal-proposals"]) {
+        const response = await fetch(`http://${url}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        expect(response.status).toBe(404);
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers an unknown path with 404 before refusing its method", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const unknown = await fetch(`http://${url}/missing.html`, { method: "POST" });
+      expect(unknown.status).toBe(404);
+
+      const existing = await fetch(`http://${url}/index.html`, { method: "POST" });
+      expect(existing.status).toBe(405);
+      expect(existing.headers.get("allow")).toBe("GET, HEAD");
     } finally {
       server.stop(true);
     }

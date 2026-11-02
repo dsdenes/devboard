@@ -133,7 +133,7 @@ checksum, authentication, or install leaves the installed package and the runnin
 the journal records the failure and doctor reports it.
 
 Harness-owned issue reporting uses only the configured Gitea API. Without `DEVBOARD_GITEA_URL`
-the report controls are not rendered and `POST /api/feedback` answers HTTP 503 naming that
+the report controls are not rendered and `POST /feedback` answers HTTP 503 naming that
 variable; no GitHub request is made. Host-forge behavior for GitHub, GitLab, and Gitea origins is
 unchanged.
 
