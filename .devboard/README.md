@@ -100,10 +100,11 @@ The width survives a reload.
 
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
 surface that holds the same facts. The Flow overview opens with the read-only flow goal, which
-takes the full page height; while a goal interview is running the panel collapses to its header
-and the interview takes the next block. The implementation activity moves to the pinned activity
-bar, so the overview keeps the read-only goal, session facts, widgets, files, blockers, and
-verification.
+takes the full page height; while a goal interview is running the panel collapses to its header.
+The `flow-goal-active` interview block follows it only while the interview holds a pending
+question, so an answered interview leaves no empty panel behind. The implementation activity
+moves to the pinned activity bar, so the overview keeps the read-only goal, session facts,
+widgets, files, blockers, and verification.
 
 ### Workspace page
 

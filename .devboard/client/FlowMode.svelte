@@ -476,14 +476,11 @@
   <div class="scroll-column flow-overview">
     {@render goalPanel()}
 
-    {#if flow.goalCreation !== null}
-      {@const creation = flow.goalCreation}
+    {#if flow.goalCreation !== null && flow.goalCreation.question !== null}
       <section class="panel" data-testid="flow-goal-active">
         <div class="panel__header"><h2 class="panel__title">Goal interview</h2></div>
         <div class="panel__body stack-sm">
-          {#if creation.question !== null}
-            {@render questionPanel(creation.question, "goal", "flow-goal-question")}
-          {/if}
+          {@render questionPanel(flow.goalCreation.question, "goal", "flow-goal-question")}
         </div>
       </section>
     {/if}
