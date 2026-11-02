@@ -182,9 +182,10 @@
   .skills-table th {
     border-bottom: 1px solid var(--border);
     color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    line-height: 1.3;
     padding: 6px 12px;
     text-align: left;
     text-transform: uppercase;

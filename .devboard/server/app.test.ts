@@ -37,6 +37,7 @@ import { recordToolInvocation } from "../mcp/invocations";
 import { ProviderService, saveSubscriptions } from "./providers";
 import { acquireLock, pidAlive } from "../issues/lock";
 import { testProviderService } from "./fixtures/test-providers";
+import { PROBLEM_CONTENT_TYPE, problemBody } from "./fixtures/problem-body";
 import type { TrackerRead } from "./issue-sync";
 import type { OpenEpic } from "./tracker";
 
@@ -524,7 +525,43 @@ describe("createApp", () => {
       const post = await fetch(`http://${url}/ready`, { method: "POST" });
       expect(post.status).toBe(405);
       expect(post.headers.get("allow")).toBe("GET, HEAD");
-      expect(await post.text()).toBe("Method Not Allowed");
+      expect(post.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await post.json()).toEqual(
+        problemBody("Method Not Allowed", 405, "This path serves GET and HEAD only."),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers a missing static asset with Problem JSON", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(`http://${url}/assets/missing.js`);
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Not Found", 404, "The requested file was not found."),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers a non-GET static request with Problem JSON", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(`http://${url}/index.html`, { method: "DELETE" });
+
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("GET, HEAD");
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Method Not Allowed", 405, "This path serves GET and HEAD only."),
+      );
     } finally {
       server.stop(true);
     }
@@ -601,7 +638,10 @@ describe("createApp", () => {
         },
       });
       expect(refused.status).toBe(403);
-      expect(await refused.text()).toBe("Cross-origin WebSocket upgrades are refused.");
+      expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await refused.json()).toEqual(
+        problemBody("Forbidden", 403, "Cross-origin WebSocket upgrades are refused."),
+      );
 
       // The ambient WebSocket type is the DOM one, which has no Bun options.
       const Socket = WebSocket as unknown as new (
@@ -642,7 +682,9 @@ describe("createApp", () => {
         },
       });
       expect(refused.status).toBe(403);
-      expect(await refused.text()).toBe("The request host is not served by this dashboard.");
+      expect(await refused.json()).toEqual(
+        problemBody("Forbidden", 403, "The request host is not served by this dashboard."),
+      );
     } finally {
       server.stop(true);
     }

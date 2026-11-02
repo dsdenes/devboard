@@ -487,12 +487,28 @@ for (const target of delivery.written) {
       `(pid ${target.pid}, port ${target.port}) at ${delivery.digest.slice(0, 12)}`,
   );
 }
-if (delivery.written.length === 0) {
+for (const target of delivery.failed) {
+  console.error(
+    `publish: source refresh delivery failed for ${target.stateDir} ` +
+      `(pid ${target.pid}, port ${target.port}): ${target.error}`,
+  );
+}
+if (delivery.written.length === 0 && delivery.failed.length === 0) {
   console.log("publish: no live dashboard serves this source checkout");
 }
 const inventory = dashboardInventory(instances);
 for (const entry of inventory) console.log(describeInventory(entry));
 console.log(
   `publish: ${inventory.length} dashboard(s) reported; ` +
-    `${delivery.written.length} source refresh request(s) written`,
+    `${delivery.written.length} source refresh request(s) written, ` +
+    `${delivery.failed.length} failed`,
 );
+if (delivery.failed.length > 0) {
+  // Every instance was attempted first: the release steps all passed, and
+  // only delivery failed, so the operator never mistakes this for a failed
+  // release.
+  fail(
+    `source refresh delivery failed for ${delivery.failed.length} dashboard(s); ` +
+      "the release itself already shipped and stays released",
+  );
+}

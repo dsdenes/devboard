@@ -3568,7 +3568,11 @@ without a model in the loop.
 
 Every request carries an `action` of `report`, `remove`, or `redesign`; an absent `action` means
 `report`, the only action that requires report text, and any other value is refused with HTTP 400
-before the Gitea request. Harness-owned reporting uses only the Gitea API: `DEVBOARD_GITEA_URL`
+before the Gitea request. Both endpoints are strict about their body: `POST /feedback` accepts
+`action`, `report`, `conversation`, `route`, `url`, `selector`, `dom_excerpt`, `visible_text`,
+`viewport`, and `captured_at`, `POST /goal-proposals` accepts the same set without `action`, and
+any other top-level key is refused with HTTP 400 naming the first unknown key before any Gitea
+request or draft write. Harness-owned reporting uses only the Gitea API: `DEVBOARD_GITEA_URL`
 names the instance, `GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`) authenticates it, and
 `DEVBOARD_RELEASE_REPO` selects the repository (default `dsdenes/devboard`), whatever host project
 the interface is serving. Nothing is created in the host's own tracker, and no `github.com`
@@ -3581,8 +3585,11 @@ endpoint answers HTTP 503 naming `DEVBOARD_GITEA_URL` and performs no request. A
 failing request is reported in the filing toast and creates nothing. The endpoint accepts only
 same-origin `POST` requests, bounds the body to 64 KB, and gives the request 60 seconds.
 
-An unexpected exception in either mutating endpoint answers
-`500 { "error": "An internal error occurred." }`: `POST /feedback` and
+Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
+`title`, `status`, and `detail`, so a client reads one media type and one body shape.
+
+An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
+detail "An internal error occurred.": `POST /feedback` and
 `POST /goal-proposals` share that one fixed detail, record the exception text as a
 `server-error` journal record prefixed with the endpoint, and never return the text to the
 client.

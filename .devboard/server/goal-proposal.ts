@@ -14,10 +14,12 @@ import { link, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   FeedbackRequestError,
+  GOAL_PROPOSAL_BODY_KEYS,
   conversationSection,
   parseCapturedFields,
   parseConversation,
   parseReportText,
+  rejectUnknownFields,
   type CapturedFields,
   type FeedbackTurn,
 } from "./feedback";
@@ -49,12 +51,13 @@ export interface GoalProposal {
   path: string;
 }
 
-/** Validates one proposal body: the same fields and limits as a report. */
+/** Validates one proposal body, refusing any key the endpoint does not accept. */
 export function parseGoalProposalSubmission(value: unknown): GoalProposalSubmission {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new FeedbackRequestError(400, "The proposal must be a JSON object.");
   }
   const source = value as Record<string, unknown>;
+  rejectUnknownFields(source, GOAL_PROPOSAL_BODY_KEYS);
   return {
     report: parseReportText(source.report),
     conversation: parseConversation(source.conversation),

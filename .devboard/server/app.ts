@@ -2164,6 +2164,45 @@ function requestRefusal(
   }
 }
 
+/** The reason phrase each status this server reports as a failure carries. */
+const PROBLEM_TITLES: Readonly<Record<number, string>> = {
+  400: "Bad Request",
+  403: "Forbidden",
+  404: "Not Found",
+  405: "Method Not Allowed",
+  413: "Content Too Large",
+  426: "Upgrade Required",
+  500: "Internal Server Error",
+  502: "Bad Gateway",
+  503: "Service Unavailable",
+  504: "Gateway Timeout",
+};
+
+/**
+ * One RFC 9457 failure body. Every 4xx and 5xx response this server writes
+ * goes through it, so a client reads one media type and one shape. `detail`
+ * carries the cause a caller can act on and never a stack trace or an
+ * implementation internal.
+ */
+function problemResponse(
+  status: number,
+  detail: string,
+  headers: Readonly<Record<string, string>> = {},
+): Response {
+  return new Response(
+    JSON.stringify({
+      type: "about:blank",
+      title: PROBLEM_TITLES[status] ?? "Error",
+      status,
+      detail,
+    }),
+    {
+      status,
+      headers: { "Content-Type": "application/problem+json", ...headers },
+    },
+  );
+}
+
 /**
  * Whether an `Accept-Encoding` header admits a gzip response.
  *
@@ -2229,22 +2268,17 @@ async function readMutationBody(
   allowedHostnames: ReadonlySet<string>,
 ): Promise<{ value: unknown } | { response: Response }> {
   if (request.method !== "POST") {
-    return {
-      response: new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } }),
-    };
+    return { response: problemResponse(405, "This endpoint accepts POST only.", { Allow: "POST" }) };
   }
 
   const refusal = requestRefusal(request, url, allowedHostnames);
   if (refusal !== null) {
     return {
-      response: Response.json(
-        {
-          error:
-            refusal === "host"
-              ? "The request host is not served by this dashboard."
-              : "Cross-origin feedback is refused.",
-        },
-        { status: 403 },
+      response: problemResponse(
+        403,
+        refusal === "host"
+          ? "The request host is not served by this dashboard."
+          : "Cross-origin feedback is refused.",
       ),
     };
   }
@@ -2252,39 +2286,26 @@ async function readMutationBody(
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_FEEDBACK_BYTES) {
     return {
-      response: Response.json(
-        { error: `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.` },
-        { status: 413 },
-      ),
+      response: problemResponse(413, `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.`),
     };
   }
 
   let raw: string;
   try {
     raw = await request.text();
-  } catch (error) {
-    return {
-      response: Response.json(
-        { error: error instanceof Error ? error.message : "The report could not be read." },
-        { status: 400 },
-      ),
-    };
+  } catch {
+    return { response: problemResponse(400, "The report could not be read.") };
   }
   if (raw.length > MAX_FEEDBACK_BYTES) {
     return {
-      response: Response.json(
-        { error: `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.` },
-        { status: 413 },
-      ),
+      response: problemResponse(413, `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.`),
     };
   }
 
   try {
     return { value: JSON.parse(raw) };
   } catch {
-    return {
-      response: Response.json({ error: "The report is not valid JSON." }, { status: 400 }),
-    };
+    return { response: problemResponse(400, "The report is not valid JSON.") };
   }
 }
 
@@ -7542,7 +7563,7 @@ export function createApp(options: AppOptions) {
   function internalErrorResponse(endpoint: string, error: unknown): Response {
     const detail = error instanceof Error ? error.message : String(error);
     journal.write("server-error", `${endpoint}: ${detail}`);
-    return Response.json({ error: INTERNAL_ERROR_DETAIL }, { status: 500 });
+    return problemResponse(500, INTERNAL_ERROR_DETAIL);
   }
 
   /**
@@ -7554,12 +7575,9 @@ export function createApp(options: AppOptions) {
    */
   async function handleFeedbackRequest(request: Request, url: URL): Promise<Response> {
     if (!feedbackEnabled) {
-      return Response.json(
-        {
-          error:
-            "Harness reporting is disabled. Set DEVBOARD_GITEA_URL and GITEA_TOKEN to file issues.",
-        },
-        { status: 503 },
+      return problemResponse(
+        503,
+        "Harness reporting is disabled. Set DEVBOARD_GITEA_URL and GITEA_TOKEN to file issues.",
       );
     }
     const guarded = await readMutationBody(request, url, allowedHostnames);
@@ -7582,7 +7600,7 @@ export function createApp(options: AppOptions) {
       return Response.json(filed, { status: 201 });
     } catch (error) {
       if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
-        return Response.json({ error: error.message }, { status: error.status });
+        return problemResponse(error.status, error.message);
       }
       return internalErrorResponse("POST /feedback", error);
     }
@@ -7607,7 +7625,7 @@ export function createApp(options: AppOptions) {
       return Response.json(proposal, { status: 201 });
     } catch (error) {
       if (error instanceof FeedbackRequestError) {
-        return Response.json({ error: error.message }, { status: error.status });
+        return problemResponse(error.status, error.message);
       }
       return internalErrorResponse("POST /goal-proposals", error);
     }
@@ -7628,9 +7646,8 @@ export function createApp(options: AppOptions) {
       // this dashboard, and not another server on the port, answered.
       if (url.pathname === "/ready") {
         if (request.method !== "GET" && request.method !== "HEAD") {
-          return new Response("Method Not Allowed", {
-            status: 405,
-            headers: { Allow: "GET, HEAD" },
+          return problemResponse(405, "This path serves GET and HEAD only.", {
+            Allow: "GET, HEAD",
           });
         }
         const ready = Response.json({ pid: process.pid });
@@ -7645,46 +7662,46 @@ export function createApp(options: AppOptions) {
       if (url.pathname === "/ws") {
         const refusal = requestRefusal(request, url, allowedHostnames);
         if (refusal !== null) {
-          return new Response(
+          return problemResponse(
+            403,
             refusal === "host"
               ? "The request host is not served by this dashboard."
               : "Cross-origin WebSocket upgrades are refused.",
-            { status: 403 },
           );
         }
         if (server.upgrade(request)) return;
-        return new Response("Expected a WebSocket upgrade", { status: 426 });
+        return problemResponse(426, "This path upgrades to a WebSocket.");
       }
+
 
       let pathname: string;
       try {
         pathname = decodeURIComponent(url.pathname);
       } catch {
-        return new Response("Bad Request", { status: 400 });
+        return problemResponse(400, "The request path is not valid percent-encoding.");
       }
 
       const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
       const filePath = resolve(staticRoot, relative);
       if (filePath !== staticRoot && !filePath.startsWith(staticRoot + sep)) {
-        return new Response("Not Found", { status: 404 });
+        return problemResponse(404, "The requested file was not found.");
       }
 
       const file = Bun.file(filePath);
       if (!(await file.exists())) {
-        return new Response("Not Found", { status: 404 });
+        return problemResponse(404, "The requested file was not found.");
       }
 
       const fileStat = await stat(filePath);
       if (!fileStat.isFile()) {
-        return new Response("Not Found", { status: 404 });
+        return problemResponse(404, "The requested file was not found.");
       }
 
       // A method the static fallback cannot serve is refused only for a file
       // that exists: an unknown path is a 404 on every method.
       if (request.method !== "GET" && request.method !== "HEAD") {
-        return new Response("Method Not Allowed", {
-          status: 405,
-          headers: { Allow: "GET, HEAD" },
+        return problemResponse(405, "This path serves GET and HEAD only.", {
+          Allow: "GET, HEAD",
         });
       }
 

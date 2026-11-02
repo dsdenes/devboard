@@ -1,5 +1,4 @@
-import { join } from "node:path";
-import { readHarnessVersion } from "../server/version";
+import { hostHarnessDir, readHarnessVersion } from "../server/version";
 
 /**
  * What a running dashboard serves, as an operator needs it: the package it
@@ -30,9 +29,7 @@ export function dashboardInventory(instances: DashboardInstance[]): DashboardInv
     const installed =
       instance.repoDir.length === 0
         ? running
-        : readHarnessVersion(
-            join(instance.repoDir, ".devboard", "node_modules", "@dsdenes", "devboard"),
-          );
+        : readHarnessVersion(hostHarnessDir(instance.repoDir));
     return {
       host: instance.repoDir.length > 0 ? instance.repoDir : "an unknown host",
       port: instance.port,

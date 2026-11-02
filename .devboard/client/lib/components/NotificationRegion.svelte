@@ -70,12 +70,12 @@
       });
       const body = (await response.json().catch(() => null)) as {
         url?: unknown;
-        error?: unknown;
+        detail?: unknown;
       } | null;
       if (!response.ok || typeof body?.url !== "string") {
         throw new Error(
-          typeof body?.error === "string"
-            ? body.error
+          typeof body?.detail === "string"
+            ? body.detail
             : `The server refused the report (${response.status}).`,
         );
       }

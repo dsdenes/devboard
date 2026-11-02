@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { dashboardInventory, describeInventory } from "./inventory";
+import { serverVersion } from "../server/version";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const testRoot = join(harnessRoot, ".tmp");
@@ -19,6 +20,14 @@ async function temporaryDirectory(): Promise<string> {
 async function writePackage(directory: string, version: string): Promise<void> {
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "package.json"), `${JSON.stringify({ version })}\n`);
+}
+
+async function writeHarnessPackage(directory: string, version: string): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard", version })}\n`,
+  );
 }
 
 afterAll(async () => {
@@ -60,6 +69,20 @@ describe("dashboardInventory", () => {
     expect(entry?.stale).toBe(false);
     expect(describeInventory(entry!)).toBe(
       `publish: ${host} port 8085 (pid 42) running 0.1.8 installed 0.1.8`,
+    );
+  });
+
+  test("reports the source checkout's harness version as installed", async () => {
+    const host = await temporaryDirectory();
+    const prefix = join(host, ".devboard");
+    await writeHarnessPackage(prefix, "0.1.0");
+
+    const [entry] = dashboardInventory([{ pid: 44, port: 8087, repoDir: host, harness: prefix }]);
+    expect(entry?.installed).toBe(serverVersion(host, entry!.running).installed);
+    expect(entry?.installed).toBe("0.1.0");
+    expect(entry?.stale).toBe(false);
+    expect(describeInventory(entry!)).toBe(
+      `publish: ${host} port 8087 (pid 44) running 0.1.0 installed 0.1.0`,
     );
   });
 

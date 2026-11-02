@@ -5,6 +5,7 @@ import { createApp, type FeedbackOptions } from "./app";
 import { REDESIGN_INSTRUCTION } from "./feedback";
 import { testProviderService } from "./fixtures/test-providers";
 import type { Journal, JournalKind } from "./journal";
+import { PROBLEM_CONTENT_TYPE, problemBody } from "./fixtures/problem-body";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -215,9 +216,10 @@ describe("feedback endpoint", () => {
       );
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({
-        error: "conversation[0].role must be developer or agent.",
-      });
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "conversation[0].role must be developer or agent."),
+      );
       expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
@@ -242,9 +244,9 @@ describe("feedback endpoint", () => {
       );
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({
-        error: "conversation is longer than 12000 characters.",
-      });
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "conversation is longer than 12000 characters."),
+      );
       expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
@@ -271,7 +273,30 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report({ report: "   " }));
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ error: "report must not be empty." });
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "report must not be empty."),
+      );
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a body that is not JSON with a Problem response", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await fetch(`http://${url}/feedback`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{",
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "The report is not valid JSON."),
+      );
       expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
@@ -298,6 +323,10 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report(), { origin: "http://evil.example" });
 
       expect(response.status).toBe(403);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Forbidden", 403, "Cross-origin feedback is refused."),
+      );
       expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
@@ -312,9 +341,9 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report(), { host, origin: `http://${host}` });
 
       expect(response.status).toBe(403);
-      expect(await response.json()).toEqual({
-        error: "The request host is not served by this dashboard.",
-      });
+      expect(await response.json()).toEqual(
+        problemBody("Forbidden", 403, "The request host is not served by this dashboard."),
+      );
       expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
@@ -341,8 +370,10 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report());
 
       expect(response.status).toBe(502);
-      const body = (await response.json()) as { error: string };
-      expect(body.error.startsWith("Issue creation failed:")).toBe(true);
+      const body = (await response.json()) as { type: string; status: number; detail: string };
+      expect(body.type).toBe("about:blank");
+      expect(body.status).toBe(502);
+      expect(body.detail.startsWith("Issue creation failed:")).toBe(true);
     } finally {
       server.stop(true);
     }
@@ -355,9 +386,9 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report());
 
       expect(response.status).toBe(504);
-      expect(await response.json()).toEqual({
-        error: "Issue creation timed out after 100 ms.",
-      });
+      expect(await response.json()).toEqual(
+        problemBody("Gateway Timeout", 504, "Issue creation timed out after 100 ms."),
+      );
     } finally {
       server.stop(true);
     }
@@ -384,7 +415,10 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report());
 
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({ error: "An internal error occurred." });
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Internal Server Error", 500, "An internal error occurred."),
+      );
       expect(records).toEqual([
         ["server-error", "POST /feedback: gitea token secret-token is unusable"],
       ]);
@@ -400,8 +434,10 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report());
 
       expect(response.status).toBe(503);
-      const body = (await response.json()) as { error: string };
-      expect(body.error).toContain("DEVBOARD_GITEA_URL");
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      const body = (await response.json()) as { title: string; detail: string };
+      expect(body.title).toBe("Service Unavailable");
+      expect(body.detail).toContain("DEVBOARD_GITEA_URL");
     } finally {
       server.stop(true);
     }
@@ -543,6 +579,28 @@ describe("feedback endpoint", () => {
     }
   });
 
+  test("refuses an unknown body field and accepts the same body without it", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const accepted = report({ action: "report", conversation: [] });
+      const refused = await submit(url, { ...accepted, unexpected: 1 });
+
+      expect(refused.status).toBe(400);
+      expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await refused.json()).toEqual(
+        problemBody("Bad Request", 400, "unknown field: unexpected."),
+      );
+      expect(calls).toHaveLength(0);
+
+      const created = await submit(url, accepted);
+      expect(created.status).toBe(201);
+      expect(calls).toHaveLength(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("files one issue for a retried Idempotency-Key", async () => {
     const { server, url, calls } = await startServer();
 
@@ -586,7 +644,9 @@ describe("feedback endpoint", () => {
       const response = await submit(url, report(), { "idempotency-key": "" });
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ error: "Idempotency-Key must not be empty." });
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "Idempotency-Key must not be empty."),
+      );
       expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
