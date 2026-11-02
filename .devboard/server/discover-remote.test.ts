@@ -1645,9 +1645,7 @@ describe("discover remote target", () => {
       await waitFor(
         () =>
           scratchEntries(fixture).filter((entry) => entry.startsWith(".staging-")).length === 0 &&
-          !existsSync(join(scratch, ".runs"))
-            ? true
-            : undefined,
+          !existsSync(join(scratch, ".runs")),
         "the run's checkout and claim cleanup",
         20_000,
       );
