@@ -1,5 +1,3 @@
-import type { AcpActivity, AcpQuestion } from "./acp";
-
 /**
  * The public surface of an ACP peer a dashboard holds. An in-process
  * `AcpConnection` and a detached owner's `DetachedPeer` both satisfy it, so
@@ -16,6 +14,3 @@ export interface PeerConnection {
   resume(): boolean;
   close(): void;
 }
-
-export type PeerActivity = AcpActivity;
-export type PeerQuestion = AcpQuestion;
