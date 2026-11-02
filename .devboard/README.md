@@ -3550,7 +3550,11 @@ without a model in the loop.
 
 Every request carries an `action` of `report`, `remove`, or `redesign`; an absent `action` means
 `report`, the only action that requires report text, and any other value is refused with HTTP 400
-before the Gitea request. Harness-owned reporting uses only the Gitea API: `DEVBOARD_GITEA_URL`
+before the Gitea request. Both endpoints are strict about their body: `POST /feedback` accepts
+`action`, `report`, `conversation`, `route`, `url`, `selector`, `dom_excerpt`, `visible_text`,
+`viewport`, and `captured_at`, `POST /goal-proposals` accepts the same set without `action`, and
+any other top-level key is refused with HTTP 400 naming the first unknown key before any Gitea
+request or draft write. Harness-owned reporting uses only the Gitea API: `DEVBOARD_GITEA_URL`
 names the instance, `GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`) authenticates it, and
 `DEVBOARD_RELEASE_REPO` selects the repository (default `dsdenes/devboard`), whatever host project
 the interface is serving. Nothing is created in the host's own tracker, and no `github.com`

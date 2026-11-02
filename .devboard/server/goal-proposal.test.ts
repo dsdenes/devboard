@@ -356,6 +356,28 @@ describe("goal proposal drafts", () => {
     }
   });
 
+  test("refuses an unknown body field and accepts the same body without it", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const accepted = proposal({ conversation: [] });
+      const refused = await propose(url, { ...accepted, unexpected: 1 });
+
+      expect(refused.status).toBe(400);
+      expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await refused.json()).toEqual(
+        problemBody("Bad Request", 400, "unknown field: unexpected."),
+      );
+      expect(await drafts(root)).toEqual([]);
+
+      const created = await propose(url, accepted);
+      expect(created.status).toBe(201);
+      expect((await drafts(root)).length).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("applies the feedback field limits", async () => {
     const { server, root, url } = await startServer();
 

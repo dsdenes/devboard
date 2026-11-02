@@ -176,6 +176,42 @@ export function parseCapturedFields(source: Record<string, unknown>): CapturedFi
   };
 }
 
+/** The body keys the captured-context validator reads, in wire naming. */
+const CAPTURED_KEYS: readonly string[] = [
+  "route",
+  "url",
+  "selector",
+  "dom_excerpt",
+  "visible_text",
+  "viewport",
+  "captured_at",
+];
+
+/** The body keys `POST /feedback` accepts; every other key is refused with 400. */
+export const FEEDBACK_BODY_KEYS: readonly string[] = [
+  "action",
+  "report",
+  "conversation",
+  ...CAPTURED_KEYS,
+];
+
+/** The body keys `POST /goal-proposals` accepts: the report's set without `action`. */
+export const GOAL_PROPOSAL_BODY_KEYS: readonly string[] = FEEDBACK_BODY_KEYS.filter(
+  (key) => key !== "action",
+);
+
+/** Refuses the first body key the endpoint does not accept. */
+export function rejectUnknownFields(
+  source: Record<string, unknown>,
+  accepted: readonly string[],
+): void {
+  for (const key of Object.keys(source)) {
+    if (!accepted.includes(key)) {
+      throw new FeedbackRequestError(400, `unknown field: ${key}.`);
+    }
+  }
+}
+
 /** Validates the required free text under the shared report limit. */
 export function parseReportText(value: unknown): string {
   return field(value, "report", MAX_REPORT, true);
@@ -223,12 +259,13 @@ export function parseConversation(value: unknown): FeedbackTurn[] {
   return turns;
 }
 
-/** Validates one JSON body. Unknown fields are ignored for forwards compatibility. */
+/** Validates one JSON body, refusing any key the endpoint does not accept. */
 export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new FeedbackRequestError(400, "The report must be a JSON object.");
   }
   const source = value as Record<string, unknown>;
+  rejectUnknownFields(source, FEEDBACK_BODY_KEYS);
   const action = feedbackAction(source.action);
   return {
     action,
