@@ -18,10 +18,12 @@ export interface DevboardSidebarEntry {
   tab: WorkspaceTab;
 }
 
-/** One row of the Skills page: an installed skill and whether OMP loads it. */
+/** One row of the Skills page: an installed skill, whether OMP loads it, and its file. */
 export interface DevboardSkillRow {
   name: string;
   enabled: boolean;
+  /** The whole SKILL.md; empty when an older server sends no content. */
+  content: string;
 }
 
 /** The read-only MCP catalog page. */
@@ -57,7 +59,11 @@ export function skillRows(value: unknown): DevboardSkillRow[] {
     const row = entry as Record<string, unknown>;
     if (typeof row.name !== "string" || row.name.length === 0) continue;
     if (typeof row.enabled !== "boolean") continue;
-    rows.push({ name: row.name, enabled: row.enabled });
+    rows.push({
+      name: row.name,
+      enabled: row.enabled,
+      content: typeof row.content === "string" ? row.content : "",
+    });
   }
   return rows;
 }
@@ -127,7 +133,7 @@ export class DevboardStore {
   setSkillEnabled(name: string, enabled: boolean): void {
     const previous = this.skills;
     this.skills = this.skills.map((row) =>
-      row.name === name ? { name: row.name, enabled } : row,
+      row.name === name ? { ...row, enabled } : row,
     );
     if (!connection.send({ type: "setInstalledSkillEnabled", name, enabled })) {
       this.skills = previous;

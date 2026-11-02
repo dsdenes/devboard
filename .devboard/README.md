@@ -132,14 +132,25 @@ five seconds, so counts follow calls a peer makes without a reload.
 ### Skills page
 
 The `Skills` sidebar entry opens the Devboard mode's other page. It renders one
-`data-testid="skills-table"` table with exactly two columns: every row's first cell names one
-skill installed under the repository's `.omp/skills` root verbatim, and its second cell holds
-exactly one `data-testid="skill-enabled"` checkbox on a row carrying `data-testid="skill-row"` and
-`data-skill="<name>"`. No description, family, state, document, or delete control appears. The
-rows come from that directory and nothing else: a skill directory holding a `SKILL.md` appears
-whether hand-authored, prepared, Discover-generated, or reached through a symlink, while a name
-only a Discover manifest carries and no directory backs produces no row. Creating or deleting a
-directory changes the rows after the next page load, and the sidebar entry count never changes.
+`data-testid="skills-table"` table with exactly two columns. Each row carries `data-testid="skill-row"`
+and `data-skill="<name>"`; its first cell holds one `data-testid="skill-disclosure"` button naming
+the skill installed under the repository's `.omp/skills` root verbatim, and its second cell holds
+exactly one `data-testid="skill-enabled"` checkbox. No description, family, state, or delete
+control appears. The rows come from that directory and nothing else: a skill directory holding a
+`SKILL.md` appears whether hand-authored, prepared, Discover-generated, or reached through a
+symlink, while a name only a Discover manifest carries and no directory backs produces no row.
+Creating or deleting a directory changes the rows after the next page load, and the sidebar entry
+count never changes.
+
+Rows are collapsible. Clicking a row anywhere outside the checkbox, clicking its disclosure
+button, or focusing the row and pressing Enter or Space expands it: one
+`data-testid="skill-content-row"` follows, carrying one `data-testid="skill-content"` region with
+the row's `data-skill` whose content is that skill's `SKILL.md` body rendered as sanitized
+Markdown, with the YAML frontmatter omitted. The whole `SKILL.md` arrives on the row itself with
+the `installedSkills` frame, beside the name and enabled state, so expanding one asks for no
+second read, route, or file. Only an expanded row renders a content row; the same click, button,
+or key collapses it and removes that row. A checkbox click toggles the exclusion and never
+expands the row. The table's collapsed text carries no skill body.
 
 A fresh skill starts checked. Unchecking one adds exactly its name to `skills.ignoredSkills` in the
 project-level OMP settings at `.omp/settings.json`, the file a plain `omp` session at the

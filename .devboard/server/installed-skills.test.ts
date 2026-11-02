@@ -37,6 +37,10 @@ function skillSource(name: string): string {
   ].join("\n");
 }
 
+function installedRow(name: string, enabled: boolean, content = skillSource(name)) {
+  return { name, enabled, content };
+}
+
 interface Fixture {
   root: string;
   skillsDir: string;
@@ -148,9 +152,9 @@ test("lists exactly the directories holding a SKILL.md, sorted, with symlinks an
   await symlink("alpha", join(fixture.skillsDir, "linked"));
 
   expect(await skillsState(fixture.url)).toEqual([
-    { name: "alpha", enabled: true },
-    { name: "gamma", enabled: true },
-    { name: "linked", enabled: true },
+    installedRow("alpha", true),
+    installedRow("gamma", true),
+    installedRow("linked", true, skillSource("alpha")),
   ]);
 });
 
@@ -163,9 +167,9 @@ test("reads the project-level exclusion, including globs, and ignores names with
   );
 
   expect(await skillsState(fixture.url)).toEqual([
-    { name: "alpha", enabled: true },
-    { name: "beta", enabled: false },
-    { name: "gamma", enabled: false },
+    installedRow("alpha", true),
+    installedRow("beta", false),
+    installedRow("gamma", false),
   ]);
 });
 
@@ -186,9 +190,9 @@ test("unchecking adds exactly one name and checking removes exactly that name", 
     client.send({ type: "setInstalledSkillEnabled", name: "beta", enabled: false });
     const unchecked = await client.waitFor((frame) => frame.type === "installedSkills");
     expect(unchecked.skills).toEqual([
-      { name: "alpha", enabled: true },
-      { name: "beta", enabled: false },
-      { name: "gamma", enabled: true },
+      installedRow("alpha", true),
+      installedRow("beta", false),
+      installedRow("gamma", true),
     ]);
 
     const stored = JSON.parse(await readFile(fixture.settingsPath, "utf8"));
@@ -201,9 +205,9 @@ test("unchecking adds exactly one name and checking removes exactly that name", 
     client.send({ type: "setInstalledSkillEnabled", name: "beta", enabled: true });
     const resumed = await client.waitFor((frame) => frame.type === "installedSkills");
     expect(resumed.skills).toEqual([
-      { name: "alpha", enabled: true },
-      { name: "beta", enabled: true },
-      { name: "gamma", enabled: true },
+      installedRow("alpha", true),
+      installedRow("beta", true),
+      installedRow("gamma", true),
     ]);
     expect(JSON.parse(await readFile(fixture.settingsPath, "utf8")).skills).toEqual({
       includeSkills: ["kept"],
@@ -224,9 +228,9 @@ test("refuses a name that is not installed and writes nothing", async () => {
     expect(error.message).toContain('No skill named "not-installed" is installed.');
     const state = await client.waitFor((frame) => frame.type === "installedSkills");
     expect(state.skills).toEqual([
-      { name: "alpha", enabled: true },
-      { name: "beta", enabled: true },
-      { name: "gamma", enabled: true },
+      installedRow("alpha", true),
+      installedRow("beta", true),
+      installedRow("gamma", true),
     ]);
   } finally {
     client.close();

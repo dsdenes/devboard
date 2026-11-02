@@ -1377,6 +1377,8 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
 interface InstalledSkill {
   name: string;
   enabled: boolean;
+  /** The whole SKILL.md, so an expanded row opens without a second read. */
+  content: string;
 }
 
 /** The project-level settings file OMP reads at the repository root. */
@@ -1389,7 +1391,7 @@ const SKILL_EXCLUSION_SETTING = "ignoredSkills";
  * symlink to one holding a readable `SKILL.md`. A name only the published
  * Discover manifest carries contributes no row; the filesystem is the source.
  */
-async function installedSkillNames(root: string): Promise<string[]> {
+async function installedSkillFiles(root: string): Promise<Array<{ name: string; content: string }>> {
   let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -1397,14 +1399,15 @@ async function installedSkillNames(root: string): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  const names: string[] = [];
+  const files: Array<{ name: string; content: string }> = [];
   for (const entry of entries) {
     if (!(await skillEntryIsDirectory(root, entry))) continue;
-    if ((await readSkillAt(root, entry.name)) === undefined) continue;
-    names.push(entry.name);
+    const skill = await readSkillAt(root, entry.name);
+    if (skill === undefined) continue;
+    files.push({ name: entry.name, content: skill.content });
   }
-  names.sort((left, right) => left.localeCompare(right));
-  return names;
+  files.sort((left, right) => left.name.localeCompare(right.name));
+  return files;
 }
 
 /**
@@ -4720,10 +4723,11 @@ export function createApp(options: AppOptions) {
     const patterns = projectIgnoredSkills(document).filter(
       (value): value is string => typeof value === "string",
     );
-    const names = await installedSkillNames(skillsDir);
-    return names.map((name) => ({
+    const files = await installedSkillFiles(skillsDir);
+    return files.map(({ name, content }) => ({
       name,
       enabled: !patterns.some((pattern) => new Bun.Glob(pattern).match(name)),
+      content,
     }));
   }
 
@@ -4758,8 +4762,8 @@ export function createApp(options: AppOptions) {
     }
 
     try {
-      const names = await installedSkillNames(skillsDir);
-      if (!names.includes(name)) {
+      const files = await installedSkillFiles(skillsDir);
+      if (!files.some((file) => file.name === name)) {
         send(target, { type: "error", message: `No skill named "${name}" is installed.` });
         await sendInstalledSkills(target);
         return;

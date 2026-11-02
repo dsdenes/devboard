@@ -1,9 +1,12 @@
 <script lang="ts">
+  import ChevronRight from "lucide-svelte/icons/chevron-right";
   import { connection } from "../connection.svelte";
   import { devboard } from "../devboard.svelte";
+  import { renderSkillDocument } from "../skill-document";
   import PageHeader from "./ui/page-header.svelte";
 
   const count = $derived(devboard.skills.length);
+  let expanded = $state<string[]>([]);
 
   // The page reads when it opens and after a reconnect; the server pushes a
   // frame after every toggle. No watcher, poll, or start trigger is involved.
@@ -15,6 +18,10 @@
     const input = event.currentTarget;
     if (!(input instanceof HTMLInputElement)) return;
     devboard.setSkillEnabled(name, input.checked);
+  }
+
+  function setExpanded(name: string, open: boolean): void {
+    expanded = open ? [...expanded, name] : expanded.filter((entry) => entry !== name);
   }
 </script>
 
@@ -38,8 +45,41 @@
       </thead>
       <tbody>
         {#each devboard.skills as skill (skill.name)}
-          <tr data-testid="skill-row" data-skill={skill.name}>
-            <td class="skills-table__name">{skill.name}</td>
+          {@const open = expanded.includes(skill.name)}
+          <tr
+            class="skills-table__row"
+            class:skills-table__row--open={open}
+            data-testid="skill-row"
+            data-skill={skill.name}
+            tabindex="0"
+            aria-expanded={open}
+            onclick={(event) => {
+              if ((event.target as HTMLElement).closest("button, input, a") !== null) return;
+              setExpanded(skill.name, !open);
+            }}
+            onkeydown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setExpanded(skill.name, !open);
+              }
+            }}
+          >
+            <td class="skills-table__name">
+              <button
+                type="button"
+                class="skills-table__disclosure"
+                data-testid="skill-disclosure"
+                aria-expanded={open}
+                aria-controls={open ? `devboard-skill-content-${skill.name}` : undefined}
+                onclick={() => setExpanded(skill.name, !open)}
+              >
+                <span class="skills-table__chevron" class:skills-table__chevron--open={open}>
+                  <ChevronRight size={12} aria-hidden="true" />
+                </span>
+                {skill.name}
+              </button>
+            </td>
             <td class="skills-table__toggle">
               <input
                 type="checkbox"
@@ -50,6 +90,32 @@
               />
             </td>
           </tr>
+          {#if open}
+            <tr
+              class="skills-table__content-row"
+              data-testid="skill-content-row"
+              data-skill={skill.name}
+            >
+              <td colspan="2" class="skills-table__content-cell">
+                <div
+                  id={`devboard-skill-content-${skill.name}`}
+                  class="skills-table__content"
+                  data-testid="skill-content"
+                  data-skill={skill.name}
+                  role="region"
+                  aria-label={`${skill.name} content`}
+                >
+                  {#if skill.content.trim().length === 0}
+                    <p class="skills-table__empty">This skill's SKILL.md is empty.</p>
+                  {:else}
+                    <div class="skill__document" data-testid="skill-content-text">
+                      {@html renderSkillDocument(skill.content)}
+                    </div>
+                  {/if}
+                </div>
+              </td>
+            </tr>
+          {/if}
         {:else}
           <tr>
             <td colspan="2" class="empty">
@@ -101,6 +167,66 @@
 
   .skills-table tbody tr:last-child td {
     border-bottom: 0;
+  }
+
+  .skills-table__row {
+    cursor: pointer;
+  }
+
+  .skills-table__row:hover,
+  .skills-table__row:focus-visible {
+    background: var(--row-hover);
+  }
+
+  .skills-table__row:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+  }
+
+  .skills-table__disclosure {
+    align-items: center;
+    background: none;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    font: inherit;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    text-align: left;
+  }
+
+  .skills-table__disclosure:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .skills-table__chevron {
+    color: var(--muted-foreground);
+    display: inline-flex;
+    transition: transform 120ms ease;
+  }
+
+  .skills-table__chevron--open {
+    transform: rotate(90deg);
+  }
+
+  .skills-table__content-cell {
+    background: var(--surface);
+    padding: 0;
+  }
+
+  .skills-table__content {
+    border-top: 1px solid var(--border-subtle);
+    max-height: 320px;
+    overflow: auto;
+    padding: 10px 12px 12px 30px;
+  }
+
+  .skills-table__empty {
+    color: var(--muted-foreground);
+    margin: 0;
   }
 
   .skills-table__name {

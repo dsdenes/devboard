@@ -3203,8 +3203,14 @@ try {
   );
   check(
     devboardSkillsTable.cells.every((cells) => cells === 2) &&
-      devboardSkillsTable.controls.every((control) => control === "skill-enabled"),
-    "a Skills row does not hold exactly one checkbox beside its name",
+      devboardSkillsTable.controls.every(
+        (control) => control === "skill-disclosure" || control === "skill-enabled",
+      ) &&
+      devboardSkillsTable.controls.filter((control) => control === "skill-disclosure").length ===
+        devboardInstalledSkills.length &&
+      devboardSkillsTable.controls.filter((control) => control === "skill-enabled").length ===
+        devboardInstalledSkills.length,
+    "a Skills row does not hold exactly one disclosure beside its checkbox",
     devboardSkillsTable,
   );
   check(
@@ -3218,10 +3224,57 @@ try {
     devboardSkillsTable,
   );
 
+  const devboardFirstSkill = devboardInstalledSkills[0] ?? "";
+  const devboardSkillRow = (name: string): string =>
+    `[data-testid="skill-row"][data-skill="${name}"]`;
+  const devboardDisclosure = (name: string): string =>
+    `${devboardSkillRow(name)} [data-testid="skill-disclosure"]`;
+  await page.click(devboardDisclosure(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('[data-testid="skill-content"]') !== null`,
+    "the expanded skill content",
+  );
+  const devboardSkillExpanded = await page.eval<{
+    text: string;
+    skill: string;
+    expanded: boolean;
+    contentRows: number;
+  }>(`(() => {
+    const content = document.querySelector('[data-testid="skill-content"]');
+    const row = document.querySelector('${devboardSkillRow(devboardFirstSkill)}');
+    return {
+      text: content?.textContent ?? "",
+      skill: content?.getAttribute("data-skill") ?? "",
+      expanded: row?.getAttribute("aria-expanded") === "true",
+      contentRows: document.querySelectorAll('[data-testid="skill-content-row"]').length,
+    };
+  })()`);
+  const devboardFirstSkillSentence =
+    readFileSync(join(host, ".omp", "skills", devboardFirstSkill, "SKILL.md"), "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .find(
+        (line) =>
+          line.length > 3 && !line.startsWith("#") && !line.startsWith("---") && !line.includes(":"),
+      ) ?? "";
+  check(
+    devboardSkillExpanded.skill === devboardFirstSkill &&
+      devboardSkillExpanded.expanded &&
+      devboardSkillExpanded.contentRows === 1 &&
+      devboardFirstSkillSentence.length > 0 &&
+      devboardSkillExpanded.text.includes(devboardFirstSkillSentence.replace(/^-\s*/, "")),
+    "the expanded skill row does not show its SKILL.md body",
+    { expanded: devboardSkillExpanded, expected: devboardFirstSkillSentence },
+  );
+  await page.click(devboardDisclosure(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('[data-testid="skill-content"]') === null`,
+    "the collapsed skill content",
+  );
+
   const devboardSettingsFile = join(host, ".omp", "settings.json");
   const devboardSkillCheckbox = (name: string): string =>
     `[data-testid="skill-row"][data-skill="${name}"] [data-testid="skill-enabled"]`;
-  const devboardFirstSkill = devboardInstalledSkills[0] ?? "";
   await page.click(devboardSkillCheckbox(devboardFirstSkill));
   await page.wait(
     `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === false`,

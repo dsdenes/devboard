@@ -88,10 +88,16 @@ test("installed-skill rows keep the server's names and states and drop malformed
       "not-an-object",
     ]),
   ).toEqual([
-    { name: "benchmark-methodology", enabled: true },
-    { name: "wire-format-conformance", enabled: false },
+    { name: "benchmark-methodology", enabled: true, content: "" },
+    { name: "wire-format-conformance", enabled: false, content: "" },
   ]);
   expect(skillRows(undefined)).toEqual([]);
+});
+
+test("an installed-skill row keeps the SKILL.md text it was sent", () => {
+  expect(
+    skillRows([{ name: "benchmark-methodology", enabled: true, content: "# Benchmark\n" }]),
+  ).toEqual([{ name: "benchmark-methodology", enabled: true, content: "# Benchmark\n" }]);
 });
 
 test("each frame replaces its own rows and leaves the other page alone", () => {
@@ -120,8 +126,8 @@ test("each frame replaces its own rows and leaves the other page alone", () => {
 
   expect(store.skillsLoaded).toBe(true);
   expect(store.skills).toEqual([
-    { name: "benchmark-methodology", enabled: true },
-    { name: "wire-format-conformance", enabled: false },
+    { name: "benchmark-methodology", enabled: true, content: "" },
+    { name: "wire-format-conformance", enabled: false, content: "" },
   ]);
   expect(store.tools.length).toBe(payload.tools.length);
 });
