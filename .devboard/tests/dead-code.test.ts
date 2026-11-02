@@ -11,6 +11,7 @@ import {
   scoutPool,
 } from "../lib/entry-point";
 import type { DeadCodeForgeClient, DeadCodeForgeIssue } from "../issues/dead-code/forge";
+import { writeCommand } from "../issues/dead-code/control";
 import { DeadCodeWorker } from "../issues/dead-code/worker";
 import {
   cyclesDirectory,
@@ -20,6 +21,7 @@ import {
   requestPath,
   settingsPath,
   statePath,
+  versionedControlDirectory,
 } from "../issues/dead-code/paths";
 import {
   DEFAULT_SETTINGS,
@@ -177,8 +179,16 @@ function issueRow(overrides: Partial<DeadCodeIssueRow> = {}): DeadCodeIssueRow {
 class FakeForge implements DeadCodeForgeClient {
   readonly issues: DeadCodeForgeIssue[] = [];
   openTitles: string[] = [];
+  /** Set by a test that holds the forge read open until it settles. */
+  hold: Promise<void> | undefined;
+  /** Resolves once the held read has been requested. */
+  holding: (() => void) | undefined;
 
   async listIssues(): Promise<DeadCodeForgeIssue[]> {
+    const holding = this.holding;
+    this.holding = undefined;
+    holding?.();
+    if (this.hold !== undefined) await this.hold;
     return [...this.issues];
   }
 
@@ -228,6 +238,7 @@ function fileIssue(forge: FakeForge, directory: string, title: string): void {
 function peerFor(
   forge: FakeForge,
   onRequest?: (request: Record<string, unknown>, directory: string) => void,
+  hold?: Promise<void>,
 ): (options: IssuesPeerOptions) => AcpPeer {
   return () => ({
     pid: undefined,
@@ -239,6 +250,7 @@ function peerFor(
         unknown
       >;
       onRequest?.(request, directory);
+      if (hold !== undefined) await hold;
       if (Number(request.issueRoom) > 0) fileIssue(forge, directory, "Remove dead fixture code");
       return {};
     },
@@ -438,6 +450,113 @@ describe("dead-code worker", () => {
     );
     expect(activity).toContain("no filing room");
     expect(worker.currentState.issues.length).toBe(5);
+    await worker.stop();
+  });
+
+  test("a drain consumed during a forge read starts no cycle when the tick resumes", async () => {
+    const root = await temporaryRoot("drain-race");
+    const repo = join(root, "repo");
+    write(join(repo, "src", "a.ts"), "export const dead = 1;\n");
+    const stateDir = join(repo, ".devboard", ".tmp", "state");
+    mkdirSync(stateDir, { recursive: true });
+    const forge = new FakeForge();
+    const hold = Promise.withResolvers<void>();
+    const reading = Promise.withResolvers<void>();
+    forge.hold = hold.promise;
+    forge.holding = reading.resolve;
+    const worker = new DeadCodeWorker({
+      repoDir: repo,
+      stateDir,
+      syncMs: 60_000,
+      cadenceMs: 60 * 60_000,
+      now: () => new Date("2026-01-01T12:00:00Z"),
+      harnessVersion: "test",
+      github: forge,
+      connect: peerFor(forge),
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    const readingTick = worker.tickNow();
+    await reading.promise;
+
+    const control = versionedControlDirectory(stateDir, repo, "test");
+    writeCommand(control, { type: "drain" });
+    // The tick that consumes the drain stays inside `consumeCommands` past the
+    // settlement of the read, so the tick resuming from that read runs its own
+    // body while `draining` is already true and before the consumer reaches its
+    // own drain branch. That is the interleaving the resumed tick must honour.
+    for (let index = 0; index < 32; index += 1) {
+      writeCommand(control, {
+        type: "settings",
+        intervalMinutes: 60,
+        maxPerHour: 10,
+        maxPending: 5,
+      });
+    }
+    const drainingTick = worker.tickNow();
+    hold.resolve();
+    await Promise.all([readingTick, drainingTick]);
+
+    expect(worker.cyclingNow).toBe(false);
+    expect(worker.currentState.lastCycleStartedAt).toBeNull();
+    const cycles = existsSync(cyclesDirectory(repo)) ? readdirSync(cyclesDirectory(repo)) : [];
+    expect(cycles).toEqual([]);
+    expect(worker.currentState.lifecycle).toBe("stopped");
+  });
+
+  test("a drain during an in-flight cycle exits once that cycle ends", async () => {
+    const root = await temporaryRoot("drain-in-flight");
+    const repo = join(root, "repo");
+    write(join(repo, "src", "a.ts"), "export const dead = 1;\n");
+    const stateDir = join(repo, ".devboard", ".tmp", "state");
+    mkdirSync(stateDir, { recursive: true });
+    const forge = new FakeForge();
+    const release = Promise.withResolvers<void>();
+    const worker = new DeadCodeWorker({
+      repoDir: repo,
+      stateDir,
+      syncMs: 60_000,
+      cadenceMs: 60 * 60_000,
+      now: () => new Date("2026-01-01T12:00:00Z"),
+      harnessVersion: "test",
+      github: forge,
+      connect: peerFor(forge, undefined, release.promise),
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.tickNow();
+    expect(worker.cyclingNow).toBe(true);
+
+    writeCommand(versionedControlDirectory(stateDir, repo, "test"), { type: "drain" });
+    await worker.tickNow();
+    expect(worker.currentState.draining).toBe(true);
+    expect(worker.cyclingNow).toBe(true);
+
+    release.resolve();
+    await worker.waitForCycle();
+    expect(worker.currentState.lifecycle).toBe("stopped");
+    expect(readdirSync(cyclesDirectory(repo)).length).toBe(1);
+  });
+
+  test("a tick with no drain still starts a cycle", async () => {
+    const root = await temporaryRoot("no-drain");
+    const repo = join(root, "repo");
+    write(join(repo, "src", "a.ts"), "export const dead = 1;\n");
+    const stateDir = join(repo, ".devboard", ".tmp", "state");
+    mkdirSync(stateDir, { recursive: true });
+    const forge = new FakeForge();
+    const worker = new DeadCodeWorker({
+      repoDir: repo,
+      stateDir,
+      syncMs: 60_000,
+      cadenceMs: 60 * 60_000,
+      now: () => new Date("2026-01-01T12:00:00Z"),
+      harnessVersion: "test",
+      github: forge,
+      connect: peerFor(forge),
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.tickNow();
+    await worker.waitForCycle();
+    expect(readdirSync(cyclesDirectory(repo)).length).toBe(1);
     await worker.stop();
   });
 });
