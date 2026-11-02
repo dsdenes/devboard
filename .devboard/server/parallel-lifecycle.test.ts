@@ -959,6 +959,7 @@ case "$*" in
   "api --hostname github.com repos/owner/repo --jq .permissions") echo '{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}' ;;
   "label list --search epic --limit 100 --json name") echo '[{"name":"epic"}]' ;;
   "issue list --label epic --state open --json number,title,url --limit 100") echo '${output}' ;;
+  "search issues --repo owner/repo --match body "*) echo '[]' ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
 esac
 `
@@ -969,6 +970,7 @@ case "$*" in
   "api --hostname gitlab.com projects/group%2Fproject") echo '{"visibility":"private","permissions":{"project_access":{"access_level":40}}}' ;;
   "label list --output json") echo '[{"name":"epic"}]' ;;
   "issue list --label epic --output json") echo '${output}' ;;
+  "issue list --search devboard-epic "*) echo '[]' ;;
   *) echo "unexpected glab $*" >&2; exit 1 ;;
 esac
 `;

@@ -280,6 +280,20 @@ function allEpics(entries: unknown): OpenEpic[] {
   return epics;
 }
 
+/**
+ * Merges the rows of several epic queries into one list, keeping the first row
+ * per issue number. An issue that is both labelled and body-marked appears once.
+ */
+function unionEpics(...groups: OpenEpic[][]): OpenEpic[] {
+  const merged = new Map<number, OpenEpic>();
+  for (const group of groups) {
+    for (const epic of group) {
+      if (!merged.has(epic.number)) merged.set(epic.number, epic);
+    }
+  }
+  return [...merged.values()];
+}
+
 async function githubEpics(
   cwd: string,
   project: string,
@@ -297,8 +311,34 @@ async function githubEpics(
     (entry) => typeof entry.name === "string" && entry.name.toLowerCase() === "epic",
   );
 
-  if (label !== undefined && typeof label.name === "string") {
-    const issues = await commandJson<unknown>(
+  const bodyEpics = allEpics(
+    await commandJson<unknown>(
+      cwd,
+      [
+        "gh",
+        "search",
+        "issues",
+        "--repo",
+        project,
+        "--match",
+        "body",
+        "--state",
+        "open",
+        "devboard-epic",
+        "--json",
+        "number,title,url",
+        "--limit",
+        "100",
+      ],
+      "search open epics",
+      env,
+      signal,
+    ),
+  );
+  if (label === undefined || typeof label.name !== "string") return bodyEpics;
+
+  const labelledEpics = allEpics(
+    await commandJson<unknown>(
       cwd,
       [
         "gh",
@@ -316,33 +356,9 @@ async function githubEpics(
       "list open epics",
       env,
       signal,
-    );
-    return allEpics(issues);
-  }
-
-  const issues = await commandJson<unknown>(
-    cwd,
-    [
-      "gh",
-      "search",
-      "issues",
-      "--repo",
-      project,
-      "--match",
-      "body",
-      "--state",
-      "open",
-      "devboard-epic",
-      "--json",
-      "number,title,url",
-      "--limit",
-      "100",
-    ],
-    "search open epics",
-    env,
-    signal,
+    ),
   );
-  return allEpics(issues);
+  return unionEpics(labelledEpics, bodyEpics);
 }
 
 async function gitlabEpics(
@@ -361,25 +377,27 @@ async function gitlabEpics(
     (entry) => typeof entry.name === "string" && entry.name.toLowerCase() === "epic",
   );
 
-  if (label !== undefined && typeof label.name === "string") {
-    const issues = await commandJson<unknown>(
+  const bodyEpics = allEpics(
+    await commandJson<unknown>(
+      cwd,
+      ["glab", "issue", "list", "--search", "devboard-epic", "--in", "description", "--output", "json"],
+      "search open epics",
+      env,
+      signal,
+    ),
+  );
+  if (label === undefined || typeof label.name !== "string") return bodyEpics;
+
+  const labelledEpics = allEpics(
+    await commandJson<unknown>(
       cwd,
       ["glab", "issue", "list", "--label", label.name, "--output", "json"],
       "list open epics",
       env,
       signal,
-    );
-    return allEpics(issues);
-  }
-
-  const issues = await commandJson<unknown>(
-    cwd,
-    ["glab", "issue", "list", "--search", "devboard-epic", "--in", "description", "--output", "json"],
-    "search open epics",
-    env,
-    signal,
+    ),
   );
-  return allEpics(issues);
+  return unionEpics(labelledEpics, bodyEpics);
 }
 
 async function giteaEpics(remote: Remote, signal: AbortSignal): Promise<OpenEpic[]> {
