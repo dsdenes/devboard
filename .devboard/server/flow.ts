@@ -642,7 +642,6 @@ export class FlowController {
   /** The newest checkpoint tip a busy PR sync must pick up when it finishes. */
   #prPendingTip: string | null = null;
   #decisionsChain: Promise<void> = Promise.resolve();
-  #seenCommits = new Set<string>();
   #startedAt: string;
   #restartNotice: string | null = null;
 
@@ -1050,7 +1049,6 @@ export class FlowController {
         wasRunning && !adopted ? "stopped" : session.status === "idle" ? "idle" : session.status;
       session.question = null;
       this.#session = session;
-      for (const checkpoint of session.checkpoints) this.#seenCommits.add(checkpoint.commit);
       this.#persist();
 
       if (wasRunning && !adopted) {
@@ -2015,14 +2013,18 @@ export class FlowController {
     if (commits.length === 0) return;
 
     const recorded = readJsonLines<Partial<FlowCheckpoint>>(this.#path("checkpoints.jsonl"));
-    let added = false;
+    let changed = false;
     for (const commit of commits) {
       const short = commit.hash.slice(0, 7);
-      if (session.checkpoints.some((entry) => entry.commit === short)) continue;
+      const index = session.checkpoints.findIndex((entry) => entry.commit === short);
       const match = recorded.find(
         (entry) => typeof entry.commit === "string" && commit.hash.startsWith(entry.commit),
       );
       if (match !== undefined) {
+        // The agent's own record is authoritative for its commit. The watcher
+        // ticks between the commit and the record, so a provisional entry may
+        // already exist here carrying the previous unit's verdict; the record
+        // replaces it instead of being ignored by the commit latch.
         const entry: FlowCheckpoint = {
           id: typeof match.id === "string" ? match.id : `checkpoint-${short}`,
           timestamp: typeof match.timestamp === "string" ? match.timestamp : commit.timestamp,
@@ -2031,15 +2033,29 @@ export class FlowController {
           commit: short,
           verification: verificationStatus(match.verification),
         };
-        session.checkpoints.push(entry);
+        const existing = index === -1 ? undefined : session.checkpoints[index];
+        if (existing === undefined) session.checkpoints.push(entry);
+        else if (
+          existing.id !== entry.id ||
+          existing.timestamp !== entry.timestamp ||
+          existing.summary !== entry.summary ||
+          existing.files !== entry.files ||
+          existing.commit !== entry.commit ||
+          existing.verification !== entry.verification
+        ) {
+          session.checkpoints[index] = entry;
+        } else continue;
       } else {
-        const changed = await this.#git(session.worktree, [
+        // No record exists for this commit, so its subject, file count, and
+        // the session's current verdict are the best available projection.
+        if (index !== -1) continue;
+        const shown = await this.#git(session.worktree, [
           "show",
           "--name-only",
           "--format=",
           commit.hash,
         ]);
-        const fileCount = changed.stdout.split("\n").filter((line) => line.trim().length > 0).length;
+        const fileCount = shown.stdout.split("\n").filter((line) => line.trim().length > 0).length;
         session.checkpoints.push({
           id: `checkpoint-${short}`,
           timestamp: commit.timestamp,
@@ -2049,11 +2065,10 @@ export class FlowController {
           verification: session.verification?.status ?? STALE_VERIFICATION,
         });
       }
-      this.#seenCommits.add(short);
-      added = true;
+      changed = true;
     }
 
-    if (added) {
+    if (changed) {
       this.#persist();
       this.#broadcast({ type: "flowCheckpoints", checkpoints: session.checkpoints });
     }

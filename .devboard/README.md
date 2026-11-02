@@ -743,10 +743,12 @@ a new goal.
 The implementation commits each coherent unit itself, records the unit's verification through
 `flow_verification_record`, and appends one checkpoint through `flow_checkpoint_record`; it never
 pushes. The server reads its commits, reconciles the recorded checkpoints, follows the diff, and
-runs the change analyst whenever the diff changes. The developer watches activity, answers
-implementation questions, accepts or refuses widgets, and writes steering notes and decisions while
-it works. A refused widget becomes a steering note telling the agent to abandon that change and
-implement another solution.
+runs the change analyst whenever the diff changes. A recorded checkpoint is authoritative for its
+commit: when the watcher projected that commit before the record arrived, the next pass replaces
+the projected summary, file count, and verdict with the recorded values. The developer watches
+activity, answers implementation questions, accepts or refuses widgets, and writes steering notes
+and decisions while it works. A refused widget becomes a steering note telling the agent to
+abandon that change and implement another solution.
 
 ### Session state
 

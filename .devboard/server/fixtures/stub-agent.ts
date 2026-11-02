@@ -137,6 +137,8 @@ const flowSilentCheckpoints = process.argv.includes("--flow-silent-checkpoints")
 const flowPreCommitDelay = Number(argument("flow-pre-commit-delay") ?? 0);
 /** File this stub waits for before its second and later checkpoints. */
 const flowWaitFile = argument("flow-wait-file");
+/** File this stub waits for after committing and before recording the unit. */
+const flowRecordWaitFile = argument("flow-record-wait-file");
 const flowNoVerification = process.argv.includes("--flow-no-verification");
 
 /** Discover Mode: the crawl staging turn and its validation-failure variants. */
@@ -936,6 +938,11 @@ async function runFlowImplementation(directory: string) {
     const revision = flowGit(process.cwd(), ["rev-parse", "--short=7", "HEAD"]);
     const commit = revision.stdout.toString().trim();
     const verifiedAt = new Date().toISOString();
+    if (flowRecordWaitFile !== undefined) {
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(flowRecordWaitFile) && Date.now() < deadline) await Bun.sleep(25);
+      log(`flow-record-wait-done ${existsSync(flowRecordWaitFile) ? "yes" : "timeout"}`);
+    }
     if (!flowNoVerification) {
       writeJsonFile(join(directory, "verification.json"), {
         command: "bun test",

@@ -1899,6 +1899,61 @@ describe("Flow checkpoints, verification, questions, and blockers", () => {
     failingClient.close();
   }, 120_000);
 
+  test("the agent's record replaces a checkpoint projected for the same commit", async () => {
+    const fixture = createFixture("checkpoint-record");
+    // The peer holds between its commit and its record, so the watcher always
+    // projects the commit first — the provisional entry the record must win.
+    const recordWait = join(fixture.root, "record-checkpoint");
+    const testServer = startServer(fixture, {
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-verification=failed",
+        `--flow-record-wait-file=${recordWait}`,
+      ],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+
+    const projected = await client.waitFor(
+      (event) =>
+        event.type === "flowCheckpoints" &&
+        (event.checkpoints as { summary: string }[]).some(
+          (checkpoint) => checkpoint.summary === "checkpoint 1: fixture change",
+        ),
+      { timeout: 60_000 },
+    );
+    const provisional = (projected.checkpoints as Record<string, unknown>[])[0] as Record<string, unknown>;
+    expect(provisional.verification).toBe("not-run");
+    expect(provisional.id).toBe(`checkpoint-${String(provisional.commit)}`);
+
+    writeFileSync(recordWait, "record\n");
+    const recorded = await client.waitFor(
+      (event) =>
+        event.type === "flowCheckpoints" &&
+        (event.checkpoints as { verification: string }[]).some(
+          (checkpoint) => checkpoint.verification === "failed",
+        ),
+      { timeout: 60_000 },
+    );
+    const entry = (recorded.checkpoints as Record<string, unknown>[])[0] as Record<string, unknown>;
+    expect(recorded.checkpoints as unknown[]).toHaveLength(1);
+    expect(entry.id).toBe("cp-1");
+    expect(entry.commit).toBe(provisional.commit);
+    expect(entry.summary).toBe("checkpoint 1 — fixture change");
+    expect(entry.files).toBe(2);
+    expect(entry.verification).toBe("failed");
+
+    const session = readSession(fixture, sessionIds(fixture)[0] as string);
+    const persisted = (session.checkpoints as Record<string, unknown>[])[0] as Record<string, unknown>;
+    expect(persisted.verification).toBe("failed");
+    expect(persisted.summary).toBe("checkpoint 1 — fixture change");
+    client.close();
+  }, 120_000);
+
   test("an implementation question is answerable and a blocker can be dismissed", async () => {
     const fixture = createFixture("question-blocker");
     const testServer = startServer(fixture, {
