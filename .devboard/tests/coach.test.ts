@@ -518,7 +518,13 @@ function threeFamilies(): AgentSession[] {
 
 describe("Coach registration and lifecycle", () => {
   test("the registry declares coach with its defaults", () => {
-    expect(agentRegistry.ids()).toEqual(["scout", "watchdog", "design", "coach"]);
+    expect(agentRegistry.ids()).toEqual([
+      "scout",
+      "watchdog",
+      "design",
+      "coach",
+      "release-train",
+    ]);
     const coach = agentRegistry.require("coach");
     expect(coach.label).toBe("Coach");
     expect(coach.scope).toBe("repository");

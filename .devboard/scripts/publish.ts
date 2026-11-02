@@ -14,9 +14,11 @@ import { configuredGiteaToken, configuredGiteaUrl, parseForgeRemote } from "../l
 import { releaseVersionAt } from "../lib/commit-gate";
 import { lowestReleaseVersion } from "../lib/release";
 import {
+  giteaDispatchWorkflow as dispatchWorkflow,
   giteaReleaseByTag,
   giteaWorkflowRuns,
   type GiteaTarget,
+  type GiteaWorkflowRun,
 } from "../lib/gitea";
 import { dashboardInventory, describeInventory } from "../lib/inventory";
 import { discoverInstances } from "../watchdog/discovery";
@@ -232,23 +234,74 @@ for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) {
   if (!existsSync(asset)) fail(`dist/index.html references a missing asset: ${asset}`);
 }
 
+function workflowFinished(run: GiteaWorkflowRun): boolean {
+  return (
+    run.conclusion !== null ||
+    ["completed", "success", "failure", "cancelled", "skipped", "timed_out"].includes(run.status)
+  );
+}
+
+function chooseWorkflowRun(runs: readonly GiteaWorkflowRun[]): GiteaWorkflowRun | undefined {
+  const matching = runs.filter((candidate) => candidate.headSha === published);
+  return (
+    matching.find((candidate) => !workflowFinished(candidate)) ??
+    matching.find((candidate) => candidate.conclusion === "success") ??
+    matching[0]
+  );
+}
+
+/**
+ * The release workflow is dispatch-only. Before waiting, dispatch it for the
+ * checked-out `main` tip when that tip has no usable run: no run at all, or
+ * only runs that already concluded unsuccessfully. A failed range therefore
+ * gets one fresh attempt on the next train tick, while an active or successful
+ * run is never duplicated.
+ */
+async function dispatchReleaseWhenNeeded(): Promise<{
+  dispatched: boolean;
+  previousIds: Set<number>;
+}> {
+  const runs = await giteaWorkflowRuns(target, published).catch((error: unknown) => {
+    fail(`could not list workflow runs: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  const matching = runs.filter((candidate) => candidate.headSha === published);
+  const previousIds = new Set(matching.map((candidate) => candidate.id));
+  if (matching.some((candidate) => !workflowFinished(candidate))) {
+    return { dispatched: false, previousIds };
+  }
+  if (matching.some((candidate) => candidate.conclusion === "success")) {
+    return { dispatched: false, previousIds };
+  }
+  try {
+    await dispatchWorkflow(target, "devboard-release.yml", "refs/heads/main");
+  } catch (error) {
+    fail(
+      `could not dispatch devboard-release.yml for ${published.slice(0, 7)}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+  console.log(`publish: dispatched devboard-release.yml for ${published.slice(0, 7)}`);
+  return { dispatched: true, previousIds };
+}
+
 console.log(`publish: waiting for the release workflow of ${published.slice(0, 7)}`);
+const dispatchedRun = await dispatchReleaseWhenNeeded();
 
 const deadline = Date.now() + waitTimeoutMs;
-let workflow: { id: number; status: string; conclusion: string | null } | undefined;
+let workflow: GiteaWorkflowRun | undefined;
 while (Date.now() < deadline) {
   const runs = await giteaWorkflowRuns(target, published).catch((error: unknown) => {
     fail(`could not list workflow runs: ${error instanceof Error ? error.message : String(error)}`);
   });
-  const match = runs.find((candidate) => candidate.headSha === published);
+  // After a dispatch, only a run this invocation created can settle the wait;
+  // the previous failed run must not be read as its answer.
+  const candidates = dispatchedRun.dispatched
+    ? runs.filter((candidate) => !dispatchedRun.previousIds.has(candidate.id))
+    : runs;
+  const match = chooseWorkflowRun(candidates);
   if (match !== undefined) {
     workflow = match;
-    const finished =
-      match.conclusion !== null ||
-      ["completed", "success", "failure", "cancelled", "skipped", "timed_out"].includes(
-        match.status,
-      );
-    if (finished) break;
+    if (workflowFinished(match)) break;
   }
   await Bun.sleep(5000);
 }

@@ -1,20 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { giteaBaseUrl, configuredGiteaToken, type Forge } from "../../lib/forge";
+import { giteaBaseUrl } from "../../lib/forge";
 import { deriveReleaseVersion } from "../../lib/commit-gate";
-import { giteaWorkflowRuns } from "../../lib/gitea";
 import { originForge } from "../repository";
-import { findOnPath } from "../repository";
 import { runCommand } from "../scout/preflight";
 import { type DesignConfig, cycleBranch, worktreesRoot } from "./paths";
 import { missingPrincipleSections, validTokenDocument } from "./scan";
 
 /**
- * The autonomous documentation release path: one cycle worktree, one commit
- * limited to the two documents, integration of main, a non-force push, the
- * release workflow wait, the integration checkout's fast-forward, and
- * `bun run publish`. Every external step is injectable so the planner can be
- * proven without a real forge, npm, or Gitea.
+ * The autonomous documentation push path: one cycle worktree, one commit
+ * limited to the two documents, integration of main, a non-force push, and the
+ * integration checkout's fast-forward. The commit is reported; the Release
+ * Train is the only component that releases it.
  */
 
 export interface CommandOutcome {
@@ -38,21 +35,9 @@ export interface ReleaseInput {
   environment: Record<string, string | undefined>;
   activity: (line: string) => void;
   now: () => Date;
-  /** Injected for tests. Defaults to the bounded Git and publish path. */
+  /** Injected for tests. Defaults to the bounded Git path. */
   run?: RunCommand;
   checks?: (worktree: string) => Promise<{ ok: true } | { ok: false; detail: string }>;
-  waitForWorkflow?: (options: {
-    sha: string;
-    repoDir: string;
-    environment: Record<string, string | undefined>;
-  }) => Promise<{ ok: true } | { ok: false; detail: string }>;
-  publish?: (options: {
-    sha: string;
-    version: string;
-    tag: string;
-    harnessDir: string;
-    environment: Record<string, string | undefined>;
-  }) => Promise<{ ok: true } | { ok: false; detail: string }>;
   /** How many rejected pushes are integrated and retried. */
   pushAttempts?: number;
 }
@@ -73,8 +58,6 @@ export type ReleaseResult =
 
 const PUSH_ATTEMPTS = 3;
 const FETCH_LIMIT_MS = 10 * 60_000;
-const WORKFLOW_TIMEOUT_MS = 30 * 60_000;
-const PUBLISH_TIMEOUT_MS = 60 * 60_000;
 
 function firstLine(text: string): string {
   return (
@@ -131,19 +114,20 @@ function must(outcome: CommandOutcome, description: string): string {
   return outcome.stdout.trim();
 }
 
-function releaseUrl(
+/** The pushed commit's forge URL; no release exists yet. */
+function commitUrl(
   repoDir: string,
   environment: Record<string, string | undefined>,
   project: string,
-  tag: string,
+  sha: string,
 ): string {
   const remote = originForge(repoDir, environment);
   if (remote?.forge === "gitea") {
     const baseUrl = giteaBaseUrl(remote, environment);
-    if (baseUrl !== undefined) return `${baseUrl.replace(/\/+$/, "")}/${project}/releases/tag/${tag}`;
+    if (baseUrl !== undefined) return `${baseUrl.replace(/\/+$/, "")}/${project}/commit/${sha}`;
   }
-  if (remote?.forge === "github") return `https://github.com/${project}/releases/tag/${tag}`;
-  return `${project}/releases/tag/${tag}`;
+  if (remote?.forge === "github") return `https://github.com/${project}/commit/${sha}`;
+  return `${project}/commit/${sha}`;
 }
 
 async function defaultChecks(
@@ -161,88 +145,6 @@ async function defaultChecks(
   if (!existsSync(tokenPath)) return { ok: false, detail: `${config.tokenDocument} is missing` };
   if (!validTokenDocument(readFileSync(tokenPath, "utf8"))) {
     return { ok: false, detail: `${config.tokenDocument} is not a JSON object` };
-  }
-  return { ok: true };
-}
-
-async function defaultWaitForWorkflow(options: {
-  sha: string;
-  repoDir: string;
-  environment: Record<string, string | undefined>;
-}): Promise<{ ok: true } | { ok: false; detail: string }> {
-  const remote = originForge(options.repoDir, options.environment);
-  if (remote === undefined) return { ok: false, detail: "the origin is not a supported forge" };
-  if (remote.forge !== "gitea") {
-    return {
-      ok: false,
-      detail: "waiting for the release workflow needs a Gitea origin",
-    };
-  }
-  const baseUrl = giteaBaseUrl(remote, options.environment);
-  if (baseUrl === undefined) {
-    return { ok: false, detail: "the Gitea address is not configured" };
-  }
-  const token = configuredGiteaToken(options.environment);
-  const target = {
-    baseUrl,
-    project: remote.project,
-    ...(token === undefined ? {} : { token }),
-  };
-  const timeout = Number(options.environment.DESIGN_WORKFLOW_TIMEOUT_MS ?? "");
-  const deadline =
-    Date.now() + (Number.isFinite(timeout) && timeout > 0 ? timeout : WORKFLOW_TIMEOUT_MS);
-  while (Date.now() < deadline) {
-    try {
-      const runs = await giteaWorkflowRuns(target, options.sha);
-      const match = runs.find((candidate) => candidate.headSha === options.sha);
-      if (match !== undefined) {
-        const concluded =
-          match.conclusion ?? (match.status === "success" ? "success" : null);
-        if (concluded !== null && concluded !== "") {
-          return concluded === "success"
-            ? { ok: true }
-            : { ok: false, detail: `the release workflow concluded ${concluded}` };
-        }
-      }
-    } catch (error) {
-      // A transient read is retried until the deadline.
-    }
-    await Bun.sleep(1000);
-  }
-  return { ok: false, detail: "the release workflow did not conclude before the wait" };
-}
-
-async function defaultPublish(options: {
-  sha: string;
-  version: string;
-  tag: string;
-  harnessDir: string;
-  environment: Record<string, string | undefined>;
-}): Promise<{ ok: true } | { ok: false; detail: string }> {
-  const bun = findOnPath("bun", options.environment) ?? "bun";
-  const configured = options.environment.DESIGN_PUBLISH_COMMAND?.trim();
-  const argv =
-    configured === undefined || configured.length === 0
-      ? [bun, "run", "publish"]
-      : [configured];
-  const outcome = await runCommand(argv, boundedEnv(options.environment, {
-    DESIGN_RELEASE_VERSION: options.version,
-    DESIGN_RELEASE_TAG: options.tag,
-    DESIGN_RELEASE_COMMIT: options.sha,
-  }), {
-    cwd: options.harnessDir,
-    timeoutMs: Math.max(
-      1,
-      Number(options.environment.DESIGN_PUBLISH_TIMEOUT_MS ?? PUBLISH_TIMEOUT_MS) || PUBLISH_TIMEOUT_MS,
-    ),
-  });
-  if (outcome.code !== 0) {
-    return {
-      ok: false,
-      detail: `bun run publish exited ${outcome.code}: ${
-        firstLine(outcome.stderr) || firstLine(outcome.stdout)
-      }`,
-    };
   }
   return { ok: true };
 }
@@ -313,8 +215,6 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
   const run = input.run ?? defaultRun;
   const git = makeGit(run, input.environment);
   const checks = input.checks ?? ((worktree) => defaultChecks(worktree, input.config));
-  const waitForWorkflow = input.waitForWorkflow ?? defaultWaitForWorkflow;
-  const publish = input.publish ?? defaultPublish;
   const project = originForge(input.repoDir, input.environment)?.project ?? "";
   let pushed = false;
   let worktree: Worktree | undefined;
@@ -433,18 +333,8 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
     const sha = must(await git(worktree.directory, ["rev-parse", "HEAD"]), "could not read the pushed commit");
     input.activity(`pushed ${sha.slice(0, 7)} to main`);
 
-    const workflow = await waitForWorkflow({
-      sha,
-      repoDir: input.repoDir,
-      environment: input.environment,
-    });
-    if (!workflow.ok) throw new Error(workflow.detail);
-    input.activity(`release workflow for ${sha.slice(0, 7)} succeeded`);
-
     const fetchedIntegration = await git(input.repoDir, ["fetch", "origin", "main"]);
     must(fetchedIntegration, "could not fetch origin/main in the integration checkout");
-    const fetchedTags = await git(input.repoDir, ["fetch", "--tags", "origin"]);
-    must(fetchedTags, "could not fetch origin release tags");
     const incoming = await git(input.repoDir, ["diff", "--name-only", "HEAD", "origin/main"]);
     const incomingPaths = incoming.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
     const dirty = await git(input.repoDir, ["status", "--porcelain", "--untracked-files=no"]);
@@ -473,19 +363,12 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
       throw new Error("the integration checkout does not contain the pushed commit");
     }
 
+    // The commit is pushed, not released. Report the version the next Release
+    // Train run will derive and a link to the commit itself; the train owns
+    // the npm version, tag, and Gitea release.
     const version = deriveReleaseVersion(input.repoDir, sha).version;
-    const tag = `v${version}`;
-    input.activity(`publishing ${version} from the integration checkout`);
-    const published = await publish({
-      sha,
-      version,
-      tag,
-      harnessDir: input.harnessDir,
-      environment: input.environment,
-    });
-    if (!published.ok) throw new Error(published.detail);
-    const url = releaseUrl(input.repoDir, input.environment, project, tag);
-    input.activity(`released ${tag}: ${url}`);
+    const url = commitUrl(input.repoDir, input.environment, project, sha);
+    input.activity(`pushed documentation ${sha.slice(0, 7)}; the Release Train will release it`);
     await removeWorktree(input.repoDir, worktree, git);
     return { ok: true, version, url, sha, branch: worktree.branch, files: [...changed].sort(), diff: releasedDiff };
   } catch (error) {

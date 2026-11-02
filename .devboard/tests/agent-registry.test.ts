@@ -123,12 +123,13 @@ function fakeAdapter(
 }
 
 describe("background agent registry", () => {
-  test("ships exactly the four declared descriptors with their defaults", () => {
+  test("ships exactly the five declared descriptors with their defaults", () => {
     expect(DEFAULT_AGENT_DESCRIPTORS.map((descriptor) => descriptor.id)).toEqual([
       "scout",
       "watchdog",
       "design",
       "coach",
+      "release-train",
     ]);
     const scout = agentRegistry.require("scout");
     expect(scout.label).toBe("Auto Scout");
@@ -167,6 +168,19 @@ describe("background agent registry", () => {
     expect(coach.detail.panel).toBe("cycles");
     expect(coach.tab).toEqual({ id: "coach", kind: "coach", title: "Coach" });
     expect(coach.prompt.kind).toBe("template");
+    const releaseTrain = agentRegistry.require("release-train");
+    expect(releaseTrain.label).toBe("Release Train");
+    expect(releaseTrain.scope).toBe("repository");
+    expect(releaseTrain.cadence.defaultMinutes).toBe(10);
+    expect(releaseTrain.limits.default).toEqual({ maxPerHour: null, maxPending: null });
+    expect(releaseTrain.detail.panel).toBe("activity");
+    expect(releaseTrain.controls).toEqual({ pause: true, checkNow: true });
+    expect(releaseTrain.tab).toEqual({
+      id: "release-train",
+      kind: "release-train",
+      title: "Release Train",
+    });
+    expect(releaseTrain.prompt).toEqual({ kind: "file", file: "release-train.md" });
     for (const descriptor of DEFAULT_AGENT_DESCRIPTORS) {
       expect(descriptor.lifecycle).toEqual([...AGENT_LIFECYCLES]);
       expect(descriptor.commands.start).toBe("startAgent");
@@ -203,7 +217,14 @@ describe("background agent registry", () => {
   test("a synthetic extra descriptor is accepted by validation and projection", () => {
     const descriptor = syntheticDescriptor();
     const registry = defineAgentRegistry([...DEFAULT_AGENT_DESCRIPTORS, descriptor]);
-    expect(registry.ids()).toEqual(["scout", "watchdog", "design", "coach", "patrol"]);
+    expect(registry.ids()).toEqual([
+      "scout",
+      "watchdog",
+      "design",
+      "coach",
+      "release-train",
+      "patrol",
+    ]);
     const projected = projectAgentSnapshot(descriptor, snapshotInput(descriptor));
     expect(projected.id).toBe("patrol");
     expect(projected.label).toBe("Patrol");
@@ -262,6 +283,7 @@ describe("background agent registry", () => {
       "watchdog",
       "design",
       "coach",
+      "release-train",
       "patrol",
     ]);
     await bridge.handle(target, { type: "startAgent", id: "patrol" });

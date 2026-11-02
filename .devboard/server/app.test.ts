@@ -1010,6 +1010,7 @@ describe("issues protocol", () => {
         "watchdog",
         "design",
         "coach",
+        "release-train",
       ]);
     } finally {
       server.stop(true);

@@ -1064,6 +1064,7 @@ try {
           "open-devboard-watchdog",
           "open-devboard-design",
           "open-devboard-coach",
+          "open-devboard-release-train",
         ]),
     `the Background agents section is wrong: ${JSON.stringify(groups)}`,
   );
@@ -1080,6 +1081,7 @@ try {
     ["watchdog", "Watchdog"],
     ["design", "Design System"],
     ["coach", "Coach"],
+    ["release-train", "Release Train"],
   ]) {
     const entry = await devtools.evaluate(`(() => {
       const button = document.querySelector('[data-testid="open-devboard-${id}"]');
@@ -2302,7 +2304,7 @@ try {
   console.log("PASS sync-retry-clears");
 
   /* No page shows an error for the retry that just succeeded. */
-  for (const id of ["scout", "watchdog", "design", "coach"]) {
+  for (const id of ["scout", "watchdog", "design", "coach", "release-train"]) {
     await click(devtools, `open-devboard-${id}`);
     await waitFor(
       async () =>
@@ -2527,7 +2529,7 @@ try {
   }
 
   console.log(
-    "verify:agents: the Background agents section, all four shared pages, lifecycle, cadence, " +
+    "verify:agents: the Background agents section, all five shared pages, lifecycle, cadence, " +
       "nullable limits, the Watchdog cap, the shared table, Coach detail and settings, " +
       "freshness, no mutation on reload, the timer gate, the footer indicator, and the " +
       "periodic-read retry window and exhausted alert all hold",

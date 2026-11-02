@@ -57,6 +57,7 @@
     "svelte.config.js",
     "tsconfig.json",
     "coach",
+    "release-train",
     "mcp"
   ],
   "devDependencies": {

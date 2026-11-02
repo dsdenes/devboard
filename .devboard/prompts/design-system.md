@@ -6,7 +6,8 @@ description: Audit the harness interface against DESIGN.md and design/tokens.jso
 
 Your goal is to leave the design system consistent with its documented standard, and the
 observable result is one `design` issue per admissible divergence filed through the Devboard MCP
-issue tool, plus a requested release when the documents themselves must change.
+issue tool, plus a documentation push request when the documents themselves must change. The
+Release Train releases the pushed commit later; you never release.
 
 ## Contract
 
@@ -118,14 +119,16 @@ edit, not unrelated prose. A token addition or correction appears in both the pr
 `design/tokens.json`. Change no other prose. When no admissible decision exists, edit nothing and
 call no release tool.
 
-## Release
+## Documentation push
 
-You edit only your cycle draft and record the release request. The worker releases it, never you,
+You edit only your cycle draft and record the release request. The worker pushes it, never you,
 from one isolated worktree under `<REPO_DIR>/.worktree/`. In that worktree the worker commits only
-`DESIGN.md` and `design/tokens.json`, fetches and integrates `origin/main`, and pushes `main`
-without force; it then waits for the release workflow to succeed, and runs
-`cd .devboard && bun run publish`. After the push it advances the main checkout by fast-forward and
-removes the worktree and its branch.
+`DESIGN.md` and `design/tokens.json`, fetches and integrates `origin/main`, pushes `main`
+without force, advances the main checkout by fast-forward, removes the worktree and its branch,
+and reports the pushed commit. It never waits for a workflow and never invokes the publish entry
+point: the Release Train is the only component that releases, on its own schedule.
 
 You never edit the main checkout and never run git: no branch, worktree, commit, push, or publish.
-Your write surfaces are `<cycle-dir>/draft/`, the MCP issue tool, and the MCP release tool.
+Never invoke the publish entry point and never request a release. Your write surfaces are
+`<cycle-dir>/draft/`, the MCP issue tool, and the MCP release tool that stages this documentation
+request.

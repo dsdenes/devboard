@@ -107,8 +107,10 @@ bun run verify:update
 bun run verify:ui
 ```
 
-Merge into `main` and push. The release workflow tests, packs the complete public package,
-publishes `@dsdenes/devboard@<version>` to npmjs, and creates the Gitea release with the fallback
-tarball and `.sha256`. Then run `bun run publish` from the integration checkout: it waits for
-that workflow, verifies the npm package and release assets, and reports each dashboard without
-restarting it.
+Merge into `main` and push. A push releases nothing: `.gitea/workflows/devboard-release.yml` runs
+only on `workflow_dispatch`. The Release Train background agent watches canonical `main` on its
+10-minute default cadence, batches every non-merge commit since the newest release tag into one
+release, starts one agent only when that range is non-empty, and retries a failed release on a
+later tick. That agent dispatches the release workflow and verifies the npm package and the
+Gitea assets. No implementation agent, design agent, or manual step publishes a version; the
+train is the only releaser.

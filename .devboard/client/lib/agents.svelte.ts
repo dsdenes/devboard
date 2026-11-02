@@ -116,6 +116,19 @@ export class AgentsStore {
     connection.send({ type: "stopAgent", id });
   }
 
+  pause(id: string): void {
+    connection.send({ type: "pauseAgent", id });
+  }
+
+  resume(id: string): void {
+    connection.send({ type: "resumeAgent", id });
+  }
+
+  /** Ask the adapter for a fresh read; the Release Train runs its gate. */
+  checkNow(id: string): void {
+    connection.send({ type: "refreshAgent", id });
+  }
+
   saveSettings(
     id: string,
     minutes: number,

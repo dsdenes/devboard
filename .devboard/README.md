@@ -1588,16 +1588,32 @@ missing-clone error. Discover a second repository, switch between the two from t
 confirm no clone appears. Remove one entry and confirm only its directory disappears. Hash `.omp`
 from the repository root before and after; the two hashes match.
 
-## Publish a change
+## The Release Train releases
 
-Merging into `main` and pushing to the canonical Gitea remote triggers
-`.gitea/workflows/devboard-release.yml`, which runs on the repository's registered Gitea
-`act_runner` — never a hosted runner, and never a fallback — and builds the client, runs the
-harness suite and typecheck, packs the complete public package, publishes
-`@dsdenes/devboard@<version>` to npmjs, and creates the Gitea release `v<version>` with notes and
-the same tarball plus its `.sha256` as a fallback. A rerun on the same commit leaves the existing
-npm version and release assets untouched. Nothing is published under
-`@dsdenes/devboard-harness`.
+One scheduled background family publishes every version: the Release Train (`release-train`).
+A push to `main` releases nothing, and neither does an implementation or design agent.
+`.gitea/workflows/devboard-release.yml` runs only on `workflow_dispatch`; the train is the only
+component that dispatches it.
+
+- The Release Train's worker runs on a 10-minute default cadence (1 through 1440 minutes).
+- On each tick it fetches `origin/main` and its tags and runs one deterministic gate. Unreleased
+  means at least one non-merge commit after the newest `v<version>` tag reachable from that tip;
+  with no release tag, every non-merge commit is unreleased. Only merge commits release nothing.
+  An unreadable remote, tag, or commit read records a failure and starts no agent.
+- The gate starts exactly one `omp acp` release agent only for a non-empty range and hands it the
+  whole range. At most one run exists per repository: a second worker of the same harness version
+  refuses to start, and a tick or Check now during an active run starts nothing.
+- One run batches every non-merge commit since the newest tag into one release. The runner on the
+  repository's registered Gitea `act_runner` — never a hosted runner and never a fallback — builds
+  the client, runs the harness suite and typecheck, packs the complete public package, publishes
+  `@dsdenes/devboard@<version>` to npmjs, and creates the Gitea release `v<version>` with notes and
+  the same tarball plus its `.sha256` as a fallback. A rerun on the same commit leaves the existing
+  npm version and release assets untouched. Nothing is published under
+  `@dsdenes/devboard-harness`.
+- A failing workflow conclusion, a missing npm version, missing release assets, or a rejected
+  derived version records the failure with its detail, ships nothing, and leaves the range
+  unreleased. The next due tick starts a new run without operator action; a failed run is never
+  recorded as released.
 
 The release version is semver derived from Conventional Commits. The first release of this line
 is `1.0.0` while the highest published release is still below it. Every later release takes the
@@ -1624,24 +1640,21 @@ share: the release step then serialises the npm publish and release creation thr
 so the next job sees the previous version before it chooses its tag. Without the variable the
 step is unchanged and assumes one release at a time.
 
-After the push, verify from the integration checkout:
-
-```bash
-cd .devboard
-bun run publish
-```
-
-`bun run publish` refuses a worktree, a branch other than `main`, or a checkout ahead of or
-diverged from its canonical remote; fetches and fast-forwards `main` without discarding
-uncommitted work; installs dependencies and rebuilds `dist/`; waits for the release workflow of
-`HEAD`; reads the release tag the workflow created for that commit and fails when none exists, so
-the reported version is the one that workflow published and never a locally counted value;
-verifies the Gitea release assets and `npm view @dsdenes/devboard@<version> version`;
-pushes the `github` mirror remote's `main` and the release tags, then proves `main` is the
-published commit or a descendant that still contains it (another agent may merge while the
-release workflow runs); and reports every running dashboard's running and installed version. It never
-restarts a dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and
-propagation wait (default 1800 seconds).
+The Release Train's release agent fetches canonical `main` and runs `bun run publish` from the
+integration checkout. That path refuses a worktree, a branch other than `main`, or a checkout
+ahead of or diverged from its canonical remote; fetches and fast-forwards `main` without
+discarding uncommitted work; installs dependencies and rebuilds `dist/`; dispatches
+`.gitea/workflows/devboard-release.yml` for the checked-out `main` tip when that tip has no usable
+run and waits for that run; reads the release tag the workflow created for the commit and fails
+when none exists, so the reported version is the one that workflow published and never a locally
+counted value; verifies the Gitea release assets and `npm view @dsdenes/devboard@<version>
+version`; pushes the `github` mirror remote's `main` and the release tags, then proves `main` is
+the published commit or a descendant that still contains it (another agent may merge while the
+release workflow runs); and reports every running dashboard's running and installed version. It
+never restarts a dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and
+propagation wait (default 1800 seconds). No other prompt, worker, or operator invokes it; the
+implementing agent closes its issue after the push proof, and the Design System pushes its
+documentation commit and reports.
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
@@ -1995,34 +2008,34 @@ only `DESIGN.md` and `design/tokens.json`, must contain `## Design principles` a
 `## UX principles` (adding either section when the current document lacks it), and must name
 every added token in both the prose table and the token document. The agent never edits a
 document to record a single literal and never legalizes a drift it reported. A draft that breaks
-this contract is refused and recorded in activity without releasing and without an operator-facing
-error; only a failed push, workflow, publish, or asset check is reported as a cycle failure.
+this contract is refused and recorded in activity without pushing and without an operator-facing
+error; only a failed integration or push is reported as a cycle failure.
 
-An admitted edit is released autonomously after the agent records the decision through the
-Devboard MCP `design_release_request` tool with the release summary and rationale: the worker
-creates one worktree under `<REPO_DIR>/.worktree/`, commits only the two documents, fetches and
-integrates `main` with every conflict resolved and every check rerun, pushes to `main` without
-force, waits for the release workflow, fast-forwards the integration checkout without discarding
-uncommitted work, and runs `cd .devboard && bun run publish` (exit 0, npm package, Gitea fallback
-tarball, and `.sha256`). The released version and URL are recorded in activity, then the worktree
-and branch are removed. A cycle with no release request makes no commit, push, workflow wait, or
-publish. A failed push, workflow, publish, or asset check leaves the pushed commit intact, never
-force-pushes, never reverts, and reports the failing step in `agent-error` and activity.
+An admitted edit is pushed autonomously after the agent records the decision through the
+Devboard MCP `design_release_request` tool with the summary and rationale: the worker creates one
+worktree under `<REPO_DIR>/.worktree/`, commits only the two documents, fetches and integrates
+`main` with every conflict resolved and every check rerun, pushes to `main` without force,
+fast-forwards the integration checkout without discarding uncommitted work, removes the worktree
+and branch, and reports the pushed commit. It never waits for a release workflow and never runs
+the publish entry point: the Release Train releases the pushed commit later. A cycle with no
+request makes no commit, push, or checkout update. A failed integration or push leaves the
+pushed commit intact, never force-pushes, never reverts, and reports the failing step in
+`agent-error` and activity.
 
-The `/design-system-audit` prompt states this contract in its `Release` section: the agent edits
-only its cycle draft, the worker releases an admitted edit from one isolated worktree under
-`<REPO_DIR>/.worktree/`, commits only the two documents, integrates `origin/main`, pushes without
-force, waits for the release workflow, and runs `cd .devboard && bun run publish`; the agent never
-edits the main checkout and never runs git.
+The `/design-system-audit` prompt states this contract in its `Documentation push` section: the
+agent edits only its cycle draft, the worker pushes an admitted edit from one isolated worktree
+under `<REPO_DIR>/.worktree/`, commits only the two documents, integrates `origin/main`, pushes
+without force, and reports; the agent never edits the main checkout, never runs git, and never
+releases.
 
-Every successful documentation release appends one entry to the bounded `documentation` list in the
-design state file, newest first and at most 20: the cycle's one-sentence summary, the release time,
-the version, the release URL, the changed document paths, and the unified diff of the removed and
-added lines. A rejected document edit, a cycle with no admissible decision, and a failed release add
-no entry. A state file written before the list existed loads with an empty list rather than being
-quarantined. On the Design System page the `Documentation changes` panel
-(`data-testid="agent-documentation"`) renders immediately above the Filed issues panel
-(`agent-issues`); `agent-documentation-empty` states that no change has been released yet. Each
+Every successful documentation push appends one entry to the bounded `documentation` list in the
+design state file, newest first and at most 20: the cycle's one-sentence summary, the push time,
+the version the Release Train will derive, the commit URL, the changed document paths, and the
+unified diff of the removed and added lines. A rejected document edit, a cycle with no admissible
+decision, and a failed push add no entry. A state file written before the list existed loads with
+an empty list rather than being quarantined. On the Design System page the `Documentation changes`
+panel (`data-testid="agent-documentation"`) renders immediately above the Filed issues panel
+(`agent-issues`); `agent-documentation-empty` states that no change has been pushed yet. Each
 entry (`agent-documentation-entry`) shows `agent-documentation-summary`,
 `agent-documentation-files`, `agent-documentation-at`, and the version link
 `agent-documentation-version`; opening its `agent-documentation-summary` reveals the exact
@@ -2628,14 +2641,14 @@ refused slash command still ends the turn normally, so before a run can succeed 
 tracker for that issue's state. Only an issue the tracker now reports closed finishes as
 `succeeded`, records only its issue as handled, and does not touch another issue. An issue still
 open after its turn gets up to four follow-up turns on the same peer, because nothing else prompts
-an ACP session again: a peer that yielded to a background job — `bun run publish` waits up to 1800
-seconds — reads that job's result in the next turn and closes its issue instead of leaving landed
-work unhandled. When the issue is still open after the last follow-up turn, or its state cannot be
-read, the run finishes as `failed` with a cooldown and stays unhandled. A
-verification error names its issue; when a later poll no longer lists that issue, the error
-clears, so the Overview never keeps claiming a closed issue is open. The five-minute
-cooldown remains: an issue in cooldown is retried when it expires, and other issues keep running
-and start normally.
+an ACP session again: a peer that yielded to a long background job — a full-suite
+`verification_run` can wait many minutes — reads that job's result in the next turn and closes its
+issue instead of leaving landed work unhandled. When the issue is still open after the last
+follow-up turn, or its state cannot be read, the run finishes as `failed` with a cooldown and
+stays unhandled. A verification error names its issue; when a later poll no longer lists that
+issue, the error clears, so the Overview never keeps claiming a closed issue is open. The
+five-minute cooldown remains: an issue in cooldown is retried when it expires, and other issues
+keep running and start normally.
 
 `Check now` clears every cooldown and polls immediately; while paused it writes a notice and polls
 nothing. Lifecycle is `running` while any peer runs, `pausing` while paused with any peer,

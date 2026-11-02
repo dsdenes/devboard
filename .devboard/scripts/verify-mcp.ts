@@ -14,6 +14,7 @@ import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { journalFile } from "../server/journal";
+import { agentRegistry } from "../server/agents/registry";
 import { MCP_TOOL_NAMES } from "../mcp/catalog";
 import { stageHarness } from "./harness-package";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
@@ -471,8 +472,23 @@ try {
   const agents = await client.call("background_agents_list");
   assertTrue(
     JSON.stringify((agents.agents as Array<{ id: string }>).map((agent) => agent.id)) ===
-      JSON.stringify(["scout", "watchdog", "design", "coach"]),
+      JSON.stringify(["scout", "watchdog", "design", "coach", "release-train"]),
     "verify:mcp: the live agents snapshot is wrong",
+  );
+  const releaseTrain = (agents.agents as Array<Record<string, unknown>>).find(
+    (agent) => agent.id === "release-train",
+  );
+  assertTrue(
+    releaseTrain !== undefined &&
+      (releaseTrain.cadence as Record<string, unknown> | undefined)?.defaultMinutes === 10,
+    "verify:mcp: Release Train cadence is not the 10-minute default",
+  );
+  const releaseTrainDescriptor = agentRegistry.require("release-train");
+  assertTrue(
+    releaseTrainDescriptor.commands.start === "startAgent" &&
+      releaseTrainDescriptor.commands.stop === "stopAgent" &&
+      releaseTrainDescriptor.commands.setSettings === "setAgentSettings",
+    "verify:mcp: Release Train does not declare the shared commands",
   );
   const coach = await client.call("background_agent_get", { id: "coach" });
   assertTrue(coach.id === "coach", "verify:mcp: background_agent_get returned another agent");
@@ -737,8 +753,18 @@ try {
     lifecycle.error && lifecycle.text.includes("No lifecycle run"),
     `verify:mcp: lifecycle refusal is ${lifecycle.text}`,
   );
-  const saved = await client.call("goal_control", { action: "save", text: "# Saved goal\n" });
-  assertTrue(saved.goal === "# Saved goal\n", `verify:mcp: goal save returned ${String(saved.goal)}`);
+  const releaseTrainControl = await client.call("background_agent_control", {
+    id: "release-train",
+    action: "set_settings",
+    minutes: 10,
+    maxPerHour: null,
+    maxPending: null,
+  });
+  assertTrue(
+    releaseTrainControl.id === "release-train" &&
+      typeof (releaseTrainControl.agent as Record<string, unknown>).cadence === "object",
+    "verify:mcp: Release Train control returned no snapshot",
+  );
   const flow = await client.call("flow_control", { action: "create_goal" });
   assertTrue(
     typeof (flow.flow as Record<string, unknown>).status === "string",

@@ -27,6 +27,8 @@ export type AgentCommand =
   | { type: "refreshAgent"; id?: unknown }
   | { type: "startAgent"; id?: unknown }
   | { type: "stopAgent"; id?: unknown }
+  | { type: "pauseAgent"; id?: unknown }
+  | { type: "resumeAgent"; id?: unknown }
   | {
       type: "setAgentSettings";
       id?: unknown;
@@ -221,6 +223,19 @@ export class BackgroundAgentBridge {
     }
     if (command.type === "stopAgent") {
       this.finish(target, command.id, adapter.stop());
+      return;
+    }
+    if (command.type === "pauseAgent" || command.type === "resumeAgent") {
+      const action = command.type === "pauseAgent" ? "pause" : "resume";
+      const handler = command.type === "pauseAgent" ? adapter.pause : adapter.resume;
+      if (handler === undefined) {
+        this.send(target, {
+          type: "error",
+          message: `${descriptor.label} has no ${action} control.`,
+        });
+        return;
+      }
+      this.finish(target, command.id, handler.call(adapter));
       return;
     }
     if (command.type === "setAgentSettings") {

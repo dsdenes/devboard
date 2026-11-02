@@ -73,6 +73,7 @@ import { TRACKER_SYNC_INTERVAL_MS } from "./issue-sync";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
+import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./release-train";
 import { coachDirectory } from "../coach/paths";
 import { readCoachSettings } from "../coach/settings";
 import { coachPromptTemplate } from "../coach/synthesize";
@@ -248,6 +249,8 @@ export interface AppOptions {
     CoachActivityOptions,
     "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker"
   >;
+  /** Release Train's test seams; production reads its worker's state. */
+  releaseTrain?: Pick<ReleaseTrainActivityOptions, "now" | "spawnWorker">;
   /** Watchdog's test seams; production reads `gh` in the background. */
   watchdog?: Pick<
     WatchdogActivityOptions,
@@ -2562,6 +2565,7 @@ export function createApp(options: AppOptions) {
   const watchdogDescriptor = agentRegistry.require("watchdog");
   const designDescriptor = agentRegistry.require("design");
   const coachDescriptor = agentRegistry.require("coach");
+  const releaseTrainDescriptor = agentRegistry.require("release-train");
   const scout = new ScoutBridge({
     descriptor: scoutDescriptor,
     repoDir,
@@ -2666,10 +2670,29 @@ export function createApp(options: AppOptions) {
     hasClients: () => clients.size > 0,
   });
 
+  /**
+   * Release Train reads its detached worker's state and commands it. On each
+   * tick the worker runs the deterministic gate and starts one release agent
+   * only for unresolved commits; this adapter never runs a release itself.
+   */
+  const releaseTrain = new ReleaseTrainActivity({
+    descriptor: releaseTrainDescriptor,
+    repoDir,
+    stateDir,
+    harnessDir: runnableHarnessDir(repoDir),
+    runningVersion,
+    environment: process.env,
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.releaseTrain?.now === undefined ? {} : { now: options.releaseTrain.now }),
+    ...(options.releaseTrain?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.releaseTrain.spawnWorker }),
+  });
+
   /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog, design, coach],
+    adapters: [scout, watchdog, design, coach, releaseTrain],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });

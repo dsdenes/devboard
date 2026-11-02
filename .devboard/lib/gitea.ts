@@ -1019,6 +1019,26 @@ export async function giteaDeleteBranch(
   );
 }
 
+/**
+ * `dispatchWorkflow` posts a Gitea `workflow_dispatch` event for one workflow.
+ * The release workflow is dispatch-only; `bun run publish` calls this for the
+ * checked-out `main` tip when that tip has no run of its own. `workflow` is the
+ * workflow file name, and `ref` is a full ref such as `refs/heads/main`.
+ */
+export async function giteaDispatchWorkflow(
+  target: GiteaTarget,
+  workflow: string,
+  ref: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<void> {
+  await giteaRequest(
+    target,
+    `${repoPath(target)}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`,
+    { method: "POST", body: JSON.stringify({ ref }) },
+    fetchImpl,
+  );
+}
+
 /** Workflow runs whose triggering commit is `headSha`. */
 function workflowRunsFrom(document: unknown): GiteaWorkflowRun[] {
   let entries: unknown;
