@@ -1509,6 +1509,74 @@ describe("issues bridge family view", () => {
     }
   }, 20_000);
 
+  test("a stopped version's queue never reappears as pending", async () => {
+    const root = await temporaryDirectory("issues-family-stopped-queue-repo");
+    const stateDir = join(root, "state");
+    const worker = await liveProcess();
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: NEW,
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      now: readClock("2026-10-27T10:00:00.000Z", "2026-10-27T10:00:10.000Z"),
+      syncRead: async () => ({ kind: "issues", issues: [issue(20)], etag: null }),
+    });
+    try {
+      writeState(
+        versionedStatePath(stateDir, root, NEW),
+        ownerState({
+          root,
+          stateDir,
+          version: NEW,
+          pid: worker.pid,
+          startedAt: worker.startedAt,
+          lifecycle: "running",
+          paused: false,
+          runId: "2026-10-27T10-00-00-000Z",
+          issueNumber: 20,
+          lastPollAt: "2026-10-27T10:00:05.000Z",
+        }),
+      );
+      // A retired version keeps the open list of its last read on disk. Those
+      // rows are history: only the dashboard's own forge read publishes rows.
+      writeState(versionedStatePath(stateDir, root, OLD), {
+        ...emptyState({ repo: "acme/fixture", root }),
+        lifecycle: "stopped",
+        enabled: false,
+        worker: {
+          pid: 999_999,
+          startedAt: "2026-10-27T09:00:00.000Z",
+          stateDir,
+          harnessVersion: OLD,
+          argv: [],
+        },
+        queue: [
+          { ...issue(9), handled: false, runId: null, agentRunId: null },
+          { ...issue(20), handled: false, runId: null, agentRunId: null },
+        ],
+      });
+      await writeLiveLock(
+        versionLockPath(lockPath(root), NEW),
+        { pid: worker.pid, startedAt: worker.startedAt, harnessVersion: NEW, stateDir },
+        root,
+      );
+
+      await subject.syncNow();
+      const snapshot = subject.snapshot();
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.queue.map((entry) => entry.number)).toEqual([20]);
+    } finally {
+      subject.dispose();
+      worker.stop();
+      await rm(lockPath(root), { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test("an operator's Pause still reads as pausing", async () => {
     const root = await temporaryDirectory("issues-family-pause-repo");
     const stateDir = join(root, "state");

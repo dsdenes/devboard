@@ -81,8 +81,8 @@ CSS px wide, constrained to 200–600 CSS px, and resized by dragging its separa
 arrow keys with that separator focused. Double-clicking the separator restores the default width.
 The width survives a reload.
 
-- **Goal** lists the goal workspace surfaces, a **Skills** entry that discloses every prepared
-  skill, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
+- **Goal** lists the goal workspace surfaces, one **Skills** entry that opens the prepared-skills
+  table, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
   ADR records group is absent while no record is pending.
 - **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
   session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
@@ -172,11 +172,13 @@ another tab, mode, or a reload starts collapsed. The expanded panel never contai
 
 Each existing control moved into `data-testid="agent-activity-control"` keeps its test id, command,
 label, disabled conditions, title, and effect, and the page no longer renders a second copy:
-`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` for Discover
-run pages, `discover-agent-start`/`discover-agent-stop` for Discover agent pages, the Goal record
+`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` on the
+Discover Overview, `discover-agent-start`/`discover-agent-stop` for a Discover agent card and for
+the Glossary and skill pages, which start and stop the agent that owns them, the Goal record
 `start`, and `start-flow-implementation`/`stop-flow-implementation` for the Flow overview. The
-Goal lane, the Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal`
-remains a page action. Moving a control never adds a backend command or a per-agent Stop.
+Discover warnings page follows the seven-agent suite and carries no control. The Goal lane, the
+Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal` remains a page
+action. Moving a control never adds a backend command or a per-agent Stop.
 
 The removed page content is `discover-run-tag`, `discover-agent-run-tag`, `discover-agent-status`,
 `agent-lifecycle`, `agent-detail`, `issues-agent-focus-run`, `issues-agent-focus-run-id`,
@@ -973,9 +975,9 @@ The same vocabulary covers the other modes:
 - **Goal**: the Implementation entry (`data-testid="open-implementation"`) is `running` while a
   manual implementation run or the lifecycle's current step executes and `answer` while that run
   waits for an operator question; its stage, `manual`, or `idle` meta never moves into the badge.
-  The Skills toggle row (`data-testid="goal-skills-toggle"`) is `running` while skills preparation
-  executes, including while the submenu is collapsed. Goal records no failed terminal state, so
-  neither entry shows `failed`, and an operator stop is never relabelled a failure.
+  The Skills entry (`data-testid="goal-skills-open"`) is `running` while skills preparation
+  executes. Goal records no failed terminal state, so neither entry shows `failed`, and an
+  operator stop is never relabelled a failure.
 - **Issues**: the Overview entry (`data-testid="open-issues-overview"`) is `running` while the
   issues lifecycle runs, `failed` while it is failed, and `answer` while a running issue agent has a
   pending question, alongside its lifecycle badge and queue summary. The Draft goals entry
@@ -1062,13 +1064,19 @@ work is active, and the title names the reason. A start never happens on page lo
 switch, or page switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge
 account; it is accepted on a host with a dirty tree and no goal document.
 
-**One at a time.** A card's Start sends `discoverAgent { agent }`. The server starts exactly one ACP
-peer whose working directory is the active target root, whose prompt is exactly
-`<that agent's command> <staging-dir>`, and whose staging directory is
-`<target>/.omp/discover/staging/<run-id>/`. No other agent starts. While any discovery agent or Run
-all is active, every other Start control is disabled with a title naming the reason, and a
-programmatic `discoverAgent` for another agent is refused with one `discoverError` and spawns no
-peer. **Run all** runs the seven in this fixed order: `sheet`, `discover-glossary`,
+The Glossary page and every skill page carry the same bar for the one agent that produced them:
+the Glossary Agent on the Glossary page, and the agent that owns the skill on its skill page. Their
+bar shows only that agent's run state, activity, and pending question, and its control starts or
+stops that one agent — never the seven-agent Run all. The warnings page follows the seven-agent
+suite and carries no start or stop control.
+
+**One at a time.** A card's Start, the Glossary page's control, and a skill page's control each
+send `discoverAgent { agent }`. The server starts exactly one ACP peer whose working directory is
+the active target root, whose prompt is exactly `<that agent's command> <staging-dir>`, and whose
+staging directory is `<target>/.omp/discover/staging/<run-id>/`. No other agent starts. While any
+discovery agent or Run all is active, every other Start control is disabled with a title naming the
+reason, and a programmatic `discoverAgent` for another agent is refused with one `discoverError`
+and spawns no peer. **Run all** runs the seven in this fixed order: `sheet`, `discover-glossary`,
 `discover-testing-strategy`, `discover-naming-conventions`, `discover-coding-conventions`,
 `discover-architecture-boundaries`, `discover-contribution`. The agents run one at a time, and
 each successful agent publishes its slice before the next starts. The first failure or stop halts the sequence: the
@@ -1427,24 +1435,26 @@ Each skill has a page that shows the whole `SKILL.md` as read-only text
 (`data-testid="discover-skill-text"`), with no rendered preview, no split pane, and no editor. The
 page header holds only the skill's page title. The panel header is one 44px row: the skill's
 relative path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on
-the leading edge, and `data-testid="discover-skill-status"` names `generated`, `edited`, or
-`Live file missing`. The page renders no `discover-skill-save`, `discover-skill-restore`, or
-`discover-skill-dirty`, and no state badge or purpose line, because the sidebar already flags
-`edited` or `missing`. The text is the live file when it exists and the generated baseline while
-it is missing, including the contribution skill.
+the leading edge. The page renders no `discover-skill-save`, `discover-skill-restore`, or
+`discover-skill-dirty`, and no state badge, status pill, or purpose line, because the sidebar
+already flags `edited` or `missing` on the skill entry. The text is the live file when it exists
+and the generated baseline while it is missing, including the contribution skill.
 
 A later run compares each live hash with its last baseline: an unedited skill is replaced, an
 edited skill is preserved byte for byte with its new baseline published beside it, and a skill
-the developer deleted is not recreated but shows `Live file missing`. A generated name colliding
-with a prepare-family, unmanaged, or different Discover skill fails the run and publishes
-nothing.
+the developer deleted is not recreated but keeps rendering its generated baseline with the
+sidebar flagging it `missing`. A generated name colliding with a prepare-family, unmanaged, or
+different Discover skill fails the run and publishes nothing.
 
 The goal lifecycle's skill prerequisite accepts a managed skill from either family: at least one
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`
 carry `name`, `description`, `family` (`prepare` or `discover`), and `state` (`generated`, `edited`,
 or `missing`), and a managed skill with no `devboard-family` field belongs to `prepare`. The Skills
-panel lists both families with their family and Discover state, and every prepare-family row
-carries a Delete control that confirms before removing that one skill. Prepare Skills replaces only its
+page is one `data-testid="skills-table"` with a `data-testid="skill"` row per skill: a collapsed row
+shows the skill name and its description, a click or Enter expands it in place to the rendered
+document and its file path, and a second click collapses it. Both families appear, and every
+prepare-family row carries a Delete control that confirms before removing that one skill. Prepare
+Skills replaces only its
 own family, and its contradiction review covers its family plus hand-authored unmanaged skills, so
 a project-specific Discover directive cannot fail a project-agnostic preparation. Discover's
 generated baselines must agree with each other and with the glossary; a contradiction there fails
