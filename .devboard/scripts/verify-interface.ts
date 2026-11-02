@@ -413,6 +413,69 @@ async function sourceOnlyMarkers(page: Page): Promise<number> {
   })()`);
 }
 
+interface FlowGoalMeasure {
+  goalHeight: number;
+  pageHeight: number;
+  goalWidth: number;
+  pageWidth: number;
+  minHeight: string;
+  goalText: boolean;
+  cancel: boolean;
+  createActions: number;
+  state: string;
+  nextTop: number;
+  viewportHeight: number;
+  error: boolean;
+  onboarding: {
+    text: string;
+    width: number;
+    scrollWidth: number;
+    clientWidth: number;
+  } | null;
+}
+
+/** The Flow goal panel against its page: size, states, and onboarding card. */
+async function measureFlowGoal(page: Page): Promise<FlowGoalMeasure> {
+  return page.eval<FlowGoalMeasure>(`(() => {
+    const goal = document.querySelector('#workspace-flow [data-testid="flow-goal"]');
+    const overview = document.querySelector('#workspace-flow .flow-overview');
+    const card = document.querySelector('[data-testid="flow-goal-onboarding"]');
+    const next = document.querySelector('#workspace-flow [data-testid="flow-pr-section"]');
+    const goalBox = goal?.getBoundingClientRect();
+    const pageBox = overview?.getBoundingClientRect();
+    const nextBox = next?.getBoundingClientRect();
+    return {
+      goalHeight: Math.round(goalBox?.height ?? -1),
+      pageHeight: Math.round(pageBox?.height ?? -1),
+      goalWidth: Math.round(goalBox?.width ?? -1),
+      pageWidth: Math.round(pageBox?.width ?? -1),
+      minHeight: goal === null ? "" : getComputedStyle(goal).minHeight,
+      goalText: document.querySelector('[data-testid="flow-goal-text"]') !== null,
+      cancel: document.querySelector('[data-testid="cancel-flow-goal"]') !== null,
+      createActions: document.querySelectorAll('#workspace-flow [data-testid="create-flow-goal"]').length,
+      state: document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() ?? "",
+      nextTop: Math.round(nextBox?.top ?? -1),
+      viewportHeight: innerHeight,
+      error: document.querySelector('[data-testid="flow-error"]') !== null,
+      onboarding: card === null
+        ? null
+        : {
+            text: (card.textContent ?? "").replace(/\\s+/g, " ").trim(),
+            width: Math.round(card.getBoundingClientRect().width),
+            scrollWidth: card.scrollWidth,
+            clientWidth: card.clientWidth,
+          },
+    };
+  })()`);
+}
+
+async function setTheme(page: Page, theme: "light" | "dark"): Promise<void> {
+  const current = await page.eval<string>(`document.documentElement.dataset.theme`);
+  if (current === theme) return;
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(`document.documentElement.dataset.theme === "${theme}"`, `the ${theme} theme`);
+}
+
 async function git(cwd: string, args: string[]): Promise<void> {
   const result = run(
     "git",
@@ -598,6 +661,7 @@ async function seedFlow(stateDir: string, host: string): Promise<void> {
     createdAt: now,
   };
   await writeFile(join(sessionDir, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
+  await writeFile(join(sessionDir, "goal.md"), session.goal);
 }
 
 /**
@@ -1326,8 +1390,8 @@ try {
       return new Response("not found", { status: 404 });
     },
   });
-  await seedFlow(stateDir, host);
   const agentLog = join(root, "agent.log");
+  const flowGoalGate = join(root, "flow-goal-hang");
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}/`;
   const serverLog = join(root, "server.log");
@@ -1379,7 +1443,7 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft`,
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
     // Harness-owned reporting goes through the local Gitea API stub, never
     // through `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
@@ -3538,13 +3602,126 @@ try {
   const reopened = await page.eval<string>(`document.querySelector('[data-testid="goal-text"]')?.textContent ?? ""`);
   check(reopened === goalBytes, "reopening the Goal document changed its bytes", reopened);
 
-  // 10. Flow surfaces and the shared single-agent activity bar.
+  // 10. Flow surfaces, the empty-goal onboarding card, and goal cancellation.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 2101,
+    height: 1017,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(
+    `innerWidth === 2101 && innerHeight === 1017`,
+    "the 2101×1017 viewport for the Flow goal panel",
+  );
   await runPalette("open.flow.overview");
   await page.wait(`document.querySelector('[data-testid="mode-flow"]')?.getAttribute("aria-selected") === "true"`, "Flow overview");
+  await page.wait(`document.querySelector('[data-testid="flow-goal-onboarding"]') !== null`, "the empty Flow goal onboarding");
+
+  await setTheme(page, "light");
+  const emptyLight = await measureFlowGoal(page);
+  check(emptyLight.onboarding !== null, "the no-goal Flow panel has no onboarding card", emptyLight);
+  check(
+    ["interview", "goal", "implementation", "Create flow goal"].every((word) =>
+      emptyLight.onboarding!.text.includes(word),
+    ),
+    "the onboarding card does not name the interview, goal, implementation, and Create action",
+    emptyLight.onboarding,
+  );
+  check(!emptyLight.goalText, "the empty Flow goal renders a read-only goal element", emptyLight);
+  check(!emptyLight.cancel, "the empty Flow goal renders a cancel control", emptyLight);
+  check(emptyLight.state === "No goal yet", "the empty Flow goal header is not 'No goal yet'", emptyLight);
+  check(emptyLight.createActions === 1, "the no-goal header does not hold exactly one Create action", emptyLight);
+  check(emptyLight.minHeight !== "360px", "the no-goal panel still carries the 360px minimum", emptyLight);
+  check(emptyLight.goalHeight * 2 < emptyLight.pageHeight, "the no-goal panel is not under half its page", emptyLight);
+  check(
+    emptyLight.nextTop < emptyLight.viewportHeight,
+    "the content after the goal starts below the fold",
+    emptyLight,
+  );
+  check(
+    emptyLight.onboarding!.scrollWidth <= emptyLight.onboarding!.clientWidth + 1,
+    "the onboarding card overflows horizontally in the light theme",
+    emptyLight.onboarding,
+  );
+
+  await setTheme(page, "dark");
+  const emptyDark = await measureFlowGoal(page);
+  check(
+    emptyDark.goalHeight * 2 < emptyDark.pageHeight && emptyDark.minHeight !== "360px",
+    "the no-goal panel reclaims no space in the dark theme",
+    emptyDark,
+  );
+  check(
+    emptyDark.onboarding !== null &&
+      emptyDark.onboarding.scrollWidth <= emptyDark.onboarding.clientWidth + 1,
+    "the onboarding card overflows horizontally in the dark theme",
+    emptyDark,
+  );
+
+  // Cancel while the interview is working: the panel disappears, the empty
+  // state returns, and no error is reported.
+  await writeFile(flowGoalGate, "");
+  await page.click('[data-testid="create-flow-goal"]');
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-active"]') !== null &&
+      document.querySelector('[data-testid="cancel-flow-goal"]') !== null`,
+    "the working goal interview panel",
+  );
+  check(
+    !(await page.eval<boolean>(`document.querySelector('[data-testid="cancel-flow-goal"]').disabled`)),
+    "the cancel control is disabled while the interview works",
+  );
+  await page.click('[data-testid="cancel-flow-goal"]');
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-active"]') === null &&
+      document.querySelector('[data-testid="flow-goal-onboarding"]') !== null &&
+      document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "No goal yet"`,
+    "the empty Flow goal after canceling a working interview",
+  );
+  check(
+    !(await page.eval<boolean>(`document.querySelector('[data-testid="flow-error"]') !== null`)),
+    "canceling a working goal interview reported an error",
+  );
+
+  // Cancel while a question waits: its panel and question disappear at once.
+  await rm(flowGoalGate, { force: true });
+  await page.click('[data-testid="create-flow-goal"]');
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-question"]') !== null &&
+      document.querySelector('[data-testid="cancel-flow-goal"]') !== null`,
+    "the waiting goal question with a cancel control",
+  );
+  check(
+    !(await page.eval<boolean>(`document.querySelector('[data-testid="cancel-flow-goal"]').disabled`)),
+    "the cancel control is disabled while a goal question waits",
+  );
+  await page.click('[data-testid="cancel-flow-goal"]');
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-question"]') === null &&
+      document.querySelector('[data-testid="flow-goal-active"]') === null &&
+      document.querySelector('[data-testid="flow-goal-onboarding"]') !== null`,
+    "the empty Flow goal after canceling a waiting question",
+  );
+  check(
+    !(await page.eval<boolean>(`document.querySelector('[data-testid="flow-error"]') !== null`)),
+    "canceling a waiting goal question reported an error",
+  );
+
+  // The seeded saved-goal session arrives once the dashboard restores it.
+  await stopServer();
+  await seedFlow(stateDir, host);
+  startServer();
+  await waitForHttp(baseUrl);
+  await page.reload();
+  await runPalette("open.flow.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-text"]')?.textContent?.includes("Seeded flow goal") === true`,
+    "the seeded saved Flow goal",
+  );
+
   const flowSurfaces = await page.eval<Record<string, boolean>>(`(() => {
     const has = (testid) => document.querySelector('[data-testid="' + testid + '"]') !== null;
     return {
-      session: has("flow-session"),
       pr: has("flow-pr-section"),
       widgets: has("flow-widgets-section"),
       files: has("flow-files-section"),
@@ -3779,6 +3956,61 @@ try {
     "the Create flow goal control is missing",
   );
 
+  // The saved goal keeps the full-height read-only editor in both themes.
+  await setTheme(page, "light");
+  const savedLight = await measureFlowGoal(page);
+  check(
+    savedLight.goalText && !savedLight.cancel && savedLight.onboarding === null,
+    "the saved Flow goal renders the wrong panel",
+    savedLight,
+  );
+  check(savedLight.state === "Saved", "the saved Flow goal header is not 'Saved'", savedLight);
+  check(savedLight.createActions === 1, "the saved header does not hold exactly one goal action", savedLight);
+  check(
+    savedLight.goalHeight >= savedLight.pageHeight - 1,
+    "the saved Flow goal does not fill the page",
+    savedLight,
+  );
+  await setTheme(page, "dark");
+  const savedDark = await measureFlowGoal(page);
+  check(
+    savedDark.goalText &&
+      savedDark.state === "Saved" &&
+      savedDark.goalHeight >= savedDark.pageHeight - 1,
+    "the saved Flow goal does not fill the page in the dark theme",
+    savedDark,
+  );
+  await setTheme(page, "light");
+
+  // Re-create and cancel: the accepted bytes and the Saved header return.
+  const seededGoalPath = join(stateDir, "flow", journalKey(host), "seed", "goal.md");
+  const seededBytes = await readFile(seededGoalPath, "utf8");
+  await page.click('[data-testid="create-flow-goal"]');
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-question"]') !== null &&
+      document.querySelector('[data-testid="cancel-flow-goal"]') !== null`,
+    "the re-created goal question",
+  );
+  check(
+    !(await page.eval<boolean>(`document.querySelector('[data-testid="cancel-flow-goal"]').disabled`)),
+    "the cancel control is disabled during a re-created interview",
+  );
+  await page.click('[data-testid="cancel-flow-goal"]');
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-active"]') === null &&
+      document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "Saved" &&
+      document.querySelector('[data-testid="flow-goal-text"]')?.textContent?.includes("Exercise the Flow workspace.") === true`,
+    "the restored saved Flow goal after cancel",
+  );
+  check(
+    !(await page.eval<boolean>(`document.querySelector('[data-testid="flow-error"]') !== null`)),
+    "canceling a re-created goal reported an error",
+  );
+  check(
+    (await readFile(seededGoalPath, "utf8")) === seededBytes,
+    "canceling a re-created goal changed goal.md",
+  );
+
   await page.click('[data-testid="dismiss-flow-blocker"]');
   await page.wait(`document.querySelector('[data-testid="flow-blocker"]')?.getAttribute("data-dismissed") === "true"`, "the dismissed blocker");
   await page.click('[data-testid="sidebar"] [data-command="flow.blocker.open.block-1"]');
@@ -3924,6 +4156,14 @@ try {
     `(document.querySelector('[data-testid="flow-decisions"]')?.textContent ?? "").includes("Server appended decision.")`,
     "the reopened decision board",
   );
+
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after Flow");
 
   // 11. Discover: dense tables, glossary, term and skill splits.
   await runPalette("discover.tab.overview");

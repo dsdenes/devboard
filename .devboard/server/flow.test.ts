@@ -143,7 +143,6 @@ interface StartOptions {
   stub?: string[];
   forge?: StubForge;
   watchMs?: number;
-  goalTimeoutMs?: number;
   tracker?: () => Promise<undefined>;
   stateDir?: string;
   restart?: () => void;
@@ -180,7 +179,6 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
       forgeTarget: { forge: "github", host: "forge.test", project: "acme/fixture" },
       watchMs: options.watchMs ?? 40,
       analystTimeoutMs: 10_000,
-      goalTimeoutMs: options.goalTimeoutMs ?? 10_000,
     },
   });
   servers.push(server);
@@ -372,6 +370,61 @@ function readSession(fixture: Fixture, id: string): Record<string, unknown> {
   ) as Record<string, unknown>;
 }
 
+/** Writes one pre-existing session directory, as a previous dashboard left it. */
+function seedSession(
+  fixture: Fixture,
+  id: string,
+  status: "idle" | "stopped" | "merged",
+  goal: string,
+): string {
+  const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
+  mkdirSync(directory, { recursive: true });
+  const pr =
+    status === "merged"
+      ? {
+          forge: "github",
+          number: 1,
+          url: "https://forge.test/acme/fixture/pull/1",
+          state: "merged",
+        }
+      : null;
+  writeFileSync(
+    join(directory, "session.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        id,
+        baseRevision: null,
+        worktree: join(fixture.root, ".worktree", `flow-${id}`),
+        branch: `flow/${id}`,
+        status,
+        goal,
+        decisions: "",
+        steering: [],
+        accepted: [],
+        widgets: [],
+        files: [],
+        checkpoints: [],
+        verification: null,
+        blockers: [],
+        pr,
+        prError: null,
+        leftover: null,
+        cleanupPending: false,
+        pushedTip: null,
+        prFailedTip: null,
+        lastDiffHash: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(join(directory, "goal.md"), goal);
+  return directory;
+}
+
 async function createGoal(client: TestClient, fixture: Fixture): Promise<void> {
   client.send({ type: "createFlowGoal" });
   await client.waitFor((event) => event.type === "flowQuestion");
@@ -514,74 +567,295 @@ describe("Flow Mode contract", () => {
     client.close();
   }, 30_000);
 
-  test("a timed-out Flow goal interview keeps the previous goal unfinished", async () => {
-    const fixture = createFixture("goal-timeout");
-    // The detached owner needs a real start budget, so the accepted goal is
-    // created under the normal timeout and only the hanging interview uses
-    // the short one.
-    const seeded = startServer(fixture, { stub: ["--flow-goal"] });
-    const seedClient = await connect(seeded);
-    await connected(seedClient);
-    await createGoal(seedClient, fixture);
-    seedClient.close();
+  test("canceling a working Flow goal interview ends the peer with no error or late output", async () => {
+    const fixture = createFixture("goal-cancel-working");
     const gate = join(fixture.root, "goal-hang");
+    writeFileSync(gate, "");
     const testServer = startServer(fixture, {
       stub: ["--flow-goal", `--flow-goal-hang=${gate}`],
-      goalTimeoutMs: 2_000,
     });
     const client = await connect(testServer);
     await connected(client);
-    const id = sessionIds(fixture)[0] as string;
-    expect(readSession(fixture, id).goal).toBe(FLOW_GOAL);
 
+    const mark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    await client.waitFor((event) => event.type === "flowGoalStarted", { from: mark });
+    await waitForStub(fixture, (line) => line.startsWith("flow-goal-hung "));
+    client.send({ type: "cancelFlowGoal" });
+    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
+      from: mark,
+    });
+    expect(stopped.completed).toBe(false);
+    expect("text" in stopped).toBe(false);
+    expect(client.events.slice(mark).filter((event) => event.type === "flowError")).toHaveLength(0);
+    await waitUntil(
+      () => latest(client, "flowSnapshot")?.goalCreation === null,
+      "the canceled interview state",
+    );
+
+    // The detached owner is stopped; nothing it produces afterwards may reach
+    // the view as a question or activity line. Absence has no event to await,
+    // so this integration case observes a real span after the stop.
+    const after = client.mark();
+    await Bun.sleep(500);
+    expect(
+      client.events
+        .slice(after)
+        .filter((event) => event.type === "flowQuestion" || event.type === "flowActivity"),
+    ).toHaveLength(0);
+
+    const snapshot = latest(client, "flowSnapshot");
+    expect(snapshot?.goal).toBe("");
+    expect(snapshot?.sessionId).toBe(null);
+    // The session existed only for this canceled interview.
+    expect(sessionIds(fixture)).toEqual([]);
+    client.close();
+  }, 30_000);
+
+  test("canceling a waiting question clears it and lets Create start again immediately", async () => {
+    const fixture = createFixture("goal-cancel-question");
+    const testServer = startServer(fixture, { stub: ["--flow-goal"] });
+    const client = await connect(testServer);
+    await connected(client);
+
+    const first = client.mark();
+    client.send({ type: "createFlowGoal" });
+    const question = await client.waitFor((event) => event.type === "flowQuestion", {
+      from: first,
+    });
+    client.send({ type: "cancelFlowGoal" });
+    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
+      from: first,
+    });
+    expect(stopped.completed).toBe(false);
+    expect("text" in stopped).toBe(false);
+    expect(client.events.slice(first).filter((event) => event.type === "flowError")).toHaveLength(0);
+    await waitUntil(
+      () => {
+        const snapshot = latest(client, "flowSnapshot");
+        return snapshot?.goalCreation === null && snapshot.question === null;
+      },
+      "the cleared goal question",
+    );
+    expect(sessionIds(fixture)).toEqual([]);
+
+    // Create works at once: one new peer, its own question, an accepted goal.
+    const second = client.mark();
+    client.send({ type: "createFlowGoal" });
+    const next = await client.waitFor((event) => event.type === "flowQuestion", {
+      from: second,
+    });
+    client.send({ type: "flowAnswer", target: "goal", id: next.id, value: "Alpha" });
+    const accepted = await client.waitFor(
+      (event) => event.type === "flowGoalStopped" && event.completed === true,
+      { from: second },
+    );
+    expect(accepted.text).toBe(FLOW_GOAL);
+    expect(client.events.slice(second).filter((event) => event.type === "flowError")).toHaveLength(0);
+    expect(sessionIds(fixture)).toHaveLength(1);
+    expect(prompts(fixture).filter((line) => line.startsWith("prompt /flow-goal "))).toHaveLength(2);
+    client.close();
+  }, 30_000);
+
+  test("canceling a re-created goal restores its accepted bytes", async () => {
+    const fixture = createFixture("goal-cancel-restore");
+    const gate = join(fixture.root, "goal-hang");
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", `--flow-goal-hang=${gate}`],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    const id = sessionIds(fixture)[0] as string;
+    const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
+    const goalPath = join(directory, "goal.md");
+    const acceptedBytes = readFileSync(goalPath, "utf8");
+    expect(readSession(fixture, id).goal).toBe(acceptedBytes);
+
+    // The hanging stub makes the re-created interview stay live with no draft.
     writeFileSync(gate, "");
     const mark = client.mark();
     client.send({ type: "createFlowGoal" });
+    await client.waitFor((event) => event.type === "flowGoalStarted", { from: mark });
+    await waitForStub(fixture, (line) => line.startsWith("flow-goal-hung "));
+    client.send({ type: "cancelFlowGoal" });
     const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
       from: mark,
-      timeout: 20_000,
+    });
+    expect(stopped.completed).toBe(false);
+    expect("text" in stopped).toBe(false);
+    expect(client.events.slice(mark).filter((event) => event.type === "flowError")).toHaveLength(0);
+
+    expect(readFileSync(goalPath, "utf8")).toBe(acceptedBytes);
+    expect(readSession(fixture, id).goal).toBe(acceptedBytes);
+    await waitUntil(
+      () => {
+        const snapshot = latest(client, "flowSnapshot");
+        return (
+          snapshot?.goalCreation === null &&
+          snapshot.sessionId === id &&
+          snapshot.goal === acceptedBytes
+        );
+      },
+      "the restored saved goal",
+    );
+    expect(sessionIds(fixture)).toEqual([id]);
+    client.close();
+  }, 30_000);
+
+  test("canceling a Create that opened a session removes only that directory", async () => {
+    const fixture = createFixture("goal-cancel-merged");
+    const mergedDirectory = seedSession(fixture, "merged1", "merged", "# Merged goal\n");
+    const mergedBytes = readFileSync(join(mergedDirectory, "session.json"), "utf8");
+    const testServer = startServer(fixture, { stub: ["--flow-goal"] });
+    const client = await connect(testServer);
+    await connected(client);
+    // Restore runs in a microtask before any socket command is handled, so the
+    // merged-only session is already history here.
+
+    const mark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    await client.waitFor((event) => event.type === "flowQuestion", { from: mark });
+    expect(sessionIds(fixture).length).toBe(2);
+    client.send({ type: "cancelFlowGoal" });
+    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
+      from: mark,
+    });
+    expect(stopped.completed).toBe(false);
+    expect(client.events.slice(mark).filter((event) => event.type === "flowError")).toHaveLength(0);
+
+    expect(sessionIds(fixture)).toEqual(["merged1"]);
+    expect(readFileSync(join(mergedDirectory, "session.json"), "utf8")).toBe(mergedBytes);
+    await waitUntil(
+      () => latest(client, "flowSnapshot")?.sessionId === null,
+      "the restored empty session",
+    );
+
+    // A fresh restore selects no canceled session and keeps the history entry.
+    const restored = new FlowController({
+      repoDir: fixture.root,
+      stateDir: fixture.stateDir,
+      agentCommand: `bun ${STUB_AGENT} --flow-goal`,
+      agentEnvironment: async () => ({ ...process.env }),
+      broadcast: () => {},
+      watchMs: 20,
+      analystTimeoutMs: 1_000,
+    });
+    try {
+      restored.begin();
+      // The restore has no real I/O for a merged-only directory: its queued
+      // microtask finishes before the next turn.
+      await Promise.resolve();
+      expect(restored.snapshot().sessionId).toBe(null);
+      expect(restored.snapshot().history.map((entry) => entry.sessionId)).toEqual(["merged1"]);
+    } finally {
+      restored.dispose();
+    }
+    client.close();
+  }, 30_000);
+
+  test("a canceled interview's partial draft never becomes the session goal", async () => {
+    const fixture = createFixture("goal-cancel-partial");
+    const gate = join(fixture.root, "goal-partial");
+    writeFileSync(gate, "");
+    seedSession(fixture, "existing1", "stopped", FLOW_GOAL);
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", `--flow-goal-partial=${gate}`],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+
+    const mark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    await client.waitFor((event) => event.type === "flowGoalStarted", { from: mark });
+    await waitForStub(fixture, (line) => line.startsWith("flow-goal-partial "));
+    client.send({ type: "cancelFlowGoal" });
+    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
+      from: mark,
+    });
+    expect(stopped.completed).toBe(false);
+    expect("text" in stopped).toBe(false);
+
+    const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), "existing1");
+    expect(readFileSync(join(directory, "goal.md"), "utf8")).toBe(FLOW_GOAL);
+    expect(readSession(fixture, "existing1").goal).toBe(FLOW_GOAL);
+    expect(readFileSync(join(directory, "session.json"), "utf8")).not.toContain(
+      "An unfinished draft",
+    );
+    await waitUntil(
+      () => latest(client, "flowSnapshot")?.goal === FLOW_GOAL,
+      "the restored partial goal",
+    );
+    client.close();
+  }, 30_000);
+
+  test("a failed Flow goal interview reports one error and keeps the accepted goal", async () => {
+    const fixture = createFixture("goal-fail");
+    const directory = seedSession(fixture, "existing1", "stopped", FLOW_GOAL);
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-goal-fail"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+
+    const mark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    const question = await client.waitFor((event) => event.type === "flowQuestion", {
+      from: mark,
+    });
+    client.send({ type: "flowAnswer", target: "goal", id: question.id, value: "Alpha" });
+    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
+      from: mark,
     });
     expect(stopped.completed).toBe(false);
     expect("text" in stopped).toBe(false);
     const errors = client.events.slice(mark).filter((event) => event.type === "flowError");
     expect(errors).toHaveLength(1);
-    expect(String(errors[0]?.message)).toContain("timed out");
-
-    // The interrupted interview wrote nothing, so the accepted goal survives.
-    expect(readSession(fixture, id).goal).toBe(FLOW_GOAL);
-    const sessionDirectory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
-    expect(readFileSync(join(sessionDirectory, "goal.md"), "utf8")).toBe(FLOW_GOAL);
-    expect(sessionIds(fixture)).toEqual([id]);
-    expect(stubLog(fixture)).toContain(`flow-goal-hung ${sessionDirectory}`);
+    expect(readFileSync(join(directory, "goal.md"), "utf8")).toBe(FLOW_GOAL);
+    expect(readSession(fixture, "existing1").goal).toBe(FLOW_GOAL);
     client.close();
   }, 30_000);
 
-  test("a timed-out interview keeps its partial draft out of the session goal", async () => {
-    const fixture = createFixture("goal-partial");
-    const gate = join(fixture.root, "goal-partial");
-    writeFileSync(gate, "");
-    const testServer = startServer(fixture, {
-      stub: ["--flow-goal", `--flow-goal-partial=${gate}`],
-      goalTimeoutMs: 2_000,
-    });
-    const client = await connect(testServer);
-    await connected(client);
-    const mark = client.mark();
-    client.send({ type: "createFlowGoal" });
-    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
-      from: mark,
-      timeout: 20_000,
-    });
-    expect(stopped.completed).toBe(false);
-    expect("text" in stopped).toBe(false);
-    expect(stubLog(fixture).some((line) => line.startsWith("flow-goal-partial "))).toBe(true);
+  test.skipIf(process.env.FLOW_LONG_INTERVIEW !== "1")(
+    "a Flow goal interview has no wall-clock bound",
+    async () => {
+      const fixture = createFixture("goal-long");
+      const testServer = startServer(fixture, {
+        stub: ["--flow-goal", "--flow-goal-settle=121000"],
+      });
+      const client = await connect(testServer);
+      await connected(client);
 
-    const id = sessionIds(fixture)[0] as string;
-    expect(readSession(fixture, id).goal).toBe("");
-    const sessionDirectory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
-    expect(readFileSync(join(sessionDirectory, "goal.md"), "utf8")).toBe("");
-    client.close();
-  }, 30_000);
+      client.send({ type: "createFlowGoal" });
+      const question = await client.waitFor((event) => event.type === "flowQuestion");
+      client.send({ type: "flowAnswer", target: "goal", id: question.id, value: "Alpha" });
+      await waitForStub(fixture, (line) => line.startsWith("flow-goal-written "));
+      const mark = client.mark();
+
+      // Past the old 120 s bound the interview is still the live one. This case
+      // exists to exercise the wall clock itself; deterministic timers cannot
+      // replace the real detached turn.
+      await Bun.sleep(120_500);
+      expect(
+        client.events
+          .slice(mark)
+          .filter((event) => event.type === "flowGoalStopped" || event.type === "flowError"),
+      ).toHaveLength(0);
+      const observer = await connect(testServer);
+      const snapshot = await observer.waitFor((event) => event.type === "flowSnapshot");
+      expect(snapshot.goalCreation).not.toBe(null);
+      expect(snapshot.question).toBe(null);
+      observer.close();
+
+      const stopped = await client.waitFor(
+        (event) => event.type === "flowGoalStopped" && event.completed === true,
+        { from: mark, timeout: 30_000 },
+      );
+      expect(stopped.text).toBe(FLOW_GOAL);
+      client.close();
+    },
+    200_000,
+  );
 
   test("a goal save during the interview is refused and cannot outlive it", async () => {
     const fixture = createFixture("goal-save-interview");
@@ -1183,7 +1457,6 @@ describe("Flow change widgets", () => {
       forgeTarget: { forge: "github", host: "forge.test", project: "acme/fixture" },
       watchMs: 20,
       analystTimeoutMs: 10_000,
-      goalTimeoutMs: 10_000,
     });
     try {
       void controller.createGoal();

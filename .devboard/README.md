@@ -708,7 +708,7 @@ refused while a Flow session exists whose worktree or pull request is not merged
 ### Commands and events
 
 Flow Mode uses one WebSocket at `/ws`. The client sends `createFlowGoal`,
-`startFlowImplementation`, `stopFlowImplementation`, `retryFlowPr`,
+`cancelFlowGoal`, `startFlowImplementation`, `stopFlowImplementation`, `retryFlowPr`,
 `markFlowPrReady`, `mergeFlowPr`, `sendFlowSteering`, `acceptFlowWidget`,
 `refuseFlowWidget`, `openFlowWidget`, `closeFlowWidget`, `sendFlowConversation`,
 `sendFlowConclusion`, `dismissFlowBlocker`, and `flowAnswer` (with `target` naming the goal,
@@ -735,10 +735,15 @@ one ACP peer. The prompt interviews the developer one question at a time until t
 result and every load-bearing boundary are settled, then writes only `<session-dir>/goal.md`; its
 questions arrive as `flowQuestion` with `target: "goal"` and are answered with `flowAnswer`. The
 goal text is end-result only: no implementation, technology, path, step, or internal criterion.
-The interview is bounded by `goalTimeoutMs` (120 s by default). `<session-dir>/goal.md` is removed
-before each interview, so only a file that interview writes can be accepted. A timeout kills the
-peer, discards whatever draft it wrote, and reports `flowGoalStopped` with `completed: false`; the
-session's accepted goal is left unchanged, exactly as when the interview writes no goal.
+An interview has no wall-clock bound: it runs until the agent finishes, the agent fails, or the
+operator cancels it. `<session-dir>/goal.md` is removed before each interview, so only a file that
+interview writes can be accepted. Any interview is cancellable while its agent works or a question
+waits: the Goal interview panel carries one `Cancel goal interview` control that sends
+`cancelFlowGoal`; the control is absent when no interview is active. Cancel closes the interview
+peer and reports `flowGoalStopped` with `completed: false`, never a `flowError`: the accepted
+`goal.md`, the session goal, and the read-only goal return byte for byte, and a session or scratch
+directory opened only for that Create is removed. A failed turn reports one `flowError` and
+`flowGoalStopped` with `completed: false`, and leaves the previous accepted goal unchanged.
 `startFlowImplementation` requires a non-empty goal and starts `/flow-implement`; `stopFlowImplementation` ends that peer and
 reports the session `stopped`. A session whose pull request has merged cannot be restarted: create
 a new goal.

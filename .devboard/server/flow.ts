@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  rmSync,
   type Stats,
   unlinkSync,
   writeFileSync,
@@ -182,8 +183,6 @@ export interface FlowOptions {
   watchMs?: number;
   /** Bound on one analyst turn. */
   analystTimeoutMs?: number;
-  /** Bound on one goal interview turn. */
-  goalTimeoutMs?: number;
   /** Bound on one git/gh/glab child; a stalled command settles as killed. */
   commandTimeoutMs?: number;
   /** Describes active Goal Mode work, if any. */
@@ -240,6 +239,23 @@ interface Conversation {
   queue: string[];
 }
 
+/** The Flow state that existed before Create opened this interview. */
+interface GoalCreationRestore {
+  session: FlowSession | undefined;
+  persistedGoal: string | null;
+  /** The previous session's goal.md bytes, or undefined when the file was absent. */
+  goalText: string | undefined;
+  /** True when this Create opened the session directory itself. */
+  sessionCreated: boolean;
+}
+
+interface GoalCreation {
+  agent: PeerConnection | undefined;
+  activity: string[];
+  question: FlowQuestion | null;
+  restore: GoalCreationRestore;
+}
+
 interface CommandResult {
   stdout: string;
   stderr: string;
@@ -251,7 +267,6 @@ const DEFAULT_WATCH_MS = 400;
 /** Bound on the text the watcher keeps for one untracked file. */
 export const UNTRACKED_BODY_MAX_BYTES = 1_048_576;
 const DEFAULT_ANALYST_TIMEOUT_MS = 60_000;
-const DEFAULT_GOAL_TIMEOUT_MS = 120_000;
 const OUTPUT_TAIL_MAX = 4000;
 const BLOCKER_MARKER = "DEVBOARD-BLOCKED:";
 const GIT_ENV: Record<string, string> = {
@@ -610,7 +625,6 @@ export class FlowController {
   readonly #now: () => number;
   readonly #watchMs: number;
   readonly #analystTimeoutMs: number;
-  readonly #goalTimeoutMs: number;
   readonly #commandTimeoutMs: number;
   readonly #goalWorkActive: () => string | undefined;
   readonly #harnessVersion: string | null;
@@ -623,9 +637,7 @@ export class FlowController {
   #implementation:
     | { agent: PeerConnection | undefined; activity: string[]; finished: boolean }
     | undefined;
-  #goalCreation:
-    | { agent: PeerConnection | undefined; activity: string[]; question: FlowQuestion | null }
-    | undefined;
+  #goalCreation: GoalCreation | undefined;
   #analyst: PeerConnection | undefined;
   #analystPending = false;
   #conversation: Conversation | undefined;
@@ -661,7 +673,6 @@ export class FlowController {
     this.#now = options.now ?? Date.now;
     this.#watchMs = Math.max(10, options.watchMs ?? DEFAULT_WATCH_MS);
     this.#analystTimeoutMs = Math.max(10, options.analystTimeoutMs ?? DEFAULT_ANALYST_TIMEOUT_MS);
-    this.#goalTimeoutMs = Math.max(10, options.goalTimeoutMs ?? DEFAULT_GOAL_TIMEOUT_MS);
     this.#goalWorkActive = options.goalWorkActive ?? (() => undefined);
     this.#harnessVersion = options.harnessVersion ?? null;
     this.#instance = options.instance ?? "flow-test";
@@ -1222,16 +1233,97 @@ export class FlowController {
       return;
     }
 
-    if (this.#session === undefined || this.#session.status === "merged") {
+    const previous = this.#session;
+    const restore: GoalCreationRestore = {
+      session: previous,
+      persistedGoal: this.#persistedGoal,
+      goalText:
+        previous === undefined
+          ? undefined
+          : readText(join(this.flowRoot, previous.id, "goal.md")),
+      sessionCreated: previous === undefined || previous.status === "merged",
+    };
+
+    if (restore.sessionCreated) {
       await this.#newSession();
       if (this.#session === undefined) return;
     }
 
-    const creation = { agent: undefined, activity: [] as string[], question: null };
+    const creation: GoalCreation = {
+      agent: undefined,
+      activity: [],
+      question: null,
+      restore,
+    };
     this.#goalCreation = creation;
     this.#broadcast({ type: "flowGoalStarted" });
     this.#publish();
     await this.#spawnGoalCreation(creation);
+  }
+
+  /**
+   * Ends the active goal interview and returns the Flow state that existed
+   * before Create. Only a session directory this Create opened is removed; a
+   * pre-existing session, its goal, and its work are left exactly as they were.
+   */
+  cancelGoal(): void {
+    const creation = this.#goalCreation;
+    if (creation === undefined) {
+      this.#error("No Flow goal interview is active.");
+      return;
+    }
+    this.#goalCreation = undefined;
+    creation.question = null;
+    creation.agent?.close();
+    this.#restoreCanceledGoal(creation.restore);
+    this.#broadcast({ type: "flowGoalStopped", completed: false });
+    this.#publish();
+  }
+
+  #restoreCanceledGoal(restore: GoalCreationRestore): void {
+    const current = this.#session;
+    if (restore.sessionCreated && current !== undefined) {
+      const directory = join(this.flowRoot, current.id);
+      // A canceled interview never reached implementation, so an idle session
+      // with no worktree, pull request, or checkpoint is the only directory
+      // this path may remove. Anything else is left in place for the operator.
+      const untouched =
+        current.status === "idle" &&
+        current.pr === null &&
+        current.checkpoints.length === 0 &&
+        !existsSync(current.worktree);
+      if (!untouched) {
+        this.#journal?.write(
+          "server-error",
+          `flow: canceled goal interview left ${directory} because it holds work`,
+        );
+        return;
+      }
+      try {
+        rmSync(directory, { recursive: true, force: true });
+      } catch (error) {
+        this.#journal?.write(
+          "server-error",
+          `flow: could not remove ${directory}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
+    }
+    this.#session = restore.session;
+    this.#persistedGoal = restore.persistedGoal;
+    if (restore.sessionCreated || restore.session === undefined) return;
+    const goalPath = join(this.flowRoot, restore.session.id, "goal.md");
+    try {
+      // The interview unlinked goal.md and may have written a draft into it;
+      // the accepted goal file returns byte for byte.
+      if (restore.goalText === undefined) unlinkSync(goalPath);
+      else writeText(goalPath, restore.goalText);
+    } catch (error) {
+      this.#journal?.write(
+        "server-error",
+        `flow: could not restore ${goalPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   async #newSession(): Promise<void> {
@@ -1273,11 +1365,7 @@ export class FlowController {
     this.#persistArtifacts();
   }
 
-  async #spawnGoalCreation(creation: {
-    agent: PeerConnection | undefined;
-    activity: string[];
-    question: FlowQuestion | null;
-  }): Promise<void> {
+  async #spawnGoalCreation(creation: GoalCreation): Promise<void> {
     const directory = this.sessionDir;
     if (directory === undefined) return;
     // Drop the previous interview's goal first: only a file this turn writes
@@ -1336,24 +1424,13 @@ export class FlowController {
         return;
       }
       creation.agent = agent;
-      // A timeout is its own outcome: an interrupted interview is never an
-      // accepted goal, and its peer is closed before anything is read.
-      const turn = agent
-        .run(`/flow-goal ${directory}`)
-        .then(
-          () => ({ ok: true as const }),
-          (error: unknown) => ({ ok: false as const, error }),
-        );
-      const outcome = await Promise.race([
-        turn,
-        timeout(this.#goalTimeoutMs).then(() => ({ timedOut: true as const })),
-      ]);
+      // The interview runs until the agent finishes, fails, or the operator
+      // cancels it; no wall-clock limit ends it.
+      const outcome = await agent.run(`/flow-goal ${directory}`).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
       if (this.#goalCreation !== creation) return;
-      if ("timedOut" in outcome) {
-        this.#error(`The Flow goal interview timed out after ${this.#goalTimeoutMs / 1000} s.`);
-        this.#finishGoalCreation(false);
-        return;
-      }
       if (!outcome.ok) throw outcome.error;
       this.#finishGoalCreation(true);
     } catch (error) {
