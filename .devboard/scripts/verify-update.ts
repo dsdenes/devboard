@@ -144,6 +144,14 @@ async function installFixture(name: string, releaseDir: string): Promise<string>
   return host.directory;
 }
 
+/** True when every shipped skill directory in the host matches the package. */
+function installedSkillsMatch(host: string): boolean {
+  const harness = installedPackage(join(host, ".devboard"));
+  return MANAGED_SKILLS.every((name) =>
+    treesMatch(join(harness, "omp", "skills", name), join(host, ".omp", "skills", name)),
+  );
+}
+
 async function assertInstalledSkills(host: string): Promise<void> {
   const harness = installedPackage(join(host, ".devboard"));
   for (const name of MANAGED_SKILLS) {
@@ -199,6 +207,13 @@ try {
   // closes; the same event makes every browser reload once.
   const restarting = websocketCommand(server.port, { type: "getVersion" }, "serverRestarting", 30_000);
   await waitForInstalledVersion(prefix, NEW);
+  // The installed version flips as soon as the package lands; the host copy
+  // sync runs immediately after it, so wait for that sync before comparing.
+  await waitFor(
+    () => (installedSkillsMatch(host) ? true : undefined),
+    "the automatic sync of the managed skills",
+    30_000,
+  );
   await assertInstalledMcp(host);
   await assertInstalledSkills(host);
   assertTrue(
