@@ -258,8 +258,8 @@ describe("goal proposal drafts", () => {
         url,
         proposal({
           conversation: [
-            { role: "developer", text: "Why is this button clipped?" },
-            { role: "agent", text: "The flex row has no min-width." },
+            { role: "DEVELOPER", text: "Why is this button clipped?" },
+            { role: "AGENT", text: "The flex row has no min-width." },
           ],
         }),
       );

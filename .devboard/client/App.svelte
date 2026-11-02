@@ -423,8 +423,8 @@
         <ActivityBar
           onopenpalette={openPalette}
           onreportissue={() => feedbackOverlay?.toggleReport()}
-          onremoveelement={() => feedbackOverlay?.toggleAction("remove")}
-          onredesignelement={() => feedbackOverlay?.toggleAction("redesign")}
+          onremoveelement={() => feedbackOverlay?.toggleAction("REMOVE")}
+          onredesignelement={() => feedbackOverlay?.toggleAction("REDESIGN")}
           reportphase={reportPhase}
           reportaction={reportAction}
           feedbackenabled={connection.feedbackEnabled}

@@ -6594,7 +6594,7 @@ try {
   const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/feedback`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "report", report: "disabled check" }),
+    body: JSON.stringify({ action: "REPORT", report: "disabled check" }),
   });
   const refusal = await refused.text();
   check(
@@ -6872,7 +6872,7 @@ try {
   );
   check(
     feedbackRequests.length === 1 &&
-      feedbackRequests[0]?.action === "report" &&
+      feedbackRequests[0]?.action === "REPORT" &&
       String(feedbackRequests[0]?.report).includes("status bar is clipped"),
     "the report request is wrong",
     feedbackRequests,
@@ -7137,7 +7137,7 @@ try {
     check(call.body.includes("## Captured UI context"), "a removal body lost the captured context", call.body);
     check(call.body.includes("### DOM excerpt"), "a removal body lost the DOM excerpt", call.body);
   }
-  const removalRequests = feedbackRequests.filter((entry) => entry.action === "remove");
+  const removalRequests = feedbackRequests.filter((entry) => entry.action === "REMOVE");
   check(removalRequests.length === 2, "the issue actions did not send two removal requests", feedbackRequests);
   check(
     removalRequests.every(
@@ -7175,7 +7175,7 @@ try {
     check(call.body.includes(redesignInstruction), "a redesign body lost its instruction", call.body);
     check(call.body.includes("## Captured UI context"), "a redesign body lost the captured context", call.body);
   }
-  const redesignRequests = feedbackRequests.filter((entry) => entry.action === "redesign");
+  const redesignRequests = feedbackRequests.filter((entry) => entry.action === "REDESIGN");
   check(redesignRequests.length === 2, "the issue actions did not send two redesign requests", feedbackRequests);
   const redesignStatus = await page.eval<{ text: string; href: string; color: string; foreground: string }>(`(() => {
     const status = document.querySelector('.feedback-result');
@@ -7547,7 +7547,7 @@ try {
   check(transcriptSurface.maxHeight === "180px" && transcriptSurface.overflow === "auto", "the transcript does not scroll inside 180px", transcriptSurface);
   check(transcriptSurface.turns === 4, "the transcript lost a turn", transcriptSurface);
   check(
-    transcriptSurface.roles.join(",") === "developer,agent,developer,agent" &&
+    transcriptSurface.roles.join(",") === "DEVELOPER,AGENT,DEVELOPER,AGENT" &&
       transcriptSurface.who.join(",") === "You,Agent,You,Agent",
     "the transcript does not label who spoke",
     transcriptSurface,
@@ -10325,7 +10325,7 @@ try {
   );
   check(
     feedbackRequests.length === 2 &&
-      feedbackRequests.every((request) => request.action === "report") &&
+      feedbackRequests.every((request) => request.action === "REPORT") &&
       String(feedbackRequests[1]?.report).startsWith("Error notification: ") &&
       String(feedbackRequests[1]?.report).includes("Raised at: "),
     "the notification filing request is wrong",

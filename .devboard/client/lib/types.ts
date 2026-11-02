@@ -217,7 +217,7 @@ export interface SkillSummary {
 export type FeedbackPhase = "idle" | "picking" | "composing" | "sending" | "failed";
 
 /** The UI issue action an armed selection mode files. */
-export type FeedbackAction = "report" | "remove" | "redesign";
+export type FeedbackAction = "REPORT" | "REMOVE" | "REDESIGN";
 
 export interface SkillContradiction {
   skills: [string, string];
@@ -575,7 +575,7 @@ export interface DiscoverTab {
 
 /** One visible turn of the element-scoped Ask conversation. */
 export interface AskTurn {
-  role: "developer" | "agent";
+  role: "DEVELOPER" | "AGENT";
   text: string;
 }
 

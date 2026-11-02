@@ -3491,7 +3491,8 @@ Filing or proposing from a panel that has answered questions carries the visible
 into the issue or draft as a `## Ask conversation` block between the request and
 `## Captured UI context`, labelled `You:` and `Agent:` per turn. The conversation is bounded to 40
 turns, 4000 characters per turn, and 12000 characters in total; when it exceeds that, the newest
-whole turns are kept and the oldest dropped. A panel without a conversation produces no block, and
+whole turns are kept and the oldest dropped. Each turn's `role` is `DEVELOPER` or `AGENT`; any
+other value is refused with HTTP 400. A panel without a conversation produces no block, and
 a conversation is never resumed from storage.
 
 `Goal` turns the composer text into a raw proposed goal instead of an issue. With non-whitespace
@@ -3551,24 +3552,25 @@ The report title is `[ui] ` plus the first line of the report, at most 200 chara
 the verbatim report followed by the same captured context, so the ticket stays authoritative
 without a model in the loop.
 
-Every request carries an `action` of `report`, `remove`, or `redesign`; an absent `action` means
-`report`, the only action that requires report text, and any other value is refused with HTTP 400
-before the Gitea request. Both endpoints are strict about their body: `POST /feedback` accepts
-`action`, `report`, `conversation`, `route`, `url`, `selector`, `dom_excerpt`, `visible_text`,
-`viewport`, and `captured_at`, `POST /goal-proposals` accepts the same set without `action`, and
-any other top-level key is refused with HTTP 400 naming the first unknown key before any Gitea
-request or draft write. Harness-owned reporting uses only the Gitea API: `DEVBOARD_GITEA_URL`
-names the instance, `GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`) authenticates it, and
-`DEVBOARD_RELEASE_REPO` selects the repository (default `dsdenes/devboard`), whatever host project
-the interface is serving. Nothing is created in the host's own tracker, and no `github.com`
-repository is used for filing. Starting the dashboard from the canonical `.devboard` checkout
-resolves the HTTP origin itself when the `origin` remote is a Gitea SSH address on this machine
-and neither variable is set: it probes the local listening ports for `GET /api/v1/version` and
-uses the lowest matching loopback port. An explicit variable always wins, an HTTP(S) origin needs
-no discovery, and an installed host never probes. Without a configured or discovered origin the
-endpoint answers HTTP 503 naming `DEVBOARD_GITEA_URL` and performs no request. A refused or
-failing request is reported in the filing toast and creates nothing. The endpoint accepts only
-same-origin `POST` requests, bounds the body to 64 KB, and gives the request 60 seconds.
+Every request carries an `action` of `REPORT`, `REMOVE`, or `REDESIGN`; an absent `action` means
+`REPORT`, the only action that requires report text, and any other value — including a lower-case
+spelling — is refused with HTTP 400 before the Gitea request. Both endpoints are strict about their
+body: `POST /feedback` accepts `action`, `report`, `conversation`, `route`, `url`, `selector`,
+`dom_excerpt`, `visible_text`, `viewport`, and `captured_at`, `POST /goal-proposals` accepts the
+same set without `action`, and any other top-level key is refused with HTTP 400 naming the first
+unknown key before any Gitea request or draft write. Harness-owned reporting uses only the Gitea
+API: `DEVBOARD_GITEA_URL` names the instance, `GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`)
+authenticates it, and `DEVBOARD_RELEASE_REPO` selects the repository (default `dsdenes/devboard`),
+whatever host project the interface is serving. Nothing is created in the host's own tracker, and
+no `github.com` repository is used for filing. Starting the dashboard from the canonical
+`.devboard` checkout resolves the HTTP origin itself when the `origin` remote is a Gitea SSH address
+on this machine and neither variable is set: it probes the local listening ports for
+`GET /api/v1/version` and uses the lowest matching loopback port. An explicit variable always wins,
+an HTTP(S) origin needs no discovery, and an installed host never probes. Without a configured or
+discovered origin the endpoint answers HTTP 503 naming `DEVBOARD_GITEA_URL` and performs no
+request. A refused or failing request is reported in the filing toast and creates nothing. The
+endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and gives the request
+60 seconds.
 
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
 `title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful

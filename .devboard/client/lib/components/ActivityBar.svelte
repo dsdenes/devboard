@@ -97,7 +97,7 @@
     layout.theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
   );
   const reportLabel = $derived(
-    reportphase !== "idle" && reportaction === "report"
+    reportphase !== "idle" && reportaction === "REPORT"
       ? reportphase === "sending"
         ? "Filing the UI issue"
         : reportphase === "composing" || reportphase === "failed"
@@ -106,14 +106,14 @@
       : "Report a UI issue",
   );
   const removeLabel = $derived(
-    reportaction === "remove"
+    reportaction === "REMOVE"
       ? reportphase === "sending"
         ? "Filing the removal issue"
         : "Cancel element removal"
       : "Remove element",
   );
   const redesignLabel = $derived(
-    reportaction === "redesign"
+    reportaction === "REDESIGN"
       ? reportphase === "sending"
         ? "Filing the redesign issue"
         : "Cancel element redesign"
@@ -284,7 +284,7 @@
         command="app.report"
         data-testid="activity-report"
         class="activity-bar__action"
-        active={reportaction === "report"}
+        active={reportaction === "REPORT"}
         disabled={reportphase === "sending"}
         onclick={onreportissue}
       >
@@ -295,7 +295,7 @@
         command="app.remove"
         data-testid="activity-remove"
         class="activity-bar__action"
-        active={reportaction === "remove"}
+        active={reportaction === "REMOVE"}
         disabled={quickDisabled}
         onclick={onremoveelement}
       >
@@ -306,7 +306,7 @@
         command="app.redesign"
         data-testid="activity-redesign"
         class="activity-bar__action"
-        active={reportaction === "redesign"}
+        active={reportaction === "REDESIGN"}
         disabled={quickDisabled}
         onclick={onredesignelement}
       >

@@ -33,7 +33,7 @@ const MAX_CONVERSATION_TURN = 4000;
 const MAX_CONVERSATION_TEXT = 12_000;
 
 /** What the operator asked for when they picked an element. */
-export type FeedbackAction = "report" | "remove" | "redesign";
+export type FeedbackAction = "REPORT" | "REMOVE" | "REDESIGN";
 
 /**
  * The instruction a removal issue carries. It is fixed, so the implementation
@@ -50,11 +50,11 @@ export const REDESIGN_INSTRUCTION =
   "Use the project UI/UX skill (devboard-ui-ux) and this repository's " +
   "DESIGN.md and design/tokens.json as the normative design system.";
 
-const ACTION_ERROR = "action must be one of report, remove, redesign.";
+const ACTION_ERROR = "action must be one of REPORT, REMOVE, REDESIGN.";
 
 /** One visible turn of the element-scoped Ask conversation. */
 export interface FeedbackTurn {
-  role: "developer" | "agent";
+  role: "DEVELOPER" | "AGENT";
   text: string;
 }
 
@@ -152,8 +152,8 @@ function field(
 
 function feedbackAction(value: unknown): FeedbackAction {
   // An absent action keeps the original free-text report contract.
-  if (value === undefined || value === null) return "report";
-  if (value === "report" || value === "remove" || value === "redesign") return value;
+  if (value === undefined || value === null) return "REPORT";
+  if (value === "REPORT" || value === "REMOVE" || value === "REDESIGN") return value;
   throw new FeedbackRequestError(400, ACTION_ERROR);
 }
 
@@ -245,10 +245,10 @@ export function parseConversation(value: unknown): FeedbackTurn[] {
     }
     const source = entry as Record<string, unknown>;
     const role = source.role;
-    if (role !== "developer" && role !== "agent") {
+    if (role !== "DEVELOPER" && role !== "AGENT") {
       throw new FeedbackRequestError(
         400,
-        `conversation[${index}].role must be developer or agent.`,
+        `conversation[${index}].role must be DEVELOPER or AGENT.`,
       );
     }
     const text = field(source.text, `conversation[${index}].text`, MAX_CONVERSATION_TURN, true);
@@ -276,7 +276,7 @@ export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
     action,
     // The one-click shortcuts use a fixed instruction, so any text the client
     // still sends is ignored rather than validated or filed.
-    report: action === "report" ? parseReportText(source.report) : "",
+    report: action === "REPORT" ? parseReportText(source.report) : "",
     conversation: parseConversation(source.conversation),
     ...parseCapturedFields(source),
   };
@@ -304,8 +304,8 @@ function firstLine(value: string): string {
 
 /** One-line issue title for the submission's action. */
 export function feedbackTitle(submission: FeedbackSubmission): string {
-  if (submission.action !== "report") {
-    const label = submission.action === "remove" ? "Remove element" : "Redesign element";
+  if (submission.action !== "REPORT") {
+    const label = submission.action === "REMOVE" ? "Remove element" : "Redesign element";
     const selector = submission.selector.replace(/\s+/g, " ").trim();
     if (selector.length === 0) return `${TITLE_PREFIX}${label}`;
     return truncate(`${TITLE_PREFIX}${label}: ${selector}`, MAX_TITLE);
@@ -325,7 +325,7 @@ export function feedbackTitle(submission: FeedbackSubmission): string {
 export function conversationSection(conversation: FeedbackTurn[]): string[] {
   const lines: string[] = [];
   for (const turn of conversation) {
-    lines.push("", `**${turn.role === "developer" ? "You" : "Agent"}:**`, "", turn.text.trim());
+    lines.push("", `**${turn.role === "DEVELOPER" ? "You" : "Agent"}:**`, "", turn.text.trim());
   }
   if (lines.length === 0) return [];
   return ["## Ask conversation", ...lines];
@@ -334,9 +334,9 @@ export function conversationSection(conversation: FeedbackTurn[]): string[] {
 /** The ticket body: the request first, then the conversation and captured context. */
 export function feedbackBody(submission: FeedbackSubmission): string {
   const request =
-    submission.action === "remove"
+    submission.action === "REMOVE"
       ? ["## Removal request", "", REMOVAL_INSTRUCTION]
-      : submission.action === "redesign"
+      : submission.action === "REDESIGN"
         ? ["## Redesign request", "", REDESIGN_INSTRUCTION]
         : ["## Operator report", "", submission.report.trim()];
   const lines = [...request, ""];

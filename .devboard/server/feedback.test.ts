@@ -187,8 +187,8 @@ describe("feedback endpoint", () => {
         url,
         report({
           conversation: [
-            { role: "developer", text: "Why is this button clipped?" },
-            { role: "agent", text: "The flex row has no min-width." },
+            { role: "DEVELOPER", text: "Why is this button clipped?" },
+            { role: "AGENT", text: "The flex row has no min-width." },
           ],
         }),
       );
@@ -218,7 +218,7 @@ describe("feedback endpoint", () => {
       expect(response.status).toBe(400);
       expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await response.json()).toEqual(
-        problemBody("Bad Request", 400, "conversation[0].role must be developer or agent."),
+        problemBody("Bad Request", 400, "conversation[0].role must be DEVELOPER or AGENT."),
       );
       expect(calls).toHaveLength(0);
     } finally {
@@ -235,10 +235,10 @@ describe("feedback endpoint", () => {
         url,
         report({
           conversation: [
-            { role: "developer", text: turn },
-            { role: "agent", text: turn },
-            { role: "developer", text: turn },
-            { role: "agent", text: turn },
+            { role: "DEVELOPER", text: turn },
+            { role: "AGENT", text: turn },
+            { role: "DEVELOPER", text: turn },
+            { role: "AGENT", text: turn },
           ],
         }),
       );
@@ -475,13 +475,51 @@ describe("feedback endpoint", () => {
     }
   });
 
+  test("accepts the upper-case report action and developer role", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({
+          action: "REPORT",
+          conversation: [{ role: "DEVELOPER", text: "Why is this button clipped?" }],
+        }),
+      );
+
+      expect(response.status).toBe(201);
+      const call = calls[0]!;
+      expect(call.body).toContain("## Operator report");
+      expect(call.body).toContain("**You:**\n\nWhy is this button clipped?");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses the lower-case action value it no longer declares", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(url, report({ action: "report" }));
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Bad Request", 400, "action must be one of REPORT, REMOVE, REDESIGN."),
+      );
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("files a removal request without report text", async () => {
     const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(
         url,
-        report({ action: "remove", report: undefined, selector: "main > section.run" }),
+        report({ action: "REMOVE", report: undefined, selector: "main > section.run" }),
       );
 
       expect(response.status).toBe(201);
@@ -509,7 +547,7 @@ describe("feedback endpoint", () => {
     try {
       const response = await submit(
         url,
-        report({ action: "redesign", report: "ignored operator text" }),
+        report({ action: "REDESIGN", report: "ignored operator text" }),
       );
 
       expect(response.status).toBe(201);
@@ -536,7 +574,7 @@ describe("feedback endpoint", () => {
     try {
       const response = await submit(
         url,
-        report({ action: "remove", report: undefined, selector: "a ".repeat(300) }),
+        report({ action: "REMOVE", report: undefined, selector: "a ".repeat(300) }),
       );
 
       expect(response.status).toBe(201);
@@ -555,7 +593,7 @@ describe("feedback endpoint", () => {
     try {
       const response = await submit(
         url,
-        report({ action: "remove", report: undefined, selector: "" }),
+        report({ action: "REMOVE", report: undefined, selector: "" }),
       );
 
       expect(response.status).toBe(201);
@@ -583,7 +621,7 @@ describe("feedback endpoint", () => {
     const { server, url, calls } = await startServer();
 
     try {
-      const accepted = report({ action: "report", conversation: [] });
+      const accepted = report({ action: "REPORT", conversation: [] });
       const refused = await submit(url, { ...accepted, unexpected: 1 });
 
       expect(refused.status).toBe(400);
