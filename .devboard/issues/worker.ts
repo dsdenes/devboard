@@ -654,6 +654,7 @@ export class IssuesWorker {
     switch (command.type) {
       case "pause": {
         this.state.paused = true;
+        this.state.pauseSource = "operator";
         this.state.notice = null;
         this.state.lifecycle = this.running ? "pausing" : "paused";
         this.publish();
@@ -661,6 +662,7 @@ export class IssuesWorker {
       }
       case "resume": {
         this.state.paused = false;
+        this.state.pauseSource = null;
         this.state.notice = null;
         this.state.lifecycle = this.settledLifecycle();
         this.nextPollDue = this.clock().getTime();
@@ -731,6 +733,7 @@ export class IssuesWorker {
         // A newer version owns new work. Finish every live unit, then exit.
         this.draining = true;
         this.state.paused = true;
+        this.state.pauseSource = "drain";
         this.state.notice = null;
         this.state.lifecycle = this.running ? "pausing" : "paused";
         this.publish();

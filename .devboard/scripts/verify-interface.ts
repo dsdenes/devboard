@@ -16,6 +16,14 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { remoteCloneName } from "../server/discover";
+import {
+  drainMarkerPath,
+  lockPath,
+  runsDirectory,
+  versionedStatePath,
+} from "../issues/paths";
+import { versionLockPath } from "../issues/lock";
+import { writeDrainMarker } from "../issues/control";
 import { fixtureRecord, pendingRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
 import { saveSubscriptions } from "../server/providers";
@@ -32,10 +40,16 @@ const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
 // The source dashboard reports the commit-count version, not the unpacked
 // manifest's placeholder.
 const sourceVersion = readHarnessVersion(runningHarnessDir());
+/** The version every seeded fixture worker records. */
+const seedVersion = sourceVersion ?? "0.1.0";
 /** The version the fixture installs, distinct from the source checkout's. */
 const INSTALLED_VERSION = "9.9.9";
 /** A newer install that makes the running replacement stale again. */
 const NEXT_INSTALLED_VERSION = "9.9.10";
+/** The older harness version a mixed-version takeover fixture keeps live. */
+const MIXED_OLD_VERSION = "0.1.900";
+const MIXED_OLD_RUN = "2026-10-27T10-10-01-000Z";
+const MIXED_NEW_RUN = "2026-10-27T10-10-02-000Z";
 // The deterministic `gh` stub always answers with this issue URL.
 const stubIssueUrl = "https://gitea.example/dsdenes/devboard/issues/42";
 // A tracker title longer than any supported line: it must truncate instead of
@@ -778,7 +792,7 @@ async function seedIssuesState(
           pid: process.pid,
           startedAt: "2026-10-27T10:00:00.000Z",
           stateDir,
-          harnessVersion: sourceVersion ?? "0.1.0",
+          harnessVersion: seedVersion,
           argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
         }
       : null,
@@ -844,7 +858,7 @@ async function seedIssuesState(
         ],
         firstStderrLine: status === "failed" ? "the agent exited with code 1" : null,
         workerPid: process.pid,
-        harnessVersion: sourceVersion ?? "0.1.0",
+        harnessVersion: seedVersion,
       }),
     );
   };
@@ -867,10 +881,242 @@ async function seedIssuesState(
       startedAt: lockStartedAt,
       repo: resolve(host),
       stateDir,
-      harnessVersion: sourceVersion ?? "0.1.0",
+      harnessVersion: seedVersion,
       argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
     }),
   );
+}
+
+/**
+ * Two live issues workers of different harness versions, exactly as a takeover
+ * leaves them: the older one drained with its unit still running, the newer
+ * one polling and working. The older document predates the pause source, so
+ * only the dashboard's drain marker can tell its pause from an operator Pause.
+ */
+let mixedWorkerPids: number[] = [];
+
+function fixtureProcessStartedAt(pid: number): string {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const close = stat.lastIndexOf(")");
+  const ticks = Number(stat.slice(close + 2).split(" ")[19]);
+  const uptime = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+  return new Date(Date.now() - uptime * 1000 + ticks * 10).toISOString();
+}
+
+async function liveFixtureProcess(): Promise<{ pid: number; startedAt: string }> {
+  const child = Bun.spawn({
+    cmd: [process.execPath, "-e", "setTimeout(() => undefined, 600000)"],
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      readFileSync(`/proc/${child.pid}/stat`, "utf8");
+      break;
+    } catch {
+      if (Date.now() > deadline) throw new Error("verify:interface: the fixture worker did not start");
+      await Bun.sleep(20);
+    }
+  }
+  mixedWorkerPids.push(child.pid);
+  return { pid: child.pid, startedAt: fixtureProcessStartedAt(child.pid) };
+}
+
+async function seedMixedIssuesState(stateDir: string, host: string): Promise<void> {
+  const root = resolve(host);
+  const oldWorker = await liveFixtureProcess();
+  const newWorker = await liveFixtureProcess();
+  const runsDir = runsDirectory(stateDir, root);
+  const now = new Date().toISOString();
+  const queue = (issueNumber: number, runId: string) =>
+    [17, 18, 20, 21].map((number) => ({
+      number,
+      title: `Fixture issue ${number}`,
+      url: `https://github.com/fixture/host/issues/${number}`,
+      createdAt: "2026-10-26T00:00:00Z",
+      labels: [] as string[],
+      handled: false,
+      runId: null,
+      agentRunId: number === issueNumber ? runId : null,
+    }));
+  const state = (options: {
+    version: string;
+    pid: number;
+    startedAt: string;
+    lifecycle: "running" | "pausing";
+    paused: boolean;
+    issueNumber: number;
+    runId: string;
+    lastPollAt: string;
+    pauseSource?: "drain" | null;
+  }) => ({
+    version: 2,
+    repo: "fixture/host",
+    root,
+    lifecycle: options.lifecycle,
+    enabled: true,
+    paused: options.paused,
+    ...(options.pauseSource === undefined ? {} : { pauseSource: options.pauseSource }),
+    worker: {
+      pid: options.pid,
+      startedAt: options.startedAt,
+      stateDir,
+      harnessVersion: options.version,
+      argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
+    },
+    poll: {
+      intervalMs: 10_000,
+      lastPollAt: options.lastPollAt,
+      nextPollAt: new Date(Date.parse(options.lastPollAt) + 10_000).toISOString(),
+      etag: null,
+      notModified: false,
+      rateLimitedUntil: null,
+      error: null,
+    },
+    queue: queue(options.issueNumber, options.runId),
+    runs: [
+      {
+        runId: options.runId,
+        status: "running",
+        startedAt: "2026-10-27T10:10:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        issueNumbers: [options.issueNumber],
+        activity: 2,
+        firstStderrLine: null,
+        harnessVersion: options.version,
+        workerPid: options.pid,
+      },
+    ],
+    agents: [
+      {
+        runId: options.runId,
+        issueNumber: options.issueNumber,
+        startedAt: "2026-10-27T10:10:00.000Z",
+        question: null,
+        acp: null,
+      },
+    ],
+    cooldowns: {},
+    lastError: null,
+    lastExitCode: null,
+    finishedAt: null,
+    notice: null,
+    updatedAt: now,
+  });
+  const publish = async (path: string, document: unknown): Promise<void> => {
+    await mkdir(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`);
+    await rename(temporary, path);
+  };
+  // The older worker's document predates the pause source on purpose.
+  await publish(
+    versionedStatePath(stateDir, root, MIXED_OLD_VERSION),
+    state({
+      version: MIXED_OLD_VERSION,
+      pid: oldWorker.pid,
+      startedAt: oldWorker.startedAt,
+      lifecycle: "pausing",
+      paused: true,
+      issueNumber: 17,
+      runId: MIXED_OLD_RUN,
+      lastPollAt: "2026-10-27T10:09:00.000Z",
+    }),
+  );
+  await publish(
+    versionedStatePath(stateDir, root, seedVersion),
+    state({
+      version: seedVersion,
+      pid: newWorker.pid,
+      startedAt: newWorker.startedAt,
+      lifecycle: "running",
+      paused: false,
+      pauseSource: null,
+      issueNumber: 18,
+      runId: MIXED_NEW_RUN,
+      lastPollAt: new Date(Date.now() - 1_000).toISOString(),
+    }),
+  );
+  for (const [runId, issueNumber, version, workerPid] of [
+    [MIXED_OLD_RUN, 17, MIXED_OLD_VERSION, oldWorker.pid],
+    [MIXED_NEW_RUN, 18, seedVersion, newWorker.pid],
+  ] as const) {
+    const directory = join(runsDir, runId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "run.json"),
+      JSON.stringify({
+        version: 1,
+        runId,
+        repo: "fixture/host",
+        status: "running",
+        argv: ["omp", "acp"],
+        cwd: root,
+        startedAt: "2026-10-27T10:10:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        issues: [
+          {
+            number: issueNumber,
+            title: `Fixture issue ${issueNumber}`,
+            url: `https://github.com/fixture/host/issues/${issueNumber}`,
+            createdAt: "2026-10-26T00:00:00Z",
+            labels: [],
+          },
+        ],
+        firstStderrLine: null,
+        workerPid,
+        harnessVersion: version,
+      }),
+    );
+    await writeFile(
+      join(directory, "activity.json"),
+      JSON.stringify([`Reading issue ${issueNumber}`, `Implementing issue ${issueNumber}`]),
+    );
+  }
+  // The dashboard wrote this before sending the drain, so the merge reports the
+  // family's running work while the older worker's own state says `pausing`.
+  writeDrainMarker(drainMarkerPath(stateDir, root, MIXED_OLD_VERSION), {
+    version: MIXED_OLD_VERSION,
+    pid: oldWorker.pid,
+    by: seedVersion,
+    at: now,
+  });
+  for (const worker of [
+    { version: MIXED_OLD_VERSION, ...oldWorker },
+    { version: seedVersion, ...newWorker },
+  ]) {
+    const path = versionLockPath(lockPath(root), worker.version);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(
+      path,
+      JSON.stringify({
+        pid: worker.pid,
+        startedAt: worker.startedAt,
+        repo: root,
+        stateDir,
+        harnessVersion: worker.version,
+        argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
+      }),
+    );
+  }
+}
+
+/** Ends the mixed-version fixture: every worker, lock, and its records. */
+async function clearMixedIssuesState(stateDir: string, host: string): Promise<void> {
+  for (const pid of mixedWorkerPids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+  mixedWorkerPids = [];
+  await rm(join(stateDir, "issues", journalKey(host)), { recursive: true, force: true });
+  await rm(join(resolve(host), ".devboard", ".tmp", "issues"), { recursive: true, force: true });
 }
 
 async function clearIssuesState(stateDir: string, host: string): Promise<void> {
@@ -7212,6 +7458,7 @@ try {
     cooldowns: string;
     facts: string[];
     summaryIssues: string[];
+    summaryVersions: string[];
     summaryIssueLinks: Array<{ tag: string; text: string; href: string; target: string }>;
     sideBeforeOutput: boolean;
     leftOfOutput: boolean;
@@ -7241,6 +7488,9 @@ try {
       ),
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
+      ),
+      summaryVersions: [...(summary?.querySelectorAll('[data-testid="issues-agent-row-version"]') ?? [])].map(
+        (item) => item.textContent?.trim() ?? "",
       ),
       summaryIssueLinks: [...(summary?.querySelectorAll(".issues-agent-row__issue") ?? [])].map(
         (link) => ({
@@ -7354,6 +7604,12 @@ try {
     overview,
   );
   check(
+    overview.summaryVersions.length === 3 &&
+      overview.summaryVersions.every((version) => version === seedVersion),
+    "an overview running row does not name its worker version",
+    overview.summaryVersions,
+  );
+  check(
     overview.summaryIssueLinks.length === 3 &&
       overview.summaryIssueLinks.every(
         (link, index) =>
@@ -7464,6 +7720,7 @@ try {
       activity: string;
       question: string;
       linked: string;
+      version: string;
     }>
   >(`[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => ({
     issue: card.getAttribute("data-issue") ?? "",
@@ -7472,6 +7729,7 @@ try {
     activity: card.querySelector('[data-testid="issues-agent-activity"]')?.textContent ?? "",
     question: card.querySelector('[data-testid="issues-agent-question"]')?.textContent ?? "",
     linked: card.querySelector("a")?.getAttribute("href") ?? "",
+    version: card.querySelector('[data-testid="issues-agent-version"]')?.textContent?.trim() ?? "",
   }))`);
   check(cards.length === 3, "the Agents page lost an agent", cards);
   check(cards.map((card) => card.issue).join(",") === "17,18,19", "the cards are not sorted by issue", cards);
@@ -7497,6 +7755,11 @@ try {
     cards,
   );
   check(cards.every((card) => card.status === "running"), "a card has the wrong status", cards);
+  check(
+    cards.every((card) => card.version.includes(seedVersion)),
+    "an Agents card does not name its worker version",
+    cards.map((card) => card.version),
+  );
   const agentsHeader = await page.eval<{ count: string; asking: string; title: string; eyebrow: string }>(`(() => ({
     count: document.querySelector('[data-testid="issues-agents-count"]')?.textContent?.trim() ?? "",
     asking: document.querySelector('[data-testid="issues-agents-asking"]')?.textContent?.trim() ?? "",
@@ -7948,6 +8211,14 @@ try {
     await page.eval<number>(`document.querySelectorAll('[data-testid="issues-running-marker"]').length`) === 3,
     "the queue has no running marker for an active agent",
   );
+  const queueVersions = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-running-version"]')].map((item) => item.textContent?.trim() ?? "")`,
+  );
+  check(
+    queueVersions.length === 3 && queueVersions.every((version) => version === seedVersion),
+    "a queue running row does not name its worker version",
+    queueVersions,
+  );
   const goalBadges = await page.eval<number>(
     `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
   );
@@ -8068,6 +8339,20 @@ try {
     `document.querySelector('[data-testid="issues-run-activity"]')?.textContent ?? ""`,
   );
   check(runActivity.includes("Implementing issue"), "the run detail does not show its activity", runActivity);
+  const runVersions = await page.eval<{ rows: string[]; detail: string }>(`(() => ({
+    rows: [...document.querySelectorAll('[data-testid="issues-run-version"]')].map((item) => item.textContent?.trim() ?? ""),
+    detail: document.querySelector('[data-testid="issues-run-version-detail"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    runVersions.rows.length === 4 && runVersions.rows.every((version) => version === seedVersion),
+    "an issues run row does not name its worker version",
+    runVersions.rows,
+  );
+  check(
+    runVersions.detail.includes(seedVersion),
+    "the run detail does not name the worker that owns it",
+    runVersions.detail,
+  );
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview again");
 
@@ -9232,6 +9517,214 @@ try {
     `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues stopped"`,
     "the stopped indicator after the state was removed",
     8_000,
+  );
+
+  // 15b. Two live worker versions: every running task names the version that
+  // owns it, and the older worker's drain never becomes the family's pause.
+  await seedMixedIssuesState(stateDir, host);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues working (2)"`,
+    "the family headline during the mixed-version takeover",
+    10_000,
+  );
+  const mixedIndicator = await page.eval<{
+    text: string;
+    title: string;
+    label: string;
+  }>(`(() => {
+    const item = document.querySelector('[data-testid="issues-indicator"]');
+    return {
+      text: item?.textContent?.trim() ?? "",
+      title: item?.getAttribute("title") ?? "",
+      label: item?.getAttribute("aria-label") ?? "",
+    };
+  })()`);
+  check(
+    mixedIndicator.text === "issues working (2)" &&
+      mixedIndicator.title.includes("2 running agent") &&
+      !/pausing|draining|drain/i.test(mixedIndicator.text) &&
+      !/pausing|draining|drain/i.test(mixedIndicator.title) &&
+      !/pausing|draining|drain/i.test(mixedIndicator.label),
+    "the status indicator reports the older worker's drain instead of the family's work",
+    mixedIndicator,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-poll-text"]')?.textContent?.trim()?.startsWith("Every 10s · checked ") === true`,
+    "the takeover poll line to report polling",
+    10_000,
+  );
+  const mixedPoll = await page.eval<{ text: string; title: string }>(`(() => {
+    const poll = document.querySelector('[data-testid="issues-poll"]');
+    return {
+      text: poll?.querySelector('[data-testid="issues-poll-text"]')?.textContent?.trim() ?? "",
+      title: poll?.getAttribute("title") ?? "",
+    };
+  })()`);
+  check(
+    !/pausing|draining|drain/i.test(mixedPoll.text) && !/pausing|draining|drain/i.test(mixedPoll.title),
+    "the takeover poll line reports the drained worker as paused",
+    mixedPoll,
+  );
+  const mixedRows = await page.eval<Array<{ issue: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-agent-summary"] .issues-agent-row')].map((row) => ({
+      issue: row.getAttribute("data-issue") ?? "",
+      version: row.querySelector('[data-testid="issues-agent-row-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    mixedRows.length === 2 &&
+      mixedRows.some((row) => row.issue === "17" && row.version === MIXED_OLD_VERSION) &&
+      mixedRows.some((row) => row.issue === "18" && row.version === seedVersion),
+    "the overview does not attribute a mixed-version takeover's tasks",
+    mixedRows,
+  );
+  await saveShot("issues-mixed-version-overview");
+
+  await runPalette("open.issues.agents");
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-agent"]').length === 2`,
+    "the two mixed-version agent cards",
+    8_000,
+  );
+  const mixedCards = await page.eval<Array<{ issue: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => ({
+      issue: card.getAttribute("data-issue") ?? "",
+      version: card.querySelector('[data-testid="issues-agent-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    mixedCards.some((card) => card.issue === "17" && card.version.includes(MIXED_OLD_VERSION)) &&
+      mixedCards.some((card) => card.issue === "18" && card.version.includes(seedVersion)),
+    "an agents card does not attribute a mixed-version takeover's task",
+    mixedCards,
+  );
+  const mixedWorkerList = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-worker"]')].map((item) => item.textContent?.trim() ?? "")`,
+  );
+  check(
+    mixedWorkerList.includes(MIXED_OLD_VERSION) && mixedWorkerList.includes(seedVersion),
+    "the Agents header does not list both live worker versions",
+    mixedWorkerList,
+  );
+
+  await page.click('[data-testid="open-issues-queue"]');
+  await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the takeover queue");
+  const mixedQueue = await page.eval<Array<{ issue: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
+      issue: item.getAttribute("data-number") ?? "",
+      version: item.querySelector('[data-testid="issues-running-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    mixedQueue.length === 4 &&
+      mixedQueue.some((row) => row.issue === "17" && row.version === MIXED_OLD_VERSION) &&
+      mixedQueue.some((row) => row.issue === "18" && row.version === seedVersion) &&
+      mixedQueue.filter((row) => row.version.length > 0).length === 2,
+    "the queue does not attribute the takeover's running rows",
+    mixedQueue,
+  );
+
+  await runPalette("open.issues.runs");
+  await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the takeover runs page");
+  const mixedRunRows = await page.eval<Array<{ run: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-run"]')].map((item) => ({
+      run: item.getAttribute("data-run") ?? "",
+      version: item.querySelector('[data-testid="issues-run-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    mixedRunRows.some((row) => row.run === MIXED_OLD_RUN && row.version === MIXED_OLD_VERSION) &&
+      mixedRunRows.some((row) => row.run === MIXED_NEW_RUN && row.version === seedVersion),
+    "the run history does not name both owning versions",
+    mixedRunRows,
+  );
+  await page.click(`[data-testid="issues-run"][data-run="${MIXED_OLD_RUN}"]`);
+  await page.wait(`document.querySelector('[data-testid="issues-run-detail"]') !== null`, "the old run detail");
+  const mixedDetail = await page.eval<{ run: string; status: string; version: string }>(`(() => {
+    const detail = document.querySelector('[data-testid="issues-run-detail"]');
+    return {
+      run: detail?.getAttribute("data-run") ?? "",
+      status: detail?.querySelector('.badge')?.textContent?.trim() ?? "",
+      version: detail?.querySelector('[data-testid="issues-run-version-detail"]')?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    mixedDetail.run === MIXED_OLD_RUN &&
+      mixedDetail.status === "running" &&
+      mixedDetail.version.includes(MIXED_OLD_VERSION),
+    "the draining task's run detail is not intact and attributed",
+    mixedDetail,
+  );
+
+  const drainVocabulary = await page.eval<string[]>(`(() => {
+    const found = [];
+    const scan = (scope, name) => {
+      if (scope === null) return;
+      const text = scope.innerText ?? "";
+      if (/pausing|draining|drain/i.test(text)) found.push(name + ":text:" + text.slice(0, 160));
+      for (const node of [scope, ...scope.querySelectorAll("[title], [aria-label]")]) {
+        if (!(node instanceof Element)) continue;
+        for (const attribute of ["title", "aria-label"]) {
+          const value = node.getAttribute(attribute) ?? "";
+          if (/pausing|draining|drain/i.test(value)) found.push(name + ":" + attribute + ":" + value);
+        }
+      }
+    };
+    scan(document.getElementById("workspace-issues"), "issues");
+    scan(document.querySelector('[data-testid="issues-indicator"]'), "indicator");
+    return found;
+  })()`);
+  check(drainVocabulary.length === 0, "the takeover renders drain vocabulary", drainVocabulary);
+
+  // The older worker retires: its run stays readable with its own version,
+  // the live list drops it, and every running task names the newer version.
+  try {
+    process.kill(mixedWorkerPids[0]!, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+  await rm(versionLockPath(lockPath(resolve(host)), MIXED_OLD_VERSION), { force: true });
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues working (1)"`,
+    "the family headline after the older worker retired",
+    10_000,
+  );
+  await runPalette("open.issues.agents");
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-agent"]').length === 1`,
+    "the single running task after retirement",
+    8_000,
+  );
+  const retiredWorkers = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-worker"]')].map((item) => item.textContent?.trim() ?? "")`,
+  );
+  check(
+    retiredWorkers.length === 1 && retiredWorkers[0] === seedVersion,
+    "the live worker list still contains the retired worker",
+    retiredWorkers,
+  );
+  const retiredCard = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-agent"] [data-testid="issues-agent-version"]')?.textContent?.trim() ?? ""`,
+  );
+  check(retiredCard.includes(seedVersion), "the surviving task does not name the newer version", retiredCard);
+  await runPalette("open.issues.runs");
+  await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the history after retirement");
+  const retiredRuns = await page.eval<Array<{ run: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-run"]')].map((item) => ({
+      run: item.getAttribute("data-run") ?? "",
+      version: item.querySelector('[data-testid="issues-run-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    retiredRuns.some((row) => row.run === MIXED_OLD_RUN && row.version === MIXED_OLD_VERSION),
+    "the retired worker's run lost its version in history",
+    retiredRuns,
+  );
+  await clearMixedIssuesState(stateDir, host);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues stopped"`,
+    "the stopped indicator after the mixed-version fixture",
+    10_000,
   );
 
   // Leave a running state so the 1024×720 clipping check sees the item.
