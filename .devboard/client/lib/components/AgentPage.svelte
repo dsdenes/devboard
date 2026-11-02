@@ -3,11 +3,12 @@
   import { agents } from "../agents.svelte";
   import { connection } from "../connection.svelte";
   import { layout } from "../layout.svelte";
-  import type { AgentCycle, AgentDocumentationEntry, AgentIssueRow } from "../types";
+  import type { AgentCycle, AgentDocumentationEntry, AgentIssueRow, AgentReleaseRow } from "../types";
   import AgentActivityBar from "./AgentActivityBar.svelte";
   import AgentDocumentationPanel from "./AgentDocumentationPanel.svelte";
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
   import AgentPromptSection from "./AgentPromptSection.svelte";
+  import AgentReleasesTable from "./AgentReleasesTable.svelte";
   import CommandButton from "./CommandButton.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
   import Input from "./ui/input.svelte";
@@ -25,6 +26,7 @@
   const paused = $derived(snapshot?.paused === true);
   const sync = $derived(snapshot?.sync ?? { state: "stale", at: null, error: null });
   const issues = $derived<AgentIssueRow[]>(snapshot?.issues ?? []);
+  const releases = $derived<AgentReleaseRow[]>(snapshot?.releases ?? []);
   const documentation = $derived<AgentDocumentationEntry[]>(snapshot?.documentation ?? []);
   const detail = $derived(snapshot?.detail ?? null);
   const blocked = $derived(snapshot?.timer?.blocked === true);
@@ -386,15 +388,29 @@
         {#if descriptor.documentation !== undefined}
           <AgentDocumentationPanel entries={documentation} />
         {/if}
-        <section class="panel agent-page__issues" aria-label={`${descriptor.label} filed issues`}>
-          <div class="panel__header">
-            <h2 class="panel__title">Filed issues</h2>
-            <span class="panel__subtitle" data-testid="agent-issues-count">{issues.length} filed</span>
-          </div>
-          <div class="panel__body panel__body--flush">
-            <AgentIssuesTable {issues} agentLabel={descriptor.label} />
-          </div>
-        </section>
+        {#if descriptor.releases !== undefined}
+          <section class="panel agent-page__releases" aria-label={`${descriptor.label} release history`}>
+            <div class="panel__header">
+              <h2 class="panel__title">Releases</h2>
+              <span class="panel__subtitle" data-testid="agent-releases-count">
+                {releases.length} released
+              </span>
+            </div>
+            <div class="panel__body panel__body--flush">
+              <AgentReleasesTable {releases} />
+            </div>
+          </section>
+        {:else}
+          <section class="panel agent-page__issues" aria-label={`${descriptor.label} filed issues`}>
+            <div class="panel__header">
+              <h2 class="panel__title">Filed issues</h2>
+              <span class="panel__subtitle" data-testid="agent-issues-count">{issues.length} filed</span>
+            </div>
+            <div class="panel__body panel__body--flush">
+              <AgentIssuesTable {issues} agentLabel={descriptor.label} />
+            </div>
+          </section>
+        {/if}
       </div>
     </div>
     </div>
@@ -520,18 +536,21 @@
     min-width: 0;
   }
 
-  .agent-page__column .agent-page__issues {
+  .agent-page__column .agent-page__issues,
+  .agent-page__column .agent-page__releases {
     flex: 1 1 auto;
   }
 
-  .agent-page__issues {
+  .agent-page__issues,
+  .agent-page__releases {
     display: flex;
     flex-direction: column;
     min-height: 0;
     min-width: 0;
   }
 
-  .agent-page__issues :global(.panel__body) {
+  .agent-page__issues :global(.panel__body),
+  .agent-page__releases :global(.panel__body) {
     flex: 1 1 auto;
     min-height: 0;
   }

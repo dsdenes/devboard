@@ -186,6 +186,7 @@ export type {
   AgentIssueState,
   AgentLifecycle,
   AgentLimits,
+  AgentReleaseRow,
   AgentScope,
   AgentSnapshot,
   AgentSync,

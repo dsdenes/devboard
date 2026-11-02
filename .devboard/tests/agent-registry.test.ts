@@ -174,6 +174,7 @@ describe("background agent registry", () => {
     expect(releaseTrain.cadence.defaultMinutes).toBe(10);
     expect(releaseTrain.limits.default).toEqual({ maxPerHour: null, maxPending: null });
     expect(releaseTrain.detail.panel).toBe("activity");
+    expect(releaseTrain.releases).toEqual({ testId: "agent-releases" });
     expect(releaseTrain.controls).toEqual({ pause: true, checkNow: true });
     expect(releaseTrain.tab).toEqual({
       id: "release-train",

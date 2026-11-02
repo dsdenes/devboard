@@ -15,12 +15,14 @@ import {
   writeSettings,
 } from "../release-train/settings";
 import {
+  readRunCommitCount,
   readState,
+  type ReleaseTrainRun,
   type ReleaseTrainState,
   type ReleaseTrainWorkerRecord,
 } from "../release-train/state";
 import { releaseTrainWorkerStates } from "../release-train/worker";
-import type { AgentDescriptor, AgentSnapshotInput } from "./agents/registry";
+import type { AgentDescriptor, AgentReleaseRow, AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 
 /**
@@ -73,6 +75,8 @@ export class ReleaseTrainActivity implements AgentAdapter {
   private startingSince: number | null = null;
   private stopRequested = false;
   private startError: string | null = null;
+  /** Commit counts read from a legacy run's request, keyed by run id. */
+  private readonly releaseCommitCounts = new Map<string, number | null>();
 
   constructor(options: ReleaseTrainActivityOptions) {
     this.descriptor = options.descriptor;
@@ -224,6 +228,7 @@ export class ReleaseTrainActivity implements AgentAdapter {
         maxPending: settings.maxPending,
       },
       issues: [],
+      releases: this.releaseHistory(shared),
       pending: 0,
       sync: {
         state:
@@ -241,6 +246,35 @@ export class ReleaseTrainActivity implements AgentAdapter {
       timer: null,
       workers,
     };
+  }
+
+  /** The verified releases, newest first, as the page lists them. */
+  private releaseHistory(shared: ReleaseTrainState | undefined): AgentReleaseRow[] {
+    const rows: AgentReleaseRow[] = [];
+    for (const run of shared?.runs ?? []) {
+      if (run.state !== "released" || run.version === null) continue;
+      rows.push({
+        at: run.endedAt ?? run.startedAt,
+        version: run.version,
+        commits: this.runCommitCount(run),
+        url: run.url,
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * A run recorded before the shared state carried the count still has the
+   * request its agent read. Read it once; an absent answer stays null.
+   */
+  private runCommitCount(run: ReleaseTrainRun): number | null {
+    if (run.commits !== null) return run.commits;
+    if (this.releaseCommitCounts.has(run.id)) {
+      return this.releaseCommitCounts.get(run.id) ?? null;
+    }
+    const count = readRunCommitCount(this.directory, run.id);
+    this.releaseCommitCounts.set(run.id, count);
+    return count;
   }
 
   async start(): Promise<AgentCommandResult> {

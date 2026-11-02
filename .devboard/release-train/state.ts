@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { isInteger, isRecord, nullableString } from "../issues/guards";
 import { writeJsonAtomic } from "../watchdog/settings";
 import type { AgentLifecycle } from "../server/agents/registry";
-import { STATE_VERSION, WORKER_VERSION, statePath } from "./paths";
+import { STATE_VERSION, WORKER_VERSION, requestPath, statePath } from "./paths";
 
 /**
  * The Release Train's shared, durable record. Every worker version writes the
@@ -50,6 +50,8 @@ export interface ReleaseTrainRun {
   version: string | null;
   url: string | null;
   detail: string | null;
+  /** Non-merge commits in the range; null when the gate carried no commit list. */
+  commits: number | null;
 }
 
 export interface ReleaseTrainState {
@@ -141,8 +143,19 @@ function isRun(value: unknown): value is ReleaseTrainRun {
     typeof value.target === "string" &&
     nullableString(value.version) &&
     nullableString(value.url) &&
-    nullableString(value.detail)
+    nullableString(value.detail) &&
+    (value.commits === undefined ||
+      value.commits === null ||
+      (isInteger(value.commits) && value.commits >= 0))
   );
+}
+
+/** A run written before the count existed keeps null instead of a guess. */
+function normalizeRun(run: ReleaseTrainRun): ReleaseTrainRun {
+  return {
+    ...run,
+    commits: isInteger(run.commits) && run.commits >= 0 ? run.commits : null,
+  };
 }
 
 export function parseState(text: string): ReleaseTrainState | undefined {
@@ -169,7 +182,9 @@ export function parseState(text: string): ReleaseTrainState | undefined {
     release: parsed.release as ReleaseTrainRelease | null,
     failure: parsed.failure as ReleaseTrainFailure | null,
     gate: parsed.gate as ReleaseTrainGateRecord | null,
-    runs: (parsed.runs as ReleaseTrainRun[]).slice(0, RUN_HISTORY_LIMIT),
+    runs: (parsed.runs as ReleaseTrainRun[])
+      .slice(0, RUN_HISTORY_LIMIT)
+      .map(normalizeRun),
     activity: (parsed.activity as string[]).slice(-ACTIVITY_MAX_ENTRIES),
     updatedAt: parsed.updatedAt,
   };
@@ -185,6 +200,23 @@ export function readState(directory: string): ReleaseTrainState | undefined {
 
 export function writeState(directory: string, state: ReleaseTrainState): void {
   writeJsonAtomic(statePath(directory), state);
+}
+
+/**
+ * The non-merge commits one persisted run released, read from the request the
+ * worker handed its agent. A run written before the shared state carried the
+ * count still has this record; a missing or malformed one answers null.
+ */
+export function readRunCommitCount(directory: string, id: string): number | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(requestPath(directory, id), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.releaseCommits)) return null;
+  const count = parsed.releaseCommits.length;
+  return count > 0 ? count : null;
 }
 
 /** Prepends one run and keeps the newest bounded history. */

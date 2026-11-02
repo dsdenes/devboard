@@ -117,6 +117,17 @@ export interface AgentCyclesDetail {
   cycles: AgentCycle[];
 }
 
+/** One verified release, newest first, as the Release Train page lists them. */
+export interface AgentReleaseRow {
+  /** When the worker verified the release, UTC ISO 8601. */
+  at: string;
+  version: string;
+  /** Non-merge commits the released range carried; null when it is unknown. */
+  commits: number | null;
+  /** The forge release page, or null when the run recorded none. */
+  url: string | null;
+}
+
 export type AgentDetail = AgentActivityDetail | AgentCyclesDetail;
 
 /** One live worker process of a background agent family. */
@@ -151,6 +162,8 @@ export interface AgentSnapshot {
   issues: AgentIssueRow[];
   /** Released documentation changes, newest first; empty for most agents. */
   documentation: AgentDocumentationEntry[];
+  /** Verified releases, newest first; empty for most agents. */
+  releases: AgentReleaseRow[];
   /** Findings or fingerprints waiting for a successful filing. */
   pending: number;
   sync: AgentSync;
@@ -179,6 +192,8 @@ export interface AgentSnapshotInput {
   issues: AgentIssueRow[];
   /** Optional so an adapter of an older server keeps projecting. */
   documentation?: AgentDocumentationEntry[];
+  /** Optional so an adapter of an older server keeps projecting. */
+  releases?: AgentReleaseRow[];
   pending: number;
   sync: AgentSync;
   detail: AgentDetail;
@@ -242,6 +257,10 @@ export interface AgentDescriptor {
   /** A released documentation list rendered above the filed issues table. */
   documentation?: {
     testId: "agent-documentation";
+  };
+  /** A verified release history that replaces the filed-issues table. */
+  releases?: {
+    testId: "agent-releases";
   };
   tab: {
     id: string;
@@ -391,6 +410,12 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     throw new AgentRegistryError(`${id}: documentation must declare the shared panel`);
   }
   if (
+    descriptor.releases !== undefined &&
+    (!isRecord(descriptor.releases) || descriptor.releases.testId !== "agent-releases")
+  ) {
+    throw new AgentRegistryError(`${id}: releases must declare the shared panel`);
+  }
+  if (
     !isRecord(descriptor.tab) ||
     descriptor.tab.id !== id ||
     descriptor.tab.kind !== id ||
@@ -498,6 +523,28 @@ function normalizeDocumentation(value: unknown): AgentDocumentationEntry[] {
     .slice(0, 20);
 }
 
+/** The release history a page lists, newest first and bounded. */
+function normalizeReleases(value: unknown): AgentReleaseRow[] {
+  if (!Array.isArray(value)) return [];
+  const rows: AgentReleaseRow[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || typeof entry.at !== "string" || typeof entry.version !== "string") {
+      continue;
+    }
+    if (!(entry.url === null || typeof entry.url === "string")) continue;
+    if (!(entry.commits === null || isIntegerIn(entry.commits, 0, Number.MAX_SAFE_INTEGER))) {
+      continue;
+    }
+    rows.push({
+      at: entry.at,
+      version: entry.version,
+      url: entry.url,
+      commits: entry.commits as number | null,
+    });
+  }
+  return rows.slice(0, 20);
+}
+
 /** The one sort every agent's filed-issue table uses. */
 export function sortAgentIssues(rows: readonly AgentIssueRow[]): AgentIssueRow[] {
   const instant = (value: string): number => {
@@ -575,6 +622,7 @@ export function projectAgentSnapshot(
         : 0,
     sync: { state: sync.state, at: sync.at, error: sync.error },
     detail: detail as AgentDetail,
+    releases: normalizeReleases(input.releases),
     notice: nullableTimestamp(input.notice),
     error: nullableTimestamp(input.error),
     timer:
@@ -763,6 +811,7 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,
     detail: { panel: "activity", testId: "agent-detail" },
+    releases: { testId: "agent-releases" },
     controls: { pause: true, checkNow: true },
     tab: { id: "release-train", kind: "release-train", title: "Release Train" },
   }),

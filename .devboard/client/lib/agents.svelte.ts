@@ -95,9 +95,14 @@ export class AgentsStore {
       .filter((snapshot): snapshot is AgentSnapshot => snapshot !== undefined);
   }
 
-  /** The sidebar count: the issues this agent has filed, matching its table. */
+  /** The sidebar count: the rows the agent's page lists. */
   count(id: string): number {
-    return this.snapshots[id]?.issues.length ?? 0;
+    const snapshot = this.snapshots[id];
+    if (snapshot === undefined) return 0;
+    if (agentRegistry.get(id)?.releases !== undefined) {
+      return snapshot.releases?.length ?? 0;
+    }
+    return snapshot.issues.length;
   }
 
   lifecycle(id: string): string {
