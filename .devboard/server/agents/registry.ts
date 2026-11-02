@@ -133,6 +133,8 @@ export interface AgentSnapshot {
   description: string;
   scope: AgentScope;
   lifecycle: AgentLifecycle;
+  /** True while the worker is paused by an operator. */
+  paused: boolean;
   /** The worker's persisted start intent. */
   enabled: boolean;
   /** True when this dashboard may command the live worker. */
@@ -140,6 +142,8 @@ export interface AgentSnapshot {
   attached: boolean;
   cadence: {
     minutes: number;
+    /** The descriptor's default cadence, kept for callers that compare it. */
+    defaultMinutes: number;
     lastRunAt: string | null;
     nextRunAt: string | null;
   };
@@ -161,6 +165,8 @@ export interface AgentSnapshot {
 /** What an adapter publishes; the registry validates and normalizes it. */
 export interface AgentSnapshotInput {
   lifecycle: AgentLifecycle;
+  /** Optional so an adapter of an older server keeps projecting. */
+  paused?: boolean;
   enabled: boolean;
   owned: boolean;
   attached: boolean;
@@ -227,6 +233,11 @@ export interface AgentDescriptor {
   detail: {
     panel: "activity" | "cycles";
     testId: "agent-detail";
+  };
+  /** Extra shared controls a family answers beyond Start and Stop. */
+  controls?: {
+    pause?: true;
+    checkNow?: true;
   };
   /** A released documentation list rendered above the filed issues table. */
   documentation?: {
@@ -363,6 +374,14 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     descriptor.detail.testId !== "agent-detail"
   ) {
     throw new AgentRegistryError(`${id}: detail must declare the shared panel`);
+  }
+  if (
+    descriptor.controls !== undefined &&
+    (!isRecord(descriptor.controls) ||
+      (descriptor.controls.pause !== undefined && descriptor.controls.pause !== true) ||
+      (descriptor.controls.checkNow !== undefined && descriptor.controls.checkNow !== true))
+  ) {
+    throw new AgentRegistryError(`${id}: controls must be the shared pause and check-now flags`);
   }
   if (
     descriptor.documentation !== undefined &&
@@ -534,11 +553,13 @@ export function projectAgentSnapshot(
     description: descriptor.description,
     scope: descriptor.scope,
     lifecycle: normalizeLifecycle(descriptor, input.lifecycle),
+    paused: input.paused === true,
     enabled: input.enabled === true,
     owned: input.owned === true,
     attached: input.attached === true,
     cadence: {
       minutes: normalizeMinutes(descriptor, input.cadence?.minutes),
+      defaultMinutes: descriptor.cadence.defaultMinutes,
       lastRunAt: nullableTimestamp(input.cadence?.lastRunAt),
       nextRunAt: nullableTimestamp(input.cadence?.nextRunAt),
     },
@@ -715,6 +736,35 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     issues: SHARED_ISSUES,
     detail: { panel: "cycles", testId: "agent-detail" },
     tab: { id: "coach", kind: "coach", title: "Coach" },
+  }),
+  validateAgentDescriptor({
+    id: "release-train",
+    label: "Release Train",
+    description:
+      "Releases every unreleased commit on main on its scheduled cadence, one version per " +
+      "collected range.",
+    scope: "repository",
+    prompt: {
+      kind: "file",
+      file: "release-train.md",
+    },
+    lifecycle: AGENT_LIFECYCLES,
+    cadence: {
+      field: "intervalMinutes",
+      defaultMinutes: 10,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    },
+    limits: {
+      maxPerHour: { min: 1, max: 100, nullable: true },
+      maxPending: { min: 1, max: 100, nullable: true },
+      default: { maxPerHour: null, maxPending: null },
+    },
+    commands: SHARED_COMMANDS,
+    issues: SHARED_ISSUES,
+    detail: { panel: "activity", testId: "agent-detail" },
+    controls: { pause: true, checkNow: true },
+    tab: { id: "release-train", kind: "release-train", title: "Release Train" },
   }),
 ]);
 

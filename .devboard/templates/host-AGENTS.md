@@ -96,9 +96,10 @@ waits for the new process, and reloads once. The replacement never kills a live 
 background worker. Every run owns a detached process that survives the dashboard, so its state and
 activity replay after reconnect, an answer reaches the same run, Stop ends it, and work in flight
 finishes on the version that started it. Each background worker family (Issues, Auto Scout, Design
-System, Coach, Watchdog) accepts a live worker of more than one harness version: the running
-version starts its own worker when an older one is live, sends the older worker a drain, and every
-unit that arises afterwards is claimed by the newest worker. The older worker starts no new unit,
+System, Coach, Watchdog, Release Train) accepts a live worker of more than one harness version:
+the running version starts its own worker when an older one is live, sends the older worker a
+drain, and every unit that arises afterwards is claimed by the newest worker. The older worker
+starts no new unit,
 finishes its in-flight unit, exits when its last unit ends, releases its lock, and leaves its
 state and activity readable. Start launches the newest installed version when no worker is live;
 Pause, Resume, Check now, Stop, and settings apply to every live worker of the family. A worker
@@ -120,45 +121,45 @@ the report controls are not rendered and `POST /api/feedback` answers HTTP 503 n
 variable; no GitHub request is made. Host-forge behavior for GitHub, GitLab, and Gitea origins is
 unchanged.
 
-## Publish after every change
+## The Release Train releases
 
-Publishing is a release, not a restart. Merging into `main` and pushing triggers the
-`.gitea/workflows/devboard-release.yml` workflow, which builds, tests, packs the complete public
-package, publishes `@dsdenes/devboard@<version>` to npmjs, and creates the Gitea release with
-notes plus the same tarball and its `.sha256` as a fallback. Nothing is published under
-`@dsdenes/devboard-harness`.
+The Release Train is the only component that publishes a Devboard version. It is the
+`release-train` background agent family in the dashboard. On each tick its worker runs one
+deterministic gate and starts one `omp acp` release agent only when the gate finds unreleased
+commits. Nothing is published under `@dsdenes/devboard-harness`.
 
-A change is not finished until the workflow for the pushed commit succeeds, the npm package and
-Gitea release assets exist, and the installed hosts have picked the release up. After the push, run
-from the integration checkout — never from a worktree:
+- **Cadence.** The default is 10 minutes, and the field accepts 1 through 1440 minutes.
+- **Gate.** The worker fetches `origin/main` and its tags and compares that tip with the newest
+  `v<version>` tag reachable from it. Unreleased means at least one non-merge commit after that
+  tag; with no release tag, every non-merge commit is unreleased. Only merge commits release
+  nothing. An unreadable remote, tag, or commit read records a failure and starts no agent.
+- **Singleton.** At most one release agent run exists per repository. A second worker of the same
+  harness version refuses to start while one is live; a cadence tick or Check now during an active
+  run starts nothing. After a run ends, the next due tick may start one.
+- **Batching.** One run publishes exactly one version for every non-merge commit since the newest
+  release tag, using the existing Conventional Commit derivation: one npm version, one Gitea
+  release carrying `devboard-<version>.tgz` and `devboard-<version>.tgz.sha256`, and one tag
+  naming the released commit.
+- **Retry.** A failing workflow conclusion, a missing npm version, missing release assets, or a
+  rejected derived version records the failure with its detail, ships nothing, and leaves the
+  range unreleased. The next due tick starts a new run without operator action. A failed run is
+  never recorded as released.
+- **Agent.** `.devboard/prompts/release-train.md` instructs one run to fetch canonical `main`,
+  release it through `bun run publish` from the integration checkout, verify the npm package and
+  the Gitea assets, and report the version and release URL. `bun run publish` dispatches
+  `.gitea/workflows/devboard-release.yml` for the checked-out `main` tip when that tip has no
+  usable run, then performs the existing verification; it never requires a push.
+- **No other releaser.** `.gitea/workflows/devboard-release.yml` runs only on
+  `workflow_dispatch`. The implementing agent closes its issue after the push proof and never
+  publishes. The Design System pushes its documentation commit and reports without waiting for a
+  release. No prompt, worker, or workflow other than the Release Train starts a release.
 
-```bash
-cd .devboard
-bun run publish
-```
-
-`bun run publish` is the verification path. It:
-
-1. refuses a worktree, a branch other than `main`, or a checkout ahead of or diverged from its
-   canonical remote;
-2. fetches the remote and fast-forwards `main` to it; uncommitted work is never discarded — an
-   overlapping local change stops the run and names the blocking paths;
-3. runs `bun install --frozen-lockfile` and `bun run build`, then proves `dist/index.html` is
-   newer than every client source and that every referenced asset exists;
-4. waits for the `devboard-release.yml` run of `HEAD` and requires a successful conclusion;
-5. verifies the npm package and the Gitea release's fallback tarball and `.sha256`;
-6. pushes the `github` mirror remote and proves its `main` names the published commit;
-7. reports every running dashboard's running and installed versions without restarting it.
-
-Options: `--wait-timeout N` bounds the workflow and propagation wait (default 1800 seconds).
-It never restarts a dashboard, never writes into a host, and exits nonzero when the npm package
-or the release assets are missing. Installed dashboards update themselves; an operator clicks the
-reload control when they want the new code.
-
-The integration checkout is advanced and rebuilt after a push; it is never a place for feature
-work. If its uncommitted changes block the fast-forward, preserve them (copy or patch them
-aside, apply the published revision, reapply the changes) and rerun `publish`. Never discard
-them and never bypass the fast-forward.
+A change is finished when it is merged to `main`, pushed, and released by the Release Train. The
+integration checkout is advanced and rebuilt after a push; it is never a place for feature work.
+If its uncommitted changes block the fast-forward, preserve them (copy or patch them aside, apply
+the published revision, reapply the changes) and rerun the train's publish path. Never discard
+them and never bypass the fast-forward. Never run `bun run publish` by hand and never dispatch the
+release workflow by hand: the Release Train owns both.
 
 Guardrails:
 
@@ -228,18 +229,21 @@ never hand-edit them.
   verified that the upstream tip is the integrated commit. Only then are the worktree and branch
   removed. Local-only main is never done.
 - Host mode: host build/tests run; `.devboard/` unchanged.
-- Harness mode: the pushed commit's release workflow succeeded and `bun run publish` verified
-  the npm package and release assets; installed dashboards report the release through
-  `versionState` and restart only from the reload control; the changed entry point runs from the
-  repo root against a supplied host path; no absolute paths or host specifics under
-  `.devboard/`; nothing created outside `.devboard/`.
+- Harness mode: the pushed commit is released by the Release Train, which dispatched and verified
+  the release workflow and the npm package and release assets; installed dashboards report the
+  release through `versionState` and restart only from the reload control; the changed entry
+  point runs from the repo root against a supplied host path; no absolute paths or host
+  specifics under `.devboard/`; nothing created outside `.devboard/`.
 
 ## Map
 
 - `.devboard/` — harness root: interface, toolchain, prompts, extensions, goals, tests,
   `omp/`, `install.sh`, `scripts/publish.ts`.
-- `.devboard/scripts/publish.ts` — verifies `main`, waits for the release workflow, proves the
-  npm package and release assets, and reports dashboards without restarting them.
+- `.devboard/scripts/publish.ts` — dispatches the release workflow for the `main` tip, waits for
+  it, proves the npm package and release assets, and reports dashboards without restarting them.
+  Only the Release Train invokes it.
+- `.devboard/release-train/` — the Release Train family: worker, gate call, settings, control,
+  state, and runs.
 - `.devboard/scripts/release.ts` — publishes the public package and the Gitea fallback release.
 - `.devboard/templates/host-AGENTS.md` — host contract copied at release time; byte-identical to
   this file.

@@ -74,8 +74,9 @@ import { readToolLog, toolValueNumber, toolValueString } from "../../lib/tool-lo
 /**
  * The detached worker for one repository's Design System agent. It owns the
  * audit cadence, the ACP peer, the repository lock, the attributed issue
- * filing, and the autonomous document release, so it outlives any dashboard
- * process. At most one audit and release cycle runs at a time.
+ * filing, and the documentation push, so it outlives any dashboard process.
+ * At most one audit and documentation cycle runs at a time. It never releases:
+ * the Release Train owns every npm version and Gitea release.
  */
 
 const TICK_MS = 100;
@@ -207,9 +208,9 @@ export class DesignWorker {
   private cycleDone: Promise<void> = Promise.resolve();
   private settleCycle: (() => void) | undefined;
   /**
-   * Resolves when the running cycle has settled. Set before the release starts
-   * so a stop during `releasing` can wait for the push, the workflow, and the
-   * publish instead of exiting between them.
+   * Resolves when the running cycle has settled. Set before the documentation
+   * push starts so a stop during `releasing` can wait for the push and cleanup
+   * instead of exiting between them.
    */
   private releaseSettled: Promise<void> | undefined;
   private settleRelease: (() => void) | undefined;
@@ -920,9 +921,9 @@ export class DesignWorker {
       const request = readReleaseRequest(active.directory);
       const changed = draftChanged(active.directory, active.input.documents);
       // A draft that breaks the document contract is refused like an
-      // inadmissible decision: activity records it, nothing is released, and
-      // the cycle is not an operator-facing failure. Only a failed release
-      // (push, workflow, publish) is a failure.
+      // inadmissible decision: activity records it, nothing is pushed, and
+      // the cycle is not an operator-facing failure. Only a failed
+      // documentation push (integration or push) is a failure.
       let rejected: string | null = null;
       let releaseError: string | null = null;
       let released: ReleaseResult | undefined;
@@ -1012,10 +1013,13 @@ export class DesignWorker {
                 files: released.files,
                 diff: released.diff,
               });
-              record(`released ${released.version}: ${released.url}`);
+              record(
+                `pushed documentation ${released.sha.slice(0, 7)}; ` +
+                  "the Release Train will release it",
+              );
             }
           }
-          if (releaseError !== null) record(`release failed: ${releaseError}`);
+          if (releaseError !== null) record(`documentation push failed: ${releaseError}`);
         }
       } else if (request !== undefined) {
         record("the release request produced no changed document");
@@ -1096,9 +1100,10 @@ export class DesignWorker {
       this.releaseCycleClaim();
       this.settleCycle?.();
       this.settleCycle = undefined;
-      // A cycle whose release already pushed must finish its workflow wait,
-      // publish, and worktree cleanup before the worker reports `stopped` and
-      // exits: exiting in between leaves main with an unreleased commit.
+      // A cycle whose documentation push already ran must finish its worktree
+      // cleanup before the worker reports `stopped` and exits: exiting in
+      // between leaves main with a pushed documentation commit and a stale
+      // cycle worktree.
       const releaseSettled = this.releaseSettled;
       if (releaseSettled !== undefined) await releaseSettled;
       this.state.enabled = false;

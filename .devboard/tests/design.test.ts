@@ -542,15 +542,15 @@ describe("design documentation history", () => {
     );
   });
 
-  test("the design prompt names the isolated worktree release path", () => {
+  test("the design prompt names the isolated worktree documentation push", () => {
     const prompt = readFileSync(join(harnessRoot, "prompts", "design-system.md"), "utf8");
     for (const concept of [
       "worktree",
       "origin/main",
-      "bun run publish",
       "main checkout",
       "without force",
-      "release workflow",
+      "Release Train",
+      "documentation push",
       ".worktree/",
       "issue_create",
       "design_release_request",
@@ -559,6 +559,8 @@ describe("design documentation history", () => {
       expect(prompt).toContain(concept);
     }
     expect(prompt).toContain("never run git");
+    expect(prompt).not.toContain("bun run publish");
+    expect(prompt).not.toContain("release workflow");
   });
 });
 
@@ -1198,7 +1200,7 @@ describe("design worker", () => {
       join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
       "utf8",
     );
-    expect(activity).toContain("release failed");
+    expect(activity).toContain("documentation push failed");
     expect(activity).toContain("design/tokens.json");
 
     await worker.beginCycle();
@@ -1253,7 +1255,7 @@ describe("design worker", () => {
     );
     expect(activity).toContain("documentation rejected");
     expect(activity).toContain("lacks ## Design principles and ## UX principles");
-    expect(activity).not.toContain("release failed");
+    expect(activity).not.toContain("documentation push failed");
     await worker.stop();
   });
 
@@ -1298,7 +1300,7 @@ describe("design worker", () => {
     );
     expect(activity).toContain("documentation rejected");
     expect(activity).toContain("design/tokens.json is not a JSON object");
-    expect(activity).not.toContain("release failed");
+    expect(activity).not.toContain("documentation push failed");
     await worker.stop();
   });
 
@@ -1791,7 +1793,7 @@ function advanceOrigin(bare: string, worktree: string, fileName: string, text: s
 }
 
 describe("design release planner", () => {
-  test("creates a cycle worktree, commits only the documents, pushes, publishes once, and cleans up", async () => {
+  test("creates a cycle worktree, commits only the documents, pushes, and cleans up", async () => {
     const { repo, bare, config } = await releaseFixture("release");
     const current = readDocuments(repo, config);
     const next = current.map((document) => ({
@@ -1801,7 +1803,6 @@ describe("design release planner", () => {
           ? `${document.text}\n## Design principles\n\n- Accent is one token.\n\n## UX principles\n\n- Every state carries a word.\n`
           : `${document.text}\n`,
     }));
-    const published: Array<{ version: string; sha: string }> = [];
     const result = await releaseDocuments({
       repoDir: repo,
       harnessDir: join(repo, ".devboard"),
@@ -1812,17 +1813,11 @@ describe("design release planner", () => {
       environment: { PATH: process.env.PATH },
       activity: () => undefined,
       now: () => new Date(),
-      waitForWorkflow: async () => ({ ok: true }),
-      publish: async (options) => {
-        published.push({ version: options.version, sha: options.sha });
-        return { ok: true };
-      },
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.version).toBe("1.0.0");
-    expect(published).toHaveLength(1);
-    expect(published[0]?.version).toBe("1.0.0");
+    expect(result.url).toContain(`/commit/${result.sha}`);
     const bareHead = run("git", ["--git-dir", bare, "rev-parse", "main"]);
     expect(bareHead).toBe(result.sha);
     const bareFiles = run("git", ["--git-dir", bare, "show", "--name-only", "--format=", "main"]);
@@ -1869,8 +1864,6 @@ describe("design release planner", () => {
           run("git", ["worktree", "remove", "--force", temporary], repo);
         }
       }),
-      waitForWorkflow: async () => ({ ok: true }),
-      publish: async () => ({ ok: true }),
     });
     expect(result.ok ? "" : result.detail).toBe("");
     if (!result.ok) return;
@@ -1913,74 +1906,11 @@ describe("design release planner", () => {
           run("git", ["worktree", "remove", "--force", temporary], repo);
         }
       }),
-      waitForWorkflow: async () => ({ ok: true }),
-      publish: async () => ({ ok: true }),
     });
     expect(result.ok ? "" : result.detail).toBe("");
     if (!result.ok) return;
     const prose = run("git", ["--git-dir", bare, "show", "main:DESIGN.md"]);
     expect(prose).toContain("Cycle accent");
-  });
-
-  test("a failed workflow keeps the pushed commit and reports the failing step", async () => {
-    const { repo, bare, config } = await releaseFixture("workflow-failure");
-    const current = readDocuments(repo, config);
-    const next = current.map((document) => ({
-      ...document,
-      text:
-        document.path === config.designDocument
-          ? `${document.text}\n## Design principles\n\n- One.\n\n## UX principles\n\n- Two.\n`
-          : document.text,
-    }));
-    let published = 0;
-    const result = await releaseDocuments({
-      repoDir: repo,
-      harnessDir: join(repo, ".devboard"),
-      cycleId: "cycle-4",
-      summary: "Document a standard",
-      config,
-      documents: next,
-      environment: { PATH: process.env.PATH },
-      activity: () => undefined,
-      now: () => new Date(),
-      waitForWorkflow: async () => ({ ok: false, detail: "the release workflow concluded failure" }),
-      publish: async () => {
-        published += 1;
-        return { ok: true };
-      },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.detail).toContain("concluded failure");
-    expect(published).toBe(0);
-    expect(run("git", ["--git-dir", bare, "log", "-1", "--format=%s", "main"])).toContain("docs(design):");
-  });
-
-  test("a failed publish keeps the pushed commit and reports it", async () => {
-    const { repo, bare, config } = await releaseFixture("publish-failure");
-    const current = readDocuments(repo, config);
-    const next = current.map((document) => ({
-      ...document,
-      text:
-        document.path === config.designDocument
-          ? `${document.text}\n## Design principles\n\n- One.\n\n## UX principles\n\n- Two.\n`
-          : document.text,
-    }));
-    const result = await releaseDocuments({
-      repoDir: repo,
-      harnessDir: join(repo, ".devboard"),
-      cycleId: "cycle-5",
-      summary: "Document a standard",
-      config,
-      documents: next,
-      environment: { PATH: process.env.PATH },
-      activity: () => undefined,
-      now: () => new Date(),
-      waitForWorkflow: async () => ({ ok: true }),
-      publish: async () => ({ ok: false, detail: "bun run publish exited 1" }),
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.detail).toContain("bun run publish exited 1");
-    expect(run("git", ["--git-dir", bare, "log", "-1", "--format=%s", "main"])).toContain("docs(design):");
   });
 
   test("a dirty integration checkout names its blocking paths and discards nothing", async () => {
@@ -2013,8 +1943,6 @@ describe("design release planner", () => {
           writeFileSync(join(repo, config.designDocument), "local uncommitted\n");
         }
       }),
-      waitForWorkflow: async () => ({ ok: true }),
-      publish: async () => ({ ok: true }),
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.detail).toContain("DESIGN.md");
@@ -2043,8 +1971,6 @@ describe("design release planner", () => {
         }
         return real(argv, options);
       },
-      waitForWorkflow: async () => ({ ok: true }),
-      publish: async () => ({ ok: true }),
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {

@@ -21,6 +21,10 @@ export interface AgentAdapter {
   requestSync?(): void;
   start(): Promise<AgentCommandResult>;
   stop(): AgentCommandResult;
+  /** Only a family whose descriptor declares the control implements this. */
+  pause?(): AgentCommandResult;
+  /** Only a family whose descriptor declares the control implements this. */
+  resume?(): AgentCommandResult;
   /** Saves the cadence and both caps as one settings write. */
   setSettings(minutes: unknown, maxPerHour: unknown, maxPending: unknown): AgentCommandResult;
   /** Only the descriptor with a legacy timer gate implements this. */

@@ -5,4 +5,4 @@ argument-hint: "[absolute scan directory]"
 
 Read `.devboard/prompts/scout-recommendations.md` (repo-root-relative) and follow it as the instructions for this turn. Do nothing else.
 
-Scan directory (required; read its `request.json` and write its `recommendations.json`): $ARGUMENTS
+Scan directory (required; read its `request.json` and file recommendations with the `issue_create` MCP tool): $ARGUMENTS

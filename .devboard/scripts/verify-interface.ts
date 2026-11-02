@@ -7996,6 +7996,19 @@ try {
     pendingMeta,
   );
 
+  // The indicator reports issue automation state, so activating it lands on the
+  // Overview even when Issues mode kept another surface open.
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="issues-queue"]') !== null`),
+    "the Issues queue is not the surface before the indicator click",
+  );
+  await page.click('[data-testid="issues-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-overview"]') !== null`,
+    "the Issues overview from the indicator on another surface",
+    8_000,
+  );
+
   // The sidebar no longer lists Runs; the palette still opens the tab.
   check(
     await page.eval<boolean>(`document.querySelector('[data-testid="open-issues-runs"]') === null`),

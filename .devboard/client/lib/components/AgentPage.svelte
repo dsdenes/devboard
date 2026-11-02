@@ -22,6 +22,7 @@
   const descriptor = $derived(agentRegistry.get(agentId));
   const snapshot = $derived(agents.snapshot(agentId));
   const lifecycle = $derived(snapshot?.lifecycle ?? "stopped");
+  const paused = $derived(snapshot?.paused === true);
   const sync = $derived(snapshot?.sync ?? { state: "stale", at: null, error: null });
   const issues = $derived<AgentIssueRow[]>(snapshot?.issues ?? []);
   const documentation = $derived<AgentDocumentationEntry[]>(snapshot?.documentation ?? []);
@@ -151,6 +152,34 @@
       startedAt={barStartedAt}
     >
       {#snippet control()}
+        {#if descriptor.controls?.checkNow && lifecycle === "running"}
+          <CommandButton
+            variant="default"
+            label="Check now"
+            evidence={() => agents.snapshot(agentId)?.cadence.lastRunAt ?? null}
+            command={() => agents.checkNow(agentId)}
+            data-testid="agent-check-now"
+            data-agent={agentId}
+            data-id={agentId}
+            disabled={!connection.open}
+          >
+            Check now
+          </CommandButton>
+        {/if}
+        {#if descriptor.controls?.pause && lifecycle === "running"}
+          <CommandButton
+            variant="default"
+            label={paused ? "Resume" : "Pause"}
+            evidence={() => agents.snapshot(agentId)?.paused === true}
+            command={() => (paused ? agents.resume(agentId) : agents.pause(agentId))}
+            data-testid={paused ? "agent-resume" : "agent-pause"}
+            data-agent={agentId}
+            data-id={agentId}
+            disabled={!connection.open}
+          >
+            {paused ? "Resume" : "Pause"}
+          </CommandButton>
+        {/if}
         {#if showStop}
           <CommandButton
             variant="default"

@@ -27,6 +27,7 @@ const FILE_ALLOWLIST = [
   "lib",
   "watchdog",
   "coach",
+  "release-train",
   "mcp",
   "issues",
   "prompts",

@@ -13,6 +13,13 @@ import { readCoachStatus } from "../coach/status";
 import { readCoachSettings } from "../coach/settings";
 import { coachDirectory } from "../coach/paths";
 import { readWorkerState as readCoachWorker, type CoachWorkerState } from "../coach/worker-state";
+import { releaseTrainDirectory } from "../release-train/paths";
+import { readSettings as readReleaseTrainSettings } from "../release-train/settings";
+import {
+  readState as readReleaseTrainState,
+  type ReleaseTrainWorkerRecord,
+} from "../release-train/state";
+import { releaseTrainWorkerStates } from "../release-train/worker";
 import type { AgentSnapshotInput } from "../server/agents/registry";
 import type { McpContext } from "./context";
 import { dashboardCommand, dashboardsFor, type LiveDashboard } from "./dashboard";
@@ -41,7 +48,7 @@ async function liveAgents(context: McpContext): Promise<AgentSnapshot[] | undefi
 }
 
 function workerLifecycle(
-  worker: WatchdogWorkerState | CoachWorkerState | undefined,
+  worker: WatchdogWorkerState | CoachWorkerState | ReleaseTrainWorkerRecord | undefined,
   attached: boolean,
 ): AgentSnapshotInput["lifecycle"] {
   if (attached) return worker?.lifecycle === "failed" ? "failed" : "running";
@@ -184,11 +191,60 @@ function coachSnapshot(context: McpContext): AgentSnapshot {
   });
 }
 
+function releaseTrainSnapshot(context: McpContext): AgentSnapshot {
+  const descriptor = agentRegistry.require("release-train");
+  const directory = releaseTrainDirectory(context.stateDir);
+  const shared = readReleaseTrainState(directory);
+  const worker = releaseTrainWorkerStates(directory)[0];
+  const attached = worker !== undefined && worker.lifecycle !== "stopped" && pidAlive(worker.pid);
+  const owned = attached && resolve(worker?.stateDir ?? "") === resolve(context.stateDir);
+  const settings = readReleaseTrainSettings(directory);
+  const lifecycle = workerLifecycle(worker, attached);
+  const gate = shared?.gate ?? null;
+  const activity = shared?.activity ?? [];
+  return projectAgentSnapshot(descriptor, {
+    lifecycle,
+    paused: worker?.paused === true,
+    enabled: attached && worker?.enabled === true && lifecycle !== "stopped",
+    owned,
+    attached,
+    cadence: {
+      minutes: settings.intervalMinutes,
+      lastRunAt: worker?.lastRunAt ?? shared?.release?.at ?? null,
+      nextRunAt: attached ? (worker?.nextRunAt ?? null) : null,
+    },
+    limits: {
+      maxPerHour: settings.maxPerHour,
+      maxPending: settings.maxPending,
+    },
+    issues: [],
+    pending: 0,
+    sync: {
+      state: gate === null ? "stale" : gate.state === "error" ? "error" : "ok",
+      at: gate?.at ?? null,
+      error: gate?.state === "error" ? gate.detail : null,
+    },
+    detail: {
+      panel: "activity",
+      scanId: `${shared?.runs[0]?.id ?? "idle"}:${activity.length}`,
+      entries: activity,
+    },
+    notice: worker?.notice ?? null,
+    error:
+      (gate?.state === "error" ? gate.detail : null) ??
+      worker?.lastError ??
+      shared?.failure?.detail ??
+      null,
+    timer: null,
+  });
+}
+
 function persistedAgents(context: McpContext): AgentSnapshot[] {
   return agentRegistry.descriptors.map((descriptor) => {
     if (descriptor.id === "scout") return scoutSnapshot(context);
     if (descriptor.id === "watchdog") return watchdogSnapshot(context);
     if (descriptor.id === "design") return designSnapshot(context);
+    if (descriptor.id === "release-train") return releaseTrainSnapshot(context);
     return coachSnapshot(context);
   });
 }

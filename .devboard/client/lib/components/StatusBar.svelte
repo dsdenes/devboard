@@ -106,8 +106,8 @@
       data-state={issues.lifecycle}
       data-tone={statusTone(issues.lifecycle)}
       title={issuesTitle}
-      aria-label={`${issuesLabel}. Open Issues mode.`}
-      onclick={() => layout.setMode("issues")}
+      aria-label={`${issuesLabel}. Open the Issues overview.`}
+      onclick={() => layout.showIssuesOverview()}
     >
       <span class="status-issues__dot" aria-hidden="true"></span>
       <span class="status-issues__label">{issuesLabel}</span>

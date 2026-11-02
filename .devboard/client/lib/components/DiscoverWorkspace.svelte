@@ -123,11 +123,11 @@
 {/snippet}
 
 {#snippet notices()}
-  {#if discover.displayError !== null || discover.interrupted}
+  {#if discover.noticeError !== null || discover.interrupted}
     <div class="discover-notices">
-      {#if discover.displayError !== null}
+      {#if discover.noticeError !== null}
         <p class="message" data-severity="error" data-testid="discover-error" role="alert">
-          {discover.displayError}
+          {discover.noticeError}
         </p>
       {/if}
       {#if discover.interrupted}

@@ -30,8 +30,8 @@ context, but you never edit, comment on, close, or reopen another issue.
   that is not that upstream — is never counted either: the one `git status --short --branch` of
   the checkout that has that branch checked out reports it, and the same count is never re-run
   between steps. Issue the call before the auth decision below. Never issue more than one
-  `devboard_status` call in a turn, except for the one read immediately after `bun run publish` or
-  a dashboard reload that confirms the newly running version; never poll it before each step or
+  `devboard_status` call in a turn, except for the one read immediately after a dashboard reload
+  that confirms the newly running version; never poll it before each step or
   between successive forge reads and writes.
 - Read every Devboard fact through the registered MCP tools — `devboard_status`, `issue_get`,
   `issues_list`, `issue_close`, `verification_run`, `goal_get`, `journal_search`, and
@@ -174,12 +174,13 @@ context, but you never edit, comment on, close, or reopen another issue.
   title, body, labels, state, and URL on whichever forge the repository uses. Use `issues_list`
   only to confirm the state of a referenced prerequisite, never to survey the backlog.
 - Forge state — issues, labels, releases, and workflow runs or jobs — MUST be read and mutated
-  through the `devboard` MCP tools: `issue_get` and `issues_list` for reads, `issue_close` for the
-  one close, and `verification_run` for an allowlisted check. NEVER source `.env` (including
+  through the `devboard` MCP tools: `issue_get` and `issues_list` for reads, `issue_close` for
+  the one close, and `verification_run` for an allowlisted check. NEVER source `.env` (including
   `set -a; . ./.env; set +a`) or call `curl` with `$GITEA_TOKEN` or `$DEVBOARD_GITEA_URL` to read
-  or write an issue, label, run, job, or release. Never call `gh` or `glab` for a tracker read or
-  mutation. Release and workflow verification goes through `bun run publish` as specified below,
-  never through a forge API.
+  or write an issue, label, run, job, or release.
+  Never call `gh` or `glab` for a tracker read or mutation. This run never releases and never
+  verifies a release: the Release Train publishes on its own schedule after the push, so do not
+  inspect or wait for a release workflow.
 
 ## Fetch budget
 
@@ -227,7 +228,7 @@ git fetch origin && git status --short --branch
   remote moved, or `git rev-parse --verify --quiet <ref>` printed nothing for the ref itself. It is
   that same one-step sync — fetch and the divergence line in one command — and it belongs to the
   rejection handling below, never to a re-check of the tip fetched at the start.
-- Never fetch to learn CI, release, or dashboard state: the publish run and the forge report it.
+- Never fetch to learn CI, release, or dashboard state: the push proof and the forge report it.
 
 ## Dependencies
 
@@ -699,9 +700,10 @@ worktree — and `main` too when the refusal names its side — rerun the invali
 repeat the same check unchanged. Never re-push blind, never substitute a different ad-hoc
 verification command, and never report done from a bare `git push` line. The landing merge is
 fast-forward only: never `--no-ff`, `--no-edit`, or a non-fast-forward `git merge origin/main` on
-`main`. Push before publish, never after.
+`main`. Never publish: the Release Train releases the pushed commit on its own schedule.
 
-After that block, release from the integration checkout with the single Publish invocation below.
+After that block, close the issue with `issue_close` and report. Do not release, and do not wait
+for a release workflow: the Release Train releases later.
 
 Untracked scratch entries already present under `.devboard/` are expected status noise: they never
 justify another fetch, merge, or commit. This run adds none of them: every scratch file — issue or
@@ -715,83 +717,24 @@ branch.
 
 ## CI waits
 
-Waiting for CI has exactly two sanctioned forms, and nothing else. The first is `bun run publish`
-for the `devboard-release.yml` run of `HEAD`: `bun run publish` blocks on that run for up to 1800
-seconds by default, then verifies the npm package and the Gitea release assets, so its exit status
-is the whole wait. Run it once per pushed commit as the Publish section specifies — in the
-foreground from `.devboard` with `--wait-timeout 1800` and `timeout: 0` — and read the output and
-exit status it returns.
+CI waiting in this run covers only the checks the change itself needs: the one sanctioned
+foreground `verification_run` per check, and one long-lived background watcher for a local `verify`
+process, started with `async: true` and `timeout: 0`. After it starts, end the turn.
 
-The second is one long-lived background watcher whose whole lifetime is that wait — a non-release
-run or a local `verify` process that publish does not cover — started with `async: true` and
-`timeout: 0`, after which the turn ends.
+Never wait for the release workflow: this run releases nothing, and the Release Train dispatches
+and verifies `devboard-release.yml` later on its own schedule. Never poll a workflow run with a
+hand-rolled `for i in $(seq 1 60)` loop over `/actions/runs/<id>`, never background a poll of the
+Gitea API, and never read `/actions/runs/<id>`, `/commits/<sha>/status`, a statuses feed, or a
+"count busy runs" page. The forge rule above already requires run reads through the `devboard` MCP
+tools, never `curl`.
 
-Never poll a workflow run with a hand-rolled `for i in $(seq 1 60)` loop over `/actions/runs/<id>`.
-The banned shape is `for i in $(seq 1 60); do curl ... /actions/runs/<id> ...; sleep ...; done`:
-any bounded retry over `sleep`, any backgrounded poll of the Gitea API, and these payload reads —
-`/actions/runs/<id>` for run `status`, `conclusion`, and `run_attempt`, `/commits/<sha>/status` for
-`state`, a statuses read, and a "count busy runs" read over `/actions/runs?limit=N`. Twenty calls
-across thirteen sessions took that shape: each iteration spends a turn, the harness backgrounds the
-loop as `bg_N`, and its own output says not to poll.
+## Release
 
-The forge rule above already requires run reads through the `devboard` MCP tools, never `curl`.
-One wait per run is the rule: start the sanctioned wait once, then end the turn. Never re-issue the
-same wait in a later turn, and never re-invoke or re-check it from a foreground turn — no `sleep`,
-`ps`, `pgrep`, `kill -0`, `top`, log tailing, `/proc` read, or second wait command. When the wait
-itself reads a run, read it at most once, parse `status`, `conclusion`, and `run_attempt` from that
-one read, and report what it says: `completed` means report the conclusion and continue; otherwise
-the watcher's completion follow-up is the answer, so end the turn.
-
-## Publish
-
-Publishing is part of the task, and its final step. Invoke `bun run publish` exactly once per
-pushed commit, from the integration checkout's `.devboard/`, and only after the change is merged to
-`main` and pushed — never from a worktree and never before the push. Run it in the foreground and
-read what it prints:
-
-```bash
-bun run publish --wait-timeout 1800
-```
-
-- Set `cwd` to `.devboard` and `timeout: 0` on that call: publish waits up to 1800 seconds for the
-  release workflow, so the default 300-second deadline would abort it with `Command aborted`.
-  Never redirect it — not into `.devboard/.tmp/publish.log` and not into a numbered
-  `.devboard/.tmp/publish-<digits>.log` — never append an `echo "EXIT:$?"` to a log, and never
-  pass `async: true`. The tool result and its completion follow-up carry publish's output and exit
-  status; a log file would hide both behind a path the turn then has to be woken to read.
-- Publish is long-running. When the call outlives the harness's foreground window it prints
-  `Backgrounded as job <id>` and keeps running; that acknowledgement is not the result. Its
-  completion follow-up carries the whole output and the exit status, so end the turn and read that
-  follow-up. Never poll for it — no `sleep`, `ps`, `pgrep`, `top`, or log tailing — never abort,
-  kill, or re-invoke it while it runs, and never start a second `bun run publish` for the same
-  pushed commit.
-- Use this invocation and this working directory: that `bun run publish` line with
-  `--wait-timeout 1800`, no absolute `cd` path such as `/home/...`, no `| tail`, `| head`,
-  `2>&1 | tee`, or any other output consumer, and no second option. Publish already
-  verifies `main`, the release workflow, the npm package, the release assets, and the mirror; the
-  push block already owns the push proof, so add no `git ls-remote` or `git status` probe around
-  the publish run, and never relaunch it to re-check propagation the result already reported. Read
-  no release or workflow state through `curl`, `gh`, or `glab`; publish prints the verification
-  result.
-- A nonzero exit is never followed by an immediate identical re-run, and no second `bun run publish`
-  starts for the same pushed commit after the release workflow concluded failure until the failing
-  step is diagnosed, fixed, committed, and pushed. Read publish's output, name the failing step, and
-  fix the cause in a new commit. When that output reports
-  `the release workflow concluded failure`, open that workflow run for the named commit and read
-  its failing step; when the run's log is not reachable through the exposed tools, reproduce the
-  workflow's own steps locally from the package root (`bun install --frozen-lockfile`,
-  `verification_run` with `{"check": "build"}`, `{"check": "test"}`, and `{"check": "typecheck"}`,
-  each executing with `.devboard` as the working directory) and fix the step that fails. Land the
-  fix — commit it, push it, and prove the push with the sync check above — and then run publish
-  exactly once for that new commit, never again for the commit whose run failed. Report the failing
-  step, the fix commit, and the exit status.
-- When the result reports truncation, read the spilled `artifact://<id>` it names for the complete
-  output instead of re-running publish. Never re-run publish for the same commit to see its output,
-  to confirm success, or to re-check propagation, and never retry it before a fix commit is pushed.
-- Report the observed exit status and the `publish:` lines it printed — workflow, npm package,
-  release assets, mirror, and dashboards — as the publish result. A completed run whose text ends
-  without `Command exited with code <n>` is exit 0. Close the issue with `issue_close` only after
-  that exit status is `0` and the pushed revision is verified on the canonical integration line.
+This run never releases. Close the issue with `issue_close` after the push block proved the push
+and the required checks pass. Never invoke the publish entry point, never dispatch a workflow,
+never call npm or the Gitea release API, and never wait for a release tag. The Release Train
+collects every unreleased `main` commit, publishes one version for the range, and records the
+version and release URL itself; a separate release from this run would collide with it.
 
 ## Reporting
 
