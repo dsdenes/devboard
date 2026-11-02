@@ -88,9 +88,11 @@ The width survives a reload.
   session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
   overview at the blocker they name.
 - **Devboard** carries the **Background agents** group — Auto Scout, Watchdog, Design System,
-  and Coach — and one `data-testid="devboard-tab"` entry labeled `MCP tools` with
-  `data-command="devboard.tab.tools"`. Each agent entry opens its page; the last entry opens the
-  read-only MCP tool list. No tool name appears in the sidebar.
+  Coach, and Release Train — then exactly two `data-testid="devboard-tab"` entries: `MCP tools`
+  (`data-command="devboard.tab.tools"`) and `Skills` (`data-command="devboard.tab.skills"`). Each
+  agent entry opens its page; the last two open the read-only MCP tool list and the Skills table.
+  Neither entry is repeated per tool or per skill, so adding or removing one never changes the
+  menu. No tool or skill name appears in the sidebar.
 - **Discover** lists the overview, glossary, and contribution sections, the six skills under their
   own group, and warnings only while at least one exists. The glossary entry carries the published
   term count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
@@ -125,6 +127,27 @@ catalog entry changes the page on the next server start with no client-source ed
 and its counts arrive through the dashboard's existing read-only `getMcpTools` command; no HTTP
 route or second socket is involved. While the socket is open the page asks for that frame every
 five seconds, so counts follow calls a peer makes without a reload.
+
+### Skills page
+
+The `Skills` sidebar entry opens the Devboard mode's other page. It renders one
+`data-testid="skills-table"` table with exactly two columns: every row's first cell names one
+skill installed under the repository's `.omp/skills` root verbatim, and its second cell holds
+exactly one `data-testid="skill-enabled"` checkbox on a row carrying `data-testid="skill-row"` and
+`data-skill="<name>"`. No description, family, state, document, or delete control appears. The
+rows come from that directory and nothing else: a skill directory holding a `SKILL.md` appears
+whether hand-authored, prepared, Discover-generated, or reached through a symlink, while a name
+only a Discover manifest carries and no directory backs produces no row. Creating or deleting a
+directory changes the rows after the next page load, and the sidebar entry count never changes.
+
+A fresh skill starts checked. Unchecking one adds exactly its name to `skills.ignoredSkills` in the
+project-level OMP settings at `.omp/settings.json`, the file a plain `omp` session at the
+repository root reads, so every OMP session, Task subagent, and dashboard-launched agent started
+there omits that skill; checking it removes exactly that name and leaves every other entry as it
+was. The skill stays installed with its bytes, row, and `SKILL.md`, and the exclusion survives a
+page reload, a dashboard restart, a harness update, and a rerun of `.devboard/install.sh`, which
+never copies that file. A toggle applies to sessions and runs started afterwards; opening the page
+starts no agent, and a toggle never stops, restarts, or edits a skill or a live run.
 
 A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
@@ -1913,8 +1936,9 @@ so a field never separates from its save control. Either save validates all thre
 sends one settings command. The Devboard sidebar has two groups in order: `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
 `open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`, then
-`open-devboard-coach`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
-`Devboard sections` (the `devboard-tab` MCP tools entry). The Issues sidebar carries no
+`open-devboard-coach` and `open-devboard-release-train`, badges `agent-state-<id>`, counts
+`agent-count-<id>`), and
+`Devboard sections` (the `devboard-tab` MCP tools and Skills entries). The Issues sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
 queue.
