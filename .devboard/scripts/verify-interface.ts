@@ -3069,16 +3069,23 @@ try {
       invocations: string;
       label: string;
     }>;
+    descriptionType: { fontSize: number; lineHeight: number };
     controls: number;
     commands: number;
   }>(`(() => {
     const workspace = document.querySelector('[data-testid="devboard-workspace"]');
     const list = workspace?.querySelector('[data-testid="mcp-tools-list"]') ?? null;
     const rows = [...(list?.querySelectorAll('[data-testid="mcp-tool"]') ?? [])];
+    const description = list?.querySelector('.devboard-tool__description') ?? null;
+    const descriptionStyle = description === null ? null : getComputedStyle(description);
     return {
       workspace: workspace !== null,
       list: list !== null,
       count: rows.length,
+      descriptionType: {
+        fontSize: descriptionStyle === null ? 0 : Number.parseFloat(descriptionStyle.fontSize),
+        lineHeight: descriptionStyle === null ? 0 : Number.parseFloat(descriptionStyle.lineHeight),
+      },
       rows: rows.map((row) => {
         const stats = row.querySelector('[data-testid="mcp-tool-invocations"]');
         return {
@@ -3103,6 +3110,30 @@ try {
     expected: catalog.length,
   });
   check(toolPage.controls === 0 && toolPage.commands === 0, "the MCP tool list exposes an action", toolPage);
+  check(
+    Math.abs(toolPage.descriptionType.fontSize - 12) < 0.05 &&
+      Math.abs(toolPage.descriptionType.lineHeight - 17.4) < 0.05,
+    "an MCP tool description does not render body-small 12px/17.4px in the dark theme",
+    toolPage.descriptionType,
+  );
+  await setTheme(page, "light");
+  const lightDescriptionType = await page.eval<{ fontSize: number; lineHeight: number }>(`(() => {
+    const description = document.querySelector(
+      '[data-testid="mcp-tools-list"] .devboard-tool__description',
+    );
+    const style = description === null ? null : getComputedStyle(description);
+    return {
+      fontSize: style === null ? 0 : Number.parseFloat(style.fontSize),
+      lineHeight: style === null ? 0 : Number.parseFloat(style.lineHeight),
+    };
+  })()`);
+  check(
+    Math.abs(lightDescriptionType.fontSize - 12) < 0.05 &&
+      Math.abs(lightDescriptionType.lineHeight - 17.4) < 0.05,
+    "an MCP tool description does not render body-small 12px/17.4px in the light theme",
+    lightDescriptionType,
+  );
+  await setTheme(page, "dark");
   const toolMismatch = catalog.findIndex((expected, index) => {
     const row = toolPage.rows[index];
     return (

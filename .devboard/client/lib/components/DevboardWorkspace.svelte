@@ -131,7 +131,7 @@
   .devboard-tool__description {
     color: var(--muted-foreground);
     font-size: 12px;
-    line-height: 1.4;
+    line-height: 1.45;
     margin: 0;
     overflow-wrap: anywhere;
   }
