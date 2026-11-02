@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "../server/acp";
 import { readHarnessVersion } from "../server/version";
 import {
@@ -25,7 +25,6 @@ import {
   lockPath,
   releaseTrainDirectory,
   requestPath,
-  resultPath,
   runDirectory,
   runLockPath,
   runsDirectory,
@@ -147,11 +146,10 @@ function git(repoDir: string, args: string[]): { code: number; stdout: string; s
   };
 }
 
-function readResult(runDir: string): Record<string, unknown> | undefined {
+/** The run agent's outcome document, at the `<run-dir>/result.json` the prompt names. */
+export function readResult(runDir: string): Record<string, unknown> | undefined {
   try {
-    const parsed: unknown = JSON.parse(
-      readFileSync(resultPath(resolve(runDir, ".."), basename(runDir)), "utf8"),
-    );
+    const parsed: unknown = JSON.parse(readFileSync(join(runDir, "result.json"), "utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : undefined;

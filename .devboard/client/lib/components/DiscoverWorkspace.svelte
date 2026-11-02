@@ -6,6 +6,7 @@
     labelTexts,
     TABS,
   } from "../discover-format";
+  import { DISCOVER_AGENTS } from "../../../server/agents/registry";
   import { discover } from "../discover.svelte";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
@@ -53,13 +54,30 @@
     discover.filteredContexts.reduce((total, context) => total + context.concepts.length, 0),
   );
 
-  const agentCard = $derived(tab?.kind === "agent" ? discover.agent(tab.resourceId) : null);
-  const isAgentPage = $derived(tab?.kind === "agent");
+  /**
+   * The agent whose work the open page reports: its own card, the Glossary
+   * page's Glossary Agent, or the agent that owns a skill page. The Overview
+   * and the warnings page report the seven-agent suite instead, and only the
+   * Overview runs it.
+   */
+  const ownerAgent = $derived.by((): string | null => {
+    if (tab === null) return null;
+    if (tab.kind === "agent") return tab.resourceId;
+    if (tab.kind === "glossary") return "discover-glossary";
+    if (tab.kind === "skill") {
+      return DISCOVER_AGENTS.find((descriptor) => descriptor.skill === tab.resourceId)?.id ?? null;
+    }
+    return null;
+  });
+  const agentCard = $derived(ownerAgent === null ? null : discover.agent(ownerAgent));
   const agentRunActive = $derived(
-    isAgentPage && discover.active && discover.activeAgent === tab?.resourceId,
+    ownerAgent !== null && discover.active && discover.activeAgent === ownerAgent,
+  );
+  const barLabel = $derived(
+    ownerAgent === null ? "Discover" : (discover.agent(ownerAgent)?.label ?? "Discovery agent"),
   );
   const barState = $derived(
-    isAgentPage
+    ownerAgent !== null
       ? (agentCard?.state ?? "idle")
       : discover.active
         ? ("running" as const)
@@ -69,22 +87,16 @@
   );
   const barStartedAt = $derived(
     barState === "running"
-      ? isAgentPage
+      ? ownerAgent !== null
         ? (agentCard?.startedAt ?? null)
         : discover.startedAt
       : null,
   );
   const barActivity = $derived(
-    isAgentPage
-      ? agentRunActive
-        ? discover.activity
-        : []
-      : discover.activity,
+    ownerAgent === null ? discover.activity : agentRunActive ? discover.activity : [],
   );
   const barQuestion = $derived(
-    isAgentPage
-      ? (tab === null ? null : discover.agentQuestionOf(tab.resourceId))
-      : discover.question,
+    ownerAgent === null ? discover.question : discover.agentQuestionOf(ownerAgent),
   );
 
   function clearGlossaryFilters(): void {
@@ -347,16 +359,14 @@
   {#if tab !== null && ["overview", "glossary", "skill", "warnings", "agent"].includes(tab.kind)}
     <AgentActivityBar
       identity={`${layout.mode}:${tab.id}`}
-      label={isAgentPage
-        ? (discover.agent(tab.resourceId)?.label ?? "Discovery agent")
-        : "Discover"}
+      label={barLabel}
       status={barState}
       activity={barActivity}
       startedAt={barStartedAt}
       waiting={barQuestion !== null}
     >
       {#snippet control()}
-        {#if isAgentPage}
+        {#if ownerAgent !== null}
           {#if agentRunActive}
             <CommandButton
               bare
@@ -366,7 +376,7 @@
               evidence={() => discover.active}
               command={() => discover.stop()}
               data-testid="discover-agent-stop"
-              data-command={`discover.agent.stop.${tab.resourceId}`}
+              data-command={`discover.agent.stop.${ownerAgent}`}
               title="Stop this discovery agent"
             >
               Stop
@@ -378,41 +388,43 @@
               busyLabel={(agentCard?.state ?? "idle") === "idle"
                 ? "Starting…"
                 : "Re-running…"}
-              evidence={() => discover.agent(tab?.resourceId ?? "")?.state}
-              command={() => discover.startAgent(tab.resourceId)}
-              data-command={`discover.agent.start.${tab.resourceId}`}
+              evidence={() => discover.agent(ownerAgent)?.state}
+              command={() => discover.startAgent(ownerAgent)}
+              data-command={`discover.agent.start.${ownerAgent}`}
               data-testid="discover-agent-start"
-              disabled={discover.agentStartDisabled(tab.resourceId)}
-              title={discover.agentStartTitle(tab.resourceId)}
+              disabled={discover.agentStartDisabled(ownerAgent)}
+              title={discover.agentStartTitle(ownerAgent)}
             >
               {(agentCard?.state ?? "idle") === "idle" ? "Start" : "Re-run"}
             </CommandButton>
           {/if}
-        {:else if discover.active}
-          <CommandButton
-            variant="destructive"
-            label="Stop"
-            evidence={() => discover.active}
-            command={() => discover.stop()}
-            data-command="discover.stop"
-            data-testid="discover-stop"
-            title="Stop this Discover run"
-          >
-            Stop
-          </CommandButton>
-        {:else}
-          <CommandButton
-            variant="default"
-            label={discover.hasArtifacts ? "Re-discover" : "Discover project"}
-            evidence={() => discover.active}
-            command={() => discover.start()}
-            data-command="discover.start"
-            data-testid="discover-start"
-            disabled={discover.startDisabled}
-            title={discover.startTitle}
-          >
-            {discover.hasArtifacts ? "Re-discover" : "Discover project"}
-          </CommandButton>
+        {:else if tab.kind === "overview"}
+          {#if discover.active}
+            <CommandButton
+              variant="destructive"
+              label="Stop"
+              evidence={() => discover.active}
+              command={() => discover.stop()}
+              data-command="discover.stop"
+              data-testid="discover-stop"
+              title="Stop this Discover run"
+            >
+              Stop
+            </CommandButton>
+          {:else}
+            <CommandButton
+              variant="default"
+              label={discover.hasArtifacts ? "Re-discover" : "Discover project"}
+              evidence={() => discover.active}
+              command={() => discover.start()}
+              data-command="discover.start"
+              data-testid="discover-start"
+              disabled={discover.startDisabled}
+              title={discover.startTitle}
+            >
+              {discover.hasArtifacts ? "Re-discover" : "Discover project"}
+            </CommandButton>
+          {/if}
         {/if}
       {/snippet}
     </AgentActivityBar>
