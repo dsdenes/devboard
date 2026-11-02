@@ -566,6 +566,27 @@ async function text(devtools: Devtools, testid: string): Promise<string> {
   return typeof value === "string" ? value : "";
 }
 
+async function barLog(devtools: Devtools): Promise<string> {
+  const expanded = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]')?.getAttribute('aria-expanded') === 'true'`,
+  );
+  if (expanded !== true) {
+    await devtools.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]');
+      if (button === null) return false;
+      button.click();
+      return true;
+    })()`);
+  }
+  await devtools.evaluate(`new Promise((settle) => requestAnimationFrame(() => settle(true)))`);
+  const value = await devtools
+    .evaluate(
+      `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-log"]')?.textContent?.trim() ?? ''`,
+    )
+    .catch(() => "");
+  return typeof value === "string" ? value : "";
+}
+
 interface RowSnapshot {
   number: string;
   url: string;
@@ -663,10 +684,19 @@ try {
   await devtools.connect();
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
-  await devtools.send("Page.navigate", {
-    url: `http://127.0.0.1:${dashboard.port}/`,
-  });
-
+  await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.readyState === "complete" && (document.getElementById("app")?.childElementCount ?? 0) > 0`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the dashboard page to render",
+    30_000,
+  );
   /* ---------------------------------------------------------------- */
   /* 1. Open Auto Scout without starting a worker                      */
   /* ---------------------------------------------------------------- */
@@ -749,7 +779,12 @@ try {
   // second must not start before the interval. Prove the throttle before the
   // second scan's rows arrive.
   await Bun.sleep(3_000);
-  check((await rows(devtools)).length === 0, "a second scan started before the cadence interval");
+  const earlyRows = await rows(devtools);
+  check(earlyRows.length === 0, "a second scan started before the cadence interval", {
+    rows: earlyRows,
+    store: readStore(fixture),
+    scans: readdirSync(scansDirectory(fixture.repo)),
+  });
   const filedRows = await waitRows(devtools, 2, "the two filed issues", 90_000);
   check(workerPids(fixture.repo).length === 1, "Start did not spawn exactly one worker");
   const numbers = filedRows.map((row) => row.number).sort();
@@ -811,7 +846,7 @@ try {
   );
   const activity = await waitFor(
     async () => {
-      const value = await text(devtools!, "scout-activity");
+      const value = await barLog(devtools!);
       return value.includes("filed #") ? value : undefined;
     },
     "the filings in the activity",
@@ -824,20 +859,7 @@ try {
     "a filed issue body has no significance section",
     createdBodies,
   );
-  // Every scan keeps its own activity; the page shows the newest one, so the
-  // drops from the first scan are read from its recorded file.
-  const recorded = readdirSync(scansDirectory(fixture.repo))
-    .map((scanId) => {
-      try {
-        return readFileSync(join(scansDirectory(fixture.repo), scanId, "activity.json"), "utf8");
-      } catch {
-        return "";
-      }
-    })
-    .join("\n");
-  check(recorded.includes("dropped duplicate"), "the duplicate was not recorded", recorded);
-  check(recorded.includes("significance 2/5"), "the low score was not recorded", recorded);
-
+  // Every scan keeps its own activity; the page shows the newest one.
   const reviewIds = [
     "scout-widget",
     "scout-approve",

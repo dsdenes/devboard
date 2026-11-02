@@ -8,11 +8,13 @@ import { earliestRelease, resolveShippedVersion, shippedVersion } from "../lib/g
 import { createApp } from "../server/app";
 import {
   WatchdogActivity,
-  createWatchdogGitHubReader,
-  issueLocator,
-  type WatchdogFacts,
-  type WatchdogReader,
 } from "../server/watchdog";
+import {
+  createForgeIssueReader,
+  issueLocator,
+  type ForgeIssueFact,
+  type ForgeIssueReader,
+} from "../server/agents/forge-reader";
 import { CYCLE_HISTORY_LIMIT, readWatchdogCycles } from "../watchdog/history";
 import { takeWatchdogCommands } from "../watchdog/control";
 import {
@@ -336,10 +338,10 @@ describe("readWatchdogCycles", () => {
   });
 });
 
-function fakeReader(facts: Map<string, WatchdogFacts>): WatchdogReader & { calls: number } {
+function fakeReader(facts: Map<string, ForgeIssueFact>): ForgeIssueReader & { calls: number } {
   const reader = {
     calls: 0,
-    async project(urls: string[]): Promise<WatchdogFacts[]> {
+    async project(urls: string[]): Promise<ForgeIssueFact[]> {
       reader.calls += 1;
       return urls.map((url) => {
         const fact = facts.get(url);
@@ -351,22 +353,22 @@ function fakeReader(facts: Map<string, WatchdogFacts>): WatchdogReader & { calls
   return reader;
 }
 
-interface RetryReader extends WatchdogReader {
+interface RetryReader extends ForgeIssueReader {
   calls: number;
   /** One queued failure per attempt, consumed in order. */
   failures: string[];
   /** A failure every attempt uses until cleared. */
   failAll: string | null;
-  facts: Map<string, WatchdogFacts>;
+  facts: Map<string, ForgeIssueFact>;
 }
 
-function retryReader(facts: Map<string, WatchdogFacts>): RetryReader {
+function retryReader(facts: Map<string, ForgeIssueFact>): RetryReader {
   const reader: RetryReader = {
     calls: 0,
     failures: [],
     failAll: null,
     facts,
-    async project(urls: string[]): Promise<WatchdogFacts[]> {
+    async project(urls: string[]): Promise<ForgeIssueFact[]> {
       reader.calls += 1;
       const message = reader.failures.shift() ?? reader.failAll;
       if (message !== null) throw new Error(message);
@@ -388,7 +390,7 @@ async function readOnce(activity: WatchdogActivity): Promise<void> {
 function watchdogAdapter(
   directory: string,
   options: {
-    reader?: WatchdogReader;
+    reader?: ForgeIssueReader;
     now?: () => number;
     intervalMs?: number;
     staleAfterMs?: number;
@@ -408,6 +410,7 @@ function watchdogAdapter(
     harnessDir: resolve(import.meta.dir, ".."),
     send: () => undefined,
     watchdogDir: directory,
+    hasClients: () => true,
     ...(options.runningVersion === undefined ? {} : { runningVersion: options.runningVersion }),
     ...(options.reader === undefined ? {} : { reader: options.reader }),
     ...(options.spawnWorker === undefined ? {} : { spawnWorker: options.spawnWorker }),
@@ -472,7 +475,7 @@ function issueStates(snapshot: ReturnType<WatchdogActivity["snapshot"]>): Array<
 describe("WatchdogActivity", () => {
   test("answers from the last read, refreshes at most once per interval, and maps states", async () => {
     const directory = await watchdogDirectory();
-    const facts = new Map<string, WatchdogFacts>([
+    const facts = new Map<string, ForgeIssueFact>([
       [first.url, { url: first.url, state: "pending", version: null }],
       [second.url, { url: second.url, state: "implemented", version: "v1.4.0" }],
     ]);
@@ -531,8 +534,8 @@ describe("WatchdogActivity", () => {
     let fail = false;
     let clock = 5_000_000;
     const url = first.url;
-    const reader: WatchdogReader = {
-      async project(): Promise<WatchdogFacts[]> {
+    const reader: ForgeIssueReader = {
+      async project(): Promise<ForgeIssueFact[]> {
         if (fail) throw new Error("gh: authentication failed");
         return [
           { url: first.url, state: "implemented", version: "v2.0.0" },
@@ -580,7 +583,7 @@ describe("WatchdogActivity", () => {
 
   test("retries a transient read without an error and keeps the rows and read time", async () => {
     const directory = await watchdogDirectory();
-    const facts = new Map<string, WatchdogFacts>([
+    const facts = new Map<string, ForgeIssueFact>([
       [first.url, { url: first.url, state: "pending", version: null }],
       [second.url, { url: second.url, state: "implemented", version: "v1.4.0" }],
     ]);
@@ -630,7 +633,7 @@ describe("WatchdogActivity", () => {
 
   test("retries a transient read four times and surfaces the fifth failure", async () => {
     const directory = await watchdogDirectory();
-    const facts = new Map<string, WatchdogFacts>([
+    const facts = new Map<string, ForgeIssueFact>([
       [first.url, { url: first.url, state: "pending", version: null }],
       [second.url, { url: second.url, state: "pending", version: null }],
     ]);
@@ -683,7 +686,7 @@ describe("WatchdogActivity", () => {
 
   test("a success during the retry schedule clears the state", async () => {
     const directory = await watchdogDirectory();
-    const facts = new Map<string, WatchdogFacts>([
+    const facts = new Map<string, ForgeIssueFact>([
       [first.url, { url: first.url, state: "pending", version: null }],
       [second.url, { url: second.url, state: "pending", version: null }],
     ]);
@@ -725,7 +728,7 @@ describe("WatchdogActivity", () => {
   ] as const) {
     test(`a permanent read failure (${label}) is attempted once and surfaces at once`, async () => {
       const directory = await watchdogDirectory();
-      const facts = new Map<string, WatchdogFacts>([
+      const facts = new Map<string, ForgeIssueFact>([
         [first.url, { url: first.url, state: "pending", version: null }],
         [second.url, { url: second.url, state: "pending", version: null }],
       ]);
@@ -753,7 +756,7 @@ describe("WatchdogActivity", () => {
 
   test("a rate-limited read surfaces once, raises no error, and waits a cadence", async () => {
     const directory = await watchdogDirectory();
-    const facts = new Map<string, WatchdogFacts>([
+    const facts = new Map<string, ForgeIssueFact>([
       [first.url, { url: first.url, state: "pending", version: null }],
       [second.url, { url: second.url, state: "pending", version: null }],
     ]);
@@ -794,8 +797,8 @@ describe("WatchdogActivity", () => {
     const directory = await watchdogDirectory();
     const gate = Promise.withResolvers<void>();
     let calls = 0;
-    const reader: WatchdogReader = {
-      async project(): Promise<WatchdogFacts[]> {
+    const reader: ForgeIssueReader = {
+      async project(): Promise<ForgeIssueFact[]> {
         calls += 1;
         await gate.promise;
         return [
@@ -820,7 +823,7 @@ describe("WatchdogActivity", () => {
     let clock = 9_000_000;
     const activity = watchdogAdapter(directory, {
       reader: fakeReader(
-        new Map<string, WatchdogFacts>([
+        new Map<string, ForgeIssueFact>([
           [first.url, { url: first.url, state: "pending", version: null }],
           [second.url, { url: second.url, state: "pending", version: null }],
         ]),
@@ -848,8 +851,8 @@ describe("WatchdogActivity", () => {
     const directory = await watchdogDirectory();
     const gate = Promise.withResolvers<void>();
     let calls = 0;
-    const reader: WatchdogReader = {
-      async project(): Promise<WatchdogFacts[]> {
+    const reader: ForgeIssueReader = {
+      async project(): Promise<ForgeIssueFact[]> {
         calls += 1;
         await gate.promise;
         return [
@@ -904,7 +907,7 @@ describe("WatchdogActivity", () => {
       .digest("hex");
     const activity = watchdogAdapter(directory, {
       reader: fakeReader(
-        new Map<string, WatchdogFacts>([
+        new Map<string, ForgeIssueFact>([
           [first.url, { url: first.url, state: "pending", version: null }],
           [second.url, { url: second.url, state: "implemented", version: "v1.0.0" }],
         ]),
@@ -1096,7 +1099,7 @@ describe("agent transport", () => {
       providers: testProviderService(join(root, "state")),
       watchdog: {
         reader: fakeReader(
-          new Map<string, WatchdogFacts>([
+          new Map<string, ForgeIssueFact>([
             [first.url, { url: first.url, state: "pending", version: null }],
             [second.url, { url: second.url, state: "implemented", version: "v1.0.0" }],
           ]),
@@ -1163,7 +1166,7 @@ function ghStub(replies: (argv: string[]) => RunnerReply | undefined) {
 
 const fullSha = "0123456789abcdef0123456789abcdef01234567";
 
-describe("createWatchdogGitHubReader", () => {
+describe("createForgeIssueReader", () => {
   test("maps open to pending and closed to implemented from each URL's repository", async () => {
     const root = await temporaryDirectory("test-watchdog-reader");
     const stub = ghStub((argv) => {
@@ -1179,7 +1182,7 @@ describe("createWatchdogGitHubReader", () => {
       if (text.includes("/comments")) return { code: 0, stdout: "", stderr: "" };
       return undefined;
     });
-    const reader = createWatchdogGitHubReader({ repoDir: root, run: stub.run });
+    const reader = createForgeIssueReader({ repoDir: root, run: stub.run });
     const facts = await reader.project([
       "https://github.com/example/widget/issues/1",
       "https://github.com/dsdenes/devboard/issues/2",
@@ -1222,7 +1225,7 @@ describe("createWatchdogGitHubReader", () => {
       if (text.includes("/compare/")) return { code: 0, stdout: "behind\n", stderr: "" };
       return undefined;
     });
-    const reader = createWatchdogGitHubReader({ repoDir: root, run: stub.run });
+    const reader = createForgeIssueReader({ repoDir: root, run: stub.run });
     const facts = await reader.project(["https://github.com/dsdenes/devboard/issues/7"]);
     expect(facts).toEqual([
       {
@@ -1267,7 +1270,7 @@ describe("createWatchdogGitHubReader", () => {
       if (text.includes("/compare/")) return { code: 0, stdout: "ahead\n", stderr: "" };
       return undefined;
     });
-    const reader = createWatchdogGitHubReader({ repoDir: root, run: stub.run });
+    const reader = createForgeIssueReader({ repoDir: root, run: stub.run });
     const facts = await reader.project(["https://github.com/dsdenes/devboard/issues/8"]);
     expect(facts[0]?.version).toBe("v1.0.0");
   });
@@ -1275,7 +1278,7 @@ describe("createWatchdogGitHubReader", () => {
   test("rejects the read when gh fails, and leaves an unknown state unresolved", async () => {
     const root = await temporaryDirectory("test-watchdog-reader-failure");
     const failing = ghStub(() => ({ code: 1, stdout: "", stderr: "HTTP 401: Bad credentials\nmore" }));
-    const reader = createWatchdogGitHubReader({ repoDir: root, run: failing.run });
+    const reader = createForgeIssueReader({ repoDir: root, run: failing.run });
     await expect(reader.project(["https://github.com/dsdenes/devboard/issues/9"])).rejects.toThrow(
       "HTTP 401: Bad credentials",
     );
@@ -1286,7 +1289,7 @@ describe("createWatchdogGitHubReader", () => {
       }
       return undefined;
     });
-    const unknownReader = createWatchdogGitHubReader({ repoDir: root, run: unknown.run });
+    const unknownReader = createForgeIssueReader({ repoDir: root, run: unknown.run });
     await expect(
       unknownReader.project(["https://github.com/dsdenes/devboard/issues/9"]),
     ).rejects.toThrow("unknown issue state");
@@ -1295,7 +1298,7 @@ describe("createWatchdogGitHubReader", () => {
   test("rejects a URL that is not a GitHub issue", async () => {
     const root = await temporaryDirectory("test-watchdog-reader-url");
     const stub = ghStub(() => undefined);
-    const reader = createWatchdogGitHubReader({ repoDir: root, run: stub.run });
+    const reader = createForgeIssueReader({ repoDir: root, run: stub.run });
     await expect(reader.project(["https://example.test/not-an-issue"])).rejects.toThrow(
       "not a GitHub issue URL",
     );

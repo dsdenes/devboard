@@ -1,6 +1,7 @@
 <script lang="ts">
   import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
+  import { layout } from "../layout.svelte";
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import type { WorkspaceTab } from "../layout.svelte";
@@ -9,6 +10,7 @@
   import { statusTone } from "../status-tone";
   import type { AdrRecord, Lane } from "../types";
   import AdrTable from "./AdrTable.svelte";
+  import AgentActivityBar from "./AgentActivityBar.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
@@ -74,6 +76,25 @@
   const record = $derived(
     tab?.kind === "adr" ? (goal.records.find((entry) => entry.file === tab?.resourceId) ?? null) : null,
   );
+
+  const laneBarState = $derived(
+    lane === null
+      ? ("idle" as const)
+      : lane.status === "running" || lane.status === "retrying"
+        ? ("running" as const)
+        : lane.status === "failed"
+          ? ("failed" as const)
+          : ("idle" as const),
+  );
+  const laneStartedAt = $derived(
+    lane === null || laneBarState !== "running" ? null : (goal.laneStartedAt[lane.id] ?? null),
+  );
+  const recordRunActive = $derived(
+    record !== null && goal.running && goal.runFile === record.file,
+  );
+  const recordBarState = $derived(recordRunActive ? ("running" as const) : ("idle" as const));
+  const recordActivity = $derived(recordRunActive ? goal.activity : []);
+  const recordQuestion = $derived(recordRunActive ? goal.question : null);
 
   const filters: Array<{ id: FilterMode; label: string }> = [
     { id: "all", label: "All" },
@@ -150,6 +171,50 @@
 </script>
 
 <div class="mode-body">
+{#if tab?.kind === "lane" && lane !== null}
+  <AgentActivityBar
+    identity={`${layout.mode}:${tab.id}`}
+    label={goal.laneLabel(lane)}
+    status={laneBarState}
+    activity={lane.activity}
+    startedAt={laneStartedAt}
+    waiting={lane.question !== null}
+  />
+{:else if tab?.kind === "adr" && record !== null}
+  {#if record.pending}
+    <AgentActivityBar
+      identity={`${layout.mode}:${tab.id}`}
+      label={record.title}
+      status={recordBarState}
+      activity={recordActivity}
+      startedAt={recordRunActive ? goal.runStartedAt : null}
+      waiting={recordQuestion !== null}
+    >
+      {#snippet control()}
+        <Button
+          variant="default"
+          data-command={`goal.adr.start.${record.file}`}
+          data-testid="start"
+          data-file={record.file}
+          title={runStartTitle}
+          disabled={goal.runStartDisabled}
+          onclick={() => goal.startRecord(record)}
+        >
+          Start this record
+        </Button>
+      {/snippet}
+    </AgentActivityBar>
+  {:else}
+    <AgentActivityBar
+      identity={`${layout.mode}:${tab.id}`}
+      label={record.title}
+      status={recordBarState}
+      activity={recordActivity}
+      startedAt={recordRunActive ? goal.runStartedAt : null}
+      waiting={recordQuestion !== null}
+    />
+  {/if}
+{/if}
 {#snippet runQuestion()}
   {#if goal.question !== null}
     {@const pending = goal.question}
@@ -760,20 +825,10 @@
 
         {#if record.pending}
           <section class="panel" data-testid="record-action">
-            <div class="panel__body row-sm">
-              <Button
-                variant="default"
-                data-command={`goal.adr.start.${record.file}`}
-                data-testid="start"
-                data-file={record.file}
-                title={runStartTitle}
-                disabled={goal.runStartDisabled}
-                onclick={() => goal.startRecord(record)}
-              >
-                Start this record
-              </Button>
+            <div class="panel__body">
               <span class="muted">
-                Runs one record outside the lifecycle. Stop the lifecycle first when it is active.
+                Runs one record outside the lifecycle from the activity bar. Stop the lifecycle
+                first when it is active.
               </span>
             </div>
           </section>
@@ -799,15 +854,6 @@
       <div class="goal-page">
         <PageHeader eyebrow="Lane" title={panel.label} testid="lane-header">
           {#snippet meta()}
-            <span
-              class="badge"
-              data-testid="lane-status"
-              data-kind={lane.kind}
-              data-status={lane.status}
-              data-tone={statusTone(lane.status)}
-            >
-              {lane.status}
-            </span>
             <span class="muted">Attempt <span class="mono">{lane.attempt}</span></span>
           {/snippet}
           {#snippet actions()}
@@ -930,37 +976,6 @@
           </section>
         {/if}
 
-        <section class="panel goal-activity" data-testid="lane-activity">
-          <div class="panel__header">
-            <h2 class="panel__title">Activity</h2>
-            <span class="badge" data-tone={statusTone(lane.status)}>
-              {lane.status === "running" || lane.status === "retrying" ? "live" : lane.status}
-            </span>
-          </div>
-          <div class="panel__body term-split">
-            <Terminal
-              lines={panel.current.length === 0 ? ["No activity yet."] : panel.current}
-              data-testid="lane-current"
-              label="Lane current activity"
-            />
-            {#if panel.history.length > 0}
-              <details class="activity-history">
-                <summary data-testid="lane-history">
-                  {panel.history.length === 1
-                    ? "1 previous action"
-                    : `${panel.history.length} previous actions`}
-                </summary>
-                <div style="height: 140px;">
-                  <Terminal
-                    lines={panel.history}
-                    data-testid="lane-history-log"
-                    label="Lane activity history"
-                  />
-                </div>
-              </details>
-            {/if}
-          </div>
-        </section>
       </div>
     {/if}
   {/if}

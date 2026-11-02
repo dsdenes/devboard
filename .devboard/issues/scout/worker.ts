@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "../../server/acp";
 import {
   createWorkerProviderEnvironment,
@@ -10,7 +10,6 @@ import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner, pidAlive, versionLockPath } from "../lock";
 import { originRepository } from "../repository";
 import { appendActivityLine, writeActivity } from "../state";
-import { fileScoutIssue } from "./actions";
 import { claimScan, releaseScanClaim, updateScanClaim } from "./claims";
 import { takeCommands, type ScoutCommand } from "./control";
 import {
@@ -29,32 +28,23 @@ import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-r
 import {
   HOUR_MS,
   SCAN_TIMEOUT_MS,
-  SIGNIFICANCE_THRESHOLD,
   SYNC_INTERVAL_MS,
   UNLIMITED_SCAN_BATCH,
   controlDirectory,
   lockPath,
-  recommendationsPath,
   scanDirectory,
   settingsPath,
   statePath,
   versionedControlDirectory,
   versionedStatePath,
 } from "./paths";
-import {
-  categoryFromBody,
-  normalizeTitle,
-  parseScanResult,
-  type ScanResult,
-  type ScoutRecommendation,
-} from "./recommendation";
+import { categoryFromBody } from "./recommendation";
+import { readToolLog, toolValueNumber, toolValueString } from "../../lib/tool-log";
 import {
   buildRequest,
   createScanDirectory,
-  knownTitlesFor,
   promptFor,
   readDraftGoalHeadings,
-  repairPrompt,
   scanCapacity,
   writeRequest,
   type ScanCapacity,
@@ -133,7 +123,6 @@ export interface ScoutWorkerOptions {
    * work, so production clients must bound every command they start.
    */
   github?: ScoutGitHubClient;
-  fileIssue?: typeof fileScoutIssue;
   harnessVersion?: string | null;
   log?: (line: string) => void;
   /** Runs after Stop has written its state and released the lock. */
@@ -156,8 +145,6 @@ interface ActiveScan {
   filed: number;
   /** Numbers this scan filed, in filing order, so the notice names them. */
   filedNumbers: number[];
-  /** Correction turns already requested for a rejected answer; at most one. */
-  repairs: number;
   /** Present while reading and filing, where the scan timer no longer guards. */
   settle?: {
     controller: AbortController;
@@ -246,7 +233,6 @@ export class ScoutWorker {
   private readonly connect: NonNullable<ScoutWorkerOptions["connect"]>;
   private readonly providerEnvironment: WorkerProviderEnvironment;
   private readonly injectedGithub: ScoutGitHubClient | undefined;
-  private readonly fileIssue: typeof fileScoutIssue;
   private readonly harnessVersion: string | null;
   private readonly log: (line: string) => void;
   private readonly onStopped: (() => void) | undefined;
@@ -297,7 +283,6 @@ export class ScoutWorker {
       options.providerEnvironment ??
       createWorkerProviderEnvironment(this.stateDir, this.environment);
     this.injectedGithub = options.github;
-    this.fileIssue = options.fileIssue ?? fileScoutIssue;
     this.harnessVersion =
       options.harnessVersion ??
       process.env.DEVBOARD_HARNESS_VERSION ??
@@ -874,8 +859,9 @@ export class ScoutWorker {
         repository: this.state.repo,
         repoDir: this.repoDir,
         requested,
-        knownTitles: knownTitlesFor(this.state.issues, this.openTitles, draftGoalHeadings),
         draftGoalHeadings,
+        maxPerHour: this.state.limits.maxPerHour,
+        maxPending: this.state.limits.maxPending,
       });
       writeRequest(scan.directory, request);
       const prompt = promptFor(scan.directory);
@@ -887,7 +873,12 @@ export class ScoutWorker {
         peer = this.connect({
           command: this.agentCommand,
           cwd: this.repoDir,
-          env: environment,
+          env: {
+            ...environment,
+            REPO_DIR: this.repoDir,
+            STATE_DIR: this.stateDir,
+            DEVBOARD_TOOL_LOG: join(scan.directory, "tool-log.jsonl"),
+          },
           onActivity: (entry) => this.recordActivity(entry),
           onSessionUpdate: () => this.notePeerUpdate(),
           onQuestion: (question) => this.answerQuestion(question),
@@ -927,7 +918,6 @@ export class ScoutWorker {
         firstLine: null,
         filed: 0,
         filedNumbers: [],
-        repairs: 0,
       };
       this.active = active;
       this.state.scan = { scanId: scan.scanId, startedAt: scan.startedAt, requested };
@@ -1271,80 +1261,15 @@ export class ScoutWorker {
   }
 
   /**
-   * Reads and validates the answer file. A missing file, invalid JSON, and a
-   * rejected document are all the same kind of failure: the correction turn
-   * gets the message, and an uncorrected scan files nothing.
-   */
-  private readAnswer(
-    active: ActiveScan,
-  ): { ok: true; result: Extract<ScanResult, { ok: true }> } | { ok: false; error: string } {
-    let text: string;
-    try {
-      text = readFileSync(recommendationsPath(active.directory), "utf8");
-    } catch {
-      return { ok: false, error: "the agent wrote no recommendations.json" };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return { ok: false, error: "recommendations.json is not valid JSON" };
-    }
-    const result = parseScanResult(parsed, {
-      requested: active.requested,
-      repoDir: this.repoDir,
-    });
-    return result.ok ? { ok: true, result } : { ok: false, error: result.error };
-  }
-
-  /**
-   * Reads and validates the answer, asks the agent for one correction when the
-   * answer is rejected while the scan timer still guards the phase, re-reads
-   * GitHub immediately before filing, then files every significant, novel item
-   * the caps allow. A malformed or insignificant item never reaches `gh`; a
-   * failed read files nothing.
+   * Ends the turn, re-reads the forge so a periodic read cannot overwrite a
+   * just-created row, and reconciles the tool log. Nothing is read from or
+   * corrected in an agent answer: the issue tool's records are the filing
+   * evidence, and a tool error is recorded here without another turn.
    */
   private async completeScan(active: ActiveScan): Promise<void> {
     if (active.finished) return;
-
-    let answer = this.readAnswer(active);
-    if (!answer.ok) {
-      this.recordScanLine(active, `rejected: ${answer.error}`);
-      if (active.repairs === 0) {
-        active.repairs = 1;
-        this.recordScanLine(active, "asked the agent to correct the answer");
-        try {
-          await active.peer.prompt(repairPrompt(active.directory, answer.error));
-        } catch (error) {
-          if (active.finished || this.active !== active) return;
-          this.recordScanLine(active, `correction failed: ${detailOf(error)}`);
-        }
-        if (active.finished || this.active !== active) return;
-        answer = this.readAnswer(active);
-        if (!answer.ok) this.recordScanLine(active, `rejected: ${answer.error}`);
-      }
-    }
-    if (!answer.ok) {
-      this.endAgentPhase(active);
-      this.writeScan(active, "failed", {
-        requested: active.requested,
-        filed: 0,
-        error: answer.error,
-      });
-      this.finishScan(active, answer.error);
-      return;
-    }
-
-    // The answer is final: claim the terminal path before touching the
-    // tracker, so the scan timer can no longer close a scan that is settling.
     this.endAgentPhase(active);
-    const result = answer.result;
 
-    // Immediately before filing, read every scout issue again. The periodic
-    // read stands aside until this scan has finished filing, so a stale apply
-    // can never drop a row that was just created. A failed read files nothing
-    // and surfaces the reason; the next read retries. Every wait and command
-    // shares one deadline, because the scan timer no longer guards this phase.
     this.filing = true;
     this.beginSettle(active);
     try {
@@ -1386,71 +1311,30 @@ export class ScoutWorker {
       if (this.settled(active)) return;
       this.publish();
 
-      const known = new Set(
-        knownTitlesFor(this.state.issues, this.openTitles, active.draftGoalHeadings),
-      );
-      const capacity = this.capacity();
-      const limit = Math.min(active.requested, capacity.batch);
       let filingError: string | null = null;
       let lastFiled: { number: number; title: string } | null = null;
-      for (const item of result.items) {
-        if (this.settled(active) || this.stopping) break;
-        if (item.significance < SIGNIFICANCE_THRESHOLD) {
-          this.recordScanLine(
-            active,
-            `dropped “${item.title}” — significance ${item.significance}/5 is below ` +
-              `${SIGNIFICANCE_THRESHOLD}`,
-          );
+      for (const record of readToolLog(join(active.directory, "tool-log.jsonl"))) {
+        if (record.tool !== "issue_create") continue;
+        const value = record.value;
+        const number = toolValueNumber(value, "number");
+        const title = toolValueString(value, "title");
+        if (record.ok === true && number !== undefined && title !== undefined) {
+          if (active.filed >= active.requested) {
+            this.recordScanLine(active, `filed beyond the requested count: #${number}`);
+            continue;
+          }
+          active.filed += 1;
+          active.filedNumbers.push(number);
+          lastFiled = { number, title };
+          this.recordScanLine(active, `filed #${number} “${title}”`);
           continue;
         }
-        const key = normalizeTitle(item.title);
-        if (known.has(key)) {
-          this.recordScanLine(active, `dropped duplicate “${item.title}”`);
-          continue;
-        }
-        if (active.filed >= limit) break;
-        const settle = active.settle;
-        let created: { url: string; number: number };
-        try {
-          created = await this.within(
-            active,
-            this.fileIssue({
-              repoDir: this.repoDir,
-              repository: this.state.repo,
-              recommendation: item,
-              environment: this.environment,
-              ...(settle === undefined
-                ? {}
-                : { deadline: settle.deadline, signal: settle.controller.signal }),
-            }),
-          );
-        } catch (error) {
-          if (error instanceof SettleAborted) return;
-          filingError = detailOf(error);
-          this.recordScanLine(active, `failed to file “${item.title}”: ${filingError}`);
-          break;
-        }
-        known.add(key);
-        active.filed += 1;
-        active.filedNumbers.push(created.number);
-        lastFiled = { number: created.number, title: item.title };
-        const createdAt = this.clock().toISOString();
-        this.state.issues = newestFirst([
-          ...this.state.issues.filter((row) => row.number !== created.number),
-          {
-            number: created.number,
-            title: item.title,
-            url: created.url,
-            createdAt,
-            state: "pending",
-            category: item.category,
-            version: null,
-            versionAttemptAt: null,
-            versionError: null,
-          },
-        ]);
-        this.recordScanLine(active, `filed #${created.number} “${item.title}”`);
-        this.publish();
+        const detail =
+          typeof record.error === "string" && record.error.length > 0
+            ? record.error
+            : "the issue-creation tool failed";
+        filingError ??= detail;
+        this.recordScanLine(active, `failed: ${detail}`);
       }
 
       if (this.settled(active)) return;
@@ -1469,12 +1353,9 @@ export class ScoutWorker {
             : `Filed ${active.filed} issues in ${this.state.repo}: ` +
               active.filedNumbers.map((number) => `#${number}`).join(", ");
       }
-
       const shortfall =
         active.filed < active.requested
-          ? (filingError ??
-            result.shortfall ??
-            `filed ${active.filed} of the ${active.requested} requested`)
+          ? (filingError ?? `filed ${active.filed} of the ${active.requested} requested`)
           : null;
       if (shortfall !== null) this.recordScanLine(active, `shortfall: ${shortfall}`);
       this.writeScan(active, filingError === null ? "succeeded" : "failed", {

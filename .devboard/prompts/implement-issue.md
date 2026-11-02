@@ -2,7 +2,10 @@
 description: Implement exactly one open issue, integrate it into the canonical line, and close it only after the push is verified.
 ---
 
-`/implement-issue <number>`: implement exactly one open issue end to end.
+## Manifesto
+
+Your goal is to deliver exactly one open issue end to end, and the observable result is the issue
+implemented, integrated into the canonical line, pushed, and closed after the push is verified.
 
 The argument must be exactly one positive integer issue number. If it is missing, non-numeric, or
 carries more than one token, refuse before changing anything: write the refusal to stderr, exit

@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { appendFile, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
@@ -38,7 +38,6 @@ import { DEFAULT_WATCHDOG_SETTINGS, type WatchdogSettings } from "../watchdog/se
 import {
   commentIssue,
   createIssue,
-  watchdogTitle,
   type GhOutcome,
   type GhRun,
 } from "../watchdog/github";
@@ -179,40 +178,96 @@ function ghStub(reply: (call: GhCall, index: number) => GhReply = () => ({})): {
 
 interface DedupCall {
   request: DedupRequest;
+  /** The per-cycle directory the turn was told to record into. */
+  runDir: string;
   /** Forge calls the cycle had made when the agent was asked. */
   createsBefore: number;
 }
 
+interface DedupTurn {
+  /** Records the peer's MCP write tools would append. */
+  records?: unknown[];
+  /** Counts of open issues the peer read, one line each. */
+  reads?: number[];
+  /** Thrown after the records are written, as a failed tool call would be. */
+  error?: string;
+}
+
+/** The dedup peer's deterministic filing record for one candidate. */
+function filedRecord(
+  candidate: DedupRequest["candidates"][number],
+  number: number,
+): Record<string, unknown> {
+  return {
+    fingerprint: candidate.fingerprint,
+    action: "filed",
+    number,
+    url: `https://github.com/acme/fixture/issues/${number}`,
+    title: `[watchdog] ${candidate.category}: ${candidate.line}`,
+  };
+}
+
+/** A duplicate record naming an open issue or another candidate. */
+function duplicateRecord(
+  candidate: DedupRequest["candidates"][number],
+  match: { issue?: string; representative?: string },
+): Record<string, unknown> {
+  return { fingerprint: candidate.fingerprint, action: "duplicate", ...match };
+}
+
 /**
- * A deterministic deduplication agent. The answer is serialized to JSON; an
- * Error is thrown as the agent failure it stands for. Every call is recorded
- * so a test can prove one request over the whole set.
+ * A deterministic deduplication peer. The turn writes the records its MCP
+ * tools would append to `runDir/dedup-records.jsonl`; an Error is thrown as
+ * the agent failure it stands for, and nothing is read from an answer object.
+ * Every call is recorded so a test can prove one request over the whole set.
  */
 function dedupStub(
-  answer: (request: DedupRequest, call: number) => unknown,
+  turn: (request: DedupRequest, call: number) => DedupTurn | Error | string,
   forge?: { calls: unknown[] },
 ): { dedup: Dedup; calls: DedupCall[] } {
   const calls: DedupCall[] = [];
-  const dedup: Dedup = async (request) => {
-    calls.push({ request, createsBefore: forge?.calls.length ?? 0 });
-    const value = answer(request, calls.length - 1);
+  const dedup: Dedup = async (request, runDir) => {
+    calls.push({ request, runDir, createsBefore: forge?.calls.length ?? 0 });
+    const value = turn(request, calls.length - 1);
     if (value instanceof Error) throw value;
     if (typeof value === "string") return value;
-    return JSON.stringify(value);
+    writeFileSync(
+      join(runDir, "dedup-records.jsonl"),
+      (value.records ?? []).map((record) => `${JSON.stringify(record)}\n`).join(""),
+    );
+    if (value.reads !== undefined) {
+      writeFileSync(
+        join(runDir, "dedup-reads.jsonl"),
+        value.reads.map((count) => `${JSON.stringify({ count })}\n`).join(""),
+      );
+    }
+    if (value.error !== undefined) throw new Error(value.error);
+    return "";
   };
   return { dedup, calls };
 }
 
-/** Marks every candidate unique; the agent read no open issue. */
-function uniqueDedup(openIssues: string[] = []): Dedup {
-  return async (request) =>
-    JSON.stringify({
-      read: { open_issues: openIssues },
-      decisions: request.candidates.map((candidate) => ({
-        fingerprint: candidate.fingerprint,
-        action: "unique",
-      })),
-    });
+/** Files every candidate the turn was given room for; reads no open issue. */
+function filedWithinRoom(request: DedupRequest): DedupTurn {
+  const room = Math.min(request.filingRoom, request.candidates.length);
+  return {
+    records: request.candidates
+      .slice(0, room)
+      .map((candidate, index) => filedRecord(candidate, 100 + index)),
+  };
+}
+
+/** Files every candidate; used where caps and duplicates are irrelevant. */
+function uniqueDedup(): Dedup {
+  return async (request, runDir) => {
+    writeFileSync(
+      join(runDir, "dedup-records.jsonl"),
+      request.candidates
+        .map((candidate, index) => `${JSON.stringify(filedRecord(candidate, 100 + index))}\n`)
+        .join(""),
+    );
+    return "";
+  };
 }
 
 function deliveryStub(
@@ -967,7 +1022,7 @@ describe("evidence mapping", () => {
 });
 
 describe("filing", () => {
-  test("files one issue per new fingerprint and records it in the ledger", async () => {
+  test("files one issue per recorded filing and records it in the ledger", async () => {
     const { root } = await fixtureRepository();
     const stateDir = join(root, ".devboard", ".tmp", "watchdog");
     const events = [
@@ -975,11 +1030,15 @@ describe("filing", () => {
       event(root, 1, "update install failed: checksum mismatch", "update-error"),
     ];
     const { gh, calls } = ghStub();
+    const { dedup, calls: dedupCalls } = dedupStub((request) => filedWithinRoom(request));
 
-    const result = await runCycle(cycleFor(root, { events, gh }));
+    const result = await runCycle(cycleFor(root, { events, gh, dedup }));
     expect(result.exitCode).toBe(0);
     expect(result.report.action).toBe("filed");
-    expect(calls).toHaveLength(2);
+    expect(dedupCalls).toHaveLength(1);
+    expect(dedupCalls[0]?.request.filingRoom).toBe(2);
+    // The coordinator never files: the peer's records are the only filings.
+    expect(calls).toEqual([]);
     expect(result.report.issues).toHaveLength(2);
 
     const ledger = loadLedger(stateDir);
@@ -988,47 +1047,16 @@ describe("filing", () => {
       expect(entry?.disposition).toBe(`filed:${issue.url}`);
       expect(entry?.url).toBe(issue.url);
       expect(entry?.filedAt).toBe(fixedNow.toISOString());
-      expect(calls.some((call) => call.stdin.includes(issue.fingerprint))).toBe(true);
     }
     expect(ledger.pendingFiling).toEqual([]);
 
-    for (const call of calls) {
-      expect(call.argv.slice(0, 5)).toEqual([
-        "issue",
-        "create",
-        "--repo",
-        "acme/fixture",
-        "--title",
-      ]);
-      expect(call.argv.slice(5)).toEqual([expect.any(String), "--body-file", "-"]);
-      const title = call.argv[5] ?? "";
-      expect(
-        title.startsWith("[watchdog] server-error:") ||
-          title.startsWith("[watchdog] update-error:"),
-      ).toBe(true);
-      expect(title.length).toBeLessThanOrEqual(80);
-      expect(title.includes("\n")).toBe(false);
-    }
-
-    const serverError = calls.find((call) => call.stdin.includes(SERVER_ERROR));
-    const body = serverError?.stdin ?? "";
-    const fingerprint = result.report.issues.find(
-      (issue) => issue.category === "server-error",
-    )?.fingerprint;
-    expect(fingerprint).toBeDefined();
-    expect(body).toContain(`- Category: \`server-error\``);
-    expect(body).toContain(`- Fingerprint: \`${fingerprint}\``);
-    expect(body).toContain(SERVER_ERROR);
-    expect(body).toContain(`- First seen: ${fixedNow.toISOString()}`);
-    expect(body).toContain(`- Last seen: ${fixedNow.toISOString()}`);
-    expect(body).toContain("- Count: 1");
-    expect(body).toContain(window.start.toISOString());
-    expect(body).toContain(window.end.toISOString());
-    expect(body).toContain(join(root, ".devboard", ".tmp", "watchdog", "runs"));
-    expect(body).toContain(root);
-    expect(body).toContain("port 8080");
-    expect(body).toContain(`pid ${instanceFor(root, 8080).pid}`);
-    expect(body).toContain(`journal \`${instanceFor(root, 8080).journal}\``);
+    expect(result.report.issues.map((issue) => issue.url).sort()).toEqual([
+      "https://github.com/acme/fixture/issues/100",
+      "https://github.com/acme/fixture/issues/101",
+    ]);
+    expect(result.report.issues.map((issue) => issue.line).sort()).toEqual(
+      [SERVER_ERROR, "update install failed: checksum mismatch"].sort(),
+    );
 
     expect(existsSync(join(stateDir, "latest.json"))).toBe(true);
     const latest = JSON.parse(readFileSync(join(stateDir, "latest.json"), "utf8"));
@@ -1040,48 +1068,32 @@ describe("filing", () => {
     expect(existsSync(join(result.runDir as string, "coordinator.log"))).toBe(true);
   });
 
-  test("persists each filing and comment before the next forge call", async () => {
+  test("each recorded filing is persisted before the next cycle reads the ledger", async () => {
     const { root } = await fixtureRepository();
     const stateDir = join(root, ".devboard", ".tmp", "watchdog");
     const events = [
       event(root, 2, SERVER_ERROR, "server-error", instanceFor(root, 8080)),
       event(root, 1, "update install failed: checksum mismatch", "update-error"),
     ];
-    const filedBeforeSecondCall: number[] = [];
-    const commentedBeforeSecondComment: number[] = [];
-    const { gh } = ghStub((_call, index) => {
-      if (index === 1) {
-        filedBeforeSecondCall.push(
-          Object.values(loadLedger(stateDir).findings).filter((entry) =>
-            entry.disposition.startsWith("filed:"),
-          ).length,
-        );
-      }
-      if (index === 3) {
-        commentedBeforeSecondComment.push(
-          Object.values(loadLedger(stateDir).findings).filter(
-            (entry) => entry.lastCommentAt !== undefined,
-          ).length,
-        );
-      }
-      return {};
-    });
+    const { gh } = ghStub();
 
     const first = await runCycle(cycleFor(root, { events, gh }));
     expect(first.report.action).toBe("filed");
     expect(first.report.issues).toHaveLength(2);
-    expect(filedBeforeSecondCall).toEqual([1]);
 
+    // The next cycle treats both as filed and asks the peer nothing.
+    const neverAsked = dedupStub(() => new Error("a filed candidate reached the agent"));
     const later = await runCycle(
-      cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000) }),
+      cycleFor(root, {
+        events,
+        gh,
+        dedup: neverAsked.dedup,
+        now: new Date(fixedNow.getTime() + 23 * 60 * 60 * 1000),
+      }),
     );
-    expect(later.report.action).toBe("commented");
-    expect(later.report.issues).toEqual([]);
-    expect(commentedBeforeSecondComment).toEqual([1]);
-    const ledger = loadLedger(stateDir);
-    expect(
-      Object.values(ledger.findings).filter((entry) => entry.lastCommentAt !== undefined),
-    ).toHaveLength(2);
+    expect(neverAsked.calls).toHaveLength(0);
+    expect(later.report.action).toBe("duplicate");
+    expect(loadLedger(stateDir).pendingFiling).toEqual([]);
   });
 
   test("a start in a cycle's final five minutes stalls in the next cycle", async () => {
@@ -1125,7 +1137,7 @@ describe("filing", () => {
     expect(second.report.findings[0]?.ts).toBe(started.toISOString());
     expect(second.report.action).toBe("filed");
     expect(second.report.issues).toHaveLength(1);
-    expect(calls).toHaveLength(1);
+    expect(calls).toEqual([]);
   });
 
   test("an unchanged window is a duplicate and makes no gh call", async () => {
@@ -1134,13 +1146,13 @@ describe("filing", () => {
     const { gh, calls } = ghStub();
     const first = await runCycle(cycleFor(root, { events, gh }));
     expect(first.report.action).toBe("filed");
-    expect(calls).toHaveLength(1);
+    expect(calls).toEqual([]);
 
     const second = await runCycle(cycleFor(root, { events, gh }));
     expect(second.report.action).toBe("duplicate");
     expect(second.report.issues).toEqual([]);
     expect(second.exitCode).toBe(0);
-    expect(calls).toHaveLength(1);
+    expect(calls).toEqual([]);
   });
 
   test("a recurrence comments once after 24 hours and never closes", async () => {
@@ -1155,15 +1167,15 @@ describe("filing", () => {
       cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 23 * 60 * 60 * 1000) }),
     );
     expect(soon.report.action).toBe("duplicate");
-    expect(calls).toHaveLength(1);
+    expect(calls).toEqual([]);
 
     const later = await runCycle(
       cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000) }),
     );
     expect(later.report.action).toBe("commented");
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.argv).toEqual(["issue", "comment", url, "--body-file", "-"]);
-    const body = calls[1]?.stdin ?? "";
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.argv).toEqual(["issue", "comment", url, "--body-file", "-"]);
+    const body = calls[0]?.stdin ?? "";
     const stateDir = join(root, ".devboard", ".tmp", "watchdog");
     expect(body).toContain(fingerprint);
     expect(body).toContain(`- Count: ${loadLedger(stateDir).findings[fingerprint]?.count}`);
@@ -1180,15 +1192,14 @@ describe("filing", () => {
       new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000).toISOString(),
     );
     expect(calls.some((call) => call.argv.includes("close"))).toBe(false);
-    expect(calls.some((call) => call.argv.includes("create"))).toBe(true);
-    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(1);
+    expect(calls.some((call) => call.argv.includes("create"))).toBe(false);
   });
 
   test("a rejected recurrence comment is not marked and is retried", async () => {
     const { root } = await fixtureRepository();
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
     const { gh, calls } = ghStub((_call, index) =>
-      index === 1 ? { code: 1, stderr: "HTTP 422: Validation failed\nsecond line" } : {},
+      index === 0 ? { code: 1, stderr: "HTTP 422: Validation failed\nsecond line" } : {},
     );
     const first = await runCycle(cycleFor(root, { events, gh }));
     const fingerprint = first.report.issues[0]?.fingerprint as string;
@@ -1199,22 +1210,22 @@ describe("filing", () => {
     );
     expect(rejected.report.action).toBe("failed");
     expect(rejected.report.reason).toBe("HTTP 422: Validation failed");
-    expect(calls[1]?.stdin).toContain(fingerprint);
+    expect(calls[0]?.stdin).toContain(fingerprint);
     expect(loadLedger(stateDir).findings[fingerprint]?.lastCommentAt).toBeUndefined();
 
     const retried = await runCycle(
       cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 26 * 60 * 60 * 1000) }),
     );
     expect(retried.report.action).toBe("commented");
-    expect(calls).toHaveLength(3);
-    expect(calls[2]?.argv).toEqual([
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.argv).toEqual([
       "issue",
       "comment",
       first.report.issues[0]?.url,
       "--body-file",
       "-",
     ]);
-    expect(calls[2]?.stdin).toContain(fingerprint);
+    expect(calls[1]?.stdin).toContain(fingerprint);
     expect(loadLedger(stateDir).findings[fingerprint]?.lastCommentAt).toBe(
       new Date(fixedNow.getTime() + 26 * 60 * 60 * 1000).toISOString(),
     );
@@ -1257,7 +1268,8 @@ describe("filing", () => {
     expect(later.report.unowned).toEqual([
       { url, category: "server-error", fingerprint },
     ]);
-    expect(calls).toHaveLength(1);
+    // The issue was filed through the dedup tool record, not another gh call.
+    expect(calls).toHaveLength(0);
     expect(loadLedger(stateDir).findings[fingerprint]?.lastCommentAt).toBeUndefined();
     const latest = JSON.parse(readFileSync(join(stateDir, "latest.json"), "utf8"));
     expect(latest.action).toBe("skipped");
@@ -1267,19 +1279,19 @@ describe("filing", () => {
     expect(markdown).toContain(url);
   });
 
-  test("a failed gh call retries the pending fingerprint before new ones", async () => {
+  test("a failed filing tool retries the pending fingerprint before new ones", async () => {
     const { root } = await fixtureRepository();
     const stateDir = join(root, ".devboard", ".tmp", "watchdog");
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
-    const { gh, calls } = ghStub((_call, index) =>
-      index === 0
-        ? { code: 1, stderr: "HTTP 403: Resource not accessible by integration\nsecond line" }
-        : {},
-    );
+    const { gh, calls } = ghStub();
+    const failed = dedupStub(() => ({
+      records: [],
+      error: "issue_create failed: HTTP 403: Resource not accessible by integration",
+    }));
 
-    const first = await runCycle(cycleFor(root, { events, gh }));
+    const first = await runCycle(cycleFor(root, { events, gh, dedup: failed.dedup }));
     expect(first.report.action).toBe("failed");
-    expect(first.report.reason).toBe("HTTP 403: Resource not accessible by integration");
+    expect(first.report.reason).toContain("HTTP 403: Resource not accessible by integration");
     expect(first.exitCode).toBe(1);
     expect(first.report.issues).toEqual([]);
     expect(loadLedger(stateDir).pendingFiling).toHaveLength(1);
@@ -1287,8 +1299,7 @@ describe("filing", () => {
     const second = await runCycle(cycleFor(root, { events, gh }));
     expect(second.report.action).toBe("filed");
     expect(second.report.issues).toHaveLength(1);
-    expect(calls).toHaveLength(2);
-    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(2);
+    expect(calls).toEqual([]);
     const ledger = loadLedger(stateDir);
     expect(ledger.pendingFiling).toEqual([]);
     expect(Object.values(ledger.findings)[0]?.disposition).toBe(
@@ -1343,40 +1354,21 @@ describe("filing", () => {
     );
     expect(retried.report.action).toBe("filed");
     expect(retried.report.issues).toHaveLength(1);
-    expect(calls).toHaveLength(1);
+    expect(calls).toEqual([]);
     expect(loadLedger(stateDir).pendingFiling).toEqual([]);
   });
 
-  test("a timed-out gh call is a failure with a bounded reason", async () => {
+  test("a dedup failure keeps the first diagnostic line and fails the cycle", async () => {
     const { root } = await fixtureRepository();
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
-    const timedOut = await runCycle(
-      cycleFor(root, {
-        events,
-        gh: ghStub(() => ({ code: 1, timedOut: true, stderr: "the command timed out\n" })).gh,
-      }),
+    const { gh } = ghStub();
+    const failed = dedupStub(() => new Error("issue_create failed: HTTP 500\nsecond line"));
+    const result = await runCycle(cycleFor(root, { events, gh, dedup: failed.dedup }));
+    expect(result.exitCode).toBe(1);
+    expect(result.report.action).toBe("failed");
+    expect(result.report.reason).toBe(
+      "the deduplication agent failed: issue_create failed: HTTP 500",
     );
-    expect(timedOut.report.action).toBe("failed");
-    expect(timedOut.report.reason).toBe("the command timed out");
-
-    const { root: silent } = await fixtureRepository();
-    const noDiagnostic = await runCycle(
-      cycleFor(silent, {
-        events,
-        gh: ghStub(() => ({ code: 1, timedOut: true, stderr: "" })).gh,
-      }),
-    );
-    expect(noDiagnostic.report.reason).toBe("gh timed out");
-
-    const { root: long } = await fixtureRepository();
-    const truncated = await runCycle(
-      cycleFor(long, {
-        events,
-        gh: ghStub(() => ({ code: 1, stderr: `${"y".repeat(400)}\nnext line` })).gh,
-      }),
-    );
-    expect(truncated.report.reason?.length).toBe(300);
-    expect(truncated.report.reason?.endsWith("…")).toBe(true);
   });
 
   test("dry run files nothing and leaves the state directory untouched", async () => {
@@ -1409,22 +1401,12 @@ function stateDirFor(root: string): string {
   return join(root, ".devboard", ".tmp", "watchdog");
 }
 
-function dedupAnswer(
-  request: DedupRequest,
-  decisions: (candidate: DedupRequest["candidates"][number]) => unknown,
-  openIssues: string[] = [],
-): unknown {
-  return {
-    read: { open_issues: openIssues },
-    decisions: request.candidates.map((candidate) => decisions(candidate)),
-  };
-}
-
 describe("deduplication gate", () => {
   function promptRequest(lines: string[]): DedupRequest {
     return {
       repository: "acme/fixture",
       window: { start: window.start.toISOString(), end: window.end.toISOString() },
+      filingRoom: lines.length,
       candidates: lines.map((line, index) => ({
         fingerprint: `fingerprint-${index}`,
         category: "server-error",
@@ -1440,8 +1422,8 @@ describe("deduplication gate", () => {
 
   /** The candidate JSON the prompt carries, between the two fixed markers. */
   function candidatesBlock(prompt: string): string {
-    const start = prompt.indexOf("The complete candidate set, as JSON:");
-    const end = prompt.indexOf("Answer with one JSON object");
+    const start = prompt.indexOf("The complete candidate set, as JSON");
+    const end = prompt.indexOf("## Filing room");
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     return prompt.slice(prompt.indexOf("\n\n", start) + 2, end).trim();
@@ -1452,7 +1434,8 @@ describe("deduplication gate", () => {
     const prompt = dedupPrompt(promptRequest([line]));
     const candidates = JSON.parse(candidatesBlock(prompt)) as { line: string }[];
     expect(candidates.map((candidate) => candidate.line)).toEqual([line]);
-    expect(prompt.split("Answer with one JSON object")).toHaveLength(2);
+    expect(prompt).not.toContain("{{candidates}}");
+    expect(prompt).toContain("at most 1 of these candidates");
   });
 
   test("$& and $` in a candidate line stay literal instead of splicing the prompt", () => {
@@ -1479,10 +1462,7 @@ describe("deduplication gate", () => {
     ];
     const { gh, calls } = ghStub();
     const { dedup, calls: dedupCalls } = dedupStub(
-      (request) => dedupAnswer(request, (candidate) => ({
-        fingerprint: candidate.fingerprint,
-        action: "unique",
-      })),
+      (request) => filedWithinRoom(request),
       { calls },
     );
 
@@ -1493,6 +1473,7 @@ describe("deduplication gate", () => {
     const request = dedupCalls[0]?.request as DedupRequest;
     expect(request.repository).toBe("acme/fixture");
     expect(request.window.start).toBe(window.start.toISOString());
+    expect(request.filingRoom).toBe(2);
     expect(request.candidates).toHaveLength(2);
     for (const candidate of request.candidates) {
       expect(candidate.fingerprint).toMatch(/^[0-9a-f]{32}$/);
@@ -1512,28 +1493,30 @@ describe("deduplication gate", () => {
       "unique",
       "unique",
     ]);
-    expect(forgeMutations(calls)).toHaveLength(2);
+    expect(result.report.issues).toHaveLength(2);
+    // The coordinator only reads the peer's records; it never files itself.
+    expect(forgeMutations(calls)).toEqual([]);
   });
 
   test("the request carries no issue list and the agent reports its own read", async () => {
     const { root } = await fixtureRepository();
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
     const { gh } = ghStub();
-    const { dedup, calls } = dedupStub((request) =>
-      dedupAnswer(
-        request,
-        (candidate) => ({
-          fingerprint: candidate.fingerprint,
-          action: "duplicate",
-          issue: ISSUE_URL,
-        }),
-        [ISSUE_URL],
+    const { dedup, calls } = dedupStub((request) => ({
+      records: request.candidates.map((candidate) =>
+        duplicateRecord(candidate, { issue: ISSUE_URL }),
       ),
-    );
+      reads: [1],
+    }));
 
     const result = await runCycle(cycleFor(root, { events, gh, dedup }));
     const request = calls[0]?.request as DedupRequest;
-    expect(Object.keys(request).sort()).toEqual(["candidates", "repository", "window"]);
+    expect(Object.keys(request).sort()).toEqual([
+      "candidates",
+      "filingRoom",
+      "repository",
+      "window",
+    ]);
     expect(JSON.stringify(request)).not.toContain(ISSUE_URL);
     expect(JSON.stringify(request)).not.toContain("open_issues");
     const prompt = dedupPrompt(request);
@@ -1547,17 +1530,12 @@ describe("deduplication gate", () => {
     const stateDir = stateDirFor(root);
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
     const { gh, calls } = ghStub();
-    const { dedup } = dedupStub((request) =>
-      dedupAnswer(
-        request,
-        (candidate) => ({
-          fingerprint: candidate.fingerprint,
-          action: "duplicate",
-          issue: ISSUE_URL,
-        }),
-        [ISSUE_URL],
+    const { dedup } = dedupStub((request) => ({
+      records: request.candidates.map((candidate) =>
+        duplicateRecord(candidate, { issue: ISSUE_URL }),
       ),
-    );
+      reads: [1],
+    }));
 
     const result = await runCycle(cycleFor(root, { events, gh, dedup }));
     expect(result.exitCode).toBe(0);
@@ -1600,21 +1578,18 @@ describe("deduplication gate", () => {
       const first = request.candidates[0];
       const second = request.candidates[1];
       if (first === undefined || second === undefined) throw new Error("missing candidates");
-      return dedupAnswer(request, (candidate) =>
-        candidate.fingerprint === second.fingerprint
-          ? {
-              fingerprint: candidate.fingerprint,
-              action: "duplicate",
-              representative: first.fingerprint,
-            }
-          : { fingerprint: candidate.fingerprint, action: "unique" },
-      );
+      return {
+        records: [
+          filedRecord(first, 100),
+          duplicateRecord(second, { representative: first.fingerprint }),
+        ],
+      };
     });
 
     const result = await runCycle(cycleFor(root, { events, gh, dedup }));
     expect(result.report.action).toBe("filed");
     expect(result.report.issues).toHaveLength(1);
-    expect(forgeMutations(calls)).toHaveLength(1);
+    expect(forgeMutations(calls)).toEqual([]);
     const representative = result.report.deduplication.decisions[0]?.fingerprint;
     const grouped = result.report.deduplication.decisions.find(
       (entry) => entry.decision === "duplicate",
@@ -1625,36 +1600,21 @@ describe("deduplication gate", () => {
     expect(result.report.issues[0]?.line).toBe(SERVER_ERROR);
   });
 
-  test("a unique candidate keeps the current title, body, and filed ledger entry", async () => {
+  test("a filed record marks the ledger and never calls delivery.create", async () => {
     const { root } = await fixtureRepository();
     const stateDir = stateDirFor(root);
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
     const { gh, calls } = ghStub();
-    const { dedup } = dedupStub((request) =>
-      dedupAnswer(request, (candidate) => ({
-        fingerprint: candidate.fingerprint,
-        action: "unique",
-      })),
-    );
+    const { dedup } = dedupStub((request) => ({
+      records: request.candidates.map((candidate, index) => filedRecord(candidate, 700 + index)),
+    }));
 
     const result = await runCycle(cycleFor(root, { events, gh, dedup }));
     expect(result.report.action).toBe("filed");
-    expect(calls).toHaveLength(1);
-    const call = calls[0] as GhCall;
-    expect(call.argv).toEqual([
-      "issue",
-      "create",
-      "--repo",
-      "acme/fixture",
-      "--title",
-      watchdogTitle("server-error", SERVER_ERROR),
-      "--body-file",
-      "-",
-    ]);
-    expect(call.stdin).toContain(`- Category: \`server-error\``);
-    expect(call.stdin).toContain(`- Fingerprint: \`${result.report.issues[0]?.fingerprint}\``);
-    expect(call.stdin).toContain(SERVER_ERROR);
+    expect(forgeMutations(calls)).toEqual([]);
     expect(result.report.deduplication.decisions[0]?.decision).toBe("unique");
+    expect(result.report.issues[0]?.url).toBe("https://github.com/acme/fixture/issues/700");
+    expect(result.report.issues[0]?.line).toBe(SERVER_ERROR);
 
     const ledger = loadLedger(stateDir);
     const fingerprint = result.report.issues[0]?.fingerprint as string;
@@ -1665,7 +1625,7 @@ describe("deduplication gate", () => {
     expect(ledger.pendingFiling).toEqual([]);
   });
 
-  test("a missing or invalid answer fails closed and retries the next cycle", async () => {
+  test("a failed dedup turn fails closed and retries the next cycle", async () => {
     const { root } = await fixtureRepository();
     const stateDir = stateDirFor(root);
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
@@ -1686,34 +1646,6 @@ describe("deduplication gate", () => {
         label: "times out",
         dedup: async () => {
           throw new Error("the deduplication agent timed out after 240000ms");
-        },
-      },
-      { label: "malformed", dedup: async () => "the agent wrote prose, not JSON" },
-      {
-        label: "names a nonexistent issue",
-        dedup: async (request) =>
-          JSON.stringify(
-            dedupAnswer(
-              request,
-              (candidate) => ({
-                fingerprint: candidate.fingerprint,
-                action: "duplicate",
-                issue: "https://github.com/acme/fixture/issues/999",
-              }),
-              [ISSUE_URL],
-            ),
-          ),
-      },
-      {
-        label: "representative cycle",
-        dedup: async (request) => {
-          const fingerprint = request.candidates[0]?.fingerprint as string;
-          return JSON.stringify({
-            read: { open_issues: [] },
-            decisions: [
-              { fingerprint, action: "duplicate", representative: fingerprint },
-            ],
-          });
         },
       },
     ];
@@ -1750,48 +1682,90 @@ describe("deduplication gate", () => {
     expect(loadLedger(stateDir).pendingFiling).toEqual([]);
   });
 
-  test("an omitted or unknown candidate fails the whole set closed", async () => {
+  test("a turn that records nothing leaves every candidate pending", async () => {
     const { root } = await fixtureRepository();
     const events = [
       event(root, 2, SERVER_ERROR, "server-error", instanceFor(root, 8080)),
       event(root, 1, "update install failed: checksum mismatch", "update-error"),
     ];
-    const omissions: Dedup[] = [
-      async (request) =>
-        JSON.stringify({
-          read: { open_issues: [] },
-          decisions: [
-            {
-              fingerprint: request.candidates[0]?.fingerprint as string,
-              action: "unique",
-            },
-          ],
-        }),
-      async (request) =>
-        JSON.stringify({
-          read: { open_issues: [] },
-          decisions: [
-            ...request.candidates.map((candidate) => ({
-              fingerprint: candidate.fingerprint,
-              action: "unique",
-            })),
-            { fingerprint: "ffffffffffffffffffffffffffffffff", action: "unique" },
-          ],
-        }),
+    const { gh, calls } = ghStub();
+    const { dedup } = dedupStub(() => ({ records: [] }));
+
+    const result = await runCycle(cycleFor(root, { events, gh, dedup }));
+    expect(result.report.issues).toEqual([]);
+    expect(forgeMutations(calls)).toEqual([]);
+    expect(result.report.deduplication.decisions).toHaveLength(2);
+    expect(
+      result.report.deduplication.decisions.every(
+        (entry) =>
+          entry.decision === "failed" &&
+          entry.reason === "the deduplication turn recorded no decision",
+      ),
+    ).toBe(true);
+    const ledger = loadLedger(stateDirFor(root));
+    expect(ledger.pendingFiling).toHaveLength(2);
+    expect(Object.values(ledger.findings).every((entry) => entry.disposition === "none")).toBe(
+      true,
+    );
+  });
+
+  test("a record for an unknown fingerprint never files or suppresses a candidate", async () => {
+    const { root } = await fixtureRepository();
+    const events = [
+      event(root, 2, SERVER_ERROR, "server-error", instanceFor(root, 8080)),
+      event(root, 1, "update install failed: checksum mismatch", "update-error"),
     ];
-    for (const dedup of omissions) {
-      const { gh, calls } = ghStub();
-      const result = await runCycle(cycleFor(root, { events, gh, dedup }));
-      expect(result.exitCode).toBe(1);
-      expect(result.report.action).toBe("failed");
-      expect(result.report.issues).toEqual([]);
-      expect(forgeMutations(calls)).toEqual([]);
-      expect(result.report.deduplication.decisions).toHaveLength(2);
-      expect(
-        result.report.deduplication.decisions.every((entry) => entry.decision === "failed"),
-      ).toBe(true);
-      expect(loadLedger(stateDirFor(root)).pendingFiling).toHaveLength(2);
-    }
+    const { gh, calls } = ghStub();
+    const { dedup } = dedupStub(() => ({
+      records: [
+        {
+          fingerprint: "ffffffffffffffffffffffffffffffff",
+          action: "filed",
+          number: 900,
+          url: "https://github.com/acme/fixture/issues/900",
+        },
+      ],
+    }));
+
+    const result = await runCycle(cycleFor(root, { events, gh, dedup }));
+    expect(result.report.issues).toEqual([]);
+    expect(forgeMutations(calls)).toEqual([]);
+    expect(result.report.deduplication.decisions).toHaveLength(2);
+    expect(
+      result.report.deduplication.decisions.every((entry) => entry.decision === "failed"),
+    ).toBe(true);
+    expect(loadLedger(stateDirFor(root)).pendingFiling).toHaveLength(2);
+  });
+
+  test("a tool error after a record leaves every candidate pending", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = stateDirFor(root);
+    const events = [
+      event(root, 2, SERVER_ERROR, "server-error", instanceFor(root, 8080)),
+      event(root, 1, "update install failed: checksum mismatch", "update-error"),
+    ];
+    const { gh, calls } = ghStub();
+    const { dedup } = dedupStub((request) => {
+      const first = request.candidates[0];
+      if (first === undefined) throw new Error("missing candidate");
+      return { records: [filedRecord(first, 300)], error: "issue_create failed: HTTP 500" };
+    });
+
+    const result = await runCycle(cycleFor(root, { events, gh, dedup }));
+    expect(result.exitCode).toBe(1);
+    expect(result.report.action).toBe("failed");
+    expect(result.report.reason).toContain("issue_create failed: HTTP 500");
+    expect(result.report.issues).toEqual([]);
+    expect(forgeMutations(calls)).toEqual([]);
+    expect(result.report.deduplication.decisions).toHaveLength(2);
+    expect(
+      result.report.deduplication.decisions.every((entry) => entry.decision === "failed"),
+    ).toBe(true);
+    const ledger = loadLedger(stateDir);
+    expect(ledger.pendingFiling).toHaveLength(2);
+    expect(Object.values(ledger.findings).every((entry) => entry.disposition === "none")).toBe(
+      true,
+    );
   });
 
   test("an open match suppresses silently until it is closed", async () => {
@@ -1799,17 +1773,12 @@ describe("deduplication gate", () => {
     const stateDir = stateDirFor(root);
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
     const { gh, calls } = ghStub();
-    const duplicate = dedupStub((request) =>
-      dedupAnswer(
-        request,
-        (candidate) => ({
-          fingerprint: candidate.fingerprint,
-          action: "duplicate",
-          issue: ISSUE_URL,
-        }),
-        [ISSUE_URL],
+    const duplicate = dedupStub((request) => ({
+      records: request.candidates.map((candidate) =>
+        duplicateRecord(candidate, { issue: ISSUE_URL }),
       ),
-    );
+      reads: [1],
+    }));
     const first = await runCycle(
       cycleFor(root, {
         events,
@@ -1840,12 +1809,7 @@ describe("deduplication gate", () => {
     expect(forgeMutations(calls)).toEqual([]);
 
     // Closed: the same evidence reaches the agent again and is filed.
-    const unique = dedupStub((request) =>
-      dedupAnswer(request, (candidate) => ({
-        fingerprint: candidate.fingerprint,
-        action: "unique",
-      })),
-    );
+    const unique = dedupStub((request) => filedWithinRoom(request));
     const third = await runCycle(
       cycleFor(root, {
         events,
@@ -1859,7 +1823,7 @@ describe("deduplication gate", () => {
     expect(unique.calls[0]?.request.candidates[0]?.fingerprint).toBe(fingerprint);
     expect(third.report.action).toBe("filed");
     expect(third.report.issues).toHaveLength(1);
-    expect(forgeMutations(calls)).toHaveLength(1);
+    expect(forgeMutations(calls)).toEqual([]);
     expect(loadLedger(stateDir).findings[fingerprint]?.disposition).toMatch(/^filed:/);
   });
 
@@ -1875,19 +1839,19 @@ describe("deduplication gate", () => {
     // Different lines, agent says duplicates: one issue.
     const { gh, calls } = ghStub();
     const grouped = dedupStub((request) => {
-      const first = request.candidates[0]?.fingerprint as string;
-      const second = request.candidates[1]?.fingerprint as string;
-      return JSON.stringify({
-        read: { open_issues: [] },
-        decisions: [
-          { fingerprint: first, action: "unique" },
-          { fingerprint: second, action: "duplicate", representative: first },
+      const first = request.candidates[0];
+      const second = request.candidates[1];
+      if (first === undefined || second === undefined) throw new Error("missing candidates");
+      return {
+        records: [
+          filedRecord(first, 100),
+          duplicateRecord(second, { representative: first.fingerprint }),
         ],
-      });
+      };
     });
     const one = await runCycle(cycleFor(root, { events, gh, dedup: grouped.dedup }));
     expect(one.report.issues).toHaveLength(1);
-    expect(forgeMutations(calls)).toHaveLength(1);
+    expect(forgeMutations(calls)).toEqual([]);
 
     // A long shared prefix, agent says unique: both are filed.
     const { root: other } = await fixtureRepository();
@@ -1897,40 +1861,35 @@ describe("deduplication gate", () => {
       event(other, 1, `${prefix} two`, "server-error", instanceFor(other, 8080)),
     ];
     const uniqueGh = ghStub();
-    const unique = dedupStub((request) =>
-      dedupAnswer(request, (candidate) => ({
-        fingerprint: candidate.fingerprint,
-        action: "unique",
-      })),
-    );
+    const unique = dedupStub((request) => filedWithinRoom(request));
     const both = await runCycle(
       cycleFor(other, { events: longEvents, gh: uniqueGh.gh, dedup: unique.dedup }),
     );
     expect(both.report.issues).toHaveLength(2);
-    expect(forgeMutations(uniqueGh.calls)).toHaveLength(2);
+    expect(forgeMutations(uniqueGh.calls)).toEqual([]);
   });
 
-  test("the dedup pass and its agent make no forge mutation", async () => {
+  test("the dedup pass reads records and the peer's MCP surface has exactly two writes", async () => {
     const { root } = await fixtureRepository();
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
     const { gh, calls } = ghStub();
-    const { dedup, calls: dedupCalls } = dedupStub((request) =>
-      dedupAnswer(
-        request,
-        (candidate) => ({
-          fingerprint: candidate.fingerprint,
-          action: "duplicate",
-          issue: ISSUE_URL,
-        }),
-        [ISSUE_URL],
+    const { dedup, calls: dedupCalls } = dedupStub((request) => ({
+      records: request.candidates.map((candidate) =>
+        duplicateRecord(candidate, { issue: ISSUE_URL }),
       ),
-    );
+      reads: [1],
+    }));
     await runCycle(cycleFor(root, { events, gh, dedup }));
     expect(dedupCalls).toHaveLength(1);
     expect(calls).toEqual([]);
 
-    // The peer's MCP surface is exactly two read tools.
-    expect(DEDUP_TOOLS.map((tool) => tool.name)).toEqual(["issues_list", "issue_get"]);
+    // The peer's MCP surface exposes the reads and exactly two writes.
+    expect(DEDUP_TOOLS.map((tool) => tool.name)).toEqual([
+      "issues_list",
+      "issue_get",
+      "issue_create",
+      "watchdog_duplicate_record",
+    ]);
     const fake: ForgeIssues = {
       forge: "gitea",
       repository: "acme/fixture",
@@ -2003,7 +1962,12 @@ describe("deduplication gate", () => {
     const listed = replies.find((reply) => reply.id === 2)?.result as {
       tools: Array<{ name: string }>;
     };
-    expect(listed.tools.map((tool) => tool.name)).toEqual(["issues_list", "issue_get"]);
+    expect(listed.tools.map((tool) => tool.name)).toEqual([
+      "issues_list",
+      "issue_get",
+      "issue_create",
+      "watchdog_duplicate_record",
+    ]);
     const writeAttempt = replies.find((reply) => reply.id === 3)?.result as {
       isError?: boolean;
       content: Array<{ text: string }>;
@@ -2068,17 +2032,12 @@ describe("deduplication gate", () => {
     const events = collected.events;
 
     // An open issue already describes the failure: no create, no comment.
-    const matched = dedupStub((request) =>
-      dedupAnswer(
-        request,
-        (candidate) => ({
-          fingerprint: candidate.fingerprint,
-          action: "duplicate",
-          issue: ISSUE_URL,
-        }),
-        [ISSUE_URL],
+    const matched = dedupStub((request) => ({
+      records: request.candidates.map((candidate) =>
+        duplicateRecord(candidate, { issue: ISSUE_URL }),
       ),
-    );
+      reads: [1],
+    }));
     const matchedGh = ghStub();
     const matchedResult = await runCycle(
       cycleFor(base, { events, gh: matchedGh.gh, dedup: matched.dedup }),
@@ -2092,12 +2051,7 @@ describe("deduplication gate", () => {
 
     // No open issue matches: exactly one issue for the whole set.
     const uniqueGh = ghStub();
-    const unique = dedupStub((request) =>
-      dedupAnswer(request, (candidate) => ({
-        fingerprint: candidate.fingerprint,
-        action: "unique",
-      })),
-    );
+    const unique = dedupStub((request) => filedWithinRoom(request));
     const filed = await runCycle(
       cycleFor(base, {
         events,
@@ -2108,7 +2062,7 @@ describe("deduplication gate", () => {
     );
     expect(filed.report.findings).toHaveLength(1);
     expect(filed.report.issues).toHaveLength(1);
-    expect(forgeMutations(uniqueGh.calls)).toHaveLength(1);
+    expect(forgeMutations(uniqueGh.calls)).toEqual([]);
     expect(filed.report.issues[0]?.line).not.toContain("raw-http-request");
   });
 });
@@ -2131,7 +2085,7 @@ describe("fix pipeline removal", () => {
       }),
     );
     expect(result.report.action).toBe("filed");
-    expect(calls).toHaveLength(1);
+    expect(calls).toEqual([]);
     expect(git(root, "rev-parse", "HEAD")).toBe(before.head);
     expect(git(origin, "rev-parse", "main")).toBe(before.remote);
     expect(git(root, "worktree", "list")).toBe(before.worktrees);
@@ -2301,7 +2255,7 @@ describe("watchdog filing caps", () => {
       }),
     );
     expect(result.report.issues).toHaveLength(2);
-    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(2);
+    expect(calls).toEqual([]);
     expect(loadLedger(stateDir).pendingFiling).toEqual([]);
   });
 
@@ -2310,15 +2264,18 @@ describe("watchdog filing caps", () => {
     const stateDir = join(root, ".devboard", ".tmp", "watchdog");
     okProjection(stateDir);
     const { gh, calls } = ghStub();
+    const dedup = dedupStub((request) => filedWithinRoom(request));
     const first = await runCycle(
       cycleFor(root, {
         events: twoFindings(root),
         gh,
+        dedup: dedup.dedup,
         settings: { intervalMinutes: 10, maxPerHour: 1, maxPending: null },
       }),
     );
     expect(first.report.issues).toHaveLength(1);
-    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(1);
+    expect(dedup.calls[0]?.request.filingRoom).toBe(1);
+    expect(calls).toEqual([]);
     const ledger = loadLedger(stateDir);
     expect(ledger.pendingFiling).toHaveLength(1);
 
@@ -2326,13 +2283,15 @@ describe("watchdog filing caps", () => {
       cycleFor(root, {
         events: twoFindings(root),
         gh,
+        dedup: dedup.dedup,
         settings: { intervalMinutes: 10, maxPerHour: 1, maxPending: null },
       }),
     );
     expect(second.report.issues).toEqual([]);
     expect(second.report.action).toBe("capped");
+    expect(dedup.calls[1]?.request.filingRoom).toBe(0);
     expect(loadLedger(stateDir).pendingFiling).toHaveLength(1);
-    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(1);
+    expect(calls).toEqual([]);
   });
 
   test("an open cap counts the last successful projection", async () => {
@@ -2346,14 +2305,17 @@ describe("watchdog filing caps", () => {
       issues: [{ url: "https://github.com/acme/fixture/issues/1", state: "pending", version: null }],
     });
     const { gh, calls } = ghStub();
+    const dedup = dedupStub((request) => filedWithinRoom(request));
     const result = await runCycle(
       cycleFor(root, {
         events: twoFindings(root),
         gh,
+        dedup: dedup.dedup,
         settings: { intervalMinutes: 10, maxPerHour: null, maxPending: 1 },
       }),
     );
     expect(result.report.issues).toEqual([]);
+    expect(dedup.calls[0]?.request.filingRoom).toBe(0);
     expect(calls).toEqual([]);
     expect(loadLedger(stateDir).pendingFiling).toHaveLength(2);
   });
@@ -2369,14 +2331,17 @@ describe("watchdog filing caps", () => {
       issues: [],
     });
     const { gh, calls } = ghStub();
+    const dedup = dedupStub((request) => filedWithinRoom(request));
     const result = await runCycle(
       cycleFor(root, {
         events: twoFindings(root),
         gh,
+        dedup: dedup.dedup,
         settings: { intervalMinutes: 10, maxPerHour: 5, maxPending: 5 },
       }),
     );
     expect(result.report.issues).toEqual([]);
+    expect(dedup.calls[0]?.request.filingRoom).toBe(0);
     expect(calls).toEqual([]);
     expect(loadLedger(stateDir).pendingFiling).toHaveLength(2);
     expect(result.report.reason).toContain("projection is not ok");

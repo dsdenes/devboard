@@ -241,6 +241,46 @@ async function text(devtools: Devtools, testid: string): Promise<string> {
   return typeof value === "string" ? value : "";
 }
 
+async function discoverBar(devtools: Devtools): Promise<{
+  bars: number;
+  dot: string;
+  last: string;
+  control: string;
+  removed: boolean;
+}> {
+  const value = await devtools.evaluate(`(() => {
+    const root = document.querySelector('#workspace-discover');
+    const bar = root?.querySelector('[data-testid="agent-activity-bar"]');
+    const control = bar?.querySelector('[data-testid="agent-activity-control"]');
+    return {
+      bars: root?.querySelectorAll('[data-testid="agent-activity-bar"]').length ?? 0,
+      dot: bar?.querySelector('[data-testid="agent-activity-dot"]')?.getAttribute('data-state') ?? '',
+      last: bar?.querySelector('[data-testid="agent-activity-last"]')?.textContent?.trim() ?? '',
+      control:
+        control?.querySelector('[data-testid="discover-start"]') !== null
+          ? 'discover-start'
+          : control?.querySelector('[data-testid="discover-agent-start"]') !== null
+            ? 'discover-agent-start'
+            : control?.querySelector('[data-testid="discover-agent-stop"]') !== null
+              ? 'discover-agent-stop'
+              : control?.querySelector('[data-testid="discover-stop"]') !== null
+                ? 'discover-stop'
+                : '',
+      removed:
+        root?.querySelector('[data-testid="discover-run-tag"]') !== null ||
+        root?.querySelector('[data-testid="discover-agent-run-tag"]') !== null ||
+        root?.querySelector('[data-testid="discover-agent-status"]') !== null,
+    };
+  })()`);
+  return (value ?? { bars: 0, dot: "", last: "", control: "", removed: false }) as {
+    bars: number;
+    dot: string;
+    last: string;
+    control: string;
+    removed: boolean;
+  };
+}
+
 async function valueOf(devtools: Devtools, testid: string): Promise<string> {
   const value = await devtools.evaluate(
     `document.querySelector('[data-testid="${testid}"]')?.value ?? ''`,
@@ -382,6 +422,8 @@ async function startDashboard(options: {
   logPath: string;
   extraStub?: string[];
   agentCommand?: string;
+  /** The peer's MCP call log; the Discover agents stage through the tools. */
+  toolLogPath?: string;
 }): Promise<Dashboard> {
   await mkdir(options.stateDir, { recursive: true });
   seedVerificationProvider(options.stateDir);
@@ -401,6 +443,9 @@ async function startDashboard(options: {
       STATIC_DIR: join(harnessRoot, "dist"),
       STATE_DIR: options.stateDir,
       AGENT_COMMAND: command,
+      ...(options.toolLogPath === undefined
+        ? {}
+        : { DEVBOARD_TOOL_LOG: options.toolLogPath }),
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -428,6 +473,32 @@ function logPrompts(path: string): string[] {
     .split("\n")
     .filter((line) => line.startsWith("prompt /discover"))
     .map((line) => line.slice("prompt ".length));
+}
+
+/** The MCP calls one peer made, in order, as its tool log records them. */
+function toolCalls(path: string): Array<{ tool: string; ok: boolean }> {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { tool?: unknown; ok?: unknown })
+    .map((entry) => ({ tool: String(entry.tool ?? ""), ok: entry.ok === true }));
+}
+
+/** The staging tools each agent's turn must call, in the order it calls them. */
+function stagingTools(agent: string): string[] {
+  if (agent === "sheet") return ["discover_sheet_stage"];
+  if (agent === "discover-glossary") {
+    return [
+      "discover_glossary_stage",
+      "discover_significance_stage",
+      "discover_skill_stage",
+    ];
+  }
+  if (agent === "discover-contribution") {
+    return ["discover_contribution_stage", "discover_skill_stage"];
+  }
+  return ["discover_skill_stage"];
 }
 
 /** A git host whose `.devboard` makes it a harness source checkout. */
@@ -604,10 +675,12 @@ try {
   const source = await makeSourceHost(root, "source-host");
   const sourceState = join(source, ".devboard", ".tmp", "state");
   const sourceLog = join(root, "source-acp.log");
+  const sourceTools = join(source, ".devboard", ".tmp", "discover-tools.jsonl");
   const dashboard = await startDashboard({
     repoDir: source,
     stateDir: sourceState,
     logPath: sourceLog,
+    toolLogPath: sourceTools,
   });
   pids.push(dashboard.process.pid ?? 0);
 
@@ -765,6 +838,14 @@ try {
         (await countOf(devtools, "discover-agent-activity")) === 0,
         `the ${agent.id} card still renders an activity log`,
       );
+      const bar = await discoverBar(devtools);
+      check(
+        bar.bars === 1 &&
+          (bar.control === "discover-agent-start" || bar.control === "discover-agent-stop") &&
+          !bar.removed,
+        `the ${agent.id} card does not render its control inside the activity bar`,
+        bar,
+      );
     }
     check(shown.size === 7, "two cards share one prompt text");
     const promptBytes = PROMPT_FILES.map((file) =>
@@ -787,11 +868,23 @@ try {
       "the sidebar still carries a Run all control",
     );
     await openOverview(devtools);
+    const overviewBar = await discoverBar(devtools);
     check(
-      (await countOf(devtools, "discover-start")) === 1,
-      "the Overview page does not carry the Run all control",
+      overviewBar.bars === 1 && overviewBar.control === "discover-start" && !overviewBar.removed,
+      "the Overview page does not carry the Run all control inside the activity bar",
+      overviewBar,
     );
     await click(devtools, "discover-start");
+    await waitFor(
+      async () => {
+        const bar = await discoverBar(devtools);
+        return bar.dot === "running" && bar.control === "discover-stop" && !bar.removed
+          ? true
+          : undefined;
+      },
+      "the running Discover bar",
+      30_000,
+    );
     await waitFor(
       async () =>
         (await devtools.evaluate(`(() => {
@@ -802,6 +895,12 @@ try {
           : undefined,
       "all seven agents to succeed",
       120_000,
+    );
+    const finishedBar = await discoverBar(devtools);
+    check(
+      finishedBar.control === "discover-start" && finishedBar.last.length > 0,
+      "the Discover bar did not return to its idle control",
+      finishedBar,
     );
     const orderedPrompts = logPrompts(sourceLog);
     check(
@@ -870,6 +969,16 @@ try {
         `the ${tab} panel`,
         15_000,
       );
+      const tabBar = await discoverBar(devtools);
+      if (tab === "contribution") {
+        check(tabBar.bars === 0, "the contribution page renders an activity bar", tabBar);
+      } else {
+        check(
+          tabBar.bars === 1 && tabBar.control === "discover-start" && !tabBar.removed,
+          `the ${tab} page does not render the activity bar with its control`,
+          tabBar,
+        );
+      }
     }
     console.log("PASS run-all-order");
   }
@@ -880,6 +989,7 @@ try {
       await openCard(devtools, agent.id);
       const before = ompBytes(source);
       const promptsBefore = logPrompts(sourceLog).length;
+      const callsBefore = toolCalls(sourceTools).length;
       await click(devtools, "discover-agent-start");
       // The card still shows the previous success for a moment; the peer's own
       // prompt line is the first proof this trigger started.
@@ -911,6 +1021,18 @@ try {
       check(
         !existsSync(stage),
         `the ${agent.id} staging directory survived its publication`,
+      );
+      const calls = toolCalls(sourceTools).slice(callsBefore);
+      check(
+        JSON.stringify(calls.map((call) => call.tool)) ===
+          JSON.stringify(stagingTools(agent.id)),
+        `the ${agent.id} peer did not stage through its MCP tools`,
+        calls,
+      );
+      check(
+        calls.every((call) => call.ok),
+        `the ${agent.id} staging tool call did not succeed`,
+        calls,
       );
     }
     console.log("PASS per-agent-publication");
@@ -1112,10 +1234,12 @@ try {
       refused,
     );
     await openOverview(devtools);
-    const runAllDisabled = await devtools.evaluate(
-      `document.querySelector('[data-testid="discover-start"]')?.disabled === true`,
+    const runningBar = await discoverBar(devtools);
+    check(
+      runningBar.dot === "running" && runningBar.control === "discover-stop",
+      "Run all is offered in the bar while an agent runs",
+      runningBar,
     );
-    check(runAllDisabled === true, "Run all is enabled while an agent runs");
     console.log("PASS one-at-a-time");
   }
 

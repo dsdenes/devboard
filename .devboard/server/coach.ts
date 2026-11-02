@@ -4,7 +4,6 @@ import { join, resolve } from "node:path";
 import { ghCommand } from "../issues/scout/preflight";
 import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl } from "../lib/forge";
-import { ForgeReadRetry, classifyForgeReadFailure } from "../lib/forge-read-retry";
 import { giteaRepository } from "../lib/gitea";
 import { originForge } from "../issues/repository";
 import { liveLockOwners, readLock, type LockOwner } from "../issues/lock";
@@ -27,7 +26,11 @@ import {
 import { readWorkerState, type CoachWorkerState } from "../coach/worker-state";
 import { hostHarnessDir, readHarnessVersion } from "./version";
 import { readProjection, writeProjection } from "../watchdog/projection";
-import { createWatchdogGitHubReader, type WatchdogReader } from "./watchdog";
+import { AgentForgeState } from "./agents/forge-state";
+import {
+  createForgeIssueReader,
+  type ForgeIssueReader,
+} from "./agents/forge-reader";
 import type { AgentDescriptor, AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 
@@ -37,9 +40,6 @@ import type { AgentAdapter, AgentCommandResult } from "./agents/types";
  * count, and starts or stops the worker. A page load, a reconnect, or a
  * dashboard restart only reads; it never starts a cycle.
  */
-
-export const COACH_REFRESH_MS = 60_000;
-export const COACH_STALE_MS = 120_000;
 
 export interface CoachActivityOptions {
   descriptor: AgentDescriptor;
@@ -52,7 +52,9 @@ export interface CoachActivityOptions {
   send: (event: unknown, except?: { send(data: string): unknown }) => void;
   /** Test seam; production derives it from the state directory. */
   coachDir?: string;
-  reader?: WatchdogReader;
+  reader?: ForgeIssueReader;
+  /** True while at least one dashboard client is connected. */
+  hasClients?: () => boolean;
   now?: () => number;
   intervalMs?: number;
   staleAfterMs?: number;
@@ -96,25 +98,13 @@ export class CoachActivity implements AgentAdapter {
   private readonly harnessDir: string;
   private readonly runningVersion: string | null;
   private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
-  private readonly reader: WatchdogReader;
+  private readonly forge: AgentForgeState;
   private readonly now: () => number;
-  private readonly intervalMs: number;
-  private readonly staleAfterMs: number;
   private readonly environment: Record<string, string | undefined>;
   private readonly log: (line: string) => void;
   private readonly preflight: NonNullable<CoachActivityOptions["preflight"]>;
   private readonly spawnWorker: NonNullable<CoachActivityOptions["spawnWorker"]>;
 
-  private readonly facts = new Map<string, { state: "pending" | "implemented"; version: string | null }>();
-  private lastStarted: number | null = null;
-  private lastSuccess: number | null = null;
-  private lastFailure: string | null = null;
-  /** When the next projection read is due; null means the normal cadence. */
-  private nextAttemptAt: number | null = null;
-  /** The consecutive transient failures of the projection read. */
-  private readonly retry = new ForgeReadRetry();
-  private inFlight: Promise<void> | null = null;
-  private timer: Timer | undefined;
   private starting = false;
   private startingSince: number | null = null;
   private stopRequested = false;
@@ -133,17 +123,29 @@ export class CoachActivity implements AgentAdapter {
     this.harnessDir = options.harnessDir;
     this.runningVersion = options.runningVersion ?? null;
     this.send = options.send;
-    this.reader =
-      options.reader ??
-      createWatchdogGitHubReader({
-        repoDir: this.repoDir,
-        ...(options.environment === undefined ? {} : { environment: options.environment }),
-      });
     this.now = options.now ?? (() => Date.now());
-    this.intervalMs = Math.max(1, options.intervalMs ?? COACH_REFRESH_MS);
-    this.staleAfterMs = Math.max(0, options.staleAfterMs ?? COACH_STALE_MS);
     this.environment = options.environment ?? process.env;
     this.log = options.log ?? (() => undefined);
+    this.forge = new AgentForgeState({
+      reader:
+        options.reader ??
+        createForgeIssueReader({
+          repoDir: this.repoDir,
+          ...(options.environment === undefined ? {} : { environment: options.environment }),
+        }),
+      urls: () => readCoachStatus(this.coachDir).issues.map((issue) => issue.url),
+      hasClients: options.hasClients ?? (() => false),
+      now: this.now,
+      ...(options.intervalMs === undefined ? {} : { intervalMs: options.intervalMs }),
+      ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
+      seed: (readProjection(this.coachDir)?.issues ?? []).map(
+        (issue) => [issue.url, { url: issue.url, state: issue.state, version: issue.version }] as const,
+      ),
+      onRead: () => {
+        if (this.shouldPersistProjection()) this.persistProjection();
+      },
+      log: this.log,
+    });
     this.preflight = options.preflight ?? ((request) => preflightCoach(request));
     this.spawnWorker =
       options.spawnWorker ??
@@ -169,72 +171,31 @@ export class CoachActivity implements AgentAdapter {
   }
 
   begin(): void {
-    if (this.timer !== undefined) return;
-    this.timer = setInterval(() => this.schedule(), Math.max(50, Math.min(this.intervalMs, 1_000)));
+    this.forge.begin();
     this.takeoverTask = this.takeoverOldWorkers().finally(() => {
       this.takeoverTask = null;
     });
   }
 
   dispose(): void {
-    if (this.timer !== undefined) {
-      clearInterval(this.timer);
-      this.timer = undefined;
-    }
+    this.forge.dispose();
     this.clearStopProof();
   }
 
   settled(): Promise<void> {
-    return Promise.all([this.inFlight ?? Promise.resolve(), this.takeoverTask ?? Promise.resolve()])
-      .then(() => undefined);
+    return Promise.all([
+      this.forge.settled(),
+      this.takeoverTask ?? Promise.resolve(),
+    ]).then(() => undefined);
   }
 
   replay(_target: { send(data: string): unknown }): void {
     // Coach detail is the retained cycle history carried by the snapshot.
   }
 
-  private schedule(): void {
-    if (this.inFlight !== null) return;
-    const now = this.now();
-    if (this.lastStarted !== null) {
-      const due = this.nextAttemptAt ?? this.lastStarted + this.intervalMs;
-      if (now < due) return;
-    }
-    this.lastStarted = now;
-    this.nextAttemptAt = null;
-    this.inFlight = this.refresh().finally(() => {
-      this.inFlight = null;
-    });
-  }
-
-  private async refresh(): Promise<void> {
-    const status = readCoachStatus(this.coachDir);
-    try {
-      const urls = status.issues.map((issue) => issue.url);
-      const facts = urls.length === 0 ? [] : await this.reader.project(urls);
-      const next = new Map<string, { state: "pending" | "implemented"; version: string | null }>();
-      for (const fact of facts) next.set(fact.url, { state: fact.state, version: fact.version });
-      this.facts.clear();
-      for (const [url, fact] of next) this.facts.set(url, fact);
-      this.lastSuccess = this.now();
-      this.lastFailure = null;
-      this.nextAttemptAt = null;
-      this.retry.succeed();
-    } catch (error) {
-      const reason = firstLineOf(error instanceof Error ? error.message : String(error));
-      const kind = classifyForgeReadFailure(reason);
-      const delay = this.retry.record(kind);
-      if (kind === "transient" && delay !== null) {
-        // The retry window is not an alert: the last known rows and read time
-        // stay, and the sync reads `stale` with no reason.
-        this.lastFailure = null;
-        this.nextAttemptAt = this.now() + delay;
-      } else {
-        this.lastFailure = reason;
-        this.nextAttemptAt = null;
-      }
-    }
-    if (this.shouldPersistProjection()) this.persistProjection();
+  /** A view opened this agent: read the forge now when the cadence allows. */
+  requestSync(): void {
+    this.forge.requestSync();
   }
 
   private shouldPersistProjection(): boolean {
@@ -244,14 +205,14 @@ export class CoachActivity implements AgentAdapter {
   }
 
   private persistProjection(): void {
-    const sync = this.sync();
+    const sync = this.forge.sync;
     try {
       writeProjection(this.coachDir, {
         version: 1,
         state: sync.state,
         at: sync.at,
         error: sync.error,
-        issues: [...this.facts.entries()].map(([url, fact]) => ({
+        issues: [...this.forge.entries()].map(([url, fact]) => ({
           url,
           state: fact.state,
           version: fact.version,
@@ -264,16 +225,6 @@ export class CoachActivity implements AgentAdapter {
         }`,
       );
     }
-  }
-
-  private sync(): { state: "ok" | "error" | "stale"; at: string | null; error: string | null } {
-    const now = this.now();
-    const at = this.lastSuccess === null ? null : new Date(this.lastSuccess).toISOString();
-    if (this.lastFailure !== null) return { state: "error", at, error: this.lastFailure };
-    if (this.retry.failures > 0) return { state: "stale", at, error: null };
-    if (this.lastSuccess === null) return { state: "stale", at: null, error: null };
-    if (now - this.lastSuccess > this.staleAfterMs) return { state: "stale", at, error: null };
-    return { state: "ok", at, error: null };
   }
 
   /** Every published worker state: the legacy file and each version's file. */
@@ -307,7 +258,7 @@ export class CoachActivity implements AgentAdapter {
   }
 
   snapshot(): AgentSnapshotInput {
-    this.schedule();
+    this.forge.requestSync();
     const owners = this.owners();
     const states = this.allStates();
     const byPid = new Map(states.map((state) => [state.pid, state] as const));
@@ -355,10 +306,6 @@ export class CoachActivity implements AgentAdapter {
       stateDir: owner.stateDir,
       lifecycle: byPid.get(owner.pid)?.lifecycle ?? "running",
     }));
-    const projection = readProjection(this.coachDir);
-    const facts = new Map(
-      projection?.issues.map((issue) => [issue.url, issue] as const) ?? [],
-    );
     return {
       lifecycle,
       enabled: attached && active?.enabled === true && lifecycle !== "stopped",
@@ -373,24 +320,21 @@ export class CoachActivity implements AgentAdapter {
         maxPerHour: settings.maxPerHour,
         maxPending: settings.maxPending,
       },
-      issues: status.issues.map((issue) => ({
-        title: issue.title,
-        category: issue.kind,
-        filedAt: issue.filedAt,
-        url: issue.url,
-        state:
-          facts.get(issue.url)?.state === "implemented"
-            ? "implemented"
-            : facts.get(issue.url)?.state === "pending"
-              ? "pending"
-              : "unknown",
-        version:
-          facts.get(issue.url)?.state === "implemented"
-            ? (facts.get(issue.url)?.version ?? null)
-            : null,
-      })),
+      issues: status.issues
+        .filter((issue) => this.forge.reported(issue.url))
+        .map((issue) => {
+          const fact = this.forge.fact(issue.url);
+          return {
+            title: issue.title,
+            category: issue.kind,
+            filedAt: issue.filedAt,
+            url: issue.url,
+            state: fact?.state ?? "unknown",
+            version: fact?.version ?? null,
+          };
+        }),
       pending: status.pending,
-      sync: this.sync(),
+      sync: this.forge.sync,
       detail: { panel: "cycles", cycles: status.cycles },
       notice: active?.notice ?? this.notice,
       error: this.startError ?? active?.lastError ?? null,
@@ -404,7 +348,7 @@ export class CoachActivity implements AgentAdapter {
     // Any live worker of this family already serves new cycles, whichever
     // version started it; Start never duplicates one.
     if (this.owners().length > 0) {
-      this.schedule();
+      this.forge.requestSync();
       return { ok: true };
     }
     return this.spawn();
@@ -478,8 +422,7 @@ export class CoachActivity implements AgentAdapter {
         this.startError = "the Coach worker could not be started";
         return { ok: false, message: this.startError };
       }
-      this.lastStarted = null;
-      this.schedule();
+      this.forge.requestSync();
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

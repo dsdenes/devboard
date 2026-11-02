@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "../../server/acp";
 import {
   createWorkerProviderEnvironment,
@@ -10,8 +10,7 @@ import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner, liveLockOwners, versionLockPath } from "../lock";
 import { originForge, originRepository } from "../repository";
 import { appendActivityLine, writeActivity } from "../state";
-import { fileDesignIssue } from "./actions";
-import { parseAudit, readAuditInput, type DesignFinding } from "./audit";
+import { readAuditInput } from "./audit";
 import { takeCommands, type DesignCommand } from "./control";
 import { shippedVersion } from "../../lib/github-release";
 import {
@@ -59,8 +58,8 @@ import {
   createCycleDirectory,
   draftChanged,
   missingPrincipleSections,
-  readAuditText,
   readDraftDocument,
+  readReleaseRequest,
   tokenNames,
   tokensNamedInProse,
   tokenValues,
@@ -70,6 +69,7 @@ import {
 } from "./scan";
 import { releaseDocuments, type ReleaseResult } from "./release";
 import type { AcpPeer, IssuesPeerOptions } from "../worker";
+import { readToolLog, toolValueNumber, toolValueString } from "../../lib/tool-log";
 
 /**
  * The detached worker for one repository's Design System agent. It owns the
@@ -101,7 +101,6 @@ export interface DesignWorkerOptions {
   /** Resolves each cycle's provider environment; re-reads the store per cycle. */
   providerEnvironment?: WorkerProviderEnvironment;
   github?: DesignForgeClient;
-  fileIssue?: typeof fileDesignIssue;
   release?: typeof releaseDocuments;
   harnessVersion?: string | null;
   config?: DesignConfig;
@@ -179,7 +178,6 @@ export class DesignWorker {
   private readonly connect: NonNullable<DesignWorkerOptions["connect"]>;
   private readonly providerEnvironment: WorkerProviderEnvironment;
   private readonly injectedGithub: DesignForgeClient | undefined;
-  private readonly fileIssue: typeof fileDesignIssue;
   private readonly release: typeof releaseDocuments;
   private readonly harnessVersion: string | null;
   private readonly log: (line: string) => void;
@@ -240,7 +238,6 @@ export class DesignWorker {
       options.providerEnvironment ??
       createWorkerProviderEnvironment(this.stateDir, this.environment);
     this.injectedGithub = options.github;
-    this.fileIssue = options.fileIssue ?? fileDesignIssue;
     this.release = options.release ?? releaseDocuments;
     this.harnessVersion =
       options.harnessVersion ??
@@ -728,7 +725,12 @@ export class DesignWorker {
         peer = this.connect({
           command: this.agentCommand,
           cwd: directory,
-          env: environment,
+          env: {
+            ...environment,
+            REPO_DIR: this.repoDir,
+            STATE_DIR: this.stateDir,
+            DEVBOARD_TOOL_LOG: join(directory, "tool-log.jsonl"),
+          },
           onActivity: (entry: AcpActivity) => this.recordActivity(entry),
           onSessionUpdate: () => this.notePeerUpdate(),
           onQuestion: (question) => this.answerQuestion(question),
@@ -897,43 +899,25 @@ export class DesignWorker {
     // of leaving it active forever with no recorded reason.
     let error: string | null = null;
     try {
-      let text: string;
-      try {
-        text = readAuditText(active.directory);
-      } catch {
-        error = "the agent wrote no audit.json";
-        return;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        error = "audit.json is not valid JSON";
-        return;
-      }
-      let audit;
-      try {
-        audit = parseAudit(parsed, {
-          input: active.input,
-          knownTitles: [
-            ...this.state.issues.map((issue) => issue.title),
-            ...this.openTitles,
-          ],
-        });
-      } catch (failure) {
-        error = detailOf(failure);
-        return;
-      }
-      for (const dropped of audit.dropped) {
-        record(`dropped “${dropped.title}”: ${dropped.reason}`);
-      }
-      for (const finding of audit.findings) {
-        record(`finding “${finding.title}” (${finding.category})`);
-      }
-      if (audit.documentationError !== null) {
-        record(`documentation rejected: ${audit.documentationError}`);
+      let filedNow = 0;
+      for (const entry of readToolLog(join(active.directory, "tool-log.jsonl"))) {
+        if (entry.tool !== "issue_create") continue;
+        const number = toolValueNumber(entry.value, "number");
+        const title = toolValueString(entry.value, "title");
+        if (entry.ok === true && number !== undefined && title !== undefined) {
+          filedNow += 1;
+          record(`filed #${number} “${title}”`);
+          continue;
+        }
+        const detail =
+          typeof entry.error === "string" && entry.error.length > 0
+            ? entry.error
+            : "the issue-creation tool failed";
+        if (error === null) error = detail;
+        record(`failed: ${detail}`);
       }
 
+      const request = readReleaseRequest(active.directory);
       const changed = draftChanged(active.directory, active.input.documents);
       // A draft that breaks the document contract is refused like an
       // inadmissible decision: activity records it, nothing is released, and
@@ -943,8 +927,8 @@ export class DesignWorker {
       let releaseError: string | null = null;
       let released: ReleaseResult | undefined;
       if (changed) {
-        if (audit.documentation.decision !== "edit") {
-          record("ignored a document change without an admissible decision");
+        if (request === undefined) {
+          record("ignored a document change without a release request");
         } else {
           const readDraft = (document: string): string | null => {
             try {
@@ -997,12 +981,12 @@ export class DesignWorker {
             this.settleRelease = releaseSettled.resolve;
             this.state.lifecycle = "releasing";
             this.publish();
-            record(`documentation: ${audit.documentation.summary}`);
+            record(`documentation: ${request.summary}`);
             released = await this.release({
               repoDir: this.repoDir,
               harnessDir: resolve(this.repoDir, ".devboard"),
               cycleId: active.cycleId,
-              summary: audit.documentation.summary,
+              summary: request.summary,
               config: this.config,
               documents: [
                 { path: this.config.designDocument, text: draftDesign },
@@ -1024,7 +1008,7 @@ export class DesignWorker {
                 at,
                 version: released.version,
                 url: released.url,
-                summary: audit.documentation.summary,
+                summary: request.summary,
                 files: released.files,
                 diff: released.diff,
               });
@@ -1033,12 +1017,22 @@ export class DesignWorker {
           }
           if (releaseError !== null) record(`release failed: ${releaseError}`);
         }
-      } else if (audit.documentation.decision === "edit") {
-        record("documentation edit produced no changed document");
+      } else if (request !== undefined) {
+        record("the release request produced no changed document");
       }
 
-      const filingError = await this.fileFindings(active, audit.findings, record);
-      error = releaseError ?? filingError;
+      // The agent filed its findings; re-read the forge so the filed-issue
+      // table shows the created rows immediately. A failed read keeps the
+      // last-known rows and the periodic read retries.
+      if (filedNow > 0 || this.state.issues.length > 0) {
+        try {
+          await this.applyRead(await this.readGitHubWithinDeadline());
+          this.publish();
+        } catch (failure) {
+          record(`could not re-read the forge: ${detailOf(failure)}`);
+        }
+      }
+      error = releaseError ?? error;
     } catch (failure) {
       const detail = detailOf(failure).length > 0 ? detailOf(failure) : "the cycle failed";
       record(`failed: ${detail}`);
@@ -1051,64 +1045,6 @@ export class DesignWorker {
   private releaseCycleClaim(): void {
     this.cycleClaim?.release();
     this.cycleClaim = undefined;
-  }
-
-  private async fileFindings(
-    active: ActiveCycle,
-    findings: DesignFinding[],
-    record: (line: string) => void,
-  ): Promise<string | null> {
-    if (this.state.sync.state !== "ok") {
-      record("skipped filing: the last forge read failed; keeping the last known rows");
-      return null;
-    }
-    const capacity = this.capacity();
-    const limit = Math.min(active.requested, capacity.batch);
-    if (limit <= 0) {
-      for (const finding of findings) {
-        record(`skipped “${finding.title}”: the hourly or open-issue cap leaves no room`);
-      }
-      return null;
-    }
-    let filed = 0;
-    for (const finding of findings) {
-      if (this.stopping) break;
-      if (filed >= limit) {
-        record(`skipped “${finding.title}”: the cycle's filing room is full`);
-        continue;
-      }
-      try {
-        const created = await this.fileIssue({
-          repoDir: this.repoDir,
-          repository: this.state.repo,
-          finding,
-          environment: this.environment,
-          ...this.forgeOptions(),
-        });
-        filed += 1;
-        const createdAt = this.clock().toISOString();
-        this.state.issues = newestFirst([
-          ...this.state.issues.filter((row) => row.number !== created.number),
-          {
-            number: created.number,
-            title: finding.title,
-            url: created.url,
-            createdAt,
-            state: "pending",
-            category: finding.category,
-            version: null,
-          },
-        ]);
-        this.state.notice = `Filed #${created.number} “${finding.title}”`;
-        record(`filed #${created.number} “${finding.title}”: ${created.url}`);
-        this.publish();
-      } catch (error) {
-        const detail = detailOf(error);
-        record(`failed to file “${finding.title}”: ${detail}`);
-        return detail;
-      }
-    }
-    return null;
   }
 
   private finishCycle(active: ActiveCycle, error: string | null): void {

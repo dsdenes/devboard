@@ -56,7 +56,7 @@ export const GITLAB_TRACKER_UNSUPPORTED =
 
 const QUERY =
   ".[] | select(.pull_request == null) | " +
-  "{number, title, url: .html_url, createdAt: .created_at, labels: [.labels[].name]}";
+  "{number, title, body, url: .html_url, createdAt: .created_at, labels: [.labels[].name]}";
 
 /** Default wall-clock bound for one tracker read, including the `gh` child. */
 export const TRACKER_TIMEOUT_MS = 20_000;
@@ -187,7 +187,8 @@ function isIssue(value: unknown): value is IssuesIssue {
     typeof issue.url === "string" &&
     typeof issue.createdAt === "string" &&
     (issue.labels === undefined ||
-      (Array.isArray(issue.labels) && issue.labels.every((label) => typeof label === "string")))
+      (Array.isArray(issue.labels) && issue.labels.every((label) => typeof label === "string"))) &&
+    (issue.body === undefined || typeof issue.body === "string")
   );
 }
 
@@ -312,6 +313,7 @@ async function pollGiteaIssues(options: TrackerOptions): Promise<PollResult> {
         url: issue.url,
         createdAt: issue.createdAt,
         labels: issue.labels,
+        body: issue.body,
       })),
       etag: options.etag ?? null,
     };

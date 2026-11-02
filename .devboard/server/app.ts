@@ -73,6 +73,9 @@ import { TRACKER_SYNC_INTERVAL_MS } from "./issue-sync";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
+import { coachDirectory } from "../coach/paths";
+import { readCoachSettings } from "../coach/settings";
+import { coachPromptTemplate } from "../coach/synthesize";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import { toolListPayload } from "../mcp/catalog";
 import { toolInvocationCounts } from "../mcp/invocations";
@@ -103,8 +106,6 @@ import {
   retainRemoteProject,
   retainedProjectReady,
   stagingDirectory,
-  validateAgentStaged,
-  type AgentStaged,
   type DiscoverArtifacts,
   type RemoteCloneRequest,
   type RemoteCloneResult,
@@ -223,10 +224,10 @@ export interface AppOptions {
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<
     ScoutBridgeOptions,
-    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker"
+    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker" | "reader"
   >;
   /** Design System's test seams; production uses the detached worker itself. */
-  design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "reader">;
   /** Coach's test seams; production reads its worker's state and ledger. */
   coach?: Pick<
     CoachActivityOptions,
@@ -578,6 +579,11 @@ const NEGATIVE_DIRECTIVES: Record<string, true> = {
 function goalRevisionPrompt(goalFile: string, request: string | undefined): string {
   const guidance = request?.trim();
   return [
+    "## Manifesto",
+    "",
+    `Your goal is to revise the project goal at ${goalFile} with the developer, and the observable`,
+    "result is that file holding the complete revised goal text.",
+    "",
     `Revise the goal in ${goalFile}.`,
     "Ask the developer any questions you need, one at a time.",
     "When the revision is complete, write the complete revised goal text to that file and end the turn.",
@@ -2484,6 +2490,13 @@ export function createApp(options: AppOptions) {
       : TRACKER_SYNC_INTERVAL_MS);
 
   /**
+   * The Coach prompt section is generated from the dashboard's own open-issue
+   * read, so it is republished whenever that read returns a fresh list. The
+   * publisher is bound after the prompt controller exists; the read is async.
+   */
+  let publishPromptTemplates: (() => void) | undefined;
+
+  /**
    * Issues mode reads and commands the detached worker for this checkout. The
    * bridge never owns the worker: starting one is detached, stopping this
    * server leaves it alive, and a replacement attaches to the same state.
@@ -2499,6 +2512,7 @@ export function createApp(options: AppOptions) {
     log: (line) => process.stderr.write(`${line}\n`),
     hasClients: () => clients.size > 0,
     syncMs: issuesSyncMs,
+    onOpenIssues: () => publishPromptTemplates?.(),
     ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
     ...(options.issues?.syncRead === undefined ? {} : { syncRead: options.issues.syncRead }),
     ...(options.issues?.preflightTimeoutMs === undefined
@@ -2549,6 +2563,8 @@ export function createApp(options: AppOptions) {
       : { preflightTimeoutMs: options.scout.preflightTimeoutMs }),
     ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),
     ...(options.scout?.spawnWorker === undefined ? {} : { spawnWorker: options.scout.spawnWorker }),
+    ...(options.scout?.reader === undefined ? {} : { reader: options.scout.reader }),
+    hasClients: () => clients.size > 0,
   });
 
   /**
@@ -2579,6 +2595,7 @@ export function createApp(options: AppOptions) {
     ...(options.watchdog?.systemctl === undefined
       ? {}
       : { systemctl: options.watchdog.systemctl }),
+    hasClients: () => clients.size > 0,
   });
 
   /**
@@ -2601,6 +2618,8 @@ export function createApp(options: AppOptions) {
     ...(options.design?.spawnWorker === undefined
       ? {}
       : { spawnWorker: options.design.spawnWorker }),
+    ...(options.design?.reader === undefined ? {} : { reader: options.design.reader }),
+    hasClients: () => clients.size > 0,
   });
 
   /**
@@ -2629,6 +2648,7 @@ export function createApp(options: AppOptions) {
     ...(options.coach?.spawnWorker === undefined
       ? {}
       : { spawnWorker: options.coach.spawnWorker }),
+    hasClients: () => clients.size > 0,
   });
 
   /** The shared control plane every background agent answers through. */
@@ -2646,7 +2666,22 @@ export function createApp(options: AppOptions) {
   const prompts = new AgentPromptController({
     registry: agentRegistry,
     repoDir,
+    send: (event, except) => sendAll(event, except),
+    templates: {
+      coach: () =>
+        coachPromptTemplate({
+          settings: readCoachSettings(coachDirectory(stateDir)),
+          openIssues:
+            issues.openIssues?.map((issue) => ({
+              number: issue.number,
+              title: issue.title,
+              body: issue.body ?? "",
+              url: issue.url,
+            })) ?? null,
+        }),
+    },
   });
+  publishPromptTemplates = () => prompts.publishTemplates();
 
   /** The prompt half of each Discover card. Each reads its own prompt file. */
   const discoverPrompts = new DiscoverPromptController({ repoDir });
@@ -3578,14 +3613,14 @@ export function createApp(options: AppOptions) {
       if (facts.fingerprint !== factsBefore.fingerprint) {
         throw new Error("the agent changed host files outside its staging directory");
       }
-      const staged: AgentStaged = validateAgentStaged(root, stagingDir, {
+      publishAgentStaged({
+        repoDir: root,
+        runId,
+        facts,
+        stagingDir,
         project: projectName,
-        commit: facts.commit,
-        dirty: facts.dirty,
-        discoveredAt: new Date().toISOString(),
-        fingerprint: facts.fingerprint,
-      }, id);
-      publishAgentStaged({ repoDir: root, runId, facts, staged, project: projectName, agent: id });
+        agent: id,
+      });
     } catch (error) {
       failDiscover(
         run,

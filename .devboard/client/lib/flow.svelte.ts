@@ -55,6 +55,10 @@ export class FlowStore {
   goalCreation = $state<FlowGoalCreation | null>(null);
   conversation = $state<FlowConversation | null>(null);
   activity = $state<string[]>([]);
+  /** When this dashboard saw each operation start; the server sends no stamp. */
+  implementationStartedAt = $state<string | null>(null);
+  goalCreationStartedAt = $state<string | null>(null);
+  conversationStartedAt = $state<string | null>(null);
   notice = $state<string | null>(null);
   history = $state<FlowHistoryEntry[]>([]);
   errorMessage = $state<string | null>(null);
@@ -245,11 +249,13 @@ export class FlowStore {
     }
     if (type === "flowGoalStarted") {
       this.goalCreation = { activity: [], question: null };
+      this.goalCreationStartedAt = new Date().toISOString();
       this.errorMessage = null;
       return;
     }
     if (type === "flowGoalStopped") {
       this.goalCreation = null;
+      this.goalCreationStartedAt = null;
       if (message.completed === true && typeof message.text === "string") {
         this.goal = message.text;
       }
@@ -299,6 +305,7 @@ export class FlowStore {
     if (type === "flowImplementationStarted") {
       this.status = "running";
       this.activity = [];
+      this.implementationStartedAt = new Date().toISOString();
       if (typeof message.sessionId === "string") this.sessionId = message.sessionId;
       if (typeof message.worktree === "string") this.worktree = message.worktree;
       if (typeof message.branch === "string") this.branch = message.branch;
@@ -308,6 +315,7 @@ export class FlowStore {
     if (type === "flowStopped") {
       if (this.status !== "merged") this.status = "stopped";
       this.question = null;
+      this.implementationStartedAt = null;
       return;
     }
     if (type === "flowError" && typeof message.message === "string") {
@@ -348,6 +356,7 @@ export class FlowStore {
       return;
     }
     if (type === "flowConversationStarted" && typeof message.widgetId === "string") {
+      this.conversationStartedAt = new Date().toISOString();
       this.conversation = {
         widgetId: message.widgetId,
         messages: [],
@@ -364,6 +373,7 @@ export class FlowStore {
       message.widgetId === this.conversation.widgetId
     ) {
       this.conversation = null;
+      this.conversationStartedAt = null;
       return;
     }
     if (

@@ -2,8 +2,10 @@
 description: Prepare project-agnostic Agent Skills grounded in relevant public standards, general best practices, software-architecture patterns, and testing patterns selected from GOAL.md.
 ---
 
-`/prepare-skills`: derive a focused set of project-agnostic Agent Skills from the goal, grounded in
-current public practice, and leave no contradictions among the installed skills.
+## Manifesto
+
+Your goal is to give this project a focused, project-agnostic set of Agent Skills, and the
+observable result is the installed skills matching the goal with no contradictions among them.
 
 ## Contract
 

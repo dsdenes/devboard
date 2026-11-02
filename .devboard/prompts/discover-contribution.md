@@ -2,17 +2,18 @@
 description: Crawl the host and its merged pull-request history read-only and stage the contribution sheet and skill.
 ---
 
-`/discover-contribution <staging-dir>`: crawl the host and its merged pull-request history
-read-only, then stage the contribution document and the contribution Discover skill. This turn
-produces data, not conversation: no interview, no questions, no prose report.
+## Manifesto
+
+Your goal is to record how this host wants a change contributed, and the observable result is the
+run's staged contribution sheet and contribution skill written through the Devboard MCP staging
+tools and then published by the server.
 
 ## Contract
 
 - `<host>` is the git top level: `git rev-parse --show-toplevel`. If that fails, use the current
   working directory.
-- `<staging-dir>` is the single argument after `/discover-contribution` (`$ARGUMENTS` in the
-  wrapper). It is the only directory this turn may write. Write exactly the two files below and
-  create nothing else.
+- `<staging-dir>` is the run's staging directory, passed to every staging tool call. The tools are
+  the only writers; never create or edit a staged file by hand.
 - The server owns publication and derives the profile. Never write outside `<staging-dir>`, and
   never touch `<host>/.omp/discover/`, `<host>/.omp/skills/`, `<host>/GOAL.md`, anything under
   `<host>/adrs/`, or any host source file.
@@ -77,19 +78,15 @@ Read the merge history through the repository's one forge-auth resolution, read-
    closed-unmerged list, and a one-line `unavailable` reason. The workflow and testing facts still
    publish from the git crawl.
 
-## Staged layout
+## Staging
 
-Write exactly this layout under `<staging-dir>`:
+Call `discover_contribution_stage` once with `stagingDir` set to `<staging-dir>` and
+`contribution` set to the complete object below. Then call `discover_skill_stage` once with `name`
+set to `discover-contribution`, its one-line description, and its heading-plus-bullets body. The
+tools write the run's staged artifacts; write no other file, note, log, or temporary file. Order
+every object key, array, and enum exactly as specified.
 
-```
-contribution.json
-skills/discover-contribution/SKILL.md
-```
-
-Write no other files, no notes, no logs, and no temporary files. Order every object key, array,
-and enum exactly as specified.
-
-## `contribution.json`
+## Contribution sheet
 
 Top-level key order: `schemaVersion`, `source`, `workflow`, `testing`.
 
@@ -173,9 +170,14 @@ Each `workflow` and `testing` entry is one fact:
 The server derives `pull-request-style`, `pull-request-size`, `conventions`, `review`,
 `documentation`, `hotspots`, and `evidence` from `source`. Stage no derived fact.
 
-## `skills/discover-contribution/SKILL.md`
+## Contribution skill
 
-Frontmatter, in this shape:
+Call `discover_skill_stage` with `name` set to `discover-contribution`, `description` set to one
+sentence naming how a change should be proposed and described in this repository, and `body` set
+to a `#` heading title followed only by imperative bullets and the exemplar quotes. The tool writes
+the managed frontmatter.
+
+The staged skill carries this frontmatter, written by the tool:
 
 ```yaml
 ---
@@ -240,8 +242,8 @@ machine-specific value.
 
 Confirm all of the following:
 
-- [ ] `<staging-dir>/contribution.json` and
-      `<staging-dir>/skills/discover-contribution/SKILL.md` exist and are the only staged files.
+- [ ] `discover_contribution_stage` and `discover_skill_stage` returned their staged paths and no
+      other file was staged.
 - [ ] Every known fact carries a value, evidence, and a confidence; every unknown fact carries a
       reason and no value.
 - [ ] The merged list holds only pull requests the forge records as merged, and the closed list

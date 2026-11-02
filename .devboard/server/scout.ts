@@ -30,12 +30,13 @@ import {
   type ScoutIssueRow,
   type ScoutSettings,
   type ScoutState,
-  type ScoutSync,
 } from "../issues/scout/state";
 import { readActivity } from "../issues/state";
 import { hostHarnessDir, readHarnessVersion } from "./version";
 import { canonicalProcessPath } from "./state";
 import { activityDelta } from "./activity";
+import { AgentForgeState } from "./agents/forge-state";
+import { createForgeIssueReader, type ForgeIssueReader } from "./agents/forge-reader";
 import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 import type { AgentDescriptor } from "./agents/registry";
@@ -75,6 +76,10 @@ export interface ScoutBridgeOptions {
   pollMs?: number;
   /** Wall-clock bound for the start preflight; defaults to 20 seconds. */
   preflightTimeoutMs?: number;
+  /** Injectable forge read; production reads the origin's issue state. */
+  reader?: ForgeIssueReader;
+  /** True while at least one dashboard client is connected. */
+  hasClients?: () => boolean;
   /** Test seams: replace the start preflight and the detached spawn. */
   preflight?: (options: {
     repoDir: string;
@@ -107,6 +112,7 @@ export class ScoutBridge implements AgentAdapter {
   private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
   private readonly environment: Record<string, string | undefined>;
   private readonly repository: () => string | null;
+  private readonly forge: AgentForgeState;
   private readonly preflight: NonNullable<ScoutBridgeOptions["preflight"]>;
   private readonly spawnWorker: NonNullable<ScoutBridgeOptions["spawnWorker"]>;
   private readonly log: (line: string) => void;
@@ -158,19 +164,34 @@ export class ScoutBridge implements AgentAdapter {
           timeoutMs: request.timeoutMs,
         }));
     this.spawnWorker = options.spawnWorker ?? ((argv, environment) => this.detach(argv, environment));
+    this.forge = new AgentForgeState({
+      reader:
+        options.reader ??
+        createForgeIssueReader({
+          repoDir: this.repoDir,
+          ...(options.environment === undefined ? {} : { environment: options.environment }),
+        }),
+      urls: () => this.mergedRows().map((issue) => issue.url),
+      hasClients: options.hasClients ?? (() => false),
+      now: this.now,
+      log: this.log,
+    });
   }
 
   /** Starts observing the worker state; it never starts a worker itself. */
   begin(): void {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => this.refresh(), this.pollMsValue);
+    this.forge.begin();
     void this.refresh();
     this.takeoverTask = this.takeoverOldWorkers();
   }
 
-  /** Resolves after the automatic takeover attempt, if any, has settled. */
+  /** Resolves after the automatic takeover attempt and any read have settled. */
   settled(): Promise<void> {
-    return (this.takeoverTask ?? Promise.resolve()).then(() => undefined);
+    return Promise.all([this.takeoverTask ?? Promise.resolve(), this.forge.settled()]).then(
+      () => undefined,
+    );
   }
 
   /**
@@ -210,6 +231,7 @@ export class ScoutBridge implements AgentAdapter {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    this.forge.dispose();
     if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
   }
 
@@ -329,7 +351,32 @@ export class ScoutBridge implements AgentAdapter {
     return this.allStates().length > 0 || this.allOwners().length > 0;
   }
 
+  /**
+   * Every filed row the attached workers published, newest state first. Live
+   * workers' reads are merged, so the view shows every running unit; a
+   * stopped worker's state is history, and its dropped rows must not return.
+   */
+  private mergedRows(): ScoutIssueRow[] {
+    const owners = this.owners();
+    const ownerStates = owners
+      .map((owner) => this.stateForOwner(owner))
+      .filter((state): state is ScoutState => state !== undefined);
+    const state = this.currentState();
+    const reading = owners.length > 0 ? ownerStates : state === undefined ? [] : [state];
+    const issues = new Map<number, ScoutIssueRow>();
+    for (const entry of [...reading].sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt),
+    )) {
+      for (const issue of entry.issues) if (!issues.has(issue.number)) issues.set(issue.number, issue);
+    }
+    return [...issues.values()].sort((left, right) => {
+      const byCreation = right.createdAt.localeCompare(left.createdAt);
+      return byCreation !== 0 ? byCreation : right.number - left.number;
+    });
+  }
+
   snapshot(): AgentSnapshotInput {
+    this.forge.requestSync();
     const allOwners = this.allOwners();
     const owners = this.owners();
     const attached = owners.length > 0;
@@ -395,21 +442,22 @@ export class ScoutBridge implements AgentAdapter {
     const nextRunAt = attached
       ? (active?.nextAttemptAt ?? nextCadenceAt(lastRunAt, settings.intervalMinutes))
       : null;
-    // Live workers' reads are merged, so the view shows every running unit.
-    // A stopped worker's state is history: its dropped rows must not return.
-    const reading = owners.length > 0 ? ownerStates : state === undefined ? [] : [state];
-    const issues = new Map<number, ScoutIssueRow>();
-    for (const entry of [...reading].sort((left, right) =>
-      right.updatedAt.localeCompare(left.updatedAt),
-    )) {
-      for (const issue of entry.issues) if (!issues.has(issue.number)) issues.set(issue.number, issue);
-    }
-    const merged = [...issues.values()].sort((left, right) => {
-      const byCreation = right.createdAt.localeCompare(left.createdAt);
-      return byCreation !== 0 ? byCreation : right.number - left.number;
-    });
-    const sync: ScoutSync =
-      active?.sync ?? state?.sync ?? { state: "stale", at: null, error: null };
+    const merged = this.mergedRows();
+    const rows = merged
+      .filter((issue) => this.forge.reported(issue.url))
+      .map((issue) => {
+        const fact = this.forge.fact(issue.url);
+        return fact === undefined
+          ? projectIssue(issue)
+          : {
+              title: issue.title,
+              category: issue.category,
+              filedAt: issue.createdAt,
+              url: issue.url,
+              state: fact.state,
+              version: fact.version,
+            };
+      });
     const scanId = this.scanIdOf(states);
     const workers = owners.map((owner) => {
       const workerState = this.stateForOwner(owner);
@@ -434,9 +482,9 @@ export class ScoutBridge implements AgentAdapter {
         maxPerHour: settings.maxPerHour,
         maxPending: settings.maxPending,
       },
-      issues: merged.map(projectIssue),
-      pending: merged.filter((issue) => issue.state === "pending").length,
-      sync,
+      issues: rows,
+      pending: rows.filter((issue) => issue.state === "pending").length,
+      sync: this.forge.sync,
       detail: {
         panel: "activity",
         scanId,
@@ -523,11 +571,13 @@ export class ScoutBridge implements AgentAdapter {
   }
 
   /**
-   * A view opened this agent: ask every attached worker for one fresh forge
-   * read, at most once per sync-request window. A stopped or foreign worker
-   * gets no command, and no command ever starts one.
+   * A view opened this agent: read the forge now when the shared cadence
+   * allows, and ask every attached worker for its own fresh read, at most once
+   * per sync-request window. A stopped worker gets no command and is never
+   * started; the dashboard read alone still shows its table.
    */
   requestSync(): void {
+    this.forge.requestSync();
     const owners = this.owners();
     if (owners.length === 0) return;
     const now = this.now();

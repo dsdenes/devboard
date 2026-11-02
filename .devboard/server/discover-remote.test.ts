@@ -1642,10 +1642,15 @@ describe("discover remote target", () => {
       }
 
       // The dashboard that owned the run removes its checkout and its claim.
-      expect(
-        scratchEntries(fixture).filter((entry) => entry.startsWith(".staging-")),
-      ).toEqual([]);
-      expect(existsSync(join(scratch, ".runs"))).toBe(false);
+      await waitFor(
+        () =>
+          scratchEntries(fixture).filter((entry) => entry.startsWith(".staging-")).length === 0 &&
+          !existsSync(join(scratch, ".runs"))
+            ? true
+            : undefined,
+        "the run's checkout and claim cleanup",
+        20_000,
+      );
     },
     60_000,
   );

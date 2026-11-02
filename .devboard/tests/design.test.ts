@@ -3,11 +3,21 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, wr
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseAudit, readAuditInput, type DesignFinding } from "../issues/design/audit";
-import { issueBody } from "../issues/design/actions";
-import { createDesignForge, type DesignForgeClient, type DesignForgeIssue } from "../issues/design/forge";
+import { readAuditInput } from "../issues/design/audit";
+import {
+  createDesignForge,
+  type DesignForgeClient,
+  type DesignForgeIssue,
+} from "../issues/design/forge";
 import { preflightDesign } from "../issues/design/preflight";
 import { releaseDocuments, type ReleaseResult, type RunCommand } from "../issues/design/release";
+import { callTool } from "../mcp/tools";
+import type { McpContext } from "../mcp/context";
+import type {
+  ForgeIssueDocument,
+  ForgeIssueSummary,
+  ForgeIssues,
+} from "../lib/forge-issues";
 import {
   DOCUMENTATION_HISTORY_LIMIT,
   capacityFor,
@@ -136,6 +146,16 @@ async function fixture(name: string): Promise<{
   return { root, repo, bare, config: designConfig({}), stateDir };
 }
 
+interface DesignFinding {
+  category: string;
+  title: string;
+  principle: { name: string; passage: string };
+  evidence: Array<{ path: string; lines: string; quote: string }>;
+  files: string[];
+  proposedChange: string;
+  acceptanceCriteria: string[];
+}
+
 function finding(): DesignFinding {
   return {
     category: "color",
@@ -157,22 +177,185 @@ function finding(): DesignFinding {
   };
 }
 
-function editDecision(): Record<string, unknown> {
+/** The complete Markdown body the design prompt requires for each finding. */
+function findingBody(entry: DesignFinding): string {
+  return [
+    "## Category",
+    "",
+    entry.category,
+    "",
+    "## Violated principle or token",
+    "",
+    `**${entry.principle.name}**`,
+    "",
+    `> ${entry.principle.passage}`,
+    "",
+    "## Evidence",
+    "",
+    ...entry.evidence.map(
+      (evidence) => `- \`${evidence.path}:${evidence.lines}\`\n  > ${evidence.quote}`,
+    ),
+    "",
+    "## Files",
+    "",
+    ...entry.files.map((file) => `- \`${file}\``),
+    "",
+    "## Proposed change",
+    "",
+    entry.proposedChange,
+    "",
+    "## Acceptance criteria",
+    "",
+    ...entry.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+    "",
+    "---",
+    "",
+    "Filed by Design System. Bring the interface in line with DESIGN.md and design/tokens.json.",
+    "",
+  ].join("\n");
+}
+
+interface FakeDesignForge extends ForgeIssues {
+  issues: ForgeIssueDocument[];
+  labels: Set<string>;
+}
+
+/** The in-memory forge the stub's issue tool and the worker both read. */
+function fakeDesignForge(firstNumber = 1): FakeDesignForge {
+  const issues: ForgeIssueDocument[] = [];
+  const labels = new Set<string>();
   return {
-    findings: [],
-    documentation: {
-      decision: "edit",
-      summary: "Document the accent standard",
-      rationale: "Two interface surfaces share the same token.",
-      surfaces: [".devboard/client/App.svelte", ".devboard/client/index.html"],
-      contradiction: false,
-      evidence: [],
-      addsTokens: [],
+    forge: "github",
+    repository: "acme/fixture",
+    issues,
+    labels,
+    async list(state: "open" | "closed" | "all", limit = 200): Promise<ForgeIssueSummary[]> {
+      return issues
+        .filter((issue) => state === "all" || issue.state === state)
+        .slice(0, limit)
+        .map((issue) => ({
+          number: issue.number,
+          title: issue.title,
+          state: issue.state,
+          labels: issue.labels,
+          url: issue.url,
+          createdAt: issue.createdAt,
+        }));
+    },
+    async get(number: number): Promise<ForgeIssueDocument> {
+      const issue = issues.find((candidate) => candidate.number === number);
+      if (issue === undefined) throw new Error(`no issue ${number}`);
+      return { ...issue };
+    },
+    async ensureLabel(name: string): Promise<void> {
+      labels.add(name);
+    },
+    async create(input: {
+      title: string;
+      body: string;
+      labels?: string[];
+    }): Promise<ForgeIssueDocument> {
+      const highest = issues.reduce((most, issue) => Math.max(most, issue.number), firstNumber - 1);
+      const number = highest + 1;
+      const issue: ForgeIssueDocument = {
+        number,
+        title: input.title,
+        body: input.body,
+        state: "open",
+        labels: input.labels ?? [],
+        url: `https://forge.test/acme/fixture/issues/${number}`,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      issues.push(issue);
+      return { ...issue };
+    },
+    async comment(): Promise<void> {},
+    async close(number: number): Promise<ForgeIssueDocument> {
+      const issue = issues.find((candidate) => candidate.number === number);
+      if (issue === undefined) throw new Error(`no issue ${number}`);
+      issue.state = "closed";
+      return { ...issue };
     },
   };
 }
 
-describe("design audit input and answer", () => {
+/** The worker's own forge client, backed by the same in-memory store. */
+function forgeClient(forge: FakeDesignForge): DesignForgeClient {
+  return {
+    listIssues: async (): Promise<DesignForgeIssue[]> =>
+      forge.issues.map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        url: issue.url,
+        state: issue.state,
+        createdAt: issue.createdAt,
+        body: issue.body,
+      })),
+    listOpenIssueTitles: async (): Promise<string[]> =>
+      forge.issues
+        .filter((issue) => issue.state === "open")
+        .map((issue) => issue.title),
+    listReleases: async () => [],
+    closingCommit: async () => null,
+    resolveCommit: async () => null,
+    containingReleaseTags: async () => [],
+  };
+}
+
+/** The tool context a stub turn uses: its cycle log and the injected forge. */
+function designContext(
+  repo: string,
+  stateDir: string,
+  cycleDir: string,
+  forge: FakeDesignForge,
+): McpContext {
+  return {
+    repoDir: repo,
+    harnessDir: join(repo, ".devboard"),
+    stateDir,
+    environment: { DEVBOARD_TOOL_LOG: join(cycleDir, "tool-log.jsonl") },
+    forgeIssues: forge,
+  };
+}
+
+async function fileFinding(
+  repo: string,
+  stateDir: string,
+  cycleDir: string,
+  forge: FakeDesignForge,
+  entry: DesignFinding = finding(),
+): Promise<void> {
+  const result = await callTool(designContext(repo, stateDir, cycleDir, forge), "issue_create", {
+    title: entry.title,
+    body: findingBody(entry),
+    labels: [DESIGN_LABEL],
+  });
+  if (result.error !== undefined) throw new Error(result.error);
+}
+
+const RELEASE_SUMMARY = "Document the accent standard";
+const RELEASE_RATIONALE =
+  "Two interface surfaces share the same token, so the documented standard prevents drift.";
+
+async function requestRelease(
+  repo: string,
+  stateDir: string,
+  cycleDir: string,
+  forge: FakeDesignForge,
+): Promise<void> {
+  const result = await callTool(
+    designContext(repo, stateDir, cycleDir, forge),
+    "design_release_request",
+    {
+      cycleDir,
+      summary: RELEASE_SUMMARY,
+      rationale: RELEASE_RATIONALE,
+    },
+  );
+  if (result.error !== undefined) throw new Error(result.error);
+}
+
+describe("design audit input", () => {
   test("reads the interface sources and both documents", async () => {
     const { repo, config } = await fixture("input");
     const input = readAuditInput(repo, config);
@@ -193,105 +376,76 @@ describe("design audit input and answer", () => {
     expect(() => readAuditInput(other.repo, other.config)).toThrow(/DESIGN.md/);
   });
 
-  test("accepts a category finding and drops invalid ones with reasons", async () => {
-    const { repo, config } = await fixture("parse");
-    const input = readAuditInput(repo, config);
-    const parsed = parseAudit(
-      {
-        findings: [
-          finding(),
-          { ...finding(), category: "performance", title: "Backend cache" },
-          { ...finding(), title: "Wrong quote", evidence: [{ ...finding().evidence[0], quote: "nope" }] },
-          { ...finding(), title: "Already known" },
-        ],
-        documentation: { decision: "none" },
-      },
-      { input, knownTitles: ["already known"] },
-    );
-    expect(parsed.findings.map((entry) => entry.title)).toEqual([finding().title]);
-    expect(parsed.dropped.map((entry) => entry.title)).toContain("Backend cache");
-    expect(parsed.dropped).toHaveLength(3);
-    expect(parsed.documentation).toEqual({ decision: "none" });
+  test("files a full finding through the issue tool with the design label", async () => {
+    const { repo, stateDir } = await fixture("file");
+    const forge = fakeDesignForge(7);
+    const cycleDir = join(repo, ".devboard", ".tmp", "design", "cycles", "cycle-file");
+    await mkdir(cycleDir, { recursive: true });
+
+    await fileFinding(repo, stateDir, cycleDir, forge);
+
+    expect(forge.issues).toHaveLength(1);
+    expect(forge.labels.has(DESIGN_LABEL)).toBe(true);
+    const [issue] = forge.issues;
+    expect(issue?.number).toBe(7);
+    expect(issue?.labels).toEqual([DESIGN_LABEL]);
+    expect(issue?.title).toBe(finding().title);
+    expect(issue?.body).toContain("## Category\n\ncolor");
+    expect(issue?.body).toContain("Use tokens for every color");
+    expect(issue?.body).toContain("`.devboard/client/App.svelte:2`");
+    expect(issue?.body).toContain('> const accent = "#58a6ff";');
+    expect(issue?.body).toContain("- `.devboard/client/App.svelte`");
+    expect(issue?.body).toContain("## Proposed change");
+    expect(issue?.body).toContain("- App.svelte contains no hardcoded color literal.");
+
+    const log = readFileSync(join(cycleDir, "tool-log.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { tool: string; ok: boolean });
+    expect(log).toEqual([{ tool: "issue_create", at: expect.any(String), ok: true, value: expect.any(Object) }]);
   });
 
-  test("requires two surfaces or a document contradiction for an edit", async () => {
-    const { repo, config } = await fixture("decision");
-    const input = readAuditInput(repo, config);
-    const base = {
-      findings: [],
-      documentation: {
-        decision: "edit",
-        summary: "Document the accent standard",
-        rationale: "Two surfaces use it.",
-        surfaces: [".devboard/client/App.svelte"],
-        contradiction: false,
-        evidence: [],
-        addsTokens: [],
-      },
+  test("a refused tool call records its error and files nothing", async () => {
+    const { repo, stateDir } = await fixture("tool-error");
+    const forge = fakeDesignForge();
+    const cycleDir = join(repo, ".devboard", ".tmp", "design", "cycles", "cycle-error");
+    await mkdir(cycleDir, { recursive: true });
+
+    const result = await callTool(designContext(repo, stateDir, cycleDir, forge), "issue_create", {
+      title: "",
+      body: findingBody(finding()),
+      labels: [DESIGN_LABEL],
+    });
+
+    expect(result.error).toContain("one-line issue title is required");
+    expect(forge.issues).toEqual([]);
+    const records = readFileSync(join(cycleDir, "tool-log.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { tool: string; ok: boolean; error?: string });
+    expect(records).toHaveLength(1);
+    expect(records[0]?.tool).toBe("issue_create");
+    expect(records[0]?.ok).toBe(false);
+    expect(records[0]?.error).toContain("one-line issue title is required");
+  });
+
+  test("records a release request beside the cycle's draft documents", async () => {
+    const { repo, stateDir } = await fixture("release-request");
+    const forge = fakeDesignForge();
+    const cycleDir = join(repo, ".devboard", ".tmp", "design", "cycles", "cycle-release");
+    await mkdir(join(cycleDir, "draft", "design"), { recursive: true });
+
+    await requestRelease(repo, stateDir, cycleDir, forge);
+
+    const request = JSON.parse(readFileSync(join(cycleDir, "release-request.json"), "utf8")) as {
+      version: number;
+      summary: string;
+      rationale: string;
     };
-    const refused = parseAudit(base, { input, knownTitles: [] });
-    expect(refused.documentation).toEqual({ decision: "none" });
-    expect(refused.documentationError).toContain("two distinct interface surfaces");
-
-    const contradicted = parseAudit(
-      {
-        ...base,
-        documentation: {
-          ...base.documentation,
-          contradiction: true,
-          evidence: ["Use tokens for every color."],
-        },
-      },
-      { input, knownTitles: [] },
-    );
-    expect(contradicted.documentation.decision).toBe("edit");
-
-    const two = parseAudit(
-      {
-        ...base,
-        documentation: {
-          ...base.documentation,
-          surfaces: [".devboard/client/App.svelte", ".devboard/client/index.html"],
-        },
-      },
-      { input, knownTitles: [] },
-    );
-    expect(two.documentation.decision).toBe("edit");
-  });
-
-  test("never legalizes a drift the same cycle reports", async () => {
-    const { repo, config } = await fixture("drift");
-    const input = readAuditInput(repo, config);
-    const drift: DesignFinding = { ...finding(), token: { name: "accent", value: "#58a6ff" } };
-    const parsed = parseAudit(
-      {
-        findings: [drift],
-        documentation: {
-          decision: "edit",
-          summary: "Add accent",
-          rationale: "Two surfaces.",
-          surfaces: [".devboard/client/App.svelte", ".devboard/client/index.html"],
-          contradiction: false,
-          evidence: [],
-          addsTokens: ["accent"],
-        },
-      },
-      { input, knownTitles: [] },
-    );
-    expect(parsed.documentation).toEqual({ decision: "none" });
-    expect(parsed.documentationError).toContain("legalize");
-    expect(parsed.findings).toHaveLength(1);
-  });
-
-  test("the issue body carries category, standard, evidence, files, and criteria", () => {
-    const body = issueBody(finding());
-    expect(body).toContain("## Category\n\ncolor");
-    expect(body).toContain("Use tokens for every color");
-    expect(body).toContain("`.devboard/client/App.svelte:2`");
-    expect(body).toContain('> const accent = "#58a6ff";');
-    expect(body).toContain("- `.devboard/client/App.svelte`");
-    expect(body).toContain("## Proposed change");
-    expect(body).toContain("- App.svelte contains no hardcoded color literal.");
+    expect(request.version).toBe(1);
+    expect(request.summary).toBe(RELEASE_SUMMARY);
+    expect(request.rationale).toBe(RELEASE_RATIONALE);
+    expect(existsSync(join(cycleDir, "audit.json"))).toBe(false);
   });
 });
 
@@ -398,7 +552,8 @@ describe("design documentation history", () => {
       "without force",
       "release workflow",
       ".worktree/",
-      "audit.json",
+      "issue_create",
+      "design_release_request",
       "draft",
     ]) {
       expect(prompt).toContain(concept);
@@ -419,7 +574,7 @@ interface FakePeer {
 }
 
 function fakePeer(
-  write: (directory: string) => void,
+  write: (directory: string) => void | Promise<void>,
   counter: { connects: number },
 ): FakePeer {
   return {
@@ -428,7 +583,7 @@ function fakePeer(
       argv: [],
       async run(prompt: string) {
         counter.connects += 1;
-        write(prompt.slice("/design-system-audit ".length));
+        await write(prompt.slice("/design-system-audit ".length));
         return {};
       },
       async prompt() {
@@ -577,7 +732,7 @@ function retryWorker(options: {
 describe("design worker", () => {
   test("files a valid finding, records activity, and skips the release on no decision", async () => {
     const { repo, stateDir } = await fixture("worker");
-    const filed: Array<{ title: string; url: string }> = [];
+    const forge = fakeDesignForge(7);
     const counter = { connects: 0 };
     let released = 0;
     const worker = new DesignWorker({
@@ -586,37 +741,23 @@ describe("design worker", () => {
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async (options) => {
-        filed.push({ title: options.finding.title, url: "https://forge.test/acme/fixture/issues/7" });
-        return { number: 7, url: "https://forge.test/acme/fixture/issues/7" };
-      },
+      github: forgeClient(forge),
       release: async () => {
         released += 1;
         return { ok: true, version: "0.1.9", url: "https://forge.test/released", sha: "a", branch: "b", files: [], diff: "" };
       },
       connect: () =>
-        fakePeer((directory) => {
-          writeFileSync(
-            join(directory, "audit.json"),
-            JSON.stringify({ findings: [finding()], documentation: { decision: "none" } }),
-          );
-        }, counter).peer as never,
+        fakePeer((directory) => fileFinding(repo, stateDir, directory, forge), counter).peer as never,
     });
     expect(worker.start("acme/fixture")).toBe(true);
     await worker.refresh();
     await worker.beginCycle();
     await worker.waitForCycle();
-    expect(filed.map((entry) => entry.title)).toEqual([finding().title]);
+    expect(forge.issues.map((entry) => entry.title)).toEqual([finding().title]);
+    expect(forge.issues[0]?.labels).toEqual([DESIGN_LABEL]);
     expect(released).toBe(0);
     expect(worker.currentState.issues[0]?.number).toBe(7);
+    expect(worker.currentState.issues[0]?.category).toBe("color");
     expect(worker.currentState.release).toBeNull();
     expect(worker.currentState.documentation).toEqual([]);
     const cycleId = worker.currentState.newestCycleId!;
@@ -625,11 +766,19 @@ describe("design worker", () => {
       "utf8",
     );
     expect(activity).toContain("filed #7");
+    expect(readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "tool-log.jsonl"),
+      "utf8",
+    )).toContain('"tool":"issue_create"');
+    expect(existsSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "audit.json"),
+    )).toBe(false);
     await worker.stop();
   });
 
   test("a successful release records its summary, files, version, URL, time, and diff", async () => {
     const { repo, stateDir } = await fixture("history");
+    const forge = fakeDesignForge();
     const at = new Date("2026-03-04T05:06:07.000Z");
     const worker = new DesignWorker({
       repoDir: repo,
@@ -638,15 +787,7 @@ describe("design worker", () => {
       syncMs: 10_000,
       manualCycles: true,
       now: () => at,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      github: forgeClient(forge),
       release: async () => ({
         ok: true,
         version: "0.1.42",
@@ -657,12 +798,12 @@ describe("design worker", () => {
         diff: "--- a/DESIGN.md\n+++ b/DESIGN.md\n@@ -1 +1 @@\n-old\n+new\n",
       }),
       connect: () =>
-        fakePeer((directory) => {
+        fakePeer(async (directory) => {
           writeFileSync(
             join(directory, "draft", "DESIGN.md"),
             `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
           );
-          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+          await requestRelease(repo, stateDir, directory, forge);
         }, { connects: 0 }).peer as never,
     });
     expect(worker.start("acme/fixture")).toBe(true);
@@ -687,6 +828,7 @@ describe("design worker", () => {
 
   test("a single flight never starts a second cycle", async () => {
     const { repo, stateDir } = await fixture("single-flight");
+    const forge = fakeDesignForge();
     const counter = { connects: 0 };
     const worker = new DesignWorker({
       repoDir: repo,
@@ -694,23 +836,9 @@ describe("design worker", () => {
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      github: forgeClient(forge),
       release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
-      connect: () =>
-        fakePeer((directory) => {
-          writeFileSync(
-            join(directory, "audit.json"),
-            JSON.stringify({ findings: [], documentation: { decision: "none" } }),
-          );
-        }, counter).peer as never,
+      connect: () => fakePeer(() => undefined, counter).peer as never,
     });
     expect(worker.start("acme/fixture")).toBe(true);
     await worker.refresh();
@@ -722,7 +850,7 @@ describe("design worker", () => {
 
   test("a slow audit keeps a successful forge read fresh and still files its findings", async () => {
     const { repo, stateDir } = await fixture("slow-audit");
-    const filed: string[] = [];
+    const forge = fakeDesignForge(7);
     let now = new Date("2026-03-01T12:00:00.000Z");
     const audit = Promise.withResolvers<void>();
     const worker = new DesignWorker({
@@ -732,28 +860,15 @@ describe("design worker", () => {
       syncMs: 10_000,
       manualCycles: true,
       now: () => now,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async (options) => {
-        filed.push(options.finding.title);
-        return { number: 7, url: "https://forge.test/acme/fixture/issues/7" };
-      },
+      github: forgeClient(forge),
       release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () => ({
         pid: undefined,
         argv: [],
         async run(prompt: string) {
           await audit.promise;
-          writeFileSync(
-            join(prompt.slice("/design-system-audit ".length), "audit.json"),
-            JSON.stringify({ findings: [finding()], documentation: { decision: "none" } }),
-          );
+          const directory = prompt.slice("/design-system-audit ".length);
+          await fileFinding(repo, stateDir, directory, forge);
           return {};
         },
         async prompt() {
@@ -771,19 +886,21 @@ describe("design worker", () => {
     expect(worker.currentState.sync.state).toBe("ok");
     audit.resolve();
     await worker.waitForCycle();
-    expect(filed).toEqual([finding().title]);
+    expect(forge.issues.map((entry) => entry.title)).toEqual([finding().title]);
+    expect(worker.currentState.issues.map((entry) => entry.number)).toEqual([7]);
     const cycleId = worker.currentState.newestCycleId!;
     const activity = readFileSync(
       join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
       "utf8",
     );
-    expect(activity).not.toContain("skipped filing");
+    expect(activity).toContain("filed #7");
+    expect(activity).not.toContain("failed:");
     await worker.stop();
   });
 
-  test("a failed forge read still skips filing and records why", async () => {
+  test("a failed forge read still files through the tool and records the read failure", async () => {
     const { repo, stateDir } = await fixture("read-failure");
-    const filed: string[] = [];
+    const forge = fakeDesignForge();
     const worker = new DesignWorker({
       repoDir: repo,
       stateDir,
@@ -800,55 +917,78 @@ describe("design worker", () => {
         resolveCommit: async () => null,
         containingReleaseTags: async () => [],
       },
-      fileIssue: async (options) => {
-        filed.push(options.finding.title);
-        return { number: 1, url: "https://forge.test/issues/1" };
-      },
       release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () =>
-        fakePeer((directory) => {
-          writeFileSync(
-            join(directory, "audit.json"),
-            JSON.stringify({ findings: [finding()], documentation: { decision: "none" } }),
-          );
-        }, { connects: 0 }).peer as never,
+        fakePeer((directory) => fileFinding(repo, stateDir, directory, forge), { connects: 0 })
+          .peer as never,
     });
     expect(worker.start("acme/fixture")).toBe(true);
     await worker.refresh();
     expect(worker.currentState.sync.error).not.toBeNull();
     await worker.beginCycle();
     await worker.waitForCycle();
-    expect(filed).toEqual([]);
+    expect(forge.issues.map((entry) => entry.title)).toEqual([finding().title]);
+    expect(worker.currentState.issues).toEqual([]);
     const cycleId = worker.currentState.newestCycleId!;
     const activity = readFileSync(
       join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
       "utf8",
     );
-    expect(activity).toContain("skipped filing");
+    expect(activity).toContain("filed #1");
+    expect(activity).toContain("could not re-read the forge");
     await worker.stop();
   });
 
-  test("a malformed audit files nothing and records the reason", async () => {
+  test("a refused issue tool call records the tool error", async () => {
     const { repo, stateDir } = await fixture("bad-audit");
-    const filed: string[] = [];
+    const forge = fakeDesignForge();
     const worker = new DesignWorker({
       repoDir: repo,
       stateDir,
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async (options) => {
-        filed.push(options.finding.title);
-        return { number: 1, url: "https://forge.test/issues/1" };
-      },
+      github: forgeClient(forge),
+      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
+      connect: () =>
+        fakePeer(async (directory) => {
+          const result = await callTool(
+            designContext(repo, stateDir, directory, forge),
+            "issue_create",
+            { title: "", body: findingBody(finding()), labels: [DESIGN_LABEL] },
+          );
+          if (result.error === undefined) throw new Error("the tool accepted an empty title");
+        }, { connects: 0 }).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(forge.issues).toEqual([]);
+    expect(worker.currentState.issues).toEqual([]);
+    expect(worker.currentState.lastError).toContain("one-line issue title is required");
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).toContain("failed: A one-line issue title is required.");
+    expect(existsSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "audit.json"),
+    )).toBe(false);
+    await worker.stop();
+  });
+
+  test("ignores an audit answer file left in the cycle directory", async () => {
+    const { repo, stateDir } = await fixture("ignored-audit");
+    const forge = fakeDesignForge();
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      github: forgeClient(forge),
       release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () =>
         fakePeer((directory) => {
@@ -859,14 +999,21 @@ describe("design worker", () => {
     await worker.refresh();
     await worker.beginCycle();
     await worker.waitForCycle();
-    expect(filed).toEqual([]);
     expect(worker.currentState.issues).toEqual([]);
-    expect(worker.currentState.lastError).toContain("not valid JSON");
+    expect(worker.currentState.lastError).toBeNull();
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).not.toContain("JSON");
+    expect(activity).not.toContain("filed #");
     await worker.stop();
   });
 
-  test("a draft change without an admissible decision is not released", async () => {
+  test("a draft change without a release request is not released", async () => {
     const { repo, stateDir } = await fixture("bless-drift");
+    const forge = fakeDesignForge();
     let released = 0;
     const worker = new DesignWorker({
       repoDir: repo,
@@ -874,15 +1021,7 @@ describe("design worker", () => {
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      github: forgeClient(forge),
       release: async () => {
         released += 1;
         return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" };
@@ -891,10 +1030,6 @@ describe("design worker", () => {
         fakePeer((directory) => {
           const draft = join(directory, "draft", "DESIGN.md");
           writeFileSync(draft, "legalized drift\n");
-          writeFileSync(
-            join(directory, "audit.json"),
-            JSON.stringify({ findings: [], documentation: { decision: "none" } }),
-          );
         }, { connects: 0 }).peer as never,
     });
     expect(worker.start("acme/fixture")).toBe(true);
@@ -903,12 +1038,20 @@ describe("design worker", () => {
     await worker.waitForCycle();
     expect(released).toBe(0);
     expect(worker.currentState.documentation).toEqual([]);
+    expect(worker.currentState.release).toBeNull();
     expect(readFileSync(join(repo, "DESIGN.md"), "utf8")).toContain("Use tokens for every color");
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).toContain("ignored a document change without a release request");
     await worker.stop();
   });
 
   test("a rejecting release settles the cycle, records the failure, and a later cycle runs", async () => {
     const { repo, stateDir } = await fixture("release-throws");
+    const forge = fakeDesignForge();
     const counter = { connects: 0 };
     let released = 0;
     const worker = new DesignWorker({
@@ -917,26 +1060,18 @@ describe("design worker", () => {
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      github: forgeClient(forge),
       release: async () => {
         released += 1;
         throw new Error("boom");
       },
       connect: () =>
-        fakePeer((directory) => {
+        fakePeer(async (directory) => {
           writeFileSync(
             join(directory, "draft", "DESIGN.md"),
             `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
           );
-          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+          await requestRelease(repo, stateDir, directory, forge);
         }, counter).peer as never,
     });
     expect(worker.start("acme/fixture")).toBe(true);
@@ -957,6 +1092,7 @@ describe("design worker", () => {
 
   test("a stop during the release waits for it before reporting stopped", async () => {
     const { repo, stateDir } = await fixture("stop-releasing");
+    const forge = fakeDesignForge();
     const gate = Promise.withResolvers<ReleaseResult>();
     const releaseStarted = Promise.withResolvers<void>();
     const observed = { stoppedCalls: 0, lockAtStop: true, lifecycleAtStop: "" };
@@ -966,26 +1102,18 @@ describe("design worker", () => {
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async () => ({ number: 1, url: "https://forge.test/acme/fixture/issues/1" }),
+      github: forgeClient(forge),
       release: async () => {
         releaseStarted.resolve();
         return gate.promise;
       },
       connect: () =>
-        fakePeer((directory) => {
+        fakePeer(async (directory) => {
           writeFileSync(
             join(directory, "draft", "DESIGN.md"),
             `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
           );
-          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+          await requestRelease(repo, stateDir, directory, forge);
         }, { connects: 0 }).peer as never,
       onStopped: () => {
         observed.stoppedCalls += 1;
@@ -1033,6 +1161,7 @@ describe("design worker", () => {
 
   test("a missing draft document fails the cycle instead of rejecting it", async () => {
     const { repo, stateDir } = await fixture("missing-draft");
+    const forge = fakeDesignForge();
     const counter = { connects: 0 };
     let released = 0;
     const worker = new DesignWorker({
@@ -1041,27 +1170,19 @@ describe("design worker", () => {
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      github: forgeClient(forge),
       release: async () => {
         released += 1;
         return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" };
       },
       connect: () =>
-        fakePeer((directory) => {
+        fakePeer(async (directory) => {
           writeFileSync(
             join(directory, "draft", "DESIGN.md"),
             `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
           );
           rmSync(join(directory, "draft", "design", "tokens.json"));
-          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+          await requestRelease(repo, stateDir, directory, forge);
         }, counter).peer as never,
     });
     expect(worker.start("acme/fixture")).toBe(true);
@@ -1096,32 +1217,25 @@ describe("design worker", () => {
         .replace("## UX principles", "## Interactions"),
     );
     let released = 0;
+    const forge = fakeDesignForge();
     const worker = new DesignWorker({
       repoDir: repo,
       stateDir,
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => [],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
-      },
-      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      github: forgeClient(forge),
       release: async () => {
         released += 1;
         return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" };
       },
       connect: () =>
-        fakePeer((directory) => {
+        fakePeer(async (directory) => {
           writeFileSync(
             join(directory, "draft", "DESIGN.md"),
             `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
           );
-          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+          await requestRelease(repo, stateDir, directory, forge);
         }, { connects: 0 }).peer as never,
     });
     expect(worker.start("acme/fixture")).toBe(true);
@@ -1143,43 +1257,105 @@ describe("design worker", () => {
     await worker.stop();
   });
 
-  test("a zero room files nothing and records each skipped finding", async () => {
-    const { repo, stateDir } = await fixture("zero-room");
-    const filed: string[] = [];
+  test("a draft token document that is not an object is refused without a cycle error", async () => {
+    const { repo, stateDir } = await fixture("invalid-tokens");
+    const forge = fakeDesignForge();
+    let released = 0;
     const worker = new DesignWorker({
       repoDir: repo,
       stateDir,
       cadenceMs: 60 * 60_000,
       syncMs: 10_000,
       manualCycles: true,
-      github: {
-        listIssues: async () => [
-          {
-            number: 1,
-            title: "existing open design issue",
-            url: "https://forge.test/acme/fixture/issues/1",
-            state: "open",
-            createdAt: new Date().toISOString(),
-            body: "",
-          },
-        ],
-        listReleases: async () => [],
-        listOpenIssueTitles: async () => ["existing open design issue"],
-        closingCommit: async () => null,
-        resolveCommit: async () => null,
-        containingReleaseTags: async () => [],
+      github: forgeClient(forge),
+      release: async () => {
+        released += 1;
+        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" };
       },
-      fileIssue: async (options) => {
-        filed.push(options.finding.title);
-        return { number: 2, url: "https://forge.test/acme/fixture/issues/2" };
+      connect: () =>
+        fakePeer(async (directory) => {
+          writeFileSync(
+            join(directory, "draft", "DESIGN.md"),
+            `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
+          );
+          writeFileSync(join(directory, "draft", "design", "tokens.json"), "[]\n");
+          await requestRelease(repo, stateDir, directory, forge);
+        }, { connects: 0 }).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(released).toBe(0);
+    expect(worker.currentState.documentation).toEqual([]);
+    expect(worker.currentState.release).toBeNull();
+    expect(worker.currentState.lifecycle).toBe("idle");
+    expect(worker.currentState.lastError).toBeNull();
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).toContain("documentation rejected");
+    expect(activity).toContain("design/tokens.json is not a JSON object");
+    expect(activity).not.toContain("release failed");
+    await worker.stop();
+  });
+
+  test("a release request without a draft change leaves the release state unchanged", async () => {
+    const { repo, stateDir } = await fixture("no-draft-change");
+    const forge = fakeDesignForge();
+    let released = 0;
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      github: forgeClient(forge),
+      release: async () => {
+        released += 1;
+        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" };
       },
+      connect: () =>
+        fakePeer((directory) => requestRelease(repo, stateDir, directory, forge), {
+          connects: 0,
+        }).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(released).toBe(0);
+    expect(worker.currentState.documentation).toEqual([]);
+    expect(worker.currentState.release).toBeNull();
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).toContain("the release request produced no changed document");
+    await worker.stop();
+  });
+
+  test("a zero room files nothing and records the empty room", async () => {
+    const { repo, stateDir } = await fixture("zero-room");
+    const forge = fakeDesignForge();
+    await forge.create({ title: "existing open design issue", body: "", labels: [DESIGN_LABEL] });
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      github: forgeClient(forge),
       release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () =>
-        fakePeer((directory) => {
-          writeFileSync(
-            join(directory, "audit.json"),
-            JSON.stringify({ findings: [finding()], documentation: { decision: "none" } }),
-          );
+        fakePeer(async (directory) => {
+          const request = JSON.parse(readFileSync(join(directory, "request.json"), "utf8")) as {
+            issueRoom: number;
+          };
+          if (request.issueRoom > 0) await fileFinding(repo, stateDir, directory, forge);
         }, { connects: 0 }).peer as never,
     });
     writeSettings(settingsPath(stateDir, repo), {
@@ -1191,13 +1367,17 @@ describe("design worker", () => {
     await worker.refresh();
     await worker.beginCycle();
     await worker.waitForCycle();
-    expect(filed).toEqual([]);
+    expect(forge.issues.map((entry) => entry.title)).toEqual(["existing open design issue"]);
     const cycleId = worker.currentState.newestCycleId!;
     const activity = readFileSync(
       join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
       "utf8",
     );
-    expect(activity).toContain("cap leaves no room");
+    expect(activity).toContain("room 0");
+    expect(activity).not.toContain("filed #");
+    expect(existsSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "tool-log.jsonl"),
+    )).toBe(false);
     await worker.stop();
   });
 });

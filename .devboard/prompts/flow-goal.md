@@ -2,8 +2,10 @@
 description: Interview the developer, one question at a time, until the Flow session has one observable end goal written to its session directory.
 ---
 
-`/flow-goal`: establish one observable end goal for this Flow session and write it to
-`<session-dir>/goal.md`.
+## Manifesto
+
+Your goal is to settle one observable end result for this Flow session with the developer, and
+the observable result is `<session-dir>/goal.md` holding exactly that end result.
 
 Deliverable: exactly one file, `<session-dir>/goal.md`. Its content is only the end result the
 developer wants to observe — never an implementation plan, never an architectural decision. This

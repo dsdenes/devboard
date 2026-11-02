@@ -1,15 +1,15 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import {
     conceptTitle,
     contextTitle,
     labelText,
     labelTexts,
-    relativeTime,
     TABS,
   } from "../discover-format";
   import { discover } from "../discover.svelte";
+  import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
+  import AgentActivityBar from "./AgentActivityBar.svelte";
   import DiscoverAgentCard from "./DiscoverAgentCard.svelte";
   import DataTable from "./DataTable.svelte";
   import DiscoverContribution from "./DiscoverContribution.svelte";
@@ -54,38 +54,44 @@
     discover.filteredContexts.reduce((total, context) => total + context.concepts.length, 0),
   );
 
+  const agentCard = $derived(tab?.kind === "agent" ? discover.agent(tab.resourceId) : null);
+  const isAgentPage = $derived(tab?.kind === "agent");
+  const agentRunActive = $derived(
+    isAgentPage && discover.active && discover.activeAgent === tab?.resourceId,
+  );
+  const barState = $derived(
+    isAgentPage
+      ? (agentCard?.state ?? "idle")
+      : discover.active
+        ? ("running" as const)
+        : discover.displayError !== null
+          ? ("failed" as const)
+          : ("idle" as const),
+  );
+  const barStartedAt = $derived(
+    barState === "running"
+      ? isAgentPage
+        ? (agentCard?.startedAt ?? null)
+        : discover.startedAt
+      : null,
+  );
+  const barActivity = $derived(
+    isAgentPage
+      ? agentRunActive
+        ? discover.activity
+        : []
+      : discover.activity,
+  );
+  const barQuestion = $derived(
+    isAgentPage
+      ? (tab === null ? null : discover.agentQuestionOf(tab.resourceId))
+      : discover.question,
+  );
+
   function clearGlossaryFilters(): void {
     discover.resetGlossaryFilters();
   }
-
-  let now = $state(Date.now());
-  const startedLabel = $derived(
-    discover.startedAt === null ? "" : relativeTime(discover.startedAt, now),
-  );
-  const lastActivity = $derived(
-    [...discover.activity].reverse().find((line) => line.trim().length > 0)?.trim() ?? "",
-  );
-
-  onMount(() => {
-    const timer = setInterval(() => (now = Date.now()), 15_000);
-    return () => clearInterval(timer);
-  });
 </script>
-
-{#snippet runTag()}
-  {#if discover.active}
-    <div class="discover-run-tag" data-testid="discover-run-tag" role="status" aria-live="polite">
-      <span class="discover-run__dot" aria-hidden="true"></span>
-      <strong>Run in progress</strong>
-      {#if discover.startedAt !== null}
-        <span class="muted" title={discover.startedAt}>started {startedLabel}</span>
-      {/if}
-      {#if lastActivity.length > 0}
-        <span class="discover-run-tag__activity" title={lastActivity}>{lastActivity}</span>
-      {/if}
-    </div>
-  {/if}
-{/snippet}
 
 {#snippet glossaryCell(row: Record<string, unknown>, columnId: string)}
   {#if columnId === "title"}
@@ -366,7 +372,67 @@
 {/snippet}
 
 <div class="mode-body discover-body">
-  {@render runTag()}
+  {#if tab !== null && ["overview", "glossary", "skill", "warnings", "agent"].includes(tab.kind)}
+    <AgentActivityBar
+      identity={`${layout.mode}:${tab.id}`}
+      label={isAgentPage
+        ? (discover.agent(tab.resourceId)?.label ?? "Discovery agent")
+        : "Discover"}
+      status={barState}
+      activity={barActivity}
+      startedAt={barStartedAt}
+      waiting={barQuestion !== null}
+    >
+      {#snippet control()}
+        {#if isAgentPage}
+          {#if agentRunActive}
+            <button
+              type="button"
+              class="discover-run__stop"
+              data-testid="discover-agent-stop"
+              data-command={`discover.agent.stop.${tab.resourceId}`}
+              title="Stop this discovery agent"
+              onclick={() => discover.stop()}
+            >
+              Stop
+            </button>
+          {:else}
+            <Button
+              variant="default"
+              data-command={`discover.agent.start.${tab.resourceId}`}
+              data-testid="discover-agent-start"
+              disabled={discover.agentStartDisabled(tab.resourceId)}
+              title={discover.agentStartTitle(tab.resourceId)}
+              onclick={() => discover.startAgent(tab.resourceId)}
+            >
+              {(agentCard?.state ?? "idle") === "idle" ? "Start" : "Re-run"}
+            </Button>
+          {/if}
+        {:else if discover.active}
+          <Button
+            variant="destructive"
+            data-command="discover.stop"
+            data-testid="discover-stop"
+            title="Stop this Discover run"
+            onclick={() => discover.stop()}
+          >
+            Stop
+          </Button>
+        {:else}
+          <Button
+            variant="default"
+            data-command="discover.start"
+            data-testid="discover-start"
+            disabled={discover.startDisabled}
+            title={discover.startTitle}
+            onclick={() => discover.start()}
+          >
+            {discover.hasArtifacts ? "Re-discover" : "Discover project"}
+          </Button>
+        {/if}
+      {/snippet}
+    </AgentActivityBar>
+  {/if}
   {@render notices()}
 
   {#if tab === null}

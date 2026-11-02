@@ -10,7 +10,6 @@ import { LEDGER_VERSION, ledgerPath } from "./paths";
  * version-2 ledger is discarded; deduplication then relies on the forge.
  */
 
-export const PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const FAMILY_KINDS: readonly FamilyKind[] = Object.freeze([
   "command",
   "question",
@@ -218,44 +217,4 @@ export function markFamily(
     if (options.title !== undefined) entry.lastTitle = options.title;
     entry.lastFiledAt = options.at.toISOString();
   }
-}
-
-export function removePending(ledger: CoachLedger, family: string): void {
-  ledger.pendingFiling = ledger.pendingFiling.filter((entry) => entry.family !== family);
-}
-
-/** The queue keeps the highest-scoring entries up to `maxPending`. */
-export function enqueuePending(
-  ledger: CoachLedger,
-  entry: PendingFiling,
-  maxPending: number | null,
-): PendingFiling[] {
-  const all = [...ledger.pendingFiling.filter((value) => value.family !== entry.family), entry].sort(
-    (left, right) =>
-      right.score - left.score || left.createdAt.localeCompare(right.createdAt),
-  );
-  const kept = maxPending === null ? all : all.slice(0, maxPending);
-  ledger.pendingFiling = kept;
-  return all.slice(kept.length);
-}
-
-/** Drops queue entries older than seven days or absent from the window. */
-export function dropStalePending(
-  ledger: CoachLedger,
-  familyKeys: ReadonlySet<string>,
-  now: Date,
-): PendingFiling[] {
-  const kept: PendingFiling[] = [];
-  const dropped: PendingFiling[] = [];
-  for (const entry of ledger.pendingFiling) {
-    const created = Date.parse(entry.createdAt);
-    const stale =
-      !Number.isFinite(created) ||
-      now.getTime() - created > PENDING_MAX_AGE_MS ||
-      !familyKeys.has(entry.family);
-    if (stale) dropped.push(entry);
-    else kept.push(entry);
-  }
-  ledger.pendingFiling = kept;
-  return dropped;
 }

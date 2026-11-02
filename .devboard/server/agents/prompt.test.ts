@@ -74,7 +74,7 @@ describe("agent prompt snapshot", () => {
     }
   });
 
-  test("Watchdog and Coach state their absence", async () => {
+  test("Watchdog states its absence and Coach renders its generated template", async () => {
     const root = await fixtureRoot("absent", true);
     expect(prompts(root).snapshot("watchdog")).toEqual({
       id: "watchdog",
@@ -82,12 +82,20 @@ describe("agent prompt snapshot", () => {
       text: null,
       error: null,
     });
-    expect(prompts(root).snapshot("coach")).toEqual({
+    const coach = new AgentPromptController({
+      registry: agentRegistry,
+      repoDir: root,
+      send: () => undefined,
+      templates: { coach: () => "# Coach synthesis template\n" },
+    }).snapshot("coach");
+    expect(coach).toEqual({
       id: "coach",
-      absent: true,
+      absent: false,
       text: null,
       error: null,
+      template: "# Coach synthesis template\n",
     });
+    expect(Object.keys(coach ?? {})).not.toContain("editable");
   });
 
   test("an unreadable prompt reports an error and no bytes", async () => {

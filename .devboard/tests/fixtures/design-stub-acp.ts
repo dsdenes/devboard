@@ -1,17 +1,22 @@
 #!/usr/bin/env bun
 /**
  * The deterministic ACP peer for Design System verification. It reads the
- * cycle's mode file, answers with a valid audit document, and edits the draft
- * documents in `admit` mode. It never contacts a real model or forge.
+ * cycle's mode file, files each admissible finding through the real MCP
+ * `issue_create` tool, edits the draft documents and records the release
+ * request through `design_release_request` in `admit` mode. It never writes an
+ * audit answer, contacts a real model, or contacts a real forge.
  */
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { callTool } from "../../mcp/tools";
+import type { McpContext } from "../../mcp/context";
 
 const stubDir = process.env.DESIGN_STUB_DIR;
 const logPath = process.env.DESIGN_STUB_LOG;
 const delay = Number(process.env.DESIGN_STUB_DELAY_MS ?? "0");
 const sessionId = "stub-design-session";
+const DESIGN_LABEL = "design";
 
 function log(line: string): void {
   if (logPath !== undefined) appendFileSync(logPath, `${line}\n`);
@@ -74,12 +79,78 @@ function firstPassage(text: string): string {
   return line ?? "The interface uses documented tokens.";
 }
 
+interface CycleRequest {
+  cycleId: string;
+  repoDir: string;
+  issueRoom: number;
+}
+
+function contextFor(cycleDir: string, repoDir: string): McpContext {
+  const stateDir = process.env.STATE_DIR ?? join(repoDir, ".devboard", ".tmp");
+  return {
+    repoDir,
+    harnessDir: process.env.DEVBOARD_HARNESS_DIR ?? resolve(import.meta.dir, "../.."),
+    stateDir,
+    environment: {
+      ...process.env,
+      REPO_DIR: repoDir,
+      STATE_DIR: stateDir,
+      DEVBOARD_TOOL_LOG: process.env.DEVBOARD_TOOL_LOG ?? join(cycleDir, "tool-log.jsonl"),
+    },
+  };
+}
+
+interface Finding {
+  category: string;
+  title: string;
+  principle: { name: string; passage: string };
+  evidence: Array<{ path: string; lines: string; quote: string }>;
+  files: string[];
+  proposedChange: string;
+  acceptanceCriteria: string[];
+}
+
+function findingBody(entry: Finding): string {
+  return [
+    "## Category",
+    "",
+    entry.category,
+    "",
+    "## Violated principle or token",
+    "",
+    `**${entry.principle.name}**`,
+    "",
+    `> ${entry.principle.passage}`,
+    "",
+    "## Evidence",
+    "",
+    ...entry.evidence.map(
+      (evidence) => `- \`${evidence.path}:${evidence.lines}\`\n  > ${evidence.quote}`,
+    ),
+    "",
+    "## Files",
+    "",
+    ...entry.files.map((file) => `- \`${file}\``),
+    "",
+    "## Proposed change",
+    "",
+    entry.proposedChange,
+    "",
+    "## Acceptance criteria",
+    "",
+    ...entry.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+    "",
+    "---",
+    "",
+    "Filed by Design System. Bring the interface in line with DESIGN.md and design/tokens.json.",
+    "",
+  ].join("\n");
+}
+
 async function handlePrompt(id: number | string, params: unknown): Promise<void> {
   const text = promptText(params);
   const directory = text.slice("/design-system-audit ".length);
-  const request = JSON.parse(readFileSync(join(directory, "request.json"), "utf8")) as {
-    cycleId: string;
-  };
+  const request = JSON.parse(readFileSync(join(directory, "request.json"), "utf8")) as CycleRequest;
   const input = JSON.parse(readFileSync(join(directory, "input.json"), "utf8")) as {
     sources: Array<{ path: string; text: string }>;
     documents: Array<{ path: string; text: string }>;
@@ -89,10 +160,13 @@ async function handlePrompt(id: number | string, params: unknown): Promise<void>
   notify(`design audit ${request.cycleId}`);
   if (delay > 0) await Bun.sleep(delay);
 
+  const repoDir = request.repoDir ?? process.env.REPO_DIR ?? process.cwd();
+  const context = contextFor(directory, repoDir);
+
   const source = input.sources[0];
   const design = input.documents.find((document) => document.path.endsWith("DESIGN.md"));
   const passage = firstPassage(design?.text ?? "");
-  const finding = {
+  const finding: Finding = {
     category: "color",
     title: `Fixture divergence ${request.cycleId}`,
     principle: { name: "Tokenized color", passage },
@@ -108,8 +182,28 @@ async function handlePrompt(id: number | string, params: unknown): Promise<void>
     acceptanceCriteria: ["The surface contains no undocumented color literal."],
   };
 
-  const audit: Record<string, unknown> = { findings: [], documentation: { decision: "none" } };
-  if (current === "issue" || current === "single") audit.findings = [finding];
+  if (current === "issue" || current === "single") {
+    if (request.issueRoom > 0) {
+      const result = await callTool(context, "issue_create", {
+        title: finding.title,
+        labels: [DESIGN_LABEL],
+        body: findingBody(finding),
+      });
+      if (result.error !== undefined) log(`tool error ${result.error}`);
+    } else {
+      notify("skipped: the cycle's filing room is full; the hourly or open-issue cap leaves no room");
+    }
+  }
+
+  if (current === "error" || current === "invalid") {
+    const result = await callTool(context, "issue_create", {
+      title: "",
+      labels: [DESIGN_LABEL],
+      body: findingBody(finding),
+    });
+    if (result.error !== undefined) log(`tool error ${result.error}`);
+  }
+
   if (current === "admit") {
     if (stubDir === undefined) throw new Error("admit mode needs DESIGN_STUB_DIR");
     const prose = readFileSync(join(stubDir, "admit-DESIGN.md"), "utf8");
@@ -119,22 +213,14 @@ async function handlePrompt(id: number | string, params: unknown): Promise<void>
     mkdirSync(join(draftRoot, "design"), { recursive: true });
     writeFileSync(join(draftRoot, "DESIGN.md"), `${prose}${marker}`);
     writeFileSync(join(draftRoot, "design", "tokens.json"), tokens);
-    audit.findings = [];
-    audit.documentation = {
-      decision: "edit",
+    const result = await callTool(context, "design_release_request", {
+      cycleDir: directory,
       summary: `Document the fixture standard ${request.cycleId}`,
       rationale: "Two interface surfaces share the standard.",
-      surfaces: [source?.path ?? ".devboard/client/App.svelte", input.sources[1]?.path ?? ".devboard/client/app.css"],
-      contradiction: false,
-      evidence: [],
-      addsTokens: ["compact"],
-    };
+    });
+    if (result.error !== undefined) log(`tool error ${result.error}`);
   }
-  if (current === "invalid") {
-    writeFileSync(join(directory, "audit.json"), "{ not json");
-  } else {
-    writeFileSync(join(directory, "audit.json"), `${JSON.stringify(audit, null, 2)}\n`);
-  }
+
   log(`end ${process.pid} ${request.cycleId} ${current}`);
   write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
 }

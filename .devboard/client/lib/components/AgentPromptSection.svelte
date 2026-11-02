@@ -25,6 +25,10 @@
   <div class="agent-prompt__body" data-testid="agent-prompt-body">
     {#if prompt === null}
       <p class="agent-prompt__hint">Loading the prompt…</p>
+    {:else if prompt.template !== undefined && prompt.template !== null}
+      <div class="agent-prompt__template" data-testid="agent-prompt-template">
+        <pre class="agent-prompt__template-text mono" data-testid="agent-prompt-template-text">{prompt.template}</pre>
+      </div>
     {:else if prompt.absent}
       <p class="agent-prompt__absent" data-testid="agent-prompt-absent">
         {descriptor?.prompt.kind === "absent"
@@ -94,6 +98,24 @@
     line-height: 1.45;
     margin: 0;
     max-height: 320px;
+    overflow: auto;
+    padding: 8px;
+    white-space: pre;
+  }
+
+  .agent-prompt__template {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .agent-prompt__template-text {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 11px;
+    line-height: 1.45;
+    margin: 0;
+    max-height: 360px;
     overflow: auto;
     padding: 8px;
     white-space: pre;

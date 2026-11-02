@@ -5,6 +5,8 @@
  * catalog byte for byte.
  */
 
+import { FLOW_CATEGORIES } from "./flow";
+
 export interface McpToolDefinition {
   name: string;
   title: string;
@@ -277,6 +279,202 @@ const TOOLS: readonly McpToolDefinition[] = [
       },
       ["action"],
     ),
+  },
+  {
+    name: "issue_create",
+    title: "Create an issue",
+    description:
+      "Creates one issue with a one-line title, a full Markdown body, and an " +
+      "optional list of label names. Each label is ensured before the issue is " +
+      "created; the created issue's number, URL, title, and labels are returned.",
+    inputSchema: object(
+      {
+        title: STRING,
+        body: STRING,
+        labels: { type: "array", items: STRING, maxItems: 20 },
+      },
+      ["title", "body"],
+    ),
+    covers: ["gh issue create"],
+  },
+  {
+    name: "issue_comment",
+    title: "Comment on an issue",
+    description:
+      "Appends one Markdown comment to an existing issue and confirms the issue " +
+      "number that received it.",
+    inputSchema: object({ number: INTEGER, body: STRING }, ["number", "body"]),
+    covers: ["gh issue comment"],
+  },
+  {
+    name: "flow_widgets_register",
+    title: "Register Flow change widgets",
+    description:
+      "Replaces one Flow session's widget list with the supplied widgets. Each " +
+      "widget carries a category, concept, summary, rationale, and its changed " +
+      "files. The flow server reconciles identity, acceptance, and missing files.",
+    inputSchema: object(
+      {
+        sessionDir: STRING,
+        widgets: {
+          type: "array",
+          maxItems: 200,
+          items: object(
+            {
+              category: { type: "string", enum: [...FLOW_CATEGORIES] },
+              concept: STRING,
+              summary: STRING,
+              rationale: STRING,
+              files: { type: "array", items: STRING, minItems: 1, maxItems: 200 },
+            },
+            ["category", "concept", "summary", "rationale", "files"],
+          ),
+        },
+      },
+      ["sessionDir", "widgets"],
+    ),
+  },
+  {
+    name: "flow_steering_ack",
+    title: "Acknowledge Flow steering",
+    description:
+      "Records the steering-note ids this implementation turn consumed, once " +
+      "each, in the session's acknowledgement log and returns the ids it wrote " +
+      "and the ids already recorded.",
+    inputSchema: object(
+      { sessionDir: STRING, ids: { type: "array", items: STRING, maxItems: 200 } },
+      ["sessionDir", "ids"],
+    ),
+  },
+  {
+    name: "flow_checkpoint_record",
+    title: "Record a Flow checkpoint",
+    description:
+      "Appends one checkpoint for a committed coherent unit to the session's " +
+      "checkpoint log and returns its id, commit, and summary.",
+    inputSchema: object(
+      {
+        sessionDir: STRING,
+        id: STRING,
+        timestamp: STRING,
+        summary: STRING,
+        files: INTEGER,
+        commit: STRING,
+        verification: { type: "string", enum: ["passed", "failed", "not-run"] },
+      },
+      ["sessionDir", "commit", "summary"],
+    ),
+  },
+  {
+    name: "flow_verification_record",
+    title: "Record Flow verification",
+    description:
+      "Replaces the session's latest verification result with the command run, " +
+      "its status, the timestamp, and a bounded output tail, and returns the " +
+      "recorded status.",
+    inputSchema: object(
+      {
+        sessionDir: STRING,
+        command: STRING,
+        status: { type: "string", enum: ["passed", "failed", "not-run"] },
+        timestamp: STRING,
+        output: STRING,
+      },
+      ["sessionDir", "status"],
+    ),
+  },
+  {
+    name: "discover_sheet_stage",
+    title: "Stage a Discover project sheet",
+    description:
+      "Writes the complete project sheet as the run's staged sheet.json and " +
+      "returns its path and schema version. Publication validates and publishes it.",
+    inputSchema: object({ stagingDir: STRING, sheet: { type: "object" } }, [
+      "stagingDir",
+      "sheet",
+    ]),
+  },
+  {
+    name: "discover_contribution_stage",
+    title: "Stage a Discover contribution sheet",
+    description:
+      "Writes the contribution agent's complete staged contribution.json and returns " +
+      "its path and schema version. Publication validates and publishes it.",
+    inputSchema: object({ stagingDir: STRING, contribution: { type: "object" } }, [
+      "stagingDir",
+      "contribution",
+    ]),
+  },
+  {
+    name: "discover_glossary_stage",
+    title: "Stage a Discover glossary",
+    description:
+      "Writes one bounded context's UbiLang glossary YAML as the run's staged " +
+      "glossary document and returns its path and context id.",
+    inputSchema: object(
+      { stagingDir: STRING, context: STRING, yaml: STRING },
+      ["stagingDir", "context", "yaml"],
+    ),
+  },
+  {
+    name: "discover_significance_stage",
+    title: "Stage Discover significance scores",
+    description:
+      "Writes the glossary significance sidecar beside the staged glossaries and " +
+      "returns its path and schema version.",
+    inputSchema: object({ stagingDir: STRING, significance: { type: "object" } }, [
+      "stagingDir",
+      "significance",
+    ]),
+  },
+  {
+    name: "discover_skill_stage",
+    title: "Stage a Discover skill",
+    description:
+      "Writes one managed Discover skill with its name, one-line description, " +
+      "and heading-plus-bullets body, and returns its path and name.",
+    inputSchema: object(
+      { stagingDir: STRING, name: STRING, description: STRING, body: STRING },
+      ["stagingDir", "name", "description", "body"],
+    ),
+  },
+  {
+    name: "design_release_request",
+    title: "Request a Design System release",
+    description:
+      "Records the documentation release summary and rationale beside the " +
+      "cycle's edited draft documents. The worker commits, pushes, waits for the " +
+      "release workflow, and publishes; the request path is returned.",
+    inputSchema: object({ cycleDir: STRING, summary: STRING, rationale: STRING }, [
+      "cycleDir",
+      "summary",
+      "rationale",
+    ]),
+  },
+  {
+    name: "watchdog_duplicate_record",
+    title: "Record a watchdog duplicate",
+    description:
+      "Records that one watchdog candidate duplicates an open issue or another " +
+      "candidate in the same cycle. A duplicate creates and comments on nothing; " +
+      "the recorded disposition is returned.",
+    inputSchema: object(
+      {
+        fingerprint: STRING,
+        issue: STRING,
+        representative: STRING,
+      },
+      ["fingerprint"],
+    ),
+  },
+  {
+    name: "coach_proposal_skip",
+    title: "Record a Coach family with no proposal",
+    description:
+      "Records why a Coach family's synthesis turn filed no issue. The " +
+      "coordinator records the family as skipped with this reason; nothing is " +
+      "queued and no answer document is read.",
+    inputSchema: object({ family: STRING, reason: STRING }, ["family", "reason"]),
   },
   {
     name: "verification_run",

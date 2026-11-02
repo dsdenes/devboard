@@ -28,11 +28,12 @@ import {
   type DesignIssueRow,
   type DesignSettings,
   type DesignState,
-  type DesignSync,
 } from "../issues/design/state";
 import { readActivity } from "../issues/state";
 import { activityDelta } from "./activity";
 import { hostHarnessDir, readHarnessVersion } from "./version";
+import { AgentForgeState } from "./agents/forge-state";
+import { createForgeIssueReader, type ForgeIssueReader } from "./agents/forge-reader";
 import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 import type { AgentDescriptor } from "./agents/registry";
@@ -61,6 +62,10 @@ export interface DesignBridgeOptions {
   log?: (line: string) => void;
   environment?: Record<string, string | undefined>;
   pollMs?: number;
+  /** Injectable forge read; production reads the origin's issue state. */
+  reader?: ForgeIssueReader;
+  /** True while at least one dashboard client is connected. */
+  hasClients?: () => boolean;
   preflight?: (options: {
     repoDir: string;
     stateDir: string;
@@ -82,6 +87,7 @@ export class DesignBridge implements AgentAdapter {
   private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
   private readonly environment: Record<string, string | undefined>;
   private readonly repository: () => string | null;
+  private readonly forge: AgentForgeState;
   private readonly preflight: NonNullable<DesignBridgeOptions["preflight"]>;
   private readonly spawnWorker: NonNullable<DesignBridgeOptions["spawnWorker"]>;
   private readonly log: (line: string) => void;
@@ -125,11 +131,24 @@ export class DesignBridge implements AgentAdapter {
           environment: request.environment,
         }));
     this.spawnWorker = options.spawnWorker ?? ((argv, environment) => this.detach(argv, environment));
+    this.forge = new AgentForgeState({
+      reader:
+        options.reader ??
+        createForgeIssueReader({
+          repoDir: this.repoDir,
+          ...(options.environment === undefined ? {} : { environment: options.environment }),
+        }),
+      urls: () => mergeIssues(this.allStates()).map((issue) => issue.url),
+      hasClients: options.hasClients ?? (() => false),
+      now: this.now,
+      log: this.log,
+    });
   }
 
   begin(): void {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => this.refresh(), this.pollMsValue);
+    this.forge.begin();
     void this.refresh();
     void this.takeoverOldWorkers();
   }
@@ -139,6 +158,7 @@ export class DesignBridge implements AgentAdapter {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    this.forge.dispose();
     for (const pid of [...this.stopping.keys()]) this.clearStopProof(pid);
   }
 
@@ -246,6 +266,7 @@ export class DesignBridge implements AgentAdapter {
   }
 
   snapshot(): AgentSnapshotInput {
+    this.forge.requestSync();
     const owners = this.owners();
     const attachedOwners = owners.filter(
       (owner) => resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid),
@@ -305,8 +326,21 @@ export class DesignBridge implements AgentAdapter {
               ? "failed"
               : "stopped";
     const settings = this.settings(active);
-    const issues = mergeIssues(states);
-    const sync: DesignSync = active?.sync ?? { state: "stale", at: null, error: null };
+    const rows = mergeIssues(states)
+      .filter((issue) => this.forge.reported(issue.url))
+      .map((issue) => {
+        const fact = this.forge.fact(issue.url);
+        return fact === undefined
+          ? projectIssue(issue)
+          : {
+              title: issue.title,
+              category: issue.category,
+              filedAt: issue.createdAt,
+              url: issue.url,
+              state: fact.state,
+              version: fact.version,
+            };
+      });
     const cycleId = newestCycle(states);
     const lastRunAt =
       states
@@ -334,10 +368,10 @@ export class DesignBridge implements AgentAdapter {
         nextRunAt: attached ? (active?.nextAttemptAt ?? null) : null,
       },
       limits: { maxPerHour: settings.maxPerHour, maxPending: settings.maxPending },
-      issues: issues.map(projectIssue),
+      issues: rows,
       documentation: mergeDocumentation(states),
-      pending: issues.filter((issue) => issue.state === "pending").length,
-      sync,
+      pending: rows.filter((issue) => issue.state === "pending").length,
+      sync: this.forge.sync,
       detail: { panel: "activity", scanId: cycleId, entries: [...this.lastActivity] },
       notice: this.notice ?? active?.notice ?? null,
       error: this.startError ?? active?.lastError ?? null,
@@ -372,6 +406,16 @@ export class DesignBridge implements AgentAdapter {
     };
     deliver(event);
     this.send(event, target);
+  }
+
+  /** A view opened this agent: read the forge now when the cadence allows. */
+  requestSync(): void {
+    this.forge.requestSync();
+  }
+
+  /** Resolves after the read in flight, if any, has settled. */
+  settled(): Promise<void> {
+    return this.forge.settled();
   }
 
   private readActivity(cycleId: string): string[] {

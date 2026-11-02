@@ -315,10 +315,56 @@ describe("MCP transport and catalog", () => {
     const tools = (replies[1]?.result as { tools: Array<{ name: string }> }).tools;
     expect(tools.map((tool) => tool.name)).toEqual([...MCP_TOOL_NAMES]);
     expect(tools.map((tool) => tool.name)).toEqual([...MCP_TOOL_NAMES].sort());
-    expect(tools).toHaveLength(21);
+    expect(tools).toHaveLength(MCP_TOOL_NAMES.length);
     expect(MCP_TOOLS.every((tool) => MCP_TOOL_NAMES.includes(tool.name))).toBe(true);
     const error = replies[2]?.error as Record<string, unknown>;
     expect(error.code).toBe(-32601);
+  });
+
+  test("the catalog publishes every write tool the agent flows need", async () => {
+    const { context } = await workspace();
+    const required = [
+      "issue_create",
+      "issue_comment",
+      "flow_widgets_register",
+      "flow_steering_ack",
+      "flow_checkpoint_record",
+      "flow_verification_record",
+      "discover_sheet_stage",
+      "discover_glossary_stage",
+      "discover_significance_stage",
+      "discover_skill_stage",
+      "design_release_request",
+      "watchdog_duplicate_record",
+      "coach_proposal_skip",
+    ];
+    const replies = await stdio(context, [
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    ]);
+    const result = replies[0]?.result;
+    if (
+      typeof result !== "object" ||
+      result === null ||
+      !("tools" in result) ||
+      !Array.isArray(result.tools)
+    ) {
+      throw new Error("tools/list did not return a tools array");
+    }
+    const tools = result.tools.filter(
+      (entry): entry is { name: string; description: string } =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "name" in entry &&
+        typeof entry.name === "string" &&
+        "description" in entry &&
+        typeof entry.description === "string",
+    );
+    const names = tools.map((tool) => tool.name);
+    expect(names).toEqual([...names].sort());
+    for (const name of required) expect(names).toContain(name);
+    for (const tool of tools.filter((entry) => required.includes(entry.name))) {
+      expect(tool.description.length).toBeGreaterThan(0);
+    }
   });
 
   test("an unknown tool is an error result and a final line without a newline is answered", async () => {
@@ -695,6 +741,42 @@ describe("MCP work and control tools", () => {
     injected.environment.DEVBOARD_ISSUES_RUN_ID = "run-7";
     await callTool(injected, "issue_close", { number: second.number });
     expect(closedByRun(context.stateDir, context.repoDir, second.number)).toBe("run-7");
+  });
+
+  test("issue_create validates its arguments before touching the forge", async () => {
+    const { context } = await workspace();
+    const forge = fakeForge();
+    const injected = { ...context, forgeIssues: forge };
+    const refused = await callTool(injected, "issue_create", { title: "Missing body" });
+    expect(refused.error).toContain("body is required");
+    const blank = await callTool(injected, "issue_create", { title: "Blank", body: "  " });
+    expect(blank.error).toContain("non-empty Markdown body");
+    expect(await forge.list("all")).toEqual([]);
+    expect(forge.labels.size).toBe(0);
+  });
+
+  test("issue_create ensures its labels and returns the created issue", async () => {
+    const { context } = await workspace();
+    const forge = fakeForge();
+    const injected = { ...context, forgeIssues: forge };
+    const body = "## Evidence\n\nA full Markdown body.\n";
+    const created = valueOf(
+      await callTool(injected, "issue_create", {
+        title: "Design divergence",
+        body,
+        labels: ["design", "design-system"],
+      }),
+    );
+    expect(created).toEqual({
+      number: 1,
+      url: "https://forge.test/acme/fixture/issues/1",
+      title: "Design divergence",
+      labels: ["design", "design-system"],
+    });
+    expect([...forge.labels]).toEqual(["design", "design-system"]);
+    const issue = await forge.get(1);
+    expect(issue.body).toBe(body);
+    expect(issue.labels).toEqual(["design", "design-system"]);
   });
 
   test("multibyte issue bodies and goals stay within their byte budgets", async () => {
