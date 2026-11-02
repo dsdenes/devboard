@@ -2531,9 +2531,18 @@ try {
     "the permanently failing Auto Scout",
     15_000,
   );
-  const permanent = scoutSync(sourceStateDir, sourceHost.directory);
+  const permanent = await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "error" && sync.error?.includes("Bad credentials")
+        ? sync
+        : undefined;
+    },
+    "the permanent failure to surface",
+    15_000,
+  );
   assertTrue(
-    permanent?.state === "error" && permanent.error?.includes("Bad credentials"),
+    permanent.error?.includes("Bad credentials"),
     `the permanent failure did not surface at once: ${JSON.stringify(permanent)}`,
   );
   assertTrue(
