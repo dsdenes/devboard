@@ -16,7 +16,7 @@
   import { issues } from "../issues.svelte";
   import { queueCounts, queueSummary } from "../issues-queue";
   import { agents } from "../agents.svelte";
-  import { statusTone } from "../status-tone";
+  import { statusTone, verificationTone } from "../status-tone";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import type { DiscoverTab, Mode } from "../types";
@@ -532,7 +532,7 @@
               )}
           >
             <span class="sidebar-item__label">{checkpoint.summary}</span>
-            <span class="badge" data-tone={checkpoint.verification === "failed" ? "error" : "success"}>
+            <span class="badge" data-tone={verificationTone(checkpoint.verification)}>
               {checkpoint.verification}
             </span>
           </Button>
