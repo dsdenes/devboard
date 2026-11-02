@@ -11256,7 +11256,7 @@ try {
     }))`,
   );
   check(
-    devboardEntries.length === 6 &&
+    devboardEntries.length === 7 &&
       devboardEntries.every(
         (entry) => entry.run === devboardMapping[entry.lifecycle],
       ) &&

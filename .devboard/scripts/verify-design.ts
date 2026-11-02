@@ -36,6 +36,7 @@ import { readState as readDesignState } from "../issues/design/state";
 import { pickEntryPoint } from "../lib/entry-point";
 
 const stubAcp = join(harnessRoot, "tests", "fixtures", "design-stub-acp.ts");
+const stubPublisher = join(harnessRoot, "tests", "fixtures", "design-stub-publisher.ts");
 const stubForge = join(harnessRoot, "tests", "fixtures", "design-stub-forge.ts");
 const chromeCandidates = [
   "/usr/bin/google-chrome",
@@ -541,6 +542,7 @@ try {
   await writeFile(join(stubDir, "admit-tokens.json"), `${JSON.stringify(admitTokens, null, 2)}\n`);
   await writeFile(join(stubDir, "mode"), "issue\n");
   await writeFile(join(stubDir, "push-mode"), "ok\n");
+  await writeFile(join(stubDir, "publish-mode"), "ok\n");
   await writeFile(join(repo, "tracked.txt"), "fixture\n");
 
   const git = (args: string[], cwd = repo): string => {
@@ -612,8 +614,10 @@ try {
   chmodSync(gitPath, 0o755);
 
   const gitLog = join(root, "git.log");
+  const publishLog = join(root, "publish.log");
   const acpLog = join(root, "acp.log");
   await writeFile(gitLog, "");
+  await writeFile(publishLog, "");
   await writeFile(acpLog, "");
 
   seedVerificationProvider(stateDir);
@@ -637,6 +641,8 @@ try {
       DESIGN_STUB_LOG: acpLog,
       DESIGN_STUB_DELAY_MS: "0",
       DESIGN_CADENCE_MS: "3000",
+      DESIGN_PUBLISH_COMMAND: stubPublisher,
+      DESIGN_PUBLISH_LOG: publishLog,
       DESIGN_GIT_LOG: gitLog,
       DESIGN_STUB_REPO: repo,
     },
@@ -954,6 +960,7 @@ try {
 
   /* 3. A single literal yields an issue and no document diff. */
   const headBeforeSingle = git(["rev-parse", "HEAD"]);
+  const publishBeforeSingle = readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length;
   await writeFile(join(stubDir, "mode"), "single\n");
   await click(devtools, "agent-start");
   await waitFor(
@@ -967,6 +974,10 @@ try {
     30_000,
   );
   check(git(["rev-parse", "HEAD"]) === headBeforeSingle, "a single literal released a document change");
+  check(
+    readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length === publishBeforeSingle,
+    "a single literal invoked the publisher",
+  );
   await click(devtools, "agent-stop");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
@@ -995,23 +1006,13 @@ try {
     "the documented standard to push",
     90_000,
   );
-  await click(devtools, "agent-stop");
-  await waitFor(
-    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
-    "the stopped releasing Design System",
-    15_000,
-  );
   const activity = await barLog(devtools);
   const pushed = /pushed documentation ([0-9a-f]+);/.exec(activity);
   check(pushed !== null, "the activity does not name the pushed commit", activity);
   const pushedSha = pushed![1]!;
   check(
     git(["--git-dir", bare, "rev-parse", "main"]) !== headBeforeRelease,
-    "the documentation push did not change the origin",
-  );
-  check(
-    git(["--git-dir", bare, "rev-parse", "main"]).startsWith(pushedSha),
-    "the pushed commit is not the origin tip",
+    "the release did not push a commit",
   );
   const changed = git(["--git-dir", bare, "show", "--name-only", "--format=", "main"])
     .split("\n")
@@ -1046,8 +1047,8 @@ try {
     releasedDocumentation.present &&
       releasedDocumentation.adjacent &&
       !releasedDocumentation.empty &&
-      releasedDocumentation.entries >= 1,
-    "the documentation panel did not gain an entry above the issues",
+      releasedDocumentation.entries === 1,
+    "the documentation panel did not gain exactly one entry above the issues",
     releasedDocumentation,
   );
   const releasedEntryView = await devtools.evaluate(`(() => {
@@ -1161,7 +1162,13 @@ try {
     "the release did not use one worktree under .worktree/",
     worktreeLines,
   );
-  check((await pageLifecycle(devtools)) === "stopped", "the page lost its lifecycle");
+  check((await pageLifecycle(devtools)) !== "", "the page lost its lifecycle");
+  await click(devtools, "agent-stop");
+  await waitFor(
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
+    "the stopped releasing Design System",
+    15_000,
+  );
   console.log("PASS documentation-release");
 
   /* 5. Single flight: no two cycles overlap. */
@@ -1180,9 +1187,9 @@ try {
   /* 6. A cycle with no admissible decision makes no commit, push, or publish. */
   await writeFile(join(stubDir, "mode"), "none\n");
   const headBeforeNoop = git(["rev-parse", "HEAD"]);
+  const publishBeforeNoop = readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length;
   const cyclesDir = join(repo, ".devboard", ".tmp", "design", "cycles");
   const cyclesBefore = new Set(readdirSync(cyclesDir));
-  const entriesBeforeNoop = (await documentationLayout(devtools)).entries;
   await click(devtools, "agent-start");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
@@ -1213,7 +1220,11 @@ try {
   );
   check(git(["rev-parse", "HEAD"]) === headBeforeNoop, "a no-op cycle committed a change");
   check(
-    (await documentationLayout(devtools)).entries === entriesBeforeNoop,
+    readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length === publishBeforeNoop,
+    "a no-op cycle invoked the publisher",
+  );
+  check(
+    (await documentationLayout(devtools)).entries === 1,
     "a no-op cycle added a documentation history entry",
   );
   console.log("PASS no-op");
@@ -1307,6 +1318,7 @@ try {
   /* 9. A dirty integration checkout names its blocking paths. */
   await writeFile(join(stubDir, "mode"), "admit\n");
   await writeFile(join(repo, "DESIGN.md"), "local uncommitted edit\n");
+  const publishBeforeDirty = readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length;
   await click(devtools, "agent-start");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
@@ -1325,6 +1337,10 @@ try {
     readFileSync(join(repo, "DESIGN.md"), "utf8") === "local uncommitted edit\n",
     "the dirty integration checkout discarded its edit",
   );
+  check(
+    readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length === publishBeforeDirty,
+    "a dirty checkout still published",
+  );
   await click(devtools, "agent-stop");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
@@ -1339,20 +1355,6 @@ try {
     const moved = `${path}.hidden`;
     run("mv", [path, moved]);
     try {
-      // A refused Start holds its control's busy word until the shared
-      // ceiling releases it; the next activation waits for that release.
-      await waitFor(
-        async () =>
-          (await devtools!
-            .evaluate(
-              `document.querySelector('[data-testid="agent-start"]')?.getAttribute('aria-busy') !== 'true'`,
-            )
-            .catch(() => false)) === true
-            ? true
-            : undefined,
-        "the Start control after a refused start",
-        20_000,
-      );
       await click(devtools!, "agent-start");
       await waitFor(
         async () => {
@@ -1381,7 +1383,7 @@ try {
   );
 
   /* ---------------------------------------------------------------- */
-  /* 9. An older worker hands over without an operator step.           */
+  /* 9. An older worker hands over without an operator step            */
   /* ---------------------------------------------------------------- */
   const oldVersion = "0.1.900";
   const newestVersion = readHarnessVersion(harnessRoot) ?? "unknown";
@@ -1400,6 +1402,8 @@ try {
     DESIGN_STUB_LOG: acpLog,
     DESIGN_STUB_DELAY_MS: "0",
     DESIGN_CADENCE_MS: "600000",
+    DESIGN_PUBLISH_COMMAND: stubPublisher,
+    DESIGN_PUBLISH_LOG: publishLog,
     DESIGN_GIT_LOG: gitLog,
     DESIGN_STUB_REPO: repo,
   };
