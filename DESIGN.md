@@ -652,10 +652,10 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   header.
 - **Flow goal header** (`.flow-goal__header`) — the lead surface's header: one 44px row
   with an 18px `section-title` word and a 10px status badge (`No goal yet` muted, `Saved`
-  success, `Unsaved changes` warning, `Interview running` accent), then a right-aligned
-  action group that stays on one line. The single filled primary follows the state:
-  `Create flow goal` while no goal exists, `Save` while the draft is unsaved; the other
-  control is outline or secondary, and a disabled Save is never the only emphasis. The
+  success, `Interview running` accent), then a right-aligned action group that stays on one
+  line. The goal document is read-only, so the group carries one `Create flow goal` filled
+  primary while no goal exists and an outline `Recreate flow goal` once one does; the
+  surface never keeps a primary after the document exists and offers no save state. The
   badge always states the meaning in words.
 - **Flow steering panel** (`.steering-composer`) — the panel header carries the title and an 11px
   state line (`Read at the next checkpoint` muted while empty, `N notes waiting for the next
@@ -663,27 +663,23 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   a full-width textarea followed by a right-aligned primary `Send` at 6px, disabled while the draft
   is blank, so the action sits with the field it acts on instead of the header bar. Notes follow
   as left-ruled rows with source, timestamp, and status words.
-- **Decision board header** (`.flow-decisions__header`) — the Decision board's lead editor
-  header on a 44px row: one 18px `section-title` word, a labeled status badge (`No decisions yet`
-  muted, `Saved` success, `Unsaved changes` warning), and a right-aligned `Save` that is the
-  filled primary only while the draft differs from the saved text and a neutral secondary control
-  otherwise. The identity and action group are centered on the row, matching the Flow goal header.
-- **Discover skill header** (`.discover-skill__header`) — the skill editor's chrome bar: one 44px
-  `surface-raised` row with 12px horizontal padding and the panel header's `border` rule under it,
-  so the path chip and the 28px controls share the band with 8px above and below and the editor
-  reads as the pane below a distinct band. The relative path `<skill>/SKILL.md` takes the shared
-  inline-code chip (`.code-chip`) on the leading edge, with the skill name in `foreground` and the
-  file name in `muted-foreground`, so a file path draws no second presentation of its own. The
-  trailing group starts with the 11px draft state as one full-radius pill on the tint of the state
-  it names: `No unsaved changes` on `success-surface` with a `success` dot and word, `Unsaved
-  changes` on `warning-surface` with `warning`, and `Live file missing` on `error-surface` with
-  `error`. The 6px dot pairs with the word, so the word states the meaning and the tint and dot
-  never carry it alone. `Save` is the filled primary only while the draft differs from the live
-  text and a disabled `secondary` otherwise; it stays disabled while the live file is missing. The
-  restore control is `outline` while an edit can be discarded and becomes the filled primary as
-  `Recreate generated version` when the live file is missing, so the surface always has at most one
-  primary and never a disabled one as its emphasis. The chip ellipsizes with a full-path `title`
-  while the state and actions never shrink or wrap.
+- **Decision board header** (`.flow-decisions__header`) — the Decision board's lead document
+  header on a 44px row: one 18px `section-title` word and a labeled status badge
+  (`No decisions yet` muted, `Saved` success). The board is read-only, so the header carries no
+  action group; the badge states the presence of the saved document in words.
+- **Discover skill header** (`.discover-skill__header`) — the skill document's chrome bar: one
+  44px `surface-raised` row with 12px horizontal padding and the panel header's `border` rule
+  under it, so the path chip and the state pill share the band with 8px above and below and the
+  document reads as the pane below a distinct band. The relative path `<skill>/SKILL.md` takes
+  the shared inline-code chip (`.code-chip`) on the leading edge, with the skill name in
+  `foreground` and the file name in `muted-foreground`, so a file path draws no second
+  presentation of its own. The trailing group holds the 11px read-only state as one full-radius
+  pill on the tint of the state it names: `generated` on `success-surface` with a `success` dot
+  and word, `edited` on `warning-surface` with `warning`, and `Live file missing` on
+  `error-surface` with `error`. The 6px dot pairs with the word, so the word states the meaning
+  and the tint and dot never carry it alone. The document is read-only, so the band carries no
+  Save or restore control. The chip ellipsizes with a full-path `title` while the state never
+  shrinks or wraps.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
