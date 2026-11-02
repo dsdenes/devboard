@@ -12,6 +12,7 @@ import {
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 import type { Server } from "bun";
 import { createApp, projectLabel, type InstallerHooks } from "./app";
 import {
@@ -461,6 +462,47 @@ describe("createApp", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toContain("text/html");
       expect(await response.text()).toContain("<title>ADR overview</title>");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("negotiates gzip for a static file and keeps the identity response", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const source = await readFile(join(root, "static", "index.html"));
+
+      const compressed = await fetch(`http://${url}/index.html`, {
+        headers: { "accept-encoding": "gzip" },
+        // Read the wire bytes so the assertion covers the encoded body itself.
+        decompress: false,
+      });
+      expect(compressed.status).toBe(200);
+      expect(compressed.headers.get("content-encoding")).toBe("gzip");
+      expect(compressed.headers.get("vary")).toBe("Accept-Encoding");
+      expect(gunzipSync(Buffer.from(await compressed.arrayBuffer()))).toEqual(source);
+
+      const identity = await fetch(`http://${url}/index.html`, {
+        headers: { "accept-encoding": "identity" },
+      });
+      expect(identity.status).toBe(200);
+      expect(identity.headers.get("content-encoding")).toBeNull();
+      expect(Buffer.from(await identity.arrayBuffer())).toEqual(source);
+
+      const refused = await fetch(`http://${url}/index.html`, {
+        headers: { "accept-encoding": "gzip;q=0, identity" },
+      });
+      expect(refused.headers.get("content-encoding")).toBeNull();
+      expect(Buffer.from(await refused.arrayBuffer())).toEqual(source);
+
+      const head = await fetch(`http://${url}/index.html`, {
+        method: "HEAD",
+        headers: { "accept-encoding": "gzip" },
+      });
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-encoding")).toBe("gzip");
+      expect(await head.text()).toBe("");
     } finally {
       server.stop(true);
     }
