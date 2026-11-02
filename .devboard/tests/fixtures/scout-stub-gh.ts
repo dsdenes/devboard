@@ -33,6 +33,8 @@ interface StubStore {
   closing: Record<string, string>;
   comments: Record<string, string[]>;
   failReads?: boolean;
+  /** The diagnostic `failReads` prints; a permanent one is not retried. */
+  failMessage?: string;
 }
 
 const args = process.argv.slice(2);
@@ -81,10 +83,10 @@ const endpoint = args.find((argument) => argument.startsWith("repos/")) ?? "";
 const store = loadStore();
 
 if (store.failReads === true && args[0] === "issue" && args[1] === "list") {
-  fail("the GitHub read is unavailable");
+  fail(store.failMessage ?? "the GitHub read is unavailable");
 }
 if (store.failReads === true && args[0] === "api" && endpoint.endsWith("/releases")) {
-  fail("the GitHub release read is unavailable");
+  fail(store.failMessage ?? "the GitHub release read is unavailable");
 }
 
 if (args[0] === "auth" && args[1] === "status") {

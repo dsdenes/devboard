@@ -95,6 +95,30 @@ export function isVerificationScratch(repoDir: string): boolean {
 }
 
 /**
+ * The local release directory override the verification scripts set. A host
+ * install reads the npm registry and never names one, so a dashboard holding
+ * it is a fixture serving tarballs from a directory that can vanish with the
+ * check that created it.
+ */
+const RELEASE_FIXTURE_ENV = "DEVBOARD_RELEASE_DIR";
+
+/**
+ * True when a dashboard belongs to verification: its repository root sits in
+ * harness scratch, or it reads a local release directory instead of the npm
+ * registry. Fixtures deliberately fail release checks, installs, and servers,
+ * so that evidence proves the script's assertion, not a defect an operator
+ * must see. A fixture outside scratch opts in with `DEVBOARD_WATCHDOG_FIXTURE=1`
+ * when a live cycle must still discover it.
+ */
+export function isVerificationFixture(
+  repoDir: string,
+  env: Map<string, string>,
+): boolean {
+  const releaseDir = env.get(RELEASE_FIXTURE_ENV);
+  return isVerificationScratch(repoDir) || (releaseDir !== undefined && releaseDir.length > 0);
+}
+
+/**
  * The live watchdog verification seeds a scratch dashboard on purpose and must
  * still be discovered; every other fixture stays invisible.
  */
@@ -121,7 +145,7 @@ export function instancesFromProcesses(
     const port = Number(process.env.get("PORT"));
     if (repoDir === undefined || !Number.isInteger(port) || port <= 0) continue;
     if (
-      isVerificationScratch(repoDir) &&
+      isVerificationFixture(repoDir, process.env) &&
       process.env.get(WATCHDOG_FIXTURE_ENV) !== "1"
     ) {
       continue;

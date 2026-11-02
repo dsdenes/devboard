@@ -92,6 +92,11 @@ async function fakeNpm(root: string, version: string): Promise<string> {
 
 test("update re-syncs the host copies when the prefix already holds the newest version", async () => {
   const host = await fixture();
+  // A real host is a git repository: the sync's tracked-path probe must answer.
+  await writeFile(join(host, ".gitignore"), "/.devboard\n/.omp\n");
+  git(host, "init", "-q");
+  git(host, "add", ".gitignore");
+  git(host, "commit", "-q", "-m", "fixture");
   const packageRoot = join(host, ".devboard", "node_modules", "@dsdenes", "devboard");
   await writePackage(packageRoot, "1.2.3");
   // Host copies from the previous release, including one the package no

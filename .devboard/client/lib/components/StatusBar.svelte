@@ -133,7 +133,7 @@
         <span class="mono">{connection.version?.installed ?? "unknown"}</span>
       </span>
     </span>
-    {#if connection.version?.stale === true}
+    {#if connection.version?.replacement != null}
       <button
         type="button"
         class="status-item status-item--button"

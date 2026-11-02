@@ -456,17 +456,17 @@
       current viewport is {viewport.width}×{viewport.height}. Widen the window or connect a larger
       display.
     </p>
-    {#if connection.version?.stale === true}
+    {#if connection.version?.replacement != null}
       <Button
         variant="default"
         data-command="app.reload"
         data-testid="reload-devboard"
-        title={`Devboard ${connection.version?.running ?? "unknown"} is running; ${
-          connection.version?.installed ?? "unknown"
-        } is installed. Restart the server and reload.`}
-        aria-label={`Restart devboard, running ${connection.version?.running ?? "unknown"}, installed ${
-          connection.version?.installed ?? "unknown"
-        }`}
+        title={`Devboard ${connection.version.replacement.running ?? "unknown"} is still running; the automatic replacement with ${
+          connection.version.replacement.installed ?? "unknown"
+        } failed. Retry the replacement.`}
+        aria-label={`Retry the devboard replacement from version ${
+          connection.version.replacement.running ?? "unknown"
+        } to version ${connection.version.replacement.installed ?? "unknown"}`}
         disabled={connection.restarting}
         onclick={() => connection.requestRestart()}
       >

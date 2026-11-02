@@ -12,8 +12,8 @@ they want; you return the complete replacement prompt text, never a fragment, di
 
 ## Rules
 
-- The prompt you revise is one of the six files under `.devboard/prompts/discover-*.md`. Its reader
-  is one of the six Discover agents and its worker.
+- The prompt you revise is one of the seven files under `.devboard/prompts/discover-*.md`. Its
+  reader is one of the seven Discover agents and its worker.
 - Preserve the file's contract unless the operator explicitly changes it: the YAML front matter
   with `description`; a body that opens with `## Manifesto` whose first sentence names the agent's
   goal and the observable result it produces; no line that opens with a backticked or bare

@@ -400,6 +400,18 @@ class Page {
   }
 }
 
+/** Visible markers only: a hidden mode workspace is not the operator's surface. */
+async function sourceOnlyMarkers(page: Page): Promise<number> {
+  return page.eval<number>(`(() => {
+    const badges = [...document.querySelectorAll('[data-testid="source-only-badge"]')];
+    return badges.filter((badge) =>
+      typeof badge.checkVisibility === "function"
+        ? badge.checkVisibility()
+        : badge.getBoundingClientRect().width > 0,
+    ).length;
+  })()`);
+}
+
 async function git(cwd: string, args: string[]): Promise<void> {
   const result = run(
     "git",
@@ -484,7 +496,7 @@ async function writeFixture(root: string): Promise<string> {
   }
 
   // One prepare-family managed skill, so the Goal skills panel has a row the
-  // delete control owns; the five Discover skills are managed by Discover.
+  // delete control owns; the six Discover skills are managed by Discover.
   await mkdir(join(host, ".omp", "skills", "fixture-conventions"), { recursive: true });
   await writeFile(
     join(host, ".omp", "skills", "fixture-conventions", "SKILL.md"),
@@ -1137,6 +1149,40 @@ providerBehaviors.set(PROVIDER_SLOW_INVALID_KEY, { status: 401, delayMs: 400 });
 
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
+/** Waits on the server's own snapshot until no Discover run is active. */
+async function waitDiscoverIdle(port: number, timeoutMs = 120_000): Promise<void> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  await new Promise<void>((settle, reject) => {
+    socket.onopen = () => settle();
+    socket.onerror = () => reject(new Error("verify:interface: discover idle socket failed"));
+  });
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const state = await new Promise<Record<string, unknown> | null>((settle) => {
+        const guard = setTimeout(() => settle(null), 5_000);
+        socket.onmessage = (event) => {
+          let message: Record<string, unknown>;
+          try {
+            message = JSON.parse(String(event.data)) as Record<string, unknown>;
+          } catch {
+            return;
+          }
+          if (message.type !== "discoverState") return;
+          clearTimeout(guard);
+          settle(message.state as Record<string, unknown>);
+        };
+        socket.send(JSON.stringify({ type: "getDiscover" }));
+      });
+      if (state !== null && state.active !== true) return;
+      await Bun.sleep(250);
+    }
+    throw new Error("verify:interface: the Discover run did not become idle");
+  } finally {
+    socket.close();
+  }
+}
+
 let serverProcess: ReturnType<typeof spawn> | undefined;
 let fixtureHost: string | undefined;
 let feedbackApi: ReturnType<typeof Bun.serve> | undefined;
@@ -1613,6 +1659,7 @@ try {
   check(shell.page.scrollHeight <= shell.page.clientHeight, "the page scrolls vertically", shell.page);
   check(shell.theme === "dark", "a fresh profile does not start dark", shell.theme);
   check(shell.firstTheme === "dark" && shell.firstPaint === "dark", "the dark theme is not applied before first paint", { firstTheme: shell.firstTheme, firstPaint: shell.firstPaint });
+  check((await sourceOnlyMarkers(page)) === 0, "the Goal surface renders a source-only marker");
 
   // 2. Activity bar.
   const activity = await page.eval<{
@@ -1820,6 +1867,7 @@ try {
   check(statusBar.themeLabel.length > 0 && statusBar.notificationLabel.includes("Notifications"), "a status-bar icon lacks a name", statusBar);
   const sidebarToggle = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar-toggle"]') !== null`);
   check(!sidebarToggle, "the sidebar still renders a hide control");
+  check((await sourceOnlyMarkers(page)) === 0, "the status bar or reload control renders a source-only marker");
 
   // 4b. Providers: dialog, exactly two providers, masked keys,
   // usage rows, validation, edit, enable, delete, refresh, palette entry,
@@ -2045,14 +2093,24 @@ try {
     position: string;
     insideDialog: boolean;
     text: string;
+    frame: { top: number; right: number; bottom: number; left: number; leftColor: string; topColor: string };
   }>(`(() => {
     const node = document.querySelector('[data-testid="save-feedback"]');
+    const style = node === null ? null : getComputedStyle(node);
     return {
       scope: node?.getAttribute("data-scope") ?? "",
       parent: node?.parentElement?.className ?? "",
-      position: node === null ? "" : getComputedStyle(node).position,
+      position: style?.position ?? "",
       insideDialog: node?.closest('[data-testid="providers-dialog"]') !== null,
       text: node?.textContent?.trim() ?? "",
+      frame: {
+        top: style === null ? 0 : parseFloat(style.borderTopWidth),
+        right: style === null ? 0 : parseFloat(style.borderRightWidth),
+        bottom: style === null ? 0 : parseFloat(style.borderBottomWidth),
+        left: style === null ? 0 : parseFloat(style.borderLeftWidth),
+        leftColor: style?.borderLeftColor ?? "",
+        topColor: style?.borderTopColor ?? "",
+      },
     };
   })()`);
   check(
@@ -2063,6 +2121,15 @@ try {
       providerConfirmation.text.includes("Provider saved."),
     "the provider save confirmation is not beside its Save control",
     providerConfirmation,
+  );
+  check(
+    providerConfirmation.frame.top === 1 &&
+      providerConfirmation.frame.right === 1 &&
+      providerConfirmation.frame.bottom === 1 &&
+      providerConfirmation.frame.left === 1 &&
+      providerConfirmation.frame.leftColor === providerConfirmation.frame.topColor,
+    "the save confirmation does not carry a uniform 1px frame",
+    providerConfirmation.frame,
   );
   const added = await page.eval<{ statuses: string[]; text: string; inputs: string[]; html: string }>(`(() => ({
     statuses: [...document.querySelectorAll('[data-testid="provider-status"]')].map((node) => node.textContent?.trim() ?? ""),
@@ -2308,10 +2375,14 @@ try {
     "flow.pr.retry", "flow.pr.ready", "flow.pr.merge", "flow.decisions.save",
     "flow.steering.focus", "discover.start", "discover.stop",
     "discover.skill.save.discover-testing-strategy",
+    "discover.tab.contribution", "discover.tab.contribution-skill",
+    "discover.skill.save.discover-contribution",
+    "discover.skill.restore.discover-contribution",
   ];
   const missingCommands = requiredCommands.filter((id) => !ids.has(id));
   check(missingCommands.length === 0, "the palette misses required commands", missingCommands);
   check(!ids.has("view.sidebar.toggle"), "the palette still offers a sidebar toggle");
+  check((await sourceOnlyMarkers(page)) === 0, "the command palette renders a source-only marker");
   const agentsCommand = palette.items.find((item) => item.id === "open.issues.agents");
   check(
     agentsCommand?.title === "Open Agents" && agentsCommand?.group === "Workspace",
@@ -2633,6 +2704,7 @@ try {
     devboardSidebar,
   );
   check(devboardSidebar.toolNames.length === 0, "a tool name leaked into the sidebar", devboardSidebar);
+  check((await sourceOnlyMarkers(page)) === 0, "the Devboard MCP tools page renders a source-only marker");
 
   await page.key("1", 1);
   await page.wait(
@@ -3477,6 +3549,7 @@ try {
   }))()`);
   check(flowData.status === "stopped" && flowData.branch.length > 0 && flowData.pr === "draft", "the Flow session is not restored", flowData);
   check(flowData.widgets === 1 && flowData.files === 1 && flowData.blockers === 1 && flowData.readyEnabled, "Flow data surfaces are incomplete", flowData);
+  check((await sourceOnlyMarkers(page)) === 0, "the Flow surface renders a source-only marker");
   const flowVerification = await page.eval<{ status: string; text: string; tone: string }>(`(() => {
     const panel = document.querySelector('[data-testid="flow-verification"]');
     const badge = panel?.querySelector(".badge");
@@ -4039,7 +4112,7 @@ try {
   );
   check(discoverTables.contextPathChips === 0, "a bounded context still renders its repository path", discoverTables);
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
-  check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
+  check(discoverTables.sectionTabs === 3 && discoverTables.skillTabs === 6, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
   const discoverChrome = await page.eval<{
     eyebrow: boolean;
@@ -4325,6 +4398,9 @@ try {
     "the Discover running label to clear",
     30_000,
   );
+  // The server's own snapshot proves every agent finished; a DOM badge can
+  // move off the active tab while the run is still advancing.
+  await waitDiscoverIdle(port);
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the glossary term table");
@@ -5026,6 +5102,9 @@ try {
     `document.querySelector('[data-testid="discover-remote-clear"]') !== null`,
     "the retained remote target",
   );
+  // A restart may resume a run the previous server was holding. Let it finish
+  // before reading the remote controls, which are disabled while a run is live.
+  await waitDiscoverIdle(port);
   const remoteStrip = await page.eval<{
     select: boolean;
     options: string[];
@@ -5044,11 +5123,22 @@ try {
     clear: boolean;
     sheet: boolean;
     first: boolean;
+    badgeCount: number;
+    badgeText: string;
+    badgeTitle: string | null;
+    badgeAfterTitle: boolean;
+    trailing: string;
+    trailingIsSubtitle: boolean;
   }>(`(() => {
     const select = document.querySelector('[data-testid="discover-remote-select"]');
     const input = document.querySelector('[data-testid="discover-remote-url"]');
     const start = document.querySelector('[data-testid="discover-remote-start"]');
     const error = document.querySelector('[data-testid="discover-error"]');
+    const header = document.querySelector('[data-testid="discover-remote"] .panel__header');
+    const title = header?.querySelector('.panel__title') ?? null;
+    const badges = header === null
+      ? []
+      : [...header.querySelectorAll('[data-testid="source-only-badge"]')];
     return {
       select: select !== null,
       options: select === null ? [] : [...select.options].map((option) => option.value),
@@ -5073,6 +5163,13 @@ try {
       first:
         document.querySelector('[data-testid="discover-panel"][data-tab="overview"]')
           ?.firstElementChild?.getAttribute("data-testid") === "discover-remote",
+      badgeCount: badges.length,
+      badgeText: (badges[0]?.textContent ?? "").trim(),
+      badgeTitle: badges[0]?.getAttribute("title") ?? null,
+      badgeAfterTitle: title !== null && title.nextElementSibling === badges[0],
+      trailing: (header?.lastElementChild?.textContent ?? "").trim(),
+      trailingIsSubtitle:
+        header?.lastElementChild?.classList.contains("panel__subtitle") === true,
     };
   })()`);
   check(remoteStrip.select, "the retained-project dropdown is missing", remoteStrip);
@@ -5100,6 +5197,19 @@ try {
   check(
     remoteStrip.active === helloUrl,
     "the active retained project is not marked in the retained list",
+    remoteStrip,
+  );
+  check(
+    remoteStrip.badgeCount === 1 &&
+      remoteStrip.badgeText === "devboard" &&
+      remoteStrip.badgeTitle === "Only available when Devboard serves a harness source checkout" &&
+      remoteStrip.badgeAfterTitle,
+    "the manual-testing panel header does not carry the one source-only marker",
+    remoteStrip,
+  );
+  check(
+    remoteStrip.trailing === "2 retained" && remoteStrip.trailingIsSubtitle,
+    "the retained count left the header's trailing edge",
     remoteStrip,
   );
   check(
@@ -5399,6 +5509,7 @@ try {
     remove: document.querySelector('[data-testid="discover-remote-remove"]') !== null,
     panel: document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null,
     skills: document.querySelector('[data-testid="sidebar"] section[aria-label="Skills"]') !== null,
+    badge: document.querySelectorAll('[data-testid="source-only-badge"]').length,
   })`);
   check(gateOff.panel, "the gate-off host has no Discover overview", gateOff);
   check(
@@ -5406,6 +5517,7 @@ try {
     "the gate-off host renders a remote control",
     gateOff,
   );
+  check(gateOff.badge === 0, "the installed gate-off host renders a source-only marker", gateOff);
 
   // Harness-owned reporting is absent without DEVBOARD_GITEA_URL: the client
   // renders no report control and the endpoint refuses without a request.
@@ -5515,6 +5627,7 @@ try {
     })()`,
     "the armed report action to paint its active surface",
   );
+  check((await sourceOnlyMarkers(page)) === 0, "the feedback controls render a source-only marker");
   const reportActive = await issueState();
   check(
     reportActive.pressed.join(",") === "true,false,false",
@@ -6563,6 +6676,7 @@ try {
     "the stopped controls are not in their exact states",
     stoppedConsole,
   );
+  check((await sourceOnlyMarkers(page)) === 0, "the Issues overview renders a source-only marker");
 
   // With no active agent the Agents page explains the empty fleet and links back.
   await runPalette("open.issues.agents");
@@ -7434,6 +7548,7 @@ try {
     "the queue rows do not share one height",
     queueGeometry.heights,
   );
+  check((await sourceOnlyMarkers(page)) === 0, "the Issues queue renders a source-only marker");
   check(
     queueGeometry.goalTop !== null &&
       queueGeometry.stateTop !== null &&
@@ -7550,6 +7665,7 @@ try {
     "the drafts list is missing, unsorted, or lists the wrong files",
     { listedDrafts, expectedDrafts },
   );
+  check((await sourceOnlyMarkers(page)) === 0, "the Draft goals page renders a source-only marker");
   const draftHeadings = await page.eval<string[]>(
     `[...document.querySelectorAll('[data-testid="issues-draft"]')].map((item) => item.textContent ?? "")`,
   );
@@ -8197,6 +8313,12 @@ try {
     "the second submit did not start its own elaboration",
     busyStart,
   );
+  await waitFor(
+    async () =>
+      (await draftTurns()) === turnsBeforeBusy + 1 ? true : undefined,
+    "the second submit's peer",
+    15_000,
+  );
   check(
     (await draftTurns()) === turnsBeforeBusy + 1,
     "the second submit did not start exactly one more elaboration",
@@ -8687,18 +8809,42 @@ try {
     "the disconnected-command notification",
     20_000,
   );
-  const notification = await page.eval<{ severity: string; text: string; count: number; live: string }>(`(() => {
+  const notification = await page.eval<{
+    severity: string;
+    text: string;
+    count: number;
+    live: string;
+    frame: { top: number; right: number; bottom: number; left: number; leftColor: string; topColor: string };
+  }>(`(() => {
     const entries = [...document.querySelectorAll('[data-testid="notifications"] .notification')];
     const entry = entries.find((item) => item.textContent.includes("Not connected")) ?? entries[0];
+    const style = entry === undefined ? null : getComputedStyle(entry);
     return {
       severity: entry?.getAttribute("data-severity") ?? "",
       text: entry?.textContent?.trim() ?? "",
       count: entries.length,
       live: document.querySelector('[data-testid="notifications"]')?.getAttribute("aria-live") ?? "",
+      frame: {
+        top: style === null ? 0 : parseFloat(style.borderTopWidth),
+        right: style === null ? 0 : parseFloat(style.borderRightWidth),
+        bottom: style === null ? 0 : parseFloat(style.borderBottomWidth),
+        left: style === null ? 0 : parseFloat(style.borderLeftWidth),
+        leftColor: style?.borderLeftColor ?? "",
+        topColor: style?.borderTopColor ?? "",
+      },
     };
   })()`);
   check(notification.severity.length > 0 && notification.text.length > 0, "the notification region has no severity or text", notification);
   check(notification.live === "polite", "the notification region is not a live region", notification);
+  check(
+    notification.frame.top === 1 &&
+      notification.frame.right === 1 &&
+      notification.frame.bottom === 1 &&
+      notification.frame.left === 1 &&
+      notification.frame.leftColor === notification.frame.topColor,
+    "the notification card does not carry a uniform 1px frame",
+    notification.frame,
+  );
   const notificationFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(notificationFocus, "a notification stole focus");
   const dismissControl = await page.eval<{
@@ -8749,6 +8895,19 @@ try {
     dismissControl,
   );
   await page.hover('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+  await page.wait(
+    `(() => {
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:absolute;background:var(--secondary-hover)";
+      document.body.append(probe);
+      const expected = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      const button = document.querySelector('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+      return button !== null && getComputedStyle(button).backgroundColor === expected;
+    })()`,
+    "the notification dismiss hover fill",
+    10_000,
+  );
   const dismissHover = await page.eval<{ background: string; expected: string }>(`(() => {
     const probe = document.createElement("div");
     probe.style.cssText = "position:absolute;background:var(--secondary-hover)";

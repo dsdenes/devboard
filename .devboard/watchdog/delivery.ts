@@ -32,6 +32,13 @@ export type CommentResult = { ok: true } | { ok: false; reason: string };
 export interface WatchdogDelivery {
   /** `owner/name` that receives the issue, for diagnostics. */
   repository: string;
+  /**
+   * True when `url` names an issue this delivery's forge serves. The ledger
+   * outlives a forge change, so an entry may name an issue filed elsewhere;
+   * that URL can never be commented on from here and is skipped instead of
+   * treated as a delivery failure.
+   */
+  owns(url: string): boolean;
   create(input: IssueInput): Promise<DeliveryResult>;
   comment(url: string, input: IssueInput): Promise<CommentResult>;
   /**
@@ -61,6 +68,22 @@ function firstLine(error: unknown): string {
   );
 }
 
+/**
+ * Whether `url` names an issue on the GitHub host this delivery writes to.
+ * `gh` resolves the URL itself, so the repository may differ from the origin's.
+ */
+function githubIssueOn(url: string, host: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+  if (parsed.hostname.toLowerCase() !== host.toLowerCase()) return false;
+  return /\/issues\/[0-9]+\/?$/.test(parsed.pathname);
+}
+
 /** The delivery for the checkout's origin, or an explicit refusal. */
 export function createWatchdogDelivery(options: DeliveryOptions): WatchdogDelivery {
   const environment = options.environment ?? process.env;
@@ -78,6 +101,9 @@ export function createWatchdogDelivery(options: DeliveryOptions): WatchdogDelive
     const target = { baseUrl, project: remote.project, token };
     return {
       repository: remote.project,
+      owns(url) {
+        return giteaIssueNumber(target, url) !== undefined;
+      },
       async create(input) {
         try {
           const issue = await giteaCreateIssue(
@@ -119,6 +145,9 @@ export function createWatchdogDelivery(options: DeliveryOptions): WatchdogDelive
   }
   return {
     repository: remote.project,
+    owns(url) {
+      return githubIssueOn(url, remote.host);
+    },
     async create(input) {
       return createGithubIssue(options.gh, remote.project, input);
     },

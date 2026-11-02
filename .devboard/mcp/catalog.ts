@@ -116,7 +116,8 @@ const TOOLS: readonly McpToolDefinition[] = [
     title: "Read Devboard status",
     description:
       "Returns the resolved repository root, harness directory, state directory, " +
-      "live dashboard port and pid when one exists, and the harness version state.",
+      "the checkout's branch, upstream, and ahead/behind counts, live dashboard " +
+      "port and pid when one exists, and the harness version state.",
     inputSchema: NO_ARGUMENTS,
     covers: ["git rev-parse --show-toplevel"],
   },
@@ -397,6 +398,17 @@ const TOOLS: readonly McpToolDefinition[] = [
     ]),
   },
   {
+    name: "discover_contribution_stage",
+    title: "Stage a Discover contribution sheet",
+    description:
+      "Writes the contribution agent's complete staged contribution.json and returns " +
+      "its path and schema version. Publication validates and publishes it.",
+    inputSchema: object({ stagingDir: STRING, contribution: { type: "object" } }, [
+      "stagingDir",
+      "contribution",
+    ]),
+  },
+  {
     name: "discover_glossary_stage",
     title: "Stage a Discover glossary",
     description:
@@ -473,7 +485,8 @@ const TOOLS: readonly McpToolDefinition[] = [
     description:
       "Runs one allowlisted check from `.devboard/package.json` with a 900-second " +
       "timeout and at most 16 KiB of captured output. The check's complete output is " +
-      "written to `<stateDir>/<check>.log` and that path is returned as `log`.",
+      "written to a log unique to that invocation and that path is returned as `log`; " +
+      "when the run settles the same output is published to `<stateDir>/<check>.log`.",
     inputSchema: object(
       {
         check: STRING,

@@ -166,57 +166,135 @@ try {
     DEVBOARD_UPDATE_INTERVAL_MS: "200",
   }, previousPort);
   servers.push(server);
+  // A connected page learns that the replacement is coming before the socket
+  // closes; the same event makes every browser reload once.
+  const restarting = websocketCommand(server.port, { type: "getVersion" }, "serverRestarting", 30_000);
   await waitForInstalledVersion(prefix, NEW);
   await assertInstalledMcp(host);
-  assertTrue(processRunning(server.pid), "the server survives its own install");
-  // The install lands before the journal line, so wait for the record rather
-  // than sampling once and racing the write.
-  await waitFor(
-    () =>
-      readJournal(prefix, host).some((record) => record.kind === "update") ? true : undefined,
-    "the update record in the host journal",
-    15_000,
-  );
-  const auto = await readVersion(server.port);
-  assertEquals(
-    [auto.running, auto.installed, auto.latest, auto.stale],
-    [OLD, NEW, NEW, true],
-    "the stale version state after an automatic install",
-  );
-  assertTrue(
-    readFileSync(`/proc/${server.pid}/cmdline`, "utf8").includes(installedPackage(prefix)),
-    "the original process still serves the dashboard",
-  );
-
-  step("restarting from the installed package");
-  const restarting = websocketCommand(server.port, { type: "restartServer" }, "serverRestarting");
   await restarting;
-  await waitFor(
+  step("the connected page received serverRestarting and reloads once");
+  const replaced = await waitFor(
     () => {
       const current = dashboardsFor(host).find((entry) => entry.port === server.port);
       return current !== undefined && current.pid !== server.pid ? current : undefined;
     },
-    "the replacement dashboard process",
+    "the automatic replacement dashboard process",
+    30_000,
   );
-  const restarted = await waitFor(
+  assertTrue(replaced.pid !== server.pid, "the automatic replacement changed the pid");
+  await waitFor(
+    () => (!processRunning(server.pid) ? true : undefined),
+    "the previous server process to exit",
+    15_000,
+  );
+  const auto = await waitFor(
     async () => {
       try {
         const state = await readVersion(server.port);
-        return state.running === NEW && state.latest === NEW ? state : undefined;
+        return state.running === NEW && state.stale === false ? state : undefined;
       } catch {
         return undefined;
       }
     },
-    "the restarted server version state",
+    "the automatic replacement version state",
     30_000,
   );
   assertEquals(
-    [restarted.running, restarted.installed, restarted.latest, restarted.stale],
-    [NEW, NEW, NEW, false],
-    "the replacement reports the installed release",
+    [auto.running, auto.installed, auto.stale],
+    [NEW, NEW, false],
+    "the replacement runs and reports the installed release",
   );
+  assertTrue(auto.replacement === undefined, "the normal path carries no replacement failure");
+  await waitFor(
+    () =>
+      readJournal(prefix, host).some(
+        (record) => record.kind === "update" && record.text.includes("replacing"),
+      )
+        ? true
+        : undefined,
+    "the replacement record in the host journal",
+    15_000,
+  );
+  step(`automatic replacement ${OLD} -> ${NEW}: running and installed both ${NEW}, stale false`);
   const replacement = dashboardsFor(host)[0];
-  assertTrue(replacement !== undefined && replacement.pid !== server.pid, "the pid changed");
+  assertTrue(replacement !== undefined, "the replacement dashboard is discoverable");
+
+  step("a stubbed replacement failure keeps the old server serving");
+  const fallbackHost = await installFixture("fallback", oldRelease);
+  const fallbackPrefix = join(fallbackHost, ".devboard");
+  const fallbackPort = Number(installState(fallbackPrefix).port);
+  await stopDashboard(fallbackHost);
+  const stub = join(root, "replacement-stub");
+  await writeFile(stub, "fail\n");
+  const fallback = await startInstalledDashboard(fallbackHost, {
+    DEVBOARD_RELEASE_DIR: newRelease,
+    DEVBOARD_UPDATE_INTERVAL_MS: "200",
+    DEVBOARD_REPLACEMENT_STUB: stub,
+  }, fallbackPort);
+  servers.push(fallback);
+  await waitForInstalledVersion(fallbackPrefix, NEW);
+  const failed = await waitFor(
+    async () => {
+      try {
+        const state = await readVersion(fallback.port);
+        return state.replacement !== undefined ? state : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "the replacement failure in versionState",
+    30_000,
+  );
+  assertEquals(
+    [failed.running, failed.installed, failed.stale],
+    [OLD, NEW, true],
+    "the failed replacement keeps the old version running",
+  );
+  assertEquals(
+    [failed.replacement?.running, failed.replacement?.installed],
+    [OLD, NEW],
+    "the fallback control names both versions",
+  );
+  assertTrue(processRunning(fallback.pid), "the old server keeps serving after a failed replacement");
+  await waitFor(
+    () =>
+      readJournal(fallbackPrefix, fallbackHost).some(
+        (record) => record.kind === "update-error" && record.text.includes("stubbed"),
+      )
+        ? true
+        : undefined,
+    "the replacement failure in the host journal",
+    15_000,
+  );
+  step("the fallback control retries and reaches the installed release");
+  await writeFile(stub, "ok\n");
+  const retry = websocketCommand(fallback.port, { type: "restartServer" }, "serverRestarting", 30_000);
+  await retry;
+  await waitFor(
+    () => {
+      const current = dashboardsFor(fallbackHost).find((entry) => entry.port === fallback.port);
+      return current !== undefined && current.pid !== fallback.pid ? current : undefined;
+    },
+    "the retried replacement dashboard process",
+    30_000,
+  );
+  const retried = await waitFor(
+    async () => {
+      try {
+        const state = await readVersion(fallback.port);
+        return state.running === NEW && state.stale === false ? state : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "the retried replacement version state",
+    30_000,
+  );
+  assertEquals(
+    [retried.running, retried.installed, retried.stale],
+    [NEW, NEW, false],
+    "the retried replacement runs the installed release",
+  );
 
   step("a running draft elaboration survives the reload");
   const draftPath = ".devboard/goal-proposals/reload-draft.md";

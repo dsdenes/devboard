@@ -32,6 +32,7 @@ import {
   registerFlowWidgets,
 } from "./flow";
 import {
+  stageDiscoverContribution,
   stageDiscoverGlossary,
   stageDiscoverSheet,
   stageDiscoverSignificance,
@@ -66,6 +67,7 @@ const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "background_agent_control",
   "coach_proposal_skip",
   "design_release_request",
+  "discover_contribution_stage",
   "discover_glossary_stage",
   "discover_sheet_stage",
   "discover_significance_stage",
@@ -315,6 +317,11 @@ async function dispatch(
       return stageDiscoverSheet(context, {
         stagingDir: args.stagingDir,
         sheet: args.sheet,
+      });
+    case "discover_contribution_stage":
+      return stageDiscoverContribution(context, {
+        stagingDir: args.stagingDir,
+        contribution: args.contribution,
       });
     case "discover_glossary_stage":
       return stageDiscoverGlossary(context, {

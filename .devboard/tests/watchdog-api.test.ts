@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import { acquireLock, type LockOwner } from "../issues/lock";
 import { earliestRelease, resolveShippedVersion, shippedVersion } from "../lib/github-release";
 import { createApp } from "../server/app";
 import {
@@ -13,6 +14,14 @@ import {
   type WatchdogReader,
 } from "../server/watchdog";
 import { CYCLE_HISTORY_LIMIT, readWatchdogCycles } from "../watchdog/history";
+import { takeWatchdogCommands } from "../watchdog/control";
+import {
+  controlDirectory,
+  versionedControlDirectory,
+  versionedLockPath,
+  versionedWorkerDirectory,
+} from "../watchdog/paths";
+import { readHarnessVersion, hostHarnessDir } from "../server/version";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
 import { readWatchdogStatus } from "../watchdog/status";
 import { testProviderService } from "../server/fixtures/test-providers";
@@ -342,6 +351,40 @@ function fakeReader(facts: Map<string, WatchdogFacts>): WatchdogReader & { calls
   return reader;
 }
 
+interface RetryReader extends WatchdogReader {
+  calls: number;
+  /** One queued failure per attempt, consumed in order. */
+  failures: string[];
+  /** A failure every attempt uses until cleared. */
+  failAll: string | null;
+  facts: Map<string, WatchdogFacts>;
+}
+
+function retryReader(facts: Map<string, WatchdogFacts>): RetryReader {
+  const reader: RetryReader = {
+    calls: 0,
+    failures: [],
+    failAll: null,
+    facts,
+    async project(urls: string[]): Promise<WatchdogFacts[]> {
+      reader.calls += 1;
+      const message = reader.failures.shift() ?? reader.failAll;
+      if (message !== null) throw new Error(message);
+      return urls.map((url) => {
+        const fact = facts.get(url);
+        if (fact === undefined) throw new Error(`no fixture for ${url}`);
+        return fact;
+      });
+    },
+  };
+  return reader;
+}
+
+async function readOnce(activity: WatchdogActivity): Promise<void> {
+  activity.snapshot();
+  await activity.settled();
+}
+
 function watchdogAdapter(
   directory: string,
   options: {
@@ -349,6 +392,12 @@ function watchdogAdapter(
     now?: () => number;
     intervalMs?: number;
     staleAfterMs?: number;
+    runningVersion?: string | null;
+    spawnWorker?: (
+      argv: string[],
+      environment: Record<string, string | undefined>,
+    ) => number | undefined;
+    systemctl?: (args: string[]) => { code: number; stdout: string; stderr: string };
   } = {},
 ): WatchdogActivity {
   const root = resolve(directory, "..");
@@ -359,11 +408,61 @@ function watchdogAdapter(
     harnessDir: resolve(import.meta.dir, ".."),
     send: () => undefined,
     watchdogDir: directory,
+    ...(options.runningVersion === undefined ? {} : { runningVersion: options.runningVersion }),
     ...(options.reader === undefined ? {} : { reader: options.reader }),
+    ...(options.spawnWorker === undefined ? {} : { spawnWorker: options.spawnWorker }),
+    ...(options.systemctl === undefined ? {} : { systemctl: options.systemctl }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.intervalMs === undefined ? {} : { intervalMs: options.intervalMs }),
     ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
   });
+}
+
+function workerState(
+  directory: string,
+  options: {
+    version: string | null;
+    lifecycle: "running" | "stopping" | "stopped";
+    stateDir: string;
+    lastRunAt?: string | null;
+    notice?: string | null;
+    draining?: boolean;
+  },
+): void {
+  writeWorkerState(directory, {
+    version: 1,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    root: resolve(directory, ".."),
+    stateDir: options.stateDir,
+    lifecycle: options.lifecycle,
+    enabled: options.lifecycle !== "stopped",
+    harnessVersion: options.version,
+    argv: ["bun", "watchdog/worker.ts"],
+    lastRunAt: options.lastRunAt ?? null,
+    nextRunAt: null,
+    lastError: null,
+    notice: options.notice ?? null,
+    ...(options.draining === true ? { draining: true } : {}),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function holdWorkerLock(
+  directory: string,
+  version: string | null,
+  stateDir: string,
+): ReturnType<typeof acquireLock> {
+  return acquireLock(versionedLockPath(directory, version), {
+    repo: resolve(directory, ".."),
+    stateDir,
+    harnessVersion: version,
+    argv: ["bun", "watchdog/worker.ts"],
+  });
+}
+
+function isLive(result: ReturnType<typeof acquireLock>): result is { acquired: true; owner: LockOwner; release: () => void } {
+  return result.acquired;
 }
 
 function issueStates(snapshot: ReturnType<WatchdogActivity["snapshot"]>): Array<string | null> {
@@ -479,6 +578,243 @@ describe("WatchdogActivity", () => {
     expect(recovered.sync.error).toBeNull();
   });
 
+  test("retries a transient read without an error and keeps the rows and read time", async () => {
+    const directory = await watchdogDirectory();
+    const facts = new Map<string, WatchdogFacts>([
+      [first.url, { url: first.url, state: "pending", version: null }],
+      [second.url, { url: second.url, state: "implemented", version: "v1.4.0" }],
+    ]);
+    const reader = retryReader(facts);
+    let clock = 1_000_000;
+    const activity = watchdogAdapter(directory, {
+      reader,
+      now: () => clock,
+      intervalMs: 60_000,
+      staleAfterMs: 120_000,
+    });
+    await readOnce(activity);
+    const successAt = clock;
+    const before = activity.snapshot().issues;
+    const reads = reader.calls;
+
+    reader.failures.push("gh: HTTP 503: Service Unavailable");
+    clock += 60_000;
+    await readOnce(activity);
+    const retrying = activity.snapshot();
+    expect(retrying.sync).toEqual({
+      state: "stale",
+      at: new Date(successAt).toISOString(),
+      error: null,
+    });
+    expect(retrying.issues).toEqual(before);
+
+    clock += 999;
+    await readOnce(activity);
+    expect(reader.calls).toBe(reads + 1);
+
+    facts.set(first.url, { url: first.url, state: "implemented", version: "v9.0.0" });
+    clock += 1;
+    await readOnce(activity);
+    expect(reader.calls).toBe(reads + 2);
+    const recovered = activity.snapshot();
+    expect(recovered.sync).toEqual({
+      state: "ok",
+      at: new Date(clock).toISOString(),
+      error: null,
+    });
+    expect(recovered.issues.find((issue) => issue.url === first.url)).toMatchObject({
+      state: "implemented",
+      version: "v9.0.0",
+    });
+  });
+
+  test("retries a transient read four times and surfaces the fifth failure", async () => {
+    const directory = await watchdogDirectory();
+    const facts = new Map<string, WatchdogFacts>([
+      [first.url, { url: first.url, state: "pending", version: null }],
+      [second.url, { url: second.url, state: "pending", version: null }],
+    ]);
+    const reader = retryReader(facts);
+    reader.failAll = "gh: HTTP 503: Service Unavailable";
+    let clock = 5_000_000;
+    const activity = watchdogAdapter(directory, {
+      reader,
+      now: () => clock,
+      intervalMs: 60_000,
+      staleAfterMs: 120_000,
+    });
+    await readOnce(activity);
+    expect(reader.calls).toBe(1);
+    expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
+
+    let now = clock;
+    let attempts = 1;
+    for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+      clock = now + delay - 1;
+      await readOnce(activity);
+      expect(reader.calls).toBe(attempts);
+      expect(activity.snapshot().sync.state).toBe("stale");
+      expect(activity.snapshot().sync.error).toBeNull();
+
+      clock = now + delay;
+      await readOnce(activity);
+      now += delay;
+      attempts += 1;
+      expect(reader.calls).toBe(attempts);
+      if (delay !== 8_000) {
+        expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
+      }
+    }
+    expect(attempts).toBe(5);
+    const failed = activity.snapshot();
+    expect(failed.sync.state).toBe("error");
+    expect(failed.sync.error).toContain("Service Unavailable");
+    expect(failed.error).toBeNull();
+
+    clock = now + 1_000;
+    await readOnce(activity);
+    expect(reader.calls).toBe(attempts);
+    expect(activity.snapshot().sync.state).toBe("error");
+    clock = now + 60_000;
+    await readOnce(activity);
+    expect(reader.calls).toBe(attempts + 1);
+    expect(activity.snapshot().sync.state).toBe("error");
+  });
+
+  test("a success during the retry schedule clears the state", async () => {
+    const directory = await watchdogDirectory();
+    const facts = new Map<string, WatchdogFacts>([
+      [first.url, { url: first.url, state: "pending", version: null }],
+      [second.url, { url: second.url, state: "pending", version: null }],
+    ]);
+    const reader = retryReader(facts);
+    reader.failures.push(
+      "gh: HTTP 502: Bad Gateway",
+      "gh: HTTP 502: Bad Gateway",
+    );
+    let clock = 7_000_000;
+    const activity = watchdogAdapter(directory, {
+      reader,
+      now: () => clock,
+      intervalMs: 60_000,
+      staleAfterMs: 120_000,
+    });
+    const start = clock;
+    await readOnce(activity);
+    expect(reader.calls).toBe(1);
+    expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
+    clock = start + 1_000;
+    await readOnce(activity);
+    expect(reader.calls).toBe(2);
+    expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
+    clock = start + 3_000;
+    await readOnce(activity);
+    expect(reader.calls).toBe(3);
+    expect(activity.snapshot().sync).toEqual({
+      state: "ok",
+      at: new Date(clock).toISOString(),
+      error: null,
+    });
+  });
+
+  for (const [label, message] of [
+    ["credentials", "gh: HTTP 401: Bad credentials"],
+    ["a missing repository", "gh: HTTP 404: Not Found"],
+    ["a malformed answer", "gh issue list did not print a JSON array"],
+    ["missing configuration", "the watchdog activity needs DEVBOARD_GITEA_URL for a Gitea origin"],
+  ] as const) {
+    test(`a permanent read failure (${label}) is attempted once and surfaces at once`, async () => {
+      const directory = await watchdogDirectory();
+      const facts = new Map<string, WatchdogFacts>([
+        [first.url, { url: first.url, state: "pending", version: null }],
+        [second.url, { url: second.url, state: "pending", version: null }],
+      ]);
+      const reader = retryReader(facts);
+      reader.failAll = message;
+      let clock = 9_000_000;
+      const activity = watchdogAdapter(directory, {
+        reader,
+        now: () => clock,
+        intervalMs: 60_000,
+        staleAfterMs: 120_000,
+      });
+      await readOnce(activity);
+      expect(reader.calls).toBe(1);
+      const failed = activity.snapshot();
+      expect(failed.sync).toEqual({ state: "error", at: null, error: message });
+      expect(failed.error).toBeNull();
+
+      clock += 1_000;
+      await readOnce(activity);
+      expect(reader.calls).toBe(1);
+      expect(activity.snapshot().sync.error).toBe(message);
+    });
+  }
+
+  test("a rate-limited read surfaces once, raises no error, and waits a cadence", async () => {
+    const directory = await watchdogDirectory();
+    const facts = new Map<string, WatchdogFacts>([
+      [first.url, { url: first.url, state: "pending", version: null }],
+      [second.url, { url: second.url, state: "pending", version: null }],
+    ]);
+    const reader = retryReader(facts);
+    reader.failAll = "You have exceeded a secondary rate limit.";
+    let clock = 11_000_000;
+    const activity = watchdogAdapter(directory, {
+      reader,
+      now: () => clock,
+      intervalMs: 60_000,
+      staleAfterMs: 120_000,
+    });
+    const start = clock;
+    await readOnce(activity);
+    expect(reader.calls).toBe(1);
+    const limited = activity.snapshot();
+    expect(limited.sync.state).toBe("error");
+    expect(limited.sync.error).toContain("secondary rate limit");
+    expect(limited.error).toBeNull();
+
+    clock = start + 1_000;
+    await readOnce(activity);
+    expect(reader.calls).toBe(1);
+    expect(activity.snapshot().sync.state).toBe("error");
+
+    reader.failAll = null;
+    clock = start + 60_000;
+    await readOnce(activity);
+    expect(reader.calls).toBe(2);
+    expect(activity.snapshot().sync).toEqual({
+      state: "ok",
+      at: new Date(clock).toISOString(),
+      error: null,
+    });
+  });
+
+  test("never runs two projection reads at once", async () => {
+    const directory = await watchdogDirectory();
+    const gate = Promise.withResolvers<void>();
+    let calls = 0;
+    const reader: WatchdogReader = {
+      async project(): Promise<WatchdogFacts[]> {
+        calls += 1;
+        await gate.promise;
+        return [
+          { url: first.url, state: "pending", version: null },
+          { url: second.url, state: "pending", version: null },
+        ];
+      },
+    };
+    const activity = watchdogAdapter(directory, { reader });
+    activity.snapshot();
+    activity.snapshot();
+    activity.snapshot();
+    expect(calls).toBe(1);
+    gate.resolve();
+    await activity.settled();
+    expect(calls).toBe(1);
+    expect(activity.snapshot().sync.state).toBe("ok");
+  });
+
   test("reports stale when the last success is older than two minutes", async () => {
     const directory = await watchdogDirectory();
     let clock = 9_000_000;
@@ -585,6 +921,140 @@ describe("WatchdogActivity", () => {
         .digest("hex"),
     ).toBe(runBefore);
     expect(existsSync(join(directory, "projection.json"))).toBe(true);
+  });
+});
+
+describe("watchdog worker family", () => {
+  test("lists legacy and versioned workers in one snapshot and controls them all", async () => {
+    const directory = await watchdogDirectory();
+    const root = resolve(directory, "..");
+    const stateDir = join(root, "state");
+    const oldVersion = "0.1.1";
+    const newVersion = "0.1.2";
+    workerState(directory, {
+      version: oldVersion,
+      lifecycle: "running",
+      stateDir,
+      lastRunAt: "2026-10-24T11:00:00.000Z",
+    });
+    const newestDirectory = versionedWorkerDirectory(directory, newVersion);
+    workerState(newestDirectory, {
+      version: newVersion,
+      lifecycle: "running",
+      stateDir,
+      lastRunAt: "2026-10-24T12:30:00.000Z",
+    });
+    const held = holdWorkerLock(directory, newVersion, stateDir);
+    expect(isLive(held)).toBe(true);
+    const activity = watchdogAdapter(directory, {
+      runningVersion: newVersion,
+      reader: fakeReader(new Map()),
+    });
+    try {
+      const snapshot = activity.snapshot();
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.owned).toBe(true);
+      expect(snapshot.lifecycle).toBe("running");
+      expect(snapshot.cadence.lastRunAt).toBe("2026-10-24T12:30:00.000Z");
+      expect(snapshot.workers?.map((worker) => worker.version).sort()).toEqual(
+        [oldVersion, newVersion].sort(),
+      );
+      expect(new Set(snapshot.workers?.map((worker) => worker.lifecycle))).toEqual(
+        new Set(["running"]),
+      );
+      expect(snapshot.notice).toBeNull();
+      expect(JSON.stringify(snapshot)).not.toContain("this dashboard loaded");
+      expect(JSON.stringify(snapshot)).not.toContain("It is left running");
+
+      expect(activity.stop().ok).toBe(true);
+      expect(takeWatchdogCommands(versionedControlDirectory(directory, newVersion))).toEqual([
+        { type: "stop" },
+      ]);
+      expect(takeWatchdogCommands(controlDirectory(directory))).toEqual([{ type: "stop" }]);
+
+      expect(activity.setSettings(30, null, null).ok).toBe(true);
+      expect(
+        takeWatchdogCommands(versionedControlDirectory(directory, newVersion)).map(
+          (command) => command.type,
+        ),
+      ).toEqual(["settings"]);
+      expect(
+        takeWatchdogCommands(controlDirectory(directory)).map((command) => command.type),
+      ).toEqual(["settings"]);
+    } finally {
+      activity.dispose();
+      if (isLive(held)) held.release();
+    }
+  });
+
+  test("auto-starts the newest harness once and drains every older version", async () => {
+    const directory = await watchdogDirectory();
+    const root = resolve(directory, "..");
+    const stateDir = join(root, "state");
+    const newest = readHarnessVersion(hostHarnessDir(root));
+    expect(newest).not.toBeNull();
+    if (newest === null) return;
+    const oldVersion = "0.1.1";
+    expect(oldVersion).not.toBe(newest);
+    const oldDirectory = versionedWorkerDirectory(directory, oldVersion);
+    workerState(oldDirectory, {
+      version: oldVersion,
+      lifecycle: "running",
+      stateDir,
+    });
+    const oldLock = holdWorkerLock(directory, oldVersion, stateDir);
+    expect(isLive(oldLock)).toBe(true);
+    const spawned: string[][] = [];
+    let newestLock: ReturnType<typeof acquireLock> | undefined;
+    const activity = watchdogAdapter(directory, {
+      runningVersion: newest,
+      reader: fakeReader(new Map()),
+      systemctl: () => ({ code: 127, stdout: "", stderr: "systemctl: not found" }),
+      spawnWorker: (argv, environment) => {
+        spawned.push(argv);
+        expect(environment.REPO_DIR).toBe(root);
+        newestLock = holdWorkerLock(directory, newest, stateDir);
+        workerState(versionedWorkerDirectory(directory, newest), {
+          version: newest,
+          lifecycle: "running",
+          stateDir,
+        });
+        return process.pid;
+      },
+    });
+    try {
+      activity.begin();
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]).toEqual([
+        process.execPath,
+        join(resolve(import.meta.dir, ".."), "watchdog", "worker.ts"),
+        "--root",
+        root,
+        "--state-dir",
+        directory,
+        "--owner-state-dir",
+        stateDir,
+      ]);
+      expect(takeWatchdogCommands(versionedControlDirectory(directory, oldVersion))).toEqual([
+        { type: "drain" },
+      ]);
+      const snapshot = activity.snapshot();
+      expect(snapshot.workers?.map((worker) => worker.version).sort()).toEqual(
+        [oldVersion, newest].sort(),
+      );
+      expect(snapshot.lifecycle).toBe("running");
+      expect(snapshot.notice).toBeNull();
+
+      // The takeover is one-shot: later looks never spawn another worker.
+      activity.begin();
+      activity.snapshot();
+      await Bun.sleep(20);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      activity.dispose();
+      if (isLive(oldLock)) oldLock.release();
+      if (newestLock !== undefined && isLive(newestLock)) newestLock.release();
+    }
   });
 });
 
@@ -910,7 +1380,7 @@ describe("earliestRelease", () => {
       await resolveShippedVersion({ number: 1, state: "closed" }, client, [
         { tag: "v1.0.0", publishedAt: "2026-10-01T00:00:00Z" },
       ]),
-    ).toEqual({ version: "v1.0.0", error: null });
+    ).toEqual({ version: "v1.0.0", error: null, inferred: false });
     expect(tried).toEqual(["1793310097358", "2692176", "abc1234"]);
   });
 
@@ -935,6 +1405,10 @@ describe("earliestRelease", () => {
       await resolveShippedVersion({ number: 1, state: "closed" }, client, [
         { tag: "v1.0.0", publishedAt: "2026-10-01T00:00:00Z" },
       ]),
-    ).toEqual({ version: null, error: `no published release contains ${real}` });
+    ).toEqual({
+      version: null,
+      error: `no published release contains ${real}`,
+      inferred: false,
+    });
   });
 });

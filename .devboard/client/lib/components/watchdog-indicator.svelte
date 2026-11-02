@@ -58,7 +58,7 @@
   </button>
   {#if open}
     <div
-      class="watchdog-popover"
+      class="watchdog-popover shadow-md"
       data-testid="watchdog-popover"
       role="dialog"
       aria-label="Watchdog report"
@@ -102,11 +102,10 @@
   }
 
   .watchdog-popover {
-    background: var(--surface);
+    background: var(--surface-raised);
     border: 1px solid var(--border);
     border-radius: 6px;
     bottom: 30px;
-    box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
     color: var(--foreground);
     display: flex;
     flex-direction: column;

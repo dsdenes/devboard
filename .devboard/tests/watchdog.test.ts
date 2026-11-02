@@ -22,7 +22,16 @@ import {
   type Window,
 } from "../watchdog/collect";
 import { analyzeEvidence, STALL_MS } from "../watchdog/findings";
-import { acquireLock } from "../watchdog/lock";
+import { claimCycle, liveCycleClaim, readCycleClaim } from "../watchdog/lock";
+import { runWorker } from "../watchdog/worker";
+import { writeWatchdogCommand } from "../watchdog/control";
+import {
+  cycleClaimPath,
+  versionedControlDirectory,
+  versionedLockPath,
+  versionedWorkerDirectory,
+} from "../watchdog/paths";
+import { readWorkerState } from "../watchdog/worker-state";
 import { emptyLedger, loadLedger } from "../watchdog/ledger";
 import { writeProjection } from "../watchdog/projection";
 import { DEFAULT_WATCHDOG_SETTINGS, type WatchdogSettings } from "../watchdog/settings";
@@ -267,6 +276,7 @@ function deliveryStub(
 ): WatchdogDelivery {
   return {
     repository: "acme/fixture",
+    owns: () => true,
     create: async (input) => createIssue(gh, "acme/fixture", input),
     comment: async (url, input) => commentIssue(gh, url, input),
     state: async (url) => states[url],
@@ -452,6 +462,56 @@ describe("discovery", () => {
     expect(instances.map((instance) => [instance.pid, instance.port, instance.repoDir])).toEqual([
       [22, 8082, realRepo],
       [23, 8083, scratchRepo],
+    ]);
+  });
+
+  test("excludes dashboards that read a local release directory", async () => {
+    const base = await temporaryDirectory("test-watchdog-release-fixture");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, "dist"), { recursive: true });
+    const fixtureRepo = join(base, "devboard-restart-F0Snwz");
+    const emptyOverride = "/projects/.devboard/empty-release-override";
+    const liveFixture = "/projects/.devboard/watchdog-live-fixture";
+    const realRepo = "/projects/.devboard/host";
+
+    const snapshot = (
+      pid: number,
+      repoDir: string,
+      port: string,
+      extra: [string, string][] = [],
+    ): ProcessSnapshot => ({
+      pid,
+      cmdline: "bun /x/server/index.ts",
+      env: new Map([
+        ["REPO_DIR", repoDir],
+        ["PORT", port],
+        ["STATIC_DIR", join(harness, "dist")],
+        ...extra,
+      ]),
+      ancestors: [],
+    });
+
+    const instances = instancesFromProcesses(
+      [
+        snapshot(30, fixtureRepo, "8080", [
+          ["DEVBOARD_RELEASE_DIR", join(fixtureRepo, "releases")],
+        ]),
+        snapshot(31, emptyOverride, "8081", [["DEVBOARD_RELEASE_DIR", ""]]),
+        snapshot(32, liveFixture, "8082", [
+          ["DEVBOARD_RELEASE_DIR", join(base, "releases")],
+          ["DEVBOARD_WATCHDOG_FIXTURE", "1"],
+        ]),
+        snapshot(33, realRepo, "8083"),
+      ],
+      { selfPids: new Set() },
+    );
+
+    // The empty override reads the npm registry, exactly as an unset variable
+    // does, so it stays a host the watchdog reads.
+    expect(instances.map((instance) => [instance.pid, instance.port, instance.repoDir])).toEqual([
+      [31, 8081, emptyOverride],
+      [32, 8082, liveFixture],
+      [33, 8083, realRepo],
     ]);
   });
 });
@@ -1169,6 +1229,54 @@ describe("filing", () => {
     expect(loadLedger(stateDir).findings[fingerprint]?.lastCommentAt).toBe(
       new Date(fixedNow.getTime() + 26 * 60 * 60 * 1000).toISOString(),
     );
+  });
+
+  test("a ledger issue filed through another forge is skipped, not failed", async () => {
+    const { root } = await fixtureRepository();
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh, calls } = ghStub();
+    const first = await runCycle(cycleFor(root, { events, gh }));
+    const url = first.report.issues[0]?.url as string;
+    const fingerprint = first.report.issues[0]?.fingerprint as string;
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+
+    // The ledger survives a forge change; this one's issue is not served here.
+    const foreign: WatchdogDelivery = {
+      repository: "acme/fixture",
+      owns: () => false,
+      create: async () => {
+        throw new Error("a filed finding must never be filed again");
+      },
+      comment: async () => {
+        throw new Error("a URL the forge does not serve must never be commented on");
+      },
+      state: async () => undefined,
+    };
+    const later = await runCycle(
+      cycleFor(root, {
+        events,
+        gh,
+        delivery: foreign,
+        now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000),
+      }),
+    );
+    expect(later.exitCode).toBe(0);
+    expect(later.report.action).toBe("skipped");
+    expect(later.report.reason).toBe(
+      "1 ledger issue URL(s) belong to another forge; no comment was made",
+    );
+    expect(later.report.unowned).toEqual([
+      { url, category: "server-error", fingerprint },
+    ]);
+    // The issue was filed through the dedup tool record, not another gh call.
+    expect(calls).toHaveLength(0);
+    expect(loadLedger(stateDir).findings[fingerprint]?.lastCommentAt).toBeUndefined();
+    const latest = JSON.parse(readFileSync(join(stateDir, "latest.json"), "utf8"));
+    expect(latest.action).toBe("skipped");
+    expect(latest.unowned).toEqual([{ url, category: "server-error", fingerprint }]);
+    const markdown = readFileSync(join(later.runDir as string, "report.md"), "utf8");
+    expect(markdown).toContain("## Issues on another forge");
+    expect(markdown).toContain(url);
   });
 
   test("a failed filing tool retries the pending fingerprint before new ones", async () => {
@@ -2025,20 +2133,90 @@ describe("ledger migration", () => {
   });
 });
 
-describe("singleton", () => {
-  test("serializes invocations and reclaims a stale lock", async () => {
-    const base = await temporaryDirectory("test-watchdog-lock");
-    const path = join(base, "lock");
-    const first = acquireLock(path);
-    expect(first.acquired).toBe(true);
-    const second = acquireLock(path);
-    expect(second.acquired).toBe(false);
-    if (first.acquired) first.release();
+describe("cycle lease", () => {
+  test("serializes watchdog cycles across versions and reclaims a stale claim", async () => {
+    const base = await temporaryDirectory("test-watchdog-claim");
+    const path = cycleClaimPath(base);
+    const first = claimCycle(path, { harnessVersion: "0.1.1" });
+    expect(first).toBeDefined();
+    expect(claimCycle(path, { harnessVersion: "0.1.2" })).toBeUndefined();
+    expect(liveCycleClaim(path)?.harnessVersion).toBe("0.1.1");
+    first?.release();
+    expect(readCycleClaim(path)).toBeUndefined();
 
-    await writeFile(path, "999999\n");
-    const reclaimed = acquireLock(path);
-    expect(reclaimed.acquired).toBe(true);
-    if (reclaimed.acquired) reclaimed.release();
+    await writeFile(
+      path,
+      JSON.stringify({
+        pid: 999999,
+        startedAt: new Date().toISOString(),
+        harnessVersion: null,
+        token: "stale",
+      }),
+    );
+    const reclaimed = claimCycle(path, { harnessVersion: "0.1.2" });
+    expect(reclaimed).toBeDefined();
+    expect(readCycleClaim(path)?.harnessVersion).toBe("0.1.2");
+    reclaimed?.release();
+  });
+
+  test("a drained worker finishes its in-flight cycle, exits, and releases its version lock", async () => {
+    const root = await temporaryDirectory("test-watchdog-drain");
+    const stateDir = join(root, "watchdog");
+    const gate = Promise.withResolvers<void>();
+    const cycleStarted = Promise.withResolvers<void>();
+    let cycles = 0;
+    const cycle = async (): Promise<{ report: { action: string } }> => {
+      cycles += 1;
+      cycleStarted.resolve();
+      await gate.promise;
+      return { report: { action: "none" } };
+    };
+    const oldWorker = runWorker({
+      root,
+      stateDir,
+      ownerStateDir: join(root, "state"),
+      harnessVersion: "0.1.1",
+      cycle,
+      pollMs: 20,
+    });
+    // The newer worker starts while the older one's cycle is in flight. It
+    // must not claim a second cycle for the same window.
+    const newWorker = runWorker({
+      root,
+      stateDir,
+      ownerStateDir: join(root, "state"),
+      harnessVersion: "0.1.2",
+      cycle,
+      pollMs: 20,
+    });
+    await cycleStarted.promise;
+    expect(cycles).toBe(1);
+    // The in-flight cycle belongs to the older version and is claimed once.
+    expect(readCycleClaim(cycleClaimPath(stateDir))?.harnessVersion).toBe("0.1.1");
+    const oldState = readWorkerState(versionedWorkerDirectory(stateDir, "0.1.1"));
+    const newState = readWorkerState(versionedWorkerDirectory(stateDir, "0.1.2"));
+    expect(oldState?.lifecycle).toBe("running");
+    expect(newState?.lifecycle).toBe("running");
+    expect(newState?.lastRunAt).toBe(oldState?.lastRunAt);
+    expect(existsSync(versionedLockPath(stateDir, "0.1.1"))).toBe(true);
+    expect(existsSync(versionedLockPath(stateDir, "0.1.2"))).toBe(true);
+
+    writeWatchdogCommand(versionedControlDirectory(stateDir, "0.1.1"), { type: "drain" });
+    gate.resolve();
+    await oldWorker;
+
+    expect(cycles).toBe(1);
+    const drained = readWorkerState(versionedWorkerDirectory(stateDir, "0.1.1"));
+    expect(drained?.lifecycle).toBe("stopped");
+    expect(drained?.draining).toBe(true);
+    expect(existsSync(versionedLockPath(stateDir, "0.1.1"))).toBe(false);
+    expect(readCycleClaim(cycleClaimPath(stateDir))).toBeUndefined();
+    // The newer version is the remaining live worker.
+    expect(existsSync(versionedLockPath(stateDir, "0.1.2"))).toBe(true);
+
+    writeWatchdogCommand(versionedControlDirectory(stateDir, "0.1.2"), { type: "stop" });
+    await newWorker;
+    expect(existsSync(versionedLockPath(stateDir, "0.1.2"))).toBe(false);
   });
 
   test("normalizes evidence lines without their timestamps", () => {

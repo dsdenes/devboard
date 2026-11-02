@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { isInteger, isRecord, nullableString } from "../issues/guards";
 import type { AgentLifecycle } from "../server/agents/registry";
-import { workerStatePath, WORKER_VERSION } from "./paths";
+import { workerStateDirectories, workerStatePath, WORKER_VERSION } from "./paths";
 import { writeJsonAtomic } from "./settings";
 
 /**
@@ -23,6 +23,8 @@ export interface WatchdogWorkerState {
   nextRunAt: string | null;
   lastError: string | null;
   notice: string | null;
+  /** True once a newer version asked this worker to finish and exit. */
+  draining?: boolean;
   updatedAt: string;
 }
 
@@ -70,6 +72,7 @@ export function parseWorkerState(text: string): WatchdogWorkerState | undefined 
     nextRunAt: parsed.nextRunAt,
     lastError: parsed.lastError,
     notice: parsed.notice,
+    ...(parsed.draining === true ? { draining: true } : {}),
     updatedAt: parsed.updatedAt,
   };
 }
@@ -84,4 +87,23 @@ export function readWorkerState(directory: string): WatchdogWorkerState | undefi
 
 export function writeWorkerState(directory: string, state: WatchdogWorkerState): void {
   writeJsonAtomic(workerStatePath(directory), state);
+}
+
+/** Every readable worker state: the legacy file and each version's file. */
+export function readWorkerStates(directory: string): WatchdogWorkerState[] {
+  const states: WatchdogWorkerState[] = [];
+  const legacy = readWorkerState(directory);
+  if (legacy !== undefined) states.push(legacy);
+  for (const versionDirectory of workerStateDirectories(directory)) {
+    const state = readWorkerState(versionDirectory);
+    if (state !== undefined) states.push(state);
+  }
+  return states;
+}
+
+/** The newest published state, whichever version wrote it last. */
+export function readNewestWorkerState(directory: string): WatchdogWorkerState | undefined {
+  return [...readWorkerStates(directory)].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt),
+  )[0];
 }

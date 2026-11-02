@@ -1,5 +1,6 @@
 import { FORGE_ISSUE_LIST_MAX, type ForgeIssueState } from "../lib/forge-issues";
 import { boundBytes } from "../lib/text-budget";
+import { recordClosedByRun } from "../issues/self-close";
 import { issuesFor, type McpContext } from "./context";
 
 /** Issue reads and the write mutations, through the repository's forge. */
@@ -69,6 +70,17 @@ export async function closeIssue(
   }
   const forge = issuesFor(context);
   const issue = await forge.close(options.number, reason);
+  // An issues run closes its own issue as its last step; naming the run keeps
+  // that close from reading as an operator's cancellation.
+  const runId = context.environment.DEVBOARD_ISSUES_RUN_ID;
+  if (typeof runId === "string" && runId.length > 0) {
+    try {
+      recordClosedByRun(context.stateDir, context.repoDir, issue.number, runId);
+    } catch {
+      // The close already landed; without the record a poll classifies it as
+      // before and may stop the run.
+    }
+  }
   return {
     number: issue.number,
     state: issue.state,

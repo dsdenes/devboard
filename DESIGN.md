@@ -374,6 +374,9 @@ Spacing uses a **2px base unit** with a half-step grid. The approved scale is 2,
   Inside the rail each mode tab is a 64×52px control with an 18px icon over a 10px `overline`
   label, inset 6px vertically and 4px horizontally so the label never touches the tab edge; the
   label never collapses to an icon-only state.
+- **Page padding.** A full-workspace page that owns its own scrolling area — the Agent page and
+  the Issues agent focus — pads its content 16px; the 8px content padding above belongs to the
+  shell's mode body and panel surfaces.
 - **Responsive spacing.** The supported viewport is at least 1024×720. Panes resize rather than
   reflow; when a pane narrows, gaps collapse to the next lower scale step before text wraps.
   Below 1024×720 the workspace is replaced by the viewport guard, so no mobile spacing scale
@@ -468,6 +471,12 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   header carries one status badge, colored by meaning: `accepted` success, `proposed` pending,
   `superseded`/`deprecated` stale, `rejected` error; the implementation state is never repeated
   as a second resolved/pending badge.
+- **Source-only marker** (`SourceOnlyBadge.svelte`) — the one treatment for a control that exists
+  only while Devboard serves its own harness source checkout: the `.badge` primitive with the word
+  `devboard`, the tooltip `Only available when Devboard serves a harness source checkout`, test id
+  `source-only-badge`, and no tone. It sits in its region header immediately after the region title
+  and stays visible while the disclosure that owns it is closed; any trailing count or subtitle
+  stays on the header's trailing edge. No source-only surface may use another treatment.
 - **Decision record start control** (`.adr-action` in `AdrTable.svelte`) — the only per-row action
   on the Decision records table: the shipped `Button` at `sm` size (24px tall, 11px/500 type, 4px
   radius) centered in the 28px row. The record marked `Next` takes the filled `default` variant
@@ -715,6 +724,8 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
 - **Do** express hierarchy with `background` → `surface` → `surface-raised` and 1px borders.
 - **Do** use `mono` for every path, identifier, commit, count, and command.
 - **Do** give every state badge a word, not only a color.
+- **Do** mark every harness-source-checkout-only control with the one source-only `devboard`
+  badge, placed in its region header immediately after the title.
 - **Do** use `control` for buttons and inputs, and `overline` for uppercase micro-labels.
 - **Do** keep every primary mode named in the rail; navigation never depends on hover.
 - **Do** state a fact once per screen: a page header may repeat a mode name only when it is the

@@ -268,6 +268,11 @@ export interface VersionState {
   installed: string | null;
   latest: string | null;
   stale: boolean;
+  replacement?: {
+    running: string | null;
+    installed: string | null;
+    error: string;
+  } | null;
 }
 
 /** Sends one command over the dashboard websocket and returns the reply. */
@@ -320,11 +325,32 @@ export function websocketCommand(
 
 export async function readVersion(port: number): Promise<VersionState> {
   const reply = await websocketCommand(port, { type: "getVersion" }, "versionState");
+  const replacement = reply.replacement;
   return {
     running: (reply.running as string | null) ?? null,
     installed: (reply.installed as string | null) ?? null,
     latest: (reply.latest as string | null) ?? null,
     stale: reply.stale === true,
+    ...(typeof replacement === "object" && replacement !== null
+      ? {
+          replacement: {
+            running:
+              (replacement as Record<string, unknown>).running === null ||
+              typeof (replacement as Record<string, unknown>).running === "string"
+                ? ((replacement as Record<string, unknown>).running as string | null)
+                : null,
+            installed:
+              (replacement as Record<string, unknown>).installed === null ||
+              typeof (replacement as Record<string, unknown>).installed === "string"
+                ? ((replacement as Record<string, unknown>).installed as string | null)
+                : null,
+            error:
+              typeof (replacement as Record<string, unknown>).error === "string"
+                ? ((replacement as Record<string, unknown>).error as string)
+                : "The replacement could not start.",
+          },
+        }
+      : {}),
   };
 }
 

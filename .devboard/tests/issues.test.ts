@@ -9,7 +9,10 @@ import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { writeCommand } from "../issues/control";
 import { migrateLegacyLedger, legacyLiveLock, legacyLockRefusal } from "../issues/legacy";
 import { pruneLedger } from "../issues/ledger";
-import { acquireLock, liveLockOwner, readLock, type LockResult } from "../issues/lock";
+import { acquireLock, liveLockOwner, pidAlive, readLock, versionLockPath, type LockResult } from "../issues/lock";
+import { createApp } from "../server/app";
+import { testProviderService } from "../server/fixtures/test-providers";
+import { readGoalDraftOwnerState } from "../server/goal-draft-owner";
 import {
   controlDirectory,
   ledgerPath,
@@ -17,8 +20,11 @@ import {
   runDirectory,
   runsDirectory,
   statePath,
+  versionedControlDirectory,
+  versionedStatePath,
 } from "../issues/paths";
 import { preflightIssues } from "../issues/preflight";
+import { closedByRun, recordClosedByRun } from "../issues/self-close";
 import {
   appendActivityLine,
   emptyState,
@@ -43,6 +49,7 @@ import {
 import {
   IssuesWorker,
   MAX_CONCURRENT_PEERS,
+  MAX_FOLLOW_UP_TURNS,
   isGoalIssue,
   promptFor,
   type AcpPeer,
@@ -162,30 +169,28 @@ class ControlledPeer implements AcpPeer {
   readonly activity: AcpActivity[] = [];
   readonly questions: AcpQuestion[] = [];
   closed = false;
-  private settled = false;
-  private readonly resolveRun: (value: unknown) => void;
-  private readonly rejectRun: (error: Error) => void;
+  private turn: { resolve: (value: unknown) => void; reject: (error: Error) => void } | undefined;
   private readonly options: IssuesPeerOptions;
   readonly environment: Record<string, string | undefined> | undefined;
 
   constructor(options: IssuesPeerOptions) {
     this.options = options;
     this.environment = options.env;
-    const deferred = Promise.withResolvers<unknown>();
-    this.resolveRun = deferred.resolve;
-    this.rejectRun = deferred.reject;
-    this.promise = deferred.promise;
   }
-
-  private readonly promise: Promise<unknown>;
 
   run(prompt: string): Promise<unknown> {
-    this.prompts.push(prompt);
-    return this.promise;
+    return this.startTurn(prompt);
   }
 
-  prompt(): Promise<unknown> {
-    return Promise.reject(new Error("the stub peer does not answer follow-up prompts"));
+  prompt(prompt: string): Promise<unknown> {
+    return this.startTurn(prompt);
+  }
+
+  private startTurn(prompt: string): Promise<unknown> {
+    this.prompts.push(prompt);
+    const deferred = Promise.withResolvers<unknown>();
+    this.turn = { resolve: deferred.resolve, reject: deferred.reject };
+    return deferred.promise;
   }
 
   answer(id: number | string, value: string): boolean {
@@ -199,10 +204,9 @@ class ControlledPeer implements AcpPeer {
 
   close(): void {
     this.closed = true;
-    if (!this.settled) {
-      this.settled = true;
-      this.rejectRun(new Error("Agent process exited before answering."));
-    }
+    const turn = this.turn;
+    this.turn = undefined;
+    turn?.reject(new Error("Agent process exited before answering."));
   }
 
   emit(text: string, append = false): void {
@@ -214,17 +218,18 @@ class ControlledPeer implements AcpPeer {
     this.options.onQuestion(question);
   }
 
+  /** Ends the current turn cleanly; the worker then verifies the issue. */
   succeed(): void {
-    if (this.settled) return;
-    this.settled = true;
-    this.resolveRun({});
+    const turn = this.turn;
+    this.turn = undefined;
+    turn?.resolve({});
   }
 
   fail(message: string): void {
-    if (this.settled) return;
-    this.settled = true;
+    const turn = this.turn;
+    this.turn = undefined;
     this.options.onStderr(`${message}\n`);
-    this.rejectRun(new Error(message));
+    turn?.reject(new Error(message));
   }
 
   /** Writes to the child's stderr without ending the turn. */
@@ -294,12 +299,31 @@ async function fixture(options: {
     peers,
     issues,
     state: () => worker.currentState,
-    path: statePath(stateDir, root),
+    path: versionedStatePath(
+      stateDir,
+      root,
+      options.harnessVersion ?? readHarnessVersion(harnessRoot),
+    ),
   };
 }
 
 async function stop(fixtureUnderTest: Fixture): Promise<void> {
   await fixtureUnderTest.worker.stop();
+}
+
+/**
+ * Ends every turn a peer opens, up to the bound the worker enforces, so a run
+ * whose issue never closes reaches its failure verdict.
+ */
+async function exhaustTurns(peer: ControlledPeer): Promise<void> {
+  for (let turn = 1; turn <= MAX_FOLLOW_UP_TURNS + 1; turn += 1) {
+    peer.succeed();
+    if (turn > MAX_FOLLOW_UP_TURNS) return;
+    await waitFor(
+      () => (peer.prompts.length === turn + 1 ? true : undefined),
+      `follow-up turn ${turn + 1}`,
+    );
+  }
 }
 
 describe("per-issue fleet", () => {
@@ -469,7 +493,7 @@ describe("per-issue fleet", () => {
     }
   });
 
-  test("a turn that leaves its issue open fails without handling it", async () => {
+  test("a turn that leaves its issue open fails after its follow-up turns", async () => {
     const f = await fixture({
       issues: [issue(1)],
       issueState: async () => ({ kind: "state", state: "open" }),
@@ -477,7 +501,7 @@ describe("per-issue fleet", () => {
     try {
       await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
       f.peers[0]!.writeStderr("implement-goal-issue: no write access");
-      f.peers[0]!.succeed();
+      await exhaustTurns(f.peers[0]!);
       const failed = await waitFor(
         () =>
           f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
@@ -485,6 +509,8 @@ describe("per-issue fleet", () => {
             : undefined,
         "the failed run",
       );
+      expect(f.peers[0]!.prompts).toHaveLength(MAX_FOLLOW_UP_TURNS + 1);
+      expect(f.peers[0]!.prompts[1]).toContain("Continue issue #1");
       expect(failed.queue.find((entry) => entry.number === 1)?.handled).toBe(false);
       const run = failed.runs.find((entry) => entry.issueNumbers.includes(1));
       expect(run?.firstStderrLine).toContain("issue #1 is still open");
@@ -500,6 +526,39 @@ describe("per-issue fleet", () => {
     }
   });
 
+  test("a turn that yields before closing its issue gets a follow-up turn", async () => {
+    let reads = 0;
+    const f = await fixture({
+      issues: [issue(1)],
+      issueState: async () => {
+        reads += 1;
+        return { kind: "state", state: reads === 1 ? "open" : "closed" } as IssueStateResult;
+      },
+    });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the peer");
+      peer.succeed();
+      await waitFor(() => (peer.prompts.length === 2 ? true : undefined), "the follow-up turn");
+      expect(peer.closed).toBe(false);
+      expect(peer.prompts[0]).toBe("/implement-issue 1");
+      expect(peer.prompts[1]).toContain("Continue issue #1");
+      expect(peer.prompts[1]).toContain(`Follow-up turn 2 of ${MAX_FOLLOW_UP_TURNS + 1}`);
+      peer.succeed();
+      const handled = await waitFor(
+        () =>
+          f.state().queue.find((entry) => entry.number === 1)?.handled ? f.state() : undefined,
+        "the handled issue",
+      );
+      expect(peer.closed).toBe(true);
+      expect(handled.runs.find((run) => run.issueNumbers.includes(1))?.status).toBe("succeeded");
+      expect(handled.lastError).toBeNull();
+      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+      expect(Object.keys(ledger.handled)).toEqual(["1"]);
+    } finally {
+      await stop(f);
+    }
+  });
+
   test("clears a still-open error when a later poll drops that issue", async () => {
     const f = await fixture({
       issues: [issue(1)],
@@ -507,7 +566,7 @@ describe("per-issue fleet", () => {
     });
     try {
       await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
-      f.peers[0]!.succeed();
+      await exhaustTurns(f.peers[0]!);
       const failed = await waitFor(
         () =>
           f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
@@ -952,6 +1011,44 @@ describe("closed issues", () => {
     }
   });
 
+  test("a run that closed its own issue settles instead of being stopped", async () => {
+    let open = [issue(1)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      const runId = f.state().agents[0]!.runId;
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_RUN_ID).toBe(runId);
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_ISSUE_NUMBER).toBe("1");
+      recordClosedByRun(f.stateDir, f.root, 1, runId);
+
+      // The run's own close drops #1 from the open list while its turn runs.
+      open = [];
+      await f.worker.poll();
+      expect(f.peers[0]!.closed).toBe(false);
+      expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([1]);
+      expect(f.state().notice).toBeNull();
+
+      f.peers[0]!.succeed();
+      const settled = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(1))?.status === "succeeded"
+            ? f.state()
+            : undefined,
+        "the succeeded run",
+      );
+      expect(settled.agents).toEqual([]);
+      expect(settled.notice).toBeNull();
+      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+      expect(ledger.handled["1"]?.runId).toBe(runId);
+      expect(closedByRun(f.stateDir, f.root, 1)).toBeNull();
+    } finally {
+      await stop(f);
+    }
+  });
+
   test("an abandon command stops only that issue and suppresses a restart", async () => {
     let open = [issue(1), issue(2)];
     const f = await fixture({
@@ -991,7 +1088,7 @@ describe("closed issues", () => {
     }
     // Two real stub peers, three polls, and a third peer spawn: under the
     // suite's own parallel file load this exceeds Bun's 5 s default bound.
-  }, 20_000);
+  }, 40_000);
 });
 
 describe("history and isolation", () => {
@@ -1306,12 +1403,13 @@ describe("history and isolation", () => {
       }),
     );
     const f = await fixture({ stateDir, issues: [] });
+    const versioned = versionLockPath(lockPath(f.root), readHarnessVersion(harnessRoot));
     try {
-      expect(liveLockOwner(lockPath(f.root))?.pid).toBe(process.pid);
+      expect(liveLockOwner(versioned)?.pid).toBe(process.pid);
     } finally {
       await stop(f);
     }
-    expect(existsSync(lockPath(f.root))).toBe(false);
+    expect(existsSync(versioned)).toBe(false);
   });
 });
 
@@ -1752,6 +1850,40 @@ describe("tracker", () => {
     expect(state).toEqual({ kind: "state", state: "closed" });
     expect(urls[0]).toBe("http://gitea.test/api/v1/repos/acme/fixture/issues/7");
   });
+
+  test("never builds a gh argv for a GitLab origin", async () => {
+    const calls: string[][] = [];
+    const run = (argv: string[]) => {
+      calls.push(argv);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const polled = await pollOpenIssues({ repository: "group/project", forge: "gitlab", run });
+    expect(polled.kind).toBe("unsupported");
+    if (polled.kind !== "unsupported") return;
+    expect(polled.detail).toContain("GitLab");
+
+    const state = await fetchIssueState({ repository: "group/project", forge: "gitlab", run }, 7);
+    expect(state.kind).toBe("error");
+    if (state.kind !== "error") return;
+    expect(state.detail).toContain("GitLab");
+    expect(calls).toEqual([]);
+  });
+
+  test("still reads a GitHub origin through gh", async () => {
+    const calls: string[][] = [];
+    const polled = await pollOpenIssues({
+      repository: "acme/fixture",
+      forge: "github",
+      run: (argv) => {
+        calls.push(argv);
+        return { code: 0, stdout: "HTTP/2.0 200 OK\n\n", stderr: "" };
+      },
+    });
+    expect(polled.kind).toBe("issues");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toBe("api");
+    expect(calls[0]?.includes("repos/acme/fixture/issues?state=open&per_page=100")).toBe(true);
+  });
 });
 
 describe("activity bounds", () => {
@@ -2078,4 +2210,210 @@ describe("dashboard bridge", () => {
     bridge.dispose();
     held.release();
   });
+});
+
+describe("parallel version workers", () => {
+  test("a new version drains the old one and claims every later unit", async () => {
+    const base = await temporaryDirectory("issues-fleet");
+    const root = join(base, "repo");
+    const stateDir = join(base, "state");
+    await mkdir(root, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    const a = await fixture({
+      root,
+      stateDir,
+      harnessVersion: "0.1.A",
+      issues: [issue(1)],
+      listIssues: async () => ({
+        kind: "issues" as const,
+        issues: [issue(1)],
+        etag: "etag-a",
+      }),
+    });
+    try {
+      await waitFor(() => (a.peers.length === 1 ? true : undefined), "the A peer");
+      const b = await fixture({
+        root,
+        stateDir,
+        harnessVersion: "0.1.B",
+        issues: [issue(1), issue(2)],
+        listIssues: async () => ({
+          kind: "issues" as const,
+          issues: [issue(1), issue(2)],
+          etag: "etag-b",
+        }),
+      });
+      try {
+        await waitFor(() => (b.peers.length === 1 ? true : undefined), "the B peer");
+        expect(a.state().agents.map((agent) => agent.issueNumber)).toEqual([1]);
+        expect(b.state().agents.map((agent) => agent.issueNumber)).toEqual([2]);
+
+        writeCommand(versionedControlDirectory(stateDir, root, "0.1.A"), { type: "drain" });
+        a.peers[0]!.succeed();
+        await waitFor(
+          () => (a.state().lifecycle === "stopped" ? true : undefined),
+          "the A worker to drain",
+        );
+        expect(a.peers).toHaveLength(1);
+        expect(liveLockOwner(lockPath(root))).toBeUndefined();
+        expect(existsSync(versionedStatePath(stateDir, root, "0.1.A"))).toBe(true);
+        expect(existsSync(versionedStatePath(stateDir, root, "0.1.B"))).toBe(true);
+
+        b.peers[0]!.succeed();
+        await waitFor(
+          () => (b.state().runs.some((run) => run.status === "succeeded") ? true : undefined),
+          "the B run to finish",
+        );
+        const ledger = JSON.parse(readFileSync(ledgerPath(stateDir, root), "utf8")) as {
+          handled: Record<string, unknown>;
+        };
+        expect(Object.keys(ledger.handled).sort()).toEqual(["1", "2"]);
+      } finally {
+        await stop(b);
+      }
+    } finally {
+      await stop(a);
+    }
+  });
+});
+
+describe("detached goal drafts", () => {
+  test("a detached elaboration survives a dashboard replacement, answers, and stops", async () => {
+    const base = await temporaryDirectory("detached-draft");
+    const repo = join(base, "repo");
+    const stateDir = join(base, "state");
+    const drafts = join(repo, ".devboard", "goal-proposals");
+    const staticDir = join(base, "static");
+    await mkdir(join(repo, "adrs"), { recursive: true });
+    await mkdir(drafts, { recursive: true });
+    await mkdir(staticDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    writeFileSync(join(staticDir, "index.html"), "<!doctype html><title>Draft</title>");
+    writeFileSync(join(repo, "GOAL.md"), "# Goal\n\nFixture.\n");
+    writeFileSync(join(drafts, "detached.md"), "# Draft\n\n> Unprocessed draft. STUB-HANG\n");
+
+    const log = join(base, "agent.log");
+    const options = {
+      adrDir: join(repo, "adrs"),
+      staticDir,
+      hostname: "127.0.0.1",
+      port: 0,
+      repoDir: repo,
+      stateDir,
+      providers: testProviderService(stateDir),
+      goalFile: join(repo, "GOAL.md"),
+      agentCommand: `${process.execPath} ${join(harnessRoot, "server", "fixtures", "stub-agent.ts")} --goal-draft --log=${log}`,
+      tracker: async () => undefined,
+      restart: () => undefined,
+    } as const;
+    const first = createApp(options);
+    interface Client {
+      send(command: unknown): void;
+      waitFor(
+        predicate: (frame: Record<string, unknown>) => boolean,
+        label: string,
+      ): Promise<Record<string, unknown>>;
+      close(): void;
+    }
+    const connect = async (port: number): Promise<Client> => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      const frames: Record<string, unknown>[] = [];
+      const waiters: Array<{
+        predicate: (frame: Record<string, unknown>) => boolean;
+        settle: (frame: Record<string, unknown>) => void;
+      }> = [];
+      socket.onmessage = (event) => {
+        const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+        frames.push(frame);
+        for (let index = waiters.length - 1; index >= 0; index -= 1) {
+          const waiter = waiters[index];
+          if (waiter === undefined || !waiter.predicate(frame)) continue;
+          waiters.splice(index, 1);
+          waiter.settle(frame);
+        }
+      };
+      const opened = Promise.withResolvers<void>();
+      socket.onopen = () => opened.resolve();
+      socket.onerror = () => opened.reject(new Error("websocket failed"));
+      await opened.promise;
+      return {
+        send: (command) => socket.send(JSON.stringify(command)),
+        waitFor: (predicate, label) => {
+          const found = frames.find(predicate);
+          if (found !== undefined) return Promise.resolve(found);
+          const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+          const waiter = { predicate, settle: resolve };
+          waiters.push(waiter);
+          setTimeout(() => {
+            const index = waiters.indexOf(waiter);
+            if (index >= 0) waiters.splice(index, 1);
+            reject(new Error(`timed out waiting for ${label}`));
+          }, 10_000);
+          return promise;
+        },
+        close: () => socket.close(),
+      };
+    };
+    const path = ".devboard/goal-proposals/detached.md";
+    const tab = await connect(first.port ?? 0);
+    let second: ReturnType<typeof createApp> | undefined;
+    try {
+      tab.send({ type: "startGoalDraft", path });
+      const started = await tab.waitFor(
+        (frame) =>
+          frame.type === "issuesDraftState" &&
+          (frame.draft as Record<string, unknown> | undefined)?.path === path &&
+          (frame.draft as Record<string, unknown>).status === "running" &&
+          Array.isArray((frame.draft as Record<string, unknown>).activity) &&
+          ((frame.draft as Record<string, unknown>).activity as unknown[]).length > 0,
+        "the draft's first activity",
+      );
+      const draft = started.draft as Record<string, unknown>;
+      const startedAt = String(draft.startedAt);
+      const owner = readGoalDraftOwnerState(stateDir, repo, path);
+      expect(owner?.peer?.pid).toBeGreaterThan(0);
+      const pid = owner!.peer!.pid;
+      expect(pidAlive(pid)).toBe(true);
+
+      tab.send({ type: "restartServer" });
+      await tab.waitFor((frame) => frame.type === "serverRestarting", "the restart handoff");
+      first.stop(true);
+      second = createApp({ ...options, port: first.port ?? 0 });
+      const after = await connect(second.port ?? 0);
+      try {
+        after.send({ type: "getGoalDrafts" });
+        const replay = await after.waitFor(
+          (frame) =>
+            frame.type === "issuesDrafts" &&
+            Array.isArray(frame.runs) &&
+            (frame.runs as Array<Record<string, unknown>>).some(
+              (run) => run.path === path && run.startedAt === startedAt && run.status === "running",
+            ),
+          "the adopted draft replay",
+        );
+        expect(JSON.stringify(replay)).not.toContain("interrupted");
+        expect(readGoalDraftOwnerState(stateDir, repo, path)?.peer?.pid).toBe(pid);
+        expect(pidAlive(pid)).toBe(true);
+
+        after.send({ type: "stopGoalDraft", path });
+        const stopped = await after.waitFor(
+          (frame) =>
+            frame.type === "issuesDraftState" &&
+            (frame.draft as Record<string, unknown> | undefined)?.path === path &&
+            (frame.draft as Record<string, unknown>).status === "stopped",
+          "the stopped draft",
+        );
+        expect(JSON.stringify(stopped)).not.toContain("interrupted");
+        const deadline = Date.now() + 5_000;
+        while (pidAlive(pid) && Date.now() < deadline) await Bun.sleep(25);
+        expect(pidAlive(pid)).toBe(false);
+      } finally {
+        after.close();
+      }
+    } finally {
+      tab.close();
+      first.stop(true);
+      second?.stop(true);
+    }
+  }, 30_000);
 });

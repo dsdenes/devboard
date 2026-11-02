@@ -259,6 +259,8 @@ async function handlePrompt(id: number | string, params: unknown): Promise<void>
   await fileRecommendations(scanDirectory, index);
   notify("scout activity end");
 
+  const delayMs = Number(process.env.SCOUT_STUB_ACP_DELAY_MS ?? 0);
+  if (delayMs > 0) await Bun.sleep(delayMs);
   log("finished");
   write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
 }

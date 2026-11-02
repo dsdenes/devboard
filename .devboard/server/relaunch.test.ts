@@ -65,6 +65,24 @@ describe("relaunch", () => {
     expect(events).toEqual([]);
   });
 
+  test("tells connected pages after the replacement exists and before the stop", () => {
+    const events: string[] = [];
+
+    relaunch(listener(events), settings, {
+      stop: (server) => server.stop(true),
+      exit: () => {},
+      beforeStop: () => events.push("beforeStop"),
+      harnessDir: () => "/host/.devboard",
+      exists: () => true,
+      spawn: () => {
+        events.push("spawn");
+        return { unref: () => events.push("unref") };
+      },
+    });
+
+    expect(events).toEqual(["spawn", "unref", "beforeStop", "stop:true"]);
+  });
+
   test("stops the listener only after the replacement process exists", () => {
     const events: string[] = [];
     let options:

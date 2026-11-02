@@ -59,9 +59,9 @@ The width survives a reload.
   and Coach — and one `data-testid="devboard-tab"` entry labeled `MCP tools` with
   `data-command="devboard.tab.tools"`. Each agent entry opens its page; the last entry opens the
   read-only MCP tool list. No tool name appears in the sidebar.
-- **Discover** lists the overview and glossary sections, the five skills under their own group,
-  and warnings only while at least one exists. The glossary entry carries the published term
-  count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
+- **Discover** lists the overview, glossary, and contribution sections, the six skills under their
+  own group, and warnings only while at least one exists. The glossary entry carries the published
+  term count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
   meta, so an exception is visible before the page opens. The Glossary entry is a plain section
   link: it has no disclosure control and no nested per-term menu. An unsaved skill edit belongs
   to the project it was written against: switching to another retained project shows that
@@ -154,6 +154,18 @@ terminal output, and IDs are monospace, one-line data rows are at most 32 CSS px
 data rows stay within 120 CSS px. The shell uses
 the full viewport with no application max-width.
 
+### Source-only marker
+
+A control that exists only while Devboard serves its own harness source checkout carries one
+shared marker: `data-testid="source-only-badge"`, the word `devboard`, the tooltip
+`Only available when Devboard serves a harness source checkout`, the `.badge` primitive with no
+tone, and `SourceOnlyBadge.svelte` as its only implementation. It is a child of its region header
+immediately after the title, and a trailing count or subtitle stays on the header's trailing edge.
+
+Four surfaces carry it: each of the six Discover agent prompt headers, Discover's manual-testing
+target panel header, and the Auto Scout and Design System prompt summaries. An installed host
+renders no marker anywhere and keeps the read-only prompt state unchanged.
+
 ### Editors and terminals
 
 Monaco Editor provides the Goal document (`goal-text`), Flow goal (`flow-goal-text`), Flow
@@ -209,13 +221,14 @@ and the Providers control: the selected provider with its lowest remaining perce
 `No provider`, whose tooltip names the provider's model and which opens the Providers dialog.
 The right group states the running lane count, the issues worker state with a state dot, the
 watchdog's last action and age, the OS notifications control, and the running and installed
-versions; each metric carries a
-10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
-shows the existing reload control (`reload-devboard`), whose accessible name and title name both
-versions; reload behavior is unchanged. A mode states its status in its sidebar and workspace,
-never a second time in the status bar, except the issues worker, which is detached from every
-dashboard and reports through `issues-indicator`. The theme toggle and the notification indicator
-live in the activity bar's action group, not the status bar.
+versions; each metric carries a 10px uppercase label so its meaning never rests on color. The
+reload control (`reload-devboard`) appears only when an automatic replacement could not start;
+its accessible name and title name the running and installed versions, and clicking it retries
+the same launcher. A successful replacement needs no click and reloads every connected page once.
+A mode states its status in its sidebar and workspace, never a second time in the status bar,
+except the issues worker, which is detached from every dashboard and reports through
+`issues-indicator`. The theme toggle and the notification indicator live in the activity bar's
+action group, not the status bar.
 
 ### Verifying the interface
 
@@ -290,6 +303,12 @@ npx @dsdenes/devboard doctor     # one PASS or FAIL line per check
 
 The launcher never discovers, reads, copies, or waits on another local Devboard installation or
 source checkout; it resolves the npm version and artifact for the target host alone.
+
+`install` refuses a target whose `.devboard/package.json` names `@dsdenes/devboard` — the
+canonical source checkout — and it stops before changing anything when `git` cannot list the
+files it tracks. The probe is never read as "nothing is tracked": a missing `git`, a timeout, or
+a dubious-ownership refusal aborts `install` and `update` instead of letting either sync over a
+tree it cannot protect.
 
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
@@ -536,6 +555,29 @@ becomes idle; the pending flag is cleared before the launcher is invoked, so the
 never restarts itself again for the same request. With no launcher configured, the existing
 unavailable-restart error is reported and the flag is cleared.
 
+### Detached runs and parallel workers
+
+Every agentic run the dashboard starts owns a detached process, not a peer inside the server: the
+lifecycle lanes, a manual ADR run, goal creation, goal revision, skills preparation, goal-draft
+elaboration, Discover, Flow, and Ask. Each owner spawns the ACP peer, appends activity to a
+run-keyed file, publishes its question, and consumes answer, stop, pause, and resume commands.
+When a newer harness replaces the dashboard, the owners stay alive; the replacement leases and
+re-attaches to the same runs, so state and activity replay after reconnect, an answer reaches the
+same run, Stop ends it, and no replacement records the run as stopped or interrupted. A non-
+replacement server exit ends its runs and records the interruption, because no replacement owns
+them.
+
+Each background worker family also accepts a live worker of more than one harness version. The
+running version starts its own worker as soon as an older-version worker is live, sends the older
+worker a `drain`, and claims every unit that arises afterwards; the older worker starts no new
+unit, finishes its in-flight unit, exits when that unit ends, releases its lock, and leaves its
+state, run directories, and activity readable. The mode lists every live worker with its version
+and merges every running unit into one view, so no surface reports a worker/dashboard or
+front-end/backend version divergence. Start launches the newest installed version when no worker
+is live; Pause, Resume, Check now, Stop, and settings apply to every live worker of the family.
+With no worker live, installing a newer version starts none. A worker or run started by a version
+that predates this mechanism has no drain command; it is never killed mid-unit.
+
 A closed or failed lane whose retention window expired while the server was down is not
 replayed; the remaining window is honored after a restart. An unreadable, truncated, or
 unsupported-version state file never prevents startup: the server renames it aside inside
@@ -751,30 +793,35 @@ directory, and the decision board is never an ADR record.
 ## Discover Mode
 
 The Discover mode is the fourth client-only view, opened from the activity bar. It exists for an
-existing host project and is produced by six independently triggerable discovery agents: **Data
-Sheet**, **Testing Strategy**, **Naming Conventions**, **Coding Conventions**, **Architecture &
-Boundaries**, and **Glossary Agent**. Each agent is one ACP turn with its own prompt file, its own
-slash command, its own staging directory, and its own slice of the published artifacts. Switching
+existing host project and is produced by seven independently triggerable discovery agents:
+**Data Sheet**, **Contribution Agent**, **Testing Strategy**, **Naming Conventions**, **Coding
+Conventions**, **Architecture & Boundaries**, and **Glossary Agent**. Each agent is one ACP turn
+with its own prompt file, its own slash command, its own staging directory, and its own slice of
+the published artifacts. Switching
 to Discover, opening a card, and switching its pages send no WebSocket frame and start, stop,
 reset, or clear nothing; all four views stay mounted, so native details, scroll state, and focus
 survive. Discover events render only in this view and never touch Goal Mode's activity, question,
 or error state.
 
-The Discover sidebar opens a **Discovery** group with exactly six entries
+The Discover sidebar opens a **Discovery** group with exactly seven entries
 (`data-testid="discover-agent-tab"` with `data-agent` values `sheet`,
-`discover-testing-strategy`, `discover-naming-conventions`, `discover-coding-conventions`,
-`discover-architecture-boundaries`, and `discover-glossary`), labelled `Data Sheet`,
-`Testing Strategy`, `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and
-`Glossary Agent`. Selecting one opens its card (`data-testid="discover-agent"` with the same
-`data-agent`). Each entry shows its own `running` badge or `failed` badge. The Discovery group
-carries no run control: the Overview page owns Run all, and no other page or sidebar entry starts
-it.
-The same sidebar opens the established pages for `Overview` and `Glossary` without a group
-heading. Once Discover artifacts are published it also lists the five skills `Testing Strategy`,
-`Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and `Glossary` under
-**Skills** (`data-testid="discover-tab"` with `data-tab` values `overview`, `glossary`,
-`testing-strategy`, `naming-conventions`, `coding-conventions`, `architecture-boundaries`, and
-`glossary-skill`); with no published artifact the **Skills** group and its header do not render.
+`discover-contribution`, `discover-testing-strategy`, `discover-naming-conventions`,
+`discover-coding-conventions`, `discover-architecture-boundaries`, and `discover-glossary`),
+labelled `Data Sheet`, `Contribution Agent`, `Testing Strategy`, `Naming Conventions`, `Coding
+Conventions`, `Architecture & Boundaries`, and `Glossary Agent`. Selecting one opens its card
+(`data-testid="discover-agent"` with the same `data-agent`). Each entry shows its own `running`
+badge or `failed` badge. The Discovery group carries no run control: the Overview page owns Run
+all, and no other page or sidebar entry starts it.
+The same sidebar opens the established pages for `Overview`, `Glossary`, and `Contribution`
+without a group heading, in that order. Once Discover artifacts are published it also lists the
+six skills `Testing Strategy`, `Naming Conventions`, `Coding Conventions`, `Architecture &
+Boundaries`, `Glossary`, and `Contribution` under **Skills** (`data-testid="discover-tab"` with
+`data-tab` values `overview`, `glossary`, `contribution`, `testing-strategy`,
+`naming-conventions`, `coding-conventions`, `architecture-boundaries`, `glossary-skill`, and
+`contribution-skill`); with no published artifact the **Skills** group and its header do not
+render. The `contribution` entry carries `data-testid="discover-tab"`, `data-tab="contribution"`,
+and the label `Contribution`; the `contribution-skill` entry carries
+`data-skill="discover-contribution"` and follows `glossary-skill` directly.
 The sidebar has no header, so its first entry is its mode's navigation. The active panel carries
 `data-testid="discover-panel"` and the same `data-tab`. While a discovery agent runs, the
 `Overview` entry carries a `running` badge (`data-testid="discover-running"`), matching the Issues
@@ -796,22 +843,24 @@ another agent's question.
 | Agent | `data-agent` | Command | Prompt file |
 |---|---|---|---|
 | Data Sheet | `sheet` | `/discover-sheet` | `.devboard/prompts/discover-sheet.md` |
+| Contribution Agent | `discover-contribution` | `/discover-contribution` | `.devboard/prompts/discover-contribution.md` |
 | Testing Strategy | `discover-testing-strategy` | `/discover-testing-strategy` | `.devboard/prompts/discover-testing-strategy.md` |
 | Naming Conventions | `discover-naming-conventions` | `/discover-naming-conventions` | `.devboard/prompts/discover-naming-conventions.md` |
 | Coding Conventions | `discover-coding-conventions` | `/discover-coding-conventions` | `.devboard/prompts/discover-coding-conventions.md` |
 | Architecture & Boundaries | `discover-architecture-boundaries` | `/discover-architecture-boundaries` | `.devboard/prompts/discover-architecture-boundaries.md` |
 | Glossary Agent | `discover-glossary` | `/discover-glossary` | `.devboard/prompts/discover-glossary.md` |
 
-Six command wrappers under `.devboard/omp/commands/` carry the same six names. No two agents share a
-prompt file, and each turn stages only its own slice through the Devboard MCP staging tools:
-`discover_sheet_stage`, `discover_glossary_stage`, `discover_significance_stage`, and
-`discover_skill_stage`. Each tool writes the same staged path the server publishes and returns the
-path and identity it wrote; no prompt asks for a staged file written by hand. A prompt may name
-`.omp/discover/sheet.json` and `.omp/discover/glossary/` as optional reference it reads, but no
-agent needs another agent's artifact to succeed.
+Seven command wrappers under `.devboard/omp/commands/` carry the same seven names. No two agents
+share a prompt file, and each turn stages only its own slice through the Devboard MCP staging
+tools: `discover_sheet_stage`, `discover_contribution_stage`, `discover_glossary_stage`,
+`discover_significance_stage`, and `discover_skill_stage`. Each tool writes the same staged path
+the server publishes and returns the path and identity it wrote; no prompt asks for a staged file
+written by hand. A prompt may name `.omp/discover/sheet.json` and `.omp/discover/glossary/` as
+optional reference it reads, but no agent needs another agent's artifact to succeed.
 
-When the dashboard serves a harness source checkout, every card renders an editor initialized
-to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
+When the dashboard serves a harness source checkout, every card's Prompt header carries the
+source-only marker (`source-only-badge`) and renders an editor initialized to the prompt file's
+bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
 (`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
 `discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
 `discover-agent-prompt-save`. One chat turn streams one visible reply; a turn that revises the
@@ -819,13 +868,14 @@ prompt replaces the editor text with a complete replacement. Chat never writes a
 starts an agent. Save writes exactly the editor's UTF-8 bytes to that one agent's prompt file and
 no other file, and the next trigger of that agent reads those bytes. An installed host has no
 prompt view and renders no editor, chat, or save; `saveDiscoverPrompt` and `chatDiscoverPrompt`
-are refused there with an error naming the harness source checkout.
+are refused there with an error naming the harness source checkout, and the header carries no
+marker while its `Read-only here` subtitle stays.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
 `owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
 the full path stays in the tooltip), the discovery date, and the single
-filled run action, which runs all six agents. Staleness is not repeated on the sheet: the activity
+filled run action, which runs all seven agents. Staleness is not repeated on the sheet: the activity
 bar and the status bar report it. While a run exists, the active agent's card carries a run tag
 in its header: a status dot, the agent label and `run in progress`, the age, the latest
 activity line, and Stop. A queued question region follows on that card while a question waits.
@@ -842,7 +892,7 @@ Glossary page.
 
 With no published artifacts the Overview page shows the header's first-run explanation and a
 `Discover project` button (`data-testid="discover-start"`); with artifacts it shows `Re-discover`.
-The button is the only Run all control in the interface and runs all six agents. It is disabled
+The button is the only Run all control in the interface and runs all seven agents. It is disabled
 when the socket is not open, while any discovery agent or Run all is active, or while Goal or Flow
 work is active, and the title names the reason. A start never happens on page load, reconnect, mode
 switch, or page switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge
@@ -854,10 +904,10 @@ peer whose working directory is the active target root, whose prompt is exactly
 `<target>/.omp/discover/staging/<run-id>/`. No other agent starts. While any discovery agent or Run
 all is active, every other Start control is disabled with a title naming the reason, and a
 programmatic `discoverAgent` for another agent is refused with one `discoverError` and spawns no
-peer. **Run all** runs the six in this fixed order: `sheet`, `discover-glossary`,
+peer. **Run all** runs the seven in this fixed order: `sheet`, `discover-glossary`,
 `discover-testing-strategy`, `discover-naming-conventions`, `discover-coding-conventions`,
-`discover-architecture-boundaries`. The agents run one at a time, and each successful agent
-publishes its slice before the next starts. The first failure or stop halts the sequence: the
+`discover-architecture-boundaries`, `discover-contribution`. The agents run one at a time, and
+each successful agent publishes its slice before the next starts. The first failure or stop halts the sequence: the
 failing agent reports one error, every slice already published stays published, no later agent
 starts, and later cards stay idle. Run all is disabled while an individual agent runs, and
 individual starts are refused while Run all runs.
@@ -887,12 +937,13 @@ artifact, and spawns no peer. `getDiscover` asks for the current snapshot and is
 `discoverPromptChatDone`, and `discoverPromptChatError`; it never sends `activity`, `question`,
 `error`, `runStarted`, or `runStopped` for Discover. `discoverState` keeps the active and interrupt
 flags, staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
-repository links for installed packages, glossaries, per-concept usage and examples measured from
-the host's documentation and source, `glossarySignificance` keyed by bounded context and then
-concept id with `{ score, reason }` values, decisions, and every published skill with baseline
-text, live text, hashes, and state. It adds `activeAgent`, `runningAll`, and `agents`: the six cards
-in sidebar order with `id`, `label`, `command`, `state`, `startedAt`, `endedAt`, `error`, and
-`prompt` (`{ agent, editable, text, error }`).
+repository links for installed packages, `contribution` (the published contribution document or
+`null`), glossaries, per-concept usage and examples measured from the host's documentation and
+source, `glossarySignificance` keyed by bounded context and then concept id with
+`{ score, reason }` values, decisions, and every published skill with baseline text, live text,
+hashes, and state. It adds `activeAgent`, `runningAll`, and `agents`: the seven cards in sidebar
+order with `id`, `label`, `command`, `state`, `startedAt`, `endedAt`, `error`, and `prompt`
+(`{ agent, editable, text, error }`).
 `discoverQuestion`, `discoverActivity`, and `discoverStopped` carry `agent`; a question also
 carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
 
@@ -912,6 +963,7 @@ files are never overwritten.
 | Agent | Owned artifacts |
 |---|---|
 | `sheet` | `.omp/discover/sheet.json` |
+| `discover-contribution` | `.omp/discover/contribution.json`, `.omp/discover/skills/discover-contribution/SKILL.md`, `.omp/skills/discover-contribution/SKILL.md` |
 | `discover-testing-strategy` | `.omp/discover/skills/discover-testing-strategy/SKILL.md`, `.omp/skills/discover-testing-strategy/SKILL.md` |
 | `discover-naming-conventions` | `.omp/discover/skills/discover-naming-conventions/SKILL.md`, `.omp/skills/discover-naming-conventions/SKILL.md` |
 | `discover-coding-conventions` | `.omp/discover/skills/discover-coding-conventions/SKILL.md`, `.omp/skills/discover-coding-conventions/SKILL.md` |
@@ -919,7 +971,8 @@ files are never overwritten.
 | `discover-glossary` | `.omp/discover/glossary/<context>.glossary.yaml`, `.omp/discover/significance.json`, `.omp/discover/skills/discover-glossary/SKILL.md`, `.omp/skills/discover-glossary/SKILL.md` |
 
 Artifacts live only under the host: `.omp/discover/manifest.json`, `.omp/discover/sheet.json`,
-`.omp/discover/decisions.json`, `.omp/discover/significance.json`,
+`.omp/discover/contribution.json`, `.omp/discover/decisions.json`,
+`.omp/discover/significance.json`,
 `.omp/discover/glossary/<bounded-context>.glossary.yaml`,
 `.omp/discover/skills/<skill>/SKILL.md` for the generated baselines, and the live, editable
 `.omp/skills/<skill>/SKILL.md`. Staging mirrors only the triggered agent's relative layout without
@@ -932,6 +985,9 @@ absolute path. `.omp/discover/manifest.json` and `.omp/discover/decisions.json` 
 bookkeeping and always name every artifact that is present. A manifest written by this code carries
 `paths.significance: ".omp/discover/significance.json"` once the glossary agent has published; a
 manifest without that path predates the significance sidecar and is read as legacy, with no error.
+`paths.contribution: ".omp/discover/contribution.json"` appears once the Contribution Agent has
+published; a manifest without it predates the contribution sheet, and an unreadable contribution
+file leaves every other published artifact readable and reports no error.
 
 `sheet.json` is the canonical data sheet, with top-level keys in the fixed order `schemaVersion`,
 `definition`, `stack`, `deployment`, `environments`, `commands`, `branching`, `testing`,
@@ -1011,6 +1067,84 @@ duplicate name collapses to one chip; the sheet's stored values stay unchanged. 
 `unknown` here and is not listed. The delivery section, the deployment pipeline sources, and the
 runtime `versions` fact stay hidden. A sheet with no observed test level and a glossary with no
 matching term keep an explicit empty state.
+
+### Contribution sheet and contribution skill
+
+The Contribution page is the third ungrouped Discover section, directly below Glossary. Its
+sidebar entry carries `data-testid="discover-tab"`, `data-tab="contribution"`, and the label
+`Contribution`; selecting it opens `data-testid="discover-panel"` with `data-tab="contribution"`,
+whose body carries `data-testid="discover-contribution"`. With nothing published the body states
+that no contribution sheet is published. Once published it renders nine
+`data-testid="discover-contribution-section"` elements, in this fixed order and with these
+`data-section` values: `workflow`, `testing`, `pull-request-style`, `pull-request-size`,
+`conventions`, `review`, `documentation`, `hotspots`, and `evidence`. Each fact renders its value,
+or an explicit `Not recorded.` empty state when its confidence is `unknown`; the page renders no
+evidence chip, no confidence label, and no separate unknowns ledger, matching the Data Sheet page.
+The evidence section itself carries the merged sample size, the merge window, the forge and host,
+the count of closed-unmerged pull requests, and one line per unknown fact with its reason. The
+freshness header renders the publication time, and staleness is reported by the activity bar and
+the status bar exactly as it is for the Data Sheet.
+
+The Contribution Agent card is the second entry in the **Discovery** group, directly after Data
+Sheet: `data-testid="discover-agent-tab"` with `data-agent="discover-contribution"` and the label
+`Contribution Agent`, its command `/discover-contribution <staging-dir>`
+(`data-testid="discover-agent-prompt-command"`), and its prompt file
+`.devboard/prompts/discover-contribution.md` (`data-testid="discover-agent-prompt-text"`). The
+command wrapper is `.devboard/omp/commands/discover-contribution.md`; no other agent uses either
+file. A trigger stages exactly `contribution.json` and
+`skills/discover-contribution/SKILL.md` under `<target>/.omp/discover/staging/<run-id>/`. The
+server reads only that slice: it validates the document and the skill and publishes exactly
+`.omp/discover/contribution.json`, the baseline
+`.omp/discover/skills/discover-contribution/SKILL.md`, and the live
+`.omp/skills/discover-contribution/SKILL.md`. `.omp/discover/manifest.json` and
+`.omp/discover/decisions.json` remain the only bookkeeping files it rewrites; every artifact owned
+by another agent stays byte-identical. A failed, stopped, invalid, unreadable, or incomplete slice
+publishes nothing, reports one `discoverError`, and removes staging. This agent never requires the
+sheet, a glossary, or another skill to exist; on a host with no published artifacts it publishes
+its own slice while every other page keeps its existing absent or empty state.
+
+`contribution.json` stages `schemaVersion: 1`, a `source` object, and the `workflow` and `testing`
+facts. `source` names the forge and host, the merged sample, the sorted closed-unmerged numbers,
+the merge window, or a one-line `unavailable` reason. Each merged record carries its number, title,
+body, merge time, additions, deletions, changed-file count and paths, test-file and
+documentation-file counts, labels, draft flag, approval count, check names, commit subjects and
+bodies, head branch, forge merge method, and referenced issue numbers. Each workflow or testing
+fact carries its key, a value when known, at least one repository- or forge-relative evidence
+entry, and a confidence of `observed`, `declared`, or `inferred`; an unknown fact carries no value,
+empty evidence, a one-line reason, and `unknown`. The server derives `pull-request-style`,
+`pull-request-size`, `conventions`, `review`, `documentation`, `hotspots`, `evidence`, and the
+three-exemplar sample from `source`, so every statistic is computed from the same merged records
+the page reports.
+
+Only pull requests the forge records as merged feed a style, size, convention, review,
+documentation, hotspot, or sample field. Closed pull requests that were never merged are counted
+in `evidence` and never become an exemplar or a size statistic; `source` records only their
+numbers, so no closed-unmerged description can reach the artifact or the skill. The merged sample
+is read through the repository's one forge-auth resolution for GitHub, GitLab, and Gitea, read-only;
+the run never writes to the forge and never copies a token, credential, or URL with user info into
+an artifact. With no credential or no network the forge-derived facts are `unknown` with that
+reason, the git-derived `workflow` and `testing` facts still publish, the page shows the unknown
+empty state, and the skill still publishes from the git-derived evidence. The existing crawl
+exclusions apply: `.devboard/`, `.worktree/`, `.git/` internals, every path under `.omp/`, caches,
+build outputs, and ignored paths are never read or cited.
+
+The published contribution skill carries `name: discover-contribution`, a one-sentence
+`description`, `metadata.devboard-managed: "true"`, `metadata.devboard-family: "discover"`, and
+`metadata.devboard-skill: "contribution"`. Its body opens with one `#` heading, then imperative
+bullets, then a `## Exemplars` heading and the quoted complete descriptions of the three most
+recently merged pull requests (fewer when the sample is smaller), each introduced by
+`> PR #<number> — <title>` and quoted verbatim. The bullets state the target size range derived
+from the merged statistics, the required description structure and section order, the tone,
+length, and vocabulary targets, the exact commands and test evidence, issue linking, commit and
+branch conventions, the review and CI gates, and the documentation or changelog expectation, and
+name `.omp/discover/contribution.json`. With no merged evidence the body states that the
+pull-request-derived rules and exemplars are unknown and why, and carries only the git-derived
+rules. The skill is editable, savable, and restorable on its page exactly like the other Discover
+skills: `contribution-skill` in the **Skills** group renders the same editor, Save, and Restore
+controls, an edited live skill survives a re-crawl, an unedited one is replaced by the new
+baseline, and a deleted one is recreated only by the explicit restore control. Two runs against
+the same commit and merge set publish structurally identical contribution artifacts apart from the
+publication time, the freshness header, and bounded prose.
 
 The Glossary page and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
@@ -1093,14 +1227,16 @@ publishes it, never again on read. A deleted or renamed source file leaves the p
 readable and stale instead of hiding every artifact and failing the next crawl on the previous
 glossary; only a staged glossary is checked against the live host.
 
-A successful run publishes exactly five skills under `.omp/skills/`: `discover-testing-strategy`,
+A successful run publishes exactly six skills under `.omp/skills/`: `discover-testing-strategy`,
 `discover-naming-conventions`, `discover-coding-conventions`,
-`discover-architecture-boundaries`, and `discover-glossary`. Each is a directory containing
-`SKILL.md` whose frontmatter has `name` equal to the directory, a non-empty `description` of at most
-1024 characters, `metadata.devboard-managed: "true"`, `metadata.devboard-family: "discover"`, and
-`metadata.devboard-skill` naming its role. The bodies are project-specific and directive: one
-imperative bullet per rule, and no bullet names a source, test, manifest, or CI path — an exact
-command may still contain one. A bullet never says where a rule was observed: no evidence clause,
+`discover-architecture-boundaries`, `discover-glossary`, and `discover-contribution`. Each is a
+directory containing `SKILL.md` whose frontmatter has `name` equal to the directory, a non-empty
+`description` of at most 1024 characters, `metadata.devboard-managed: "true"`,
+`metadata.devboard-family: "discover"`, and `metadata.devboard-skill` naming its role. The bodies
+are project-specific and directive: one imperative bullet per rule, and no bullet names a source,
+test, manifest, or CI path — an exact command may still contain one. The contribution skill is the
+one exception to the no-prose rule: after its bullets it carries the verbatim quoted exemplar
+blocks described above. A bullet never says where a rule was observed: no evidence clause,
 file name, directory name, or path outside an exact command, so the skill carries policy and the
 sheet carries provenance. Testing strategy states levels, pyramid, commands, fixture roles,
 coverage expectations, and how to add a test; naming conventions state canonical terms, casing, and
@@ -1109,7 +1245,7 @@ dependencies, formatting, and prohibited constructs; architecture and boundaries
 entry points, dependency direction, persistence, integrations, and prohibited cross-boundary
 imports; the glossary skill names the canonical glossary directory, the confirmed and rejected
 rules, and the proposal process. From the host
-root, a new `omp` session lists the five (`omp skill list`) and loads their bodies as skills, so
+root, a new `omp` session lists the six (`omp skill list`) and loads their bodies as skills, so
 every implementation agent in that host discovers the set with no extra configuration.
 
 Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
@@ -1127,7 +1263,7 @@ the page renders no state badge and no purpose line, because the sidebar already
 or `missing`.
 `saveDiscoverSkill` writes the submitted bytes verbatim and updates the manifest's current hash and
 edited state; it is refused with one
-`discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
+`discoverError` when the name is not one of the six, the skill is missing, the frontmatter name
 no longer matches the directory, the description is empty or too long, or a marker was removed,
 and invalid text leaves the previous file byte-identical. `restoreDiscoverSkill` copies the current
 generated version over the live skill, recreating it when it was deleted; it spawns no agent. A
@@ -1226,8 +1362,8 @@ exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .stag
 the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
 `NO_COLOR=1`, and a 300-second timeout. The timeout ends the clone even when a helper inherits
 and holds the stderr pipe: the child's process group is killed, the staging checkout is removed,
-and the next Discover command is accepted. On success the checkout becomes the run root and the six
-agents run against it in the fixed order. Every peer starts with `--no-skills`, so neither a
+and the next Discover command is accepted. On success the checkout becomes the run root and the
+seven agents run against it in the fixed order. Every peer starts with `--no-skills`, so neither a
 clone's nor a host's `.omp/skills` are discovered or loaded; each agent contract excludes every
 `.omp` path, and OMP's background description compression of a foreign skill would otherwise log a
 warning the watchdog files. Publication writes into the checkout's `.omp`; when the sequence
@@ -1291,9 +1427,10 @@ client still receives it before its own command replies.
 
 While `remoteAvailable` is true the Overview renders a manual-testing target panel as its first
 region, above the project header and the sheet or the empty state. The panel header states the
-title and, with retained projects, their count. Its body separates the two scopes: a `Retained
-project` toolbar pairs its label with a dropdown (`data-testid="discover-remote-select"`) whose
-options are the retained URLs, newest first, with the active project selected and no host option;
+title, carries the source-only marker, and, with retained projects, their count on the trailing
+edge. Its body separates the two scopes: a `Retained project` toolbar pairs its label with a
+dropdown (`data-testid="discover-remote-select"`) whose options are the retained URLs, newest
+first, with the active project selected and no host option;
 a bordered list carries one 28px row per retained project with the URL and a remove control
 (`data-testid="discover-remote-remove"`, carrying the URL in `data-url`), the active row taking the
 accent surface, a 2px accent edge, and an `Active` badge; a surface-raised block labelled
@@ -1314,23 +1451,30 @@ no frame. While cloning, the panel shows the cloning URL and the activity area s
 reach the Discover error and notification surfaces only.
 
 `server/discover.test.ts` proves with the stub ACP peer and a fixture host under `.devboard/.tmp`
-that each of the six triggers sends exactly its own command and staging path, that a successful
+that each of the seven triggers sends exactly its own command and staging path, that a successful
 single trigger publishes only its owned files and leaves every other byte identical, that a failed
 or stopped trigger publishes nothing, that a host with no prior artifacts can publish any one
-slice, that Run all starts the six in the stated order and halts at the first failure without
-starting later agents, that a second start while one runs is refused, and that neither stop nor a
-failure rewrites a published artifact. `server/agents/prompt.test.ts` proves the six prompt
-snapshots, the chat proposal that changes the editor without writing, a save that writes exactly
-one prompt file, and the installed-host refusal. `verify:discover` builds the client, seeds source
-and installed fixture hosts, and drives headless Chrome through the Discovery group, each card's
-command and editor bytes, all six independent triggers with a byte-level check of the fixture
-`.omp` tree, the one-at-a-time refusal, Run all order and stop at the first seeded failure, prompt
-chat/save, and the installed host's refused save. `DISCOVER_VERIFY_ONLY=<scenario>` narrows a pass
-to the named scenarios and `DISCOVER_VERIFY_KEEP=1` keeps its fixtures under `.devboard/.tmp`.
+slice, that a contribution trigger without a forge corpus still publishes its git-derived facts,
+that an invalid contribution slice publishes nothing, that Run all starts the seven in the stated
+order and halts at the first failure without starting later agents, that a second start while one
+runs is refused, and that neither stop nor a failure rewrites a published artifact.
+`server/discover-contribution.test.ts` proves the contribution document validator accepts the
+documented shape and refuses a missing owned file, a known fact without value or evidence, an
+unknown fact with a value, an unmerged exemplar, a secret, an absolute path, and a malformed skill.
+`server/agents/prompt.test.ts` proves the seven prompt snapshots, the chat proposal that changes
+the editor without writing, a save that writes exactly one prompt file, the reset read, and the
+installed-host refusal. `verify:discover` builds the client, seeds source and installed fixture
+hosts, and drives headless Chrome through the Discovery group, each card's command and editor
+bytes, all seven independent triggers with a byte-level check of the fixture `.omp` tree, the
+contribution page's nine sections and merged-only evidence, the contribution skill page with its
+exemplars and save/restore, the forge-less unknown state, the one-at-a-time refusal, Run all order
+and stop at the first seeded failure, prompt chat/save, and the installed host's refused save.
+`DISCOVER_VERIFY_ONLY=<scenario>` narrows a pass to the named scenarios and
+`DISCOVER_VERIFY_KEEP=1` keeps its fixtures under `.devboard/.tmp`.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
-`owner/repo`, switching with zero clone invocations across a restart, one clone and the six agents on
+`owner/repo`, switching with zero clone invocations across a restart, one clone and the seven agents on
 re-discovery, unchanged bytes after a failed clone or agent, clear keeping every project, removal
 of exactly one directory with a restart, busy refusals, the missing-retained-directory fallback, the
 gate refusing every remote command without touching the retained root, a byte-identical host
@@ -1413,7 +1557,10 @@ propagation wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
-staging prefix, and keeps serving its loaded code. After the package is in place it runs the
+staging prefix, and replaces itself with the installed version without an operator click. Every
+connected page receives `serverRestarting`, waits for the replacement, and reloads once. The
+running process never restarts itself on a canonical source checkout, where no package exists
+under `.devboard/node_modules/@dsdenes/devboard`. After the package is in place it runs the
 same wrapper and harness-tree sync `install` runs, with the same git-tracked paths left
 untouched, so `.omp/commands`, `.omp/extensions`, `.omp/mcp.json`, and
 `.devboard/{prompts,extensions,lib,scripts/forge-auth.ts}` match the installed package before
@@ -1426,12 +1573,15 @@ it started with. If npm cannot serve the artifact and
 `.sha256` and installed instead. The npm child always runs in
 that staging directory, and the dashboard starts from the host root rather than the replaceable
 package directory, so replacing the package never leaves a child with a deleted working
-directory. `versionState` reports `running`, `installed`, `latest`, and `stale`; the reload
-control appears while `stale` is true and restarts the server from the installed package. A
-dashboard serving the canonical source checkout reads neither side from the checked-in manifest:
-it reports the newest release tag reachable from its `HEAD` on both sides, so an unreleased commit
-on top never changes the number and an unpacked checkout never claims `0.1.0`. After
-`bun run publish` the source checkout's `running` is the version that tag just published.
+directory. `versionState` reports `running`, `installed`, `latest`, and `stale`. A newer installed
+version replaces the running server without a click and reloads every connected page. When a
+replacement cannot start, the running version keeps serving, `versionState.replacement` carries
+both versions and the failure, the journal records it, and the reload control retries the
+launcher; the control is absent on the normal path. A dashboard serving the canonical source
+checkout reads neither side from the checked-in manifest: it reports the newest release tag
+reachable from its `HEAD` on both sides, so an unreleased commit on top never changes the number
+and an unpacked checkout never claims `0.1.0`. After `bun run publish` the source checkout's
+`running` is the version that tag just published.
 
 A check that cannot use the feed — an offline host, an unreachable Gitea API, a DNS or proxy
 failure, a refused or reset connection, a timeout, an API rate limit, or an answer that is not a
@@ -1581,6 +1731,24 @@ Background agents group. `agent-count-<id>` is the number of rows in that agent'
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
 queue.
 
+### Periodic forge reads
+
+All four periodic reads share one failure policy. A transport failure — a timeout, a refused or
+reset connection, a 5xx answer, or an unclassified error — keeps the last known filed rows, the
+last successful read time in `agent-sync-at`, and the lifecycle. The page reads `stale` with no
+`agent-sync-error`, and the read is retried automatically after 1, 2, 4, and 8 seconds, measured
+from the end of the previous attempt, with at most one read in flight per agent. The initial
+attempt plus those four retries is five attempts; the fifth consecutive transport failure moves
+the page to `error` with that attempt's reason in `agent-sync-error`, and later attempts follow
+the normal 60-second cadence rather than another immediate retry. A successful read at any point
+in the schedule clears the failures and advances the last-read time.
+
+A permanent failure — unusable credentials, a missing repository, an answer that is not the
+expected JSON, or missing forge configuration — and a rate-limited answer (a primary or secondary
+limit, abuse detection, or HTTP 429) surface on the first attempt without a retry. A rate limit
+still never raises `agent-error`. Forge writes, Start and Stop preflights, agent turns, and user
+commands are never retried.
+
 ### Transport
 
 Browser-to-backend state and controls use the WebSocket from
@@ -1620,16 +1788,18 @@ the complete flow and act through the Devboard MCP tools; no prompt asks for a J
 staged answer document for deterministic code to parse or correct. The chat prompts preserve those
 rules when they propose a revision.
 
-When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections render
-`agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
+When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections'
+closed summary carries the source-only marker (`source-only-badge`, the word `devboard`), and they
+render `agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
 `agent-prompt-chat-log` (present only once the chat has a turn), `agent-prompt-message`,
-`agent-prompt-send`, and `agent-prompt-save`. In every other host those three controls are absent
-and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action
-requires a harness source checkout; no file changes.
+`agent-prompt-send`, and `agent-prompt-save`. In every other host the summary carries no marker,
+those three controls are absent, and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an
+error naming that the action requires a harness source checkout; no file changes. A prompt that is
+absent or unreadable carries no marker either.
 
 `agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
-served checkout, adds nothing, strips nothing, and writes no other file; success shows
-`agent-prompt-notice` and leaves the editor on the saved bytes, and failure shows
+served checkout, adds nothing, strips nothing, and writes no other file; success shows the
+`save-feedback` notice and leaves the editor on the saved bytes, and failure shows
 `agent-prompt-error` with the file unchanged. The notice names the run that reads the file next:
 the next scan for Auto Scout and the next cycle for Design System. Only that click writes the file.
 A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
@@ -1710,10 +1880,11 @@ The prompt receives the shared `agent-limit-hour` and `agent-limit-pending` valu
 the hourly cap counts every `design` issue created in the last rolling 60 minutes in any state, the
 pending cap counts every open `design` issue, and one cycle files no more than the smaller room or
 100. The agent enforces the room by reading the issue list through the MCP read tools and files
-nothing when it is zero, recording the skip in activity. A failed forge read keeps the last known
-rows. Age alone never blocks filing: a read that succeeded before the cycle keeps filing even when
-the audit outlasts the sync interval. Caps never block an audit, a documentation change, or its
-release.
+nothing when it is zero, recording the skip in activity; clearing a cap resumes filing on the next
+cycle. A transient forge read failure keeps the last known rows and retries on the shared schedule;
+a permanent failure or a rate limit shows its reason at once. Age alone never blocks filing: a read
+that succeeded before the cycle keeps filing even when the audit outlasts the sync interval. Caps
+never block an audit, a documentation change, or its release.
 
 A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
 distinct interface surfaces or by an internal contradiction inside the documents. It may change
@@ -1811,6 +1982,19 @@ omp appends to an error it logs is removed, so repeated occurrences of one failu
 omp's own thinking-loop notice — `Thinking loop detected; aborting stream for retry.` — is a
 recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
 provider-error record.
+
+The ledger outlives a forge change: an entry may name an issue filed through another forge, or
+through the same project under a different instance. The delivery reports the URLs its configured
+forge serves, and the cycle never comments on one it does not. Such an entry stays filed in the
+ledger, is listed under `unowned` in `report.json` and under `Issues on another forge` in
+`report.md`, and makes the cycle `skipped` instead of `failed`; a failed write never masks a
+ledger entry that this forge cannot address.
+
+A cycle reads only real dashboards. A verification fixture is invisible: a dashboard whose
+repository root sits in `.devboard/.tmp`, or that reads a local release directory
+(`DEVBOARD_RELEASE_DIR`), is skipped, because its deliberate release, install, and server failures
+prove a script's assertion. The live watchdog verification opts back in with
+`DEVBOARD_WATCHDOG_FIXTURE=1`.
 
 ### Deduplication gate
 
@@ -2061,7 +2245,11 @@ answers `initialize` and `tools/list`.
 Every ACP peer the dashboard starts also receives an `mcp.json` beside its generated `config.yml`
 in `PI_CODING_AGENT_DIR`. That registration invokes a generated `devboard-mcp.ts` wrapper, so a
 peer whose cwd is a worktree or a temporary clone discovers the server without a project `.omp`
-directory. Model roles, provider selection, keys, and the peer environment are unchanged.
+directory. An ACP session ignores on-disk MCP discovery — the client owns the definitions — so the
+ACP client reads that `mcp.json` and sends every enabled stdio entry in the `session/new`
+`mcpServers` list, converting its `env` map to name/value pairs. A session opened without it has no
+Devboard tools at all, and a lifecycle prompt that reads or closes an issue fails at its first
+call. Model roles, provider selection, keys, and the peer environment are unchanged.
 
 The server speaks newline-delimited JSON-RPC over stdio. Only JSON-RPC messages reach stdout;
 diagnostics go to stderr. It answers `initialize` (protocol version, `serverInfo.name`,
@@ -2082,7 +2270,7 @@ call; `getMcpTools` reports the table as the `invocations` map and a missing fil
 
 |Tool|Inputs|Bounds|
 |---|---|---|
-|`devboard_status`|none|root, harness, state, live dashboard port/pid, version and versionState; no secret|
+|`devboard_status`|none|root, harness, state, branch/upstream/ahead/behind, live dashboard port/pid, version and versionState; no secret|
 |`agent_sessions_list`|`since`, `until`, `cwd`, `limit`, `offset`|50 rows default, 200 max, newest first|
 |`agent_session_read`|`id`, `offset`, `limit`|50 messages default, 200 max, 64 KiB of text|
 |`agent_session_search`|`query`, `limit`|case-insensitive, 100 matches, 200-character snippets|
@@ -2124,10 +2312,10 @@ from those headers and parses only the matching file, so one read does not cost 
   `flow_checkpoint_record` appends one checkpoint to `checkpoints.jsonl` and returns its id and
   commit, and `flow_verification_record` replaces `verification.json` and returns the recorded
   status. The session directory must sit under `<STATE_DIR>/flow/`.
-- `discover_sheet_stage`, `discover_glossary_stage`, `discover_significance_stage`, and
-  `discover_skill_stage` write one Discover agent's staged slice under
-  `<REPO_DIR>/.omp/discover/staging/` and return the path and identity. Publication reads exactly
-  those paths.
+- `discover_sheet_stage`, `discover_contribution_stage`, `discover_glossary_stage`,
+  `discover_significance_stage`, and `discover_skill_stage` write one Discover agent's staged slice
+  under `<REPO_DIR>/.omp/discover/staging/` and return the path and identity. Publication reads
+  exactly those paths.
 - `design_release_request` records one cycle's release summary and rationale as
   `<cycle>/release-request.json`; the Design System worker still performs the commit, push, release
   workflow wait, and publish.
@@ -2141,9 +2329,10 @@ from those headers and parses only the matching file, so one read does not cost 
 - `verification_run` runs only `test`, `check`, `build`, `typecheck`, or a `verify:<name>` present
   in `.devboard/package.json`, with `.devboard` as cwd, an optional bounded list of existing test
   paths, a 900-second deadline, and at most 16 KiB of captured output. It writes the check's complete
-  output to `<stateDir>/<check>.log` before the spawn, truncating any earlier file, and returns that
-  repository-relative path as `log`, so the 16 KiB `output` bound never shortens the evidence. The
-  deadline covers the output reads too and reaps the check's process group, so a descendant that
+  output to a log unique to that invocation and returns that repository-relative path as `log`, then
+  publishes the same complete output to `<stateDir>/<check>.log` when the run settles, so two
+  concurrent runs never unlink each other's evidence and the 16 KiB `output` bound never shortens it.
+  The deadline covers the output reads too and reaps the check's process group, so a descendant that
   inherits the pipes cannot hold the call. Any other check, a path outside `.devboard`, or an
   unknown `verify:<name>` is refused before anything runs.
 
@@ -2246,6 +2435,14 @@ neither hidden nor stopped; the next read covers it. With no connected client th
 no tracker call, and the worker's own poll still ends a run the moment it sees the issue leave the
 open list.
 
+That stop is a cancellation, never a completion. A run closes its own issue through
+`issue_close`, which records the closing run beside the issue's state under the worker's state
+directory; the worker passes `DEVBOARD_ISSUES_RUN_ID` to each peer so the tool can name it. The
+dashboard sends no `abandon` for a run the record names, and the worker applies none: the run
+finishes its turn, its own turn-end read proves the issue closed, and it is recorded `succeeded`
+with its handled entry, exactly as when a poll never dropped the issue. The record names one run,
+so a later run for the same issue is stopped as usual, and it is removed when its run settles.
+
 Session updates stream into the mode, permission requests are auto-approved by the ACP client,
 elicitation questions are answered per agent, and every peer closes when its run ends or Stop is
 clicked. The agents own every worktree, commit, push, issue closure, and repository mutation; the
@@ -2267,13 +2464,13 @@ the canonical checkout and never in another agent's worktree, and writes nothing
 result already in context is reused as-is, and only when the context lacks one does it run one
 canonical auth check, `bun .devboard/scripts/forge-auth.ts check --required write --json`, from the
 repository root: the wrapper takes the target from `DEVBOARD_GITEA_URL`, `GITEA_TOKEN`, and the
-`origin` remote, so no host or project is passed, the exit status and JSON are read directly, and
-no further auth probe runs in the session. The shared credential rule every tracker prompt follows
-is `.devboard/prompts/forge-auth.md`: the wrapper is the only authority for forge host, project,
-and token scope, and enumerating the environment or reading credential files to find them is
-forbidden. It changes only that issue's implementation, tests, and documentation; it may read
-other issues and code but never edits, comments on, closes, or reopens another issue. When the
-issue declares an open prerequisite (`depends on`, `blocked by`, or a
+`origin` remote, so no forge, host, project, or URL flag is passed, the exit status and JSON are
+read directly, and no further auth probe runs in the session. The shared credential rule every
+tracker prompt follows is `.devboard/prompts/forge-auth.md`: the wrapper is the only authority for
+forge host, project, and token scope, and enumerating the environment or reading credential files
+to find them is forbidden. It changes only that issue's implementation, tests, and documentation;
+it may read other issues and code but never edits, comments on, closes, or reopens another issue.
+When the issue declares an open prerequisite (`depends on`, `blocked by`, or a
 task-list issue reference), it writes `blocked: #<prerequisite>` as the first stderr line, exits
 nonzero, leaves the issue open and unhandled, and never implements the prerequisite in another
 agent's place. It is
@@ -2313,8 +2510,12 @@ time. A failed agent finishes its run as `failed` with its first stderr line, le
 open and unhandled, and writes only its own cooldown. A clean ACP turn is not proof of work: a
 refused slash command still ends the turn normally, so before a run can succeed the worker asks the
 tracker for that issue's state. Only an issue the tracker now reports closed finishes as
-`succeeded`, records only its issue as handled, and does not touch another issue; one that is still
-open, or whose state cannot be read, finishes as `failed` with a cooldown and stays unhandled. A
+`succeeded`, records only its issue as handled, and does not touch another issue. An issue still
+open after its turn gets up to four follow-up turns on the same peer, because nothing else prompts
+an ACP session again: a peer that yielded to a background job — `bun run publish` waits up to 1800
+seconds — reads that job's result in the next turn and closes its issue instead of leaving landed
+work unhandled. When the issue is still open after the last follow-up turn, or its state cannot be
+read, the run finishes as `failed` with a cooldown and stays unhandled. A
 verification error names its issue; when a later poll no longer lists that issue, the error
 clears, so the Overview never keeps claiming a closed issue is open. The five-minute
 cooldown remains: an issue in cooldown is retried when it expires, and other issues keep running
@@ -2641,42 +2842,59 @@ state, any open issue title, or any draft goal heading. The agent reads those ti
 `issues_list` and `issue_get`; a duplicate is skipped and consumes no cap slot.
 
 An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
-reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the commit that shipped it — the close entry's commit when present, otherwise the `commit_ref`
-entries of earlier commits whose message names the issue, otherwise every 7–40 character hex token
-of the newest comments, most recent first — to one unambiguous full commit through the checkout or
-the forge. Each candidate is verified rather than trusted: comment prose carries fingerprints,
-process ids, and epoch stamps that look like a SHA, so a candidate that does not resolve is skipped
-and the next one is tried, up to twelve candidates per issue. The first commit that resolves and
-appears in a published release decides the version. It then selects the earliest published release
-tag whose history contains that commit, ordered by `publishedAt` and breaking ties by tag name. A
-tag the checkout already carries answers containment offline; a release the checkout has not
-fetched is compared on the forge, so a host without local release tags still reports the version.
-The row shows `—` when no candidate resolves or no published release contains it, and a release
-published later fills a blank version on the next read. An API close records no commit, so a commit
-message names its issue with a trailing `(#<number>)` to give the forge that link.
+reopened issue returns to `pending` on the next read. For an implemented issue the worker first
+reads the checkout: every commit whose landed subject ends with `(#<number>)` names the issue, and
+the earliest published release containing any of them is the exact shipped version. That local
+answer outranks the forge and is re-read on every sync while the version is blank, so a release
+published later fills the row without waiting out the negative backoff. When the checkout names
+none, the worker resolves the commit that shipped it from the forge — the close entry's commit
+when present, otherwise the `commit_ref` entries of earlier commits whose message names the issue,
+otherwise every 7–40 character hex token of the newest comments, most recent first — to one
+unambiguous full commit through the checkout or the forge. Each candidate is verified rather than
+trusted: comment prose carries fingerprints, process ids, and epoch stamps that look like a SHA, so
+a candidate the forge reports as no such commit is skipped and the next one is tried, up to twelve
+candidates per issue. The first commit that resolves and appears in a published release decides
+the version. It then selects the earliest published release tag whose history contains that
+commit, ordered by `publishedAt` and breaking ties by tag name. A tag the checkout already carries
+answers containment offline; a release the checkout has not fetched is compared on the forge, so a
+host without local release tags still reports the version. A closed issue that names no commit at
+all — an API close records none, and a commit message that omits the issue number leaves the
+timeline empty — reports the release published closest to its close: the newest release published
+at or before the close, restricted to releases published after the issue was filed, and otherwise
+the earliest release published after the close. That fallback is an approximation: an issue closed
+long after the release that fixed it reports the newest release published before that close. The
+row shows `—` when a resolved commit has no published release yet, or when no commit resolves and
+no release falls after the filing; a release published later fills a blank version on the next
+read. A commit message names its issue with a trailing `(#<number>)`, which is both the forge's
+exact link and the checkout's landed reference.
 
 ### Periodic check
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
 and immediately on Start; the table, states, and versions reflect a change within one interval. One
 periodic read, including every `gh` child it starts and the release resolution that follows it, is
-bounded to 30 seconds; a read that does not finish records a sync error and releases the worker, so
-the next interval reads again. A closed issue whose version does not resolve is attempted at most
+bounded to 30 seconds; a read that does not finish is a retryable transport failure and releases
+the worker, so the retry schedule reads again (or, once exhausted, the next interval does). A
+closed issue whose version does not resolve is attempted at most
 once every six hours, and a newly published release retries every unresolved row at once. Each
 attempt records its time and, when it fails, the reason on the row; the rows that have waited
 longest are attempted first, and the whole resolution shares the read's deadline, so a stubborn
-issue cannot hold `syncing` and starve the remaining rows or the next scan. A failed
-read keeps the last known rows, shows the reason in `agent-sync-error`, and keeps the last success
-time in `agent-sync-at`; the reason clears on the next successful read. A failed read names the
-forge, never GitHub, so a Gitea failure never claims a GitHub read. Opening the page retries at
+issue cannot hold `syncing` and starve the remaining rows or the next scan. A transient read
+failure keeps the last known rows and the last success time, records no reason, reads as `stale`,
+and retries after 1, 2, 4, and 8 seconds; only the fifth consecutive transport failure writes that
+attempt's reason to `agent-sync-error`, after which the next attempt waits the 60-second cadence. A
+permanent failure (unusable credentials, a missing repository, a malformed answer, or missing forge
+configuration) surfaces on the first attempt. The reason clears on the next successful read, and a
+failed read names the forge, never GitHub, so a Gitea failure never claims a GitHub read. Opening
+the page retries at
 once: each open asks the attached worker for a read, shared across clients inside a five-second
 window, so a recovery no longer waits out the 60-second interval; Start still reads immediately,
 and a stopped worker is never started by a page. Filing stays blocked until a read succeeds. A
 GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse detection, or HTTP
 429) is a failed read like any other: it keeps the rows and blocks filing, and its reason stays in
-the sync banner. Because the operator's credential is shared with every other process on the host
-and the limit clears itself, it never raises the dashboard-wide error notification.
+the sync banner on the first answer without a retry. Because the operator's credential is shared
+with every other process on the host and the limit clears itself, it never raises the
+dashboard-wide error notification.
 
 ## Report, remove, or redesign a UI element
 
@@ -3299,11 +3517,12 @@ mutating command on reload, the timer-blocked state and one-click disable agains
 `systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
 detail and persisted settings, and the prompt section: every page renders `agent-prompt` directly
 after `agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach
-show `agent-prompt-absent`; an installed host is read-only and refuses a save with an error while
-its prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save
-for both file-backed agents, one chat turn streams a reply and changes the editor with the file
-untouched, Save makes each file byte-equal to its editor and a reload puts those bytes back in the
-editor.
+show `agent-prompt-absent`; an installed host is read-only, carries no source-only marker, and
+refuses a save with an error while its prompt files stay byte-identical; a source-checkout fixture
+renders the marker on the closed summary and the editor, chat, and save for both file-backed
+agents, opens and closes the disclosure with the marker still one, one chat turn streams a reply
+and changes the editor with the file untouched, Save makes each file byte-equal to its editor and
+a reload puts those bytes back in the editor.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

@@ -31,6 +31,7 @@ export {
   isSha,
   parseJsonArray,
   parseJsonLines,
+  releaseAtClose,
   resolveShippedVersion,
   shaTokens,
   shippedVersion,
@@ -43,6 +44,8 @@ export interface ScoutGitHubIssue {
   url: string;
   state: "open" | "closed";
   createdAt: string;
+  /** When the issue was closed, or null while it is open. */
+  closedAt: string | null;
   body: string;
 }
 
@@ -59,6 +62,8 @@ export interface ScoutGitHubClient {
   closingCommit(issueNumber: number): Promise<string | null>;
   /** Every candidate for that commit, newest first, for verification. */
   closingCommits?(issueNumber: number): Promise<string[]>;
+  /** The checkout's own commits whose landed subject ends with `(#<number>)`. */
+  landedCommits?(issueNumber: number): string[];
   /** One unambiguous full commit, through the checkout or GitHub, or null. */
   resolveCommit(short: string): Promise<string | null>;
   /** The published release tags whose history contains `commit`. */
@@ -166,6 +171,7 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
           url: issue.url,
           state: issue.state,
           createdAt: issue.createdAt,
+          closedAt: issue.closedAt,
           body: issue.body,
         }));
     },
@@ -182,6 +188,8 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
     closingCommit: (issueNumber) => version.closingCommit(issueNumber),
 
     closingCommits: (issueNumber) => version.closingCommits(issueNumber),
+
+    landedCommits: (issueNumber) => version.landedCommits(issueNumber),
 
     resolveCommit: (short) => version.resolveCommit(short),
 
@@ -231,7 +239,7 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
         "--limit",
         "1000",
         "--json",
-        "number,title,url,state,createdAt,body",
+        "number,title,url,state,createdAt,closedAt,body",
       ]);
       const entries = parseIssues(text);
       if (entries === undefined) throw new Error("gh issue list did not print a JSON array");
@@ -260,6 +268,10 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
           url: record.url,
           state,
           createdAt: record.createdAt,
+          closedAt:
+            typeof record.closedAt === "string" && record.closedAt.length > 0
+              ? record.closedAt
+              : null,
           body: record.body,
         });
       }
@@ -301,6 +313,8 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
     async closingCommits(issueNumber: number): Promise<string[]> {
       return await repositoryGitHub.closingCommits(issueNumber);
     },
+
+    landedCommits: (issueNumber) => repositoryGitHub.landedCommits(issueNumber),
 
     async resolveCommit(short: string): Promise<string | null> {
       return await repositoryGitHub.resolveCommit(short);

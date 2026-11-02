@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostHarnessDir } from "./version";
 
@@ -39,6 +39,11 @@ export interface RelaunchHooks {
   stop: (server: Listener) => void;
   /** Ends this process so the replacement owns the port. */
   exit: (code: number) => void;
+  /**
+   * Runs after the replacement exists but before the listener stops, so
+   * connected pages can be told to expect the new process.
+   */
+  beforeStop?: () => void;
   /** Test seams; production uses Bun and the host's harness lookup. */
   spawn?: (options: ReplacementOptions) => Replacement;
   exists?: (path: string) => boolean;
@@ -89,6 +94,17 @@ export function relaunch(
   settings: RelaunchSettings,
   hooks: RelaunchHooks,
 ): void {
+  // Fixtures can make the launcher fail without breaking the running process.
+  const stub = process.env.DEVBOARD_REPLACEMENT_STUB;
+  if (stub !== undefined && stub.length > 0) {
+    let mode = "";
+    try {
+      mode = readFileSync(stub, "utf8").trim();
+    } catch {
+      mode = "fail";
+    }
+    if (mode === "fail") throw new Error("stubbed replacement failure");
+  }
   const harness = (hooks.harnessDir ?? hostHarnessDir)(settings.repoDir);
   const entry = join(harness, "server", "index.ts");
   if (!(hooks.exists ?? existsSync)(entry)) {
@@ -100,6 +116,7 @@ export function relaunch(
     hooks.spawn ?? ((options) => Bun.spawn(options)),
   );
   child.unref();
+  hooks.beforeStop?.();
   hooks.stop(server);
   hooks.exit(0);
 }

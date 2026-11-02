@@ -28,8 +28,9 @@ import {
 
 /**
  * Discover Mode's artifact contract: the project sheet, the UbiLang glossaries,
- * the five project-local skills, the host fingerprint, canonical ordering, the
- * structural digest, staged validation, and atomic publication.
+ * the six project-local skills, the contribution sheet, the host fingerprint,
+ * canonical ordering, the structural digest, staged validation, and atomic
+ * publication.
  *
  * Everything this module writes lives under `<host>/.omp/discover/` or in a live
  * skill under `<host>/.omp/skills/`. It never writes `GOAL.md`, `adrs/`, host
@@ -44,6 +45,7 @@ export const DISCOVER_SKILLS = [
   "discover-coding-conventions",
   "discover-architecture-boundaries",
   "discover-glossary",
+  "discover-contribution",
 ] as const;
 
 export type DiscoverSkillName = (typeof DISCOVER_SKILLS)[number];
@@ -56,13 +58,14 @@ function isDiscoverSkill(name: string): name is DiscoverSkillName {
   return Object.hasOwn(DISCOVER_SKILLS_BY_NAME, name);
 }
 
-/** One of the six independently triggerable Discover agents. */
+/** One of the seven independently triggerable Discover agents. */
 export interface AgentOwnership {
   descriptor: DiscoverAgentDescriptor;
   /** Artifact roots, relative to the target root, this agent may publish. */
   skills: DiscoverSkillName[];
   sheet: boolean;
   glossary: boolean;
+  contribution: boolean;
 }
 
 /** Resolves an agent id to the exact artifacts it owns; null for an unknown id. */
@@ -78,6 +81,7 @@ export function agentOwnership(id: string): AgentOwnership | null {
     skills,
     sheet: descriptor.skill === null,
     glossary: descriptor.glossary,
+    contribution: descriptor.id === "discover-contribution",
   };
 }
 
@@ -144,6 +148,7 @@ const STAGED_SHEET = "sheet.json";
 const STAGED_GLOSSARY_DIR = "glossary";
 const STAGED_SIGNIFICANCE = "glossary/significance.json";
 const STAGED_SKILL_DIR = "skills";
+const STAGED_CONTRIBUTION = "contribution.json";
 
 /** The crawl's own significance sidecar: one score and one reason per staged concept. */
 const SIGNIFICANCE_SCHEMA_VERSION = 1;
@@ -2442,22 +2447,1304 @@ function validateSkillText(name: string, text: string, path: string): StagedSkil
   }
   const role = fields.get(`metadata.${SKILL_MARKER}`) ?? "";
   if (role.trim().length === 0) invalid(`${path}:metadata.${SKILL_MARKER}`, "must name the skill's role");
+  const contribution = name === "discover-contribution";
+  if (contribution) {
+    if (role !== "contribution") {
+      invalid(`${path}:metadata.${SKILL_MARKER}`, 'must equal "contribution"');
+    }
+    const sentences = description.match(/[.!?](?=\s|$)/g) ?? [];
+    if (!/[.!?]$/.test(description) || sentences.length !== 1) {
+      invalid(`${path}:description`, "must be one sentence");
+    }
+  }
   if (hasSecret(description) || hasSecret(role) || hasSecret(body)) {
     invalid(path, "must not carry a secret value");
   }
+  if (containsAbsoluteHostPath(body)) invalid(path, "must not carry an absolute host path");
   if (body.trim().length === 0) invalid(path, "must carry a body");
   const lines = body.split("\n");
+  if (contribution) {
+    const first = lines.find((line) => line.trim().length > 0)?.trim() ?? "";
+    if (!/^# \S/.test(first)) invalid(path, "body must open with one # heading");
+  }
   let bullets = 0;
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+    if (contribution && (line.startsWith("> ") || line === ">")) continue;
     if (!/^[-*+]\s+/.test(line.trimStart())) {
       invalid(path, "body prose must be imperative bullets, not paragraphs");
     }
     bullets += 1;
   }
   if (bullets === 0) invalid(path, "must carry at least one imperative bullet");
+  if (contribution && body.includes(">") && !/^## Exemplars\s*$/m.test(body)) {
+    invalid(path, "quoted exemplars must follow a ## Exemplars heading");
+  }
   return { name: name as DiscoverSkillName, text, body };
+}
+
+// ---------------------------------------------------------- contribution
+
+/**
+ * The Contribution Agent's slice. It stages raw evidence only: the repository
+ * workflow and testing facts, and the merged and closed-unmerged pull requests
+ * it read from the forge. The server derives every profile section from that
+ * evidence, so a style or size statistic can never be computed from a closed
+ * pull request and no number reaches the page without a recorded source.
+ */
+
+export const CONTRIBUTION_SECTION_IDS = [
+  "workflow",
+  "testing",
+  "pull-request-style",
+  "pull-request-size",
+  "conventions",
+  "review",
+  "documentation",
+  "hotspots",
+  "evidence",
+] as const;
+
+export type ContributionSectionId = (typeof CONTRIBUTION_SECTION_IDS)[number];
+export type ContributionConfidence = (typeof CONFIDENCES)[number];
+
+export interface ContributionFact {
+  key: string;
+  label: string;
+  value?: unknown;
+  evidence: string[];
+  confidence: ContributionConfidence;
+  reason?: string;
+}
+
+export interface ContributionSection {
+  id: ContributionSectionId;
+  label: string;
+  facts: ContributionFact[];
+}
+
+export interface ContributionSample {
+  number: number;
+  title: string;
+  body: string;
+}
+
+export interface Contribution {
+  schemaVersion: number;
+  freshness: Freshness;
+  sections: ContributionSection[];
+  sample: ContributionSample[];
+}
+
+const CONTRIBUTION_SECTION_LABELS: Record<ContributionSectionId, string> = {
+  workflow: "Workflow",
+  testing: "Testing",
+  "pull-request-style": "Pull request style",
+  "pull-request-size": "Pull request size",
+  conventions: "Conventions",
+  review: "Review",
+  documentation: "Documentation",
+  hotspots: "Hotspots",
+  evidence: "Evidence",
+};
+
+const CONTRIBUTION_FACT_LABELS: Record<ContributionSectionId, Record<string, string>> = {
+  workflow: {
+    entryPoints: "Contribution entry points",
+    steps: "Contribution steps",
+    prerequisites: "Prerequisites",
+    install: "Install",
+    build: "Build",
+    lint: "Lint",
+    typecheck: "Typecheck",
+    run: "Run",
+  },
+  testing: {
+    suite: "Whole suite",
+    levels: "Test levels",
+  },
+  "pull-request-style": {
+    titlePatterns: "Title patterns",
+    titleWords: "Title words",
+    bodyHeadings: "Body section headings",
+    bodyWords: "Body words",
+    bodyLines: "Body lines",
+    bulletRatio: "Bullet lines",
+    voice: "Voice and tense",
+    vocabulary: "Vocabulary",
+    issueLinking: "Issue linking",
+    templates: "Templates",
+    granularity: "Change granularity",
+  },
+  "pull-request-size": {
+    additions: "Additions",
+    deletions: "Deletions",
+    filesChanged: "Files changed",
+    testFileShare: "Test-file share",
+    largest: "Largest accepted pull request",
+    testsShare: "Pull requests that change tests",
+    documentationShare: "Pull requests that change documentation",
+    testsAndDocumentationShare: "Pull requests that change tests and documentation",
+  },
+  conventions: {
+    commitSubject: "Commit subjects",
+    commitBody: "Commit bodies",
+    branchNaming: "Branch naming",
+    mergeMethod: "Merge method",
+    issueReferences: "Issue references",
+  },
+  review: {
+    requiredApprovals: "Required approvals",
+    requiredChecks: "Required checks",
+    labels: "Labels",
+    draftUsage: "Draft usage",
+    mergeMethod: "Merge method",
+  },
+  documentation: {
+    documentationShare: "Documentation changes",
+    changelogShare: "Changelog changes",
+    convention: "Documentation convention",
+  },
+  hotspots: {
+    directories: "Directories",
+    files: "Files",
+    typicalFiles: "Typical file set",
+  },
+  evidence: {
+    forge: "Forge",
+    host: "Host",
+    sampleSize: "Merged sample size",
+    window: "Merge window",
+    closedUnmerged: "Closed, unmerged pull requests",
+    unknownFacts: "Unknown facts",
+  },
+};
+
+const WORKFLOW_FACT_KEYS = Object.keys(CONTRIBUTION_FACT_LABELS.workflow);
+const TESTING_FACT_KEYS = Object.keys(CONTRIBUTION_FACT_LABELS.testing);
+const CONTRIBUTION_STAGED_KEYS = ["schemaVersion", "source", "workflow", "testing"];
+const CONTRIBUTION_SOURCE_KEYS = [
+  "forge",
+  "host",
+  "unavailable",
+  "window",
+  "mergedPullRequests",
+  "closedUnmergedPullRequests",
+];
+const MERGED_PR_KEYS = [
+  "number",
+  "title",
+  "body",
+  "mergedAt",
+  "additions",
+  "deletions",
+  "filesChanged",
+  "files",
+  "testFiles",
+  "documentationFiles",
+  "labels",
+  "draft",
+  "approvals",
+  "checks",
+  "commits",
+  "branch",
+  "mergeMethod",
+  "references",
+];
+const MERGE_METHODS = ["merge", "squash", "rebase"] as const;
+const MERGED_SAMPLE_MAX = 50;
+const CONTRIBUTION_BODY_MAX = 20_000;
+const CONTRIBUTION_TITLE_MAX = 300;
+const CONTRIBUTION_REASON_MAX = 200;
+
+/** A fact before its label is assigned from the fixed section map. */
+interface ParsedFact {
+  key: string;
+  value?: unknown;
+  evidence: string[];
+  confidence: ContributionConfidence;
+  reason?: string;
+}
+
+interface MergedPullRequest {
+  number: number;
+  title: string;
+  body: string;
+  mergedAt: string;
+  additions: number;
+  deletions: number;
+  filesChanged: number;
+  files: string[];
+  testFiles: number;
+  documentationFiles: number;
+  labels: string[];
+  draft: boolean;
+  approvals: number;
+  checks: string[];
+  commits: Array<{ subject: string; body: string }>;
+  branch: string;
+  mergeMethod: (typeof MERGE_METHODS)[number];
+  references: number[];
+}
+
+export interface ContributionSource {
+  forge: "github" | "gitlab" | "gitea" | null;
+  host: string | null;
+  unavailable: string | null;
+  window: { from: string; to: string } | null;
+  merged: MergedPullRequest[];
+  closedUnmerged: number[];
+}
+
+interface StagedContribution {
+  source: ContributionSource;
+  workflow: ParsedFact[];
+  testing: ParsedFact[];
+}
+
+function contributionString(value: unknown, path: string, max: number): string {
+  if (typeof value !== "string") invalid(path, "must be a string");
+  if (value.length > max) invalid(path, `must be at most ${max} characters`);
+  if (hasSecret(value)) invalid(path, "must not carry a secret value");
+  if (containsAbsoluteHostPath(value)) invalid(path, "must not carry an absolute host path");
+  return value;
+}
+
+function containsAbsoluteHostPath(text: string): boolean {
+  if (ABSOLUTE_PATH_PATTERN.test(text)) return true;
+  if (/(?:^|[\s"'(=:])\/(?:home|Users|etc|var|tmp|opt|usr|root|private)\/[^\s]*/.test(text)) {
+    return true;
+  }
+  if (/[A-Za-z]:[\\/]/.test(text)) return true;
+  return /(?:^|[\s"'(=:])\\\\[^\s]+/.test(text);
+}
+
+function contributionLine(value: unknown, path: string, max: number): string {
+  const text = contributionString(value, path, max);
+  if (!singleLine(text)) invalid(path, "must be a single line");
+  const trimmed = text.trim();
+  if (trimmed.length === 0) invalid(path, "must not be empty");
+  return trimmed;
+}
+
+/** Evidence is repository-relative, a pull request, a commit, or a git query. */
+function contributionEvidence(value: unknown, path: string): string[] {
+  if (!Array.isArray(value)) invalid(path, "must be a list of evidence entries");
+  if (value.length > EVIDENCE_MAX) invalid(path, `must carry at most ${EVIDENCE_MAX} entries`);
+  const entries = new Set<string>();
+  for (const [index, entry] of value.entries()) {
+    const text = contributionLine(entry, `${path}[${index}]`, CELL_MAX);
+    const fixed =
+      text === "git log" ||
+      text === "git status" ||
+      text === "git branch" ||
+      text === "git ls-files" ||
+      text === "forge records" ||
+      /^PR #[1-9][0-9]*$/.test(text) ||
+      /^commit [0-9a-f]{7,40}$/.test(text);
+    if (!fixed) {
+      if (text.includes("://")) invalid(`${path}[${index}]`, "must not be a URL");
+      if (text.split("/").includes("..")) invalid(`${path}[${index}]`, "must stay inside the host");
+      if (
+        text === ".omp" ||
+        text === ".git" ||
+        text === ".devboard" ||
+        text === ".worktree" ||
+        /^(?:\.omp|\.git|\.devboard|\.worktree)\//.test(text)
+      ) {
+        invalid(`${path}[${index}]`, "must not cite an excluded crawl path");
+      }
+    }
+    entries.add(text);
+  }
+  return [...entries].sort();
+}
+
+function contributionRecord(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
+  if (!isRecord(value)) invalid(path, "must be an object");
+  for (const key of Object.keys(value)) {
+    if (!keys.includes(key)) invalid(`${path}.${key}`, "is not part of this record");
+  }
+  return value;
+}
+
+function contributionInteger(value: unknown, path: string, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    invalid(path, `must be an integer between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function contributionStringList(value: unknown, path: string, max = LIST_MAX): string[] {
+  if (!Array.isArray(value)) invalid(path, "must be a list");
+  if (value.length > max) invalid(path, `must carry at most ${max} entries`);
+  const entries = value.map((entry, index) =>
+    contributionLine(entry, `${path}[${index}]`, CELL_MAX),
+  );
+  return [...new Set(entries)].sort();
+}
+
+function contributionNumberList(value: unknown, path: string): number[] {
+  if (!Array.isArray(value)) invalid(path, "must be a list of numbers");
+  const numbers = value.map((entry, index) =>
+    contributionInteger(entry, `${path}[${index}]`, 1, 1_000_000_000),
+  );
+  return [...new Set(numbers)].sort((left, right) => left - right);
+}
+
+function contributionTimestamp(value: unknown, path: string): string {
+  if (typeof value !== "string" || value.length === 0) invalid(path, "must be an ISO timestamp");
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) invalid(path, "must be an ISO timestamp");
+  return new Date(time).toISOString();
+}
+
+function contributionBody(value: unknown, path: string): string {
+  if (typeof value !== "string") invalid(path, "must be a string");
+  const text = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (text.length > CONTRIBUTION_BODY_MAX) {
+    invalid(path, `must be at most ${CONTRIBUTION_BODY_MAX} characters`);
+  }
+  if (hasSecret(text)) invalid(path, "must not carry a secret value");
+  if (containsAbsoluteHostPath(text)) invalid(path, "must not carry an absolute host path");
+  return text;
+}
+
+function contributionFilePath(value: unknown, path: string): string {
+  const text = contributionLine(value, path, 512);
+  if (
+    text === ".omp" ||
+    text === ".git" ||
+    text === ".devboard" ||
+    text === ".worktree" ||
+    /^(?:\.omp|\.git|\.devboard|\.worktree)\//.test(text)
+  ) {
+    invalid(path, "must not cite an excluded crawl path");
+  }
+  if (text.split("/").includes("..")) invalid(path, "must stay inside the host");
+  return text;
+}
+
+function parseMergedPullRequest(value: unknown, index: number): MergedPullRequest {
+  const path = `source.mergedPullRequests[${index}]`;
+  const raw = contributionRecord(value, path, MERGED_PR_KEYS);
+  const filesChanged = contributionInteger(raw.filesChanged, `${path}.filesChanged`, 0, 100_000);
+  if (!Array.isArray(raw.files)) invalid(`${path}.files`, "must be a list of paths");
+  if (raw.files.length !== filesChanged) {
+    invalid(`${path}.files`, "must list exactly filesChanged paths");
+  }
+  const files = [...new Set(
+    raw.files.map((entry, fileIndex) =>
+      contributionFilePath(entry, `${path}.files[${fileIndex}]`),
+    ),
+  )].sort();
+  if (files.length !== filesChanged) invalid(`${path}.files`, "must not repeat a path");
+  const testFiles = contributionInteger(raw.testFiles, `${path}.testFiles`, 0, filesChanged);
+  const documentationFiles = contributionInteger(
+    raw.documentationFiles,
+    `${path}.documentationFiles`,
+    0,
+    filesChanged,
+  );
+  if (!Array.isArray(raw.commits)) invalid(`${path}.commits`, "must be a list");
+  if (raw.commits.length > LIST_MAX) invalid(`${path}.commits`, "must carry at most 64 commits");
+  const commits = raw.commits.map((entry, commitIndex) => {
+    const commitPath = `${path}.commits[${commitIndex}]`;
+    const record = contributionRecord(entry, commitPath, ["subject", "body"]);
+    return {
+      subject: contributionLine(record.subject, `${commitPath}.subject`, CONTRIBUTION_TITLE_MAX),
+      body: contributionBody(record.body, `${commitPath}.body`),
+    };
+  });
+  const mergeMethod = contributionLine(raw.mergeMethod, `${path}.mergeMethod`, 16);
+  if (!(MERGE_METHODS as readonly string[]).includes(mergeMethod)) {
+    invalid(`${path}.mergeMethod`, "must be merge, squash, or rebase");
+  }
+  if (typeof raw.draft !== "boolean") invalid(`${path}.draft`, "must be a boolean");
+  return {
+    number: contributionInteger(raw.number, `${path}.number`, 1, 1_000_000_000),
+    title: contributionLine(raw.title, `${path}.title`, CONTRIBUTION_TITLE_MAX),
+    body: contributionBody(raw.body, `${path}.body`),
+    mergedAt: contributionTimestamp(raw.mergedAt, `${path}.mergedAt`),
+    additions: contributionInteger(raw.additions, `${path}.additions`, 0, 100_000_000),
+    deletions: contributionInteger(raw.deletions, `${path}.deletions`, 0, 100_000_000),
+    filesChanged,
+    files,
+    testFiles,
+    documentationFiles,
+    labels: contributionStringList(raw.labels, `${path}.labels`),
+    draft: raw.draft,
+    approvals: contributionInteger(raw.approvals, `${path}.approvals`, 0, 1_000),
+    checks: contributionStringList(raw.checks, `${path}.checks`),
+    commits,
+    branch: contributionLine(raw.branch, `${path}.branch`, 200),
+    mergeMethod: mergeMethod as MergedPullRequest["mergeMethod"],
+    references: contributionNumberList(raw.references, `${path}.references`),
+  };
+}
+
+function contributionWindow(merged: MergedPullRequest[]): { from: string; to: string } {
+  const times = merged.map((pullRequest) => Date.parse(pullRequest.mergedAt)).sort((a, b) => a - b);
+  return {
+    from: new Date(times[0] as number).toISOString(),
+    to: new Date(times[times.length - 1] as number).toISOString(),
+  };
+}
+
+function parseContributionSource(value: unknown): ContributionSource {
+  const raw = contributionRecord(value, "source", CONTRIBUTION_SOURCE_KEYS);
+  const forge = raw.forge;
+  if (forge !== null && forge !== "github" && forge !== "gitlab" && forge !== "gitea") {
+    invalid("source.forge", "must be github, gitlab, gitea, or null");
+  }
+  const host = raw.host === null ? null : contributionLine(raw.host, "source.host", 200);
+  const unavailable =
+    raw.unavailable === null
+      ? null
+      : contributionLine(raw.unavailable, "source.unavailable", CONTRIBUTION_REASON_MAX);
+  if (!Array.isArray(raw.mergedPullRequests)) {
+    invalid("source.mergedPullRequests", "must be a list");
+  }
+  if (raw.mergedPullRequests.length > MERGED_SAMPLE_MAX) {
+    invalid("source.mergedPullRequests", `must carry at most ${MERGED_SAMPLE_MAX} pull requests`);
+  }
+  const merged = raw.mergedPullRequests.map(parseMergedPullRequest);
+  const numbers = new Set<number>();
+  for (const [index, pullRequest] of merged.entries()) {
+    if (numbers.has(pullRequest.number)) {
+      invalid(`source.mergedPullRequests[${index}].number`, "must be unique");
+    }
+    numbers.add(pullRequest.number);
+  }
+  const closedUnmerged = contributionNumberList(
+    raw.closedUnmergedPullRequests,
+    "source.closedUnmergedPullRequests",
+  );
+  if (closedUnmerged.some((number) => numbers.has(number))) {
+    invalid("source.closedUnmergedPullRequests", "must not repeat a merged pull request");
+  }
+  let window: ContributionSource["window"] = null;
+  if (raw.window !== null) {
+    const record = contributionRecord(raw.window, "source.window", ["from", "to"]);
+    window = {
+      from: contributionTimestamp(record.from, "source.window.from"),
+      to: contributionTimestamp(record.to, "source.window.to"),
+    };
+  }
+  if (unavailable !== null) {
+    if (merged.length > 0 || closedUnmerged.length > 0) {
+      invalid("source.unavailable", "must accompany empty pull-request lists");
+    }
+    if (window !== null) invalid("source.window", "must be null when the forge was unavailable");
+    if (host !== null) invalid("source.host", "must be null when the forge was unavailable");
+    if (forge !== null) invalid("source.forge", "must be null when the forge was unavailable");
+  }
+  if (merged.length > 0) {
+    if (forge === null) invalid("source.forge", "must name the forge that supplied the sample");
+    if (host === null) invalid("source.host", "must name the host that supplied the sample");
+    const computed = contributionWindow(merged);
+    if (window === null || window.from !== computed.from || window.to !== computed.to) {
+      invalid("source.window", "must span the merged sample's merge times");
+    }
+  }
+  return { forge, host, unavailable, window, merged, closedUnmerged };
+}
+
+function validateContributionValue(value: unknown, path: string): void {
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) invalid(path, "must be a finite number");
+    return;
+  }
+  if (typeof value === "string") {
+    contributionString(value, path, CONTRIBUTION_BODY_MAX);
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > LIST_MAX) invalid(path, `must carry at most ${LIST_MAX} entries`);
+    for (const [index, entry] of value.entries()) {
+      validateContributionValue(entry, `${path}[${index}]`);
+    }
+    return;
+  }
+  if (isRecord(value)) {
+    const keys = Object.keys(value);
+    if (keys.length > 16) invalid(path, "must carry at most 16 keys");
+    for (const key of keys) {
+      if (!SKILL_NAME_PATTERN.test(key.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase())) {
+        invalid(`${path}.${key}`, "must be a camelCase field name");
+      }
+      validateContributionValue(value[key], `${path}.${key}`);
+    }
+    return;
+  }
+  invalid(path, "must be a JSON value");
+}
+
+function parseContributionFact(value: unknown, path: string, key: string): ParsedFact {
+  const raw = contributionRecord(value, path, ["key", "value", "evidence", "confidence", "reason"]);
+  if (raw.key !== key) invalid(`${path}.key`, `must be ${key}`);
+  const confidence = raw.confidence;
+  if (typeof confidence !== "string" || !(CONFIDENCES as readonly string[]).includes(confidence)) {
+    invalid(`${path}.confidence`, "must be observed, declared, inferred, or unknown");
+  }
+  const evidence = contributionEvidence(raw.evidence, `${path}.evidence`);
+  const declaredConfidence = confidence as ContributionConfidence;
+  if (declaredConfidence === "unknown") {
+    if (Object.hasOwn(raw, "value")) invalid(`${path}.value`, "must be absent on an unknown fact");
+    if (evidence.length > 0) invalid(`${path}.evidence`, "must be empty on an unknown fact");
+    const reason = contributionLine(raw.reason, `${path}.reason`, CONTRIBUTION_REASON_MAX);
+    return { key, evidence, confidence: declaredConfidence, reason };
+  }
+  if (!Object.hasOwn(raw, "value")) invalid(`${path}.value`, "must be present on a known fact");
+  if (evidence.length === 0) invalid(`${path}.evidence`, "must ground a known fact");
+  if (Object.hasOwn(raw, "reason")) invalid(`${path}.reason`, "belongs only to an unknown fact");
+  validateContributionValue(raw.value, `${path}.value`);
+  return { key, value: raw.value, evidence, confidence: declaredConfidence };
+}
+
+function parseContributionFacts(
+  value: unknown,
+  section: "workflow" | "testing",
+  keys: readonly string[],
+): ParsedFact[] {
+  if (!Array.isArray(value)) invalid(section, "must be a list of facts");
+  const byKey = new Map<string, unknown>();
+  for (const [index, entry] of value.entries()) {
+    if (!isRecord(entry)) invalid(`${section}[${index}]`, "must be a fact object");
+    const key = entry.key;
+    if (typeof key !== "string" || !keys.includes(key)) {
+      invalid(`${section}[${index}].key`, `must be one of ${keys.join(", ")}`);
+    }
+    if (byKey.has(key)) invalid(`${section}[${index}].key`, `must appear once for ${key}`);
+    byKey.set(key, entry);
+  }
+  return keys.map((key) => {
+    const entry = byKey.get(key);
+    if (entry === undefined) invalid(`${section}.${key}`, "must carry this fact");
+    return parseContributionFact(entry, `${section}.${key}`, key);
+  });
+}
+
+function parseStagedContribution(raw: unknown): StagedContribution {
+  const record = contributionRecord(raw, "contribution.json", CONTRIBUTION_STAGED_KEYS);
+  if (record.schemaVersion !== 1) invalid("contribution.json.schemaVersion", "must equal 1");
+  return {
+    source: parseContributionSource(record.source),
+    workflow: parseContributionFacts(record.workflow, "workflow", WORKFLOW_FACT_KEYS),
+    testing: parseContributionFacts(record.testing, "testing", TESTING_FACT_KEYS),
+  };
+}
+
+// ------------------------------------------------- contribution derivation
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[middle] as number;
+  const average = ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2;
+  return Math.round(average * 10) / 10;
+}
+
+function spread(values: number[]): { median: number; min: number; max: number } {
+  const sorted = [...values].sort((left, right) => left - right);
+  return {
+    median: median(sorted),
+    min: sorted[0] ?? 0,
+    max: sorted[sorted.length - 1] ?? 0,
+  };
+}
+
+function percent(part: number, total: number): number {
+  if (total === 0) return 0;
+  return Math.round((part / total) * 100);
+}
+
+function wordsOf(text: string): string[] {
+  return text.split(/\s+/).filter((word) => word.length > 0);
+}
+
+const STOP_WORDS = new Set([
+  "the", "and", "for", "this", "that", "with", "from", "into", "when", "then", "than", "have",
+  "has", "had", "was", "were", "are", "but", "not", "its", "our", "their", "they", "them", "you",
+  "your", "will", "would", "can", "could", "should", "must", "may", "also", "only", "just", "now",
+  "pull", "request", "requests", "branch", "commit", "commits", "code", "file", "files", "test",
+  "tests", "change", "changes", "changed", "add", "adds", "added", "update", "updates", "updated",
+  "fix", "fixes", "fixed", "use", "uses", "used", "make", "makes", "made", "more", "less", "one",
+  "two", "new", "all", "any", "out", "over", "under", "after", "before", "about", "which", "where",
+  "there", "here", "been", "being", "does", "did", "doing", "what", "why", "how", "who", "each",
+]);
+
+function evidenceOf(merged: MergedPullRequest[]): string[] {
+  return merged
+    .map((pullRequest) => pullRequest.number)
+    .sort((left, right) => left - right)
+    .slice(0, EVIDENCE_MAX)
+    .map((number) => `PR #${number}`);
+}
+
+function fact(
+  section: ContributionSectionId,
+  key: string,
+  value: unknown,
+  evidence: string[],
+  confidence: ContributionConfidence,
+): ContributionFact {
+  return {
+    key,
+    label: CONTRIBUTION_FACT_LABELS[section][key] ?? key,
+    value,
+    evidence: [...new Set(evidence)].sort(),
+    confidence,
+  };
+}
+
+function unknownFact(
+  section: ContributionSectionId,
+  key: string,
+  reason: string,
+): ContributionFact {
+  return {
+    key,
+    label: CONTRIBUTION_FACT_LABELS[section][key] ?? key,
+    evidence: [],
+    confidence: "unknown",
+    reason: reason.slice(0, CONTRIBUTION_REASON_MAX),
+  };
+}
+
+function parsedFact(section: ContributionSectionId, parsed: ParsedFact): ContributionFact {
+  const base = {
+    key: parsed.key,
+    label: CONTRIBUTION_FACT_LABELS[section][parsed.key] ?? parsed.key,
+    evidence: parsed.evidence,
+    confidence: parsed.confidence,
+  };
+  return parsed.confidence === "unknown"
+    ? { ...base, reason: parsed.reason ?? "Unknown." }
+    : { ...base, value: parsed.value };
+}
+
+function styleFacts(merged: MergedPullRequest[]): ContributionFact[] {
+  const section = "pull-request-style" as const;
+  const evidence = evidenceOf(merged);
+  const titles = merged.map((pullRequest) => pullRequest.title);
+  const bodies = merged.map((pullRequest) => pullRequest.body);
+  const patternCounts = new Map<string, number>();
+  for (const title of titles) {
+    const match = /^([a-z]+)(?:\(([a-z0-9._/-]+)\))?(!?):\s+/.exec(title);
+    const pattern = match === null
+      ? "free-form summary"
+      : `${match[1]}${match[2] === undefined ? "" : `(${match[2]})`}${match[3] ?? ""}: summary`;
+    patternCounts.set(pattern, (patternCounts.get(pattern) ?? 0) + 1);
+  }
+  const titlePatterns = [...patternCounts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 8)
+    .map(([pattern, count]) => `${pattern} (${count})`);
+  const headingCounts = new Map<string, number>();
+  const headingFirst = new Map<string, number>();
+  for (const [bodyIndex, body] of bodies.entries()) {
+    for (const line of body.split("\n")) {
+      const match = /^#{1,6}\s+(.+?)\s*$/.exec(line);
+      if (match === null) continue;
+      const heading = match[1] as string;
+      headingCounts.set(heading, (headingCounts.get(heading) ?? 0) + 1);
+      if (!headingFirst.has(heading)) headingFirst.set(heading, headingFirst.size + bodyIndex * 0.001);
+    }
+  }
+  const bodyHeadings = [...headingCounts.entries()]
+    .sort(
+      (left, right) =>
+        right[1] - left[1] ||
+        (headingFirst.get(left[0]) ?? 0) - (headingFirst.get(right[0]) ?? 0) ||
+        left[0].localeCompare(right[0]),
+    )
+    .slice(0, 10)
+    .map(([heading]) => heading);
+  const bulletTotal = bodies.reduce((total, body) => {
+    const lines = body.split("\n").filter((line) => line.trim().length > 0);
+    const bullets = lines.filter((line) => /^\s*[-*+]\s+/.test(line)).length;
+    return { total: total.total + lines.length, bullets: total.bullets + bullets };
+  }, { total: 0, bullets: 0 });
+  const imperative = /^(Add|Allow|Avoid|Build|Bump|Change|Clean|Convert|Create|Document|Drop|Enable|Ensure|Expose|Fix|Handle|Improve|Introduce|Keep|Make|Move|Prefer|Rename|Remove|Replace|Restore|Return|Show|Support|Test|Update|Use|Validate)\b/;
+  const past = /^(Added|Allowed|Built|Bumped|Changed|Converted|Created|Documented|Dropped|Enabled|Ensured|Exposed|Fixed|Handled|Improved|Introduced|Kept|Made|Moved|Renamed|Removed|Replaced|Restored|Returned|Showed|Supported|Tested|Updated|Used|Validated)\b/;
+  const imperativeTitles = titles.filter((title) => imperative.test(title)).length;
+  const pastTitles = titles.filter((title) => past.test(title)).length;
+  const firstPersonBodies = bodies.filter((body) => /\b(?:I|we)\b/.test(body)).length;
+  const voice: string[] = [];
+  if (imperativeTitles > 0 && imperativeTitles >= pastTitles) voice.push("imperative");
+  if (pastTitles > imperativeTitles) voice.push("past tense");
+  if (firstPersonBodies > 0 && firstPersonBodies * 2 >= merged.length) voice.push("first person");
+  voice.sort();
+  const wordCounts = new Map<string, number>();
+  for (const body of bodies) {
+    for (const word of wordsOf(body.toLowerCase()).map((entry) => entry.replace(/[^a-z0-9-]/g, ""))) {
+      if (word.length < 4 || STOP_WORDS.has(word)) continue;
+      wordCounts.set(word, (wordCounts.get(word) ?? 0) + 1);
+    }
+  }
+  const vocabulary = [...wordCounts.entries()]
+    .filter(([, count]) => count >= 2)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 8)
+    .map(([word]) => word);
+  const closing = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#[0-9]+/i;
+  const reference = /#[0-9]+/;
+  const checklist = merged.filter((pullRequest) => /- \[[ xX]\]/.test(pullRequest.body)).length;
+  const screenshot = merged.filter((pullRequest) =>
+    /!\[|screenshot/i.test(pullRequest.body),
+  ).length;
+  const testPlan = merged.filter((pullRequest) =>
+    /^#{1,6}\s+test plan\b/im.test(pullRequest.body),
+  ).length;
+  const size = spread(merged.map((pullRequest) => pullRequest.filesChanged));
+  return [
+    fact(section, "titlePatterns", titlePatterns, evidence, "observed"),
+    fact(section, "titleWords", spread(titles.map((title) => wordsOf(title).length)), evidence, "observed"),
+    fact(section, "bodyHeadings", bodyHeadings, evidence, "observed"),
+    fact(section, "bodyWords", spread(bodies.map((body) => wordsOf(body).length)), evidence, "observed"),
+    fact(section, "bodyLines", spread(bodies.map((body) => body.split("\n").length)), evidence, "observed"),
+    fact(section, "bulletRatio", percent(bulletTotal.bullets, bulletTotal.total), evidence, "observed"),
+    fact(section, "voice", voice, evidence, "inferred"),
+    fact(section, "vocabulary", vocabulary, evidence, "inferred"),
+    fact(
+      section,
+      "issueLinking",
+      {
+        referenceShare: percent(
+          merged.filter((pullRequest) => reference.test(pullRequest.body)).length,
+          merged.length,
+        ),
+        closingShare: percent(
+          merged.filter((pullRequest) => closing.test(pullRequest.body)).length,
+          merged.length,
+        ),
+      },
+      evidence,
+      "observed",
+    ),
+    fact(
+      section,
+      "templates",
+      {
+        checklistShare: percent(checklist, merged.length),
+        screenshotShare: percent(screenshot, merged.length),
+        testPlanShare: percent(testPlan, merged.length),
+      },
+      evidence,
+      "observed",
+    ),
+    fact(
+      section,
+      "granularity",
+      `One accepted change touches a median of ${size.median} files (range ${size.min}-${size.max}).`,
+      evidence,
+      "inferred",
+    ),
+  ];
+}
+
+function sizeFacts(merged: MergedPullRequest[]): ContributionFact[] {
+  const section = "pull-request-size" as const;
+  const evidence = evidenceOf(merged);
+  const testShares = merged.map((pullRequest) =>
+    percent(pullRequest.testFiles, pullRequest.filesChanged),
+  );
+  const largest = [...merged].sort(
+    (left, right) =>
+      right.additions + right.deletions - (left.additions + left.deletions) ||
+      right.filesChanged - left.filesChanged ||
+      right.number - left.number,
+  )[0] as MergedPullRequest;
+  const withTests = merged.filter((pullRequest) => pullRequest.testFiles > 0).length;
+  const withDocs = merged.filter((pullRequest) => pullRequest.documentationFiles > 0).length;
+  const withBoth = merged.filter(
+    (pullRequest) => pullRequest.testFiles > 0 && pullRequest.documentationFiles > 0,
+  ).length;
+  return [
+    fact(section, "additions", spread(merged.map((pullRequest) => pullRequest.additions)), evidence, "observed"),
+    fact(section, "deletions", spread(merged.map((pullRequest) => pullRequest.deletions)), evidence, "observed"),
+    fact(section, "filesChanged", spread(merged.map((pullRequest) => pullRequest.filesChanged)), evidence, "observed"),
+    fact(section, "testFileShare", spread(testShares), evidence, "observed"),
+    fact(
+      section,
+      "largest",
+      {
+        number: largest.number,
+        additions: largest.additions,
+        deletions: largest.deletions,
+        filesChanged: largest.filesChanged,
+      },
+      evidence,
+      "observed",
+    ),
+    fact(section, "testsShare", percent(withTests, merged.length), evidence, "observed"),
+    fact(section, "documentationShare", percent(withDocs, merged.length), evidence, "observed"),
+    fact(section, "testsAndDocumentationShare", percent(withBoth, merged.length), evidence, "observed"),
+  ];
+}
+
+function conventionFacts(merged: MergedPullRequest[]): ContributionFact[] {
+  const section = "conventions" as const;
+  const evidence = evidenceOf(merged);
+  const commits = merged.flatMap((pullRequest) => pullRequest.commits);
+  const subjects = commits.map((commit) => commit.subject);
+  const subjectCounts = new Map<string, number>();
+  for (const subject of subjects) {
+    const match = /^([a-z]+)(?:\(([a-z0-9._/-]+)\))?(!?):\s+/.exec(subject);
+    const pattern = match === null
+      ? "free-form subject"
+      : `${match[1]}${match[2] === undefined ? "" : `(${match[2]})`}${match[3] ?? ""}: summary`;
+    subjectCounts.set(pattern, (subjectCounts.get(pattern) ?? 0) + 1);
+  }
+  const subjectPattern = [...subjectCounts.entries()].sort(
+    (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+  )[0];
+  const withBody = commits.filter((commit) => commit.body.length > 0).length;
+  const branchPrefixes = new Map<string, number>();
+  for (const pullRequest of merged) {
+    const prefix = pullRequest.branch.includes("/")
+      ? `${pullRequest.branch.split("/")[0]}/`
+      : "no-prefix";
+    branchPrefixes.set(prefix, (branchPrefixes.get(prefix) ?? 0) + 1);
+  }
+  const branchNaming = [...branchPrefixes.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 8)
+    .map(([prefix, count]) => `${prefix} (${count})`);
+  const mergeMethod = mergeMethodOf(merged);
+  const referenced = merged.filter(
+    (pullRequest) =>
+      pullRequest.references.length > 0 ||
+      pullRequest.commits.some((commit) => /#[0-9]+/.test(`${commit.subject} ${commit.body}`)),
+  ).length;
+  return [
+    fact(
+      section,
+      "commitSubject",
+      {
+        pattern: subjectPattern?.[0] ?? "free-form subject",
+        share: percent(subjectPattern?.[1] ?? 0, subjects.length),
+      },
+      evidence,
+      "observed",
+    ),
+    fact(
+      section,
+      "commitBody",
+      {
+        share: percent(withBody, commits.length),
+        medianLines: median(
+          commits.filter((commit) => commit.body.length > 0).map(
+            (commit) => commit.body.split("\n").length,
+          ),
+        ),
+      },
+      evidence,
+      "observed",
+    ),
+    fact(section, "branchNaming", branchNaming, evidence, "observed"),
+    fact(section, "mergeMethod", mergeMethod, evidence, "observed"),
+    fact(
+      section,
+      "issueReferences",
+      { referenceShare: percent(referenced, merged.length) },
+      evidence,
+      "observed",
+    ),
+  ];
+}
+
+function mergeMethodOf(merged: MergedPullRequest[]): string {
+  const counts = new Map<string, number>();
+  for (const pullRequest of merged) {
+    counts.set(pullRequest.mergeMethod, (counts.get(pullRequest.mergeMethod) ?? 0) + 1);
+  }
+  return (
+    [...counts.entries()].sort(
+      (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+    )[0]?.[0] ?? "merge"
+  );
+}
+
+function reviewFacts(merged: MergedPullRequest[]): ContributionFact[] {
+  const section = "review" as const;
+  const evidence = evidenceOf(merged);
+  const checks = [...new Set(merged.flatMap((pullRequest) => pullRequest.checks))].sort();
+  const labels = [...new Set(merged.flatMap((pullRequest) => pullRequest.labels))].sort();
+  return [
+    fact(
+      section,
+      "requiredApprovals",
+      Math.min(...merged.map((pullRequest) => pullRequest.approvals)),
+      evidence,
+      "observed",
+    ),
+    fact(section, "requiredChecks", checks, evidence, "observed"),
+    fact(section, "labels", labels, evidence, "observed"),
+    fact(
+      section,
+      "draftUsage",
+      percent(merged.filter((pullRequest) => pullRequest.draft).length, merged.length),
+      evidence,
+      "observed",
+    ),
+    fact(section, "mergeMethod", mergeMethodOf(merged), evidence, "observed"),
+  ];
+}
+
+function documentationFacts(merged: MergedPullRequest[]): ContributionFact[] {
+  const section = "documentation" as const;
+  const evidence = evidenceOf(merged);
+  const docs = merged.filter((pullRequest) => pullRequest.documentationFiles > 0).length;
+  const changelog = merged.filter((pullRequest) =>
+    pullRequest.files.some((file) =>
+      /(?:^|\/)(?:changelog|changes|release[-_]?notes)(?:\.[A-Za-z0-9]+)?$/i.test(file),
+    ),
+  ).length;
+  const docsShare = percent(docs, merged.length);
+  const changelogShare = percent(changelog, merged.length);
+  const convention =
+    docsShare === 0
+      ? "Merged pull requests do not change documentation."
+      : changelogShare === 0
+        ? "Merged pull requests change documentation in the same pull request, with no changelog file."
+        : "Merged pull requests change documentation and the changelog in the same pull request.";
+  return [
+    fact(section, "documentationShare", docsShare, evidence, "observed"),
+    fact(section, "changelogShare", changelogShare, evidence, "observed"),
+    fact(section, "convention", convention, evidence, "inferred"),
+  ];
+}
+
+function hotspotFacts(merged: MergedPullRequest[]): ContributionFact[] {
+  const section = "hotspots" as const;
+  const evidence = evidenceOf(merged);
+  const directoryCounts = new Map<string, number>();
+  const fileCounts = new Map<string, number>();
+  for (const pullRequest of merged) {
+    for (const file of pullRequest.files) {
+      fileCounts.set(file, (fileCounts.get(file) ?? 0) + 1);
+      const parts = file.split("/");
+      const directory = parts.length > 1 ? parts.slice(0, -1).join("/") : ".";
+      directoryCounts.set(directory, (directoryCounts.get(directory) ?? 0) + 1);
+    }
+  }
+  const top = (counts: Map<string, number>) =>
+    [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 8)
+      .map(([path, count]) => ({ path, count }));
+  return [
+    fact(section, "directories", top(directoryCounts), evidence, "observed"),
+    fact(section, "files", top(fileCounts), evidence, "observed"),
+    fact(
+      section,
+      "typicalFiles",
+      spread(merged.map((pullRequest) => pullRequest.filesChanged)),
+      evidence,
+      "observed",
+    ),
+  ];
+}
+
+/** Every fact that could not be observed, in section and fact order. */
+function unknownLedger(sections: ContributionSection[]): string[] {
+  return sections.flatMap((section) =>
+    section.facts
+      .filter((entry) => entry.confidence === "unknown")
+      .map((entry) => `${section.id}.${entry.key}: ${entry.reason ?? "unknown"}`),
+  );
+}
+
+/**
+ * Derives the complete contribution document from staged evidence. Every
+ * profile section is computed from the merged sample alone; the closed list is
+ * counted in `evidence` and never enters another fact.
+ */
+export function deriveContribution(
+  staged: StagedContribution,
+  freshness: Freshness,
+): Contribution {
+  const { source } = staged;
+  const merged = source.merged;
+  const unavailable = source.unavailable;
+  const emptyReason =
+    unavailable ??
+    (merged.length === 0 ? "No merged pull requests were found for the target." : "");
+  const evidence = evidenceOf(merged);
+  const sections: ContributionSection[] = [];
+
+  sections.push({
+    id: "workflow",
+    label: CONTRIBUTION_SECTION_LABELS.workflow,
+    facts: staged.workflow.map((entry) => parsedFact("workflow", entry)),
+  });
+  sections.push({
+    id: "testing",
+    label: CONTRIBUTION_SECTION_LABELS.testing,
+    facts: staged.testing.map((entry) => parsedFact("testing", entry)),
+  });
+
+  const profileSections: Array<{
+    id: ContributionSectionId;
+    keys: string[];
+    facts: () => ContributionFact[];
+  }> = [
+    {
+      id: "pull-request-style",
+      keys: Object.keys(CONTRIBUTION_FACT_LABELS["pull-request-style"]),
+      facts: () => styleFacts(merged),
+    },
+    {
+      id: "pull-request-size",
+      keys: Object.keys(CONTRIBUTION_FACT_LABELS["pull-request-size"]),
+      facts: () => sizeFacts(merged),
+    },
+    {
+      id: "conventions",
+      keys: Object.keys(CONTRIBUTION_FACT_LABELS.conventions),
+      facts: () => conventionFacts(merged),
+    },
+    {
+      id: "review",
+      keys: Object.keys(CONTRIBUTION_FACT_LABELS.review),
+      facts: () => reviewFacts(merged),
+    },
+    {
+      id: "documentation",
+      keys: Object.keys(CONTRIBUTION_FACT_LABELS.documentation),
+      facts: () => documentationFacts(merged),
+    },
+    {
+      id: "hotspots",
+      keys: Object.keys(CONTRIBUTION_FACT_LABELS.hotspots),
+      facts: () => hotspotFacts(merged),
+    },
+  ];
+  for (const profile of profileSections) {
+    sections.push({
+      id: profile.id,
+      label: CONTRIBUTION_SECTION_LABELS[profile.id],
+      facts:
+        merged.length === 0
+          ? profile.keys.map((key) => unknownFact(profile.id, key, emptyReason || "No evidence."))
+          : profile.facts(),
+    });
+  }
+
+  const forgeFact =
+    unavailable !== null || source.forge === null
+      ? unknownFact("evidence", "forge", unavailable ?? "The forge could not be determined.")
+      : fact("evidence", "forge", source.forge, ["forge records"], "observed");
+  const hostFact =
+    unavailable !== null || source.host === null
+      ? unknownFact("evidence", "host", unavailable ?? "The forge host could not be determined.")
+      : fact("evidence", "host", source.host, ["forge records"], "observed");
+  const sampleFact =
+    unavailable !== null
+      ? unknownFact("evidence", "sampleSize", unavailable)
+      : fact("evidence", "sampleSize", merged.length, evidence, "observed");
+  const windowFact =
+    unavailable !== null || source.window === null
+      ? unknownFact(
+          "evidence",
+          "window",
+          unavailable ?? "No merged pull requests were found.",
+        )
+      : fact("evidence", "window", source.window, evidence, "observed");
+  const closedFact =
+    unavailable !== null
+      ? unknownFact("evidence", "closedUnmerged", unavailable)
+      : fact("evidence", "closedUnmerged", source.closedUnmerged.length, ["forge records"], "observed");
+  const evidenceSection: ContributionSection = {
+    id: "evidence",
+    label: CONTRIBUTION_SECTION_LABELS.evidence,
+    facts: [forgeFact, hostFact, sampleFact, windowFact, closedFact],
+  };
+  const ledger = unknownLedger([...sections, evidenceSection]);
+  evidenceSection.facts.push(
+    fact(
+      "evidence",
+      "unknownFacts",
+      ledger,
+      unavailable === null ? ["forge records"] : ["git log"],
+      "observed",
+    ),
+  );
+  sections.push(evidenceSection);
+
+  return {
+    schemaVersion: 1,
+    freshness,
+    sections,
+    sample: contributionSample(merged),
+  };
+}
+
+/** The fixed exemplar rule: most recently merged first, then highest number. */
+export function contributionSample(merged: MergedPullRequest[]): ContributionSample[] {
+  return [...merged]
+    .sort(
+      (left, right) =>
+        Date.parse(right.mergedAt) - Date.parse(left.mergedAt) || right.number - left.number,
+    )
+    .slice(0, 3)
+    .map((pullRequest) => ({
+      number: pullRequest.number,
+      title: pullRequest.title,
+      body: pullRequest.body,
+    }));
+}
+
+const EXEMPLAR_MARKER = /^> PR #([1-9][0-9]*) — (.+)$/;
+
+interface ContributionExemplar {
+  number: number;
+  title: string;
+  body: string;
+}
+
+/** The quoted exemplar blocks at the end of a contribution skill body. */
+export function contributionExemplars(body: string): ContributionExemplar[] {
+  const exemplars: ContributionExemplar[] = [];
+  let current: ContributionExemplar | null = null;
+  for (const line of body.split("\n")) {
+    const marker = EXEMPLAR_MARKER.exec(line);
+    if (marker !== null) {
+      if (current !== null) exemplars.push(current);
+      current = { number: Number(marker[1]), title: (marker[2] as string).trim(), body: "" };
+      continue;
+    }
+    if (current === null) continue;
+    if (line === ">") {
+      current.body += "\n";
+      continue;
+    }
+    if (line.startsWith("> ")) {
+      current.body += `${line.slice(2)}\n`;
+      continue;
+    }
+    exemplars.push(current);
+    current = null;
+  }
+  if (current !== null) exemplars.push(current);
+  return exemplars.map((exemplar) => ({ ...exemplar, body: exemplar.body.replace(/\n$/, "") }));
+}
+
+function validateContributionSkill(
+  body: string,
+  path: string,
+  sample: ContributionSample[],
+  unavailable: string | null,
+): void {
+  const exemplars = contributionExemplars(body);
+  if (sample.length === 0) {
+    if (exemplars.length > 0) {
+      invalid(path, "must quote no exemplar when the merged sample is empty");
+    }
+    if (!/unknown/i.test(body)) {
+      invalid(path, "must state that its pull-request-derived rules are unknown");
+    }
+    if (unavailable !== null && !body.includes(unavailable)) {
+      invalid(path, "must state why the merged sample is unavailable");
+    }
+    return;
+  }
+  if (exemplars.length !== sample.length) {
+    invalid(path, `must quote exactly ${sample.length} merged exemplars`);
+  }
+  for (const [index, exemplar] of exemplars.entries()) {
+    const expected = sample[index] as ContributionSample;
+    if (
+      exemplar.number !== expected.number ||
+      exemplar.title !== expected.title ||
+      exemplar.body !== expected.body
+    ) {
+      invalid(path, `exemplar ${index + 1} must quote PR #${expected.number} verbatim`);
+    }
+  }
+}
+
+/** Reads and validates the one contribution document a run staged. */
+export function parseStagedContributionFile(
+  text: string,
+  path: string,
+  freshness: Freshness,
+): { contribution: Contribution; source: ContributionSource } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw new DiscoverValidationError(
+      `${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const staged = parseStagedContribution(raw);
+  return { contribution: deriveContribution(staged, freshness), source: staged.source };
+}
+
+/** Reads a published contribution document, never failing the other pages. */
+export function readContributionArtifact(
+  repoDir: string,
+  relativePath: string,
+): Contribution | null {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(join(repoDir, relativePath), "utf8"));
+    if (!isRecord(raw) || raw.schemaVersion !== 1) return null;
+    const freshness = raw.freshness;
+    if (!isRecord(freshness)) return null;
+    const header: Freshness = {
+      project: textValue(freshness.project, "freshness.project", 200),
+      commit: textValue(freshness.commit, "freshness.commit", 64),
+      dirty: freshness.dirty === true,
+      discoveredAt: textValue(freshness.discoveredAt, "freshness.discoveredAt", 64),
+      fingerprint: textValue(freshness.fingerprint, "freshness.fingerprint", 128),
+    };
+    if (!Array.isArray(raw.sections)) return null;
+    if (raw.sections.length !== CONTRIBUTION_SECTION_IDS.length) return null;
+    const sections: ContributionSection[] = [];
+    for (const [index, entry] of raw.sections.entries()) {
+      const id = CONTRIBUTION_SECTION_IDS[index] as ContributionSectionId;
+      const section = contributionRecord(entry, `sections[${index}]`, ["id", "label", "facts"]);
+      if (section.id !== id) return null;
+      if (!Array.isArray(section.facts)) return null;
+      const facts = section.facts.map((factEntry, factIndex) => {
+        const record = contributionRecord(factEntry, `sections[${index}].facts[${factIndex}]`, [
+          "key",
+          "label",
+          "value",
+          "evidence",
+          "confidence",
+          "reason",
+        ]);
+        if (typeof record.key !== "string") invalid("fact.key", "must be a string");
+        const fields = { ...record };
+        delete fields.label;
+        return parsedFact(
+          id,
+          parseContributionFact(fields, `sections[${index}].facts[${factIndex}]`, record.key),
+        );
+      });
+      sections.push({ id, label: CONTRIBUTION_SECTION_LABELS[id], facts });
+    }
+    if (!Array.isArray(raw.sample)) return null;
+    if (raw.sample.length > 3) return null;
+    const sample = raw.sample.map((entry, index) => {
+      const record = contributionRecord(entry, `sample[${index}]`, ["number", "title", "body"]);
+      return {
+        number: contributionInteger(record.number, `sample[${index}].number`, 1, 1_000_000_000),
+        title: contributionLine(record.title, `sample[${index}].title`, CONTRIBUTION_TITLE_MAX),
+        body: contributionBody(record.body, `sample[${index}].body`),
+      };
+    });
+    return { schemaVersion: 1, freshness: header, sections, sample };
+  } catch {
+    return null;
+  }
 }
 
 // ------------------------------------------------------- staged validation
@@ -2478,6 +3765,7 @@ export interface AgentStaged {
   sheet?: Sheet;
   glossaries?: Glossary[];
   significance?: GlossarySignificance;
+  contribution?: Contribution;
   skills: StagedSkill[];
 }
 
@@ -2505,6 +3793,7 @@ export function validateAgentStaged(
     const parts = file.split("/");
     const allowed =
       (ownership.sheet && file === STAGED_SHEET) ||
+      (ownership.contribution && file === STAGED_CONTRIBUTION) ||
       (ownership.glossary &&
         (file === STAGED_SIGNIFICANCE ||
           (parts[0] === STAGED_GLOSSARY_DIR &&
@@ -2583,6 +3872,25 @@ export function validateAgentStaged(
     );
   }
 
+  let contributionSource: ContributionSource | undefined;
+  if (ownership.contribution) {
+    if (!files.includes(STAGED_CONTRIBUTION)) {
+      throw new DiscoverValidationError("the agent left no contribution.json");
+    }
+    let text: string;
+    try {
+      text = readFileSync(join(stagingDir, STAGED_CONTRIBUTION), "utf8");
+    } catch (error) {
+      throw new DiscoverValidationError(
+        `could not read ${STAGED_CONTRIBUTION}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const parsed = parseStagedContributionFile(text, STAGED_CONTRIBUTION, freshness);
+    staged.contribution = parsed.contribution;
+    contributionSource = parsed.source;
+  }
+
   for (const name of ownership.skills) {
     const file = `${STAGED_SKILL_DIR}/${name}/SKILL.md`;
     if (!files.includes(file)) {
@@ -2597,6 +3905,19 @@ export function validateAgentStaged(
     if (glossarySkill === undefined || !glossarySkill.body.includes(path)) {
       throw new DiscoverValidationError(`discover-glossary does not name ${path}`);
     }
+  }
+
+  if (ownership.contribution) {
+    const skill = staged.skills.find((entry) => entry.name === "discover-contribution");
+    if (skill === undefined || staged.contribution === undefined) {
+      throw new DiscoverValidationError("the agent left no discover-contribution skill");
+    }
+    validateContributionSkill(
+      skill.body,
+      `${STAGED_SKILL_DIR}/discover-contribution/SKILL.md`,
+      staged.contribution.sample,
+      contributionSource?.unavailable ?? null,
+    );
   }
 
   return staged;
@@ -2681,6 +4002,8 @@ export interface Manifest {
     live: Record<string, string>;
     /** Absent in a manifest published before the significance sidecar existed. */
     significance?: string;
+    /** Absent in a manifest published before the contribution sheet existed. */
+    contribution?: string;
   };
 }
 
@@ -2741,6 +4064,13 @@ function validatedManifestPaths(
       repoDir,
       value.significance,
       `${field}.significance`,
+    );
+  }
+  if (value.contribution !== undefined) {
+    validated.contribution = validatedManifestPath(
+      repoDir,
+      value.contribution,
+      `${field}.contribution`,
     );
   }
   return validated;
@@ -2825,6 +4155,8 @@ interface PublishedRead {
   glossaries: Glossary[];
   significance: GlossarySignificance;
   decisions: Decision[];
+  /** Null when the host published before this artifact existed or it is unreadable. */
+  contribution: Contribution | null;
 }
 
 /**
@@ -2882,7 +4214,13 @@ function readPublished(repoDir: string): PublishedRead | undefined {
       ? {}
       : readSignificance(repoDir, manifest.paths.significance, glossaries);
   const decisions = readDecisions(repoDir);
-  return { manifest, sheet, glossaries, significance, decisions };
+  // One unreadable or pre-change contribution artifact never hides the other
+  // published pages; only the Contribution page falls back to its empty state.
+  const contribution =
+    manifest.paths.contribution === undefined
+      ? null
+      : readContributionArtifact(repoDir, manifest.paths.contribution);
+  return { manifest, sheet, glossaries, significance, decisions, contribution };
 }
 
 /** A live skill that is not this run's to replace. */
@@ -3160,6 +4498,26 @@ export function publishAgentStaged(input: PublishInput): PublishResult {
     writes.push({ path: join(repoDir, ".omp/discover/sheet.json"), content: renderJson(sheetValue) });
   }
 
+  if (ownership.contribution) {
+    if (staged.contribution === undefined) {
+      throw new DiscoverValidationError("the agent left no contribution.json");
+    }
+    const contribution: Contribution = {
+      ...staged.contribution,
+      freshness: {
+        project,
+        commit: facts.commit,
+        dirty: facts.dirty,
+        discoveredAt: new Date().toISOString(),
+        fingerprint: facts.fingerprint,
+      },
+    };
+    writes.push({
+      path: join(repoDir, ".omp/discover/contribution.json"),
+      content: renderJson(contribution),
+    });
+  }
+
   const orderedSkills = DISCOVER_SKILLS.flatMap((name) => {
     const entry = skillEntries.get(name);
     return entry === undefined ? [] : [entry];
@@ -3201,11 +4559,18 @@ export function publishAgentStaged(input: PublishInput): PublishResult {
         ownership.glossary || previousPaths === undefined
           ? ".omp/discover/significance.json"
           : previousPaths.significance,
+      contribution: ownership.contribution
+        ? ".omp/discover/contribution.json"
+        : previousPaths?.contribution,
     },
   };
   if (!ownership.glossary && previousManifest === undefined) {
     // A skill-only first publication carries no sidecar path at all.
     delete manifest.paths.significance;
+  }
+  if (!ownership.contribution && previousPaths?.contribution === undefined) {
+    // A pre-contribution host keeps its manifest free of the new path.
+    delete manifest.paths.contribution;
   }
 
   const decisions = readDecisions(repoDir);
@@ -3256,6 +4621,8 @@ export interface DiscoverArtifacts {
   significance: GlossarySignificance;
   decisions: Decision[];
   skills: SkillView[];
+  /** Null until the contribution agent publishes, or when its file is unreadable. */
+  contribution: Contribution | null;
 }
 
 export interface ArtifactsRead {
@@ -3376,6 +4743,7 @@ export function readArtifacts(repoDir: string): ArtifactsRead {
         significance: published.significance,
         decisions: published.decisions,
         skills,
+        contribution: published.contribution,
       },
       error: null,
     };
@@ -3417,7 +4785,7 @@ export interface SkillMutation {
 
 export function saveLiveSkill(repoDir: string, name: string, text: string): string | null {
   if (!isDiscoverSkill(name)) {
-    return `${name} is not one of the five Discover skills`;
+    return `${name} is not a Discover skill`;
   }
   const manifest = readManifest(repoDir);
   if (manifest === undefined) return "no Discover artifacts are published";
@@ -3452,7 +4820,7 @@ export function saveLiveSkill(repoDir: string, name: string, text: string): stri
 
 export function restoreLiveSkill(repoDir: string, name: string): string | null {
   if (!isDiscoverSkill(name)) {
-    return `${name} is not one of the five Discover skills`;
+    return `${name} is not a Discover skill`;
   }
   const manifest = readManifest(repoDir);
   if (manifest === undefined) return "no Discover artifacts are published";

@@ -9,12 +9,23 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
-import { settingsPath, statePath } from "../issues/scout/paths";
-import { emptyState, writeSettings, writeState } from "../issues/scout/state";
+import {
+  controlDirectory,
+  lockPath,
+  settingsPath,
+  statePath,
+  versionedControlDirectory,
+  versionedStatePath,
+  workerStateDirectories,
+} from "../issues/scout/paths";
+import { writeCommand } from "../issues/scout/control";
+import { acquireLock, versionLockPath } from "../issues/lock";
+import { emptyState, readState, writeSettings, writeState } from "../issues/scout/state";
+import { readHarnessVersion } from "../server/version";
 import { writeProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
 import { coachDirectory } from "../coach/paths";
@@ -181,30 +192,71 @@ async function promptDisclosure(devtools: Devtools): Promise<{
   open: boolean;
   summary: string;
   contentHidden: boolean;
+  badgeCount: number;
+  badgeText: string;
+  badgeTitle: string | null;
 }> {
   const value = await devtools.evaluate(`(() => {
     const all = document.querySelectorAll('[data-testid="agent-prompt"]');
     const details = all[0] ?? null;
     const summary = document.querySelector('[data-testid="agent-prompt-summary"]');
     const body = document.querySelector('[data-testid="agent-prompt-body"]');
+    const badges = summary === null
+      ? []
+      : [...summary.querySelectorAll('[data-testid="source-only-badge"]')];
     return {
       present: all.length === 1 && details !== null,
       open: details !== null && details.open === true,
-      summary: summary === null ? '' : (summary.textContent ?? '').trim(),
+      summary:
+        summary?.querySelector('.agent-prompt__title')?.textContent?.trim() ?? '',
       contentHidden:
         body === null
           ? true
           : typeof body.checkVisibility === "function"
             ? !body.checkVisibility()
             : body.getBoundingClientRect().height === 0,
+      badgeCount: badges.length,
+      badgeText: (badges[0]?.textContent ?? '').trim(),
+      badgeTitle: badges[0]?.getAttribute('title') ?? null,
     };
   })()`);
-  return (value ?? { present: false, open: false, summary: "", contentHidden: false }) as {
+  return (value ?? {
+    present: false,
+    open: false,
+    summary: "",
+    contentHidden: false,
+    badgeCount: 0,
+    badgeText: "",
+    badgeTitle: null,
+  }) as {
     present: boolean;
     open: boolean;
     summary: string;
     contentHidden: boolean;
+    badgeCount: number;
+    badgeText: string;
+    badgeTitle: string | null;
   };
+}
+
+/** The summary is the only marker site: none or exactly the one shared word. */
+async function assertPromptMarker(
+  devtools: Devtools,
+  page: string,
+  expected: boolean,
+): Promise<void> {
+  const disclosure = await promptDisclosure(devtools);
+  assertTrue(disclosure.present, `${page} renders no single agent-prompt disclosure`);
+  assertTrue(
+    disclosure.badgeCount === (expected ? 1 : 0),
+    `${page} carries ${disclosure.badgeCount} source-only markers`,
+  );
+  if (!expected) return;
+  assertTrue(disclosure.badgeText === "devboard", `${page} marker is ${disclosure.badgeText}`);
+  assertTrue(
+    disclosure.badgeTitle === "Only available when Devboard serves a harness source checkout",
+    `${page} marker tooltip is ${String(disclosure.badgeTitle)}`,
+  );
 }
 
 async function assertPromptClosed(devtools: Devtools, page: string): Promise<void> {
@@ -358,6 +410,34 @@ async function rows(devtools: Devtools): Promise<
   return Array.isArray(value)
     ? (value as Array<{ url: string; state: string; version: string; title: string }>)
     : [];
+}
+
+interface ScoutSyncState {
+  state: "ok" | "error" | "stale";
+  at: string | null;
+  error: string | null;
+}
+
+/** The Auto Scout worker state the source page renders. */
+function scoutSync(stateDir: string, root: string): ScoutSyncState | undefined {
+  const candidates: Array<{ updatedAt: string; sync: ScoutSyncState }> = [];
+  const legacy = readState(statePath(stateDir, root));
+  if (legacy !== undefined) candidates.push({ updatedAt: legacy.updatedAt, sync: legacy.sync });
+  for (const directory of workerStateDirectories(stateDir, root)) {
+    const state = readState(join(directory, "state.json"));
+    if (state !== undefined) candidates.push({ updatedAt: state.updatedAt, sync: state.sync });
+  }
+  return candidates.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]?.sync;
+}
+
+/** Edits the mutable gh store the source dashboard's stub reads. */
+async function updateGhStore(
+  path: string,
+  update: (store: Record<string, unknown>) => void,
+): Promise<void> {
+  const store = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  update(store);
+  await writeFile(path, JSON.stringify(store, null, 2));
 }
 
 const INSTALLED_PROMPT =
@@ -865,6 +945,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Coach");
+  await assertPromptMarker(devtools, "Coach", false);
   await openPrompt(devtools, "Coach");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
@@ -885,6 +966,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Auto Scout");
+  await assertPromptMarker(devtools, "Auto Scout", false);
   const installedLayout = await promptLayout(devtools);
   assertTrue(
     installedLayout.one &&
@@ -938,6 +1020,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Design System");
+  await assertPromptMarker(devtools, "Design System", false);
   await openPrompt(devtools, "Design System");
   assertTrue(
     (await countOf(devtools, "agent-prompt-absent")) === 0,
@@ -962,6 +1045,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Watchdog");
+  await assertPromptMarker(devtools, "Watchdog", false);
   await openPrompt(devtools, "Watchdog");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
@@ -1505,6 +1589,33 @@ try {
     (await text(devtools, "agent-blocked")).includes("devboard-watchdog.timer"),
     "the block does not name the timer",
   );
+  const blockedFrame = (await devtools.evaluate(`(() => {
+    const node = document.querySelector('[data-testid="agent-blocked"]');
+    const style = node === null ? null : getComputedStyle(node);
+    return {
+      top: style === null ? 0 : parseFloat(style.borderTopWidth),
+      right: style === null ? 0 : parseFloat(style.borderRightWidth),
+      bottom: style === null ? 0 : parseFloat(style.borderBottomWidth),
+      left: style === null ? 0 : parseFloat(style.borderLeftWidth),
+      leftColor: style?.borderLeftColor ?? "",
+      topColor: style?.borderTopColor ?? "",
+    };
+  })()`)) as {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+    leftColor: string;
+    topColor: string;
+  };
+  assertTrue(
+    blockedFrame.top === 1 &&
+      blockedFrame.right === 1 &&
+      blockedFrame.bottom === 1 &&
+      blockedFrame.left === 1 &&
+      blockedFrame.leftColor === blockedFrame.topColor,
+    `the block does not carry a uniform 1px frame: ${JSON.stringify(blockedFrame)}`,
+  );
   const startDisabled = await devtools.evaluate(
     `document.querySelector('[data-testid="agent-start"]')?.disabled ?? null`,
   );
@@ -1560,6 +1671,7 @@ try {
     15_000,
   );
   await assertPromptClosed(devtools, "source Auto Scout");
+  await assertPromptMarker(devtools, "source Auto Scout", true);
   const sourceLayout = await promptLayout(devtools);
   assertTrue(
     sourceLayout.one &&
@@ -1569,6 +1681,7 @@ try {
     `the source prompt section is misplaced: ${JSON.stringify(sourceLayout)}`,
   );
   await openPrompt(devtools, "source Auto Scout");
+  await assertPromptMarker(devtools, "open source Auto Scout", true);
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-editor")) ? true : undefined),
     "the source prompt editor",
@@ -1695,6 +1808,7 @@ try {
     15_000,
   );
   await assertPromptClosed(devtools, "source Design System");
+  await assertPromptMarker(devtools, "source Design System", true);
   const designLayout = await promptLayout(devtools);
   assertTrue(
     designLayout.one &&
@@ -1704,6 +1818,7 @@ try {
     `the source Design System prompt section is misplaced: ${JSON.stringify(designLayout)}`,
   );
   await openPrompt(devtools, "source Design System");
+  await assertPromptMarker(devtools, "open source Design System", true);
   await waitFor(
     async () =>
       (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === SOURCE_DESIGN_PROMPT
@@ -1757,10 +1872,346 @@ try {
   );
   console.log("PASS design-prompt-source");
 
+  /* 12. A transient forge read is retried before any alert; exhaustion alerts. */
+  await click(devtools, "open-devboard-scout");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === "scout"`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the source Auto Scout page",
+    15_000,
+  );
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = true;
+    store.failMessage = "the GitHub read is unavailable";
+  });
+  await click(devtools, "agent-start");
+  await waitFor(
+    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    "the retrying Auto Scout",
+    15_000,
+  );
+  await waitFor(
+    async () => ((await rows(devtools!)).length === 2 ? true : undefined),
+    "the preserved Auto Scout rows",
+    15_000,
+  );
+  const retrying = await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "stale" && sync.error === null ? sync : undefined;
+    },
+    "the stale sync state during a retry",
+    20_000,
+  );
+  const previousAt = retrying.at;
+  const preservedRows = await rows(devtools);
+  assertTrue(
+    !(await present(devtools, "agent-sync-error")),
+    "agent-sync-error is rendered during the retry window",
+  );
+  const retrySyncAt = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-sync-at"]')?.getAttribute('title') ?? ''`,
+  );
+  assertTrue(
+    retrySyncAt === (previousAt ?? "never"),
+    `the retry changed the last read time: ${String(retrySyncAt)}`,
+  );
+  console.log("PASS sync-retry-stale-state");
+  console.log("PASS sync-retry-no-alert");
+  console.log("PASS sync-retry-preserved-rows");
+
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = false;
+  });
+  const recovered = await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "ok" && sync.error === null && sync.at !== previousAt
+        ? sync
+        : undefined;
+    },
+    "the recovered read",
+    20_000,
+  );
+  await waitFor(
+    async () => ((await present(devtools!, "agent-sync-error")) ? undefined : true),
+    "the cleared retry alert",
+    10_000,
+  );
+  const recoveredRows = await rows(devtools);
+  assertTrue(
+    preservedRows.length === 2 && recoveredRows.length === 2,
+    `the retry changed the filed rows: ${JSON.stringify({ preservedRows, recoveredRows })}`,
+  );
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-sync-at"]')?.getAttribute('title') ?? ''`,
+        )
+        .catch(() => "")) === recovered.at
+        ? true
+        : undefined,
+    "the page to show the recovered read time",
+    10_000,
+  );
+  console.log("PASS sync-retry-clears");
+
+  /* No page shows an error for the retry that just succeeded. */
+  for (const id of ["scout", "watchdog", "design", "coach"]) {
+    await click(devtools, `open-devboard-${id}`);
+    await waitFor(
+      async () =>
+        (await devtools!
+          .evaluate(
+            `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === ${JSON.stringify(id)}`,
+          )
+          .catch(() => false)) === true
+          ? true
+          : undefined,
+      `the ${id} page after a successful retry`,
+      10_000,
+    );
+    assertTrue(
+      !(await present(devtools, "agent-sync-error")),
+      `${id} shows agent-sync-error after a successful retry`,
+    );
+  }
+  console.log("PASS sync-retry-all-pages");
+
+  /* A read that keeps failing exhausts the schedule into one alert. */
+  await click(devtools, "open-devboard-scout");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-page"]')?.dataset.agent === "scout"`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the source Auto Scout page",
+    15_000,
+  );
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = true;
+    store.failMessage = "the GitHub read is unavailable";
+  });
+  writeCommand(controlDirectory(sourceStateDir, sourceHost.directory), { type: "refresh" });
+  await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "stale" && sync.error === null ? sync : undefined;
+    },
+    "the first failure of the exhausted schedule",
+    15_000,
+  );
+  assertTrue(
+    !(await present(devtools, "agent-sync-error")),
+    "agent-sync-error is rendered while retries remain",
+  );
+  const exhausted = await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "error" && sync.error !== null ? sync : undefined;
+    },
+    "the exhausted retry schedule",
+    40_000,
+  );
+  await waitFor(
+    async () =>
+      (await text(devtools!, "agent-sync-error")).includes("unavailable") ? true : undefined,
+    "the exhausted sync alert",
+    10_000,
+  );
+  assertTrue(
+    exhausted.at === recovered.at,
+    `the exhausted schedule changed the last read time: ${String(exhausted.at)}`,
+  );
+  assertTrue(
+    (await rows(devtools)).length === 2,
+    "the exhausted schedule dropped the last known rows",
+  );
+  console.log("PASS sync-retry-exhausted-alert");
+
+  /* A permanent failure appears on the first attempt, and a success clears it. */
+  await click(devtools, "agent-stop");
+  await waitFor(
+    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    "the stopped retrying Auto Scout",
+    15_000,
+  );
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = true;
+    store.failMessage = "gh: HTTP 401: Bad credentials";
+  });
+  await click(devtools, "agent-start");
+  await waitFor(
+    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    "the permanently failing Auto Scout",
+    15_000,
+  );
+  await waitFor(
+    async () =>
+      (await text(devtools!, "agent-sync-error")).includes("Bad credentials")
+        ? true
+        : undefined,
+    "the permanent failure alert",
+    10_000,
+  );
+  const permanent = scoutSync(sourceStateDir, sourceHost.directory);
+  assertTrue(
+    permanent?.state === "error" && permanent.error?.includes("Bad credentials"),
+    `the permanent failure did not surface at once: ${JSON.stringify(permanent)}`,
+  );
+  assertTrue(
+    (await rows(devtools)).length === 2,
+    "the permanent failure dropped the last known rows",
+  );
+  console.log("PASS sync-retry-permanent-alert");
+
+  await updateGhStore(ghStore, (store) => {
+    store.failReads = false;
+  });
+  writeCommand(controlDirectory(sourceStateDir, sourceHost.directory), { type: "refresh" });
+  await waitFor(
+    () => {
+      const sync = scoutSync(sourceStateDir, sourceHost.directory);
+      return sync?.state === "ok" && sync.error === null ? sync : undefined;
+    },
+    "the read after the permanent failure",
+    15_000,
+  );
+  await waitFor(
+    async () => ((await present(devtools!, "agent-sync-error")) ? undefined : true),
+    "the cleared permanent alert",
+    10_000,
+  );
+  console.log("PASS sync-retry-permanent-clears");
+  await click(devtools, "agent-stop");
+  await waitFor(
+    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    "the stopped verified Auto Scout",
+    15_000,
+  );
+
+  /* ---------------------------------------------------------------- */
+  /* The shared page lists every live version and its controls address  */
+  /* both, with no version-divergence notice                            */
+  /* ---------------------------------------------------------------- */
+  const newestVersion = readHarnessVersion(harnessRoot) ?? "unknown";
+  const seededVersions = ["0.1.900", newestVersion];
+  const held = seededVersions.map((version) => {
+    const lock = acquireLock(versionLockPath(lockPath(host.directory), version), {
+      repo: host.directory,
+      stateDir,
+      harnessVersion: version,
+      argv: [],
+    });
+    assertTrue(lock.acquired, `verify:agents: could not seed the ${version} worker lock`);
+    const state = emptyState({ repo: "acme/fixture", root: host.directory });
+    state.lifecycle = "idle";
+    state.enabled = true;
+    state.worker = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      stateDir,
+      harnessVersion: version,
+      argv: [],
+    };
+    writeState(versionedStatePath(stateDir, host.directory, version), state);
+    return lock;
+  });
+  try {
+    const snapshotReady = Promise.withResolvers<Record<string, unknown>>();
+    const snapshotSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const snapshotTimer = setTimeout(() => {
+      snapshotSocket.close();
+      snapshotReady.reject(new Error("verify:agents: timed out reading agentsState"));
+    }, 15_000);
+    snapshotSocket.onopen = () => snapshotSocket.send(JSON.stringify({ type: "getAgents" }));
+    snapshotSocket.onmessage = (event) => {
+      const message = JSON.parse(String(event.data)) as Record<string, unknown>;
+      if (message.type !== "agentsState") return;
+      clearTimeout(snapshotTimer);
+      snapshotSocket.close();
+      snapshotReady.resolve(message);
+    };
+    snapshotSocket.onerror = () => {
+      clearTimeout(snapshotTimer);
+      snapshotReady.reject(new Error("verify:agents: websocket failed"));
+    };
+    const snapshot = await snapshotReady.promise;
+    const scoutAgent = (snapshot.agents as Array<Record<string, unknown>>).find(
+      (agent) => agent.id === "scout",
+    );
+    const shown = ((scoutAgent?.workers ?? []) as Array<{ version: string | null }>)
+      .map((worker) => worker.version ?? "unknown")
+      .sort();
+    for (const version of seededVersions) {
+      assertTrue(
+        shown.includes(version),
+        `verify:agents: the shared page lost the ${version} worker: ${JSON.stringify(shown)}`,
+      );
+    }
+    assertTrue(
+      !JSON.stringify(snapshot).includes("this dashboard loaded") &&
+        !JSON.stringify(snapshot).includes("It is left running"),
+      "verify:agents: the shared page shows a version divergence notice",
+    );
+    const stopped = Promise.withResolvers<void>();
+    const stopSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const stopTimer = setTimeout(() => {
+      stopSocket.close();
+      stopped.reject(new Error("verify:agents: timed out sending stopAgent"));
+    }, 15_000);
+    stopSocket.onopen = () => {
+      stopSocket.send(JSON.stringify({ type: "stopAgent", id: "scout" }));
+      clearTimeout(stopTimer);
+      stopSocket.close();
+      stopped.resolve();
+    };
+    stopSocket.onerror = () => {
+      clearTimeout(stopTimer);
+      stopped.reject(new Error("verify:agents: websocket failed"));
+    };
+    await stopped.promise;
+    await waitFor(
+      () =>
+        seededVersions.every((version) => {
+          try {
+            return readdirSync(
+              versionedControlDirectory(stateDir, host.directory, version),
+            ).some((name) => name.endsWith(".json"));
+          } catch {
+            return false;
+          }
+        })
+          ? true
+          : undefined,
+      "Stop to reach every live worker's control directory",
+      15_000,
+    );
+    console.log(
+      `verify:agents: takeover: the shared page lists ${shown.join(" and ")} and Stop addressed both, with no divergence notice`,
+    );
+  } finally {
+    for (const lock of held) {
+      if (lock.acquired) lock.release();
+    }
+  }
+
   console.log(
     "verify:agents: the Background agents section, all four shared pages, lifecycle, cadence, " +
       "nullable limits, the Watchdog cap, the shared table, Coach detail and settings, " +
-      "freshness, no mutation on reload, the timer gate, and the footer indicator all hold",
+      "freshness, no mutation on reload, the timer gate, the footer indicator, and the " +
+      "periodic-read retry window and exhausted alert all hold",
   );
 } finally {
   for (const pid of [chromePid, dashboardPid, sourceDashboardPid]) {

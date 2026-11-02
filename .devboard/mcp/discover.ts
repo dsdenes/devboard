@@ -12,6 +12,7 @@ import { resolveWithin, type McpContext } from "./context";
 
 export const DISCOVER_SKILL_NAMES = [
   "discover-architecture-boundaries",
+  "discover-contribution",
   "discover-coding-conventions",
   "discover-glossary",
   "discover-naming-conventions",
@@ -53,6 +54,22 @@ export function stageDiscoverSheet(
   const path = join(directory, "sheet.json");
   writeJson(path, sheet);
   const schemaVersion = sheet.schemaVersion;
+  return {
+    path,
+    schemaVersion: typeof schemaVersion === "number" ? schemaVersion : null,
+  };
+}
+
+/** Stages the contribution sheet as `contribution.json`. */
+export function stageDiscoverContribution(
+  context: McpContext,
+  options: { stagingDir?: unknown; contribution?: unknown },
+) {
+  const directory = stagingDirectory(context, options.stagingDir);
+  const contribution = record(options.contribution, "contribution");
+  const path = join(directory, "contribution.json");
+  writeJson(path, contribution);
+  const schemaVersion = contribution.schemaVersion;
   return {
     path,
     schemaVersion: typeof schemaVersion === "number" ? schemaVersion : null,
@@ -134,7 +151,7 @@ export function stageDiscoverSkill(
     "metadata:",
     '  devboard-managed: "true"',
     '  devboard-family: "discover"',
-    `  devboard-skill: ${JSON.stringify(skill)}`,
+    `  devboard-skill: ${skill}`,
     "---",
     "",
     body,

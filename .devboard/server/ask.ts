@@ -1,5 +1,11 @@
+import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { Subprocess } from "bun";
 import { nextActivity, type ActivityStream } from "./acp";
+import { DetachedPeer } from "./detached-run";
+import { pidAlive } from "../issues/lock";
+import { journalKey } from "./journal";
 
 /**
  * The element-scoped Ask conversation. One controller lives with the server;
@@ -426,8 +432,8 @@ interface AskSocket {
 
 interface Conversation {
   id: string;
-  socket: AskSocket;
-  peer: AskPeer | undefined;
+  socket: AskSocket | null;
+  peer: DetachedPeer | undefined;
   /** Visible turns, replayed to a replacement peer. */
   transcript: AskTranscriptEntry[];
   busy: boolean;
@@ -435,6 +441,8 @@ interface Conversation {
   answer: string;
   closed: boolean;
   turn: number;
+  /** The prompt of the turn in flight, so a replacement can re-attach. */
+  lastPrompt: string | null;
 }
 
 export interface AskControllerOptions {
@@ -446,20 +454,152 @@ export interface AskControllerOptions {
   environment: () => Promise<Record<string, string | undefined>>;
   /** Wall-clock bound for one turn; defaults to `ASK_TURN_TIMEOUT_MS`. */
   turnTimeoutMs?: number;
+  /** The dashboard state directory that retains conversations. */
+  stateDir?: string;
+  /** The dashboard instance that owns detached runs. */
+  instance?: string;
+  harnessVersion?: string | null;
+  /** True while this process is being replaced; conversations then survive. */
+  isRestarting?: () => boolean;
+}
+
+interface StoredConversation {
+  id: string;
+  transcript: AskTranscriptEntry[];
+  turn: number;
+  busy: boolean;
+  lastPrompt: string | null;
+}
+
+/** `<STATE_DIR>/ask/<repository key>`. */
+function askDirectory(stateDir: string, repoDir: string): string {
+  return join(resolve(stateDir), "ask", journalKey(resolve(repoDir)));
+}
+
+function conversationPath(stateDir: string, repoDir: string, id: string): string {
+  const key = createHash("sha256").update(id).digest("hex").slice(0, 32);
+  return join(askDirectory(stateDir, repoDir), `${key}.json`);
+}
+
+function readConversations(stateDir: string, repoDir: string): StoredConversation[] {
+  let names: string[];
+  try {
+    names = readdirSync(askDirectory(stateDir, repoDir)).filter((name) => name.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const conversations: StoredConversation[] = [];
+  for (const name of names) {
+    try {
+      const parsed: unknown = JSON.parse(
+        readFileSync(join(askDirectory(stateDir, repoDir), name), "utf8"),
+      );
+      if (typeof parsed !== "object" || parsed === null) continue;
+      const value = parsed as Record<string, unknown>;
+      if (typeof value.id !== "string" || !Array.isArray(value.transcript)) continue;
+      conversations.push({
+        id: value.id,
+        transcript: value.transcript.filter(
+          (entry): entry is AskTranscriptEntry =>
+            typeof entry === "object" &&
+            entry !== null &&
+            ((entry as Record<string, unknown>).role === "developer" ||
+              (entry as Record<string, unknown>).role === "agent") &&
+            typeof (entry as Record<string, unknown>).text === "string",
+        ),
+        turn: typeof value.turn === "number" && Number.isInteger(value.turn) ? value.turn : 0,
+        busy: value.busy === true,
+        lastPrompt: typeof value.lastPrompt === "string" ? value.lastPrompt : null,
+      });
+    } catch {
+      // An unreadable conversation is not a reason to stop serving.
+    }
+  }
+  return conversations;
 }
 
 /**
- * Owns every open Ask conversation. A conversation is created by its first
- * ask, bound to the asking socket, and destroyed by its close or the socket's.
+ * Owns every open Ask conversation. Each turn is a detached run, so a server
+ * replacement leaves the peer alive; the transcript and the in-flight prompt
+ * are retained under STATE_DIR so the replacement can re-attach.
  */
 export class AskController {
   readonly #options: AskControllerOptions;
   readonly #conversations = new Map<string, Conversation>();
   readonly #turnTimeoutMs: number;
+  readonly #stateDir: string | undefined;
 
   constructor(options: AskControllerOptions) {
     this.#options = options;
     this.#turnTimeoutMs = Math.max(1, options.turnTimeoutMs ?? ASK_TURN_TIMEOUT_MS);
+    this.#stateDir = options.stateDir === undefined ? undefined : resolve(options.stateDir);
+    if (this.#stateDir === undefined) return;
+    for (const stored of readConversations(this.#stateDir, options.cwd)) {
+      this.#conversations.set(stored.id, {
+        id: stored.id,
+        socket: null,
+        peer: undefined,
+        transcript: stored.transcript,
+        busy: stored.busy,
+        answer: "",
+        closed: false,
+        turn: stored.turn,
+        lastPrompt: stored.lastPrompt,
+      });
+    }
+  }
+
+  #persist(conversation: Conversation): void {
+    if (this.#stateDir === undefined) return;
+    try {
+      const path = conversationPath(this.#stateDir, this.#options.cwd, conversation.id);
+      mkdirSync(dirname(path), { recursive: true });
+      const stored: StoredConversation = {
+        id: conversation.id,
+        transcript: conversation.transcript,
+        turn: conversation.turn,
+        busy: conversation.busy,
+        lastPrompt: conversation.lastPrompt,
+      };
+      writeFileSync(`${path}.${process.pid}.tmp`, `${JSON.stringify(stored)}\n`);
+      renameSync(`${path}.${process.pid}.tmp`, path);
+    } catch {
+      // A read-only state directory still serves the conversation in memory.
+    }
+  }
+
+  #detached(
+    conversation: Conversation,
+    key: string,
+    prompt: string,
+    attachOnly: boolean,
+  ): DetachedPeer {
+    return new DetachedPeer({
+      repoDir: this.#options.cwd,
+      stateDir: this.#stateDir ?? join(this.#options.cwd, ".devboard", ".tmp"),
+      kind: "ask",
+      key,
+      instance: this.#options.instance ?? "ask",
+      harnessVersion: this.#options.harnessVersion ?? null,
+      attachOnly,
+      multi: true,
+      command: this.#options.command,
+      cwd: this.#options.cwd,
+      permissionPolicy: "deny",
+      onActivity: () => undefined,
+      onText: (text) => {
+        if (conversation.closed || !conversation.busy) return;
+        conversation.answer += text;
+        if (conversation.socket !== null) {
+          this.#send(conversation.socket, {
+            type: "askChunk",
+            conversationId: conversation.id,
+            text,
+          });
+        }
+      },
+      onQuestion: () => undefined,
+    });
   }
 
   async ask(socket: AskSocket, message: { conversationId?: unknown; question?: unknown; context?: unknown }): Promise<void> {
@@ -480,11 +620,11 @@ export class AskController {
     }
 
     const existing = this.#conversations.get(request.conversationId);
-    if (existing !== undefined && existing.socket !== socket) {
+    if (existing !== undefined && existing.socket !== null && existing.socket !== socket) {
       refuse("This conversation belongs to another client.");
       return;
     }
-    if (existing !== undefined && existing.busy) {
+    if (existing !== undefined && existing.busy && existing.peer !== undefined) {
       refuse("The agent is still answering the previous question.");
       return;
     }
@@ -498,144 +638,196 @@ export class AskController {
       answer: "",
       closed: false,
       turn: 0,
+      lastPrompt: null,
     };
+    conversation.socket = socket;
+    conversation.closed = false;
     if (existing === undefined) this.#conversations.set(conversation.id, conversation);
 
-    const turn = ++conversation.turn;
-    conversation.busy = true;
-    conversation.answer = "";
-    const replacement = conversation.peer === undefined || conversation.peer.closed;
-    const prompt = replacement
-      ? askPrompt(request, conversation.transcript)
-      : followUpPrompt(request.question);
-    conversation.transcript.push({ role: "developer", text: request.question });
-
-    const live = (): boolean => !conversation.closed && conversation.turn === turn;
+    // A replacement re-attaches to the turn that was already in flight.
+    const live = (turn: number): boolean =>
+      !conversation.closed && conversation.turn === turn && conversation.socket === socket;
     let deadline: Timer | undefined;
     const clearDeadline = (): void => {
       if (deadline === undefined) return;
       clearTimeout(deadline);
       deadline = undefined;
     };
-    // The turn starts with the provider selection, so a peer that accepts the
-    // prompt and stops producing output cannot hold the conversation busy: the
-    // deadline invalidates the turn, drops the peer, and reports the timeout.
-    deadline = setTimeout(() => {
-      deadline = undefined;
-      if (!live()) return;
-      conversation.turn += 1;
-      conversation.busy = false;
-      conversation.answer = "";
-      conversation.peer?.close();
-      conversation.peer = undefined;
-      this.#send(conversation.socket, {
-        type: "askError",
-        conversationId: conversation.id,
-        message: `The ask agent did not answer within ${timeoutLabel(this.#turnTimeoutMs)}.`,
-      });
-    }, this.#turnTimeoutMs);
-    const fail = (error: unknown): void => {
+    const fail = (error: unknown, turn: number): void => {
       clearDeadline();
-      if (!live()) return;
+      if (!live(turn)) return;
       conversation.busy = false;
-      // A peer that never opened a session cannot answer a follow-up, yet its
-      // process may stay alive after a refused handshake. Drop it so the next
-      // ask rebuilds the replacement prompt and spawns a fresh peer.
-      const failedPeer = conversation.peer;
-      if (failedPeer !== undefined && !failedPeer.hasSession) {
-        failedPeer.close();
+      // A peer that is gone needs a fresh owner; a live peer that refused one
+      // turn keeps its session for the next question.
+      const peer = conversation.peer;
+      if (peer !== undefined && (peer.pid === undefined || !pidAlive(peer.pid))) {
+        peer.close();
         conversation.peer = undefined;
       }
-      this.#send(conversation.socket, {
+      this.#persist(conversation);
+      this.#send(socket, {
         type: "askError",
         conversationId: conversation.id,
         message: error instanceof Error ? error.message : String(error),
       });
     };
 
-    let peer: AskPeer;
+    if (conversation.busy && conversation.lastPrompt !== null) {
+      const attachedTurn = conversation.turn;
+      const peer = this.#detached(conversation, conversation.id, conversation.lastPrompt, true);
+      conversation.peer = peer;
+      // Attachment begins polling only through `run`; the owner already has
+      // the turn, so this promise settles with the run's own outcome.
+      void peer.run("").catch(() => undefined);
+      void peer.waitTurn(attachedTurn).then(
+        () => {
+          if (!live(attachedTurn)) return;
+          conversation.busy = false;
+          if (conversation.answer.trim().length > 0) {
+            conversation.transcript.push({ role: "agent", text: conversation.answer });
+          }
+          conversation.answer = "";
+          this.#persist(conversation);
+          this.#send(socket, { type: "askDone", conversationId: conversation.id });
+        },
+        (error: unknown) => fail(error, attachedTurn),
+      );
+      return;
+    }
+
+    const firstTurn = conversation.peer === undefined || conversation.peer.closed;
+    const turnNumber = ++conversation.turn;
+    conversation.busy = true;
+    conversation.answer = "";
+    conversation.transcript.push({ role: "developer", text: request.question });
+    const prompt = firstTurn
+      ? askPrompt(request, conversation.transcript.slice(0, -1))
+      : followUpPrompt(request.question);
+    conversation.lastPrompt = prompt;
+    this.#persist(conversation);
+    // The turn starts with the provider selection, so a peer that accepts the
+    // prompt and stops producing output cannot hold the conversation busy: the
+    // deadline invalidates the turn, drops the peer, and reports the timeout.
+    deadline = setTimeout(() => {
+      deadline = undefined;
+      if (!live(turnNumber)) return;
+      conversation.turn += 1;
+      conversation.busy = false;
+      conversation.answer = "";
+      conversation.peer?.close();
+      conversation.peer = undefined;
+      this.#persist(conversation);
+      this.#send(socket, {
+        type: "askError",
+        conversationId: conversation.id,
+        message: `The ask agent did not answer within ${timeoutLabel(this.#turnTimeoutMs)}.`,
+      });
+    }, this.#turnTimeoutMs);
+
+    let peer: DetachedPeer;
     try {
-      if (replacement) {
+      if (!firstTurn) {
+        peer = conversation.peer as DetachedPeer;
+      } else {
         const env = await this.#options.environment();
         // A close, disconnect, or deadline during provider selection discards
         // the conversation. Constructing now would leave a peer no callback can
         // reach, so this turn ends without a process.
-        if (!live()) {
+        if (!live(turnNumber)) {
           clearDeadline();
           return;
         }
-        const created = new AskPeer({
+        const created = new DetachedPeer({
+          repoDir: this.#options.cwd,
+          stateDir: this.#stateDir ?? join(this.#options.cwd, ".devboard", ".tmp"),
+          kind: "ask",
+          key: conversation.id,
+          instance: this.#options.instance ?? "ask",
+          harnessVersion: this.#options.harnessVersion ?? null,
+          multi: true,
           command: this.#options.command,
           cwd: this.#options.cwd,
           env,
           permissionPolicy: "deny",
+          onActivity: () => undefined,
           onText: (text) => {
             // A late chunk of a replaced or timed-out peer belongs to no
             // visible answer, even when a later ask made the conversation busy.
-            if (conversation.closed || conversation.peer !== created || !conversation.busy) return;
+            if (conversation.peer !== created || !conversation.busy) return;
             conversation.answer += text;
-            this.#send(conversation.socket, {
-              type: "askChunk",
-              conversationId: conversation.id,
-              text,
-            });
+            if (conversation.socket !== null) {
+              this.#send(conversation.socket, {
+                type: "askChunk",
+                conversationId: conversation.id,
+                text,
+              });
+            }
           },
+          onQuestion: () => undefined,
         });
-        // The constructor spawns the child immediately; a close that lands
-        // between the guard and here must still end with no live peer.
-        if (!live()) {
+        // A close that lands between the guard and the constructor must still
+        // end with no live peer.
+        if (!live(turnNumber)) {
           created.close();
           clearDeadline();
           return;
         }
         peer = created;
         conversation.peer = created;
-      } else {
-        peer = conversation.peer as AskPeer;
       }
     } catch (error) {
-      fail(error);
+      fail(error, turnNumber);
       return;
     }
 
-    const turnPromise = replacement ? peer.run(prompt) : peer.prompt(prompt);
-    void turnPromise.then(
+    const turn = firstTurn ? peer.run(prompt) : peer.prompt(prompt);
+    void turn.then(
       () => {
         clearDeadline();
-        if (!live()) return;
+        if (!live(turnNumber)) return;
         conversation.busy = false;
         if (conversation.answer.trim().length > 0) {
           conversation.transcript.push({ role: "agent", text: conversation.answer });
         }
         conversation.answer = "";
-        this.#send(conversation.socket, {
-          type: "askDone",
-          conversationId: conversation.id,
-        });
+        this.#persist(conversation);
+        this.#send(socket, { type: "askDone", conversationId: conversation.id });
       },
-      (error: unknown) => {
-        fail(error);
-      },
+      (error: unknown) => fail(error, turnNumber),
     );
   }
 
-  /** Closes one conversation and kills its peer; a stale id is ignored. */
+  /** Closes one conversation and stops its run; a stale id is ignored. */
   close(socket: AskSocket, conversationId: unknown): void {
     if (typeof conversationId !== "string") return;
     const conversation = this.#conversations.get(conversationId);
-    if (conversation === undefined || conversation.socket !== socket) return;
+    if (conversation === undefined) return;
+    if (conversation.socket !== null && conversation.socket !== socket) return;
     this.#discard(conversation);
   }
 
-  /** A closed socket owns no conversation and no peer. */
+  /** A closed socket owns no conversation; a replacement keeps them. */
   disconnect(socket: AskSocket): void {
     for (const conversation of [...this.#conversations.values()]) {
-      if (conversation.socket === socket) this.#discard(conversation);
+      if (conversation.socket !== socket) continue;
+      if (this.#options.isRestarting?.() === true) {
+        conversation.socket = null;
+        this.#persist(conversation);
+      } else {
+        this.#discard(conversation);
+      }
     }
   }
 
-  /** Stops every peer; used when the server shuts down. */
+  /** Stops every peer unless a replacement is about to adopt them. */
   dispose(): void {
+    if (this.#options.isRestarting?.() === true) {
+      for (const conversation of this.#conversations.values()) {
+        conversation.socket = null;
+        this.#persist(conversation);
+      }
+      return;
+    }
     for (const conversation of [...this.#conversations.values()]) {
       this.#discard(conversation);
     }
@@ -647,9 +839,19 @@ export class AskController {
     conversation.turn += 1;
     conversation.answer = "";
     conversation.transcript = [];
+    conversation.lastPrompt = null;
     conversation.peer?.close();
     conversation.peer = undefined;
     this.#conversations.delete(conversation.id);
+    if (this.#stateDir !== undefined) {
+      try {
+        rmSync(conversationPath(this.#stateDir, this.#options.cwd, conversation.id), {
+          force: true,
+        });
+      } catch {
+        // Already gone.
+      }
+    }
   }
 
   #send(socket: AskSocket, event: unknown): void {

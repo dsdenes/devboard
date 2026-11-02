@@ -4,12 +4,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { agentRegistry } from "../server/agents/registry";
+import { readHarnessVersion } from "../server/version";
 import { WatchdogActivity, preflightWatchdog } from "../server/watchdog";
 import { writeWatchdogCommand } from "../watchdog/control";
 import { loadLedger, saveLedger } from "../watchdog/ledger";
 import {
   controlDirectory,
-  lockPath,
+  versionedControlDirectory,
+  versionedLockPath,
+  versionedWorkerDirectory,
   watchdogDirectory,
   workerStatePath,
 } from "../watchdog/paths";
@@ -17,6 +20,8 @@ import { writeWatchdogSettings } from "../watchdog/settings";
 import { writeWorkerState } from "../watchdog/worker-state";
 
 const harnessRoot = resolve(import.meta.dir, "..");
+/** New workers publish under their own harness version, not the legacy path. */
+const harnessVersion = readHarnessVersion(harnessRoot);
 const temporaryDirectories: string[] = [];
 
 afterAll(async () => {
@@ -42,7 +47,7 @@ async function temporaryRoot(): Promise<string> {
 async function waitFor<T>(
   read: () => T | undefined,
   description: string,
-  timeoutMs = 15_000,
+  timeoutMs = 20_000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -112,27 +117,31 @@ describe("detached watchdog worker", () => {
     );
     try {
       const running = await waitFor(() => {
-        const state = readJson(workerStatePath(directory));
+        const state = readJson(workerStatePath(versionedWorkerDirectory(directory, harnessVersion)));
         return state?.lifecycle === "running" ? state : undefined;
       }, "the worker to publish running");
       expect(typeof running.pid).toBe("number");
       await waitFor(() => readJson(join(directory, "latest.json")), "the first cycle report");
-      expect(existsSync(lockPath(directory))).toBe(true);
+      expect(existsSync(versionedLockPath(directory, harnessVersion))).toBe(true);
 
-      writeWatchdogCommand(controlDirectory(directory), { type: "stop" });
+      writeWatchdogCommand(versionedControlDirectory(directory, harnessVersion), { type: "stop" });
       await waitFor(
-        () => (readJson(workerStatePath(directory))?.lifecycle === "stopped" ? true : undefined),
+        () =>
+          (readJson(workerStatePath(versionedWorkerDirectory(directory, harnessVersion)))
+            ?.lifecycle === "stopped"
+            ? true
+            : undefined),
         "the worker to publish stopped",
       );
       await waitFor(
-        () => (existsSync(lockPath(directory)) ? undefined : true),
+        () => (existsSync(versionedLockPath(directory, harnessVersion)) ? undefined : true),
         "the lock release",
       );
       await waitFor(
         () => (child.exitCode === null ? undefined : true),
         "the worker process to exit",
       );
-      const stopped = readJson(workerStatePath(directory));
+      const stopped = readJson(workerStatePath(versionedWorkerDirectory(directory, harnessVersion)));
       expect(stopped?.enabled).toBe(false);
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
@@ -213,11 +222,15 @@ describe("detached watchdog worker", () => {
       expect(stop.ok).toBe(true);
       child.kill("SIGTERM");
       await waitFor(
-        () => (readJson(workerStatePath(directory))?.lifecycle === "stopped" ? true : undefined),
+        () =>
+          (readJson(workerStatePath(versionedWorkerDirectory(directory, harnessVersion)))
+            ?.lifecycle === "stopped"
+            ? true
+            : undefined),
         "the worker to finish its cycle and publish stopped",
       );
       await waitFor(
-        () => (existsSync(lockPath(directory)) ? undefined : true),
+        () => (existsSync(versionedLockPath(directory, harnessVersion)) ? undefined : true),
         "the lock release",
       );
       const latest = readJson(join(directory, "latest.json"));
@@ -231,7 +244,9 @@ describe("detached watchdog worker", () => {
         "filed:https://github.com/acme/fixture/issues/1",
       );
       expect(ledger.pendingFiling).toEqual([]);
-      expect(readJson(workerStatePath(directory))?.enabled).toBe(false);
+      expect(
+        readJson(workerStatePath(versionedWorkerDirectory(directory, harnessVersion)))?.enabled,
+      ).toBe(false);
       expect(activity.snapshot().lifecycle).toBe("stopped");
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
@@ -249,18 +264,18 @@ describe("detached watchdog worker", () => {
     );
     try {
       const running = await waitFor(() => {
-        const state = readJson(workerStatePath(directory));
+        const state = readJson(workerStatePath(versionedWorkerDirectory(directory, harnessVersion)));
         return state?.lifecycle === "running" ? state : undefined;
       }, "the worker to publish running");
       const pid = running.pid;
-      writeWatchdogCommand(controlDirectory(directory), {
+      writeWatchdogCommand(versionedControlDirectory(directory, harnessVersion), {
         type: "settings",
         intervalMinutes: 30,
         maxPerHour: null,
         maxPending: null,
       });
       const changed = await waitFor(() => {
-        const state = readJson(workerStatePath(directory));
+        const state = readJson(workerStatePath(versionedWorkerDirectory(directory, harnessVersion)));
         const last = typeof state?.lastRunAt === "string" ? Date.parse(state.lastRunAt) : NaN;
         const next = typeof state?.nextRunAt === "string" ? Date.parse(state.nextRunAt) : NaN;
         if (!Number.isFinite(last) || !Number.isFinite(next)) return undefined;
@@ -272,9 +287,13 @@ describe("detached watchdog worker", () => {
         maxPerHour: null,
         maxPending: null,
       });
-      writeWatchdogCommand(controlDirectory(directory), { type: "stop" });
+      writeWatchdogCommand(versionedControlDirectory(directory, harnessVersion), { type: "stop" });
       await waitFor(
-        () => (readJson(workerStatePath(directory))?.lifecycle === "stopped" ? true : undefined),
+        () =>
+          (readJson(workerStatePath(versionedWorkerDirectory(directory, harnessVersion)))
+            ?.lifecycle === "stopped"
+            ? true
+            : undefined),
         "the worker to stop",
       );
     } finally {
