@@ -52,8 +52,6 @@ export const LIMIT_MIN = 1;
 export const LIMIT_MAX = 100;
 /** A finding earns an issue only at this significance or above. */
 export const SIGNIFICANCE_THRESHOLD = 4;
-export const SIGNIFICANCE_MIN = 1;
-export const SIGNIFICANCE_MAX = 5;
 
 export const CATEGORIES = [
   "clarity",
