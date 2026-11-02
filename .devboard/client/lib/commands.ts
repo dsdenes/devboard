@@ -37,9 +37,6 @@ export interface CommandContext {
   removeElement: () => void;
   redesignElement: () => void;
   cancelReport: () => void;
-  canCloseTab: () => boolean;
-  confirmCloseTab: () => void;
-  cancelCloseTab: () => void;
 }
 
 function disabledWhen(condition: boolean, reason: string): string | null {
@@ -187,20 +184,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "Application",
     disabled: () => disabledWhen(notifications.items.length === 0, "No notifications are waiting."),
     run: () => notifications.clear(),
-  });
-  add({
-    id: "tab.close.confirm",
-    title: "Discard unsaved changes and close the tab",
-    group: "Tabs",
-    disabled: () => disabledWhen(!ctx.canCloseTab(), "No dirty tab is waiting to close."),
-    run: () => ctx.confirmCloseTab(),
-  });
-  add({
-    id: "tab.close.cancel",
-    title: "Keep the dirty tab open",
-    group: "Tabs",
-    disabled: () => disabledWhen(!ctx.canCloseTab(), "No dirty tab is waiting to close."),
-    run: () => ctx.cancelCloseTab(),
   });
   add({
     id: "app.palette.open",
@@ -367,22 +350,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     run: () => ctx.openTab("goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }),
   });
   add({
-    id: "goal.save",
-    title: "Save goal",
-    group: "Goal",
-    shortcut: "Ctrl+S",
-    disabled: () => disabledWhen(goal.goalEditingDisabled, "The goal is read only during work."),
-    run: () => {
-      ctx.openTab("goal", {
-        id: "goal-document",
-        kind: "goal-document",
-        resourceId: "goal-document",
-        title: "Goal document",
-      });
-      goal.saveGoal();
-    },
-  });
-  add({
     id: "goal.create",
     title: goal.goalReady ? "Recreate goal" : "Create goal",
     group: "Goal",
@@ -394,20 +361,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "Goal",
     disabled: () => disabledWhen(goal.revisionDisabled, "A run is using the goal right now."),
     run: () => goal.reviseGoal(),
-  });
-  add({
-    id: "goal.revision.focus",
-    title: "Focus revision guidance",
-    group: "Goal",
-    run: () => {
-      ctx.openTab("goal", {
-        id: "goal-document",
-        kind: "goal-document",
-        resourceId: "goal-document",
-        title: "Goal document",
-      });
-      return ctx.focusLater("goal", "#revision-request");
-    },
   });
   add({
     id: "goal.skills.prepare",
@@ -575,18 +528,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     run: () => flow.createGoal(),
   });
   add({
-    id: "flow.goal.save",
-    title: "Save flow goal",
-    group: "Flow",
-    shortcut: "Ctrl+S",
-    disabled: () =>
-      disabledWhen(flow.goalCreation !== null, "The Flow goal interview is active."),
-    run: () => {
-      ctx.openTab("flow", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" });
-      flow.saveGoal();
-    },
-  });
-  add({
     id: "flow.start",
     title: "Start Flow implementation",
     group: "Flow",
@@ -599,16 +540,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "Flow",
     disabled: () => disabledWhen(flow.stopDisabled, "Implementation is not running."),
     run: () => flow.stopImplementation(),
-  });
-  add({
-    id: "flow.decisions.save",
-    title: "Save Flow decisions",
-    group: "Flow",
-    shortcut: "Ctrl+S",
-    run: () => {
-      ctx.openTab("flow", { id: "decisions", kind: "decisions", resourceId: "decisions", title: "Decision board" });
-      flow.saveDecisions();
-    },
   });
   add({
     id: "flow.steering.focus",
@@ -851,39 +782,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
           title: tab.label,
         }),
     });
-    if (tab.skill !== null) {
-      add({
-        id: `discover.skill.save.${tab.skill}`,
-        title: `Save the ${tab.label}`,
-        group: "Discover skills",
-        shortcut: "Ctrl+S",
-        run: () => {
-          ctx.openTab("discover", {
-            id: tab.id,
-            kind: "skill",
-            resourceId: tab.skill as string,
-            title: tab.label,
-          });
-          discover.saveSkill(tab.skill as string);
-        },
-      });
-      add({
-        id: `discover.skill.restore.${tab.skill}`,
-        title: `Restore the generated ${tab.label}`,
-        group: "Discover skills",
-        disabled: () =>
-          disabledWhen(discover.skill(tab.skill as string)?.state === "generated", "The skill already matches its generated version."),
-        run: () => {
-          ctx.openTab("discover", {
-            id: tab.id,
-            kind: "skill",
-            resourceId: tab.skill as string,
-            title: tab.label,
-          });
-          discover.restoreSkill(tab.skill as string);
-        },
-      });
-    }
   }
   return commands;
 }

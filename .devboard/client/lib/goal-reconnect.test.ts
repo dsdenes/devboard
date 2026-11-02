@@ -271,7 +271,6 @@ test(
       expect(goal.revisionActive).toBe(false);
       expect(goal.skillsPrepActive).toBe(false);
       expect(goal.controlsDisabled).toBe(false);
-      expect(goal.goalEditingDisabled).toBe(false);
       expect(goal.runStartDisabled).toBe(false);
     } finally {
       connection.dispose();

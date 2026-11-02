@@ -7,8 +7,6 @@
   import { statusTone, verificationTone } from "./lib/status-tone";
   import type { FlowFile, FlowWidget, RunQuestion } from "./lib/types";
   import DetailSplit from "./lib/components/DetailSplit.svelte";
-  import MonacoEditor from "./lib/components/MonacoEditor.svelte";
-  import SaveFeedback from "./lib/components/SaveFeedback.svelte";
   import Terminal from "./lib/components/Terminal.svelte";
   import Button from "./lib/components/ui/button.svelte";
 
@@ -57,9 +55,6 @@
   const goalHeaderState = $derived.by(() => {
     if (flow.goalCreation !== null) {
       return { state: "running", tone: "accent", label: "Interview running" };
-    }
-    if (flow.goalDirty) {
-      return { state: "dirty", tone: "warning", label: "Unsaved changes" };
     }
     if (hasGoal) {
       return { state: "saved", tone: "success", label: "Saved" };
@@ -396,28 +391,11 @@
         >
           {hasGoal ? "Recreate flow goal" : "Create flow goal"}
         </Button>
-        <Button
-          variant={hasGoal && flow.goalDirty ? "default" : "secondary"}
-          data-command="flow.goal.save"
-          data-testid="save-flow-goal"
-          disabled={!flow.goalDirty || flow.goalCreation !== null}
-          onclick={() => flow.saveGoal()}
-        >
-          Save
-        </Button>
-        <SaveFeedback scope="flow.goal" />
       </div>
     </div>
     {#if flow.goalCreation === null}
       <div class="panel__body flow-goal-editor">
-        <MonacoEditor
-          value={flow.goalDraft}
-          label="Flow goal"
-          data-testid="flow-goal-text"
-          dirty={flow.goalDirty}
-          onchange={(text) => flow.setGoalDraft(text)}
-          onsave={() => flow.saveGoal()}
-        />
+        <pre class="flow-document__text mono" data-testid="flow-goal-text" aria-label="Flow goal">{flow.goal}</pre>
       </div>
     {/if}
   </section>
@@ -685,48 +663,16 @@
             <h2 class="panel__title flow-decisions__title">Decision board</h2>
             <span
               class="badge flow-decisions__state"
-              data-state={flow.decisionsDirty
-                ? "dirty"
-                : flow.decisions.trim().length > 0
-                  ? "saved"
-                  : "empty"}
-              data-tone={flow.decisionsDirty
-                ? "warning"
-                : flow.decisions.trim().length > 0
-                  ? "success"
-                  : undefined}
+              data-state={flow.decisions.trim().length > 0 ? "saved" : "empty"}
+              data-tone={flow.decisions.trim().length > 0 ? "success" : undefined}
               data-testid="flow-decisions-state"
             >
-              {flow.decisionsDirty
-                ? "Unsaved changes"
-                : flow.decisions.trim().length > 0
-                  ? "Saved"
-                  : "No decisions yet"}
+              {flow.decisions.trim().length > 0 ? "Saved" : "No decisions yet"}
             </span>
           </div>
-          <div class="row-sm flow-decisions__actions">
-            <Button
-              variant={flow.decisionsDirty ? "default" : "secondary"}
-              data-command="flow.decisions.save"
-              data-testid="save-flow-decisions"
-              disabled={!flow.decisionsDirty}
-              title={flow.decisionsDirty ? "Save the decision board." : "No unsaved changes."}
-              onclick={() => flow.saveDecisions()}
-            >
-              Save
-            </Button>
-            <SaveFeedback scope="flow.decisions" />
-          </div>
         </div>
-        <div class="panel__body" style="height: 420px;">
-          <MonacoEditor
-            value={flow.decisionsDraft}
-            label="Decision board"
-            data-testid="flow-decisions"
-            dirty={flow.decisionsDirty}
-            onchange={(text) => flow.setDecisionsDraft(text)}
-            onsave={() => flow.saveDecisions()}
-          />
+        <div class="panel__body flow-decisions__body">
+          <pre class="flow-document__text mono" data-testid="flow-decisions" aria-label="Decision board">{flow.decisions}</pre>
         </div>
       </section>
     </div>

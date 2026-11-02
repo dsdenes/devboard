@@ -32,7 +32,7 @@ import { writeStateFile, type RecordedChild } from "./state";
 
 /**
  * Flow Mode: one implementation agent in an isolated worktree, reviewable as
- * color-coded change widgets, steered by an append-only feed and one editable
+ * color-coded change widgets, steered by an append-only feed and one read-only
  * decision board.
  *
  * The controller owns the session, its files under the harness state
@@ -1344,32 +1344,6 @@ export class FlowController {
     this.#publish();
   }
 
-  saveGoal(text: unknown): void {
-    if (typeof text !== "string") {
-      this.#error("saveFlowGoal needs the goal text.");
-      return;
-    }
-    if (this.#implementation !== undefined) {
-      this.#error("The Flow implementation is running. Stop it before editing the goal.");
-      return;
-    }
-    if (this.#goalCreation !== undefined) {
-      // The interview's goal.md is the accepted text, so a save here would be
-      // acknowledged and then replaced when the interview finishes.
-      this.#error("The Flow goal interview is active. Finish it before editing the goal.");
-      return;
-    }
-    const session = this.#session;
-    if (session === undefined) {
-      this.#error("No Flow session exists.");
-      return;
-    }
-    session.goal = text;
-    this.#persist();
-    this.#persistArtifacts();
-    this.#publish();
-  }
-
   async startImplementation(): Promise<void> {
     const goalWork = this.#goalWorkLabel();
     if (goalWork !== undefined) {
@@ -2387,29 +2361,6 @@ export class FlowController {
       this.#persist();
       this.#broadcast({ type: "flowSteering", notes: session.steering });
     }
-  }
-
-  saveDecisions(text: unknown): void {
-    if (typeof text !== "string") {
-      this.#error("saveFlowDecisions needs the decision board text.");
-      return;
-    }
-    const session = this.#session;
-    if (session === undefined) {
-      this.#error("No Flow session exists.");
-      return;
-    }
-    session.decisions = text;
-    this.#persist();
-    try {
-      writeText(this.#path("decisions.md"), text);
-    } catch (error) {
-      this.#error(
-        `Could not write the decision board: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    this.#broadcast({ type: "flowDecisions", text });
-    this.#publish();
   }
 
   /** Appends a timestamped, source-named section without touching developer text. */

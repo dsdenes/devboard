@@ -802,7 +802,7 @@ describe("lifecycle runs", () => {
   );
 
   test(
-    "refuses startLifecycle, an empty startRun, and saveGoal while the epic peer runs",
+    "refuses startLifecycle and an empty startRun while the epic peer runs",
     async () => {
       const { server, goalFile, logPath, url } = await startServer(
         { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
@@ -821,12 +821,10 @@ describe("lifecycle runs", () => {
 
         client.send({ type: "startLifecycle" });
         client.send({ type: "startRun" });
-        client.send({ type: "saveGoal", text: "changed" });
 
         for (const expected of [
           "A lifecycle run is already active.",
           "No pending ADRs to start.",
-          "A lifecycle run is active.",
         ]) {
           await client.waitFor(
             (message) => message.type === "error" && message.message === expected,
@@ -842,7 +840,6 @@ describe("lifecycle runs", () => {
           [
             "A lifecycle run is already active.",
             "No pending ADRs to start.",
-            "A lifecycle run is active.",
           ].sort(),
         );
         expect(spawnCount(logPath)).toBe(1);
@@ -1244,7 +1241,7 @@ describe("lifecycle runs", () => {
   );
 
   test(
-    "refuses starts and goal saving during implementation",
+    "refuses starts during implementation",
     async () => {
       const epic: OpenEpic = {
         number: 9,
@@ -1276,12 +1273,10 @@ describe("lifecycle runs", () => {
 
         client.send({ type: "startLifecycle" });
         client.send({ type: "startRun" });
-        client.send({ type: "saveGoal", text: "changed" });
 
         for (const expected of [
           "A lifecycle run is already active.",
           "No pending ADRs to start.",
-          "A lifecycle run is active.",
         ]) {
           await client.waitFor(
             (message) => message.type === "error" && message.message === expected,
@@ -1297,7 +1292,6 @@ describe("lifecycle runs", () => {
           [
             "A lifecycle run is already active.",
             "No pending ADRs to start.",
-            "A lifecycle run is active.",
           ].sort(),
         );
         expect(spawnCount(logPath)).toBe(1);
@@ -1548,7 +1542,7 @@ describe("lifecycle runs", () => {
   );
 
   test(
-    "returns an aborted run to an editable idle goal state for reconnecting clients",
+    "returns an aborted run to an idle goal state for reconnecting clients",
     async () => {
       const epic: OpenEpic = {
         number: 21,
@@ -1597,7 +1591,8 @@ describe("lifecycle runs", () => {
         }
 
         const revised = "# Goal\n\nRevised after the abort.\n";
-        client.send({ type: "saveGoal", text: revised });
+        await writeFile(goalFile, revised);
+        client.send({ type: "getGoal" });
         expect(await client.waitFor((message) => message.type === "goal")).toEqual({
           type: "goal",
           text: revised,
@@ -2005,13 +2000,10 @@ describe("lifecycle goal precondition", () => {
   test(
     "refuses a start after a blank goal is saved and accepts a non-blank replacement",
     async () => {
-      const { server, logPath, url } = await startServer({});
+      const { server, goalFile, logPath, url } = await startServer({}, { goalText: "" });
       const client = await connect(url);
 
       try {
-        client.send({ type: "saveGoal", text: "" });
-        await client.waitFor((message) => message.type === "goal" && message.text === "");
-
         client.send({ type: "startLifecycle" });
         const error = await client.waitFor((message) => message.type === "error");
         expect(String(error.message)).toMatch(/goal/i);
@@ -2019,7 +2011,8 @@ describe("lifecycle goal precondition", () => {
         expect(lifecycleStates(client)).toEqual([]);
         expect(spawnCount(logPath)).toBe(0);
 
-        client.send({ type: "saveGoal", text: "# Goal\n\nShip the interface.\n" });
+        await writeFile(goalFile, "# Goal\n\nShip the interface.\n");
+        client.send({ type: "getGoal" });
         await client.waitFor(
           (message) =>
             message.type === "goal" && String(message.text).includes("Ship the interface."),

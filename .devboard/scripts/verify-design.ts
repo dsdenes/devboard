@@ -394,6 +394,15 @@ try {
   await mkdir(join(repo, "adrs"), { recursive: true });
   await mkdir(join(repo, ".worktree"), { recursive: true });
   await mkdir(join(repo, ".omp", "commands"), { recursive: true });
+  await mkdir(join(repo, ".devboard", "prompts"), { recursive: true });
+  await cp(
+    join(harnessRoot, "prompts", "design-system.md"),
+    join(repo, ".devboard", "prompts", "design-system.md"),
+  );
+  await cp(
+    join(harnessRoot, "prompts", "scout-recommendations.md"),
+    join(repo, ".devboard", "prompts", "scout-recommendations.md"),
+  );
   await mkdir(stubDir, { recursive: true });
   await mkdir(binDir, { recursive: true });
   await mkdir(stateDir, { recursive: true });
@@ -679,6 +688,40 @@ try {
     "the filed issues empty state is missing below the documentation panel",
   );
   console.log("PASS page-shape");
+
+  // The shared prompt section renders the Design System prompt bytes, read-only.
+  await click(devtools, "agent-prompt-summary");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt-text")) ? true : undefined),
+    "the Design System prompt bytes",
+    10_000,
+  );
+  const promptBytes = readFileSync(join(harnessRoot, "prompts", "design-system.md"), "utf8");
+  check(
+    (await rawText(devtools, "agent-prompt-text")) === promptBytes,
+    "the Design System prompt bytes differ",
+  );
+  for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-save",
+    "agent-prompt-chat",
+    "agent-prompt-message",
+    "agent-prompt-send",
+    "agent-prompt-notice",
+    "agent-prompt-reset",
+  ]) {
+    check(
+      !(await present(devtools, testid)),
+      `${testid} is rendered in the shared prompt section`,
+    );
+  }
+  const promptChrome = await devtools.evaluate(`(() => {
+    const section = document.querySelector('[data-testid="agent-prompt"]');
+    return section?.querySelectorAll('textarea, input, [contenteditable], .monaco-editor').length ?? -1;
+  })()`);
+  check(promptChrome === 0, "the shared prompt section holds an editor");
+  await click(devtools, "agent-prompt-summary");
+  console.log("PASS prompt-read-only");
 
   const lifecycle: string[] = [];
   const recordLifecycle = async (): Promise<void> => {

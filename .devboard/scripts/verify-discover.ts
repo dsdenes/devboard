@@ -67,8 +67,7 @@ const SCENARIOS = [
   "per-agent-publication",
   "one-at-a-time",
   "run-all-halt",
-  "prompt-chat",
-  "prompt-save",
+  "skill-read-only",
   "installed-read-only",
 ] as const;
 
@@ -425,7 +424,7 @@ async function makeSourceHost(root: string, name: string): Promise<string> {
     join(host.directory, ".devboard", "package.json"),
     `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
   );
-  for (const file of [...PROMPT_FILES, "discover-prompt-chat.md"]) {
+  for (const file of PROMPT_FILES) {
     await cp(join(harnessRoot, "prompts", file), join(prompts, file));
   }
   await mkdir(join(host.directory, ".omp", "commands"), { recursive: true });
@@ -637,51 +636,82 @@ try {
   }
 
   if (selected("per-agent-prompts")) {
-    /* 2. Each card shows, in a source checkout, its own prompt and no command chip. */
+    /* 2. Each card shows, in a source checkout, its own read-only prompt bytes. */
     const expectedPrompts = new Map(
       AGENTS.map((agent) => {
         const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
         return [agent.id, readFileSync(join(harnessRoot, "prompts", file), "utf8")];
       }),
     );
+    const shown = new Set<string>();
     for (const agent of AGENTS) {
       await openCard(devtools, agent.id);
+      await waitFor(
+        async () =>
+          (await countOf(devtools, "discover-agent-prompt-text")) === 1 ? true : undefined,
+        `${agent.id} prompt text`,
+        15_000,
+      );
+      const promptText = await text(devtools, "discover-agent-prompt-text");
+      check(
+        promptText === expectedPrompts.get(agent.id),
+        `the ${agent.id} prompt does not show its file bytes`,
+      );
+      shown.add(promptText);
       check(
         (await countOf(devtools, "discover-agent-prompt-command")) === 0,
         `the ${agent.id} card still shows its command chip`,
         await text(devtools, "discover-agent-prompt-command"),
       );
-      check(
-        (await valueOf(devtools, "discover-agent-prompt-editor")) ===
-          expectedPrompts.get(agent.id),
-        `the ${agent.id} editor does not start at the prompt bytes`,
-      );
       for (const testid of [
+        "discover-agent-prompt-editor",
+        "discover-agent-prompt-save",
+        "discover-agent-prompt-chat-log",
         "discover-agent-prompt-message",
         "discover-agent-prompt-send",
-        "discover-agent-prompt-save",
+        "discover-agent-prompt-chat-error",
+        "discover-agent-prompt-reset",
       ]) {
         check(
-          (await countOf(devtools, testid)) === 1,
-          `${testid} is missing on the ${agent.id} card`,
+          (await countOf(devtools, testid)) === 0,
+          `${testid} is rendered on the ${agent.id} card`,
         );
       }
+      const chrome = await devtools.evaluate(`(() => {
+        const section = document.querySelector('[data-testid="discover-agent-prompt"]');
+        return {
+          fields: section?.querySelectorAll('textarea, input, [contenteditable], .monaco-editor').length ?? -1,
+          tag: section?.querySelector('[data-testid="discover-agent-prompt-text"]')?.tagName ?? '',
+          overflow: section === null ? '' :
+            getComputedStyle(section.querySelector('[data-testid="discover-agent-prompt-text"]')).overflowY,
+          font: section === null ? '' :
+            getComputedStyle(section.querySelector('[data-testid="discover-agent-prompt-text"]')).fontFamily,
+        };
+      })()`);
       check(
-        (await countOf(devtools, "discover-agent-prompt-reset")) === 0,
-        `the removed Reset control is still rendered on the ${agent.id} card`,
+        (chrome as Record<string, unknown>).fields === 0 &&
+          (chrome as Record<string, unknown>).tag === "PRE" &&
+          ["auto", "scroll"].includes(String((chrome as Record<string, unknown>).overflow)) &&
+          String((chrome as Record<string, unknown>).font).toLowerCase().includes("mono"),
+        `the ${agent.id} prompt is not a scrollable monospace PRE`,
+        chrome,
       );
       check(
         (await countOf(devtools, "discover-agent-activity")) === 0,
         `the ${agent.id} card still renders an activity log`,
       );
     }
-    // No card's editor holds another agent's prompt.
-    const shown = new Set<string>();
-    for (const agent of AGENTS) {
-      await openCard(devtools, agent.id);
-      shown.add(await valueOf(devtools, "discover-agent-prompt-editor"));
-    }
     check(shown.size === 6, "two cards share one prompt text");
+    const promptBytes = PROMPT_FILES.map((file) =>
+      readFileSync(join(source, ".devboard", "prompts", file), "utf8"),
+    );
+    check(
+      PROMPT_FILES.every(
+        (file, index) =>
+          readFileSync(join(source, ".devboard", "prompts", file), "utf8") === promptBytes[index],
+      ),
+      "opening the cards wrote a prompt file",
+    );
     console.log("PASS per-agent-prompts");
   }
 
@@ -916,72 +946,107 @@ try {
     console.log("PASS run-all-halt");
   }
 
-  if (selected("prompt-chat", "prompt-save")) {
-    /* 7. Prompt chat and save on the source checkout. */
+  if (selected("skill-read-only")) {
+    /* 7. The skill page shows the published file as read-only text. */
     await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
     await openDiscoverMode(devtools, "the source dashboard");
-    await openCard(devtools, "sheet");
-    const promptFile = join(source, ".devboard", "prompts", "discover-sheet.md");
-    const originalPrompt = readFileSync(promptFile, "utf8");
-    const otherPrompts = new Map(
-      PROMPT_FILES.filter((file) => file !== "discover-sheet.md").map((file) => [
-        file,
-        readFileSync(join(source, ".devboard", "prompts", file), "utf8"),
-      ]),
-    );
-    check(
-      readFileSync(promptFile, "utf8") === originalPrompt,
-      "opening the card wrote the prompt file",
-    );
-    await setInput(devtools, "discover-agent-prompt-message", "Tighten the evidence rule.");
-    await click(devtools, "discover-agent-prompt-send");
+    const skillName = "discover-testing-strategy";
     await waitFor(
       async () =>
-        (await text(devtools, "discover-agent-prompt-chat-log")).includes("Here is the revision.")
+        (await devtools.evaluate(
+          `document.querySelector('[data-testid="discover-tab"][data-skill="${skillName}"]') !== null`,
+        )) === true
           ? true
           : undefined,
-      "the prompt chat reply",
-      45_000,
+      "the published skill entry",
+      20_000,
     );
-    const proposal = `${originalPrompt.trimEnd()}\n\n<!-- revised by the verification peer -->\n`;
+    const opened = await devtools.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="discover-tab"][data-skill="${skillName}"]');
+      if (button === null) return false;
+      button.click();
+      return true;
+    })()`);
+    check(opened === true, "the skill entry is not clickable");
     await waitFor(
       async () =>
-        (await valueOf(devtools, "discover-agent-prompt-editor")) === proposal ? true : undefined,
-      "the proposed prompt in the editor",
+        (await countOf(devtools, "discover-skill-text")) === 1 ? true : undefined,
+      "the skill text",
       20_000,
     );
-    check(
-      readFileSync(promptFile, "utf8") === originalPrompt,
-      "the chat wrote the prompt file before Save",
-    );
-    const assistantEntries = await devtools.evaluate(
-      `document.querySelectorAll('[data-testid="discover-agent-prompt-chat-log"] [data-role="assistant"]').length`,
-    );
-    check(assistantEntries === 1, "the chat log does not show one assistant entry per turn");
-    console.log("PASS prompt-chat");
-
-    await click(devtools, "discover-agent-prompt-save");
-    await waitFor(
-      async () => ((await present(devtools!, "save-feedback")) ? true : undefined),
-      "the prompt save confirmation",
-      20_000,
+    const live = readFileSync(
+      join(source, ".omp", "skills", skillName, "SKILL.md"),
+      "utf8",
     );
     check(
-      (await attribute(devtools, "save-feedback", "data-scope")) === "discover.prompt.sheet",
-      "the save confirmation does not belong to the prompt it confirmed",
-      await attribute(devtools, "save-feedback", "data-scope"),
+      (await text(devtools, "discover-skill-text")) === live,
+      "the skill page does not show the live file bytes",
     );
     check(
-      readFileSync(promptFile, "utf8") === proposal,
-      "Save did not write exactly the editor's bytes",
+      (await text(devtools, "discover-skill-status")) === "generated",
+      "the generated skill status is not named",
+      await text(devtools, "discover-skill-status"),
     );
-    for (const [file, bytes] of otherPrompts) {
+    for (const testid of [
+      "discover-skill-save",
+      "discover-skill-restore",
+      "discover-skill-dirty",
+    ]) {
       check(
-        readFileSync(join(source, ".devboard", "prompts", file), "utf8") === bytes,
-        `Save changed ${file}`,
+        (await countOf(devtools, testid)) === 0,
+        `${testid} is rendered on the skill page`,
       );
     }
-    console.log("PASS prompt-save");
+    const skillChrome = await devtools.evaluate(`(() => ({
+      fields: document.querySelector('[data-testid="discover-skill-text"]')
+        ?.querySelectorAll('textarea, input, [contenteditable], .monaco-editor').length ?? -1,
+      tag: document.querySelector('[data-testid="discover-skill-text"]')?.tagName ?? '',
+    }))()`);
+    check(
+      (skillChrome as Record<string, unknown>).fields === 0 &&
+        (skillChrome as Record<string, unknown>).tag === "PRE",
+      "the skill page holds an editor",
+      skillChrome,
+    );
+
+    // A live file the manifest reports as edited is rendered as such.
+    writeFileSync(
+      join(source, ".omp", "skills", skillName, "SKILL.md"),
+      `${live}\n- External edit.\n`,
+    );
+    const manifestPath = join(source, ".omp", "discover", "manifest.json");
+    const manifestBefore = readFileSync(manifestPath);
+    const manifest = JSON.parse(manifestBefore.toString("utf8")) as {
+      skills: Array<{ name: string; state: string }>;
+    };
+    manifest.skills = manifest.skills.map((entry) =>
+      entry.name === skillName ? { ...entry, state: "edited" } : entry,
+    );
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await devtools.send("Page.reload");
+    await openDiscoverMode(devtools, "the reloaded source dashboard");
+    await devtools.evaluate(`document.querySelector('[data-testid="discover-tab"][data-skill="${skillName}"]')?.click()`);
+    await waitFor(
+      async () =>
+        (await text(devtools, "discover-skill-status")) === "edited" ? true : undefined,
+      "the edited skill status",
+      20_000,
+    );
+    check(
+      (await text(devtools, "discover-skill-text")).endsWith("- External edit.\n"),
+      "the edited skill text is not shown",
+    );
+
+    // The UI wrote nothing: the seeded bytes are the only change, and restoring
+    // them leaves the fixture exactly as the tests started.
+    writeFileSync(join(source, ".omp", "skills", skillName, "SKILL.md"), live);
+    writeFileSync(manifestPath, manifestBefore);
+    check(
+      readFileSync(join(source, ".omp", "skills", skillName, "SKILL.md"), "utf8") === live &&
+        readFileSync(manifestPath).equals(manifestBefore),
+      "the read-only skill page wrote a skill file",
+    );
+    console.log("PASS skill-read-only");
   }
 
   if (selected("installed-read-only")) {
@@ -1003,6 +1068,12 @@ try {
     await openDiscoverMode(devtools, "the installed dashboard");
     for (const agent of AGENTS) {
       await openCard(devtools, agent.id);
+      const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
+      check(
+        (await text(devtools, "discover-agent-prompt-text")) ===
+          installedPrompts.get(file),
+        `the installed ${agent.id} prompt differs`,
+      );
       for (const testid of [
         "discover-agent-prompt-editor",
         "discover-agent-prompt-chat-log",
@@ -1020,11 +1091,11 @@ try {
       devtools,
       installedDashboard.port,
       { type: "saveDiscoverPrompt", agent: "sheet", text: "installed bytes\n" },
-      "discoverPromptError",
+      "error",
     );
     check(
-      String(refusedSave.message ?? "").includes("harness source checkout"),
-      "the installed save was not refused with the source-checkout reason",
+      refusedSave.message === "Invalid WebSocket message.",
+      "the removed installed save was not refused as unknown",
       refusedSave,
     );
     for (const [file, bytes] of installedPrompts) {
@@ -1042,9 +1113,9 @@ try {
     console.log(`verify:discover: ran only ${[...only].join(", ")}`);
   } else {
     console.log(
-      "verify:discover: the six-entry Discovery group, per-agent prompts and publication, the " +
-        "one-at-a-time rule, Run all order and stop-at-first-failure, prompt chat/save, and " +
-        "the installed save refusal all hold",
+      "verify:discover: the six-entry Discovery group, per-agent read-only prompts and " +
+        "publication, the one-at-a-time rule, Run all order and stop-at-first-failure, the " +
+        "read-only skill page, and the installed prompt and save refusal all hold",
     );
   }
 } finally {

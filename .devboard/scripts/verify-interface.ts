@@ -1679,6 +1679,10 @@ try {
   );
 
   // 3. Status bar, reload control, and shortcut discoverability.
+  await page.wait(
+    `document.querySelector('[data-testid="status-project"]')?.textContent?.trim() === "host"`,
+    "the status bar project label",
+  );
   const statusBar = await page.eval<{
     connection: string;
     project: string;
@@ -2301,16 +2305,22 @@ try {
     "open.issues.drafts",
     "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
-    "goal.save", "goal.create", "goal.revise", "goal.skills.prepare",
+    "goal.create", "goal.revise", "goal.skills.prepare",
     "goal.adr.start-next", "goal.lifecycle.start", "goal.lifecycle.pause",
     "goal.lifecycle.resume", "goal.lifecycle.stop", "goal.reset",
-    "flow.goal.create", "flow.goal.save", "flow.start", "flow.stop",
-    "flow.pr.retry", "flow.pr.ready", "flow.pr.merge", "flow.decisions.save",
+    "flow.goal.create", "flow.start", "flow.stop",
+    "flow.pr.retry", "flow.pr.ready", "flow.pr.merge",
     "flow.steering.focus", "discover.start", "discover.stop",
-    "discover.skill.save.discover-testing-strategy",
   ];
   const missingCommands = requiredCommands.filter((id) => !ids.has(id));
   check(missingCommands.length === 0, "the palette misses required commands", missingCommands);
+  const removedCommands = [
+    "goal.save", "goal.revision.focus", "flow.goal.save", "flow.decisions.save",
+    "discover.skill.save.discover-testing-strategy",
+    "discover.skill.restore.discover-testing-strategy",
+    "tab.close.confirm", "tab.close.cancel",
+  ].filter((id) => ids.has(id));
+  check(removedCommands.length === 0, "the palette still lists a removed editor command", removedCommands);
   check(!ids.has("view.sidebar.toggle"), "the palette still offers a sidebar toggle");
   const agentsCommand = palette.items.find((item) => item.id === "open.issues.agents");
   check(
@@ -3303,7 +3313,7 @@ try {
     afterDelete,
   );
 
-  // 9. Goal editor: reset arm/cancel, dirty marker, save, unsaved survival, close prompt.
+  // 9. Goal document: reset arm/cancel, read-only bytes, and a plain tab close.
   await runPalette("open.goal.overview");
   await page.wait(`document.querySelector('[data-testid="reset-implementation"]') !== null`, "the reset control");
   const resetPlacement = await page.eval<{ inHeader: boolean; danger: boolean; eyebrow: boolean }>(`(() => ({
@@ -3322,107 +3332,80 @@ try {
   await page.click('[data-command="goal.reset.cancel"]');
   await page.wait(`document.querySelector('[data-testid="reset-confirmation"]') === null`, "the reset confirmation to close");
   await runPalette("goal.document.open");
-  await page.wait(`document.querySelector('[data-testid="goal-text"] .monaco-editor') !== null`, "the Goal Monaco editor");
+  await page.wait(`document.querySelector('[data-testid="goal-text"]') !== null`, "the Goal document");
   const goalLayout = await page.eval<{
+    tag: string;
     editor: number;
     panel: number;
     revision: number;
-    panelBottom: number;
-    revisionBottom: number;
     eyebrow: boolean;
+    chrome: number;
+    dirty: string | null;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="goal-text"]');
     const panel = document.querySelector('[data-testid="goal-editor"]');
-    const revision = document.querySelector('[data-testid="revision-request"]');
     return {
+      tag: editor?.tagName ?? "",
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
-      revision: revision === null ? 0 : Math.round(revision.getBoundingClientRect().height),
-      panelBottom: panel === null ? 0 : Math.round(panel.getBoundingClientRect().bottom),
-      revisionBottom: revision === null ? 0 : Math.round(revision.getBoundingClientRect().bottom),
+      revision: document.querySelector('[data-testid="revision-request"]') === null ? 0 : 1,
       eyebrow: document.querySelector('[data-testid="document-header"] .page-header__eyebrow') !== null,
+      chrome: editor?.querySelectorAll("textarea, input, [contenteditable], .monaco-editor").length ?? -1,
+      dirty: editor?.getAttribute("data-dirty") ?? null,
     };
   })()`);
   check(!goalLayout.eyebrow, "the goal document header still carries its Plan eyebrow", goalLayout);
+  check(goalLayout.tag === "PRE", "the Goal document is not a read-only PRE", goalLayout);
   check(goalLayout.editor >= 400 && goalLayout.editor >= goalLayout.panel * 0.6, "the goal document does not fill the page", goalLayout);
-  check(goalLayout.revision >= 60 && Math.abs(goalLayout.revisionBottom - goalLayout.panelBottom) <= 24, "the revision guidance is not a tall field at the bottom", goalLayout);
+  check(goalLayout.revision === 0, "the revision guidance field still exists", goalLayout);
+  check(goalLayout.chrome === 0 && goalLayout.dirty === null, "the Goal document carries editor chrome", goalLayout);
   await saveShot("goal-document");
-  const goalLabel = await page.eval<string>(`document.querySelector('[data-testid="goal-text"] textarea')?.getAttribute("aria-label") ?? ""`);
-  check(goalLabel.length > 0, "the Goal editor has no accessible label", goalLabel);
-  await page.eval(`window.__devboardEditors.get("goal-text").focus()`);
-  await page.key("End", 2);
-  await page.typeText(" VerifyAppend");
-  await delay(150);
-  const dirty = await page.eval<string>(`document.querySelector('[data-testid="goal-text"]').getAttribute("data-dirty") ?? ""`);
-  check(dirty === "true", "the Goal editor does not mark unsaved changes", dirty);
-  await page.key("s", 2);
-  await page.wait(`document.querySelector('[data-testid="goal-text"]').getAttribute("data-dirty") === "false"`, "the Goal save");
-  const goalConfirmation = await page.eval<{
-    scope: string;
-    parent: string;
-    position: string;
-    insideHeader: boolean;
-  }>(`(() => {
-    const node = document.querySelector('[data-testid="save-feedback"]');
-    return {
-      scope: node?.getAttribute("data-scope") ?? "",
-      parent: node?.parentElement?.className ?? "",
-      position: node === null ? "" : getComputedStyle(node).position,
-      insideHeader: node?.closest('[data-testid="document-header"]') !== null,
-    };
+  const goalBytes = await readFile(join(host, "GOAL.md"), "utf8");
+  const shownGoal = await page.eval<string>(`document.querySelector('[data-testid="goal-text"]')?.textContent ?? ""`);
+  check(shownGoal === goalBytes, "the Goal document does not show the GOAL.md bytes", { shownGoal, goalBytes });
+  const goalLabel = await page.eval<string>(`document.querySelector('[data-testid="goal-text"]')?.getAttribute("aria-label") ?? ""`);
+  check(goalLabel.length > 0, "the Goal document has no accessible label", goalLabel);
+  const goalCreate = await page.eval<{ present: boolean; command: string }>(`(() => {
+    const button = document.querySelector('[data-testid="create-goal"]');
+    return { present: button !== null, command: button?.getAttribute("data-command") ?? "" };
+  })()`);
+  const goalRevise = await page.eval<{ present: boolean; command: string }>(`(() => {
+    const button = document.querySelector('[data-testid="revise-goal"]');
+    return { present: button !== null, command: button?.getAttribute("data-command") ?? "" };
   })()`);
   check(
-    goalConfirmation.scope === "goal.document" &&
-      goalConfirmation.parent.includes("page-header__actions") &&
-      goalConfirmation.position === "static" &&
-      goalConfirmation.insideHeader,
-    "the goal save confirmation is not beside its Save control",
-    goalConfirmation,
+    goalCreate.present && goalCreate.command === "goal.create" &&
+      goalRevise.present && goalRevise.command === "goal.revise",
+    "the Goal agent actions are missing",
+    { goalCreate, goalRevise },
   );
-  const savedGoal = await readFile(join(host, "GOAL.md"), "utf8");
-  const editorGoal = await page.eval<string>(`window.__devboardEditors.get("goal-text").getValue()`);
-  check(savedGoal === editorGoal, "the Goal save did not write the exact editor text", { savedTail: savedGoal.slice(-30), editorTail: editorGoal.slice(-30) });
+  check(
+    (await page.eval<number>(`document.querySelectorAll('[data-testid="save-goal"]').length`)) === 0,
+    "the Save goal control still exists",
+  );
+  const framesBeforeGoalSave = await page.eval<number>("window.__viFrames.length");
   await page.key("s", 2);
-  const framesAfterCleanSave = await page.eval<number>("window.__viFrames.length");
-  await delay(100);
-  check((await page.eval<number>("window.__viFrames.length")) === framesAfterCleanSave, "Ctrl+S on a clean editor sent a frame");
+  await delay(150);
+  check(
+    (await page.eval<number>("window.__viFrames.length")) === framesBeforeGoalSave,
+    "Ctrl+S sent a frame from the read-only Goal document",
+  );
+  check(
+    (await readFile(join(host, "GOAL.md"), "utf8")) === goalBytes,
+    "Ctrl+S changed GOAL.md",
+  );
 
-  // Unsaved text and dirty marker survive a mode switch.
-  await page.eval(`window.__devboardEditors.get("goal-text").focus()`);
-  await page.typeText(" Unsaved");
-  await delay(100);
-  await page.click('[data-testid="mode-flow"]');
-  await page.wait(`document.querySelector('[data-testid="mode-flow"]')?.getAttribute("aria-selected") === "true"`, "Flow for unsaved check");
-  await page.click('[data-testid="mode-goal"]');
-  await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Goal for unsaved check");
-  await delay(120);
-  const unsaved = await page.eval<string>(`window.__devboardEditors.get("goal-text")?.getValue() ?? ""`);
-  check(unsaved.endsWith(" VerifyAppend Unsaved"), "a mode switch discarded unsaved text", unsaved);
-
+  // Closing the document never asks to discard anything.
   await runPalette("tab.close.goal.goal-document");
-  await page.wait(`document.querySelector('[data-testid="confirm-close-tab"]') !== null`, "the dirty-close prompt");
-  await page.key("Escape");
-  await page.wait(`document.querySelector('[data-testid="confirm-close-tab"]') === null`, "the prompt to close");
-  const stillOpen = await page.eval<boolean>(`document.querySelector('[data-testid="goal-text"]') !== null`);
-  check(stillOpen, "Escape closed a dirty page");
-  await runPalette("tab.close.goal.goal-document");
-  await page.wait(`document.querySelector('[data-testid="confirm-close-tab"]') !== null`, "the dirty-close prompt again");
-  const discarded = await page.eval<boolean>(`(() => {
-    const button = [...document.querySelectorAll('[data-testid="confirm-close-tab"] button')]
-      .find((entry) => entry.textContent?.includes("Discard"));
-    if (button === undefined) return false;
-    button.click();
-    return true;
-  })()`);
-  check(discarded, "the discard control is missing");
-  await page.wait(`document.querySelector('[data-testid="goal-text"]') === null`, "the discarded page to close");
+  await page.wait(`document.querySelector('[data-testid="goal-text"]') === null`, "the closed Goal document");
+  check(
+    (await page.eval<boolean>(`document.querySelector('[data-testid="confirm-close-tab"]') !== null`)) === false,
+    "closing the read-only Goal document asked to discard changes",
+  );
   await runPalette("goal.document.open");
-  await page.wait(`document.querySelector('[data-testid="goal-text"]') !== null`, "the reopened Goal editor");
-  const reopened = await page.eval<{ value: string; data: string }>(`({
-    value: window.__devboardEditors.get("goal-text")?.getValue() ?? "",
-    data: document.querySelector('[data-testid="goal-text"]').getAttribute("data-dirty"),
-  })`);
-  check(!reopened.value.includes("Unsaved") && reopened.data === "false", "discarding did not restore the saved text", reopened);
+  await page.wait(`document.querySelector('[data-testid="goal-text"]') !== null`, "the reopened Goal document");
+  const reopened = await page.eval<string>(`document.querySelector('[data-testid="goal-text"]')?.textContent ?? ""`);
+  check(reopened === goalBytes, "reopening the Goal document changed its bytes", reopened);
 
   // 10. Flow surfaces and the xterm terminal.
   await runPalette("open.flow.overview");
@@ -3577,7 +3560,7 @@ try {
   await runPalette("open.flow.overview");
   await page.wait(`document.querySelector('[data-testid="dismiss-flow-blocker"]') !== null`, "the Flow blocker control");
   const flowGoalSurface = await page.eval<{
-    editor: boolean;
+    tag: string;
     collapsed: string;
     sidebar: number;
     goalTop: number;
@@ -3591,10 +3574,11 @@ try {
     const page = document.querySelector('#workspace-flow .flow-overview');
     const activity = document.querySelector('#workspace-flow [data-testid="flow-activity-section"]');
     const start = document.querySelector('[data-testid="start-flow-implementation"]');
+    const text = document.querySelector('[data-testid="flow-goal-text"]');
     const goalBox = goal?.getBoundingClientRect();
     const pageBox = page?.getBoundingClientRect();
     return {
-      editor: document.querySelector('[data-testid="flow-goal-text"] .monaco-editor') !== null,
+      tag: text?.tagName ?? "",
       collapsed: goal?.getAttribute("data-collapsed") ?? "",
       sidebar: document.querySelectorAll('[data-testid="sidebar"] [data-command="open.flow.flow-goal"]').length,
       goalTop: Math.round(goalBox?.top ?? -1),
@@ -3605,7 +3589,7 @@ try {
       startPadding: start === null ? "" : getComputedStyle(start).paddingLeft,
     };
   })()`);
-  check(flowGoalSurface.editor && flowGoalSurface.collapsed === "false", "the Flow overview does not hold the goal editor", flowGoalSurface);
+  check(flowGoalSurface.tag === "PRE" && flowGoalSurface.collapsed === "false", "the Flow overview does not hold the read-only goal", flowGoalSurface);
   check(flowGoalSurface.sidebar === 0, "the Flow goal is still a separate sidebar entry", flowGoalSurface);
   check(Math.abs(flowGoalSurface.goalTop - flowGoalSurface.pageTop) <= 1, "the Flow goal does not lead the overview", flowGoalSurface);
   check(flowGoalSurface.goalHeight >= flowGoalSurface.pageHeight - 1, "the Flow goal does not fill the page", flowGoalSurface);
@@ -3615,18 +3599,24 @@ try {
     "a Flow action does not use the design-system horizontal padding",
     flowGoalSurface.startPadding,
   );
+  const flowGoalText = await page.eval<string>(`document.querySelector('[data-testid="flow-goal-text"]')?.textContent ?? ""`);
+  check(
+    flowGoalText === "# Seeded flow goal\n\nExercise the Flow workspace.",
+    "the Flow goal does not show the session goal bytes",
+    flowGoalText,
+  );
   const flowGoalHeader = await page.eval<{
     state: string;
     badge: boolean;
     tone: string;
     headerHeight: number;
     aligned: boolean;
-    saveDisabled: boolean;
+    chrome: number;
   }>(`(() => {
     const state = document.querySelector('[data-testid="flow-goal-state"]');
-    const save = document.querySelector('[data-testid="save-flow-goal"]');
     const header = state?.closest(".flow-goal__header");
     const title = header?.querySelector(".flow-goal__title");
+    const text = document.querySelector('[data-testid="flow-goal-text"]');
     const center = (element) => {
       const box = element?.getBoundingClientRect();
       return box === undefined ? Number.NaN : box.top + box.height / 2;
@@ -3637,81 +3627,31 @@ try {
       tone: state?.getAttribute("data-tone") ?? "",
       headerHeight: Math.round(header?.getBoundingClientRect().height ?? 0),
       aligned: Math.abs(center(state) - center(title)) <= 1,
-      saveDisabled: save?.disabled !== false,
+      chrome: text?.querySelectorAll("textarea, input, [contenteditable], .monaco-editor").length ?? -1,
     };
   })()`);
   check(
-    flowGoalHeader.state === "Saved" && flowGoalHeader.saveDisabled,
+    flowGoalHeader.state === "Saved" && flowGoalHeader.badge && flowGoalHeader.tone === "success",
     "the Flow goal header does not state its saved state",
     flowGoalHeader,
   );
   check(
-    flowGoalHeader.badge && flowGoalHeader.tone === "success",
-    "the Flow goal saved state is not a success badge",
+    flowGoalHeader.headerHeight === 44 && flowGoalHeader.aligned && flowGoalHeader.chrome === 0,
+    "the Flow goal header is not one read-only row",
     flowGoalHeader,
   );
+  const flowLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-goal-text"]')?.getAttribute("aria-label") ?? ""`);
+  check(flowLabel.length > 0, "the Flow goal has no accessible label", flowLabel);
   check(
-    flowGoalHeader.headerHeight === 44 && flowGoalHeader.aligned,
-    "the Flow goal header does not hold the redesigned single row",
-    flowGoalHeader,
-  );
-  const flowLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-goal-text"] textarea')?.getAttribute("aria-label") ?? ""`);
-  check(flowLabel.length > 0, "the Flow goal editor has no accessible label", flowLabel);
-  // The filled primary follows the goal state: without a saved goal the create
-  // control owns it, and only a saved goal with an unsaved draft promotes Save.
-  const goalEmphasis = () =>
-    page.eval<{ primary: string[]; saveSecondary: boolean; createOutline: boolean; saveEnabled: boolean }>(`(() => {
-      const actions = document.querySelector('[data-testid="flow-goal"] .flow-goal__actions');
-      const buttons = [...(actions?.querySelectorAll('button') ?? [])];
-      const save = actions?.querySelector('[data-testid="save-flow-goal"]');
-      const create = actions?.querySelector('[data-testid="create-flow-goal"]');
-      return {
-        primary: buttons
-          .filter((button) => button.classList.contains('bg-[var(--primary)]'))
-          .map((button) => button.getAttribute('data-testid') ?? ''),
-        saveSecondary: save?.classList.contains('bg-[var(--secondary)]') ?? false,
-        createOutline: create?.classList.contains('bg-transparent') ?? false,
-        saveEnabled: save?.disabled === false,
-      };
-    })()`);
-  await page.eval(`window.__devboardEditors.get("flow-goal-text").setValue("")`);
-  await page.wait(`document.querySelector('[data-testid="flow-goal-text"]')?.getAttribute("data-dirty") === "true"`, "the cleared Flow goal draft");
-  await page.click('[data-testid="save-flow-goal"]');
-  await page.wait(`document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "No goal yet"`, "the empty Flow goal save");
-  await page.eval(`window.__devboardEditors.get("flow-goal-text").setValue("# Draft without a saved goal")`);
-  await page.wait(
-    `document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "Unsaved changes"`,
-    "the unsaved Flow goal draft",
-  );
-  const emptyGoalEmphasis = await goalEmphasis();
-  check(
-    emptyGoalEmphasis.primary.length === 1 && emptyGoalEmphasis.primary[0] === "create-flow-goal",
-    "an unsaved draft without a saved goal does not leave Create flow goal as the only filled primary",
-    emptyGoalEmphasis,
+    (await page.eval<number>(`document.querySelectorAll('[data-testid="save-flow-goal"]').length`)) === 0,
+    "the Save flow goal control still exists",
   );
   check(
-    emptyGoalEmphasis.saveSecondary && emptyGoalEmphasis.saveEnabled,
-    "Save is not the enabled secondary control while no goal is saved",
-    emptyGoalEmphasis,
+    (await page.eval<string>(`document.querySelector('[data-testid="create-flow-goal"]')?.getAttribute("data-command") ?? ""`)) ===
+      "flow.goal.create",
+    "the Create flow goal control is missing",
   );
-  await page.click('[data-testid="save-flow-goal"]');
-  await page.wait(`document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "Saved"`, "the saved draft");
-  await page.eval(`window.__devboardEditors.get("flow-goal-text").setValue("# Draft without a saved goal\\n\\nUnsaved.")`);
-  await page.wait(
-    `document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "Unsaved changes"`,
-    "the second unsaved Flow goal draft",
-  );
-  const savedGoalEmphasis = await goalEmphasis();
-  check(
-    savedGoalEmphasis.primary.length === 1 && savedGoalEmphasis.primary[0] === "save-flow-goal",
-    "an unsaved draft with a saved goal does not make Save the only filled primary",
-    savedGoalEmphasis,
-  );
-  check(
-    savedGoalEmphasis.createOutline,
-    "Recreate flow goal is not the outline control beside a dirty saved goal",
-    savedGoalEmphasis,
-  );
+
   await page.click('[data-testid="dismiss-flow-blocker"]');
   await page.wait(`document.querySelector('[data-testid="flow-blocker"]')?.getAttribute("data-dismissed") === "true"`, "the dismissed blocker");
   await page.click('[data-testid="sidebar"] [data-command="flow.blocker.open.block-1"]');
@@ -3719,88 +3659,144 @@ try {
     `document.activeElement?.id === "flow-blocker-block-1"`,
     "the sidebar blocker did not open its row",
   );
+
   await runPalette("open.flow.decisions");
-  await page.wait(`document.querySelector('[data-testid="flow-decisions"] .monaco-editor') !== null`, "the Flow decision editor");
-  const decisionLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"] textarea')?.getAttribute("aria-label") ?? ""`);
-  check(decisionLabel.length > 0, "the decision board has no accessible label", decisionLabel);
-  const decisionHeader = () =>
-    page.eval<{
-      state: string;
-      saveDisabled: boolean;
-      badge: boolean;
-      tone: string;
-      headerHeight: number;
-      aligned: boolean;
-      startPadding: string;
-    }>(`(() => {
-      const state = document.querySelector('[data-testid="flow-decisions-state"]');
-      const save = document.querySelector('[data-testid="save-flow-decisions"]');
-      const header = state?.closest(".flow-decisions__header");
-      const title = header?.querySelector(".flow-decisions__title");
-      const center = (element) => {
-        const box = element?.getBoundingClientRect();
-        return box === undefined ? Number.NaN : box.top + box.height / 2;
-      };
-      return {
-        state: state?.textContent?.trim() ?? "",
-        saveDisabled: save?.disabled !== false,
-        badge: state?.classList.contains("badge") ?? false,
-        tone: state?.getAttribute("data-tone") ?? "",
-        headerHeight: Math.round(header?.getBoundingClientRect().height ?? 0),
-        aligned: Math.abs(center(state) - center(title)) <= 1,
-        startPadding: header ? getComputedStyle(header).paddingLeft : "",
-      };
-    })()`);
-  const decisionSaved = await decisionHeader();
+  await page.wait(`document.querySelector('[data-testid="flow-decisions"]') !== null`, "the Flow decision board");
+  const decisionState = await page.eval<{
+    tag: string;
+    state: string;
+    badge: boolean;
+    tone: string;
+    headerHeight: number;
+    aligned: boolean;
+    startPadding: string;
+    chrome: number;
+  }>(`(() => {
+    const text = document.querySelector('[data-testid="flow-decisions"]');
+    const state = document.querySelector('[data-testid="flow-decisions-state"]');
+    const header = state?.closest(".flow-decisions__header");
+    const title = header?.querySelector(".flow-decisions__title");
+    const center = (element) => {
+      const box = element?.getBoundingClientRect();
+      return box === undefined ? Number.NaN : box.top + box.height / 2;
+    };
+    return {
+      tag: text?.tagName ?? "",
+      state: state?.textContent?.trim() ?? "",
+      badge: state?.classList.contains("badge") ?? false,
+      tone: state?.getAttribute("data-tone") ?? "",
+      headerHeight: Math.round(header?.getBoundingClientRect().height ?? 0),
+      aligned: Math.abs(center(state) - center(title)) <= 1,
+      startPadding: header ? getComputedStyle(header).paddingLeft : "",
+      chrome: text?.querySelectorAll("textarea, input, [contenteditable], .monaco-editor").length ?? -1,
+    };
+  })()`);
+  check(decisionState.tag === "PRE", "the decision board is not a read-only PRE", decisionState);
   check(
-    decisionSaved.state === "Saved" && decisionSaved.saveDisabled,
+    decisionState.state === "Saved" && decisionState.badge && decisionState.tone === "success",
     "the decision board header does not state its saved state",
-    decisionSaved,
+    decisionState,
   );
   check(
-    decisionSaved.badge && decisionSaved.tone === "success",
-    "the decision board saved state is not a success badge",
-    decisionSaved,
+    decisionState.headerHeight === 44 && decisionState.aligned &&
+      decisionState.startPadding === "12px" && decisionState.chrome === 0,
+    "the decision board header is not a read-only row",
+    decisionState,
+  );
+  const decisionLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"]')?.getAttribute("aria-label") ?? ""`);
+  check(decisionLabel.length > 0, "the decision board has no accessible label", decisionLabel);
+  check(
+    (await page.eval<number>(`document.querySelectorAll('[data-testid="save-flow-decisions"]').length`)) === 0,
+    "the Save Flow decisions control still exists",
+  );
+  const seededDecisions = await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"]')?.textContent ?? ""`);
+  check(
+    seededDecisions === "# Decisions\n\n- Seeded decision.",
+    "the decision board does not show decisions.md",
+    seededDecisions,
+  );
+
+  // A decision the server appends while work proceeds appears and survives reload.
+  const appendResult = await page.eval<{ started: boolean; appended: boolean; types: string[] }>(`(async () => {
+    const socket = new WebSocket("ws://" + location.host + "/ws");
+    const events = [];
+    socket.onmessage = (event) => {
+      try { events.push(JSON.parse(String(event.data))); } catch (error) { /* ignored */ }
+    };
+    await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+    const until = (predicate, timeout) => new Promise((resolve) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        if (predicate()) { clearInterval(timer); resolve(true); return; }
+        if (Date.now() - started > timeout) { clearInterval(timer); resolve(false); }
+      }, 20);
+    });
+    socket.send(JSON.stringify({ type: "openFlowWidget", id: "widget-1" }));
+    const started = await until(
+      () => events.some((event) => event.type === "flowConversationStarted"),
+      15_000,
+    );
+    socket.send(JSON.stringify({ type: "sendFlowConclusion", text: "Server appended decision." }));
+    const appended = await until(
+      () => events.some(
+        (event) => event.type === "flowDecisions" &&
+          String(event.text).includes("Server appended decision."),
+      ),
+      15_000,
+    );
+    socket.send(JSON.stringify({ type: "closeFlowWidget" }));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    socket.close();
+    return { started, appended, types: events.map((event) => event.type) };
+  })()`);
+  check(
+    appendResult.started && appendResult.appended,
+    "the server did not append the widget conclusion",
+    appendResult,
+  );
+  await runPalette("open.flow.decisions");
+  await page.wait(
+    `(document.querySelector('[data-testid="flow-decisions"]')?.textContent ?? "").includes("Server appended decision.")`,
+    "the server-appended decision",
+  );
+  const appended = await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"]')?.textContent ?? ""`);
+  check(appended.startsWith(seededDecisions) && appended.includes("## "), "the appended decision replaced developer text", appended);
+  await page.reload();
+  await runPalette("open.flow.decisions");
+  await page.wait(
+    `(document.querySelector('[data-testid="flow-decisions"]')?.textContent ?? "").includes("Server appended decision.")`,
+    "the server-appended decision after reload",
   );
   check(
-    decisionSaved.headerHeight === 44 && decisionSaved.aligned,
-    "the decision board header is not a 44px row aligned on one line",
-    decisionSaved,
+    (await page.eval<string>(`document.querySelector('[data-testid="flow-decisions-state"]')?.textContent?.trim() ?? ""`)) ===
+      "Saved",
+    "the reloaded decision board is not read-only saved",
   );
-  check(
-    decisionSaved.startPadding === "12px",
-    "the decision board header does not use the design-system horizontal padding",
-    decisionSaved,
-  );
-  await page.eval(`window.__devboardEditors.get("flow-decisions").focus()`);
-  await page.key("End", 2);
-  await page.typeText("\n- Decision from the check.");
-  await delay(100);
-  const decisionDirty = await decisionHeader();
-  check(
-    decisionDirty.state === "Unsaved changes" && !decisionDirty.saveDisabled,
-    "the decision board header does not state its unsaved state",
-    decisionDirty,
-  );
-  check(
-    decisionDirty.badge && decisionDirty.tone === "warning",
-    "the decision board unsaved state is not a warning badge",
-    decisionDirty,
-  );
-  const decisionText = await page.eval<string>(`window.__devboardEditors.get("flow-decisions").getValue()`);
+  const framesBeforeDecisionKey = await page.eval<number>("window.__viFrames.length");
   await page.key("s", 2);
-  const decisionFrame = await waitFor(
-    async () =>
-      page.eval<{ type?: string; text?: string } | undefined>(`(() => {
-        const frames = (window.__viFrames ?? []).map((frame) => {
-          try { return JSON.parse(frame); } catch (error) { return null; }
-        });
-        return [...frames].reverse().find((frame) => frame !== null && frame.type === "saveFlowDecisions") ?? undefined;
-      })()`),
-    "the saveFlowDecisions frame",
-    10_000,
+  await delay(150);
+  check(
+    (await page.eval<number>("window.__viFrames.length")) === framesBeforeDecisionKey,
+    "Ctrl+S sent a frame from the read-only decision board",
   );
-  check(decisionFrame.text === decisionText, "the decision save did not send the exact editor text", decisionFrame);
+  check(
+    (await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"]')?.textContent ?? ""`)).includes(
+      "Server appended decision.",
+    ),
+    "Ctrl+S changed the decision board",
+  );
+
+  await runPalette("tab.close.flow.decisions");
+  await page.wait(`document.querySelector('[data-testid="flow-decisions"]') === null`, "the closed decision board");
+  check(
+    (await page.eval<boolean>(`document.querySelector('[data-testid="confirm-close-tab"]') !== null`)) === false,
+    "closing the read-only decision board asked to discard changes",
+  );
+  await runPalette("open.flow.decisions");
+  await page.wait(
+    `(document.querySelector('[data-testid="flow-decisions"]')?.textContent ?? "").includes("Server appended decision.")`,
+    "the reopened decision board",
+  );
 
   // 11. Discover: dense tables, glossary, term and skill splits.
   await runPalette("discover.tab.overview");
@@ -4146,13 +4142,13 @@ try {
   );
 
   // An agent page is a workspace, not a sheet: it takes the window's full
-  // height, and the prompt editor absorbs what the header, activity, and chat
+  // height, and the read-only prompt absorbs what the header and activity
   // leave, so the lower half of the window is never empty.
   const agentTab = '[data-testid="discover-agent-tab"]';
   await page.click(agentTab);
   await page.wait(
-    `document.querySelector('[data-testid="discover-agent-prompt-editor"]') !== null`,
-    "the Discover agent prompt editor",
+    `document.querySelector('[data-testid="discover-agent-prompt-text"]') !== null`,
+    "the Discover agent prompt text",
   );
   const agentFill = await page.eval<{
     pageScroll: number;
@@ -4162,7 +4158,7 @@ try {
   }>(`(() => {
     const page = document.querySelector('#workspace-discover .discover-agent');
     const prompt = page.querySelector('.discover-agent__prompt');
-    const editor = page.querySelector('[data-testid="discover-agent-prompt-editor"]');
+    const editor = page.querySelector('[data-testid="discover-agent-prompt-text"]');
     const contentBottom = page.getBoundingClientRect().bottom -
       parseFloat(getComputedStyle(page).paddingBottom);
     return {
@@ -4184,7 +4180,7 @@ try {
   );
   check(
     agentFill.editorHeight > 220,
-    "the prompt editor does not take the height the agent page leaves",
+    "the read-only prompt does not take the height the agent page leaves",
     agentFill,
   );
   await runPalette("discover.tab.overview");
@@ -4600,213 +4596,65 @@ try {
   check(stillGlossary, "clicking a glossary row navigated away from the table");
 
   await runPalette("discover.tab.testing-strategy");
-  await page.wait(`document.querySelector('[data-testid="discover-skill-text"] .monaco-editor') !== null`, "the Discover skill editor");
-  const skillLabel = await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"] textarea')?.getAttribute("aria-label") ?? ""`);
-  check(skillLabel.length > 0, "the skill editor has no accessible label", skillLabel);
-  const originalSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
-  await page.eval(`window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(`${originalSkill}\n- Verified edit.`)})`);
-  await page.wait(`document.querySelector('[data-testid="discover-skill-dirty"]') !== null`, "the Discover skill dirty marker");
+  await page.wait(`document.querySelector('[data-testid="discover-skill-text"]') !== null`, "the Discover skill text");
+  const skillLabel = await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"]')?.getAttribute("aria-label") ?? ""`);
+  check(skillLabel.length > 0, "the skill text has no accessible label", skillLabel);
+  const liveSkillPath = join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md");
+  const baselineSkillPath = join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md");
+  const originalSkill = await readFile(liveSkillPath, "utf8");
+  const skillText = await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? ""`);
+  check(skillText === originalSkill, "the skill page does not show the live file bytes");
+  check(
+    (await page.eval<string>(`document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? ""`)) ===
+      "generated",
+    "the generated skill status is not named",
+  );
+  for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
+    check(
+      (await page.eval<number>(`document.querySelectorAll('[data-testid="${testid}"]').length`)) === 0,
+      `${testid} is rendered on the skill page`,
+    );
+  }
+  const skillChrome = await page.eval<number>(`document.querySelector('[data-testid="discover-skill-text"]')?.querySelectorAll("textarea, input, [contenteditable], .monaco-editor").length ?? -1`);
+  check(skillChrome === 0, "the skill page holds an editor");
+  const framesBeforeSkillKey = await page.eval<number>("window.__viFrames.length");
+  await page.key("s", 2);
   await delay(150);
-  const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
-  check(skillDirty, "the skill editor does not mark unsaved changes");
-  const dirtyHeader = await page.eval<{
-    enabled: boolean;
-    state: string;
-    primary: boolean;
-    dot: string;
-    warning: string;
-  }>(`(() => {
-    const button = document.querySelector('[data-testid="discover-skill-save"]');
-    const header = button?.closest('.discover-skill__header');
-    const dot = header?.querySelector('.discover-skill__state-dot');
-    const probe = document.createElement("div");
-    probe.style.background = "var(--warning)";
-    document.body.append(probe);
-    const warning = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return {
-      enabled: button !== null && !button.disabled,
-      state: header?.querySelector('[data-testid="discover-skill-dirty"]')?.textContent?.trim() ?? "",
-      primary: button?.classList.contains("bg-[var(--primary)]") ?? false,
-      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
-      warning,
-    };
-  })()`);
   check(
-    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary &&
-      dirtyHeader.dot === dirtyHeader.warning,
-    "the skill header does not promote Save to the filled primary for an unsaved draft",
-    dirtyHeader,
+    (await page.eval<number>("window.__viFrames.length")) === framesBeforeSkillKey,
+    "Ctrl+S sent a frame from the read-only skill page",
   );
-  const editedSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
-  const saveClicked = await page.eval<boolean>(`(() => {
-    const button = document.querySelector('[data-testid="discover-skill-save"]');
-    if (button === null) return false;
-    button.click();
-    return true;
-  })()`);
-  check(saveClicked, "the skill Save control is missing");
-  let skillFrame: { type?: string; text?: string; target?: { kind?: string } };
-  try {
-    skillFrame = await waitFor(
-      async () =>
-        page.eval<
-          { type?: string; text?: string; target?: { kind?: string } } | undefined
-        >(`(() => {
-          const frames = (window.__viFrames ?? []).map((frame) => {
-            try { return JSON.parse(frame); } catch (error) { return null; }
-          });
-          return [...frames].reverse().find((frame) => frame !== null && frame.type === "saveDiscoverSkill") ?? undefined;
-        })()`),
-      "the saveDiscoverSkill frame",
-      10_000,
-    );
-  } catch (error) {
-    throw new Error(`the skill save did not reach the server: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  check(skillFrame.text === editedSkill, "the skill save did not send the exact editor text", skillFrame);
   check(
-    skillFrame.target?.kind === "host",
-    "the skill save did not name the host target it was edited for",
-    skillFrame,
+    (await readFile(liveSkillPath, "utf8")) === originalSkill,
+    "Ctrl+S changed the live skill file",
   );
-  try {
-    await waitFor(
-      async () => {
-        const text = await readFile(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8").catch(() => "");
-        return text.includes("Verified edit.") ? true : undefined;
-      },
-      "the saved skill file",
-      10_000,
-    );
-  } catch (error) {
-    const diagnostic = await page.eval<Record<string, unknown>>(`(() => {
-      const frames = (window.__viFrames ?? []).map((frame) => {
-        try { return JSON.parse(frame); } catch (parseError) { return null; }
-      }).filter(Boolean);
-      return {
-        state: document.querySelector('[data-testid="discover-skill-dirty"]')?.textContent?.trim() ?? "",
-        dirty: document.querySelector('[data-testid="discover-skill-text"]')?.getAttribute("data-dirty"),
-        notices: [...document.querySelectorAll('[data-testid="notifications"] .notification')].map((entry) => entry.textContent.trim()),
-        saves: frames.filter((frame) => frame.type === "saveDiscoverSkill").slice(-3),
-        errors: frames.filter((frame) => frame.type === "discoverError").slice(-3),
-      };
-    })()`);
-    throw new Error(`${error instanceof Error ? error.message : String(error)} ${JSON.stringify(diagnostic)}`);
-  }
-  await page.wait(
-    `document.querySelector('[data-testid="discover-skill-restore"]') !== null`,
-    "the restore control after saving",
-  );
-  await page.click('[data-testid="discover-skill-restore"]');
-  const skillBaseline = await readFile(
-    join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"),
-    "utf8",
-  );
-  await waitFor(
-    async () => {
-      const live = await readFile(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8").catch(() => "");
-      if (live !== skillBaseline) return undefined;
-      const restored = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
-      const dirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-dirty"]') !== null`);
-      return restored === skillBaseline && !dirty ? true : undefined;
-    },
-    "the restored generated skill",
-    10_000,
-  );
-  // A deleted live file states its own recovery and gives Recreate the only primary.
-  await rm(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"));
+
+  // A missing live file names its state and renders the generated baseline.
+  await rm(liveSkillPath);
   await page.reload();
   await runPalette("discover.tab.testing-strategy");
   await page.wait(
     `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "Live file missing"`,
     "the missing skill state",
   );
-  const missingHeader = await page.eval<{
-    state: string;
-    saveDisabled: boolean;
-    saveSecondary: boolean;
-    restorePrimary: boolean;
-    restore: string;
-    dot: string;
-    error: string;
-  }>(`(() => {
-    const header = document.querySelector('.discover-skill__header');
-    const save = header?.querySelector('[data-testid="discover-skill-save"]');
-    const restore = header?.querySelector('[data-testid="discover-skill-restore"]');
-    const dot = header?.querySelector('.discover-skill__state-dot');
-    const probe = document.createElement("div");
-    probe.style.background = "var(--error)";
-    document.body.append(probe);
-    const error = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return {
-      state: header?.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
-      saveDisabled: save === null || save.disabled,
-      saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
-      restorePrimary: restore?.classList.contains("bg-[var(--primary)]") ?? false,
-      restore: restore?.textContent?.trim() ?? "",
-      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
-      error,
-    };
-  })()`);
+  const baselineSkill = await readFile(baselineSkillPath, "utf8");
   check(
-    missingHeader.state === "Live file missing" && missingHeader.saveDisabled &&
-      missingHeader.saveSecondary && missingHeader.restorePrimary &&
-      missingHeader.restore === "Recreate generated version" &&
-      missingHeader.dot === missingHeader.error,
-    "the missing skill header does not give the recovery control the only primary",
-    missingHeader,
+    (await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? ""`)) ===
+      baselineSkill,
+    "the missing skill does not render its generated baseline",
   );
-  // An unsaved draft against a missing file keeps Save quiet; the recovery stays the only primary.
-  const missingDraft = await page.eval<string>(
-    `window.__devboardEditors.get("discover-skill-text").getValue()`,
-  );
-  await page.eval(
-    `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(
-      `${missingDraft}\nUnsaved against a missing file.`,
-    )})`,
-  );
+  for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
+    check(
+      (await page.eval<number>(`document.querySelectorAll('[data-testid="${testid}"]').length`)) === 0,
+      `${testid} is rendered against the missing skill`,
+    );
+  }
+  await writeFile(liveSkillPath, baselineSkill);
+  await page.reload();
+  await runPalette("discover.tab.testing-strategy");
   await page.wait(
-    `document.querySelector('[data-testid="discover-skill-dirty"]') !== null`,
-    "the dirty marker against the missing skill file",
-  );
-  const missingDirtyHeader = await page.eval<{
-    state: string;
-    saveDisabled: boolean;
-    saveSecondary: boolean;
-    primaries: string[];
-  }>(`(() => {
-    const actions = document.querySelector('.discover-skill__actions');
-    const save = actions?.querySelector('[data-testid="discover-skill-save"]');
-    return {
-      state: actions?.querySelector('[data-testid="discover-skill-dirty"]')?.textContent?.trim() ?? "",
-      saveDisabled: save === null || save.disabled,
-      saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
-      primaries: [...(actions?.querySelectorAll("button") ?? [])]
-        .filter((button) => button.classList.contains("bg-[var(--primary)]"))
-        .map((button) => button.getAttribute("data-testid") ?? ""),
-    };
-  })()`);
-  check(
-    missingDirtyHeader.state === "Unsaved changes" && missingDirtyHeader.saveDisabled &&
-      missingDirtyHeader.saveSecondary && missingDirtyHeader.primaries.length === 1 &&
-      missingDirtyHeader.primaries[0] === "discover-skill-restore",
-    "the missing skill header promotes Save for an unsaved draft",
-    missingDirtyHeader,
-  );
-  await page.click('[data-testid="discover-skill-restore"]');
-  await waitFor(
-    async () => {
-      const text = await readFile(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8").catch(() => "");
-      return text.length > 0 ? true : undefined;
-    },
-    "the recreated skill file",
-    10_000,
-  );
-  await page.wait(
-    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "No unsaved changes"`,
-    "the recreated skill state",
+    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "generated"`,
+    "the restored generated skill state",
   );
 
   const skillLayout = await page.eval<{
@@ -4819,8 +4667,6 @@ try {
     inline: boolean;
     title: string;
     state: string;
-    saveDisabled: boolean;
-    saveSecondary: boolean;
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
@@ -4841,7 +4687,6 @@ try {
     const header = panel?.querySelector('.discover-skill__header');
     const identity = header?.querySelector('.discover-skill__identity');
     const actions = header?.querySelector('.discover-skill__actions');
-    const save = document.querySelector('[data-testid="discover-skill-save"]');
     const dot = header?.querySelector('.discover-skill__state-dot');
     const chip = header?.querySelector('.discover-skill__path');
     const pill = header?.querySelector('[data-testid="discover-skill-status"]');
@@ -4871,8 +4716,6 @@ try {
       state: panel
         ?.querySelector('[data-testid="discover-skill-status"]')
         ?.textContent?.trim() ?? "",
-      saveDisabled: save === null || save.disabled,
-      saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
@@ -4896,9 +4739,8 @@ try {
     skillLayout.title,
   );
   check(
-    skillLayout.state === "No unsaved changes" && skillLayout.saveDisabled &&
-      skillLayout.saveSecondary,
-    "the clean skill header does not state the draft is saved and quiet Save",
+    skillLayout.state === "generated",
+    "the clean skill header does not name the generated state",
     skillLayout,
   );
   check(
@@ -4920,6 +4762,16 @@ try {
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
   check(skillLayout.editor >= skillLayout.panel - 48, "the skill editor does not use the full pane", skillLayout);
+
+  // Closing the read-only skill page never asks to discard anything.
+  await runPalette("tab.close.discover.testing-strategy");
+  await page.wait(`document.querySelector('[data-testid="discover-skill-text"]') === null`, "the closed skill page");
+  check(
+    (await page.eval<boolean>(`document.querySelector('[data-testid="confirm-close-tab"]') !== null`)) === false,
+    "closing the read-only skill page asked to discard changes",
+  );
+  await runPalette("discover.tab.testing-strategy");
+  await page.wait(`document.querySelector('[data-testid="discover-skill-text"]') !== null`, "the reopened skill page");
 
   // The open surface survives mode switches; only one page exists per mode.
   const surfaceBefore = await page.eval<string>(`document.querySelector('#workspace-discover [data-testid="discover-skill"]')?.getAttribute("data-name") ?? ""`);
@@ -4960,8 +4812,8 @@ try {
     panes: number[];
     theme: string;
     stored: string;
-    editor: string;
-    dirty: boolean;
+    text: string;
+    status: string;
     tabs: number;
   }>(`(() => ({
     mode: ["goal", "flow", "discover"].find((mode) => document.querySelector('[data-testid="mode-' + mode + '"]')?.getAttribute("aria-selected") === "true") ?? "",
@@ -4970,8 +4822,8 @@ try {
     panes: [...document.querySelectorAll('#workspace-discover [data-pane]')].map((pane) => Math.round(pane.getBoundingClientRect().width)),
     theme: document.documentElement.dataset.theme,
     stored: localStorage.getItem("devboard.layout.v1") ?? "",
-    editor: (window.__devboardEditors.get("discover-skill-text")?.getValue() ?? "").slice(-20),
-    dirty: document.querySelector('[data-testid="discover-skill-dirty"]') !== null,
+    text: (document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? "").slice(-20),
+    status: document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
     tabs: document.querySelectorAll('[data-testid="workspace-tab"]').length,
   }))()`);
   check(afterReload.mode === beforeReload.mode && afterReload.theme === beforeReload.theme, "mode or theme did not survive reload", { beforeReload, afterReload });
@@ -4980,9 +4832,9 @@ try {
   check(afterReload.panes.length === beforeReload.panes.length && afterReload.panes.every((width, index) => Math.abs(width - (beforeReload.panes[index] ?? 0)) <= 2), "split sizes did not survive reload", { before: beforeReload.panes, after: afterReload.panes });
   const restoredBaseline = (await readFile(join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"), "utf8")).slice(-20);
   check(
-    afterReload.editor === restoredBaseline && !afterReload.dirty,
+    afterReload.text === restoredBaseline && afterReload.status === "generated",
     "the restored skill text did not survive reload",
-    { editor: afterReload.editor, baseline: restoredBaseline, dirty: afterReload.dirty },
+    { text: afterReload.text, baseline: restoredBaseline, status: afterReload.status },
   );
   check(afterReload.stored.includes('"theme":"light"'), "layout localStorage lost the theme", afterReload.stored.slice(0, 120));
   check(!afterReload.stored.includes('"sidebarVisible"'), "layout localStorage still stores sidebar visibility", afterReload.stored.slice(0, 120));
@@ -5025,6 +4877,16 @@ try {
   await page.wait(
     `document.querySelector('[data-testid="discover-remote-clear"]') !== null`,
     "the retained remote target",
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="discover-remote-start"]')?.getAttribute("title") === "Enter a GitHub repository URL"`,
+    "the idle remote start control",
+  );
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="discover-remote-select"] option')]
+      .map((option) => option.value)[0] === ${JSON.stringify(secondUrl)}`,
+    "the retained projects in newest-first order",
+    20_000,
   );
   const remoteStrip = await page.eval<{
     select: boolean;
@@ -5195,33 +5057,33 @@ try {
     scratchAfterSwitch,
   );
 
-  // One remote skill save lands in the active retained project, never this checkout.
+  // The retained project's skill renders read-only and nothing writes it.
   await runPalette("discover.tab.testing-strategy");
-  await page.wait(`document.querySelector('[data-testid="discover-skill-text"] .monaco-editor') !== null`, "the retained skill editor");
-  const retainedSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
-  await page.eval(
-    `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(
-      `${retainedSkill}\n- Retained interface edit.\n`,
-    )})`,
+  await page.wait(`document.querySelector('[data-testid="discover-skill-text"]') !== null`, "the retained skill text");
+  const retainedSkillPath = join(
+    secondRetained,
+    ".omp",
+    "skills",
+    "discover-testing-strategy",
+    "SKILL.md",
   );
-  await page.wait(`document.querySelector('[data-testid="discover-skill-dirty"]') !== null`, "the retained skill dirty marker");
-  await page.click('[data-testid="discover-skill-save"]');
-  await waitFor(
-    async () => {
-      try {
-        const text = await readFile(
-          join(secondRetained, ".omp", "skills", "discover-testing-strategy", "SKILL.md"),
-          "utf8",
-        );
-        return text.includes("Retained interface edit") ? true : undefined;
-      } catch {
-        return undefined;
-      }
-    },
-    "the retained skill save",
-    20_000,
+  const retainedBytes = readFileSync(retainedSkillPath);
+  check(
+    (await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? ""`)) ===
+      retainedBytes.toString("utf8"),
+    "the retained skill page does not show its live bytes",
   );
-  check(await ompDigest(host) === hostOmpBefore, "a retained skill save changed this checkout's .omp");
+  for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
+    check(
+      (await page.eval<number>(`document.querySelectorAll('[data-testid="${testid}"]').length`)) === 0,
+      `${testid} is rendered on the retained skill page`,
+    );
+  }
+  check(
+    readFileSync(retainedSkillPath).equals(retainedBytes),
+    "opening the retained skill page wrote its file",
+  );
+  check(await ompDigest(host) === hostOmpBefore, "a retained skill page changed this checkout's .omp");
 
   // Removing the active project deletes exactly it and returns to the host.
   await runPalette("discover.tab.overview");
@@ -8197,10 +8059,11 @@ try {
     "the second submit did not start its own elaboration",
     busyStart,
   );
-  check(
-    (await draftTurns()) === turnsBeforeBusy + 1,
-    "the second submit did not start exactly one more elaboration",
-    { before: turnsBeforeBusy },
+  await waitFor(
+    async () =>
+      (await draftTurns()) === turnsBeforeBusy + 1 ? true : undefined,
+    "the second elaboration's prompt",
+    10_000,
   );
   check(
     (await page.eval<string>(
@@ -8680,8 +8543,8 @@ try {
     offline,
   );
   await runPalette("goal.document.open");
-  await page.wait(`document.querySelector('[data-testid="goal-text"]') !== null`, "the Goal editor while disconnected");
-  await page.click('[data-testid="save-goal"]');
+  await page.wait(`document.querySelector('[data-testid="goal-text"]') !== null`, "the Goal document while disconnected");
+  await page.click('[data-testid="revise-goal"]');
   await page.wait(
     `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some((entry) => entry.textContent.includes("Not connected"))`,
     "the disconnected-command notification",
@@ -8748,6 +8611,9 @@ try {
     "the notification dismiss control lost its accessible name or command",
     dismissControl,
   );
+  await delay(250);
+  await page.hover('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+  await delay(100);
   await page.hover('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
   const dismissHover = await page.eval<{ background: string; expected: string }>(`(() => {
     const probe = document.createElement("div");
@@ -9063,7 +8929,7 @@ try {
 
   devtools.close();
   console.log(
-    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, issues mode, ask transcript, persistence, and boundary passed",
+    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, read-only documents, terminals, accessibility, notifications, status bar, issues mode, ask transcript, persistence, and boundary passed",
   );
 } finally {
   try {

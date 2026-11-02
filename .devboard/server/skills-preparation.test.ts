@@ -449,7 +449,6 @@ describe("skills preparation", () => {
           { type: "startLifecycle" },
           { type: "resumeLifecycle" },
           { type: "reviseGoal" },
-          { type: "saveGoal", text: "A different goal" },
           { type: "createGoal" },
           { type: "prepareSkills" },
         ];

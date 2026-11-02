@@ -511,7 +511,7 @@ describe("resetImplementation", () => {
     }
   });
 
-  test("answers an empty record list and preserves goal editing afterwards", async () => {
+  test("answers an empty record list and keeps the goal readable afterwards", async () => {
     const host = await createHost();
     await pushBase(host);
     const { server, url } = await startServer(host);
@@ -538,13 +538,8 @@ describe("resetImplementation", () => {
         text: "# Goal\n\nKeep this.\n",
       });
 
-      client.send({ type: "saveGoal", text: "Edited after reset\n" });
-      expect(await client.waitFor("goal")).toEqual({
-        type: "goal",
-        text: "Edited after reset\n",
-      });
       expect(await readFile(join(host.host, "GOAL.md"), "utf8")).toBe(
-        "Edited after reset\n",
+        "# Goal\n\nKeep this.\n",
       );
       client.close();
     } finally {
@@ -1073,7 +1068,6 @@ describe("resetImplementation", () => {
 
       const refused: unknown[] = [
         { type: "resetImplementation" },
-        { type: "saveGoal", text: "blocked" },
         { type: "startRun" },
         { type: "startLifecycle" },
         { type: "pauseLifecycle" },

@@ -78,7 +78,6 @@
     "clsx": "^2.1.1",
     "happy-dom": "^21.0.4",
     "lucide-svelte": "^1.0.1",
-    "monaco-editor": "^0.57.0",
     "paneforge": "^1.0.2",
     "shadcn-svelte": "^1.7.1",
     "storybook": "10.6.4",

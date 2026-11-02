@@ -175,12 +175,8 @@ export interface AgentSnapshotInput {
 export type AgentPromptDescriptor =
   | {
       kind: "file";
-      /** The file under `.devboard/prompts` that the section reads and saves. */
+      /** The file under `.devboard/prompts` that the section reads. */
       file: string;
-      /** The file under `.devboard/prompts` whose instructions steer this prompt's chat turn. */
-      chat: string;
-      /** The Save confirmation, naming the run that reads the file next. */
-      notice: string;
     }
   | {
       kind: "absent";
@@ -288,14 +284,6 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
       throw new AgentRegistryError(
         `${id}: prompt file must be one prompts directory Markdown file`,
       );
-    }
-    if (typeof prompt.chat !== "string" || !/^[a-z0-9][a-z0-9-]*\.md$/.test(prompt.chat)) {
-      throw new AgentRegistryError(
-        `${id}: prompt chat must be one prompts directory Markdown file`,
-      );
-    }
-    if (typeof prompt.notice !== "string" || prompt.notice.trim().length === 0) {
-      throw new AgentRegistryError(`${id}: prompt file needs a save notice`);
     }
   } else if (typeof prompt.message !== "string" || prompt.message.trim().length === 0) {
     throw new AgentRegistryError(`${id}: prompt absence needs its message`);
@@ -581,8 +569,6 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     prompt: {
       kind: "file",
       file: "scout-recommendations.md",
-      chat: "agent-prompt-chat.md",
-      notice: "Prompt saved. The next scan reads this file.",
     },
     lifecycle: AGENT_LIFECYCLES,
     cadence: {
@@ -638,8 +624,6 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     prompt: {
       kind: "file",
       file: "design-system.md",
-      chat: "design-prompt-chat.md",
-      notice: "Prompt saved. The next cycle reads this file.",
     },
     lifecycle: AGENT_LIFECYCLES,
     cadence: {
@@ -718,7 +702,7 @@ export interface DiscoverAgentDescriptor {
   label: string;
   /** The slash command the peer receives, followed by its staging directory. */
   command: string;
-  /** The one file under `.devboard/prompts` this agent reads and edits. */
+  /** The one file under `.devboard/prompts` this agent reads. */
   promptFile: string;
   /** The one Discover skill this agent owns; null for the project sheet. */
   skill: string | null;

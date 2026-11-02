@@ -187,22 +187,28 @@ const FAMILIES = [
   "./scripts/verify-family-three",
 ];
 
+function synthesisAnswer(name: string): Record<string, unknown> {
+  return {
+    family: "{{family}}",
+    action: "tool",
+    tool: {
+      name,
+      title: "Run the recurring family command",
+      description: "Replaces the recurring command with one named capability.",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      covers: ["{{family}}"],
+    },
+    rationale: "The family recurs, so one named capability removes the manual command.",
+    acceptance: ["- [ ] The family command runs through the named tool."],
+  };
+}
+
 await writeFile(
   synthesisStub,
   `${JSON.stringify({
-    default: {
-      family: "{{family}}",
-      action: "tool",
-      tool: {
-        name: "coach_family_tool",
-        title: "Run the recurring family command",
-        description: "Replaces the recurring command with one named capability.",
-        inputSchema: { type: "object", additionalProperties: false, properties: {} },
-        covers: ["{{family}}"],
-      },
-      rationale: "The family recurs, so one named capability removes the manual command.",
-      acceptance: ["- [ ] The family command runs through the named tool."],
-    },
+    families: Object.fromEntries(
+      FAMILIES.map((family, index) => [family, synthesisAnswer(`coach_family_${index + 1}_tool`)]),
+    ),
   })}\n`,
 );
 
@@ -296,11 +302,11 @@ try {
   const created = calls(stub).filter((call) => call.op === "create");
   assertTrue(created.length === 3, `verify:coach: filed ${created.length} issue(s)`);
 
-  for (const key of FAMILIES) {
+  for (const [index, key] of FAMILIES.entries()) {
     const match = created.find((call) => call.title === `[coach] ${key}`);
     assertTrue(match !== undefined, `verify:coach: no issue titled [coach] ${key}`);
     const tool = {
-      name: "coach_family_tool",
+      name: `coach_family_${index + 1}_tool`,
       title: "Run the recurring family command",
       description: "Replaces the recurring command with one named capability.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
@@ -345,7 +351,14 @@ try {
     calls(stub).filter((call) => call.op === "create").length === 3,
     "verify:coach: the second cycle filed another issue",
   );
-  assertTrue(second.duplicates.length === 3, `verify:coach: duplicates ${second.duplicates.length}`);
+  assertTrue(
+    second.validations.filter((validation) => validation.outcome === "filed").length === 0,
+    "verify:coach: the second cycle marked a family filed",
+  );
+  assertTrue(
+    second.duplicates.length + second.validations.filter((validation) => validation.rule === "tool-name-duplicate").length === 3,
+    `verify:coach: the second cycle refused ${second.duplicates.length} duplicate(s)`,
+  );
   assertTrue(
     JSON.stringify(second.findings) === JSON.stringify(first.findings),
     "verify:coach: the second cycle's families differ",

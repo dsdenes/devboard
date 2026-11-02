@@ -168,6 +168,54 @@ async function valueOf(devtools: Devtools, testid: string): Promise<string> {
   return typeof value === "string" ? value : "";
 }
 
+/** The element's exact text bytes, without collapsing whitespace. */
+async function rawTextOf(devtools: Devtools, testid: string): Promise<string> {
+  const value = await devtools.evaluate(
+    `document.querySelector('[data-testid="${testid}"]')?.textContent ?? ''`,
+  );
+  return typeof value === "string" ? value : "";
+}
+
+/** The prompt region is a scrollable monospaced block with no editor chrome. */
+async function assertPromptTextRegion(
+  devtools: Devtools,
+  testid: string,
+  expected: string,
+  page: string,
+): Promise<void> {
+  await waitFor(
+    async () =>
+      (await devtools
+        .evaluate(`document.querySelector('[data-testid="${testid}"]') !== null`)
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    `${page} prompt text`,
+    15_000,
+  );
+  const actual = await rawTextOf(devtools, testid);
+  assertTrue(actual === expected, `${page} prompt bytes differ: ${JSON.stringify(actual)}`);
+  const style = await devtools.evaluate(`(() => {
+    const element = document.querySelector('[data-testid="${testid}"]');
+    if (element === null) return null;
+    const computed = getComputedStyle(element);
+    return {
+      whiteSpace: computed.whiteSpace,
+      overflow: computed.overflowY,
+      font: computed.fontFamily,
+      tag: element.tagName,
+    };
+  })()`);
+  assertTrue(
+    style !== null &&
+      (style as Record<string, unknown>).whiteSpace === "pre" &&
+      ["auto", "scroll"].includes(String((style as Record<string, unknown>).overflow)) &&
+      String((style as Record<string, unknown>).font).toLowerCase().includes("mono") &&
+      (style as Record<string, unknown>).tag === "PRE",
+    `${page} prompt region is not a scrollable monospace PRE: ${JSON.stringify(style)}`,
+  );
+}
+
 async function countOf(devtools: Devtools, testid: string): Promise<number> {
   const value = await devtools.evaluate(
     `document.querySelectorAll('[data-testid="${testid}"]').length`,
@@ -366,8 +414,6 @@ const SOURCE_PROMPT =
   "---\ndescription: source fixture\n---\n\n# Source Auto Scout prompt\n\nKeep every byte.\n";
 const INSTALLED_DESIGN_PROMPT = "# Installed Design System prompt\n\nRead-only here.\n";
 const SOURCE_DESIGN_PROMPT = "# Source Design System prompt\n\nKeep every byte.\n";
-const CHAT_PROPOSAL =
-  "---\ndescription: revised\n---\n\n# Revised Auto Scout prompt\n\nSaved by the gate.\n";
 const SOURCE_ACP = join(import.meta.dir, "..", "tests", "fixtures", "verify-source-acp.ts");
 const SCOUT_STUB_GH = join(import.meta.dir, "..", "tests", "fixtures", "scout-stub-gh.ts");
 
@@ -448,6 +494,14 @@ try {
     join(host.directory, ".devboard", "prompts", "design-system.md"),
     INSTALLED_DESIGN_PROMPT,
   );
+  assertTrue(
+    run("git", ["-C", host.directory, "add", ".devboard/prompts"]).code === 0,
+    "verify:agents: could not stage the installed prompt fixture",
+  );
+  assertTrue(
+    run("git", ["-C", host.directory, "commit", "-q", "-m", "installed prompts"]).code === 0,
+    "verify:agents: could not commit the installed prompt fixture",
+  );
   await mkdir(join(host.directory, ".omp", "commands"), { recursive: true });
   await writeFile(
     join(host.directory, ".omp", "commands", "scout-recommendations.md"),
@@ -513,7 +567,7 @@ try {
     30_000,
   );
 
-  /* A second host is a harness source checkout: its prompt is editable. */
+  /* A second host is a harness source checkout: its prompt is read-only too. */
   const sourceHost = await makeHost(root, "source");
   await mkdir(join(sourceHost.directory, ".devboard", "prompts"), { recursive: true });
   await writeFile(
@@ -527,6 +581,14 @@ try {
   await writeFile(
     join(sourceHost.directory, ".devboard", "prompts", "design-system.md"),
     SOURCE_DESIGN_PROMPT,
+  );
+  assertTrue(
+    run("git", ["-C", sourceHost.directory, "add", ".devboard/prompts"]).code === 0,
+    "verify:agents: could not stage the source prompt fixture",
+  );
+  assertTrue(
+    run("git", ["-C", sourceHost.directory, "commit", "-q", "-m", "source prompts"]).code === 0,
+    "verify:agents: could not commit the source prompt fixture",
   );
   await mkdir(join(sourceHost.directory, ".devboard", "goal-proposals"), { recursive: true });
   await writeFile(
@@ -631,7 +693,6 @@ try {
       STATE_DIR: sourceStateDir,
       AGENT_COMMAND: `bun ${SOURCE_ACP}`,
       SCOUT_STUB_STATE: ghStore,
-      PROMPT_STUB_PROPOSAL: CHAT_PROPOSAL,
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -873,9 +934,21 @@ try {
     (await text(devtools, "agent-prompt-absent")).includes("Coach"),
     "the Coach absence does not name its promptless behavior",
   );
+  for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-save",
+    "agent-prompt-chat",
+    "agent-prompt-message",
+    "agent-prompt-send",
+  ]) {
+    assertTrue(
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered on the Coach page`,
+    );
+  }
   console.log("PASS coach-page");
 
-  /* 2b. The prompt section: read-only here. */
+  /* 2b. The prompt section is read-only on every host. */
   await click(devtools, "open-devboard-scout");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
@@ -892,26 +965,42 @@ try {
     `the installed prompt section is misplaced: ${JSON.stringify(installedLayout)}`,
   );
   await openPrompt(devtools, "Auto Scout");
+  await assertPromptTextRegion(devtools, "agent-prompt-text", INSTALLED_PROMPT, "installed Auto Scout");
   for (const testid of [
     "agent-prompt-editor",
-    "agent-prompt-chat",
     "agent-prompt-save",
+    "agent-prompt-chat",
+    "agent-prompt-chat-log",
+    "agent-prompt-message",
+    "agent-prompt-send",
+    "agent-prompt-chat-error",
+    "agent-prompt-notice",
+    "agent-prompt-reset",
   ]) {
     assertTrue(
       (await countOf(devtools, testid)) === 0,
       `${testid} is rendered in an installed host`,
     );
   }
+  const promptChrome = await devtools.evaluate(`(() => {
+    const section = document.querySelector('[data-testid="agent-prompt"]');
+    return {
+      fields: section?.querySelectorAll('textarea, input, [contenteditable], .monaco-editor').length ?? -1,
+    };
+  })()`);
+  assertTrue(
+    (promptChrome as { fields: number }).fields === 0,
+    `the installed prompt section holds an editor: ${JSON.stringify(promptChrome)}`,
+  );
   const refusedSave = await promptCommand(
     devtools,
     port,
     { type: "saveAgentPrompt", id: "scout", text: "changed\n" },
-    "agentPromptError",
+    "error",
   );
   assertTrue(
-    typeof refusedSave.message === "string" &&
-      refusedSave.message.includes("harness source checkout"),
-    `the installed save was not refused: ${JSON.stringify(refusedSave)}`,
+    refusedSave.message === "Invalid WebSocket message.",
+    `the removed installed save was not refused: ${JSON.stringify(refusedSave)}`,
   );
   assertTrue(
     readFileSync(join(host.directory, ".devboard", "prompts", "scout-recommendations.md"), "utf8") ===
@@ -941,10 +1030,18 @@ try {
     (await countOf(devtools, "agent-prompt-absent")) === 0,
     "the Design System prompt is declared absent",
   );
+  await assertPromptTextRegion(
+    devtools,
+    "agent-prompt-text",
+    INSTALLED_DESIGN_PROMPT,
+    "installed Design System",
+  );
   for (const testid of [
     "agent-prompt-editor",
-    "agent-prompt-chat",
     "agent-prompt-save",
+    "agent-prompt-chat",
+    "agent-prompt-message",
+    "agent-prompt-send",
   ]) {
     assertTrue(
       (await countOf(devtools, testid)) === 0,
@@ -972,8 +1069,11 @@ try {
   );
   for (const testid of [
     "agent-prompt-editor",
-    "agent-prompt-chat",
     "agent-prompt-save",
+    "agent-prompt-chat",
+    "agent-prompt-message",
+    "agent-prompt-send",
+    "agent-prompt-text",
   ]) {
     assertTrue(
       (await countOf(devtools, testid)) === 0,
@@ -1155,8 +1255,6 @@ try {
           "stopAgent",
           "setAgentSettings",
           "disableAgentTimer",
-          "saveAgentPrompt",
-          "sendAgentPromptChat",
         ].includes(type),
       ),
     `a mutating command ran on reload: ${JSON.stringify(sent)}`,
@@ -1536,7 +1634,7 @@ try {
   );
   console.log("PASS footer-indicator");
 
-  /* 10. The source checkout's editable prompt: chat and save. */
+  /* 10. The source checkout renders the same read-only prompt bytes. */
   await devtools.send("Page.navigate", { url: `http://127.0.0.1:${sourcePort}/` });
   await waitFor(
     async () =>
@@ -1567,103 +1665,56 @@ try {
     `the source prompt section is misplaced: ${JSON.stringify(sourceLayout)}`,
   );
   await openPrompt(devtools, "source Auto Scout");
-  await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-editor")) ? true : undefined),
-    "the source prompt editor",
-    15_000,
-  );
-  assertTrue(
-    readFileSync(
-      join(sourceHost.directory, ".devboard", "prompts", "scout-recommendations.md"),
-      "utf8",
-    ) === SOURCE_PROMPT,
-    "opening the page wrote the prompt file",
-  );
-  assertTrue(
-    (await valueOf(devtools, "agent-prompt-editor")) === SOURCE_PROMPT,
-    "the editor does not start at the file's bytes",
-  );
+  await assertPromptTextRegion(devtools, "agent-prompt-text", SOURCE_PROMPT, "source Auto Scout");
   for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-save",
     "agent-prompt-chat",
+    "agent-prompt-chat-log",
     "agent-prompt-message",
     "agent-prompt-send",
-    "agent-prompt-save",
+    "agent-prompt-chat-error",
+    "agent-prompt-notice",
+    "agent-prompt-reset",
   ]) {
-    assertTrue((await countOf(devtools, testid)) === 1, `${testid} is missing on the source page`);
+    assertTrue(
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered on the source page`,
+    );
   }
+  const sourceChrome = await devtools.evaluate(`(() => {
+    const section = document.querySelector('[data-testid="agent-prompt"]');
+    return {
+      fields: section?.querySelectorAll('textarea, input, [contenteditable], .monaco-editor').length ?? -1,
+    };
+  })()`);
   assertTrue(
-    (await countOf(devtools, "agent-prompt-chat-log")) === 0,
-    "an empty chat log is rendered before the first turn",
+    (sourceChrome as { fields: number }).fields === 0,
+    `the source prompt section holds an editor: ${JSON.stringify(sourceChrome)}`,
   );
-  assertTrue(
-    (await countOf(devtools, "agent-prompt-reset")) === 0,
-    "the removed Reset control is still rendered on the source page",
-  );
-
   const sourcePromptFile = join(
     sourceHost.directory,
     ".devboard",
     "prompts",
     "scout-recommendations.md",
   );
-
-  await setInput(devtools, "agent-prompt-message", "Tighten the evidence rule.");
-  await click(devtools, "agent-prompt-send");
-  await waitFor(
-    async () =>
-      (await text(devtools, "agent-prompt-chat-log")).includes("Here is the revision.")
-        ? true
-        : undefined,
-    "the prompt chat reply",
-    30_000,
+  const refusedSourceSave = await promptCommand(
+    devtools,
+    sourcePort,
+    { type: "saveAgentPrompt", id: "scout", text: "changed\n" },
+    "error",
   );
-  await waitFor(
-    async () => ((await valueOf(devtools, "agent-prompt-editor")) === CHAT_PROPOSAL ? true : undefined),
-    "the proposed prompt in the editor",
-    15_000,
+  assertTrue(
+    refusedSourceSave.message === "Invalid WebSocket message.",
+    `the removed source save was not refused: ${JSON.stringify(refusedSourceSave)}`,
   );
   assertTrue(
     readFileSync(sourcePromptFile, "utf8") === SOURCE_PROMPT,
-    "the chat wrote the prompt file before Save",
+    "the removed save wrote the source prompt file",
   );
-  const assistantEntries = await devtools.evaluate(
-    `document.querySelectorAll('[data-testid="agent-prompt-chat-log"] [data-role="assistant"]').length`,
-  );
-  assertTrue(
-    assistantEntries === 1,
-    `the chat log shows ${String(assistantEntries)} assistant entries for one turn`,
-  );
-  console.log("PASS prompt-chat");
+  console.log("PASS prompt-read-only-source");
 
-  await click(devtools, "agent-prompt-save");
-  await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-notice")) ? true : undefined),
-    "the prompt save notice",
-    15_000,
-  );
-  assertTrue(
-    readFileSync(sourcePromptFile, "utf8") === CHAT_PROPOSAL,
-    "Save did not write the editor's bytes",
-  );
-  await devtools.send("Page.reload");
-  await waitFor(
-    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
-    "the restored source prompt section",
-    30_000,
-  );
-  await assertPromptClosed(devtools, "restored source Auto Scout");
-  await openPrompt(devtools, "restored source Auto Scout");
-  await waitFor(
-    async () =>
-      (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === CHAT_PROPOSAL
-        ? true
-        : undefined,
-    "the saved prompt after a reload",
-    30_000,
-  );
-  console.log("PASS prompt-save");
-
-  /* 11. The source checkout's Design System prompt is the same editable surface. */
+  /* 11. The source checkout's Design System prompt is the same read-only surface. */
   await click(devtools, "open-devboard-design");
   await waitFor(
     async () =>
@@ -1687,56 +1738,61 @@ try {
     `the source Design System prompt section is misplaced: ${JSON.stringify(designLayout)}`,
   );
   await openPrompt(devtools, "source Design System");
-  await waitFor(
-    async () =>
-      (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === SOURCE_DESIGN_PROMPT
-        ? true
-        : undefined,
-    "the Design System prompt in the source editor",
-    15_000,
+  await assertPromptTextRegion(
+    devtools,
+    "agent-prompt-text",
+    SOURCE_DESIGN_PROMPT,
+    "source Design System",
   );
   assertTrue(
     (await countOf(devtools, "agent-prompt-absent")) === 0,
     "the source Design System prompt is declared absent",
   );
   for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-save",
     "agent-prompt-chat",
     "agent-prompt-message",
     "agent-prompt-send",
-    "agent-prompt-save",
   ]) {
     assertTrue(
-      (await countOf(devtools, testid)) === 1,
-      `${testid} is missing on the source Design System page`,
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered on the source Design System page`,
     );
   }
-  const designPromptFile = join(
-    sourceHost.directory,
-    ".devboard",
-    "prompts",
-    "design-system.md",
-  );
-  await setInput(devtools, "agent-prompt-editor", "design saved\n");
-  await click(devtools, "agent-prompt-save");
-  await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-notice")) ? true : undefined),
-    "the Design System save notice",
-    15_000,
+  assertTrue(
+    readFileSync(
+      join(sourceHost.directory, ".devboard", "prompts", "design-system.md"),
+      "utf8",
+    ) === SOURCE_DESIGN_PROMPT,
+    "the Design System prompt file changed",
   );
   assertTrue(
-    readFileSync(designPromptFile, "utf8") === "design saved\n",
-    "Save did not write the Design System prompt file",
+    readFileSync(sourcePromptFile, "utf8") === SOURCE_PROMPT,
+    "the Design System page changed the Auto Scout prompt file",
   );
-  assertTrue(
-    readFileSync(sourcePromptFile, "utf8") === CHAT_PROPOSAL,
-    "the Design System save changed the Auto Scout prompt file",
-  );
+
+  for (const fixture of [host, sourceHost]) {
+    const diff = run("git", [
+      "-C",
+      fixture.directory,
+      "diff",
+      "--exit-code",
+      "--",
+      ".devboard/prompts",
+    ]);
+    assertTrue(
+      diff.code === 0,
+      `${fixture.directory} prompt files changed during the walkthrough: ${diff.stdout}${diff.stderr}`,
+    );
+  }
   console.log("PASS design-prompt-source");
 
   console.log(
-    "verify:agents: the Background agents section, all four shared pages, lifecycle, cadence, " +
-      "nullable limits, the Watchdog cap, the shared table, Coach detail and settings, " +
-      "freshness, no mutation on reload, the timer gate, and the footer indicator all hold",
+    "verify:agents: the Background agents section, all four shared pages, read-only prompts in " +
+      "a source checkout and an installed host, lifecycle, cadence, nullable limits, the " +
+      "Watchdog cap, the shared table, Coach detail and settings, freshness, no mutation on " +
+      "reload, the timer gate, and the footer indicator all hold",
   );
 } finally {
   for (const pid of [chromePid, dashboardPid, sourceDashboardPid]) {

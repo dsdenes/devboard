@@ -1,22 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { settingsPath, statePath } from "../../issues/scout/paths";
-import { emptyState, writeSettings, writeState } from "../../issues/scout/state";
 import { agentRegistry } from "./registry";
-import {
-  AgentPromptController,
-  DiscoverPromptController,
-  buildChatPrompt,
-  parsePromptProposal,
-} from "./prompt";
+import { AgentPromptController, DiscoverPromptController } from "./prompt";
 import { DISCOVER_AGENTS } from "./registry";
 
 const roots: string[] = [];
 const PROMPT = "---\ndescription: fixture\n---\n\n# Fixture prompt\n\nKeep this byte for byte.\n";
 const DESIGN_PROMPT = "---\ndescription: design fixture\n---\n\n# Design prompt\n";
-const CHAT_STUB = join(import.meta.dir, "..", "..", "tests", "fixtures", "prompt-stub-acp.ts");
 const HARNESS_ROOT = join(import.meta.dir, "..", "..");
 
 async function temporaryRoot(name: string): Promise<string> {
@@ -27,549 +19,141 @@ async function temporaryRoot(name: string): Promise<string> {
   return root;
 }
 
-/** A fixture that `isHarnessSourceCheckout` accepts, with one prompt file. */
-async function sourceRoot(name = "source"): Promise<string> {
+/**
+ * A fixture with one prompt file per shared section. `source` writes the
+ * package manifest a harness source checkout carries; an installed prefix does
+ * not have one. The prompt bytes are the same in both.
+ */
+async function fixtureRoot(name: string, source: boolean): Promise<string> {
   const root = await temporaryRoot(name);
   mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
-  writeFileSync(
-    join(root, ".devboard", "package.json"),
-    `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
-  );
+  if (source) {
+    writeFileSync(
+      join(root, ".devboard", "package.json"),
+      `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
+    );
+  }
   writeFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), PROMPT);
   writeFileSync(join(root, ".devboard", "prompts", "design-system.md"), DESIGN_PROMPT);
   return root;
 }
 
-function controller(root: string, options: { agentCommand?: string } = {}): AgentPromptController {
-  return new AgentPromptController({
-    registry: agentRegistry,
-    repoDir: root,
-    agentCommand: options.agentCommand ?? `bun ${CHAT_STUB}`,
-    agentEnvironment: async () => ({ ...process.env }),
-    harnessDir: HARNESS_ROOT,
-    send: () => undefined,
-  });
-}
-
-function seededState(root: string): void {
-  const stateDir = join(root, ".devboard", ".tmp", "state");
-  const state = emptyState({ repo: "acme/fixture", root });
-  state.issues = [
-    {
-      number: 101,
-      title: "Open  Scout Issue",
-      url: "https://example.test/101",
-      createdAt: "2026-10-29T11:30:00Z",
-      state: "pending",
-      category: "clarity",
-      version: null,
-      versionAttemptAt: null,
-      versionError: null,
-    },
-    {
-      number: 102,
-      title: "Shipped Scout Issue",
-      url: "https://example.test/102",
-      createdAt: "2026-10-29T11:00:00Z",
-      state: "implemented",
-      category: "tests",
-      version: "v1.0.0",
-      versionAttemptAt: null,
-      versionError: null,
-    },
-  ];
-  state.openTitles = ["Existing open issue"];
-  writeState(statePath(stateDir, root), state);
-  writeSettings(settingsPath(stateDir, root), {
-    maxPerHour: 10,
-    maxPending: 5,
-    intervalMinutes: 1,
-  });
+function prompts(root: string): AgentPromptController {
+  return new AgentPromptController({ registry: agentRegistry, repoDir: root });
 }
 
 afterAll(async () => {
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
-describe("prompt snapshot", () => {
-  test("Auto Scout publishes the exact file and its invocation", async () => {
-    const root = await sourceRoot();
-    seededState(root);
-    const prompt = controller(root).snapshot("scout");
-    expect(prompt?.absent).toBe(false);
-    expect(prompt?.editable).toBe(true);
-    expect(prompt?.text).toBe(PROMPT);
-    expect(prompt?.error).toBeNull();
+describe("agent prompt snapshot", () => {
+  for (const source of [true, false]) {
+    test(`${source ? "a source checkout" : "an installed prefix"} reads the exact bytes`, async () => {
+      const root = await fixtureRoot(source ? "source" : "installed", source);
+      const scout = prompts(root).snapshot("scout");
+      expect(scout).toEqual({
+        id: "scout",
+        absent: false,
+        text: PROMPT,
+        error: null,
+      });
+      expect(Object.keys(scout ?? {})).not.toContain("editable");
+
+      const design = prompts(root).snapshot("design");
+      expect(design?.text).toBe(DESIGN_PROMPT);
+      expect(design?.error).toBeNull();
+      expect(Object.keys(design ?? {})).not.toContain("editable");
+    });
+  }
+
+  test("the source checkout and the installed prefix render the same prompt payload", async () => {
+    const source = await fixtureRoot("same-source", true);
+    const installed = await fixtureRoot("same-installed", false);
+    for (const id of ["scout", "design", "watchdog", "coach"]) {
+      expect(prompts(source).snapshot(id)).toEqual(prompts(installed).snapshot(id));
+    }
   });
 
-  test("Design System publishes its own prompt file", async () => {
-    const root = await sourceRoot();
-    const prompt = controller(root).snapshot("design");
-    expect(prompt?.absent).toBe(false);
-    expect(prompt?.editable).toBe(true);
-    expect(prompt?.text).toBe(DESIGN_PROMPT);
-    expect(prompt?.error).toBeNull();
-  });
-
-  test("Watchdog has no prompt at all", async () => {
-    const root = await sourceRoot();
-    const prompt = controller(root).snapshot("watchdog");
-    expect(prompt).toEqual({
+  test("Watchdog and Coach state their absence", async () => {
+    const root = await fixtureRoot("absent", true);
+    expect(prompts(root).snapshot("watchdog")).toEqual({
       id: "watchdog",
       absent: true,
-      editable: false,
+      text: null,
+      error: null,
+    });
+    expect(prompts(root).snapshot("coach")).toEqual({
+      id: "coach",
+      absent: true,
       text: null,
       error: null,
     });
   });
-});
 
-describe("prompt save", () => {
-  test("writes the editor's exact bytes and nothing else", async () => {
-    const root = await sourceRoot();
-    const promptFile = join(root, ".devboard", "prompts", "scout-recommendations.md");
-    const before = await readdir(join(root, ".devboard", "prompts"));
-    const frames: unknown[] = [];
-    const save = controller(root);
-    save.save({ send: (data) => frames.push(JSON.parse(data)) }, "scout", "one line\n");
-    expect(readFileSync(promptFile, "utf8")).toBe("one line\n");
-    expect(await readdir(join(root, ".devboard", "prompts"))).toEqual(before);
-    expect(frames).toContainEqual({
-      type: "agentPromptSaved",
-      id: "scout",
-      text: "one line\n",
-      notice: "Prompt saved. The next scan reads this file.",
-    });
-    expect(save.snapshot("scout")?.text).toBe("one line\n");
+  test("an unreadable prompt reports an error and no bytes", async () => {
+    const root = await fixtureRoot("missing-file", true);
+    await rm(join(root, ".devboard", "prompts", "scout-recommendations.md"));
+    const scout = prompts(root).snapshot("scout");
+    expect(scout?.absent).toBe(false);
+    expect(scout?.text).toBeNull();
+    expect(scout?.error).toContain("Could not read the Auto Scout prompt");
+    expect(Object.keys(scout ?? {})).not.toContain("editable");
   });
 
-  test("Design System saves its own file and names the next cycle", async () => {
-    const root = await sourceRoot();
-    const designFile = join(root, ".devboard", "prompts", "design-system.md");
-    const scoutFile = join(root, ".devboard", "prompts", "scout-recommendations.md");
-    const frames: unknown[] = [];
-    controller(root).save(
-      { send: (data) => frames.push(JSON.parse(data)) },
-      "design",
-      "design bytes\n",
-    );
-    expect(readFileSync(designFile, "utf8")).toBe("design bytes\n");
-    expect(readFileSync(scoutFile, "utf8")).toBe(PROMPT);
-    expect(frames).toContainEqual({
-      type: "agentPromptSaved",
-      id: "design",
-      text: "design bytes\n",
-      notice: "Prompt saved. The next cycle reads this file.",
-    });
-  });
-
-  test("an installed prefix refuses and leaves the file byte-identical", async () => {
-    const root = await temporaryRoot("installed");
-    mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
-    const promptFile = join(root, ".devboard", "prompts", "scout-recommendations.md");
-    writeFileSync(promptFile, PROMPT);
+  test("replaying sends every descriptor's read-only state", async () => {
+    const root = await fixtureRoot("replay", true);
     const frames: Array<Record<string, unknown>> = [];
-    const installed = controller(root);
-    installed.save({ send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) }, "scout", "x");
-    expect(readFileSync(promptFile, "utf8")).toBe(PROMPT);
-    expect(frames[0]?.type).toBe("agentPromptError");
-    expect(String(frames[0]?.message)).toContain("harness source checkout");
-    expect(installed.snapshot("scout")?.editable).toBe(false);
-  });
-
-  test("a failed write reports an error, keeps the file, and shows no success", async () => {
-    const root = await sourceRoot();
-    const promptFile = join(root, ".devboard", "prompts", "scout-recommendations.md");
-    renameSync(promptFile, `${promptFile}.aside`);
-    mkdirSync(promptFile);
-    const frames: Array<Record<string, unknown>> = [];
-    controller(root).save(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "scout",
-      "replacement\n",
-    );
-    expect(frames.some((frame) => frame.type === "agentPromptSaved")).toBe(false);
-    const failure = frames.find((frame) => frame.type === "agentPromptError");
-    expect(failure).toBeDefined();
-    expect(String(failure?.message)).toContain("Could not write the Auto Scout prompt");
-    expect(existsSync(`${promptFile}.aside`)).toBe(true);
-    expect(readFileSync(`${promptFile}.aside`, "utf8")).toBe(PROMPT);
-  });
-
-  test("a failure after the staged write keeps both prompts' previous bytes", async () => {
-    const root = await sourceRoot("staged-failure");
-    writeFileSync(
-      join(root, ".devboard", "prompts", "discover-naming-conventions.md"),
-      "---\ndescription: discover fixture\n---\n\n# Naming prompt\n",
-    );
-    const fixture = join(HARNESS_ROOT, "tests", "fixtures", "prompt-save-rename-failure.ts");
-    const child = Bun.spawn({
-      cmd: [process.execPath, fixture, root],
-      stdout: "pipe",
-      stderr: "pipe",
+    prompts(root).replay({
+      send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>),
     });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    expect({ exitCode, stdout, stderr }).toEqual({ exitCode: 0, stdout: "", stderr: "" });
-  });
-
-  test("Watchdog refuses every prompt command", async () => {
-    const root = await sourceRoot();
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = controller(root);
-    prompts.save({ send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) }, "watchdog", "x");
-    expect(frames[0]?.type).toBe("agentPromptError");
-    expect(String(frames[0]?.message)).toBe(
-      "Watchdog runs no agent, so it has no prompt to show or edit.",
-    );
-    expect(existsSync(join(root, ".devboard", "prompts", "scout-recommendations.md"))).toBe(true);
-    expect(readFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), "utf8")).toBe(
-      PROMPT,
-    );
+    expect(frames).toHaveLength(agentRegistry.descriptors.length);
+    for (const frame of frames) {
+      expect(frame.type).toBe("agentPromptState");
+      expect(Object.keys(frame.prompt as Record<string, unknown>)).not.toContain("editable");
+    }
   });
 });
 
-describe("prompt chat", () => {
-  test("streams one reply, proposes text, and never writes the file", async () => {
-    const root = await sourceRoot();
-    seededState(root);
-    const promptFile = join(root, ".devboard", "prompts", "scout-recommendations.md");
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = controller(root, {
-      agentCommand: `bun ${CHAT_STUB}`,
-    });
-    const target = {
-      send: (data: string) => frames.push(JSON.parse(data) as Record<string, unknown>),
-    };
-    const stateBefore = readFileSync(
-      statePath(join(root, ".devboard", ".tmp", "state"), root),
-      "utf8",
-    );
-    await prompts.chat(target, "scout", "Tighten the evidence rule.", PROMPT);
-    prompts.dispose();
-    expect(
-      readFileSync(statePath(join(root, ".devboard", ".tmp", "state"), root), "utf8"),
-    ).toBe(stateBefore);
-    const chunks = frames.filter((frame) => frame.type === "agentPromptChat");
-    expect(chunks.length).toBeGreaterThan(0);
-    expect(
-      chunks.map((frame) => String(frame.text)).join(""),
-    ).toContain("Here is the revision.");
-    const done = frames.find((frame) => frame.type === "agentPromptChatDone");
-    expect(done?.proposal).toBe("# Revised prompt\n\nFollow it.\n");
-    expect(readFileSync(promptFile, "utf8")).toBe(PROMPT);
-    expect(frames.some((frame) => frame.type === "agentPromptError")).toBe(false);
-  });
-
-  test("Design System chat reads its own instructions and target, never Scout's", async () => {
-    const root = await sourceRoot();
-    seededState(root);
-    const capture = join(root, "design-chat-prompt.txt");
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = controller(root, {
-      agentCommand: `env PROMPT_STUB_CAPTURE=${capture} bun ${CHAT_STUB}`,
-    });
-    await prompts.chat(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "design",
-      "Clarify the evidence rule.",
-      DESIGN_PROMPT,
-    );
-    prompts.dispose();
-    const received = readFileSync(capture, "utf8");
-    expect(received).toContain(".devboard/prompts/design-system.md");
-    expect(received).toContain("audit.json");
-    expect(received).toContain("DESIGN.md");
-    expect(received).not.toContain("scout-recommendations.md");
-    expect(received).not.toContain("Auto Scout");
-    expect(received).toContain(DESIGN_PROMPT);
-    expect(frames.find((frame) => frame.type === "agentPromptChatDone")?.proposal).toBe(
-      "# Revised prompt\n\nFollow it.\n",
-    );
-    expect(frames.some((frame) => frame.type === "agentPromptChatError")).toBe(false);
-  });
-
-  test("Auto Scout chat still reads the Scout instructions and target", async () => {
-    const root = await sourceRoot();
-    seededState(root);
-    const capture = join(root, "scout-chat-prompt.txt");
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = controller(root, {
-      agentCommand: `env PROMPT_STUB_CAPTURE=${capture} bun ${CHAT_STUB}`,
-    });
-    await prompts.chat(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "scout",
-      "Tighten the evidence rule.",
-      PROMPT,
-    );
-    prompts.dispose();
-    const received = readFileSync(capture, "utf8");
-    expect(received).toContain(".devboard/prompts/scout-recommendations.md");
-    expect(received).not.toContain(".devboard/prompts/design-system.md");
-    expect(received).not.toContain("design-prompt-chat.md");
-    expect(received).toContain(PROMPT);
-    expect(frames.some((frame) => frame.type === "agentPromptChatError")).toBe(false);
-  });
-
-  test("a failed turn reports a chat error and leaves the editor base alone", async () => {
-    const root = await sourceRoot();
-    const promptFile = join(root, ".devboard", "prompts", "scout-recommendations.md");
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = controller(root, {
-      agentCommand: `env PROMPT_STUB_FAIL=1 bun ${CHAT_STUB}`,
-    });
-    await prompts.chat(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "scout",
-      "Change it.",
-      PROMPT,
-    );
-    prompts.dispose();
-    const failure = frames.find((frame) => frame.type === "agentPromptChatError");
-    expect(failure).toBeDefined();
-    expect(readFileSync(promptFile, "utf8")).toBe(PROMPT);
-  });
-
-  test("an installed prefix refuses chat without spawning", async () => {
-    const root = await temporaryRoot("installed-chat");
-    mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
-    writeFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), PROMPT);
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = controller(root, { agentCommand: "definitely-not-an-agent" });
-    await prompts.chat(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "scout",
-      "Change it.",
-      PROMPT,
-    );
-    expect(frames[0]?.type).toBe("agentPromptChatError");
-    expect(String(frames[0]?.message)).toContain("harness source checkout");
-  });
-});
-
-describe("prompt proposal parsing", () => {
-  test("takes the last complete fenced block", () => {
-    const reply = [
-      "First:",
-      "<prompt-file>",
-      "old",
-      "</prompt-file>",
-      "Second:",
-      "<prompt-file>",
-      "# Title",
-      "```json",
-      "{ \"a\": 1 }",
-      "```",
-      "</prompt-file>",
-      "done",
-    ].join("\n");
-    expect(parsePromptProposal(reply)).toBe("# Title\n```json\n{ \"a\": 1 }\n```\n");
-  });
-
-  test("returns null without a complete block", () => {
-    expect(parsePromptProposal("no proposal here")).toBeNull();
-    expect(parsePromptProposal("<prompt-file>\nunfinished")).toBeNull();
-  });
-
-  test("the chat prompt carries the base and the operator request", () => {
-    const prompt = buildChatPrompt("Rules", "BASE\n", "Make it shorter.");
-    expect(prompt).toContain("Rules");
-    expect(prompt).toContain("BASE\n");
-    expect(prompt).toContain("Make it shorter.");
-  });
-});
-
-const DISCOVER_PROMPT_FILES = [
-  "discover-sheet.md",
-  "discover-testing-strategy.md",
-  "discover-naming-conventions.md",
-  "discover-coding-conventions.md",
-  "discover-architecture-boundaries.md",
-  "discover-glossary.md",
-];
-
-/** A fixture that `isHarnessSourceCheckout` accepts, with the six prompts. */
-async function discoverSourceRoot(name = "discover-source"): Promise<string> {
-  const root = await temporaryRoot(name);
-  mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
-  writeFileSync(
-    join(root, ".devboard", "package.json"),
-    `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
-  );
-  for (const file of DISCOVER_PROMPT_FILES) {
-    writeFileSync(
-      join(root, ".devboard", "prompts", file),
-      readFileSync(join(HARNESS_ROOT, "prompts", file), "utf8"),
-    );
-  }
-  return root;
-}
-
-function discoverController(
-  root: string,
-  options: { agentCommand?: string } = {},
-): DiscoverPromptController {
-  return new DiscoverPromptController({
-    repoDir: root,
-    agentCommand: options.agentCommand ?? `bun ${CHAT_STUB}`,
-    agentEnvironment: async () => ({ ...process.env }),
-    harnessDir: HARNESS_ROOT,
-    send: () => undefined,
-  });
-}
-
-describe("discover prompt snapshots", () => {
-  test("each of the six agents publishes exactly its own prompt file bytes", async () => {
-    const root = await discoverSourceRoot();
-    const prompts = discoverController(root);
-    const seen = new Set<string>();
+describe("discover prompt snapshot", () => {
+  test("each card reads exactly its own prompt file", async () => {
+    const root = await fixtureRoot("discover", true);
     for (const descriptor of DISCOVER_AGENTS) {
-      const prompt = prompts.snapshot(descriptor.id);
-      expect(prompt?.agent).toBe(descriptor.id);
-      expect(prompt?.editable).toBe(true);
-      expect(prompt?.error).toBeNull();
-      const bytes = readFileSync(join(HARNESS_ROOT, "prompts", descriptor.promptFile), "utf8");
-      expect(prompt?.text).toBe(bytes);
-      expect(seen.has(bytes)).toBe(false);
-      seen.add(bytes);
+      const bytes = `# ${descriptor.label}\n\n${descriptor.promptFile}\n`;
+      writeFileSync(
+        join(root, ".devboard", "prompts", descriptor.promptFile),
+        bytes,
+      );
     }
-    expect(seen.size).toBe(6);
-    prompts.dispose();
-  });
-
-  test("an installed prefix shows every prompt read-only", async () => {
-    const root = await temporaryRoot("discover-installed");
-    mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
-    for (const file of DISCOVER_PROMPT_FILES) {
-      writeFileSync(join(root, ".devboard", "prompts", file), `# ${file}\n`);
-    }
-    const prompts = discoverController(root, { agentCommand: "definitely-not-an-agent" });
+    const controller = new DiscoverPromptController({ repoDir: root });
     for (const descriptor of DISCOVER_AGENTS) {
-      const prompt = prompts.snapshot(descriptor.id);
-      expect(prompt?.editable).toBe(false);
-      expect(prompt?.text).toBe(`# ${descriptor.promptFile}\n`);
+      const prompt = controller.snapshot(descriptor.id);
+      expect(prompt).toEqual({
+        agent: descriptor.id,
+        text: `# ${descriptor.label}\n\n${descriptor.promptFile}\n`,
+        error: null,
+      });
+      expect(Object.keys(prompt ?? {})).not.toContain("editable");
     }
-    prompts.dispose();
   });
-});
 
-describe("discover prompt save", () => {
-  test("writes exactly one agent's prompt file and nothing else", async () => {
-    const root = await discoverSourceRoot();
-    const prompts = discoverController(root);
-    const before = new Map(
-      DISCOVER_PROMPT_FILES.map((file) => [
-        file,
-        readFileSync(join(root, ".devboard", "prompts", file), "utf8"),
-      ]),
-    );
+  test("a missing prompt file reports an error", async () => {
+    const root = await fixtureRoot("discover-missing", false);
+    const controller = new DiscoverPromptController({ repoDir: root });
+    const prompt = controller.snapshot("sheet");
+    expect(prompt?.text).toBeNull();
+    expect(prompt?.error).toContain("Could not read the Data Sheet prompt");
+  });
+
+  test("replaying sends no editable field", async () => {
+    const root = await fixtureRoot("discover-replay", false);
     const frames: Array<Record<string, unknown>> = [];
-    prompts.save(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "discover-naming-conventions",
-      "exact bytes\n",
-    );
-    expect(readFileSync(join(root, ".devboard", "prompts", "discover-naming-conventions.md"), "utf8")).toBe(
-      "exact bytes\n",
-    );
-    for (const [file, text] of before) {
-      if (file === "discover-naming-conventions.md") continue;
-      expect(readFileSync(join(root, ".devboard", "prompts", file), "utf8")).toBe(text);
+    new DiscoverPromptController({ repoDir: root }).replay({
+      send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>),
+    });
+    expect(frames).toHaveLength(DISCOVER_AGENTS.length);
+    for (const frame of frames) {
+      expect(frame.type).toBe("discoverPromptState");
+      expect(Object.keys(frame.prompt as Record<string, unknown>)).not.toContain("editable");
     }
-    expect(frames[0]).toEqual({
-      type: "discoverPromptSaved",
-      agent: "discover-naming-conventions",
-      text: "exact bytes\n",
-      notice: "Prompt saved. The next /discover-naming-conventions run reads this file.",
-    });
-    expect(prompts.snapshot("discover-naming-conventions")?.text).toBe("exact bytes\n");
-    expect(prompts.snapshot("sheet")?.text).not.toBe("exact bytes\n");
-    prompts.dispose();
-  });
-
-  test("an installed prefix refuses and leaves every prompt byte-identical", async () => {
-    const root = await temporaryRoot("discover-installed-save");
-    mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
-    const file = join(root, ".devboard", "prompts", "discover-glossary.md");
-    writeFileSync(file, "# glossary\n");
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = discoverController(root);
-    prompts.save(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "discover-glossary",
-      "replacement\n",
-    );
-    expect(readFileSync(file, "utf8")).toBe("# glossary\n");
-    expect(frames[0]?.type).toBe("discoverPromptError");
-    expect(String(frames[0]?.message)).toContain("harness source checkout");
-    prompts.dispose();
-  });
-});
-
-describe("discover prompt chat", () => {
-  test("streams one reply per turn, proposes a replacement, and writes no file", async () => {
-    const root = await discoverSourceRoot();
-    const file = join(root, ".devboard", "prompts", "discover-sheet.md");
-    const before = readFileSync(file, "utf8");
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = discoverController(root);
-    await prompts.chat(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "sheet",
-      "Tighten the evidence rule.",
-      before,
-    );
-    prompts.dispose();
-    const chunks = frames.filter((frame) => frame.type === "discoverPromptChat");
-    expect(chunks.length).toBeGreaterThan(0);
-    for (const chunk of chunks) expect(chunk.agent).toBe("sheet");
-    const done = frames.find((frame) => frame.type === "discoverPromptChatDone");
-    expect(done?.agent).toBe("sheet");
-    expect(done?.proposal).toBe("# Revised prompt\n\nFollow it.\n");
-    expect(readFileSync(file, "utf8")).toBe(before);
-    expect(frames.some((frame) => frame.type === "discoverPromptSaved")).toBe(false);
-  });
-
-  test("a failed turn reports a chat error and leaves the editor base alone", async () => {
-    const root = await discoverSourceRoot();
-    const file = join(root, ".devboard", "prompts", "discover-testing-strategy.md");
-    const before = readFileSync(file, "utf8");
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = discoverController(root, {
-      agentCommand: `env PROMPT_STUB_FAIL=1 bun ${CHAT_STUB}`,
-    });
-    await prompts.chat(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "discover-testing-strategy",
-      "Change it.",
-      before,
-    );
-    prompts.dispose();
-    const failure = frames.find((frame) => frame.type === "discoverPromptChatError");
-    expect(failure?.agent).toBe("discover-testing-strategy");
-    expect(readFileSync(file, "utf8")).toBe(before);
-  });
-
-  test("an installed prefix refuses chat without spawning", async () => {
-    const root = await temporaryRoot("discover-installed-chat");
-    mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
-    const file = join(root, ".devboard", "prompts", "discover-sheet.md");
-    writeFileSync(file, "# sheet\n");
-    const frames: Array<Record<string, unknown>> = [];
-    const prompts = discoverController(root, { agentCommand: "definitely-not-an-agent" });
-    await prompts.chat(
-      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
-      "sheet",
-      "Change it.",
-      "# sheet\n",
-    );
-    prompts.dispose();
-    expect(frames[0]?.type).toBe("discoverPromptChatError");
-    expect(String(frames[0]?.message)).toContain("harness source checkout");
-    expect(readFileSync(file, "utf8")).toBe("# sheet\n");
   });
 });

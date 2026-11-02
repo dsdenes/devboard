@@ -57,7 +57,7 @@ import {
   listGoalDrafts,
   readGoalDraft,
 } from "./goal-drafts";
-import { defaultGoalPath, readGoal, writeGoal } from "./goal";
+import { defaultGoalPath, readGoal } from "./goal";
 import { originRepository } from "../issues/repository";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { TRACKER_SYNC_INTERVAL_MS } from "./issue-sync";
@@ -91,10 +91,8 @@ import {
   releaseScratchEntry,
   removeRetainedProject,
   removeStaging,
-  restoreLiveSkill,
   retainRemoteProject,
   retainedProjectReady,
-  saveLiveSkill,
   stagingDirectory,
   validateAgentStaged,
   type AgentStaged,
@@ -576,33 +574,6 @@ function goalRevisionPrompt(goalFile: string, request: string | undefined): stri
   ].join("\n");
 }
 
-/** The Discover target a client's skill edit was authored against. */
-type SkillSaveTarget =
-  | { kind: "host" }
-  | { kind: "remote"; owner: string; repo: string };
-
-/** Reads a save frame's target descriptor; a malformed or absent one is null. */
-function parseSkillSaveTarget(value: unknown): SkillSaveTarget | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
-  if (record.kind === "host") return { kind: "host" };
-  if (record.kind !== "remote") return null;
-  const owner = record.owner;
-  const repo = record.repo;
-  if (typeof owner !== "string" || owner.length === 0) return null;
-  if (typeof repo !== "string" || repo.length === 0) return null;
-  return { kind: "remote", owner, repo };
-}
-
-/** Remote identities compare by owner/repo, the same way retention names them. */
-function sameSkillSaveTarget(left: SkillSaveTarget, right: SkillSaveTarget): boolean {
-  if (left.kind === "host" && right.kind === "host") return true;
-  if (left.kind === "remote" && right.kind === "remote") {
-    return remoteCloneName(left.owner, left.repo) === remoteCloneName(right.owner, right.repo);
-  }
-  return false;
-}
-
 type ClientMessage =
   | { type: "listRecords" }
   | { type: "getGoal" }
@@ -637,10 +608,7 @@ type ClientMessage =
     }
   | { type: "disableAgentTimer"; id?: unknown }
   | { type: "getAgentPrompt"; id?: unknown }
-  | { type: "saveAgentPrompt"; id?: unknown; text?: unknown }
-  | { type: "sendAgentPromptChat"; id?: unknown; message?: unknown; text?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
-  | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
   | { type: "startLifecycle" }
   | { type: "stopLifecycle" }
@@ -655,12 +623,10 @@ type ClientMessage =
   | { type: "createFlowGoal" }
   | { type: "startFlowImplementation" }
   | { type: "stopFlowImplementation" }
-  | { type: "saveFlowGoal"; text?: unknown }
   | { type: "retryFlowPr" }
   | { type: "markFlowPrReady" }
   | { type: "mergeFlowPr" }
   | { type: "sendFlowSteering"; text?: unknown }
-  | { type: "saveFlowDecisions"; text?: unknown }
   | { type: "acceptFlowWidget"; id?: unknown; accepted?: unknown }
   | { type: "refuseFlowWidget"; id?: unknown; reason?: unknown }
   | { type: "openFlowWidget"; id?: unknown }
@@ -672,8 +638,6 @@ type ClientMessage =
   | { type: "answer"; id?: unknown; value?: unknown; lane?: unknown }
   | { type: "discoverProject" }
   | { type: "discoverAgent"; agent?: unknown }
-  | { type: "saveDiscoverPrompt"; agent?: unknown; text?: unknown }
-  | { type: "chatDiscoverPrompt"; agent?: unknown; message?: unknown; text?: unknown }
   | { type: "discoverRemote"; url?: unknown }
   | { type: "switchDiscoverRemote"; url?: unknown }
   | { type: "removeDiscoverRemote"; url?: unknown }
@@ -681,8 +645,6 @@ type ClientMessage =
   | { type: "stopDiscover" }
   | { type: "answerDiscover"; id?: unknown; value?: unknown }
   | { type: "getDiscover" }
-  | { type: "saveDiscoverSkill"; name?: unknown; text?: unknown; target?: unknown }
-  | { type: "restoreDiscoverSkill"; name?: unknown }
   | { type: "confirmGlossaryTerm"; context?: unknown; id?: unknown }
   | { type: "rejectGlossaryTerm"; context?: unknown; id?: unknown; reason?: unknown }
   | { type: "ask"; conversationId?: unknown; question?: unknown; context?: unknown }
@@ -794,26 +756,11 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "disableAgentTimer", id: "id" in value ? value.id : undefined };
     case "getAgentPrompt":
       return { type: "getAgentPrompt", id: "id" in value ? value.id : undefined };
-    case "saveAgentPrompt":
-      return {
-        type: "saveAgentPrompt",
-        id: "id" in value ? value.id : undefined,
-        text: "text" in value ? value.text : undefined,
-      };
-    case "sendAgentPromptChat":
-      return {
-        type: "sendAgentPromptChat",
-        id: "id" in value ? value.id : undefined,
-        message: "message" in value ? value.message : undefined,
-        text: "text" in value ? value.text : undefined,
-      };
     case "restartServer":
       return {
         type: "restartServer",
         whenIdle: "whenIdle" in value ? value.whenIdle : undefined,
       };
-    case "saveGoal":
-      return { type: "saveGoal", text: "text" in value ? value.text : undefined };
     case "startRun":
       return { type: "startRun", file: "file" in value ? value.file : undefined };
     case "startLifecycle":
@@ -842,8 +789,6 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "startFlowImplementation" };
     case "stopFlowImplementation":
       return { type: "stopFlowImplementation" };
-    case "saveFlowGoal":
-      return { type: "saveFlowGoal", text: "text" in value ? value.text : undefined };
     case "retryFlowPr":
       return { type: "retryFlowPr" };
     case "markFlowPrReady":
@@ -852,8 +797,6 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "mergeFlowPr" };
     case "sendFlowSteering":
       return { type: "sendFlowSteering", text: "text" in value ? value.text : undefined };
-    case "saveFlowDecisions":
-      return { type: "saveFlowDecisions", text: "text" in value ? value.text : undefined };
     case "acceptFlowWidget":
       return {
         type: "acceptFlowWidget",
@@ -894,19 +837,6 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "discoverProject" };
     case "discoverAgent":
       return { type: "discoverAgent", agent: "agent" in value ? value.agent : undefined };
-    case "saveDiscoverPrompt":
-      return {
-        type: "saveDiscoverPrompt",
-        agent: "agent" in value ? value.agent : undefined,
-        text: "text" in value ? value.text : undefined,
-      };
-    case "chatDiscoverPrompt":
-      return {
-        type: "chatDiscoverPrompt",
-        agent: "agent" in value ? value.agent : undefined,
-        message: "message" in value ? value.message : undefined,
-        text: "text" in value ? value.text : undefined,
-      };
     case "discoverRemote":
       // A missing or non-string URL is a malformed payload, never a command.
       return "url" in value && typeof value.url === "string"
@@ -932,15 +862,6 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       };
     case "getDiscover":
       return { type: "getDiscover" };
-    case "saveDiscoverSkill":
-      return {
-        type: "saveDiscoverSkill",
-        name: "name" in value ? value.name : undefined,
-        text: "text" in value ? value.text : undefined,
-        target: "target" in value ? value.target : undefined,
-      };
-    case "restoreDiscoverSkill":
-      return { type: "restoreDiscoverSkill", name: "name" in value ? value.name : undefined };
     case "confirmGlossaryTerm":
       return {
         type: "confirmGlossaryTerm",
@@ -2117,7 +2038,7 @@ export function createApp(options: AppOptions) {
   const hostRepository = originRepository(repoDir) ?? null;
   const goalFile = options.goalFile ?? defaultGoalPath(repoDir);
   // The creation skill always writes the repository's goal document, while
-  // getGoal and saveGoal keep using the configured goal file.
+  // getGoal keeps using the configured goal file.
   const creationGoalFile = defaultGoalPath(repoDir);
   const skillsDir = join(repoDir, ".omp", "skills");
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
@@ -2675,32 +2596,15 @@ export function createApp(options: AppOptions) {
 
   /**
    * The prompt half of each agent page. It reads the effective prompt file;
-   * Save writes that one file only from a harness source checkout, and chat
-   * proposes text without writing.
+   * the bytes are identical in a source checkout and an installed host.
    */
   const prompts = new AgentPromptController({
     registry: agentRegistry,
     repoDir,
-    agentCommand,
-    agentEnvironment: peerEnvironment,
-    harnessDir: runningHarnessDir(),
-    send: (event, except) => sendAll(event, except),
-    log: (line) => process.stderr.write(`${line}\n`),
   });
 
-  /**
-   * The prompt half of each Discover card. Each of the six reads, saves, and
-   * chats about its own prompt file; an installed host shows the bytes
-   * read-only, and every prompt write and chat is refused there.
-   */
-  const discoverPrompts = new DiscoverPromptController({
-    repoDir,
-    agentCommand,
-    agentEnvironment: peerEnvironment,
-    harnessDir: runningHarnessDir(),
-    send: (event, except) => sendAll(event, except),
-    log: (line) => process.stderr.write(`${line}\n`),
-  });
+  /** The prompt half of each Discover card. Each reads its own prompt file. */
+  const discoverPrompts = new DiscoverPromptController({ repoDir });
 
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
@@ -4016,50 +3920,6 @@ export function createApp(options: AppOptions) {
   }
 
   /**
-   * A skill edit belongs to the target it was written against. Every project
-   * shares the five fixed skill names, so a stale client must not have its text
-   * applied through `targetRoot()` after the active target changed.
-   */
-  function activeSkillSaveTarget(): SkillSaveTarget {
-    if (remoteTarget === undefined) return { kind: "host" };
-    return { kind: "remote", owner: remoteTarget.owner, repo: remoteTarget.repo };
-  }
-
-  function saveDiscoverSkillCommand(
-    ws: { send(data: string): unknown },
-    name: unknown,
-    text: unknown,
-    target: unknown,
-  ) {
-    if (typeof name !== "string" || typeof text !== "string") {
-      discoverFailure(ws, "Saving a Discover skill needs its name and text.");
-      return;
-    }
-    const editedFor = parseSkillSaveTarget(target);
-    if (editedFor === null) {
-      discoverFailure(ws, "Saving a Discover skill needs the target it was edited for.");
-      return;
-    }
-    if (!sameSkillSaveTarget(editedFor, activeSkillSaveTarget())) {
-      discoverFailure(
-        ws,
-        "The skill was edited for a different Discover target, so it was not saved. " +
-          "Switch back to that project and save again.",
-      );
-      return;
-    }
-    afterDiscoverMutation(ws, saveLiveSkill(targetRoot(), name, text));
-  }
-
-  function restoreDiscoverSkillCommand(ws: { send(data: string): unknown }, name: unknown) {
-    if (typeof name !== "string") {
-      discoverFailure(ws, "Restoring a Discover skill needs its name.");
-      return;
-    }
-    afterDiscoverMutation(ws, restoreLiveSkill(targetRoot(), name));
-  }
-
-  /**
    * Replays the Discover state a client needs before its own command replies.
    * A host with nothing published, no run, and no recorded interruption has
    * nothing to replay, except that a harness source checkout must learn the
@@ -4267,37 +4127,6 @@ export function createApp(options: AppOptions) {
       send(ws, {
         type: "error",
         message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    }
-  }
-
-  async function saveGoal(ws: { send(data: string): unknown }, text: unknown) {
-    if (refuseGoalWhileDiscovering(ws)) return;
-
-    if (skillsPreparation !== undefined || skillsPreparationPending) {
-      send(ws, { type: "error", message: "A skills preparation is active." });
-      return;
-    }
-
-    if (lifecycleRunning && !lifecycle.paused) {
-      send(ws, { type: "error", message: "A lifecycle run is active." });
-      return;
-    }
-
-    if (typeof text !== "string") {
-      send(ws, { type: "error", message: "saveGoal needs the goal text." });
-      return;
-    }
-
-    try {
-      await writeGoal(goalFile, text);
-      // Every client holds the same baseline, so the confirmation reaches all
-      // of them; the saver's own socket is included in the broadcast.
-      broadcast({ type: "goal", text });
-    } catch (error) {
-      send(ws, {
-        type: "error",
-        message: `Could not save the goal: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
   }
@@ -7374,21 +7203,10 @@ export function createApp(options: AppOptions) {
             } else {
               prompts.replayOne(ws, command.id);
             }
-          } else if (command.type === "saveAgentPrompt") {
-            prompts.save(ws, typeof command.id === "string" ? command.id : "", command.text);
-          } else if (command.type === "sendAgentPromptChat") {
-            await prompts.chat(
-              ws,
-              typeof command.id === "string" ? command.id : "",
-              command.message,
-              command.text,
-            );
           } else if (isAgentCommand(command)) {
             await agents.handle(ws, command);
           } else if (command.type === "restartServer") {
             restartServer(ws, command.whenIdle === true);
-          } else if (command.type === "saveGoal") {
-            await saveGoal(ws, command.text);
           } else if (command.type === "startRun") {
             await startRun(ws, command.file);
           } else if (command.type === "startLifecycle") {
@@ -7417,8 +7235,6 @@ export function createApp(options: AppOptions) {
             await flow.startImplementation();
           } else if (command.type === "stopFlowImplementation") {
             flow.stopImplementation();
-          } else if (command.type === "saveFlowGoal") {
-            flow.saveGoal(command.text);
           } else if (command.type === "retryFlowPr") {
             await flow.retryPr();
           } else if (command.type === "markFlowPrReady") {
@@ -7427,8 +7243,6 @@ export function createApp(options: AppOptions) {
             await flow.mergePr();
           } else if (command.type === "sendFlowSteering") {
             flow.sendSteering(command.text);
-          } else if (command.type === "saveFlowDecisions") {
-            flow.saveDecisions(command.text);
           } else if (command.type === "acceptFlowWidget") {
             flow.acceptWidget(command.id, command.accepted);
           } else if (command.type === "refuseFlowWidget") {
@@ -7454,23 +7268,6 @@ export function createApp(options: AppOptions) {
             await startDiscoverAll(ws);
           } else if (command.type === "discoverAgent") {
             await startDiscoverAgentCommand(ws, command.agent);
-          } else if (command.type === "saveDiscoverPrompt") {
-            if (!isDiscoverAgentId(command.agent)) {
-              send(ws, {
-                type: "discoverPromptError",
-                agent: typeof command.agent === "string" ? command.agent : "",
-                message: "Unknown Discover agent.",
-              });
-            } else {
-              discoverPrompts.save(ws, command.agent, command.text);
-            }
-          } else if (command.type === "chatDiscoverPrompt") {
-            await discoverPrompts.chat(
-              ws,
-              typeof command.agent === "string" ? command.agent : "",
-              command.message,
-              command.text,
-            );
           } else if (command.type === "discoverRemote") {
             if (typeof command.url === "string") await startDiscoverRemote(ws, command.url);
           } else if (command.type === "switchDiscoverRemote") {
@@ -7483,10 +7280,6 @@ export function createApp(options: AppOptions) {
             stopDiscover(ws);
           } else if (command.type === "answerDiscover") {
             answerDiscoverQuestion(ws, command.id, command.value);
-          } else if (command.type === "saveDiscoverSkill") {
-            saveDiscoverSkillCommand(ws, command.name, command.text, command.target);
-          } else if (command.type === "restoreDiscoverSkill") {
-            restoreDiscoverSkillCommand(ws, command.name);
           } else if (command.type === "confirmGlossaryTerm") {
             const term = discoverTermRequest(command.context, command.id);
             if (term === null) {
@@ -7603,8 +7396,6 @@ export function createApp(options: AppOptions) {
     issues.dispose();
     goalDrafts.dispose(restarting);
     agents.dispose();
-    prompts.dispose();
-    discoverPrompts.dispose();
     scout.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);

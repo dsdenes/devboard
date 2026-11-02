@@ -44,7 +44,6 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id: string) {
-          if (id.includes("monaco-editor")) return "monaco";
           if (id.includes("@xterm")) return "xterm";
           return undefined;
         },

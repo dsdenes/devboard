@@ -758,8 +758,6 @@ describe("Flow pull-request lifecycle", () => {
     const client = await connect(server);
     await connected(client);
     await createGoal(client);
-    client.send({ type: "saveFlowDecisions", text: "# Board\n\nKeep it small.\n" });
-    await client.waitFor((event) => event.type === "flowDecisions");
     const session = await startFlow(client, fixture);
 
     expect(forgeStub.calls).toHaveLength(0);
@@ -781,7 +779,6 @@ describe("Flow pull-request lifecycle", () => {
     expect(input.base).toBe("main");
     expect(input.title).toBe("Flow goal");
     expect(input.body).toContain(FLOW_GOAL);
-    expect(input.body).toContain("Keep it small.");
     expect(git(fixture.root, ["--git-dir", join(fixture.root, "origin.git"), "rev-parse", session.branch]).trim()).toMatch(/^[0-9a-f]{40}$/);
 
     const pushes = server.calls.filter((call) => call.command === "git" && call.args.includes("push"));

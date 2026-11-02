@@ -911,7 +911,7 @@ describe("lifecycle pause and resume", () => {
   );
 
   test(
-    "allows goal saving while paused and starts no run without pending ADRs",
+    "keeps the goal read-only while paused and starts no run without pending ADRs",
     async () => {
       const epic: OpenEpic = {
         number: 4,
@@ -937,22 +937,14 @@ describe("lifecycle pause and resume", () => {
           (message) => message.type === "lifecycleState" && message.paused === true,
         );
 
-        client.send({ type: "saveGoal", text: "# Paused goal\n\nEdited while paused.\n" });
-        expect(
-          await client.waitFor(
-            (message) => message.type === "goal" && message.text ===
-              "# Paused goal\n\nEdited while paused.\n",
-          ),
-        ).toEqual({ type: "goal", text: "# Paused goal\n\nEdited while paused.\n" });
-        expect(await readFile(goalFile, "utf8")).toBe("# Paused goal\n\nEdited while paused.\n");
-
+        expect(await readFile(goalFile, "utf8")).toBe("# Goal\n\nShip the lifecycle.\n");
         client.send({ type: "getGoal" });
         expect(
           await client.waitFor(
-            (message) => message.type === "goal" && message.text ===
-              "# Paused goal\n\nEdited while paused.\n",
+            (message) => message.type === "goal" &&
+              message.text === "# Goal\n\nShip the lifecycle.\n",
           ),
-        ).toEqual({ type: "goal", text: "# Paused goal\n\nEdited while paused.\n" });
+        ).toEqual({ type: "goal", text: "# Goal\n\nShip the lifecycle.\n" });
 
         client.send({ type: "startLifecycle" });
         client.send({ type: "startRun" });

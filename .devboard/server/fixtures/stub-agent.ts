@@ -211,7 +211,7 @@ const goalSlug = argument("goal-slug");
  * client's answer so a test proves the cancelled outcome, not just the absence.
  */
 const permissionProbe = argument("permission-probe");
-const ASK_INSTRUCTION = "This conversation is read-only.";
+const ASK_INSTRUCTION = "\nQuestion: ";
 const ASK_ANSWER_ONE =
   "The issues indicator shows the lifecycle the detached worker published for this repository. " +
   "It turns amber while a run is working and shows failed when the last run failed. " +

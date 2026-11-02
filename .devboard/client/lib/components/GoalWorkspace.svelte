@@ -10,8 +10,6 @@
   import type { AdrRecord, Lane } from "../types";
   import AdrTable from "./AdrTable.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
-  import MonacoEditor from "./MonacoEditor.svelte";
-  import SaveFeedback from "./SaveFeedback.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
@@ -95,15 +93,7 @@
             : null,
   );
 
-  const documentState = $derived(
-    goal.goalEditingDisabled
-      ? "Read only while work runs"
-      : goal.goalDirty
-        ? "Unsaved changes"
-        : goal.goalReady
-          ? "Saved"
-          : "Not written yet",
-  );
+  const documentState = $derived(goal.goalReady ? "Read-only" : "Not written yet");
 
   const runActionLabel = $derived(
     goal.runAction === "implementing"
@@ -525,35 +515,15 @@
           >
             {goal.goalReady ? "Recreate goal" : "Create goal"}
           </Button>
-          <Button
-            variant="default"
-            data-command="goal.save"
-            data-testid="save-goal"
-            title={goal.goalEditingDisabled ? "The goal is read only during work." : undefined}
-            disabled={goal.goalEditingDisabled}
-            onclick={() => goal.saveGoal()}
-          >
-            Save goal
-          </Button>
-          <SaveFeedback scope="goal.document" />
         {/snippet}
       </PageHeader>
 
       <section class="panel goal-document" data-testid="goal-editor">
         <div class="panel__body goal-details">
-          <MonacoEditor
-            value={goal.goalDraft}
-            label="Current goal"
-            data-testid="goal-text"
-            readOnly={goal.goalEditingDisabled}
-            dirty={goal.goalDirty}
-            onchange={(text) => goal.setGoalDraft(text)}
-            onsave={() => goal.saveGoal()}
-          />
+          <pre class="goal-document__text mono" data-testid="goal-text" aria-label="Goal document">{goal.goalText}</pre>
         </div>
         <div class="panel__footer goal-revision">
           <div class="goal-revision__heading">
-            <label class="field__label" for="revision-request">Revision guidance</label>
             <Button
               variant="secondary"
               data-command="goal.revise"
@@ -565,17 +535,8 @@
             </Button>
           </div>
           <p class="goal-revision__hint">
-            Revision writes a draft; save only when you accept it. Guidance is optional.
+            Revision rewrites the document through the revision agent.
           </p>
-          <textarea
-            id="revision-request"
-            class="textarea goal-revision__input"
-            rows="3"
-            bind:value={goal.revisionRequest}
-            placeholder="Optional guidance for the agent"
-            data-testid="revision-request"
-            disabled={goal.revisionDisabled}
-          ></textarea>
         </div>
       </section>
     </div>

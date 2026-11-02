@@ -4,7 +4,6 @@
   import { Tooltip } from "bits-ui";
   import ActivityBar from "./lib/components/ActivityBar.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
-  import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import DevboardWorkspace from "./lib/components/DevboardWorkspace.svelte";
   import DiscoverWorkspace from "./lib/components/DiscoverWorkspace.svelte";
   import FeedbackOverlay from "./FeedbackOverlay.svelte";
@@ -33,11 +32,6 @@
   import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
   import { MINIMUM_VIEWPORT, viewport } from "./lib/viewport.svelte";
 
-  interface PendingClose {
-    mode: Mode;
-    tab: WorkspaceTab;
-  }
-
   interface FeedbackHandle {
     startPicking: () => void;
     startRemoving: () => void;
@@ -51,7 +45,6 @@
 
   let paletteOpen = $state(false);
   let paletteReturnFocus: HTMLElement | null = null;
-  let pendingClose = $state<PendingClose | null>(null);
   let feedbackOverlay = $state<FeedbackHandle>();
   let reportPhase = $state<FeedbackPhase>("idle");
   let reportAction = $state<FeedbackAction | null>(null);
@@ -85,13 +78,6 @@
     layout.openTab(mode, tab);
   }
 
-  function tabDirty(mode: Mode, tab: WorkspaceTab): boolean {
-    if (mode === "goal" && tab.kind === "goal-document") return goal.goalDirty;
-    if (mode === "flow" && tab.kind === "decisions") return flow.decisionsDirty;
-    if (mode === "discover" && tab.kind === "skill") return discover.skillDirty(tab.resourceId);
-    return false;
-  }
-
   function focusModeAfterTick(mode: Mode): void {
     void tick().then(() => {
       document.getElementById(`mode-${mode}-tab`)?.focus();
@@ -113,33 +99,11 @@
   }
 
   function closeTab(mode: Mode, tab: WorkspaceTab): void {
-    if (tabDirty(mode, tab)) {
-      pendingClose = { mode, tab };
-      return;
-    }
     performClose(mode, tab);
-  }
-
-  function confirmDiscard(): void {
-    if (pendingClose === null) return;
-    const pending = pendingClose;
-    pendingClose = null;
-    if (pending.mode === "goal" && pending.tab.kind === "goal-document") goal.discardDraft();
-    if (pending.mode === "flow" && pending.tab.kind === "decisions") flow.discardDecisionsDraft();
-    if (pending.mode === "discover" && pending.tab.kind === "skill") {
-      discover.discardDraft(pending.tab.resourceId);
-    }
-    performClose(pending.mode, pending.tab);
-  }
-
-  function cancelDiscard(): void {
-    pendingClose = null;
-    focusModeAfterTick(layout.mode);
   }
 
   function resetLayout(): void {
     paletteOpen = false;
-    pendingClose = null;
     notifications.closeHistory();
     layout.reset();
   }
@@ -169,18 +133,9 @@
     if (event.target instanceof HTMLElement) savedFocus[mode] = event.target;
   }
 
-  function focusedEditor(): EditorHandle | undefined {
-    const active = document.activeElement;
-    if (!(active instanceof HTMLElement)) return undefined;
-    const host = active.closest<HTMLElement>("[data-monaco-editor]");
-    if (host === null) return undefined;
-    const id = host.dataset.monacoEditor;
-    return id === undefined ? undefined : window.__devboardEditors?.get(id);
-  }
-
   function isTyping(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
-    return target.closest("input, textarea, select, [contenteditable='true'], .monaco-editor") !== null;
+    return target.closest("input, textarea, select") !== null;
   }
 
   function openPalette(): void {
@@ -215,18 +170,6 @@
       if (paletteOpen) {
         event.preventDefault();
         closePalette();
-      } else if (pendingClose !== null) {
-        event.preventDefault();
-        cancelDiscard();
-      }
-      return;
-    }
-
-    if (command && key === "s") {
-      const handle = focusedEditor();
-      if (handle !== undefined) {
-        event.preventDefault();
-        if (handle.isDirty()) handle.save();
       }
       return;
     }
@@ -292,9 +235,6 @@
     removeElement,
     redesignElement,
     cancelReport: () => feedbackOverlay?.cancelReport(),
-    canCloseTab: () => pendingClose !== null,
-    confirmCloseTab: () => confirmDiscard(),
-    cancelCloseTab: () => cancelDiscard(),
   };
 
   const commands = $derived(buildCommands(commandsContext));
@@ -524,19 +464,6 @@
 {/if}
 
 <CommandPalette open={paletteOpen} {commands} onclose={closePalette} />
-
-<ConfirmDialog
-  open={pendingClose !== null}
-  title="Unsaved changes"
-  message={pendingClose === null ? "" : `Close “${pendingClose.tab.title}” and discard its unsaved changes?`}
-  confirmLabel="Discard and close"
-  destructive
-  testid="confirm-close-tab"
-  confirmCommand="tab.close.confirm"
-  cancelCommand="tab.close.cancel"
-  onconfirm={confirmDiscard}
-  oncancel={cancelDiscard}
-/>
 
 <Tooltip.Provider>
   <NotificationRegion feedbackenabled={connection.feedbackEnabled} />

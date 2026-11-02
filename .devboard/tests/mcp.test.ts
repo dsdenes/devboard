@@ -862,12 +862,13 @@ describe("MCP work and control tools", () => {
     expect(lifecycle.goal).toBe("# Goal\n");
 
     const goal = valueOf(
-      await callTool(live, "goal_control", { action: "save", text: "# New goal\n" }),
-    ) as { goal: string };
+      await callTool(live, "goal_control", { action: "create" }),
+    ) as { goal: string; event: Record<string, unknown> };
     expect(goal.goal).toBe("# Goal\n");
+    expect(goal.event).toEqual({});
 
     const flow = valueOf(
-      await callTool(live, "flow_control", { action: "save_goal", text: "flow goal" }),
+      await callTool(live, "flow_control", { action: "create_goal" }),
     ) as { flow: Record<string, unknown> };
     expect(flow.flow.status).toBe("idle");
 

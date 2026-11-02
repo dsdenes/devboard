@@ -100,11 +100,10 @@ async function dispatch(
     case "devboard_status":
       return devboardStatus(context);
     case "flow_control":
-      return flowControl(context, { action: args.action, text: args.text });
+      return flowControl(context, { action: args.action });
     case "goal_control":
       return goalControl(context, {
         action: args.action,
-        text: args.text,
         request: args.request,
       });
     case "goal_draft_file": {

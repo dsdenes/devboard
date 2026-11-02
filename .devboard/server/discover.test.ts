@@ -1033,49 +1033,23 @@ describe("discover mode", () => {
   );
 
   test(
-    "preserves edited skills across a re-crawl, refuses invalid saves, and restores missing skills",
+    "preserves a hand-edited skill across a re-crawl and reports missing skills read-only",
     async () => {
       const { server, fixture, url } = startServer();
       const client = await connect(url);
+      const editedName = "discover-coding-conventions";
+      const livePath = join(fixture.root, ".omp", "skills", editedName, "SKILL.md");
       try {
-        await runDiscover(client);
-        const editedName = "discover-coding-conventions";
-        const livePath = join(fixture.root, ".omp", "skills", editedName, "SKILL.md");
-        const original = readFileSync(livePath, "utf8");
-        const edited = original.replace(
+        const original = await runDiscover(client);
+        const originalSkill = original.skills.find((entry) => entry.name === editedName);
+        expect(originalSkill?.state).toBe("generated");
+        const before = readFileSync(livePath, "utf8");
+        const edited = before.replace(
           "- Handle recoverable errors at the caller",
           "- Handle recoverable errors at the boundary",
         );
-        expect(edited).not.toBe(original);
-
-        const saved = await afterCommand(client, {
-          type: "saveDiscoverSkill",
-          name: editedName,
-          text: edited,
-          target: { kind: "host" },
-        });
-        expect(saved.skills.find((skill) => skill.name === editedName)?.state).toBe("edited");
-        expect(readFileSync(livePath, "utf8")).toBe(edited);
-
-        // A save that drops the family marker is refused and changes nothing.
-        client.send({
-          type: "saveDiscoverSkill",
-          name: editedName,
-          text: edited.replace('  devboard-family: "discover"\n', ""),
-          target: { kind: "host" },
-        });
-        const refused = await client.waitFor((message) => message.type === "discoverError");
-        expect(String(refused.message)).toContain("devboard-family");
-        expect(readFileSync(livePath, "utf8")).toBe(edited);
-
-        client.send({
-          type: "saveDiscoverSkill",
-          name: "prepare-only",
-          text: edited,
-          target: { kind: "host" },
-        });
-        const unknown = await client.waitFor((message) => message.type === "discoverError");
-        expect(String(unknown.message)).toContain("not one of the five");
+        expect(edited).not.toBe(before);
+        writeFileSync(livePath, edited);
       } finally {
         client.close();
         server.stop(true);
@@ -1084,60 +1058,52 @@ describe("discover mode", () => {
       const second = startServer({ fixture });
       const after = await connect(second.url);
       try {
-        const beforeReRun = readFileSync(
-          join(fixture.root, ".omp", "skills", "discover-coding-conventions", "SKILL.md"),
-          "utf8",
-        );
         const state = await runDiscover(after);
-        expect(beforeReRun).toContain("Handle recoverable errors at the boundary");
         expect(
-          readFileSync(
-            join(fixture.root, ".omp", "skills", "discover-coding-conventions", "SKILL.md"),
-            "utf8",
-          ),
-        ).toBe(beforeReRun);
-        const skill = state.skills.find((entry) => entry.name === "discover-coding-conventions");
+          readFileSync(join(fixture.root, ".omp", "skills", editedName, "SKILL.md"), "utf8"),
+        ).toBe(
+          readFileSync(livePath, "utf8"),
+        );
+        expect(
+          readFileSync(livePath, "utf8"),
+        ).toContain("Handle recoverable errors at the boundary");
+        const skill = state.skills.find((entry) => entry.name === editedName);
         expect(skill?.state).toBe("edited");
         const baseline = readFileSync(
-          join(fixture.root, ".omp", "discover", "skills", "discover-coding-conventions", "SKILL.md"),
+          join(fixture.root, ".omp", "discover", "skills", editedName, "SKILL.md"),
           "utf8",
         );
         expect(skill?.baseline).toBe(baseline);
         expect(skill?.baselineHash).toBe(hashText(baseline));
-        expect(skill?.currentHash).toBe(hashText(beforeReRun));
+        expect(skill?.currentHash).toBe(hashText(readFileSync(livePath, "utf8")));
         expect(state.warnings).toEqual([]);
 
-        // A deleted skill is not recreated by a crawl; Restore recreates it.
+        // A deleted skill is reported missing and no removed command recreates it.
         rmSync(join(fixture.root, ".omp", "skills", "discover-glossary"), { recursive: true });
         const missing = await discoverState(after);
-        const glossarySkill = missing.skills.find((entry) => entry.name === "discover-glossary");
-        expect(glossarySkill?.state).toBe("missing");
+        expect(missing.skills.find((entry) => entry.name === "discover-glossary")?.state).toBe(
+          "missing",
+        );
         expect(existsSync(join(fixture.root, ".omp", "skills", "discover-glossary"))).toBe(false);
 
-        const restored = await afterCommand(after, {
-          type: "restoreDiscoverSkill",
-          name: "discover-glossary",
+        const liveBefore = readFileSync(livePath, "utf8");
+        after.send({ type: "restoreDiscoverSkill", name: "discover-glossary" });
+        expect(await after.waitFor((message) => message.type === "error")).toEqual({
+          type: "error",
+          message: "Invalid WebSocket message.",
         });
-        expect(restored.skills.find((entry) => entry.name === "discover-glossary")?.state).toBe(
-          "generated",
-        );
-        expect(
-          readFileSync(join(fixture.root, ".omp", "skills", "discover-glossary", "SKILL.md"), "utf8"),
-        ).toBe(
-          readFileSync(
-            join(fixture.root, ".omp", "discover", "skills", "discover-glossary", "SKILL.md"),
-            "utf8",
-          ),
-        );
-
-        // Restore returns an edited skill to its generated version.
-        const rederived = await afterCommand(after, {
-          type: "restoreDiscoverSkill",
-          name: "discover-coding-conventions",
+        after.send({
+          type: "saveDiscoverSkill",
+          name: editedName,
+          text: `${liveBefore}\n- Removed command.\n`,
+          target: { kind: "host" },
         });
-        expect(
-          rederived.skills.find((entry) => entry.name === "discover-coding-conventions")?.state,
-        ).toBe("generated");
+        expect(await after.waitFor((message) => message.type === "error")).toEqual({
+          type: "error",
+          message: "Invalid WebSocket message.",
+        });
+        expect(readFileSync(livePath, "utf8")).toBe(liveBefore);
+        expect(existsSync(join(fixture.root, ".omp", "skills", "discover-glossary"))).toBe(false);
       } finally {
         after.close();
         second.server.stop(true);
@@ -1406,6 +1372,9 @@ describe("discover mode", () => {
         expect(rejected).toBeUndefined();
         await client.waitFor((message) => message.type === "lifecycleState");
         client.send({ type: "stopLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "goal",
+        );
 
       } finally {
         client.close();
@@ -1423,12 +1392,7 @@ describe("discover mode", () => {
           "- Keep file names kebab-case",
           "- Never declare dependencies in one direction.\n- Keep file names kebab-case",
         );
-        await afterCommand(prepareClient, {
-          type: "saveDiscoverSkill",
-          name: "discover-naming-conventions",
-          text: edited,
-          target: { kind: "host" },
-        });
+        writeFileSync(editedPath, edited);
 
         prepareClient.send({ type: "prepareSkills" });
         const prepared = await prepareClient.waitFor(
@@ -1470,7 +1434,6 @@ describe("discover mode", () => {
         const commands = [
           { type: "startRun", file: "0001-fixture.md" },
           { type: "startLifecycle" },
-          { type: "saveGoal", text: "# changed\n" },
           { type: "prepareSkills" },
           { type: "createGoal" },
           { type: "reviseGoal", request: "tighten" },
@@ -1901,7 +1864,7 @@ interface DiscoverAgentRow {
   startedAt: string | null;
   endedAt: string | null;
   error: string | null;
-  prompt: { agent: string; editable: boolean; text: string | null; error: string | null } | null;
+  prompt: { agent: string; text: string | null; error: string | null } | null;
 }
 
 function agentsOf(state: DiscoverState): DiscoverAgentRow[] {
@@ -2265,7 +2228,7 @@ describe("discovery agents", () => {
   );
 
   test(
-    "each card carries its own prompt bytes, command, and editable prompt state",
+    "each card carries its own read-only prompt bytes and command",
     async () => {
       const fixture = createFixture("agent-prompts");
       mkdirSync(join(fixture.root, ".devboard", "prompts"), { recursive: true });
@@ -2302,7 +2265,7 @@ describe("discovery agents", () => {
         ]);
         const texts = new Set<string>();
         for (const agent of agents) {
-          expect(agent.prompt?.editable).toBe(true);
+          expect(agent.prompt === null || "editable" in agent.prompt).toBe(false);
           expect(agent.prompt?.error).toBeNull();
           const command = agent.id === "sheet" ? "/discover-sheet" : `/${agent.id}`;
           expect(agent.prompt?.text).toBe(expected.get(command));

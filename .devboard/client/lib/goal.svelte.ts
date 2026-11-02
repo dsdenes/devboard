@@ -1,6 +1,4 @@
 import { connection } from "./connection.svelte";
-import { discover } from "./discover.svelte";
-import { saveFeedback } from "./save-feedback.svelte";
 import type {
   AdrRecord,
   Lane,
@@ -138,14 +136,9 @@ export class GoalStore {
   next = $state<string | null>(null);
 
   goalText = $state("");
-  goalDraft = $state("");
-  goalDirty = $state(false);
   goalReady = $state(false);
-  /** Text of the save awaiting a `goal` echo; null when nothing is in flight. */
-  private pendingGoalSave: string | null = null;
   creationActive = $state(false);
   revisionActive = $state(false);
-  revisionRequest = $state("");
   skillsPrepActive = $state(false);
 
   runFile = $state<string | null>(null);
@@ -276,17 +269,6 @@ export class GoalStore {
       : this.startLifecycleTitle;
   }
 
-  get goalEditingDisabled(): boolean {
-    return (
-      this.creationActive ||
-      this.revisionActive ||
-      (this.lifecycleActive && !this.lifecycle.paused) ||
-      this.skillsPrepActive ||
-      discover.active ||
-      discover.cloning !== null
-    );
-  }
-
   get resetDisabled(): boolean {
     return !connection.open || this.resetting;
   }
@@ -325,44 +307,12 @@ export class GoalStore {
     return this.lanes.find((lane) => lane.id === id) ?? null;
   }
 
-  setGoalDraft(text: string): void {
-    this.goalDraft = text;
-    this.goalDirty = text !== this.goalText;
-    // Editing past the sent text means the server's echo no longer describes
-    // the draft, so it must not clear the flag or replace the newer text.
-    if (this.pendingGoalSave !== null && text !== this.pendingGoalSave) {
-      this.pendingGoalSave = null;
-    }
-  }
-
-  /**
-   * Sends the draft and leaves it dirty: the server refuses a save while other
-   * work runs and answers with an `error` frame instead of the confirming
-   * `goal` frame, so only that confirmation may clear the flag.
-   */
-  saveGoal(): void {
-    // A creation or revision owns the document; sending the buffer then would
-    // race that operation and could write an empty goal over GOAL.md.
-    if (this.creationActive || this.revisionActive) return;
-    if (!connection.send({ type: "saveGoal", text: this.goalDraft })) return;
-    this.pendingGoalSave = this.goalDraft;
-  }
-
-  discardDraft(): void {
-    this.goalDraft = this.goalText;
-    this.goalDirty = false;
-    this.pendingGoalSave = null;
-  }
-
   createGoal(): void {
     connection.send({ type: "createGoal" });
   }
 
   reviseGoal(): void {
-    const request = this.revisionRequest.trim();
-    connection.send(
-      request.length === 0 ? { type: "reviseGoal" } : { type: "reviseGoal", request },
-    );
+    connection.send({ type: "reviseGoal" });
   }
 
   prepareSkills(): void {
@@ -477,24 +427,6 @@ export class GoalStore {
     if (type === "goal" && typeof message.text === "string") {
       this.goalText = message.text;
       this.goalReady = message.text.trim().length > 0;
-      // The frame carries the server's document, including the snapshot sent
-      // before answering getGoal on a reconnect. Editing and saving are
-      // disabled while a creation or revision runs, so the draft is left for
-      // the operation's terminal frame to replace.
-      if (this.revisionActive || this.creationActive) return;
-      if (this.pendingGoalSave !== null) {
-        // Only the echo of the sent text confirms the save. Any other frame
-        // is a reconnect snapshot, another tab, or a refused save's later
-        // state, and leaving the draft untouched keeps it unsaved.
-        if (message.text === this.pendingGoalSave) {
-          this.goalDirty = false;
-          this.goalDraft = message.text;
-          this.pendingGoalSave = null;
-          saveFeedback.saved("goal.document", "Goal saved.");
-        }
-      } else if (!this.goalDirty) {
-        this.goalDraft = message.text;
-      }
       return;
     }
 
@@ -511,15 +443,7 @@ export class GoalStore {
       this.draft = "";
       if (message.completed === true && typeof message.text === "string") {
         this.goalText = message.text;
-        this.goalDraft = message.text;
-        this.goalDirty = false;
         this.goalReady = message.text.trim().length > 0;
-      } else if (!this.goalDirty) {
-        // The operation ended without new text; the snapshot replayed during
-        // it is the document now, so the editor must show it rather than the
-        // empty buffer a save would otherwise write.
-        this.goalDraft = this.goalText;
-        this.goalReady = this.goalText.trim().length > 0;
       }
       return;
     }
@@ -536,14 +460,7 @@ export class GoalStore {
       this.draft = "";
       if (message.completed === true && typeof message.text === "string") {
         this.goalText = message.text;
-        this.goalDraft = message.text;
-        this.goalDirty = false;
         this.goalReady = message.text.trim().length > 0;
-      } else if (!this.goalDirty) {
-        // Same as a creation that ends without text: show the replayed
-        // document instead of an empty buffer.
-        this.goalDraft = this.goalText;
-        this.goalReady = this.goalText.trim().length > 0;
       }
       return;
     }

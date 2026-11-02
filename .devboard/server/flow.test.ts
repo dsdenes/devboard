@@ -371,20 +371,6 @@ function readSession(fixture: Fixture, id: string): Record<string, unknown> {
   ) as Record<string, unknown>;
 }
 
-/**
- * Makes every atomic save under `directory` fail by occupying the temporary
- * path the writer opens before it renames. A directory there cannot be opened
- * for truncation, so a save either fails without touching its destination or
- * proves that the destination was written in place.
- */
-function failAtomicWrites(directory: string, names: string[]): () => void {
-  const blockers = names.map((name) => `${join(directory, name)}.${process.pid}.tmp`);
-  for (const blocker of blockers) mkdirSync(blocker, { recursive: true });
-  return () => {
-    for (const blocker of blockers) rmSync(blocker, { recursive: true, force: true });
-  };
-}
-
 async function createGoal(client: TestClient, fixture: Fixture): Promise<void> {
   client.send({ type: "createFlowGoal" });
   await client.waitFor((event) => event.type === "flowQuestion");
@@ -524,9 +510,6 @@ describe("Flow Mode contract", () => {
     expect(sessionIds(fixture)).toHaveLength(1);
     expect(sha256File(fixture.goalFile)).toBe(before);
 
-    // The same session accepts a developer save after the failed attempt.
-    client.send({ type: "saveFlowGoal", text: "# Saved by hand\n" });
-    await client.waitFor((event) => event.type === "flowSnapshot" && event.goal === "# Saved by hand\n");
     client.close();
   }, 30_000);
 
@@ -634,14 +617,14 @@ describe("Flow Mode contract", () => {
         writesBefore,
       "the interview's goal write",
     );
+    // A removed hand-write command is refused and confirms no text.
     client.send({ type: "saveFlowGoal", text: savedText });
-    const error = await client.waitFor(
-      (event) => event.type === "flowError" && String(event.message).includes("goal interview"),
-      { from: mark },
-    );
+    expect(await client.waitFor((event) => event.type === "error", { from: mark })).toEqual({
+      type: "error",
+      message: "Invalid WebSocket message.",
+    });
     expect(readSession(fixture, id).goal).toBe(interviewGoal);
     expect(readFileSync(goalPath, "utf8")).toBe(interviewGoal);
-    // The refused save never confirms its text in a snapshot of its own.
     expect(
       client.events.some(
         (event) => event.type === "flowSnapshot" && event.goal === savedText,
@@ -1458,13 +1441,6 @@ describe("Flow steering, decisions, and conversation", () => {
     await client.waitFor((event) => event.type === "flowImplementationStarted");
     await waitForStub(fixture, (line) => line.startsWith("flow-decisions-read 1 "));
 
-    // A goal edit is refused while the implementation runs.
-    client.send({ type: "saveFlowGoal", text: "# Replaced mid-run\n" });
-    const goalError = await client.waitFor(
-      (event) => event.type === "flowError" && String(event.message).includes("Stop it"),
-    );
-    expect(String(goalError.message)).toContain("implementation");
-
     client.send({ type: "sendFlowSteering", text: "Prefer a smaller configuration" });
     const steering = await client.waitFor(
       (event) =>
@@ -1478,18 +1454,9 @@ describe("Flow steering, decisions, and conversation", () => {
     expect(note?.source).toBe("developer");
     expect(client.events.some((event) => event.type === "flowStopped")).toBe(false);
 
-    client.send({ type: "saveFlowDecisions", text: "# Decisions\n\nKeep the shape small.\n" });
-    await waitUntil(
-      () => {
-        const decisions = latest(client, "flowDecisions")?.text;
-        return decisions === "# Decisions\n\nKeep the shape small.\n";
-      },
-      "the decision board save",
-    );
-
     await waitForStub(
       fixture,
-      (line) => line.startsWith("flow-decisions-read 2 ") && line.length > "flow-decisions-read 2 5".length,
+      (line) => line.startsWith("flow-decisions-read 2 "),
       30_000,
     );
     await waitForStub(fixture, (line) => line === `flow-ack ${note?.id ?? ""}`, 30_000);
@@ -1851,19 +1818,15 @@ describe("Flow steering, decisions, and conversation", () => {
     const widget = (latest(client, "flowWidgets")?.widgets as { id: string }[])[0] as { id: string };
     client.send({ type: "openFlowWidget", id: widget.id });
     await client.waitFor((event) => event.type === "flowConversationStarted");
-    client.send({ type: "saveFlowDecisions", text: "# Board\n\nDeveloper text.\n" });
     client.send({ type: "sendFlowConclusion", text: "Conclusion text." });
     await waitUntil(
       () => {
         const text = latest(client, "flowDecisions")?.text;
-        return (
-          typeof text === "string" && text.includes("Developer text.") && text.includes("Conclusion text.")
-        );
+        return typeof text === "string" && text.includes("Conclusion text.");
       },
-      "both decision-board writes",
+      "the server-appended decision",
     );
     const text = latest(client, "flowDecisions")?.text as string;
-    expect(text.startsWith("# Board\n\nDeveloper text.")).toBe(true);
     expect(text).toMatch(/## .*Widget conversation/);
     client.close();
   }, 60_000);
@@ -2287,10 +2250,6 @@ describe("Flow persistence and isolation", () => {
     const client = await connect(first);
     await connected(client);
     await createGoal(client, fixture);
-    client.send({ type: "saveFlowDecisions", text: "# Board\n\nRun one.\n" });
-    await client.waitFor(
-      (event) => event.type === "flowDecisions" && String(event.text).includes("Run one."),
-    );
     client.send({ type: "startFlowImplementation" });
     await client.waitFor((event) => event.type === "flowImplementationStarted");
     await waitUntil(
@@ -2315,7 +2274,7 @@ describe("Flow persistence and isolation", () => {
     );
     expect(snapshot.status).toBe("stopped");
     expect(snapshot.goal).toBe(before.goal as string);
-    expect(snapshot.decisions).toContain("Run one.");
+    expect(typeof snapshot.decisions).toBe("string");
     expect((snapshot.worktree as string)).toBe(before.worktree as string);
     expect((snapshot.checkpoints as unknown[]).length).toBeGreaterThan(0);
     expect((snapshot.widgets as unknown[]).length).toBeGreaterThan(0);
@@ -2345,82 +2304,6 @@ describe("Flow persistence and isolation", () => {
     expect(spawns(fixture).length).toBeGreaterThan(spawnsBefore);
     restored.send({ type: "stopFlowImplementation" });
     await restored.waitFor((event) => event.type === "flowStopped");
-    restored.close();
-  }, 90_000);
-
-  test("a failed Flow save leaves the previous session, goal, and decisions bytes intact", async () => {
-    const fixture = createFixture("save-failure");
-    const first = startServer(fixture, {
-      stub: [
-        "--flow-goal",
-        "--flow-implement",
-        "--flow-change",
-        "--flow-checkpoints=2",
-        "--flow-step-delay=5000",
-      ],
-    });
-    const client = await connect(first);
-    await connected(client);
-    await createGoal(client, fixture);
-    client.send({ type: "saveFlowDecisions", text: "# Board\n\nRun one.\n" });
-    await client.waitFor(
-      (event) => event.type === "flowDecisions" && String(event.text).includes("Run one."),
-    );
-    client.send({ type: "startFlowImplementation" });
-    await client.waitFor((event) => event.type === "flowImplementationStarted");
-    await waitUntil(
-      () => {
-        const checkpoints = latest(client, "flowCheckpoints")?.checkpoints as unknown[] | undefined;
-        return Array.isArray(checkpoints) && checkpoints.length > 0;
-      },
-      "the first checkpoint",
-    );
-    client.send({ type: "stopFlowImplementation" });
-    await client.waitFor((event) => event.type === "flowStopped");
-
-    const sessionId = sessionIds(fixture)[0] as string;
-    const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), sessionId);
-    const files = ["session.json", "goal.md", "decisions.md"];
-    const before = files.map((name) => readFileSync(join(directory, name)));
-    expect(before[1]?.toString("utf8")).toBe(FLOW_GOAL);
-
-    const release = failAtomicWrites(directory, files);
-    try {
-      client.send({ type: "saveFlowGoal", text: "# Replaced by hand\n" });
-      client.send({ type: "saveFlowDecisions", text: "# Board\n\nRun two.\n" });
-      await client.waitFor(
-        (event) => event.type === "flowError" && String(event.message).includes("decision board"),
-      );
-      files.forEach((name, index) => {
-        expect(readFileSync(join(directory, name)).equals(before[index] as Buffer)).toBe(true);
-      });
-    } finally {
-      client.close();
-      first.server.stop(true);
-    }
-
-    // The interrupted saves left the last complete session restorable, even
-    // while the replacement's own restore write keeps failing.
-    const second = startServer(fixture, {
-      stub: ["--flow-goal", "--flow-implement", "--flow-change"],
-    });
-    const restored = await connect(second);
-    const snapshot = await restored.waitFor(
-      (event) => event.type === "flowSnapshot" && event.sessionId === sessionId,
-    );
-    expect(snapshot.goal).toBe(FLOW_GOAL);
-    expect(String(snapshot.decisions)).toContain("Run one.");
-    expect(String(snapshot.decisions)).not.toContain("Run two.");
-    expect(snapshot.status).toBe("stopped");
-
-    // Once the obstruction is gone the same controller writes again.
-    release();
-    restored.send({ type: "saveFlowDecisions", text: "# Board\n\nRun three.\n" });
-    await restored.waitFor(
-      (event) => event.type === "flowDecisions" && String(event.text).includes("Run three."),
-    );
-    expect(readFileSync(join(directory, "decisions.md"), "utf8")).toBe("# Board\n\nRun three.\n");
-    expect(readSession(fixture, sessionId).decisions).toBe("# Board\n\nRun three.\n");
     restored.close();
   }, 90_000);
 

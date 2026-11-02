@@ -122,16 +122,14 @@ const TOOLS: readonly McpToolDefinition[] = [
     name: "flow_control",
     title: "Control Flow mode",
     description:
-      "Delegates create_goal, save_goal, start_implementation, or " +
-      "stop_implementation to the live dashboard and returns the resulting Flow " +
-      "snapshot.",
+      "Delegates create_goal, start_implementation, or stop_implementation to " +
+      "the live dashboard and returns the resulting Flow snapshot.",
     inputSchema: object(
       {
         action: {
           type: "string",
-          enum: ["create_goal", "save_goal", "start_implementation", "stop_implementation"],
+          enum: ["create_goal", "start_implementation", "stop_implementation"],
         },
-        text: STRING,
       },
       ["action"],
     ),
@@ -140,15 +138,14 @@ const TOOLS: readonly McpToolDefinition[] = [
     name: "goal_control",
     title: "Control Goal mode",
     description:
-      "Delegates save, create, revise, prepare_skills, or reset_implementation to the " +
+      "Delegates create, revise, prepare_skills, or reset_implementation to the " +
       "live dashboard and returns the resulting Goal-mode state.",
     inputSchema: object(
       {
         action: {
           type: "string",
-          enum: ["save", "create", "revise", "prepare_skills", "reset_implementation"],
+          enum: ["create", "revise", "prepare_skills", "reset_implementation"],
         },
-        text: STRING,
         request: STRING,
       },
       ["action"],

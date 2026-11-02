@@ -1723,7 +1723,7 @@ describe("discover remote target", () => {
   );
 
   test(
-    "saves skills and glossary decisions into the retained copy without a clone",
+    "keeps an externally edited skill and glossary decisions in the retained copy without a clone",
     async () => {
       const fixture = createFixture("retained-edits");
       const clones = cloneHarness({ source: createSourceRepository("retained-edits-source") });
@@ -1736,15 +1736,11 @@ describe("discover remote target", () => {
         const skill = state.skills.find((entry) => entry.name === "discover-testing-strategy");
         expect(skill).toBeDefined();
         const live = String(skill?.live ?? skill?.baseline ?? "");
-        const edited = await discoverStateAndMutation(client, {
-          type: "saveDiscoverSkill",
-          name: "discover-testing-strategy",
-          text: `${live}\n- Retained edit.\n`,
-          target: { kind: "remote", owner: "octocat", repo: "Hello-World" },
-        });
-        expect(
-          readFileSync(join(retained, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8"),
-        ).toBe(`${live}\n- Retained edit.\n`);
+        writeFileSync(
+          join(retained, ".omp", "skills", "discover-testing-strategy", "SKILL.md"),
+          `${live}\n- Retained edit.\n`,
+        );
+        const edited = await discoverState(client);
         expect(edited.skills.find((entry) => entry.name === "discover-testing-strategy")?.state).toBe(
           "edited",
         );
@@ -1878,10 +1874,10 @@ async function waitFor(predicate: () => boolean, label: string, timeout = 10_000
 }
 
 test(
-  "a target switch never writes one retained project's draft into another",
+  "a target switch renders each retained project's own read-only skill text",
   async () => {
-    const fixture = createFixture("draft-scope");
-    const clones = cloneHarness({ source: createSourceRepository("draft-scope-first") });
+    const fixture = createFixture("target-switch");
+    const clones = cloneHarness({ source: createSourceRepository("target-switch-first") });
     const { server, url } = startServer({ fixture, clone: clones });
     const client = await connect(url);
     const firstUrl = "https://github.com/octocat/Alpha";
@@ -1892,9 +1888,8 @@ test(
     const frames: Record<string, unknown>[] = [];
     let restoreGlobals: (() => void) | null = null;
     try {
-      // Two retained projects, crawled in order, share the same five skills.
       await runRemote(client, firstUrl);
-      clones.behavior.source = createSourceRepository("draft-scope-second");
+      clones.behavior.source = createSourceRepository("target-switch-second");
       await runRemote(client, secondUrl);
 
       const alphaPath = join(
@@ -1912,6 +1907,7 @@ test(
         "SKILL.md",
       );
       const alphaBefore = readFileSync(alphaPath);
+      const betaBefore = readFileSync(betaPath);
 
       restoreGlobals = installDiscoverClientGlobals(url);
       sockets.onMessage((message) => {
@@ -1925,56 +1921,36 @@ test(
         () => store.target.kind === "remote" && store.target.repo === "Beta",
         "the Beta snapshot",
       );
+      expect(store.skillText(skillName)).toBe(betaBefore.toString("utf8"));
 
       store.switchRemote(firstUrl);
       await waitFor(
         () => store.target.kind === "remote" && store.target.repo === "Alpha",
         "the Alpha snapshot",
       );
-      const liveAlpha = store.skill(skillName)?.live ?? "";
-      expect(liveAlpha.length).toBeGreaterThan(0);
-      store.updateDraft(skillName, `${liveAlpha}\n- Edited against Alpha.\n`);
-      expect(store.skillDirty(skillName)).toBe(true);
-
-      store.switchRemote(secondUrl);
-      await waitFor(
-        () => store.target.kind === "remote" && store.target.repo === "Beta",
-        "the Beta snapshot after the switch",
-      );
-      const liveBeta = store.skill(skillName)?.live ?? "";
-      expect(liveBeta.length).toBeGreaterThan(0);
-      expect(store.skillDraft(skillName)).toBe(liveBeta);
-      expect(store.skillDirty(skillName)).toBe(false);
+      expect(store.skillText(skillName)).toBe(alphaBefore.toString("utf8"));
 
       const mark = frames.length;
-      store.saveSkill(skillName);
+      sockets.send({
+        type: "saveDiscoverSkill",
+        name: skillName,
+        text: `${alphaBefore.toString("utf8")}\n- Removed command.\n`,
+        target: { kind: "remote", owner: "octocat", repo: "Alpha" },
+      });
       await waitFor(
         () =>
           frames
             .slice(mark)
             .some(
               (message) =>
-                message.type === "discoverState" || message.type === "discoverError",
+                message.type === "error" ||
+                message.type === "discoverError" ||
+                message.type === "discoverState",
             ),
-        "the save round trip",
-      );
-      expect(frames.slice(mark).filter((message) => message.type === "discoverError")).toEqual(
-        [],
+        "the removed command's refusal",
       );
       expect(readFileSync(alphaPath).equals(alphaBefore)).toBe(true);
-      expect(readFileSync(betaPath, "utf8")).toBe(liveBeta);
-
-      // A client still holding Alpha's draft may not write it into Beta.
-      const refusalReply = client.waitNext((message) => message.type === "discoverError");
-      client.send({
-        type: "saveDiscoverSkill",
-        name: skillName,
-        text: `${liveAlpha}\n- Edited against Alpha.\n`,
-        target: { kind: "remote", owner: "octocat", repo: "Alpha" },
-      });
-      expect(String((await refusalReply).message)).toContain("different Discover target");
-      expect(readFileSync(alphaPath).equals(alphaBefore)).toBe(true);
-      expect(readFileSync(betaPath, "utf8")).toBe(liveBeta);
+      expect(readFileSync(betaPath).equals(betaBefore)).toBe(true);
     } finally {
       sockets.dispose();
       restoreGlobals?.();

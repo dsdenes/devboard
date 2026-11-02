@@ -869,9 +869,6 @@ describe("guided goal creation", () => {
           (message) => message.type === "lifecycleState" && message.paused === true,
         );
 
-        client.send({ type: "saveGoal", text: "" });
-        await client.waitFor((message) => message.type === "goal" && message.text === "");
-
         client.send({ type: "createGoal" });
         expect(await client.waitFor((message) => message.type === "goalCreationStarted")).toEqual({
           type: "goalCreationStarted",
@@ -912,7 +909,7 @@ describe("guided goal creation", () => {
   );
 
   test(
-    "writes <repoDir>/GOAL.md while getGoal and saveGoal keep using the configured GOAL_FILE",
+    "writes <repoDir>/GOAL.md while getGoal keeps using the configured GOAL_FILE",
     async () => {
       const { server, root, logPath, url } = await startServer(
         { "0001-first.md": PENDING_ONE },

@@ -39,19 +39,6 @@ interface ActivityEntry {
   append: boolean;
 }
 
-/** One visible prompt-chat turn; assistant chunks append to the same entry. */
-export interface PromptChatEntry {
-  turnId: string;
-  role: "user" | "assistant";
-  text: string;
-}
-
-/** A chat turn's proposed complete prompt, waiting for an explicit Save. */
-export interface PromptProposal {
-  turnId: string;
-  text: string;
-}
-
 function isEntry(value: unknown): value is ActivityEntry {
   return isObject(value) && typeof value.text === "string" && typeof value.append === "boolean";
 }
@@ -84,10 +71,6 @@ export class AgentsStore {
   activity = $state<Record<string, string[]>>({});
   activityScan = $state<Record<string, string | null>>({});
   prompts = $state<Record<string, AgentPromptState>>({});
-  promptChat = $state<Record<string, PromptChatEntry[]>>({});
-  promptProposal = $state<Record<string, PromptProposal | null>>({});
-  promptError = $state<Record<string, string | null>>({});
-  promptChatError = $state<Record<string, string | null>>({});
   private readonly seen = new Set<string>();
   private readonly lastError = new Map<string, string | null>();
   private readonly lastNotice = new Map<string, string | null>();
@@ -164,79 +147,10 @@ export class AgentsStore {
     connection.send({ type: "refreshAgent", id });
   }
 
-  /** Sends the editor's exact text; the server writes only this command. */
-  savePrompt(id: string, text: string): void {
-    this.promptError[id] = null;
-    connection.send({ type: "saveAgentPrompt", id, text });
-  }
-
-  /** A chat proposal is applied once, then dropped so a remount never replays it. */
-  consumePromptProposal(id: string): void {
-    this.promptProposal[id] = null;
-  }
-
-  sendPromptChat(id: string, message: string, text: string): void {
-    this.promptChatError[id] = null;
-    const entries = this.promptChat[id] ?? [];
-    entries.push({ turnId: "pending", role: "user", text: message });
-    this.promptChat[id] = entries;
-    connection.send({ type: "sendAgentPromptChat", id, message, text });
-  }
-
   handleEvent(message: Record<string, unknown>): void {
     if (message.type === "agentPromptState" && typeof message.id === "string") {
       const prompt = message.prompt as AgentPromptState | null;
       if (prompt !== null && typeof prompt === "object") this.prompts[message.id] = prompt;
-      return;
-    }
-    if (message.type === "agentPromptSaved" && typeof message.id === "string") {
-      saveFeedback.saved(
-        `agent.prompt.${message.id}`,
-        typeof message.notice === "string" ? message.notice : "Prompt saved.",
-      );
-      this.promptError[message.id] = null;
-      const prompt = this.prompts[message.id];
-      if (prompt !== undefined && typeof message.text === "string") {
-        this.prompts[message.id] = { ...prompt, text: message.text };
-      }
-      return;
-    }
-    if (message.type === "agentPromptError" && typeof message.id === "string") {
-      this.promptError[message.id] =
-        typeof message.message === "string" ? message.message : "The prompt command failed.";
-      return;
-    }
-    if (message.type === "agentPromptChatError" && typeof message.id === "string") {
-      this.promptChatError[message.id] =
-        typeof message.message === "string" ? message.message : "The prompt chat failed.";
-      return;
-    }
-    if (
-      message.type === "agentPromptChat" &&
-      typeof message.id === "string" &&
-      typeof message.turnId === "string" &&
-      typeof message.text === "string"
-    ) {
-      const id = message.id;
-      const entries = this.promptChat[id] ?? [];
-      const last = entries[entries.length - 1];
-      if (last !== undefined && last.role === "assistant" && last.turnId === message.turnId) {
-        last.text += message.text;
-      } else {
-        entries.push({ turnId: message.turnId, role: "assistant", text: message.text });
-      }
-      this.promptChat[id] = entries;
-      return;
-    }
-    if (
-      message.type === "agentPromptChatDone" &&
-      typeof message.id === "string" &&
-      typeof message.turnId === "string"
-    ) {
-      const proposal = message.proposal;
-      if (typeof proposal === "string" && proposal.length > 0) {
-        this.promptProposal[message.id] = { turnId: message.turnId, text: proposal };
-      }
       return;
     }
     if (message.type === "agentsState" && Array.isArray(message.agents)) {

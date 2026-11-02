@@ -440,7 +440,6 @@ export type DiscoverTarget =
 /** One discovery card's prompt, as the server read it. */
 export interface DiscoverAgentPrompt {
   agent: string;
-  editable: boolean;
   text: string | null;
   error: string | null;
 }

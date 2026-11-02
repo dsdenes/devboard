@@ -541,69 +541,7 @@ describe("createApp", () => {
     }
   });
 
-  test("writes the submitted goal text verbatim and reads it back", async () => {
-    const goalFile = join(await temporaryDirectory(), "GOAL.md");
-    const { server, url } = await startServer({ goalFile, goalText: "Original\n" });
-    const edited = "  Edited goal\n\nthird line";
-
-    try {
-      expect(await exchange(url, { type: "saveGoal", text: edited })).toEqual({
-        type: "goal",
-        text: edited,
-      });
-      expect(await readFile(goalFile, "utf8")).toBe(edited);
-      expect(await exchange(url, { type: "getGoal" })).toEqual({ type: "goal", text: edited });
-    } finally {
-      server.stop(true);
-    }
-  });
-
-  test("broadcasts a saved goal to every connected client", async () => {
-    const goalFile = join(await temporaryDirectory(), "GOAL.md");
-    const { server, url } = await startServer({ goalFile, goalText: "Original\n" });
-    const saver = await watchFrames(url);
-    const reader = await watchFrames(url);
-    const edited = "Edited by the first tab\n";
-
-    try {
-      saver.send({ type: "saveGoal", text: edited });
-
-      expect(
-        await saver.waitFor(
-          (frame) => frame.type === "goal" && frame.text === edited,
-          "the saver's confirmation",
-        ),
-      ).toEqual({ type: "goal", text: edited });
-      expect(
-        await reader.waitFor(
-          (frame) => frame.type === "goal" && frame.text === edited,
-          "the second client's goal frame",
-        ),
-      ).toEqual({ type: "goal", text: edited });
-      expect(await readFile(goalFile, "utf8")).toBe(edited);
-    } finally {
-      saver.close();
-      reader.close();
-      server.stop(true);
-    }
-  });
-
-  test("reports a failed goal write and leaves the goal untouched", async () => {
-    const goalFile = join(await temporaryDirectory(), "goal-directory");
-    await mkdir(goalFile);
-    const { server, url } = await startServer({ goalFile });
-
-    try {
-      const message = await exchange(url, { type: "saveGoal", text: "Edited goal" });
-
-      expect(message).toEqual({ type: "error", message: expect.any(String) });
-      expect((await stat(goalFile)).isDirectory()).toBe(true);
-    } finally {
-      server.stop(true);
-    }
-  });
-
-  test("answers the agent prompt surface and refuses a save on an installed prefix", async () => {
+  test("answers the agent prompt surface read-only on an installed prefix", async () => {
     const { root, url } = await startServer();
     await mkdir(join(root, ".devboard", "prompts"), { recursive: true });
     await writeFile(
@@ -623,12 +561,13 @@ describe("createApp", () => {
     );
     const scout = frames.find(
       (message) => (message as { type?: string }).type === "agentPromptState",
-    ) as {
-      prompt: { absent: boolean; editable: boolean; text: string | null };
-    };
-    expect(scout.prompt.absent).toBe(false);
-    expect(scout.prompt.editable).toBe(false);
-    expect(scout.prompt.text).toBe("# Installed prompt\n");
+    ) as { prompt: Record<string, unknown> };
+    expect(scout.prompt).toEqual({
+      id: "scout",
+      absent: false,
+      text: "# Installed prompt\n",
+      error: null,
+    });
 
     const watchdogFrames = await collect(
       url,
@@ -644,25 +583,46 @@ describe("createApp", () => {
       (message) =>
         (message as { type?: string; id?: string }).type === "agentPromptState" &&
         (message as { id?: string }).id === "watchdog",
-    ) as { prompt: { absent: boolean } };
-    expect(watchdog.prompt.absent).toBe(true);
+    ) as { prompt: Record<string, unknown> };
+    expect(watchdog.prompt).toEqual({
+      id: "watchdog",
+      absent: true,
+      text: null,
+      error: null,
+    });
 
-    const refusedFrames = await collect(
-      url,
-      { type: "saveAgentPrompt", id: "scout", text: "changed\n" },
-      (messages) =>
-        messages.some((message) => (message as { type?: string }).type === "agentPromptError"),
-    );
-    const refused = refusedFrames.find(
-      (message) => (message as { type?: string }).type === "agentPromptError",
-    ) as { message: string };
-    expect(refused.message).toContain("harness source checkout");
-    expect(readFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), "utf8")).toBe(
-      "# Installed prompt\n",
-    );
+    expect(
+      await exchange(url, { type: "saveAgentPrompt", id: "scout", text: "changed\n" }),
+    ).toEqual({ type: "error", message: "Invalid WebSocket message." });
+    expect(
+      readFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), "utf8"),
+    ).toBe("# Installed prompt\n");
   });
 
-  test("does not start an agent while loading or saving the goal", async () => {
+  test("refuses every removed hand-write command without touching its file", async () => {
+    const goalFile = join(await temporaryDirectory(), "GOAL.md");
+    const { root, url } = await startServer({ goalFile, goalText: "Original\n" });
+    const goalBytes = await readFile(goalFile, "utf8");
+    const removed = [
+      { type: "saveGoal", text: "changed\n" },
+      { type: "saveFlowGoal", text: "changed\n" },
+      { type: "saveFlowDecisions", text: "changed\n" },
+      { type: "saveDiscoverPrompt", agent: "sheet", text: "changed\n" },
+      { type: "chatDiscoverPrompt", agent: "sheet", message: "change it", text: "base" },
+      { type: "saveDiscoverSkill", name: "discover-testing-strategy", text: "changed\n" },
+      { type: "restoreDiscoverSkill", name: "discover-testing-strategy" },
+    ] as const;
+    for (const command of removed) {
+      expect(await exchange(url, command)).toEqual({
+        type: "error",
+        message: "Invalid WebSocket message.",
+      });
+    }
+    expect(await readFile(goalFile, "utf8")).toBe(goalBytes);
+    expect(existsSync(join(root, ".omp", "skills"))).toBe(false);
+  });
+
+  test("does not start an agent while loading the goal", async () => {
     const logPath = join(await temporaryDirectory(), "agent.log");
     const { server, url } = await startServer({
       goalText: "Goal\n",
@@ -671,7 +631,6 @@ describe("createApp", () => {
 
     try {
       await exchange(url, { type: "getGoal" });
-      await exchange(url, { type: "saveGoal", text: "Edited goal" });
 
       expect(existsSync(logPath)).toBe(false);
     } finally {

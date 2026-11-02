@@ -13,8 +13,6 @@
   import DiscoverAgentCard from "./DiscoverAgentCard.svelte";
   import DataTable from "./DataTable.svelte";
   import DiscoverOverview from "./DiscoverOverview.svelte";
-  import MonacoEditor from "./MonacoEditor.svelte";
-  import SaveFeedback from "./SaveFeedback.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -38,12 +36,11 @@
 
   const activeSkill = $derived(tab?.kind === "skill" ? tab.resourceId : null);
   const skill = $derived(activeSkill === null ? null : discover.skill(activeSkill));
-  const skillDraft = $derived(activeSkill === null ? "" : discover.skillDraft(activeSkill));
+  const skillText = $derived(activeSkill === null ? "" : discover.skillText(activeSkill));
   const skillTab = $derived(
     activeSkill === null ? null : (TABS.find((entry) => entry.skill === activeSkill) ?? null),
   );
   const skillState = $derived(skill?.state ?? "missing");
-  const skillDirty = $derived(activeSkill === null ? false : discover.skillDirty(activeSkill));
 
   const totalTerms = $derived(
     discover.contexts.reduce(
@@ -294,15 +291,7 @@
               </h2>
             </div>
             <div class="row-sm discover-skill__actions">
-              {#if skillDirty}
-                <span
-                  class="discover-skill__state"
-                  data-state="dirty"
-                  data-testid="discover-skill-dirty"
-                >
-                  <span class="discover-skill__state-dot" aria-hidden="true"></span>Unsaved changes
-                </span>
-              {:else if skillState === "missing"}
+              {#if skillState === "missing"}
                 <span
                   class="discover-skill__state"
                   data-state="missing"
@@ -310,54 +299,27 @@
                 >
                   <span class="discover-skill__state-dot" aria-hidden="true"></span>Live file missing
                 </span>
+              {:else if skillState === "edited"}
+                <span
+                  class="discover-skill__state"
+                  data-state="edited"
+                  data-testid="discover-skill-status"
+                >
+                  <span class="discover-skill__state-dot" aria-hidden="true"></span>edited
+                </span>
               {:else}
                 <span
                   class="discover-skill__state"
-                  data-state="clean"
+                  data-state="generated"
                   data-testid="discover-skill-status"
                 >
-                  <span class="discover-skill__state-dot" aria-hidden="true"></span>No unsaved changes
+                  <span class="discover-skill__state-dot" aria-hidden="true"></span>generated
                 </span>
-              {/if}
-              <Button
-                variant={skillDirty && skillState !== "missing" ? "default" : "secondary"}
-                data-command={`discover.skill.save.${activeSkill}`}
-                data-testid="discover-skill-save"
-                disabled={!skillDirty || skillState === "missing"}
-                title={skillState === "missing"
-                  ? "Recreate the generated version before saving."
-                  : skillDirty
-                    ? "Save the skill file."
-                    : "No unsaved changes."}
-                onclick={() => discover.saveSkill(activeSkill)}
-              >
-                Save
-              </Button>
-              <SaveFeedback scope={`discover.skill.${activeSkill}`} />
-              {#if skillState !== "generated"}
-                <Button
-                  variant={skillState === "missing" ? "default" : "outline"}
-                  data-command={`discover.skill.restore.${activeSkill}`}
-                  data-testid="discover-skill-restore"
-                  title={skillState === "missing"
-                    ? "Recreate the skill from its generated version."
-                    : "Discard your edits and return to the generated version."}
-                  onclick={() => discover.restoreSkill(activeSkill)}
-                >
-                  {skillState === "missing" ? "Recreate generated version" : "Discard edits"}
-                </Button>
               {/if}
             </div>
           </div>
-          <div class="grow">
-            <MonacoEditor
-              value={skillDraft}
-              label={`${activeSkill} skill text`}
-              data-testid="discover-skill-text"
-              dirty={skillDirty}
-              onchange={(text) => discover.updateDraft(activeSkill, text)}
-              onsave={() => discover.saveSkill(activeSkill)}
-            />
+          <div class="grow discover-skill__body">
+            <pre class="discover-skill__text mono" data-testid="discover-skill-text" aria-label={`${activeSkill} skill text`}>{skillText}</pre>
           </div>
         </div>
       </div>

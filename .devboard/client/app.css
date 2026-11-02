@@ -1463,6 +1463,28 @@ kbd {
 
 .flow-goal-editor {
   display: flex;
+  min-height: 0;
+}
+
+.flow-document__text {
+  background: var(--background);
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre;
+}
+
+.flow-decisions__body {
+  display: flex;
+  flex-direction: column;
+  height: 420px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
 }
 
 .flow-goal-activity {
@@ -2007,12 +2029,12 @@ kbd {
   width: 6px;
 }
 
-.discover-skill__state[data-state="clean"] {
+.discover-skill__state[data-state="generated"] {
   background: var(--success-surface);
   color: var(--success);
 }
 
-.discover-skill__state[data-state="dirty"] {
+.discover-skill__state[data-state="edited"] {
   background: var(--warning-surface);
   color: var(--warning);
 }
@@ -2027,6 +2049,25 @@ kbd {
   flex-wrap: nowrap;
   justify-content: flex-end;
   margin-left: auto;
+}
+
+.discover-skill__body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.discover-skill__text {
+  background: var(--background);
+  font-size: 12px;
+  height: 100%;
+  line-height: 1.45;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre;
 }
 
 /* Warnings page. */
@@ -2662,10 +2703,24 @@ a.code-chip--link:focus-visible {
 }
 
 .goal-document .goal-details {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
   padding: 0;
+}
+
+.goal-document__text {
+  background: var(--background);
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre;
 }
 
 .goal-revision {
@@ -2681,12 +2736,6 @@ a.code-chip--link:focus-visible {
   display: flex;
   gap: 8px;
   justify-content: space-between;
-}
-
-.goal-revision__input {
-  min-height: 88px;
-  padding: 6px 8px;
-  resize: none;
 }
 
 .goal-revision__hint {
@@ -4080,7 +4129,7 @@ a.code-chip--link:focus-visible {
   }
 }
 
-/* One discovery agent card: its own run, activity, prompt, and prompt chat. */
+/* One discovery agent card: its own run, activity, and read-only prompt. */
 .discover-agent {
   display: flex;
   flex-direction: column;
@@ -4088,9 +4137,8 @@ a.code-chip--link:focus-visible {
 }
 
 /* The agent page is the workspace, so it uses the whole window: the prompt
-   editor takes every pixel the other blocks leave. Growing without shrinking
-   keeps a short window scrolling the page instead of clipping the editor or its
-   chat input. */
+   panel takes every pixel the other blocks leave. Growing without shrinking
+   keeps a short window scrolling the page instead of clipping the bytes. */
 .discover-agent > .discover-agent__prompt {
   flex: 1 0 auto;
   min-height: 0;
@@ -4098,16 +4146,7 @@ a.code-chip--link:focus-visible {
 
 .discover-agent__prompt > .panel__body {
   flex: 1 1 auto;
-  overflow: hidden;
-}
-
-.discover-agent__prompt-editor {
-  flex: 1 1 auto;
   min-height: 0;
-}
-
-.discover-agent__textarea {
-  flex: 1 1 auto;
 }
 
 .discover-agent__header {
@@ -4143,66 +4182,5 @@ a.code-chip--link:focus-visible {
 .discover-agent .discover-run-tag {
   border: 0;
   padding: 0;
-}
-
-.discover-agent__prompt-editor,
-.discover-agent__chat {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.discover-agent__textarea {
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.45;
-  min-height: 220px;
-  padding: 8px;
-  resize: vertical;
-  white-space: pre;
-  width: 100%;
-}
-
-.discover-agent__prompt-actions,
-.discover-agent__chat-input {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-}
-
-.discover-agent__chat-log {
-  background: var(--background);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 220px;
-  min-height: 24px;
-  overflow: auto;
-  padding: 8px;
-}
-
-.discover-agent__chat-entry {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.discover-agent__chat-role {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.discover-agent__chat-text {
-  font-size: 11px;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
 

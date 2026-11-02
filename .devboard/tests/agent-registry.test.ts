@@ -139,8 +139,6 @@ describe("background agent registry", () => {
     expect(scout.prompt).toEqual({
       kind: "file",
       file: "scout-recommendations.md",
-      chat: "agent-prompt-chat.md",
-      notice: "Prompt saved. The next scan reads this file.",
     });
     const watchdog = agentRegistry.require("watchdog");
     expect(watchdog.label).toBe("Watchdog");
@@ -160,8 +158,6 @@ describe("background agent registry", () => {
     expect(design.prompt).toEqual({
       kind: "file",
       file: "design-system.md",
-      chat: "design-prompt-chat.md",
-      notice: "Prompt saved. The next cycle reads this file.",
     });
     const coach = agentRegistry.require("coach");
     expect(coach.label).toBe("Coach");
@@ -192,13 +188,9 @@ describe("background agent registry", () => {
   test("refuses a prompt that leaves the prompts directory or lacks its words", () => {
     const scout = DEFAULT_AGENT_DESCRIPTORS[0]!;
     for (const prompt of [
-      { kind: "file", file: "../escape.md", chat: "chat.md", notice: "Saved." },
-      { kind: "file", file: "no-extension", chat: "chat.md", notice: "Saved." },
-      { kind: "file", file: "ok.md", chat: "../escape.md", notice: "Saved." },
-      { kind: "file", file: "ok.md", chat: "no-extension", notice: "Saved." },
-      { kind: "file", file: "ok.md", notice: "Saved." },
-      { kind: "file", file: "ok.md", chat: " " },
-      { kind: "file", file: "ok.md", chat: "chat.md", notice: " " },
+      { kind: "file", file: "../escape.md" },
+      { kind: "file", file: "no-extension" },
+      { kind: "file" },
       { kind: "absent", message: "" },
       { kind: "neither" },
     ]) {

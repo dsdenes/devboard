@@ -2,7 +2,7 @@
 
 Local browser interface for a repository's goal, Flow implementation, and Discover artifacts.
 It renders one full-viewport, dark-first administration workspace with an activity bar, a
-contextual sidebar, one workspace page per mode, resizable split panes, Monaco editors, xterm
+contextual sidebar, one workspace page per mode, resizable split panes, read-only document views, xterm
 terminals, a command palette, and a status bar. Every mode is a client-side view over the existing
 WebSocket contract; the server still owns all work and durable state.
 
@@ -25,8 +25,8 @@ degrades into a clipped mobile layout.
 |Status bar|`status-bar`|Connection, project name, lane count, issues state, watchdog, versions, reload|
 
 The status bar stays visible while panes resize, and the document itself never scrolls
-vertically or horizontally. Each mode's panel keeps its scroll position, focus, open page, and
-unsaved editor text while another mode is shown.
+vertically or horizontally. Each mode's panel keeps its scroll position, focus, and open page while
+another mode is shown.
 
 ### Mode rail
 
@@ -53,8 +53,8 @@ The width survives a reload.
   skill, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
   ADR records group is absent while no record is pending.
 - **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
-  session and PR state, widgets, changed files, checkpoints, and blockers. The overview entry
-  carries the goal's `unsaved` marker. Blockers open the overview at the blocker they name.
+  session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
+  overview at the blocker they name.
 - **Devboard** carries the **Background agents** group — Auto Scout, Watchdog, Design System,
   and Coach — and one `data-testid="devboard-tab"` entry labeled `MCP tools` with
   `data-command="devboard.tab.tools"`. Each agent entry opens its page; the last entry opens the
@@ -63,13 +63,12 @@ The width survives a reload.
   and warnings only while at least one exists. The glossary entry carries the published term
   count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
   meta, so an exception is visible before the page opens. The Glossary entry is a plain section
-  link: it has no disclosure control and no nested per-term menu. An unsaved skill edit belongs
-  to the project it was written against: switching to another retained project shows that
-  project's own text, and saving there never writes the earlier project's draft.
+  link: it has no disclosure control and no nested per-term menu. Switching to another retained
+  project shows that project's own read-only skill text.
 
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
-surface that holds the same facts. The Flow overview opens with the flow-goal editor, which takes
-the full page height; while a goal interview is running the editor collapses to its header and the
+surface that holds the same facts. The Flow overview opens with the read-only flow goal, which takes
+the full page height; while a goal interview is running the panel collapses to its header and the
 interview takes the next block. The overview ends with the implementation activity console, which
 also takes a full page height so agent output never shrinks to a thumbnail.
 
@@ -78,8 +77,8 @@ also takes a full page height so agent output never shrinks to a thumbnail.
 Each mode shows exactly one page at a time and renders no tab strip. Opening an ADR, a Flow
 widget, changed file, or checkpoint, or a Discover skill replaces the visible page; the previous
 selection is reachable again from the sidebar or the palette. Close controls inside a page return
-to an empty page, and a dirty page closes only after the confirmation dialog restores or discards
-the draft.
+to an empty page; no document page carries unsaved state, so closing one never asks to discard
+anything.
 
 The Devboard page is `data-testid="devboard-workspace"` and holds
 `data-testid="mcp-tools-list"`: one compact `data-testid="mcp-tool"` row per tool the Devboard MCP
@@ -127,10 +126,9 @@ reload when stale, and the `Report UI issue`, `Remove element`, and `Redesign el
 |---|---|
 |Ctrl/Cmd+K|Open the command palette|
 |Alt+1 / Alt+2 / Alt+3 / Alt+4|Switch to Goal / Issues / Flow / Discover|
-|Ctrl/Cmd+S|Save the focused editor when it has unsaved changes|
 |Escape|Close the palette, dialogs, and overlays|
 
-Shortcuts are inert while text is being typed, except palette, save, and Escape. Every shortcut
+Shortcuts are inert while text is being typed, except palette and Escape. Every shortcut
 is listed in the palette or in the control's tooltip. Focus rings are always visible; dialogs
 trap focus and restore it on close.
 
@@ -139,7 +137,7 @@ trap focus and restore it on close.
 A fresh profile starts dark with `data-theme="dark"` on the root element, regardless of the OS
 preference. The status-bar control and the palette toggle between dark and light; the choice
 persists and an inline head script applies it before the first paint, so there is no wrong-theme
-flash. Both themes define every token used by the shell, tables, editors, terminals, diffs,
+flash. Both themes define every token used by the shell, tables, document views, terminals, diffs,
 status indicators, and overlays. Body text and muted text meet 4.5:1 contrast; interactive
 borders and focus rings meet 3:1; no state is conveyed by color alone. `prefers-reduced-motion:
 reduce` disables nonessential transitions.
@@ -154,23 +152,31 @@ terminal output, and IDs are monospace, one-line data rows are at most 32 CSS px
 data rows stay within 120 CSS px. The shell uses
 the full viewport with no application max-width.
 
-### Editors and terminals
+### Read-only documents and terminals
 
-Monaco Editor provides the Goal document (`goal-text`), Flow goal (`flow-goal-text`), Flow
-decision board (`flow-decisions`), and Discover skill editor (`discover-skill-text`). Each
-supports multiline Markdown or plain-text editing, its Save control, Ctrl/Cmd+S, a dirty marker,
-and an accessible label; a save sends the editor's exact text. The Goal document page fills the
-workspace: the editor takes every remaining pixel and the Revision guidance field is a tall
-multiline text area pinned to the page bottom. Flow diffs remain rendered by
-`diff2html`; the client never parses unified diff hunks.
+Every instruction document is displayed as the exact bytes on disk, never as an editor. The
+Goal document renders `GOAL.md` in `data-testid="goal-text"`; the Flow goal renders the session
+goal in `data-testid="flow-goal-text"`; the Flow decision board renders `decisions.md` in
+`data-testid="flow-decisions"`; and a Discover skill renders its live `SKILL.md`, or the
+generated baseline while that file is missing, in `data-testid="discover-skill-text"`. Each is a
+scrollable monospace `<pre>` region with an accessible label. None contains a `textarea`, an
+`input`, a `[contenteditable]` node, or an editor widget, and none exposes a Save, discard, or
+restore control, a dirty marker, or Ctrl/Cmd+S.
 
-Every Save control in the shell reports a confirmed write with the same transient
-`data-testid="save-feedback"` status beside that control: the Goal document, both Flow editors,
-the Discover skill file, an agent prompt, an agent's cadence and limits, and a provider
-subscription. Only the confirmation mounted beside the Save control that sent the write
-renders; it replaces the previous confirmation and clears itself after three seconds. It
-appears only after the server confirms the exact value it persisted; a refused or invalid save
-keeps its existing inline error or alert and shows no confirmation.
+Documents change only through agents: `create-goal` and `revise-goal` run the goal agents,
+`create-flow-goal` runs the Flow goal interview, the server appends a Flow widget conclusion to
+the decision board, and the Discover agents publish their skills. The Goal document page fills
+the workspace with the read-only text, and its footer keeps the Revise goal action without any
+guidance field. Flow diffs remain rendered by `diff2html`; the client never parses unified diff
+hunks.
+
+Save controls remain for the settings that are not documents: an agent's cadence and limits and
+a provider subscription. Each reports its confirmed write with the shared transient
+`data-testid="save-feedback"` status beside that control. Only the confirmation mounted beside
+the Save control that sent the write renders; it replaces the previous confirmation and clears
+itself after three seconds. It appears only after the server confirms the exact value it
+persisted; a refused or invalid save keeps its existing inline error or alert and shows no
+confirmation.
 
 xterm.js renders read-only agent output for Goal current activity and history, lane current
 activity and history, Flow goal creation, implementation activity, conversation activity, and
@@ -228,7 +234,7 @@ The script builds the client, seeds a fixture host under `.devboard/.tmp` with e
 real Discover artifacts produced by the stub ACP peer, starts a source dashboard, launches
 headless Chrome with a profile under the same tree, and asserts the shell, modes, sidebar,
 pages, splits, palette, shortcuts, theme and first paint, layout persistence and reset, the
-1024×720 boundary, dense tables, Monaco editors, xterm terminals, contrast, reduced motion,
+1024×720 boundary, dense tables, read-only documents, xterm terminals, contrast, reduced motion,
 notifications, status bar, preserved test hooks, and the absence of exceptions, console errors,
 failed requests, and overflow. It writes screenshots under `.devboard/.tmp/interface/`.
 
@@ -259,7 +265,7 @@ every agent write and eventually exhausts the dev server's heap.
   spawns one `omp acp` subprocess over stdio.
 - Client: Svelte 5 built with Vite, with shadcn-svelte components and its Tailwind CSS 4 setup,
   Bits UI dialogs, tooltips, and popovers, PaneForge split panes, TanStack Table data grids,
-  Monaco Editor, xterm.js, and Lucide icons. All workers and assets are bundled locally; the
+  xterm.js, and Lucide icons. All workers and assets are bundled locally; the
   page makes no network request beyond its WebSocket.
 - Density: 13 px body text with 12 px tables and monospace paths, code, diffs, terminals, and IDs.
 - Records: read from `adrs/` through adrkit on every `listRecords` command and after every run, so
@@ -555,8 +561,8 @@ page. Goal Mode is the goal, ADR, epic,
 lifecycle, and skills interface described above. Flow Mode is one implementation session that the
 developer steers while it works: the developer interviews for a goal, starts an implementation
 agent in an isolated worktree, reviews the changes as color-coded widgets, discusses a widget with
-a read-only agent, and writes steering notes and decisions that the agent consumes between
-checkpoints.
+a read-only agent, and writes steering notes the agent consumes between checkpoints; the decision
+board is a read-only view of the sections the server and the implementation append.
 
 ### One mode at a time
 
@@ -572,8 +578,8 @@ refused while a Flow session exists whose worktree or pull request is not merged
 ### Commands and events
 
 Flow Mode uses one WebSocket at `/ws`. The client sends `createFlowGoal`,
-`startFlowImplementation`, `stopFlowImplementation`, `saveFlowGoal`, `retryFlowPr`,
-`markFlowPrReady`, `mergeFlowPr`, `sendFlowSteering`, `saveFlowDecisions`, `acceptFlowWidget`,
+`startFlowImplementation`, `stopFlowImplementation`, `retryFlowPr`,
+`markFlowPrReady`, `mergeFlowPr`, `sendFlowSteering`, `acceptFlowWidget`,
 `refuseFlowWidget`, `openFlowWidget`, `closeFlowWidget`, `sendFlowConversation`,
 `sendFlowConclusion`, `dismissFlowBlocker`, and `flowAnswer` (with `target` naming the goal,
 implementation, or conversation question). The server broadcasts `flowSnapshot`,
@@ -603,8 +609,7 @@ The interview is bounded by `goalTimeoutMs` (120 s by default). `<session-dir>/g
 before each interview, so only a file that interview writes can be accepted. A timeout kills the
 peer, discards whatever draft it wrote, and reports `flowGoalStopped` with `completed: false`; the
 session's accepted goal is left unchanged, exactly as when the interview writes no goal.
-`saveFlowGoal` replaces the goal text while the implementation is stopped. `startFlowImplementation`
-requires a non-empty goal and starts `/flow-implement`; `stopFlowImplementation` ends that peer and
+`startFlowImplementation` requires a non-empty goal and starts `/flow-implement`; `stopFlowImplementation` ends that peer and
 reports the session `stopped`. A session whose pull request has merged cannot be restarted: create
 a new goal.
 
@@ -624,8 +629,8 @@ never committed and never written into the host.
 
 |File|Contents|
 |---|---|
-|`goal.md`|The goal text `/flow-goal` wrote, or the text the developer saved.|
-|`decisions.md`|The decision board: developer text plus appended timestamped sections.|
+|`goal.md`|The goal text `/flow-goal` wrote.|
+|`decisions.md`|The decision board: appended timestamped sections.|
 |`steering.jsonl`|Append-only developer steering notes.|
 |`steering-ack.jsonl`|The ids of steering notes the implementation consumed.|
 |`checkpoints.jsonl`|One JSON line per commit: id, time, summary, files, sha, verification.|
@@ -681,12 +686,10 @@ the lines it has not consumed, appends the ids it acted on, and applies every di
 its next checkpoint. Refusing a widget records the refusal as a steering note, and concluding a
 widget conversation appends its conclusion to the decision board and adds one steering note.
 
-The decision board is `<session-dir>/decisions.md`. The developer's `Save decisions` replaces
-the document and is authoritative: it is exactly the text the agent reads next. Sections the
+The decision board is `<session-dir>/decisions.md`, rendered read-only in the UI. Sections the
 server appends — a widget conclusion, for example — are timestamped and source-named, and only
-ever append: they never edit, reflow, or remove the developer's text or an earlier section. An
-appended section is a record, not a vote: the developer's saved text still governs, and the
-implementation must not rewrite either form.
+ever append: they never edit, reflow, or remove an earlier section. An appended section is a
+record, not a vote, and the implementation must not rewrite the board.
 
 ### Worktree, pull request, and merge
 
@@ -802,16 +805,13 @@ prompt file, and each staged turn writes only its own slice; a prompt may name
 `.omp/discover/sheet.json` and `.omp/discover/glossary/` as optional reference, but no agent needs
 another agent's artifact to succeed.
 
-When the dashboard serves a harness source checkout, every card renders an editor initialized
-to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
-(`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
-`discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
-`discover-agent-prompt-save`. One chat turn streams one visible reply; a turn that revises the
-prompt replaces the editor text with a complete replacement. Chat never writes a file and never
-starts an agent. Save writes exactly the editor's UTF-8 bytes to that one agent's prompt file and
-no other file, and the next trigger of that agent reads those bytes. An installed host has no
-prompt view and renders no editor, chat, or save; `saveDiscoverPrompt` and `chatDiscoverPrompt`
-are refused there with an error naming the harness source checkout.
+Every card renders its own prompt file's complete bytes in the read-only region
+`data-testid="discover-agent-prompt-text"`, a scrollable monospace `<pre>` inside
+`data-testid="discover-agent-prompt"`. The bytes are the same in a harness source checkout and an
+installed host. No card renders `discover-agent-prompt-editor`, `discover-agent-prompt-save`,
+`discover-agent-prompt-chat-log`, `discover-agent-prompt-message`, or
+`discover-agent-prompt-send`, and no `editable` field rides in the prompt payload. A read failure
+shows `discover-agent-prompt-error`; opening a card writes no file and starts no peer.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
@@ -865,18 +865,15 @@ clears the pending question, removes its staging, marks that agent failed, broad
 byte-identical; it spawns no replacement peer.
 
 Discover uses the same WebSocket at `/ws`. The client sends `discoverAgent` (with `agent`),
-`discoverProject` (Run all), `stopDiscover`, `answerDiscover` (with `id` and `value`),
-`getDiscover`, `saveDiscoverPrompt` (with `agent` and `text`), `chatDiscoverPrompt` (with `agent`,
-`message`, and the editor's `text`), `saveDiscoverSkill` (with `name` and `text`), and
-`restoreDiscoverSkill` (with `name`). The protocol also accepts `confirmGlossaryTerm` (with
-`context` and `id`) and `rejectGlossaryTerm` (with `context`, `id`, and a non-empty `reason`) for
-tooling, but the Glossary page does not use them. An unknown agent value, a non-string agent, or a
+`discoverProject` (Run all), `stopDiscover`, `answerDiscover` (with `id` and `value`), and
+`getDiscover`. The protocol also accepts `confirmGlossaryTerm` (with `context` and `id`) and
+`rejectGlossaryTerm` (with `context`, `id`, and a non-empty `reason`) for tooling, but the
+Glossary page does not use them. An unknown agent value, a non-string agent, or a
 start while another discovery run is active is refused with one `discoverError`, changes no
 artifact, and spawns no peer. `getDiscover` asks for the current snapshot and is answered with
 `discoverState`. The server broadcasts `discoverState`, `discoverStarted`, `discoverActivity`,
-`discoverQuestion`, `discoverStopped`, `discoverError`, and the prompt frames
-`discoverPromptState`, `discoverPromptSaved`, `discoverPromptError`, `discoverPromptChat`,
-`discoverPromptChatDone`, and `discoverPromptChatError`; it never sends `activity`, `question`,
+`discoverQuestion`, `discoverStopped`, `discoverError`, and the prompt frame
+`discoverPromptState`; it never sends `activity`, `question`,
 `error`, `runStarted`, or `runStopped` for Discover. `discoverState` keeps the active and interrupt
 flags, staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
 repository links for installed packages, glossaries, per-concept usage and examples measured from
@@ -884,7 +881,7 @@ the host's documentation and source, `glossarySignificance` keyed by bounded con
 concept id with `{ score, reason }` values, decisions, and every published skill with baseline
 text, live text, hashes, and state. It adds `activeAgent`, `runningAll`, and `agents`: the six cards
 in sidebar order with `id`, `label`, `command`, `state`, `startedAt`, `endedAt`, `error`, and
-`prompt` (`{ agent, editable, text, error }`).
+`prompt` (`{ agent, text, error }`).
 `discoverQuestion`, `discoverActivity`, and `discoverStopped` carry `agent`; a question also
 carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
 
@@ -912,7 +909,7 @@ files are never overwritten.
 Artifacts live only under the host: `.omp/discover/manifest.json`, `.omp/discover/sheet.json`,
 `.omp/discover/decisions.json`, `.omp/discover/significance.json`,
 `.omp/discover/glossary/<bounded-context>.glossary.yaml`,
-`.omp/discover/skills/<skill>/SKILL.md` for the generated baselines, and the live, editable
+`.omp/discover/skills/<skill>/SKILL.md` for the generated baselines, and the live
 `.omp/skills/<skill>/SKILL.md`. Staging mirrors only the triggered agent's relative layout without
 `manifest.json` or `decisions.json`, and the staged sheet omits freshness. The manifest carries a
 schema version, the discovery fingerprint, the publication time, the run id, the sheet's structural
@@ -1103,30 +1100,21 @@ rules, and the proposal process. From the host
 root, a new `omp` session lists the five (`omp skill list`) and loads their bodies as skills, so
 every implementation agent in that host discovers the set with no extra configuration.
 
-Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
-(`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The page header
-holds only the skill's page title. The editor panel header is one 30px row: the skill's relative
-path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on the
-leading edge, and the 11px draft state (`No unsaved changes`, `Unsaved changes`, or `Live file
-missing`) starts the trailing action group. `discover-skill-save` is the filled primary only
-while the draft differs from the live text and a disabled `secondary` otherwise; it stays
-disabled while the live file is missing. While the live text differs from the generated version
-or the file is missing, `discover-skill-restore` is an outline control, and it becomes the filled
-primary as `Recreate generated version` when the live file is missing. A
-`discover-skill-dirty` marker replaces the clean state word while the draft has unsaved changes;
-the page renders no state badge and no purpose line, because the sidebar already flags `edited`
-or `missing`.
-`saveDiscoverSkill` writes the submitted bytes verbatim and updates the manifest's current hash and
-edited state; it is refused with one
-`discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
-no longer matches the directory, the description is empty or too long, or a marker was removed,
-and invalid text leaves the previous file byte-identical. `restoreDiscoverSkill` copies the current
-generated version over the live skill, recreating it when it was deleted; it spawns no agent. A
-later run compares each live hash with its last baseline: an unedited skill is replaced,
-an edited skill is preserved byte for byte with its new baseline published beside it, and a skill
-the developer deleted is not recreated but shows the `Recreate generated version` action. A
-generated name colliding with a prepare-family, unmanaged, or different Discover skill fails the
-run and publishes nothing.
+Each skill has a page that shows the whole `SKILL.md` as read-only text
+(`data-testid="discover-skill-text"`), with no rendered preview, no split pane, and no editor. The
+page header holds only the skill's page title. The panel header is one 44px row: the skill's
+relative path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on
+the leading edge, and `data-testid="discover-skill-status"` names `generated`, `edited`, or
+`Live file missing`. The page renders no `discover-skill-save`, `discover-skill-restore`, or
+`discover-skill-dirty`, and no state badge or purpose line, because the sidebar already flags
+`edited` or `missing`. The text is the live file when it exists and the generated baseline while
+it is missing.
+
+A later run compares each live hash with its last baseline: an unedited skill is replaced, an
+edited skill is preserved byte for byte with its new baseline published beside it, and a skill
+the developer deleted is not recreated but shows `Live file missing`. A generated name colliding
+with a prepare-family, unmanaged, or different Discover skill fails the run and publishes
+nothing.
 
 The goal lifecycle's skill prerequisite accepts a managed skill from either family: at least one
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`
@@ -1138,7 +1126,7 @@ own family, and its contradiction review covers its family plus hand-authored un
 a project-specific Discover directive cannot fail a project-agnostic preparation. Discover's
 generated baselines must agree with each other and with the glossary; a contradiction there fails
 the run, while a contradiction introduced by a developer's skill edit is a non-blocking warning in
-the skill editor and never discards the edit.
+the read-only skill view and never changes the file.
 
 The sheet and every glossary are canonicalized before publication: fixed schema key order, arrays
 sorted by stable identity, evidence sorted and de-duplicated, and enums in fixed spelling. The
@@ -1169,7 +1157,7 @@ and configuration names may be recorded, but their values, tokens, credentials, 
 URLs with user info are never copied into an artifact.
 
 A discovery run is active work. While one agent or Run all runs, `startRun`, `startLifecycle`,
-`resumeLifecycle`, `saveGoal`, `reviseGoal`, `createGoal`, `prepareSkills`, every Flow start, and a
+`resumeLifecycle`, `reviseGoal`, `createGoal`, `prepareSkills`, every Flow start, and a
 second `discoverAgent` or `discoverProject` are refused with one error naming the active run and
 spawn no peer; view and tab switching, read-only commands, and `resetImplementation` stay
 available. While any Goal or Flow work is active, a discovery start is refused with one
@@ -1311,13 +1299,13 @@ or stopped trigger publishes nothing, that a host with no prior artifacts can pu
 slice, that Run all starts the six in the stated order and halts at the first failure without
 starting later agents, that a second start while one runs is refused, and that neither stop nor a
 failure rewrites a published artifact. `server/agents/prompt.test.ts` proves the six prompt
-snapshots, the chat proposal that changes the editor without writing, a save that writes exactly
-one prompt file, and the installed-host refusal. `verify:discover` builds the client, seeds source
-and installed fixture hosts, and drives headless Chrome through the Discovery group, each card's
-command and editor bytes, all six independent triggers with a byte-level check of the fixture
-`.omp` tree, the one-at-a-time refusal, Run all order and stop at the first seeded failure, prompt
-chat/save, and the installed host's refused save. `DISCOVER_VERIFY_ONLY=<scenario>` narrows a pass
-to the named scenarios and `DISCOVER_VERIFY_KEEP=1` keeps its fixtures under `.devboard/.tmp`.
+snapshots carry bytes and no `editable` field in both a source fixture and an installed fixture.
+`verify:discover` builds the client, seeds source and installed fixture hosts, and drives headless
+Chrome through the Discovery group, each card's read-only prompt bytes, all six independent
+triggers with a byte-level check of the fixture `.omp` tree, the one-at-a-time refusal, Run all
+order and stop at the first seeded failure, the read-only skill page, and the installed host's
+refusal of the removed save. `DISCOVER_VERIFY_ONLY=<scenario>` narrows a pass to the named
+scenarios and `DISCOVER_VERIFY_KEEP=1` keeps its fixtures under `.devboard/.tmp`.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
@@ -1577,12 +1565,10 @@ queue.
 Browser-to-backend state and controls use the WebSocket from
 `adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
 `refreshAgent`, `startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's
-`disableAgentTimer`; each carries `id`. The prompt surface adds `getAgentPrompt`,
-`saveAgentPrompt`, and `sendAgentPromptChat`, each carrying `id`. The server answers
-`agentsState` (all agents), `agentState` (one), and `agentPromptState` (one agent's prompt
-section), streams each activity-panel agent's activity as `agentActivity` with its agent id,
-streams one prompt chat as `agentPromptChat`, and refuses an unknown id with an error naming it
-before spawning anything.
+`disableAgentTimer`; each carries `id`. The prompt surface adds `getAgentPrompt`, carrying `id`.
+The server answers `agentsState` (all agents), `agentState` (one), and `agentPromptState` (one
+agent's prompt section), streams each activity-panel agent's activity as `agentActivity` with its
+agent id, and refuses an unknown id with an error naming it before spawning anything.
 `scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
 `GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.
@@ -1590,39 +1576,24 @@ the same Watchdog snapshot through the agent store.
 ### Prompt
 
 Directly below `agent-header`, before the alert region and `agent-main`, every background-agent
-page renders one prompt section `data-testid="agent-prompt"`. It is a `<details>` disclosure: closed
-on every page load, naming its summary `Prompt` (`agent-prompt-summary`), with all of its content
-(`agent-prompt-body`) hidden until the operator opens it. A reload, tab restore, or reconnect
-renders it closed again; opening it changes no file and no agent state. It is a read-only view in
-an installed host and never writes on a page open, tab restore, reconnect, or reload.
+page renders one prompt section `data-testid="agent-prompt"`. It is a `<details>` disclosure:
+closed on every page load, naming its summary `Prompt` (`agent-prompt-summary`), with all of its
+content (`agent-prompt-body`) hidden until the operator opens it. A reload, tab restore, or
+reconnect renders it closed again; opening it changes no file and no agent state.
 
 Auto Scout and Design System read the effective prompt file their worker command opens:
-`.devboard/prompts/scout-recommendations.md` and `.devboard/prompts/design-system.md`. The Watchdog
-section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no prompt. The
-Coach section contains it too, naming that Coach assembles its prompt from each cycle's findings.
-Both render no other prompt test id, and a prompt command for either is refused with that same
-descriptor statement and has no effect.
+`.devboard/prompts/scout-recommendations.md` and `.devboard/prompts/design-system.md`. The bytes
+are shown complete in the scrollable monospace region `data-testid="agent-prompt-text"`, and are
+identical in a harness source checkout and an installed host. The Watchdog section contains
+`agent-prompt-absent`, naming that Watchdog runs no agent and has no prompt. The Coach section
+contains it too, naming that Coach assembles its prompt from each cycle's findings. Neither renders
+`agent-prompt-text`.
 
-When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections render
-`agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
-`agent-prompt-chat-log` (present only once the chat has a turn), `agent-prompt-message`,
-`agent-prompt-send`, and `agent-prompt-save`. In every other host those three controls are absent
-and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action
-requires a harness source checkout; no file changes.
-
-`agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
-served checkout, adds nothing, strips nothing, and writes no other file; success shows
-`agent-prompt-notice` and leaves the editor on the saved bytes, and failure shows
-`agent-prompt-error` with the file unchanged. The notice names the run that reads the file next:
-the next scan for Auto Scout and the next cycle for Design System. Only that click writes the file.
-A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
-proposed complete prompt in the editor without any copy; it writes no file, creates no scan, files
-no issue, and changes no agent state. A failed turn shows `agent-prompt-chat-error` and leaves the
-editor and file untouched. The chat agent reads the descriptor's chat instructions:
-`prompts/agent-prompt-chat.md` for Auto Scout and `prompts/design-prompt-chat.md` for Design
-System, each naming its own target file and contract, and returns the replacement between the
-line-anchored `<prompt-file>` and `</prompt-file>` markers, so Markdown fences inside the prompt
-survive intact.
+No page renders `agent-prompt-editor`, `agent-prompt-save`, `agent-prompt-chat`,
+`agent-prompt-chat-log`, `agent-prompt-message`, `agent-prompt-send`, `agent-prompt-chat-error`,
+`agent-prompt-notice`, or a reset control, and no prompt payload carries an `editable` field. A
+prompt read failure shows `agent-prompt-error` and leaves the bytes empty. Prompts change only
+through an agent or a direct file edit, never through the dashboard.
 
 ### Cadence and limits
 
@@ -1670,8 +1641,8 @@ newest 100 run directories.
 
 Design System is the `design` descriptor. Its sidebar entry `open-devboard-design` opens the shared
 `agent-page` with `data-agent="design"` and `design-activity`. Its prompt section shows
-`.devboard/prompts/design-system.md`, the file the `/design-system-audit` command reads; in a
-harness source checkout it is editable and chat-backed exactly like the Auto Scout prompt. While
+`.devboard/prompts/design-system.md`, the file the `/design-system-audit` command reads, as
+read-only bytes exactly like the Auto Scout prompt. While
 started, it audits the interface source `<REPO_DIR>/.devboard/client` (`.svelte`, `.css`, `.ts`,
 and the harness `index.html` entry) against the repository-relative documents `DESIGN.md` and
 `design/tokens.json` (overridable with `DESIGN_SOURCE_DIR`, `DESIGN_DOCUMENT`, and
@@ -2766,7 +2737,7 @@ docker run --rm -d --name devboard-adr-ui -p 127.0.0.1:8080:8080 \
   -v "$PWD:/repo" devboard-adr-ui
 ```
 
-The container reads `/repo/adrs` and listens on port `8080`. The repository mount is writable because `Save goal` replaces `/repo/GOAL.md`; mount it read-only only if goal saving is not needed. Docker publishes the port on the host's loopback interface only. The container process binds `0.0.0.0` because Docker forwards published traffic to the container interface; the local-only access boundary is enforced by the `127.0.0.1` host publish.
+The container reads `/repo/adrs` and listens on port `8080`. The repository mount is writable because agent runs write their worktrees, goal documents, and Discover artifacts into `/repo`; the dashboard itself writes no document by hand. Docker publishes the port on the host's loopback interface only. The container process binds `0.0.0.0` because Docker forwards published traffic to the container interface; the local-only access boundary is enforced by the `127.0.0.1` host publish.
 
 ## WebSocket contract
 
@@ -2802,7 +2773,6 @@ The client sends:
 { "type": "disableAgentTimer", "id": "watchdog" }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
-{ "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "startRun" }
 { "type": "startRun", "file": "0002-example.md" }
 { "type": "startLifecycle" }
@@ -2911,10 +2881,8 @@ The client sends:
   if the acknowledgement was lost when the old process exited. With `"whenIdle": true`, a
   dashboard with active work answers `upgradePending` instead and restarts itself as soon as
   that work ends; an idle dashboard restarts immediately.
-- `saveGoal` replaces the goal document with `text` exactly as submitted and broadcasts a `goal`
-  frame carrying that text to every connected client; the saving client's own frame is its
-  confirmation. A write failure leaves the file unchanged and answers with an `error`. It is
-  accepted while the lifecycle is paused and refused while the lifecycle is advancing.
+- `getGoal` is the only goal-document read; no client command writes `GOAL.md` or a Flow
+  document. The creation and revision agents and the Flow goal interview write their own files.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then
   continues with the lowest-numbered remaining pending records.
@@ -2940,7 +2908,7 @@ The client sends:
   time per conversation, and events for a closed conversation are dropped. `closeAsk` closes the
   conversation and kills its peer; closing the socket closes every conversation it owned. See
   Report, remove, or redesign a UI element.
-- `reviseGoal` starts a guided goal revision with one ACP peer. `request` is optional free-form guidance passed to the agent; without it, the agent establishes the direction through its interview questions. The agent writes the goal document itself. Activity and questions use the existing `activity` and `question` events, and `answer` replies to a revision question exactly as it does to a run question. It is accepted while the lifecycle is paused, where the suspended lanes keep their tabs.
+- `reviseGoal` starts a guided goal revision with one ACP peer. The dashboard sends no guidance; a `request` from tooling is optional free-form guidance passed to the agent, and without it the agent establishes the direction through its interview questions. The agent writes the goal document itself. Activity and questions use the existing `activity` and `question` events, and `answer` replies to a revision question exactly as it does to a run question. It is accepted while the lifecycle is paused, where the suspended lanes keep their tabs.
 - A revision is refused with an `error` event while the lifecycle is advancing, a run or run
   sequence is active, a manual ADR sequence is active, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.
 - `createGoal` starts the guided goal creation with one ACP peer whose prompt is exactly
@@ -2948,8 +2916,7 @@ The client sends:
   developer. The server accepts it in every state: it replaces a goal document that already has
   content, and it preempts an in-flight creation or revision and stops an advancing ADR run,
   manual ADR sequence, or lifecycle before the new peer starts. It reads
-  `<REPO_DIR>/GOAL.md` before and after the peer, while `getGoal` and `saveGoal` keep using
-  `GOAL_FILE`. It is accepted while a lifecycle run is paused, where the suspended lanes keep
+  `<REPO_DIR>/GOAL.md` before and after the peer, while `getGoal` keeps using `GOAL_FILE`. It is accepted while a lifecycle run is paused, where the suspended lanes keep
   their tabs, and it stops a manual sequence running beside those lanes. Activity and
   questions use the existing `activity` and `question` events, and `answer` replies to a creation question
   exactly as it does to a revision question; a second answer for the same question id is refused
@@ -2981,7 +2948,7 @@ The client sends:
   event with `completed: false`. `getSkills` answers with the current managed set read from disk
   and sends `skillsState`; the client issues it on every connection, so the panel is rebuilt after
   a reload or restart instead of starting a run. While preparation is active, `startRun`,
-  `startLifecycle`, `resumeLifecycle`, `reviseGoal`, `saveGoal`, `createGoal`, and a second
+  `startLifecycle`, `resumeLifecycle`, `reviseGoal`, `createGoal`, and a second
   `prepareSkills` are each refused with an `error` and spawn no peer. `deleteSkill` (with `name`)
   removes exactly one installed managed skill of the prepare family from `<REPO_DIR>/.omp/skills/`,
   is accepted only while that directory is installed and no run, lifecycle, goal creation,
@@ -3001,7 +2968,7 @@ The client sends:
   the reset runs is bounded by `gitTimeoutMs` (60 seconds by default); an invocation past that
   deadline is killed, reports `error` with `git <verb> timed out after <ms>ms`, and settles the
   reset with `completed: false`, so a stalled push never keeps the reset guard active. While a reset
-  runs, `saveGoal`, `startRun`, `startLifecycle`, `pauseLifecycle`, `resumeLifecycle`,
+  runs, `startRun`, `startLifecycle`, `pauseLifecycle`, `resumeLifecycle`,
   `reviseGoal`, `createGoal`, `prepareSkills`, `answer`, and a second `resetImplementation`
   are each refused with an `error`; `listRecords`, `getGoal`, `getProject`, `getIssues`, `getIssuesRun`,
   and `getSkills` still answer. A client that connects during a reset receives `implementationResetStarted` before its own
@@ -3022,8 +2989,7 @@ The client sends:
   the next Start is accepted instead of waiting on the unfinished one. An answer that arrives
   after a stop or reset is ignored and changes no lane or stage. `startRun` is accepted and
   pauses every lane as described above, and the lifecycle resumes when the manual sequence ends.
-  `reviseGoal` and `saveGoal` are refused only while the lifecycle is
-  advancing.
+  `reviseGoal` is refused only while the lifecycle is advancing.
 - `stopLifecycle` ends an active run for real. It closes every live lane peer, aborts an
   in-flight tracker read so the start unwinds at once, reports the idle
   `lifecycleState` at `goal` with `work: null`, `paused: false`, and the pass already reached,
@@ -3206,7 +3172,7 @@ The server answers with events:
   `activity` line, and the pending `question` if one exists. The panel lists managed skills only
   and shows a contradiction list only when the review found one; the review itself covers every
   skill directory, managed or not.
-- The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file.
+- The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file. No browser command writes a goal, Flow, or skill document.
 - Skills preparation writes only under `<REPO_DIR>/.omp/skills/` and only through its ACP peer;
   the server deletes managed skill directories before the run and restores the snapshot after a
   failure. `runStopped` reports whether the active record is now resolved; a `records` event
@@ -3259,13 +3225,12 @@ page, Start -> starting -> running and Stop -> stopping -> stopped, cadence and 
 and persistence, the Watchdog cap, the shared table columns, freshness without a reload, no
 mutating command on reload, the timer-blocked state and one-click disable against a stub
 `systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
-detail and persisted settings, and the prompt section: every page renders `agent-prompt` directly
-after `agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach
-show `agent-prompt-absent`; an installed host is read-only and refuses a save with an error while
-its prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save
-for both file-backed agents, one chat turn streams a reply and changes the editor with the file
-untouched, Save makes each file byte-equal to its editor and a reload puts those bytes back in the
-editor.
+detail and persisted settings, and the read-only prompt section: every page renders `agent-prompt`
+directly after `agent-header`, closed on load; Auto Scout and Design System show the complete
+prompt bytes in `agent-prompt-text`; Watchdog and Coach show `agent-prompt-absent`; no page renders
+an editor, save, or chat test id; an installed fixture and a source-checkout fixture render the
+same bytes and both refuse the removed save as an unknown command, leaving `.devboard/prompts`
+byte-identical.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate
@@ -3308,8 +3273,8 @@ resolution in file-name order, selected first records, refusal of a second start
 and between runs, activity and question/answer relay, the unresolved-record stop, the
 removed-record stop, disconnect continuation, records refresh, and an idle restart deferred
 until the active run ends. `server/app.test.ts`
-covers `getGoal`/`saveGoal`, including verbatim writes, failure responses, and the absence of
-agent startup. `server/goal-revision.test.ts` covers guided goal revision: request and
+covers `getGoal`, the read error, the goal prompt payload without an `editable` field, and the
+absence of agent startup. `server/goal-revision.test.ts` covers guided goal revision: request and
 no-request starts, activity and question relay, the rewritten goal reported verbatim, refusal
 during lifecycle and record runs (including between records), refusals during a revision,
 reconnect replay, the unreadable-goal failure, and the absence of run events or ADR writes.
@@ -3380,7 +3345,7 @@ hook, refusal off `main`, without `origin`, outside the top level, with an unbor
 in-repo `STATE_DIR`, and with `STATE_DIR` equal to the repository root, during an active run, a
 rejecting pre-receive hook retaining the local commit, a commit failure
 retaining the staged deletion, mutating-command refusal during a reset, replay to a late client,
-and the post-reset empty records, goal text, `getGoal`, and `saveGoal` behavior.
+and the post-reset empty records, goal text, and `getGoal` behavior.
 `server/journal.test.ts` covers the dashboard journal: a real stub-agent run writes `activity`,
 `question`, `run-start`, and `run-stop` records with `ts`, `repo`, `port`, and `pid`; a write
 failure is reported without interrupting the run; rotation keeps every record; and pruning

@@ -198,7 +198,6 @@ export async function lifecycleControl(
 }
 
 const GOAL_ACTIONS = {
-  save: "saveGoal",
   create: "createGoal",
   revise: "reviseGoal",
   prepare_skills: "prepareSkills",
@@ -206,7 +205,6 @@ const GOAL_ACTIONS = {
 } as const;
 
 const GOAL_REPLIES: Record<string, string[]> = {
-  save: ["goal"],
   create: ["goalCreationStarted"],
   revise: ["goalRevisionStarted"],
   prepare_skills: ["skillsPreparationStarted", "skillsState"],
@@ -215,17 +213,13 @@ const GOAL_REPLIES: Record<string, string[]> = {
 
 export async function goalControl(
   context: McpContext,
-  options: { action?: unknown; text?: unknown; request?: unknown },
+  options: { action?: unknown; request?: unknown },
 ): Promise<{ action: string; goal: string; event: Record<string, unknown> }> {
   if (typeof options.action !== "string" || !(options.action in GOAL_ACTIONS)) {
-    throw new Error("action must be save, create, revise, prepare_skills, or reset_implementation.");
+    throw new Error("action must be create, revise, prepare_skills, or reset_implementation.");
   }
   const action = options.action as keyof typeof GOAL_ACTIONS;
   const command: Record<string, unknown> = { type: GOAL_ACTIONS[action] };
-  if (action === "save") {
-    if (typeof options.text !== "string") throw new Error("save needs text.");
-    command.text = options.text;
-  }
   if (action === "revise") {
     if (typeof options.request !== "string") throw new Error("revise needs a request.");
     command.request = options.request;
@@ -242,24 +236,19 @@ export async function goalControl(
 
 const FLOW_ACTIONS = {
   create_goal: "createFlowGoal",
-  save_goal: "saveFlowGoal",
   start_implementation: "startFlowImplementation",
   stop_implementation: "stopFlowImplementation",
 } as const;
 
 export async function flowControl(
   context: McpContext,
-  options: { action?: unknown; text?: unknown },
+  options: { action?: unknown },
 ): Promise<{ action: string; flow: Record<string, unknown> }> {
   if (typeof options.action !== "string" || !(options.action in FLOW_ACTIONS)) {
-    throw new Error("action must be create_goal, save_goal, start_implementation, or stop_implementation.");
+    throw new Error("action must be create_goal, start_implementation, or stop_implementation.");
   }
   const action = options.action as keyof typeof FLOW_ACTIONS;
   const command: Record<string, unknown> = { type: FLOW_ACTIONS[action] };
-  if (action === "save_goal") {
-    if (typeof options.text !== "string") throw new Error("save_goal needs text.");
-    command.text = options.text;
-  }
   const dashboard = selectDashboard(context.repoDir, { dashboards: context.dashboards });
   const reply = await dashboardCommand(
     dashboard,

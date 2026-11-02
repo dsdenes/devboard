@@ -1,6 +1,5 @@
 import { connection } from "./connection.svelte";
 import { notifications } from "./notifications.svelte";
-import { saveFeedback } from "./save-feedback.svelte";
 import type {
   AnswerTarget,
   FlowBlocker,
@@ -61,12 +60,6 @@ export class FlowStore {
   errorMessage = $state<string | null>(null);
   noticeMessage = $state<string | null>(null);
 
-  goalDraft = $state("");
-  goalDirty = $state(false);
-  private pendingGoalSave: string | null = null;
-  decisionsDraft = $state("");
-  decisionsDirty = $state(false);
-  private pendingDecisionsSave: string | null = null;
   steeringDraft = $state("");
   conversationDraft = $state("");
   conclusionDraft = $state("");
@@ -143,69 +136,6 @@ export class FlowStore {
     this.activity = message.activity;
     this.notice = message.notice;
     this.history = message.history;
-    if (this.pendingGoalSave !== null) {
-      // Only a snapshot carrying the sent text confirms the save. A refused
-      // save publishes the persisted goal instead, and replacing the draft
-      // then would silently discard the operator's unsaved edit.
-      if (message.goal === this.pendingGoalSave) {
-        this.goalDirty = false;
-        this.goalDraft = message.goal;
-        this.pendingGoalSave = null;
-        saveFeedback.saved("flow.goal", "Flow goal saved.");
-      }
-    } else if (!this.goalDirty) {
-      this.goalDraft = message.goal;
-    }
-    if (this.pendingDecisionsSave !== null) {
-      if (message.decisions === this.pendingDecisionsSave) {
-        this.decisionsDirty = false;
-        this.decisionsDraft = message.decisions;
-        this.pendingDecisionsSave = null;
-        saveFeedback.saved("flow.decisions", "Decision board saved.");
-      }
-    } else if (!this.decisionsDirty) {
-      this.decisionsDraft = message.decisions;
-    }
-  }
-
-  setGoalDraft(text: string): void {
-    this.goalDraft = text;
-    this.goalDirty = text !== this.goal;
-    // Editing past the sent text means the server's echo no longer describes
-    // the draft, so it must not clear the flag or replace the newer text.
-    if (this.pendingGoalSave !== null && text !== this.pendingGoalSave) {
-      this.pendingGoalSave = null;
-    }
-  }
-
-  setDecisionsDraft(text: string): void {
-    this.decisionsDraft = text;
-    this.decisionsDirty = text !== this.decisions;
-    if (this.pendingDecisionsSave !== null && text !== this.pendingDecisionsSave) {
-      this.pendingDecisionsSave = null;
-    }
-  }
-
-  /**
-   * Sends the draft and leaves it dirty: the server refuses a goal save while
-   * the implementation runs and answers with a `flowError` frame, so only a
-   * snapshot carrying the sent text may clear the flag.
-   */
-  saveGoal(): void {
-    if (!connection.send({ type: "saveFlowGoal", text: this.goalDraft })) return;
-    this.pendingGoalSave = this.goalDraft;
-  }
-
-  discardDecisionsDraft(): void {
-    this.decisionsDraft = this.decisions;
-    this.decisionsDirty = false;
-    this.pendingDecisionsSave = null;
-  }
-
-  /** Sends the board and leaves it dirty until the server's echo confirms it. */
-  saveDecisions(): void {
-    if (!connection.send({ type: "saveFlowDecisions", text: this.decisionsDraft })) return;
-    this.pendingDecisionsSave = this.decisionsDraft;
   }
 
   createGoal(): void {
@@ -322,9 +252,6 @@ export class FlowStore {
       this.goalCreation = null;
       if (message.completed === true && typeof message.text === "string") {
         this.goal = message.text;
-        this.goalDirty = false;
-        this.goalDraft = message.text;
-        this.pendingGoalSave = null;
       }
       return;
     }
@@ -402,17 +329,6 @@ export class FlowStore {
     }
     if (type === "flowDecisions" && typeof message.text === "string") {
       this.decisions = message.text;
-      if (
-        this.pendingDecisionsSave !== null &&
-        message.text === this.pendingDecisionsSave
-      ) {
-        this.decisionsDirty = false;
-        this.decisionsDraft = message.text;
-        this.pendingDecisionsSave = null;
-        saveFeedback.saved("flow.decisions", "Decision board saved.");
-      } else if (!this.decisionsDirty) {
-        this.decisionsDraft = message.text;
-      }
       return;
     }
     if (type === "flowCheckpoints" && Array.isArray(message.checkpoints)) {

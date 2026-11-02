@@ -2,9 +2,7 @@
   import { discoverAgent } from "../../../server/agents/registry";
   import { discover } from "../discover.svelte";
   import { relativeTime } from "../discover-format";
-  import SaveFeedback from "./SaveFeedback.svelte";
   import Button from "./ui/button.svelte";
-  import Input from "./ui/input.svelte";
 
   interface Props {
     agent: string;
@@ -16,52 +14,18 @@
   const descriptorLabel = $derived(descriptor?.label ?? agent);
   const card = $derived(discover.agent(agent));
   const prompt = $derived(discover.agentPrompt(agent));
-  const editable = $derived(prompt?.editable === true);
   const running = $derived(discover.active && discover.activeAgent === agent);
   const question = $derived(discover.agentQuestionOf(agent));
-  const chat = $derived(discover.promptChat[agent] ?? []);
-  const proposal = $derived(discover.promptProposal[agent] ?? null);
-  const promptError = $derived(discover.promptError[agent] ?? (prompt?.error ?? null));
-  const chatError = $derived(discover.promptChatError[agent] ?? null);
+  const promptError = $derived(prompt?.error ?? null);
   const status = $derived(card?.state ?? "idle");
   const startedAt = $derived(card?.startedAt ?? null);
   const endedAt = $derived(card?.endedAt ?? null);
-
-  let editor = $state("");
-  let lastText = $state<string | null>(null);
-  let message = $state("");
   let now = $state(Date.now());
-
-  // The editor adopts the file's bytes on first render and whenever the file
-  // changes elsewhere, but never replaces text the operator is editing.
-  $effect(() => {
-    const text = prompt?.text ?? null;
-    if (text === null) return;
-    if (lastText === text) return;
-    if (lastText === null || editor === lastText) editor = text;
-    lastText = text;
-  });
-
-  // A chat turn that proposes a replacement updates the editor directly; the
-  // file still changes only on Save.
-  $effect(() => {
-    const value = proposal;
-    if (value === null) return;
-    editor = value.text;
-    discover.consumeProposal(agent);
-  });
 
   $effect(() => {
     const timer = setInterval(() => (now = Date.now()), 15_000);
     return () => clearInterval(timer);
   });
-
-  function send(): void {
-    const text = message.trim();
-    if (text.length === 0 || !editable) return;
-    discover.sendPromptChat(agent, text, editor);
-    message = "";
-  }
 </script>
 
 {#if descriptor !== null}
@@ -165,12 +129,14 @@
       </section>
     {/if}
 
-    <section class="panel discover-agent__prompt" aria-label="Agent prompt">
+    <section
+      class="panel discover-agent__prompt"
+      data-testid="discover-agent-prompt"
+      aria-label="Agent prompt"
+    >
       <div class="panel__header">
         <h2 class="panel__title">Prompt</h2>
-        <span class="panel__subtitle">
-          {editable ? "Editable in this source checkout" : "Read-only here"}
-        </span>
+        <span class="panel__subtitle">Read-only</span>
       </div>
       <div class="panel__body stack-sm">
         {#if promptError !== null}
@@ -178,78 +144,29 @@
             {promptError}
           </p>
         {/if}
-        {#if editable}
-          <div class="discover-agent__prompt-editor">
-            <textarea
-              class="discover-agent__textarea mono"
-              data-testid="discover-agent-prompt-editor"
-              aria-label={`${descriptorLabel} prompt editor`}
-              spellcheck="false"
-              value={editor}
-              oninput={(event) => (editor = event.currentTarget.value)}
-            ></textarea>
-            <div class="discover-agent__prompt-actions">
-              <Button
-                variant="secondary"
-                data-testid="discover-agent-prompt-save"
-                data-command={`discover.prompt.save.${agent}`}
-                onclick={() => discover.savePrompt(agent, editor)}
-              >
-                Save prompt
-              </Button>
-              <SaveFeedback scope={`discover.prompt.${agent}`} />
-            </div>
-          </div>
-
-          <section class="discover-agent__chat" aria-label="Prompt chat">
-            {#if chat.length > 0}
-              <div
-                class="discover-agent__chat-log"
-                data-testid="discover-agent-prompt-chat-log"
-                role="log"
-              >
-                {#each chat as entry, index (index)}
-                  <div class="discover-agent__chat-entry" data-role={entry.role}>
-                    <span class="discover-agent__chat-role">{entry.role}</span>
-                    <span class="discover-agent__chat-text">{entry.text}</span>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-            {#if chatError !== null}
-              <p
-                class="message"
-                data-severity="error"
-                data-testid="discover-agent-prompt-chat-error"
-                role="alert"
-              >
-                {chatError}
-              </p>
-            {/if}
-            <div class="discover-agent__chat-input">
-              <Input
-                data-testid="discover-agent-prompt-message"
-                placeholder="Describe the prompt change you want"
-                value={message}
-                oninput={(event) => (message = event.currentTarget.value)}
-                onkeydown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    send();
-                  }
-                }}
-              />
-              <Button
-                variant="secondary"
-                data-testid="discover-agent-prompt-send"
-                onclick={send}
-              >
-                Send
-              </Button>
-            </div>
-          </section>
+        {#if prompt === null}
+          <p class="muted">Loading the prompt…</p>
+        {:else}
+          <pre class="discover-agent__prompt-text mono" data-testid="discover-agent-prompt-text" aria-label={`${descriptorLabel} prompt`}>{prompt.text ?? ""}</pre>
         {/if}
       </div>
     </section>
   </div>
 {/if}
+
+<style>
+  .discover-agent__prompt-text {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    flex: 1;
+    font-size: 11px;
+    line-height: 1.45;
+    margin: 0;
+    max-height: 420px;
+    min-height: 0;
+    overflow: auto;
+    padding: 8px;
+    white-space: pre;
+  }
+</style>

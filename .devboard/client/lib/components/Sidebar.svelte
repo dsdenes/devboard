@@ -95,9 +95,6 @@
             open("goal", "goal-document", "goal-document", "goal-document", "Goal document")}
         >
           <span class="sidebar-item__label">Goal document</span>
-          {#if goal.goalDirty}
-            <span class="badge" data-tone="warning">unsaved</span>
-          {/if}
         </button>
         <button
           type="button"
@@ -371,9 +368,6 @@
           onclick={() => open("flow", "overview", "overview", "overview", "Overview")}
         >
           <span class="sidebar-item__label">Overview</span>
-          {#if flow.goalDirty}
-            <span class="badge" data-tone="warning">unsaved</span>
-          {/if}
           {#if flow.status !== "none"}
             <span class="badge" data-tone={statusTone(flow.status)}>
               {flow.status}
@@ -388,9 +382,6 @@
           onclick={() => open("flow", "decisions", "decisions", "decisions", "Decision board")}
         >
           <span class="sidebar-item__label">Decision board</span>
-          {#if flow.decisionsDirty}
-            <span class="badge" data-tone="warning">unsaved</span>
-          {/if}
         </button>
         <button
           type="button"
