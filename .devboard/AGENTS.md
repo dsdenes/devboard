@@ -34,6 +34,10 @@ This checkout builds and releases the harness; hosts run an installed copy.
   authority. The canonical Gitea release is a fallback record, not a second package.
 - Fix the harness here, then release it. An installed host picks the release up on its own; do
   not edit an installed package in a host by hand.
+- This checkout runs omp against its tracked `.omp/` mirror, and no install or update path
+  refreshes it. Change `.devboard/omp/`, run `install.sh`, and commit both trees together;
+  `bun test` fails when the mirror is missing a file, differs, or still carries a wrapper the
+  canonical tree dropped.
 
 ## Install, update, and reload
 
