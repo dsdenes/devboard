@@ -10677,14 +10677,26 @@ try {
       `the ${id} page does not render the shared bar`,
       bar,
     );
-    check(
-      await page.eval<boolean>(`(() => {
+    const control = await page.eval<{ testIds: string[]; starts: number }>(`(() => {
         const bar = document.querySelector('#workspace-devboard [data-testid="agent-activity-bar"]');
         const control = bar?.querySelector('[data-testid="agent-activity-control"]');
-        const starts = document.querySelectorAll('#workspace-devboard [data-testid="agent-start"]').length;
-        return control?.querySelector('[data-testid="agent-start"]') !== null && starts === 1;
-      })()`),
+        return {
+          testIds: [...(control?.querySelectorAll('button') ?? [])].map(
+            (button) => button.getAttribute('data-testid') ?? '',
+          ),
+          starts: document.querySelectorAll('#workspace-devboard [data-testid="agent-start"]').length,
+        };
+      })()`);
+    check(
+      control.testIds.length === 1 &&
+        (control.testIds[0] === "agent-start" || control.testIds[0] === "agent-stop"),
+      `the ${id} activity bar control is not exactly Start or Stop`,
+      control,
+    );
+    check(
+      control.testIds[0] !== "agent-start" || control.starts === 1,
       `the ${id} Start control is outside the activity bar`,
+      control,
     );
     check(
       await page.eval<boolean>(

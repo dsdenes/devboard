@@ -249,11 +249,6 @@ export interface AgentDescriptor {
     panel: "activity" | "cycles";
     testId: "agent-detail";
   };
-  /** Extra shared controls a family answers beyond Start and Stop. */
-  controls?: {
-    pause?: true;
-    checkNow?: true;
-  };
   /** A released documentation list rendered above the filed issues table. */
   documentation?: {
     testId: "agent-documentation";
@@ -393,14 +388,6 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     descriptor.detail.testId !== "agent-detail"
   ) {
     throw new AgentRegistryError(`${id}: detail must declare the shared panel`);
-  }
-  if (
-    descriptor.controls !== undefined &&
-    (!isRecord(descriptor.controls) ||
-      (descriptor.controls.pause !== undefined && descriptor.controls.pause !== true) ||
-      (descriptor.controls.checkNow !== undefined && descriptor.controls.checkNow !== true))
-  ) {
-    throw new AgentRegistryError(`${id}: controls must be the shared pause and check-now flags`);
   }
   if (
     descriptor.documentation !== undefined &&
@@ -868,7 +855,6 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     issues: SHARED_ISSUES,
     detail: { panel: "activity", testId: "agent-detail" },
     releases: { testId: "agent-releases" },
-    controls: { pause: true, checkNow: true },
     tab: { id: "release-train", kind: "release-train", title: "Release Train" },
   }),
 ]);

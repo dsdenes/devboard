@@ -316,7 +316,6 @@ describe("Release Train family", () => {
       stop: "stopAgent",
       setSettings: "setAgentSettings",
     });
-    expect(descriptor.controls).toEqual({ pause: true, checkNow: true });
     expect(DEFAULT_INTERVAL_MINUTES).toBe(10);
   });
 

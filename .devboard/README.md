@@ -781,8 +781,8 @@ state, and the Overview's poll line keeps reporting whichever attached worker po
 automatic drain is never shown as an operator Pause. Every running Overview row, Agents card, and run detail names the harness version of the worker
 that owns that run: the label comes from the run record, backed by the owning worker's live lock while it is
 live, never from the dashboard's own version, and the older version stays named in history after
-its worker retires. Start launches the newest installed version when no worker is live; Pause,
-Resume, Check now, Stop, and settings apply to every live worker of the family. With no worker
+its worker retires. Start launches the newest installed version when no worker is live; every
+control a family's own page offers applies to every live worker of that family. With no worker
 live, installing a newer version starts none. A worker or run started by a version that predates
 this mechanism has no drain command; it is never killed mid-unit, and the dashboard's own drain
 marker still distinguishes its automatic drain from a manual Pause.
@@ -1796,7 +1796,7 @@ component that dispatches it.
   An unreadable remote, tag, or commit read records a failure and starts no agent.
 - The gate starts exactly one `omp acp` release agent only for a non-empty range and hands it the
   whole range. At most one run exists per repository: a second worker of the same harness version
-  refuses to start, and a tick or Check now during an active run starts nothing.
+  refuses to start, and a cadence tick during an active run starts nothing.
 - One run batches every non-merge commit since the newest tag into one release. The runner on the
   repository's registered Gitea `act_runner` — never a hosted runner and never a fallback — builds
   the client, runs the harness suite and typecheck, packs the complete public package, publishes

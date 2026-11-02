@@ -1812,6 +1812,23 @@ try {
   );
   assertTrue(await present(devtools, "agent-stop"), "Stop is not rendered while running");
   assertTrue(!(await present(devtools, "agent-start")), "Start is still rendered while running");
+  const runningControls = (await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const control = page?.querySelector('[data-testid="agent-activity-control"]');
+    return {
+      testIds: [...(control?.querySelectorAll('button') ?? [])].map(
+        (button) => button.getAttribute('data-testid') ?? '',
+      ),
+      extras: [...(page?.querySelectorAll(
+        '[data-testid="agent-check-now"], [data-testid="agent-pause"], [data-testid="agent-resume"]',
+      ) ?? [])].length,
+    };
+  })()`)) as { testIds: string[]; extras: number };
+  assertTrue(
+    JSON.stringify(runningControls.testIds) === JSON.stringify(["agent-stop"]) &&
+      runningControls.extras === 0,
+    `the running activity bar control is not exactly Stop: ${JSON.stringify(runningControls)}`,
+  );
   await click(devtools, "agent-stop");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
