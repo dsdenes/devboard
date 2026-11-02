@@ -423,7 +423,7 @@ interface FlowGoalMeasure {
   cancel: boolean;
   createActions: number;
   state: string;
-  sessionTop: number;
+  nextTop: number;
   viewportHeight: number;
   error: boolean;
   onboarding: {
@@ -440,10 +440,10 @@ async function measureFlowGoal(page: Page): Promise<FlowGoalMeasure> {
     const goal = document.querySelector('#workspace-flow [data-testid="flow-goal"]');
     const overview = document.querySelector('#workspace-flow .flow-overview');
     const card = document.querySelector('[data-testid="flow-goal-onboarding"]');
-    const session = document.querySelector('#workspace-flow [data-testid="flow-session"]');
+    const next = document.querySelector('#workspace-flow [data-testid="flow-pr-section"]');
     const goalBox = goal?.getBoundingClientRect();
     const pageBox = overview?.getBoundingClientRect();
-    const sessionBox = session?.getBoundingClientRect();
+    const nextBox = next?.getBoundingClientRect();
     return {
       goalHeight: Math.round(goalBox?.height ?? -1),
       pageHeight: Math.round(pageBox?.height ?? -1),
@@ -454,7 +454,7 @@ async function measureFlowGoal(page: Page): Promise<FlowGoalMeasure> {
       cancel: document.querySelector('[data-testid="cancel-flow-goal"]') !== null,
       createActions: document.querySelectorAll('#workspace-flow [data-testid="create-flow-goal"]').length,
       state: document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() ?? "",
-      sessionTop: Math.round(sessionBox?.top ?? -1),
+      nextTop: Math.round(nextBox?.top ?? -1),
       viewportHeight: innerHeight,
       error: document.querySelector('[data-testid="flow-error"]') !== null,
       onboarding: card === null
@@ -3633,7 +3633,11 @@ try {
   check(emptyLight.createActions === 1, "the no-goal header does not hold exactly one Create action", emptyLight);
   check(emptyLight.minHeight !== "360px", "the no-goal panel still carries the 360px minimum", emptyLight);
   check(emptyLight.goalHeight * 2 < emptyLight.pageHeight, "the no-goal panel is not under half its page", emptyLight);
-  check(emptyLight.sessionTop < emptyLight.viewportHeight, "the Session panel starts below the fold", emptyLight);
+  check(
+    emptyLight.nextTop < emptyLight.viewportHeight,
+    "the content after the goal starts below the fold",
+    emptyLight,
+  );
   check(
     emptyLight.onboarding!.scrollWidth <= emptyLight.onboarding!.clientWidth + 1,
     "the onboarding card overflows horizontally in the light theme",
@@ -3718,7 +3722,6 @@ try {
   const flowSurfaces = await page.eval<Record<string, boolean>>(`(() => {
     const has = (testid) => document.querySelector('[data-testid="' + testid + '"]') !== null;
     return {
-      session: has("flow-session"),
       pr: has("flow-pr-section"),
       widgets: has("flow-widgets-section"),
       files: has("flow-files-section"),
