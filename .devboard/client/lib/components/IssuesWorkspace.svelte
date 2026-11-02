@@ -258,6 +258,7 @@
         <div class="panel__body panel__body--flush">
           <ol class="issues-agent-summary" data-testid="issues-agent-summary">
             {#each agents as agent (agent.runId)}
+              {@const issueHref = issueUrl(agent.issueNumber)}
               <li class="issues-agent-summary__item">
                 <div
                   class="issues-agent-row"
@@ -266,16 +267,22 @@
                   title={issueTitle(agent.issueNumber)}
                   aria-current={selectedAgent?.runId === agent.runId}
                 >
-                  <a
-                    class="issues-agent-row__issue mono"
-                    data-testid="issues-agent-row-issue"
-                    href={issueUrl(agent.issueNumber)}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label={`Open issue #${agent.issueNumber}: ${issueTitle(agent.issueNumber)}`}
-                  >
-                    #{agent.issueNumber}
-                  </a>
+                  {#if issueHref}
+                    <a
+                      class="issues-agent-row__issue mono"
+                      data-testid="issues-agent-row-issue"
+                      href={issueHref}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Open issue #${agent.issueNumber}: ${issueTitle(agent.issueNumber)}`}
+                    >
+                      #{agent.issueNumber}
+                    </a>
+                  {:else}
+                    <span class="issues-agent-row__issue mono" data-testid="issues-agent-row-issue">
+                      #{agent.issueNumber}
+                    </span>
+                  {/if}
                   <Button
                     bare
                     class="issues-agent-row__open"
@@ -426,6 +433,7 @@
         {#each agents as agent (agent.runId)}
           {@const status = issues.statusFor(agent.runId)}
           {@const title = issueTitle(agent.issueNumber)}
+          {@const issueHref = issueUrl(agent.issueNumber)}
           <article
             class="issues-agent"
             data-testid="issues-agent"
@@ -436,15 +444,19 @@
             aria-labelledby={`issues-agent-title-${agent.issueNumber}`}
           >
             <header class="issues-agent__head">
-              <a
-                class="issues-agent__issue mono"
-                href={issueUrl(agent.issueNumber)}
-                target="_blank"
-                rel="noreferrer"
-                aria-label={`Open issue #${agent.issueNumber}: ${title}`}
-              >
-                #{agent.issueNumber}
-              </a>
+              {#if issueHref}
+                <a
+                  class="issues-agent__issue mono"
+                  href={issueHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Open issue #${agent.issueNumber}: ${title}`}
+                >
+                  #{agent.issueNumber}
+                </a>
+              {:else}
+                <span class="issues-agent__issue mono">#{agent.issueNumber}</span>
+              {/if}
               <Button
                 variant="outline"
                 data-testid="issues-agent-open"

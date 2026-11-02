@@ -3154,7 +3154,8 @@ renders `data-testid="issues-agents-empty"` and an `Open Overview` control
 The grid `data-testid="issues-agents"` holds one card per running agent, sorted by issue number
 ascending. Each card has `data-testid="issues-agent"`, `data-issue`, `data-run`, `data-status`, and
 `data-asked` while its agent waits for an answer; its head shows the issue number linked to its
-tracker URL and the `Focus` control, and it does not repeat the fleet's status or waiting state as
+tracker URL while the queue lists the issue and as plain text without an `href` otherwise, plus
+the `Focus` control, and it does not repeat the fleet's status or waiting state as
 a badge. Below it the issue title reserves two lines, then one compact elapsed and started-time
 line whose tooltip carries the exact timestamp. Cards in one grid row share a height. The run id
 appears in the Focus tab, not on the card. Every card renders its agent's full streamed output in
@@ -3193,7 +3194,8 @@ panel and, directly after it, the running agents in
 sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
 The row's issue number is a tracker link (`data-testid="issues-agent-row-issue"`, opening the
-issue URL from the queue in a new tab) next to a control that selects the agent's output.
+issue URL from the queue in a new tab) while the queue lists the issue and plain text without an
+`href` once it does not, next to a control that selects the agent's output.
 The running-agent panel header carries an aggregate `data-testid="issues-overview-asking"` warning
 badge (`<n> needs answer` or `<n> need answers`) only while at least one agent waits; the fleet
 count is not repeated in that header because the Automation panel states it.

@@ -765,6 +765,7 @@ async function seedIssuesState(
   host: string,
   lifecycle: "stopped" | "idle" | "running" | "paused" | "failed",
   answeredRunId?: string,
+  missingQueueIssue?: number,
 ): Promise<void> {
   const directory = join(stateDir, "issues", journalKey(host));
   await mkdir(join(directory, "runs"), { recursive: true });
@@ -831,7 +832,7 @@ async function seedIssuesState(
           runId: null,
           agentRunId: null,
         })),
-      ]
+      ].filter((issue) => issue.number !== missingQueueIssue)
     : [];
   const runs = enabled
     ? [
@@ -8473,6 +8474,115 @@ try {
   check(
     await page.eval<number>(`document.querySelectorAll('[data-testid="issues-question"]').length`) === 0,
     "the Agents page renders a singular question",
+  );
+
+  // An agent whose issue left the queue — the row's own Close control produces
+  // that state — renders its number as plain text instead of a self-link.
+  await seedIssuesState(stateDir, host, "running", undefined, 18);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agent"][data-issue="18"] .issues-agent__issue')?.tagName === "SPAN"`,
+    "the Agents card of an issue missing from the queue",
+    8_000,
+  );
+  const missingCard = await page.eval<{
+    tag: string;
+    href: string | null;
+    text: string;
+    insideLink: boolean;
+    others: Array<{ issue: string; tag: string; href: string | null }>;
+  }>(`(() => {
+    const numbers = [...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => {
+      const number = card.querySelector(".issues-agent__issue");
+      return {
+        issue: card.getAttribute("data-issue") ?? "",
+        tag: number?.tagName ?? "",
+        href: number?.getAttribute("href") ?? null,
+      };
+    });
+    const missing = document.querySelector('[data-testid="issues-agent"][data-issue="18"] .issues-agent__issue');
+    return {
+      tag: numbers.find((entry) => entry.issue === "18")?.tag ?? "",
+      href: numbers.find((entry) => entry.issue === "18")?.href ?? null,
+      text: missing?.textContent?.trim() ?? "",
+      insideLink: missing?.closest("a") !== null,
+      others: numbers.filter((entry) => entry.issue !== "18"),
+    };
+  })()`);
+  check(
+    missingCard.tag === "SPAN" && missingCard.href === null && !missingCard.insideLink,
+    "an agent card links an issue missing from the queue",
+    missingCard,
+  );
+  check(missingCard.text === "#18", "an agent card lost the number of a missing issue", missingCard);
+  check(
+    missingCard.others.length === 2 &&
+      missingCard.others.every(
+        (entry) =>
+          entry.tag === "A" && entry.href === `https://github.com/fixture/host/issues/${entry.issue}`,
+      ),
+    "a queued issue lost its agent-card link",
+    missingCard.others,
+  );
+
+  await runPalette("open.issues.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agent-summary"] [data-issue="18"] .issues-agent-row__issue')?.tagName === "SPAN"`,
+    "the Overview row of an issue missing from the queue",
+    8_000,
+  );
+  const missingRow = await page.eval<{
+    tag: string;
+    href: string | null;
+    text: string;
+    insideLink: boolean;
+    others: Array<{ issue: string; tag: string; href: string | null }>;
+  }>(`(() => {
+    const numbers = [...document.querySelectorAll('[data-testid="issues-agent-summary"] .issues-agent-row')].map((row) => {
+      const number = row.querySelector(".issues-agent-row__issue");
+      return {
+        issue: row.getAttribute("data-issue") ?? "",
+        tag: number?.tagName ?? "",
+        href: number?.getAttribute("href") ?? null,
+      };
+    });
+    const missing = document.querySelector('[data-testid="issues-agent-summary"] [data-issue="18"] .issues-agent-row__issue');
+    return {
+      tag: numbers.find((entry) => entry.issue === "18")?.tag ?? "",
+      href: numbers.find((entry) => entry.issue === "18")?.href ?? null,
+      text: missing?.textContent?.trim() ?? "",
+      insideLink: missing?.closest("a") !== null,
+      others: numbers.filter((entry) => entry.issue !== "18"),
+    };
+  })()`);
+  check(
+    missingRow.tag === "SPAN" && missingRow.href === null && !missingRow.insideLink,
+    "an Overview row links an issue missing from the queue",
+    missingRow,
+  );
+  check(missingRow.text === "#18", "an Overview row lost the number of a missing issue", missingRow);
+  check(
+    missingRow.others.length === 2 &&
+      missingRow.others.every(
+        (entry) =>
+          entry.tag === "A" && entry.href === `https://github.com/fixture/host/issues/${entry.issue}`,
+      ),
+    "a queued issue lost its Overview-row link",
+    missingRow.others,
+  );
+
+  await runPalette("open.issues.agents");
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-agent"]').length === 3`,
+    "the Agents page after the missing-link check",
+    8_000,
+  );
+  await seedIssuesState(stateDir, host, "running");
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="issues-agent"] .issues-agent__issue')].every(
+       (number) => number.tagName === "A" &&
+         (number.getAttribute("href") ?? "").startsWith("https://github.com/fixture/host/issues/"))`,
+    "the card links after the queue recovered",
+    8_000,
   );
 
   // An answer carries its run id and clears only that agent's question.

@@ -3646,14 +3646,18 @@ a.code-chip--link:focus-visible {
   min-height: 28px;
 }
 
-.issues-agent__issue {
+a.issues-agent__issue {
   color: var(--accent);
   font-weight: 600;
   text-decoration: none;
 }
 
-.issues-agent__issue:hover {
+a.issues-agent__issue:hover {
   text-decoration: underline;
+}
+
+span.issues-agent__issue {
+  color: var(--muted-foreground);
 }
 
 .issues-agent__activity {
@@ -3813,13 +3817,13 @@ a.code-chip--link:focus-visible {
   text-decoration: none;
 }
 
-.issues-agent-row__issue:hover,
-.issues-agent-row__issue:focus-visible {
+a.issues-agent-row__issue:hover,
+a.issues-agent-row__issue:focus-visible {
   color: var(--accent);
   text-decoration: underline;
 }
 
-.issues-agent-row[aria-current="true"] .issues-agent-row__issue {
+.issues-agent-row[aria-current="true"] a.issues-agent-row__issue {
   color: var(--accent);
 }
 
