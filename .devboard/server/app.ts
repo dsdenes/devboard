@@ -58,6 +58,7 @@ import {
   parseFeedbackSubmission,
 } from "./feedback";
 import { FlowController, type CheckoutBlocker, type FlowOptions } from "./flow";
+import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints.ts";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { suggestGoalSlug } from "./goal-slug";
 import { IdempotencyStore, parseIdempotencyKey } from "./idempotency";
@@ -7535,7 +7536,7 @@ export function createApp(options: AppOptions) {
     async fetch(request, server) {
       const url = new URL(request.url);
 
-      if (url.pathname === "/feedback") {
+      if (url.pathname === FEEDBACK_ENDPOINT) {
         return handleFeedbackRequest(request, url);
       }
 
@@ -7552,7 +7553,7 @@ export function createApp(options: AppOptions) {
         return request.method === "HEAD" ? new Response(null, { headers: ready.headers }) : ready;
       }
 
-      if (url.pathname === "/goal-proposals") {
+      if (url.pathname === GOAL_PROPOSALS_ENDPOINT) {
         return handleGoalProposalRequest(request, url);
       }
 

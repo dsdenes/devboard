@@ -2,6 +2,7 @@
   import { Dialog } from "bits-ui";
   import X from "lucide-svelte/icons/x";
   import { notificationReport } from "../notification-issue";
+  import { FEEDBACK_ENDPOINT } from "../../../lib/endpoints.ts";
   import { notifications, type AppNotification } from "../notifications.svelte";
   import Button from "./ui/button.svelte";
   import CommandButton from "./CommandButton.svelte";
@@ -63,7 +64,7 @@
       captured_at: new Date().toISOString(),
     };
     try {
-      const response = await fetch("/feedback", {
+      const response = await fetch(FEEDBACK_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
