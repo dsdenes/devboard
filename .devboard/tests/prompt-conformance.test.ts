@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { dedupPrompt, type DedupRequest } from "../watchdog/dedup";
-import { synthesisPrompt } from "../coach/synthesize";
-import type { CoachFamily } from "../coach/families";
-import type { CoachSettings } from "../coach/settings";
+import { synthesisPrompt } from "../mcp-optimizer/synthesize";
+import type { McpOptimizerFamily } from "../mcp-optimizer/families";
+import type { McpOptimizerSettings } from "../mcp-optimizer/settings";
 
 /**
  * The prompt contract: every prompt the harness sends begins with a manifesto,
@@ -101,8 +101,8 @@ describe("prompt conformance", () => {
     assertContract("watchdog-dedup", dedupPrompt(request));
   });
 
-  test("the Coach synthesis prompt matches the contract", () => {
-    const family: CoachFamily = {
+  test("the MCP optimizer synthesis prompt matches the contract", () => {
+    const family: McpOptimizerFamily = {
       key: "docs:build",
       kind: "command",
       score: 3,
@@ -114,7 +114,7 @@ describe("prompt conformance", () => {
       fragments: [],
       excerpts: [],
     };
-    const settings: CoachSettings = {
+    const settings: McpOptimizerSettings = {
       intervalMinutes: 60,
       maxPerHour: null,
       maxPending: null,
@@ -122,7 +122,7 @@ describe("prompt conformance", () => {
       allowlist: ["docs:"],
     };
     assertContract(
-      "coach-synthesis",
+      "mcp-optimizer-synthesis",
       synthesisPrompt({ family, settings, openIssues: [], filingRoom: 1 }),
     );
   });

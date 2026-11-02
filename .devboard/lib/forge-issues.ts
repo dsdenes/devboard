@@ -27,7 +27,7 @@ import {
 import { originForge } from "../issues/repository";
 
 /**
- * The one forge issue client the Coach delivery and the Devboard MCP tools
+ * The one forge issue client the MCP optimizer delivery and the Devboard MCP tools
  * share. It resolves the checkout's own origin and its authenticated account
  * through the harness forge-auth path, so a stale ambient token never decides
  * which identity writes.

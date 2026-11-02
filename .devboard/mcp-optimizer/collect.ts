@@ -5,7 +5,7 @@ import type { Instance } from "../watchdog/discovery";
 import { parseTimestamp, readJournalEvidence } from "../watchdog/collect";
 
 /** One journal record the family builder reads. */
-export interface CoachJournalRecord {
+export interface McpOptimizerJournalRecord {
   kind: string;
   ts: string;
   text: string;
@@ -19,8 +19,8 @@ export interface CoachJournalRecord {
  * way. Nothing outside the repository and state directory is read.
  */
 
-/** Journal kinds a Coach cycle keeps. */
-export const COACH_JOURNAL_KINDS = new Set([
+/** Journal kinds an MCP optimizer cycle keeps. */
+export const MCP_OPTIMIZER_JOURNAL_KINDS = new Set([
   "question",
   "acp-stderr",
   "activity",
@@ -33,10 +33,10 @@ export interface EvidenceWindow {
   end: Date;
 }
 
-export interface CoachCollection {
+export interface McpOptimizerCollection {
   window: { start: string; end: string };
   sessions: AgentSession[];
-  journal: CoachJournalRecord[];
+  journal: McpOptimizerJournalRecord[];
   /** Selected transcript files, before the newest-file cap. */
   sessionFiles: number;
   /** Transcripts left out by the newest-file cap. */
@@ -55,7 +55,7 @@ export interface CollectOptions {
   window: EvidenceWindow;
   maxFiles?: number;
   /** Test seam: replaces the shared journal read. */
-  journal?: (window: EvidenceWindow) => { records: CoachJournalRecord[]; malformed: number };
+  journal?: (window: EvidenceWindow) => { records: McpOptimizerJournalRecord[]; malformed: number };
 }
 
 function journalInstance(stateDir: string, repoDir: string): Instance {
@@ -75,14 +75,14 @@ function readJournal(
   stateDir: string,
   repoDir: string,
   window: EvidenceWindow,
-): { records: CoachJournalRecord[]; malformed: number } {
+): { records: McpOptimizerJournalRecord[]; malformed: number } {
   const evidence = readJournalEvidence(journalInstance(stateDir, repoDir), {
     window,
     root: repoDir,
   });
-  const records: CoachJournalRecord[] = [];
+  const records: McpOptimizerJournalRecord[] = [];
   for (const event of evidence.events) {
-    if (!COACH_JOURNAL_KINDS.has(event.kind)) continue;
+    if (!MCP_OPTIMIZER_JOURNAL_KINDS.has(event.kind)) continue;
     const instant = parseTimestamp(event.ts);
     if (instant === undefined) continue;
     records.push({
@@ -103,7 +103,7 @@ function readJournal(
 }
 
 /** Collects the evidence for one cycle; it never writes and never spawns. */
-export function collectEvidence(options: CollectOptions): CoachCollection {
+export function collectEvidence(options: CollectOptions): McpOptimizerCollection {
   const selection = selectSessions({
     stateDir: options.stateDir,
     repoDir: options.repoDir,

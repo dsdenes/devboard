@@ -8,7 +8,7 @@ import { isValidCadence, isValidLimit } from "./settings";
  * atomic rename, so the worker never reads a half-written command and their
  * names sort in submission order.
  */
-export type CoachCommand =
+export type McpOptimizerCommand =
   | { type: "stop" }
   | { type: "drain" }
   | {
@@ -20,7 +20,7 @@ export type CoachCommand =
 
 let sequence = 0;
 
-export function writeCoachCommand(directory: string, command: CoachCommand): string {
+export function writeMcpOptimizerCommand(directory: string, command: McpOptimizerCommand): string {
   mkdirSync(directory, { recursive: true });
   sequence += 1;
   const name = `${String(Date.now()).padStart(14, "0")}-${String(sequence).padStart(6, "0")}.json`;
@@ -31,7 +31,7 @@ export function writeCoachCommand(directory: string, command: CoachCommand): str
   return path;
 }
 
-export function parseCoachCommand(text: string): CoachCommand | undefined {
+export function parseMcpOptimizerCommand(text: string): McpOptimizerCommand | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -63,14 +63,14 @@ export function parseCoachCommand(text: string): CoachCommand | undefined {
   }
 }
 
-export function takeCoachCommands(directory: string): CoachCommand[] {
+export function takeMcpOptimizerCommands(directory: string): McpOptimizerCommand[] {
   let names: string[];
   try {
     names = readdirSync(directory).filter((name) => name.endsWith(".json")).sort();
   } catch {
     return [];
   }
-  const commands: CoachCommand[] = [];
+  const commands: McpOptimizerCommand[] = [];
   for (const name of names) {
     const path = join(directory, name);
     let text: string;
@@ -84,7 +84,7 @@ export function takeCoachCommands(directory: string): CoachCommand[] {
     } catch {
       // Another consumer already took it.
     }
-    const command = parseCoachCommand(text);
+    const command = parseMcpOptimizerCommand(text);
     if (command !== undefined) commands.push(command);
   }
   return commands;

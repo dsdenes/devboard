@@ -3,17 +3,17 @@ import { boundBytes } from "../lib/text-budget";
 import { AcpConnection } from "../server/acp";
 import type { PeerBinding } from "../server/providers/selection";
 import { MCP_COVERS, MCP_TOOLS } from "../mcp/catalog";
-import type { CoachFamily } from "./families";
-import type { CoachOpenIssue } from "./issue";
+import type { McpOptimizerFamily } from "./families";
+import type { McpOptimizerOpenIssue } from "./issue";
 import { familyTag } from "./issue";
 import { openCodePeers } from "./providers";
-import type { CoachSettings } from "./settings";
+import type { McpOptimizerSettings } from "./settings";
 
 /**
  * One ACP peer call per selected family. The peer is `AGENT_COMMAND` (default
  * `omp acp`) built from every enabled OpenCode Go subscription in the
  * operator's list order, pinned to the same model as every other agent;
- * permission and elicitation requests are denied. It reads open Coach issues
+ * permission and elicitation requests are denied. It reads open MCP optimizer issues
  * through the MCP server and files at most one proposal itself, or records why
  * it filed nothing. There is no answer object and no deterministic proposal
  * validator.
@@ -39,12 +39,12 @@ export interface SynthesisPaths {
 }
 
 /** The coordinator injects a deterministic stub in tests. */
-export type Synthesize = (family: CoachFamily, prompt: string, paths: SynthesisPaths) => Promise<SynthesisResult>;
+export type Synthesize = (family: McpOptimizerFamily, prompt: string, paths: SynthesisPaths) => Promise<SynthesisResult>;
 
 export interface SynthesizeOptions {
   repoDir: string;
   stateDir: string;
-  family: CoachFamily;
+  family: McpOptimizerFamily;
   prompt: string;
   environment?: Record<string, string | undefined>;
   command?: string;
@@ -83,12 +83,13 @@ function promptText(sections: PromptSections): string {
   return [
     "## Manifesto",
     "",
-    "You are the Devboard Coach synthesizer for one family. Your goal is to remove the recurring",
-    "friction this family evidences, and your observable result is at most one proposal issue",
-    "filed through the Devboard MCP issue tool, or one recorded reason the family needs no issue.",
+    "You are the Devboard MCP optimizer synthesizer for one family. Your goal is to remove the",
+    "recurring friction this family evidences, and your observable result is at most one proposal",
+    "issue filed through the Devboard MCP issue tool, or one recorded reason the family needs no",
+    "issue.",
     "",
-    "Read this family's evidence, read the open Coach issues yourself, then act. Never answer",
-    "with a JSON document, fragment, diff, or summary.",
+    "Read this family's evidence, read the open MCP optimizer issues yourself, then act. Never",
+    "answer with a JSON document, fragment, diff, or summary.",
     "",
     "Family:",
     sections.family,
@@ -102,7 +103,7 @@ function promptText(sections: PromptSections): string {
     "MCP catalog:",
     sections.catalog,
     "",
-    "Open Coach issues:",
+    "Open MCP optimizer issues:",
     sections.issues,
     "",
     "Command allowlist:",
@@ -119,8 +120,8 @@ function promptText(sections: PromptSections): string {
     "- Prefer the smaller change: \"tool\" when a stable named capability removes the recurrence,",
     "  \"prompt\" when one instruction is enough.",
     ...PROPOSAL_TOOL_RULES,
-    "- The issue title is exactly `[coach] <family key>` for a tool proposal or",
-    "  `[coach] prompt: <family key>` for a prompt proposal.",
+    "- The issue title is exactly `[mcp-optimizer] <family key>` for a tool proposal or",
+    "  `[mcp-optimizer] prompt: <family key>` for a prompt proposal.",
     "- The issue body has exactly these level-two sections in order: `## Family`,",
     "  `## Evidence`, `## Proposed tool` or `## Proposed prompt`, `## Acceptance`, `## Rationale`.",
     "  `## Family` states the key, kind, call and session counts, first and last timestamps,",
@@ -128,8 +129,8 @@ function promptText(sections: PromptSections): string {
     "  carries one to five `- [ ]` criteria checkable from the evidence.",
     "- File with `issue_create` and no labels. Its returned number and URL are the record.",
     "- When the family needs no change, a duplicate exists, a cap leaves no room, or filing",
-    "  fails, call `coach_proposal_skip` with the family key and one reason sentence. Call either",
-    "  `issue_create` or `coach_proposal_skip` for this family, never both.",
+    "  fails, call `mcp_optimizer_proposal_skip` with the family key and one reason sentence.",
+    "  Call either `issue_create` or `mcp_optimizer_proposal_skip` for this family, never both.",
     "",
   ].join("\n");
 }
@@ -143,7 +144,7 @@ function catalogJson(): string {
 }
 
 /** The three fields of one open issue the prompt and the template publish. */
-function issueRows(issues: CoachOpenIssue[]): Array<{
+function issueRows(issues: McpOptimizerOpenIssue[]): Array<{
   number: number;
   title: string;
   url: string;
@@ -156,14 +157,15 @@ function issueRows(issues: CoachOpenIssue[]): Array<{
 }
 
 /** The open issues one synthesis call sees. */
-export function coachIssues(issues: CoachOpenIssue[]): CoachOpenIssue[] {
+export function mcpOptimizerIssues(issues: McpOptimizerOpenIssue[]): McpOptimizerOpenIssue[] {
   return issues.filter(
-    (issue) => issue.title.startsWith("[coach]") || issue.body.includes("family:"),
+    (issue) => issue.title.startsWith("[mcp-optimizer]") || issue.body.includes("family:"),
   );
 }
 
 /** What the template states when no successful open-issue read is available. */
-export const COACH_PROMPT_ISSUES_UNAVAILABLE = "Open Coach issues could not be read.";
+export const MCP_OPTIMIZER_PROMPT_ISSUES_UNAVAILABLE =
+  "Open MCP optimizer issues could not be read.";
 
 const FAMILY_PLACEHOLDER = "<family>";
 const FRAGMENTS_PLACEHOLDER = "<fragments>";
@@ -172,14 +174,14 @@ const FILING_ROOM_PLACEHOLDER = "<filingRoom>";
 
 /**
  * The prompt. It carries one family's summary, fragments, at most five
- * excerpts, the catalog, every open Coach issue, the configured allowlist, and
+ * excerpts, the catalog, every open MCP optimizer issue, the configured allowlist, and
  * the cycle's filing room. Identical family and settings bytes produce an
  * identical prompt.
  */
 export function synthesisPrompt(input: {
-  family: CoachFamily;
-  settings: CoachSettings;
-  openIssues: CoachOpenIssue[];
+  family: McpOptimizerFamily;
+  settings: McpOptimizerSettings;
+  openIssues: McpOptimizerOpenIssue[];
   filingRoom: number;
 }): string {
   const family = input.family;
@@ -226,19 +228,19 @@ export function synthesisPrompt(input: {
 }
 
 /**
- * The one read-only template the Coach page shows: the same fixed lines and
+ * The one read-only template the MCP optimizer page shows: the same fixed lines and
  * live catalog, allowlist, limits, and open-issue sections a synthesis call
  * sends, with the per-family sections named as placeholders. It reads nothing,
  * writes nothing, and starts nothing.
  */
-export function coachPromptTemplate(input: {
-  settings: CoachSettings;
-  openIssues: CoachOpenIssue[] | null;
+export function mcpOptimizerPromptTemplate(input: {
+  settings: McpOptimizerSettings;
+  openIssues: McpOptimizerOpenIssue[] | null;
 }): string {
   const issues =
     input.openIssues === null
-      ? COACH_PROMPT_ISSUES_UNAVAILABLE
-      : json(issueRows(coachIssues(input.openIssues).sort((left, right) => left.number - right.number)));
+      ? MCP_OPTIMIZER_PROMPT_ISSUES_UNAVAILABLE
+      : json(issueRows(mcpOptimizerIssues(input.openIssues).sort((left, right) => left.number - right.number)));
   return promptText({
     family: FAMILY_PLACEHOLDER,
     fragments: FRAGMENTS_PLACEHOLDER,
@@ -256,7 +258,7 @@ export function coachPromptTemplate(input: {
 }
 
 /** Verification seam: a JSON file that answers every synthesis call. */
-export const SYNTHESIS_STUB_ENV = "DEVBOARD_COACH_SYNTHESIS_STUB";
+export const SYNTHESIS_STUB_ENV = "DEVBOARD_MCP_OPTIMIZER_SYNTHESIS_STUB";
 
 interface SynthesisStub {
   families?: Record<string, unknown>;
@@ -315,7 +317,7 @@ export function readSynthesisStub(
     if (answer === undefined) throw new Error("the synthesis stub has no answer for the family");
     const entry = substitute(answer, family) as StubAnswer;
     if (entry.action === "tool" || entry.action === "prompt") {
-      const title = typeof entry.title === "string" ? entry.title : `[coach] ${family}`;
+      const title = typeof entry.title === "string" ? entry.title : `[mcp-optimizer] ${family}`;
       const body = typeof entry.body === "string" ? entry.body : "";
       const number =
         typeof entry.number === "number" && Number.isInteger(entry.number) ? entry.number : 1;
@@ -341,7 +343,7 @@ export function readSynthesisStub(
     await Bun.write(
       paths.skipLogPath,
       `${JSON.stringify({
-        tool: "coach_proposal_skip",
+        tool: "mcp_optimizer_proposal_skip",
         at: new Date().toISOString(),
         ok: true,
         value: { family, status: "skipped", reason },
@@ -444,7 +446,7 @@ async function runSynthesisPeer(run: SynthesisPeerRun): Promise<string> {
   let stderr = "";
   const extra: Record<string, string> = {};
   if (run.toolLogPath !== undefined) extra.DEVBOARD_TOOL_LOG = run.toolLogPath;
-  if (run.skipLogPath !== undefined) extra.DEVBOARD_COACH_SKIP_LOG = run.skipLogPath;
+  if (run.skipLogPath !== undefined) extra.DEVBOARD_MCP_OPTIMIZER_SKIP_LOG = run.skipLogPath;
   connection = new AcpConnection({
     command: run.command,
     cwd: run.repoDir,

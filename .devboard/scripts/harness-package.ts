@@ -26,7 +26,7 @@ const FILE_ALLOWLIST = [
   "public",
   "lib",
   "watchdog",
-  "coach",
+  "mcp-optimizer",
   "release-train",
   "mcp",
   "issues",

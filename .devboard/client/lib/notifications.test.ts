@@ -28,11 +28,11 @@ test("the source is the exact agent label that raised the notification", () => {
   vi.useFakeTimers();
   const store = new NotificationStore();
 
-  store.push("Coach", "error", "Run failed.");
+  store.push("MCP optimizer", "error", "Run failed.");
   store.push("Auto Scout", "success", "Filed 1 issue.");
 
-  expect(store.live.map((item) => item.source)).toEqual(["Auto Scout", "Coach"]);
-  expect(store.items.map((item) => item.source)).toEqual(["Auto Scout", "Coach"]);
+  expect(store.live.map((item) => item.source)).toEqual(["Auto Scout", "MCP optimizer"]);
+  expect(store.items.map((item) => item.source)).toEqual(["Auto Scout", "MCP optimizer"]);
 });
 
 test("dismissing removes a card from the live region and the history", () => {

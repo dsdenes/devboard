@@ -5,7 +5,7 @@ import { isRecord } from "../issues/guards";
 
 /**
  * One reader for the ACP peer transcripts the dashboard's generated agent
- * directories hold. Coach and the Devboard MCP server both read sessions
+ * directories hold. MCP optimizer and the Devboard MCP server both read sessions
  * through this module: the record shapes, the token and cost summation, and
  * the tool-error fingerprint are defined once here.
  *
@@ -151,7 +151,7 @@ export function evidenceFingerprint(category: string, signature: string): string
 
 /**
  * `tool-failure` identity: the tool name and the normalized first non-empty
- * line of its result text. Coach and the MCP tools report the same value.
+ * line of its result text. MCP optimizer and the MCP tools report the same value.
  */
 export function toolFailureFingerprint(toolName: string, text: string): string {
   return evidenceFingerprint(
@@ -977,7 +977,7 @@ export function searchSessions(options: {
 }
 
 /** Bytes of the bounded excerpts one filed issue may quote for a session. */
-export const COACH_SESSION_EXCERPT_MAX = 2_000;
+export const MCP_OPTIMIZER_SESSION_EXCERPT_MAX = 2_000;
 
 /**
  * A bounded, normalized excerpt of the messages that contributed evidence.
@@ -992,10 +992,10 @@ export function sessionExcerpt(session: AgentSession, repoDir: string): string {
         ? `${message.toolName ?? "tool"}${message.isError ? " (error)" : ""}`
         : message.role;
     lines.push(`${label}: ${firstNormalizedLine(message.text, { repoDir }) || "(empty)"}`);
-    if (lines.join("\n").length >= COACH_SESSION_EXCERPT_MAX) break;
+    if (lines.join("\n").length >= MCP_OPTIMIZER_SESSION_EXCERPT_MAX) break;
   }
   const text = lines.join("\n");
-  return text.length <= COACH_SESSION_EXCERPT_MAX
+  return text.length <= MCP_OPTIMIZER_SESSION_EXCERPT_MAX
     ? text
-    : `${text.slice(0, COACH_SESSION_EXCERPT_MAX - 1).trimEnd()}…`;
+    : `${text.slice(0, MCP_OPTIMIZER_SESSION_EXCERPT_MAX - 1).trimEnd()}…`;
 }

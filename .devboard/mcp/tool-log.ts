@@ -4,7 +4,7 @@ import type { McpContext } from "./context";
 
 /**
  * The per-run record an agent's tool calls leave behind. The flow worker,
- * Coach coordinator, and watchdog coordinator set the path in the peer's
+ * MCP optimizer coordinator, and watchdog coordinator set the path in the peer's
  * environment; the tool appends one line per call so the caller learns which
  * issue or record was created without asking the agent for an answer document.
  *

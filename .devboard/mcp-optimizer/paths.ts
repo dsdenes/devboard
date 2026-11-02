@@ -3,21 +3,26 @@ import { join, resolve } from "node:path";
 import { versionLockPath, workerVersionKey } from "../issues/lock";
 
 /**
- * Every file the Coach worker owns. One instance serves one repository state
- * directory, so the dashboard's `STATE_DIR` is the only anchor: the worker,
- * its settings, control channel, ledger, lock, and runs all live under
+ * Every file the MCP optimizer worker owns. One instance serves one repository
+ * state directory, so the dashboard's `STATE_DIR` is the only anchor: the
+ * worker, its settings, control channel, ledger, lock, and runs all live under
  * `<STATE_DIR>/coach/`. The legacy worker state, control, and lock sit directly
  * there; every newer harness version gets its own directory and lock beside
  * them, so two versions can hand off without either reading the other's state.
+ *
+ * The directory keeps its historical `coach/` name on purpose. A harness
+ * upgrade can leave a worker of the previous version live on the same lock,
+ * control channel, and ledger, so moving the state would strand that worker
+ * and start a second one beside it.
  */
 
-export const COACH_DIRECTORY = "coach";
+export const MCP_OPTIMIZER_DIRECTORY = "coach";
 export const WORKERS_DIRECTORY = "workers";
 export const WORKER_VERSION = 1;
 export const LEDGER_VERSION = 3;
 
-export function coachDirectory(stateDir: string): string {
-  return join(resolve(stateDir), COACH_DIRECTORY);
+export function mcpOptimizerDirectory(stateDir: string): string {
+  return join(resolve(stateDir), MCP_OPTIMIZER_DIRECTORY);
 }
 
 export function workerStatePath(directory: string): string {
@@ -26,7 +31,7 @@ export function workerStatePath(directory: string): string {
 
 /**
  * One harness version's directory beside the legacy layout:
- * `<coachDir>/workers/<versionKey>/{worker.json,control}`.
+ * `<mcpOptimizerDir>/workers/<versionKey>/{worker.json,control}`.
  */
 export function versionedWorkerDirectory(directory: string, version: string | null): string {
   return join(directory, WORKERS_DIRECTORY, workerVersionKey(version));
@@ -36,7 +41,7 @@ export function versionedControlDirectory(directory: string, version: string | n
   return join(versionedWorkerDirectory(directory, version), "control");
 }
 
-/** Every version's worker directory under one coach directory. */
+/** Every version's worker directory under one MCP optimizer directory. */
 export function workerStateDirectories(directory: string): string[] {
   const root = join(directory, WORKERS_DIRECTORY);
   try {
@@ -50,7 +55,7 @@ export function workerStateDirectories(directory: string): string[] {
 }
 
 /**
- * The cycle lease: one Coach cycle at a time across every harness version.
+ * The cycle lease: one MCP optimizer cycle at a time across every harness version.
  * Unlike the worker lock it is held only while a cycle runs, so a drained
  * worker's in-flight cycle finishes before the new worker claims the next one.
  */

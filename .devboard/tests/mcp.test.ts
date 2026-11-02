@@ -13,8 +13,8 @@ import { resolveContext, type McpContext } from "../mcp/context";
 import type { LiveDashboard } from "../mcp/dashboard";
 import type { ForgeIssueDocument, ForgeIssues } from "../lib/forge-issues";
 import { journalFile } from "../server/journal";
-import { coachDirectory } from "../coach/paths";
-import { writeCoachSettings, DEFAULT_COACH_SETTINGS } from "../coach/settings";
+import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
+import { writeMcpOptimizerSettings, DEFAULT_MCP_OPTIMIZER_SETTINGS } from "../mcp-optimizer/settings";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const directories: string[] = [];
@@ -213,7 +213,7 @@ function stubDashboard(
             ws.send(
               JSON.stringify({
                 type: "agentsState",
-                agents: [{ id: "coach", label: "Coach", lifecycle: "running" }],
+                agents: [{ id: "mcp-optimizer", label: "MCP optimizer", lifecycle: "running" }],
               }),
             );
             return;
@@ -221,7 +221,7 @@ function stubDashboard(
             ws.send(
               JSON.stringify({
                 type: "agentState",
-                agent: { id: command.id, label: "Coach", lifecycle: "running" },
+                agent: { id: command.id, label: "MCP optimizer", lifecycle: "running" },
               }),
             );
             return;
@@ -336,7 +336,7 @@ describe("MCP transport and catalog", () => {
       "discover_skill_stage",
       "design_release_request",
       "watchdog_duplicate_record",
-      "coach_proposal_skip",
+      "mcp_optimizer_proposal_skip",
     ];
     const replies = await stdio(context, [
       JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
@@ -619,8 +619,8 @@ describe("MCP context tools", () => {
 
   test("background agents are persisted when no dashboard is live", async () => {
     const { context } = await workspace();
-    await writeCoachSettings(coachDirectory(context.stateDir), {
-      ...DEFAULT_COACH_SETTINGS,
+    await writeMcpOptimizerSettings(mcpOptimizerDirectory(context.stateDir), {
+      ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
       intervalMinutes: 45,
       maxPerHour: 2,
       maxPending: null,
@@ -633,18 +633,18 @@ describe("MCP context tools", () => {
       "watchdog",
       "design",
       "dead-code",
-      "coach",
+      "mcp-optimizer",
       "api-standards",
       "release-train",
     ]);
-    const coach = valueOf(await callTool(context, "background_agent_get", { id: "coach" })) as {
+    const mcpOptimizer = valueOf(await callTool(context, "background_agent_get", { id: "mcp-optimizer" })) as {
       id: string;
       cadence: { minutes: number };
       lifecycle: string;
     };
-    expect(coach.id).toBe("coach");
-    expect(coach.cadence.minutes).toBe(45);
-    expect(coach.lifecycle).toBe("stopped");
+    expect(mcpOptimizer.id).toBe("mcp-optimizer");
+    expect(mcpOptimizer.cadence.minutes).toBe(45);
+    expect(mcpOptimizer.lifecycle).toBe("stopped");
     const unknown = await callTool(context, "background_agent_get", { id: "nope" });
     expect(unknown.error).toContain("Unknown");
   });
@@ -1091,20 +1091,20 @@ describe("MCP work and control tools", () => {
     await writeFile(join(context.repoDir, "adrs", "one.md"), "# ADR\n");
     const agent = valueOf(
       await callTool(live, "background_agent_control", {
-        id: "coach",
+        id: "mcp-optimizer",
         action: "set_settings",
         minutes: 30,
         maxPerHour: 1,
         maxPending: null,
       }),
     ) as { id: string; agent: Record<string, unknown> };
-    expect(agent.id).toBe("coach");
+    expect(agent.id).toBe("mcp-optimizer");
     expect((agent.agent as Record<string, unknown>).lifecycle).toBe("running");
 
     const agents = valueOf(await callTool(live, "background_agents_list", {})) as {
       agents: Array<{ id: string }>;
     };
-    expect(agents.agents.map((entry) => entry.id)).toEqual(["coach"]);
+    expect(agents.agents.map((entry) => entry.id)).toEqual(["mcp-optimizer"]);
 
     const issues = valueOf(
       await callTool(live, "issues_control", { action: "check_now" }),
@@ -1132,7 +1132,7 @@ describe("MCP work and control tools", () => {
     expect(flow.flow.status).toBe("idle");
 
     const invalid = await callTool(live, "background_agent_control", {
-      id: "coach",
+      id: "mcp-optimizer",
       action: "set_settings",
       minutes: 0,
       maxPerHour: null,

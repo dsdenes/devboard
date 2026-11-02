@@ -2,14 +2,14 @@ import { appendToolLog } from "./tool-log";
 import type { McpContext } from "./context";
 
 /**
- * The Coach synthesis turn files its own issue through `issue_create` and
+ * The MCP optimizer synthesis turn files its own issue through `issue_create` and
  * records why a family filed nothing through this tool. The coordinator reads
  * that record as the family's skipped reason; no answer document is involved.
  */
 
-export const COACH_SKIP_LOG = "DEVBOARD_COACH_SKIP_LOG";
+export const MCP_OPTIMIZER_SKIP_LOG = "DEVBOARD_MCP_OPTIMIZER_SKIP_LOG";
 
-export function recordCoachSkip(
+export function recordMcpOptimizerSkip(
   context: McpContext,
   options: { family?: unknown; reason?: unknown },
 ) {
@@ -28,8 +28,8 @@ export function recordCoachSkip(
   };
   appendToolLog(
     context,
-    { tool: "coach_proposal_skip", at: new Date().toISOString(), ok: true, value },
-    COACH_SKIP_LOG,
+    { tool: "mcp_optimizer_proposal_skip", at: new Date().toISOString(), ok: true, value },
+    MCP_OPTIMIZER_SKIP_LOG,
   );
   return value;
 }

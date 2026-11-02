@@ -29,7 +29,7 @@ import { emptyState, readState, writeSettings, writeState } from "../issues/scou
 import { readHarnessVersion } from "../server/version";
 import { writeProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
-import { coachDirectory } from "../coach/paths";
+import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
 import { MCP_TOOLS } from "../mcp/catalog";
 import {
   assertTrue,
@@ -675,27 +675,27 @@ const ISSUE_URLS = [
   "https://github.com/acme/fixture/issues/102",
 ];
 
-/** The Coach settings the template's allowlist section must show live. */
-const COACH_ALLOWLIST = ["gh pr merge", "systemctl restart devboard"];
+/** The MCP optimizer settings the template's allowlist section must show live. */
+const MCP_OPTIMIZER_ALLOWLIST = ["gh pr merge", "systemctl restart devboard"];
 
-/** The dashboard's open-issue read for the fixture: two Coach and one unrelated. */
-const COACH_ISSUES = [
+/** The dashboard's open-issue read for the fixture: two MCP optimizer and one unrelated. */
+const MCP_OPTIMIZER_ISSUES = [
   {
     number: 201,
-    title: "[coach] bun run publish",
+    title: "[mcp-optimizer] bun run publish",
     body: "family:aaaaaaaaaaaa",
     url: "https://github.com/acme/fixture/issues/201",
   },
   {
     number: 202,
-    title: "[coach] prompt: retry loop",
+    title: "[mcp-optimizer] prompt: retry loop",
     body: "family:bbbbbbbbbbbb",
     url: "https://github.com/acme/fixture/issues/202",
   },
   {
     number: 203,
     title: "Unrelated fixture issue",
-    body: "Nothing to do with the Coach.",
+    body: "Nothing to do with the MCP optimizer.",
     url: "https://github.com/acme/fixture/issues/203",
   },
 ];
@@ -729,14 +729,14 @@ args="$*"
 case "$args" in
   *"repos/acme/fixture/issues?state=open"*)
     printf 'HTTP/2.0 200 OK\\ncontent-type: application/json\\netag: "fixture"\\n\\n'
-${COACH_ISSUES.map(
+${MCP_OPTIMIZER_ISSUES.map(
   (issue) =>
     `    printf '%s\\n' '${JSON.stringify({
       number: issue.number,
       title: issue.title,
       url: issue.url,
       createdAt: "2026-10-01T00:00:00Z",
-      labels: ["coach"],
+      labels: ["mcp-optimizer"],
       body: issue.body,
     })}'`,
 ).join("\n")}
@@ -829,12 +829,12 @@ try {
   await mkdir(stateDir, { recursive: true });
   const watchdogDir = watchdogDirectory(host.directory);
   await mkdir(watchdogDir, { recursive: true });
-  const seededCoachDir = coachDirectory(stateDir);
-  await mkdir(seededCoachDir, { recursive: true });
+  const seededMcpOptimizerDir = mcpOptimizerDirectory(stateDir);
+  await mkdir(seededMcpOptimizerDir, { recursive: true });
   await writeFile(
-    join(seededCoachDir, "settings.json"),
+    join(seededMcpOptimizerDir, "settings.json"),
     `${JSON.stringify(
-      { allowlist: COACH_ALLOWLIST, maxPerHour: null, maxPending: null },
+      { allowlist: MCP_OPTIMIZER_ALLOWLIST, maxPerHour: null, maxPending: null },
       null,
       2,
     )}\n`,
@@ -1110,7 +1110,7 @@ try {
           "open-devboard-watchdog",
           "open-devboard-design",
           "open-devboard-dead-code",
-          "open-devboard-coach",
+          "open-devboard-mcp-optimizer",
           "open-devboard-api-standards",
           "open-devboard-release-train",
         ]),
@@ -1129,7 +1129,7 @@ try {
     ["watchdog", "Watchdog"],
     ["design", "Design System"],
     ["dead-code", "Dead Code"],
-    ["coach", "Coach"],
+    ["mcp-optimizer", "MCP optimizer"],
     ["api-standards", "API Standards"],
     ["release-train", "Release Train"],
   ]) {
@@ -1258,28 +1258,28 @@ try {
   );
   console.log("PASS shared-page-shape");
 
-  await click(devtools, "open-devboard-coach");
+  await click(devtools, "open-devboard-mcp-optimizer");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
-    "the Coach page",
+    "the MCP optimizer page",
     10_000,
   );
-  const coachPage = await devtools.evaluate(
+  const mcpOptimizerPage = await devtools.evaluate(
     `document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? ''`,
   );
-  assertTrue(coachPage === "coach", `the Coach page names ${String(coachPage)}`);
-  assertTrue(await present(devtools, "agent-issues-empty"), "Coach has no empty table");
-  assertTrue(!(await present(devtools, "agent-detail")), "Coach still renders the detail panel");
-  assertTrue((await agentLast(devtools)) === "No activity yet.", "Coach has no empty bar activity");
-  const coachCore = await coreSequence(devtools);
+  assertTrue(mcpOptimizerPage === "mcp-optimizer", `the MCP optimizer page names ${String(mcpOptimizerPage)}`);
+  assertTrue(await present(devtools, "agent-issues-empty"), "MCP optimizer has no empty table");
+  assertTrue(!(await present(devtools, "agent-detail")), "MCP optimizer still renders the detail panel");
+  assertTrue((await agentLast(devtools)) === "No activity yet.", "MCP optimizer has no empty bar activity");
+  const mcpOptimizerCore = await coreSequence(devtools);
   assertTrue(
-    JSON.stringify(coachCore.filter((id) => id !== "agent-stop")) ===
+    JSON.stringify(mcpOptimizerCore.filter((id) => id !== "agent-stop")) ===
       JSON.stringify(CORE_IDS.filter((id) => id !== "agent-stop")),
-    `the Coach core ids differ: ${JSON.stringify(coachCore)}`,
+    `the MCP optimizer core ids differ: ${JSON.stringify(mcpOptimizerCore)}`,
   );
   assertTrue(
     (await pageLifecycle(devtools)) === "stopped",
-    "Coach does not start stopped",
+    "MCP optimizer does not start stopped",
   );
   await click(devtools, "open-devboard-api-standards");
   await waitFor(
@@ -1324,37 +1324,37 @@ try {
   );
   await assertPromptClosed(devtools, "API Standards");
   await assertPromptMarker(devtools, "API Standards", false);
-  await click(devtools, "open-devboard-coach");
+  await click(devtools, "open-devboard-mcp-optimizer");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
-    "the Coach page",
+    "the MCP optimizer page",
     10_000,
   );
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
-    "the Coach prompt section",
+    "the MCP optimizer prompt section",
     10_000,
   );
-  await assertPromptClosed(devtools, "Coach");
-  await assertPromptMarker(devtools, "Coach", false);
-  const coachTemplate = await waitFor(
+  await assertPromptClosed(devtools, "MCP optimizer");
+  await assertPromptMarker(devtools, "MCP optimizer", false);
+  const mcpOptimizerTemplate = await waitFor(
     async () => {
       const body = await rawText(devtools, "agent-prompt-template-text");
-      return body.includes(COACH_ISSUES[0]!.url) ? body : undefined;
+      return body.includes(MCP_OPTIMIZER_ISSUES[0]!.url) ? body : undefined;
     },
-    "the Coach template's live open-issue section",
+    "the MCP optimizer template's live open-issue section",
     30_000,
   );
   const treeBefore = await settledTreeHash(host.directory);
   const treeBeforeEntries = await treeEntries(host.directory);
-  await openPrompt(devtools, "Coach");
+  await openPrompt(devtools, "MCP optimizer");
   assertTrue(
     (await countOf(devtools, "agent-prompt-template")) === 1,
-    "the Coach template is not rendered exactly once",
+    "the MCP optimizer template is not rendered exactly once",
   );
   assertTrue(
     (await countOf(devtools, "agent-prompt-absent")) === 0,
-    "the Coach prompt still states an absence",
+    "the MCP optimizer prompt still states an absence",
   );
   for (const testid of [
     "agent-prompt-editor",
@@ -1365,12 +1365,12 @@ try {
   ]) {
     assertTrue(
       (await countOf(devtools, testid)) === 0,
-      `${testid} is rendered on the Coach page`,
+      `${testid} is rendered on the MCP optimizer page`,
     );
   }
   for (const line of [
     "## Manifesto",
-    "You are the Devboard Coach synthesizer for one family. Your goal is to remove the recurring",
+    "You are the Devboard MCP optimizer synthesizer for one family. Your goal is to remove the",
     "Family:",
     "<family>",
     "Fragments:",
@@ -1378,61 +1378,61 @@ try {
     "Excerpts:",
     "<excerpts>",
     "MCP catalog:",
-    "Open Coach issues:",
+    "Open MCP optimizer issues:",
     "Command allowlist:",
     "Limits:",
     "Rules:",
     "- File with `issue_create` and no labels. Its returned number and URL are the record.",
     "- When the family needs no change, a duplicate exists, a cap leaves no room, or filing",
   ]) {
-    assertTrue(coachTemplate.includes(line), `the Coach template is missing ${line}`);
+    assertTrue(mcpOptimizerTemplate.includes(line), `the MCP optimizer template is missing ${line}`);
   }
   for (const tool of MCP_TOOLS) {
     assertTrue(
-      coachTemplate.includes(`"name": "${tool.name}"`),
-      `the Coach template omits the ${tool.name} tool`,
+      mcpOptimizerTemplate.includes(`"name": "${tool.name}"`),
+      `the MCP optimizer template omits the ${tool.name} tool`,
     );
   }
   assertTrue(
-    coachTemplate.includes(`Command allowlist:\n${JSON.stringify(COACH_ALLOWLIST, null, 2)}`),
-    "the Coach template does not show the live allowlist",
+    mcpOptimizerTemplate.includes(`Command allowlist:\n${JSON.stringify(MCP_OPTIMIZER_ALLOWLIST, null, 2)}`),
+    "the MCP optimizer template does not show the live allowlist",
   );
-  for (const issue of COACH_ISSUES.slice(0, 2)) {
+  for (const issue of MCP_OPTIMIZER_ISSUES.slice(0, 2)) {
     assertTrue(
-      coachTemplate.includes(`"title": "${issue.title}"`),
-      `the Coach template omits ${issue.title}`,
+      mcpOptimizerTemplate.includes(`"title": "${issue.title}"`),
+      `the MCP optimizer template omits ${issue.title}`,
     );
-    assertTrue(coachTemplate.includes(issue.url), `the Coach template omits ${issue.url}`);
+    assertTrue(mcpOptimizerTemplate.includes(issue.url), `the MCP optimizer template omits ${issue.url}`);
   }
   assertTrue(
-    !coachTemplate.includes(COACH_ISSUES[2]!.title),
-    "the Coach template lists an unrelated issue",
+    !mcpOptimizerTemplate.includes(MCP_OPTIMIZER_ISSUES[2]!.title),
+    "the MCP optimizer template lists an unrelated issue",
   );
 
   await devtools.send("Page.reload");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
-    "the reloaded Coach prompt section",
+    "the reloaded MCP optimizer prompt section",
     30_000,
   );
-  await assertPromptClosed(devtools, "Coach");
-  await openPrompt(devtools, "Coach");
+  await assertPromptClosed(devtools, "MCP optimizer");
+  await openPrompt(devtools, "MCP optimizer");
   await waitFor(
     async () =>
-      (await rawText(devtools!, "agent-prompt-template-text")) === coachTemplate
+      (await rawText(devtools!, "agent-prompt-template-text")) === mcpOptimizerTemplate
         ? true
         : undefined,
-    "the reloaded Coach template",
+    "the reloaded MCP optimizer template",
     30_000,
   );
   const treeAfterEntries = await treeEntries(host.directory);
   assertTrue(
     treeDigest(treeAfterEntries) === treeBefore,
-    `opening and reloading the Coach template changed the fixture tree: ${JSON.stringify(
+    `opening and reloading the MCP optimizer template changed the fixture tree: ${JSON.stringify(
       changedPaths(treeBeforeEntries, treeAfterEntries),
     )}`,
   );
-  console.log("PASS coach-page");
+  console.log("PASS mcp-optimizer-page");
 
   /* 2b. The prompt section: read-only here. */
   await click(devtools, "open-devboard-scout");
@@ -1996,10 +1996,10 @@ try {
       JSON.stringify(["Title", "Category", "Filed", "State", "Shipped"]),
     "the Auto Scout table columns differ",
   );
-  const coachDir = coachDirectory(stateDir);
-  await mkdir(coachDir, { recursive: true });
+  const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
+  await mkdir(mcpOptimizerDir, { recursive: true });
   await writeFile(
-    join(coachDir, "state.json"),
+    join(mcpOptimizerDir, "state.json"),
     JSON.stringify({
       version: 3,
       families: {
@@ -2011,7 +2011,7 @@ try {
           kind: "command",
           lastAction: "filed",
           lastIssueUrl: "https://github.com/acme/fixture/issues/103",
-          lastTitle: "[coach] bun run publish",
+          lastTitle: "[mcp-optimizer] bun run publish",
           lastFiledAt: now,
         },
       },
@@ -2019,7 +2019,7 @@ try {
     }),
   );
   await writeFile(
-    join(coachDir, "latest.json"),
+    join(mcpOptimizerDir, "latest.json"),
     JSON.stringify({
       cycle: now,
       window: { start: now, end: now, minutes: 1440 },
@@ -2031,27 +2031,27 @@ try {
       pending: 0,
     }),
   );
-  await click(devtools, "open-devboard-coach");
+  await click(devtools, "open-devboard-mcp-optimizer");
   await waitFor(
     async () => ((await rows(devtools!)).length === 1 ? true : undefined),
-    "the seeded Coach row without a reload",
+    "the seeded MCP optimizer row without a reload",
     60_000,
   );
-  const coachRows = await rows(devtools);
+  const mcpOptimizerRows = await rows(devtools);
   assertTrue(
-    coachRows[0]?.title === "[coach] bun run publish",
-    `the Coach title is wrong: ${JSON.stringify(coachRows)}`,
+    mcpOptimizerRows[0]?.title === "[mcp-optimizer] bun run publish",
+    `the MCP optimizer title is wrong: ${JSON.stringify(mcpOptimizerRows)}`,
   );
   assertTrue(
-    (await text(devtools, "agent-count-coach")) === "1",
-    "the Coach sidebar count does not match its filed rows",
+    (await text(devtools, "agent-count-mcp-optimizer")) === "1",
+    "the MCP optimizer sidebar count does not match its filed rows",
   );
   await waitFor(
     async () => {
       const log = await barLog(devtools!);
       return log.includes("filed") ? log : undefined;
     },
-    "the Coach cycle detail",
+    "the MCP optimizer cycle detail",
     10_000,
   );
   await setInput(devtools, "agent-cadence", "90");
@@ -2061,14 +2061,14 @@ try {
     () => {
       try {
         const settings = JSON.parse(
-          readFileSync(join(coachDir, "settings.json"), "utf8"),
+          readFileSync(join(mcpOptimizerDir, "settings.json"), "utf8"),
         ) as Record<string, unknown>;
         return settings.intervalMinutes === 90 && settings.maxPerHour === 2 ? true : undefined;
       } catch {
         return undefined;
       }
     },
-    "the persisted Coach settings",
+    "the persisted MCP optimizer settings",
     10_000,
   );
   await devtools.send("Page.reload");
@@ -2081,25 +2081,25 @@ try {
         .catch(() => false)) === true
         ? true
         : undefined,
-    "the reloaded Coach settings",
+    "the reloaded MCP optimizer settings",
     30_000,
   );
   /* The template's allowlist section is the settings file's live value. */
   const savedSettings = JSON.parse(
-    readFileSync(join(coachDir, "settings.json"), "utf8"),
+    readFileSync(join(mcpOptimizerDir, "settings.json"), "utf8"),
   ) as Record<string, unknown>;
   const nextAllowlist = ["gh pr review", "systemctl status devboard"];
   await writeFile(
-    join(coachDir, "settings.json"),
+    join(mcpOptimizerDir, "settings.json"),
     `${JSON.stringify({ ...savedSettings, allowlist: nextAllowlist }, null, 2)}\n`,
   );
   await devtools.send("Page.reload");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
-    "the Coach page after the settings edit",
+    "the MCP optimizer page after the settings edit",
     30_000,
   );
-  await openPrompt(devtools, "Coach");
+  await openPrompt(devtools, "MCP optimizer");
   await waitFor(
     async () =>
       (await rawText(devtools!, "agent-prompt-template-text")).includes(
@@ -2107,15 +2107,15 @@ try {
       )
         ? true
         : undefined,
-    "the reconnected Coach template allowlist",
+    "the reconnected MCP optimizer template allowlist",
     30_000,
   );
   assertTrue(
-    !(await rawText(devtools, "agent-prompt-template-text")).includes(COACH_ALLOWLIST[0]!),
-    "the Coach template kept a stale allowlist entry",
+    !(await rawText(devtools, "agent-prompt-template-text")).includes(MCP_OPTIMIZER_ALLOWLIST[0]!),
+    "the MCP optimizer template kept a stale allowlist entry",
   );
-  console.log("PASS coach-template-settings");
-  console.log("PASS coach-detail");
+  console.log("PASS mcp-optimizer-template-settings");
+  console.log("PASS mcp-optimizer-detail");
   console.log("PASS freshness-and-table");
 
   /* 7. Watchdog cap keeps a fingerprint pending. */
@@ -2343,38 +2343,38 @@ try {
   );
   console.log("PASS prompt-read-only-source");
 
-  /* The source checkout's Coach prompt is the same read-only template. */
-  await click(devtools, "open-devboard-coach");
+  /* The source checkout's MCP optimizer prompt is the same read-only template. */
+  await click(devtools, "open-devboard-mcp-optimizer");
   await waitFor(
     async () =>
       (await devtools!
         .evaluate(
-          `document.querySelector('[data-testid="agent-prompt"]')?.dataset.agent === "coach"`,
+          `document.querySelector('[data-testid="agent-prompt"]')?.dataset.agent === "mcp-optimizer"`,
         )
         .catch(() => false)) === true
         ? true
         : undefined,
-    "the source Coach prompt section",
+    "the source MCP optimizer prompt section",
     15_000,
   );
-  await assertPromptClosed(devtools, "source Coach");
-  await assertPromptMarker(devtools, "source Coach", false);
-  await openPrompt(devtools, "source Coach");
+  await assertPromptClosed(devtools, "source MCP optimizer");
+  await assertPromptMarker(devtools, "source MCP optimizer", false);
+  await openPrompt(devtools, "source MCP optimizer");
   const sourceTemplate = await waitFor(
     async () => {
       const body = await rawText(devtools!, "agent-prompt-template-text");
       return body.includes("<family>") ? body : undefined;
     },
-    "the source Coach template",
+    "the source MCP optimizer template",
     15_000,
   );
   assertTrue(
     (await countOf(devtools, "agent-prompt-template")) === 1,
-    "the source Coach template is not rendered exactly once",
+    "the source MCP optimizer template is not rendered exactly once",
   );
   assertTrue(
     (await countOf(devtools, "agent-prompt-absent")) === 0,
-    "the source Coach prompt states an absence",
+    "the source MCP optimizer prompt states an absence",
   );
   for (const testid of [
     "agent-prompt-editor",
@@ -2385,14 +2385,14 @@ try {
   ]) {
     assertTrue(
       (await countOf(devtools, testid)) === 0,
-      `${testid} is rendered on the source Coach page`,
+      `${testid} is rendered on the source MCP optimizer page`,
     );
   }
   assertTrue(
-    sourceTemplate.includes("## Manifesto") && sourceTemplate.includes("You are the Devboard Coach synthesizer for one family."),
-    "the source Coach template is missing its intro",
+    sourceTemplate.includes("## Manifesto") && sourceTemplate.includes("You are the Devboard MCP optimizer synthesizer for one family."),
+    "the source MCP optimizer template is missing its intro",
   );
-  console.log("PASS coach-template-source");
+  console.log("PASS mcp-optimizer-template-source");
 
   /* 11. The source checkout's Design System prompt is the same read-only surface. */
   await click(devtools, "open-devboard-design");
@@ -2551,7 +2551,7 @@ try {
   console.log("PASS sync-retry-clears");
 
   /* No page shows an error for the retry that just succeeded. */
-  for (const id of ["scout", "watchdog", "design", "coach", "api-standards", "release-train"]) {
+  for (const id of ["scout", "watchdog", "design", "mcp-optimizer", "api-standards", "release-train"]) {
     await click(devtools, `open-devboard-${id}`);
     await waitFor(
       async () =>
@@ -2786,7 +2786,7 @@ try {
 
   console.log(
     "verify:agents: the Background agents section, all seven shared pages, lifecycle, cadence, " +
-      "nullable limits, the Watchdog cap, the shared table, Coach detail and settings, " +
+      "nullable limits, the Watchdog cap, the shared table, MCP optimizer detail and settings, " +
       "freshness, no mutation on reload, the timer gate, the footer indicator, and the " +
       "periodic-read retry window and exhausted alert all hold",
   );

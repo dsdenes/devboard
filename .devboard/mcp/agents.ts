@@ -11,10 +11,10 @@ import { readWatchdogSettings } from "../watchdog/settings";
 import { readWorkerState as readWatchdogWorker, type WatchdogWorkerState } from "../watchdog/worker-state";
 import { readProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
-import { readCoachStatus } from "../coach/status";
-import { readCoachSettings } from "../coach/settings";
-import { coachDirectory } from "../coach/paths";
-import { readWorkerState as readCoachWorker, type CoachWorkerState } from "../coach/worker-state";
+import { readMcpOptimizerStatus } from "../mcp-optimizer/status";
+import { readMcpOptimizerSettings } from "../mcp-optimizer/settings";
+import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
+import { readWorkerState as readMcpOptimizerWorker, type McpOptimizerWorkerState } from "../mcp-optimizer/worker-state";
 import { releaseTrainDirectory } from "../release-train/paths";
 import { readSettings as readReleaseTrainSettings } from "../release-train/settings";
 import {
@@ -50,7 +50,7 @@ async function liveAgents(context: McpContext): Promise<AgentSnapshot[] | undefi
 }
 
 function workerLifecycle(
-  worker: WatchdogWorkerState | CoachWorkerState | ReleaseTrainWorkerRecord | undefined,
+  worker: WatchdogWorkerState | McpOptimizerWorkerState | ReleaseTrainWorkerRecord | undefined,
   attached: boolean,
 ): AgentSnapshotInput["lifecycle"] {
   if (attached) return worker?.lifecycle === "failed" ? "failed" : "running";
@@ -169,15 +169,15 @@ function watchdogSnapshot(context: McpContext): AgentSnapshot {
   });
 }
 
-function coachSnapshot(context: McpContext): AgentSnapshot {
-  const descriptor = agentRegistry.require("coach");
-  const directory = coachDirectory(context.stateDir);
-  const worker = readCoachWorker(directory);
+function mcpOptimizerSnapshot(context: McpContext): AgentSnapshot {
+  const descriptor = agentRegistry.require("mcp-optimizer");
+  const directory = mcpOptimizerDirectory(context.stateDir);
+  const worker = readMcpOptimizerWorker(directory);
   const attached =
     worker !== undefined && worker.lifecycle !== "stopped" && pidAlive(worker.pid);
   const owned = attached && resolve(worker?.stateDir ?? "") === resolve(context.stateDir);
-  const status = readCoachStatus(directory);
-  const settings = readCoachSettings(directory);
+  const status = readMcpOptimizerStatus(directory);
+  const settings = readMcpOptimizerSettings(directory);
   const projection = readProjection(directory);
   const facts = new Map(
     (projection?.issues ?? []).map((issue) => [issue.url, issue] as const),
@@ -281,7 +281,7 @@ function persistedAgents(context: McpContext): AgentSnapshot[] {
     if (descriptor.id === "api-standards") return apiStandardsSnapshot(context);
     if (descriptor.id === "dead-code") return deadCodeSnapshot(context);
     if (descriptor.id === "release-train") return releaseTrainSnapshot(context);
-    return coachSnapshot(context);
+    return mcpOptimizerSnapshot(context);
   });
 }
 

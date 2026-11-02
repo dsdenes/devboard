@@ -77,11 +77,11 @@ import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { ApiStandardsBridge, type ApiStandardsBridgeOptions } from "./api-standards";
 import { DeadCodeBridge, type DeadCodeBridgeOptions } from "./dead-code";
-import { CoachActivity, type CoachActivityOptions } from "./coach";
+import { McpOptimizerActivity, type McpOptimizerActivityOptions } from "./mcp-optimizer";
 import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./release-train";
-import { coachDirectory } from "../coach/paths";
-import { readCoachSettings } from "../coach/settings";
-import { coachPromptTemplate } from "../coach/synthesize";
+import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
+import { readMcpOptimizerSettings } from "../mcp-optimizer/settings";
+import { mcpOptimizerPromptTemplate } from "../mcp-optimizer/synthesize";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import { toolListPayload } from "../mcp/catalog";
 import { toolInvocationCounts } from "../mcp/invocations";
@@ -260,9 +260,9 @@ export interface AppOptions {
   apiStandards?: Pick<ApiStandardsBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
   /** Dead Code's test seams; production uses the detached worker itself. */
   deadCode?: Pick<DeadCodeBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "reader">;
-  /** Coach's test seams; production reads its worker's state and ledger. */
-  coach?: Pick<
-    CoachActivityOptions,
+  /** MCP optimizer's test seams; production reads its worker's state and ledger. */
+  mcpOptimizer?: Pick<
+    McpOptimizerActivityOptions,
     "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker"
   >;
   /** Release Train's test seams; production reads its worker's state. */
@@ -2810,7 +2810,7 @@ export function createApp(options: AppOptions) {
       : TRACKER_SYNC_INTERVAL_MS);
 
   /**
-   * The Coach prompt section is generated from the dashboard's own open-issue
+   * The MCP optimizer prompt section is generated from the dashboard's own open-issue
    * read, so it is republished whenever that read returns a fresh list. The
    * publisher is bound after the prompt controller exists; the read is async.
    */
@@ -2867,7 +2867,7 @@ export function createApp(options: AppOptions) {
   const watchdogDescriptor = agentRegistry.require("watchdog");
   const designDescriptor = agentRegistry.require("design");
   const deadCodeDescriptor = agentRegistry.require("dead-code");
-  const coachDescriptor = agentRegistry.require("coach");
+  const mcpOptimizerDescriptor = agentRegistry.require("mcp-optimizer");
   const apiStandardsDescriptor = agentRegistry.require("api-standards");
   const releaseTrainDescriptor = agentRegistry.require("release-train");
   const scout = new ScoutBridge({
@@ -2971,12 +2971,12 @@ export function createApp(options: AppOptions) {
   });
 
   /**
-   * Coach reads the ACP transcripts and journal records already on disk,
+   * MCP optimizer reads the ACP transcripts and journal records already on disk,
    * overlays the forge projection its caps count, and commands its detached
    * worker. Opening the page never starts a cycle.
    */
-  const coach = new CoachActivity({
-    descriptor: coachDescriptor,
+  const mcpOptimizer = new McpOptimizerActivity({
+    descriptor: mcpOptimizerDescriptor,
     repoDir,
     stateDir,
     harnessDir: runnableHarnessDir(repoDir),
@@ -2984,18 +2984,18 @@ export function createApp(options: AppOptions) {
     send: (event, except) => sendAll(event, except),
     environment: process.env,
     log: (line) => process.stderr.write(`${line}\n`),
-    ...(options.coach?.reader === undefined ? {} : { reader: options.coach.reader }),
-    ...(options.coach?.now === undefined ? {} : { now: options.coach.now }),
-    ...(options.coach?.intervalMs === undefined
+    ...(options.mcpOptimizer?.reader === undefined ? {} : { reader: options.mcpOptimizer.reader }),
+    ...(options.mcpOptimizer?.now === undefined ? {} : { now: options.mcpOptimizer.now }),
+    ...(options.mcpOptimizer?.intervalMs === undefined
       ? {}
-      : { intervalMs: options.coach.intervalMs }),
-    ...(options.coach?.staleAfterMs === undefined
+      : { intervalMs: options.mcpOptimizer.intervalMs }),
+    ...(options.mcpOptimizer?.staleAfterMs === undefined
       ? {}
-      : { staleAfterMs: options.coach.staleAfterMs }),
-    ...(options.coach?.preflight === undefined ? {} : { preflight: options.coach.preflight }),
-    ...(options.coach?.spawnWorker === undefined
+      : { staleAfterMs: options.mcpOptimizer.staleAfterMs }),
+    ...(options.mcpOptimizer?.preflight === undefined ? {} : { preflight: options.mcpOptimizer.preflight }),
+    ...(options.mcpOptimizer?.spawnWorker === undefined
       ? {}
-      : { spawnWorker: options.coach.spawnWorker }),
+      : { spawnWorker: options.mcpOptimizer.spawnWorker }),
     hasClients: () => clients.size > 0,
   });
 
@@ -3046,7 +3046,7 @@ export function createApp(options: AppOptions) {
   /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog, design, deadCode, coach, apiStandards, releaseTrain],
+    adapters: [scout, watchdog, design, deadCode, mcpOptimizer, apiStandards, releaseTrain],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });
@@ -3060,9 +3060,9 @@ export function createApp(options: AppOptions) {
     repoDir,
     send: (event, except) => sendAll(event, except),
     templates: {
-      coach: () =>
-        coachPromptTemplate({
-          settings: readCoachSettings(coachDirectory(stateDir)),
+      "mcp-optimizer": () =>
+        mcpOptimizerPromptTemplate({
+          settings: readMcpOptimizerSettings(mcpOptimizerDirectory(stateDir)),
           openIssues:
             issues.openIssues?.map((issue) => ({
               number: issue.number,

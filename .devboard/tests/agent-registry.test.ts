@@ -129,7 +129,7 @@ describe("background agent registry", () => {
       "watchdog",
       "design",
       "dead-code",
-      "coach",
+      "mcp-optimizer",
       "api-standards",
       "release-train",
     ]);
@@ -179,14 +179,14 @@ describe("background agent registry", () => {
       testId: "agent-issue",
       columns: ["title", "category", "filedAt", "state", "version"],
     });
-    const coach = agentRegistry.require("coach");
-    expect(coach.label).toBe("Coach");
-    expect(coach.scope).toBe("repository");
-    expect(coach.cadence.defaultMinutes).toBe(60);
-    expect(coach.limits.default).toEqual({ maxPerHour: 10, maxPending: 20 });
-    expect(coach.detail.panel).toBe("cycles");
-    expect(coach.tab).toEqual({ id: "coach", kind: "coach", title: "Coach" });
-    expect(coach.prompt.kind).toBe("template");
+    const mcpOptimizer = agentRegistry.require("mcp-optimizer");
+    expect(mcpOptimizer.label).toBe("MCP optimizer");
+    expect(mcpOptimizer.scope).toBe("repository");
+    expect(mcpOptimizer.cadence.defaultMinutes).toBe(60);
+    expect(mcpOptimizer.limits.default).toEqual({ maxPerHour: 10, maxPending: 20 });
+    expect(mcpOptimizer.detail.panel).toBe("cycles");
+    expect(mcpOptimizer.tab).toEqual({ id: "mcp-optimizer", kind: "mcp-optimizer", title: "MCP optimizer" });
+    expect(mcpOptimizer.prompt.kind).toBe("template");
     const releaseTrain = agentRegistry.require("release-train");
     expect(releaseTrain.label).toBe("Release Train");
     expect(releaseTrain.scope).toBe("repository");
@@ -241,7 +241,7 @@ describe("background agent registry", () => {
       "watchdog",
       "design",
       "dead-code",
-      "coach",
+      "mcp-optimizer",
       "api-standards",
       "release-train",
       "patrol",
@@ -304,7 +304,7 @@ describe("background agent registry", () => {
       "watchdog",
       "design",
       "dead-code",
-      "coach",
+      "mcp-optimizer",
       "api-standards",
       "release-train",
       "patrol",

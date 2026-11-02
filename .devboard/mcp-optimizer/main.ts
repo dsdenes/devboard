@@ -1,15 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { acquireLock } from "../issues/lock";
-import { describeCycle, runCycle, type CoachReport } from "./coordinator";
-import { coachDirectory, cycleLockPath } from "./paths";
-import { readCoachSettings } from "./settings";
+import { describeCycle, runCycle, type McpOptimizerReport } from "./coordinator";
+import { mcpOptimizerDirectory, cycleLockPath } from "./paths";
+import { readMcpOptimizerSettings } from "./settings";
 
 /**
- * The manual Coach entry point.
+ * The manual MCP optimizer entry point.
  *
- *   bun run coach -- --once --root <repo> --state-dir <state>
- *   bun run coach -- --collect --dry-run --root <repo> --state-dir <state>
+ *   bun run mcp-optimizer -- --once --root <repo> --state-dir <state>
+ *   bun run mcp-optimizer -- --collect --dry-run --root <repo> --state-dir <state>
  *
  * `--collect --dry-run` reads the evidence and prints the report without
  * writing a ledger, a run report, or an issue. `--once` runs one real cycle
@@ -28,7 +28,7 @@ interface Parsed {
 
 function usage(): never {
   console.error(
-    "usage: coach --once|--collect [--dry-run] [--json] --root <checkout> " +
+    "usage: mcp-optimizer --once|--collect [--dry-run] [--json] --root <checkout> " +
       "--state-dir <state> [--now <ISO>]",
   );
   process.exit(2);
@@ -75,7 +75,7 @@ function parseArguments(args: string[]): Parsed {
   }
   const resolvedRoot = resolve(root ?? gitTopLevel() ?? process.cwd());
   if (!existsSync(join(resolvedRoot, ".devboard"))) {
-    console.error(`coach: missing prerequisite: ${join(resolvedRoot, ".devboard")} does not exist`);
+    console.error(`mcp-optimizer: missing prerequisite: ${join(resolvedRoot, ".devboard")} does not exist`);
     process.exit(2);
   }
   const resolvedState = resolve(stateDir ?? join(resolvedRoot, ".devboard", ".tmp"));
@@ -109,7 +109,7 @@ function packageVersion(root: string): string | null {
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
-  const coachDir = coachDirectory(options.stateDir);
+  const mcpOptimizerDir = mcpOptimizerDirectory(options.stateDir);
   if (options.dryRun) {
     const result = await runCycle({
       root: options.root,
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
 
   // The same lease every worker takes for a cycle: a manual run never
   // overlaps another version's in-flight cycle.
-  const lock = acquireLock(cycleLockPath(coachDir), {
+  const lock = acquireLock(cycleLockPath(mcpOptimizerDir), {
     repo: options.root,
     stateDir: options.stateDir,
     harnessVersion: packageVersion(options.root),
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
   });
   if (!lock.acquired) {
     console.error(
-      `coach: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner.pid})`}`,
+      `mcp-optimizer: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner.pid})`}`,
     );
     return;
   }
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
     const result = await runCycle({
       root: options.root,
       stateDir: options.stateDir,
-      settings: readCoachSettings(coachDir),
+      settings: readMcpOptimizerSettings(mcpOptimizerDir),
       ...(options.now === undefined ? {} : { now: options.now }),
     });
     if (options.json) {
@@ -162,7 +162,7 @@ function stdout(text: string): void {
   process.stdout.write(text);
 }
 
-function reportLines(report: CoachReport): string[] {
+function reportLines(report: McpOptimizerReport): string[] {
   return [
     `window: ${report.window.start} .. ${report.window.end}`,
     `sessions: ${report.sessions} (selected ${report.sessionFiles}` +

@@ -396,13 +396,13 @@ function decisions(
 }
 
 describe("api-standards registry", () => {
-  test("the fifth audit descriptor sits between Coach and the Release Train", () => {
+  test("the fifth audit descriptor sits between MCP optimizer and the Release Train", () => {
     expect(DEFAULT_AGENT_DESCRIPTORS.map((descriptor) => descriptor.id)).toEqual([
       "scout",
       "watchdog",
       "design",
       "dead-code",
-      "coach",
+      "mcp-optimizer",
       "api-standards",
       "release-train",
     ]);
@@ -1375,7 +1375,7 @@ describe("api-standards MCP projection", () => {
       "watchdog",
       "design",
       "dead-code",
-      "coach",
+      "mcp-optimizer",
       "api-standards",
       "release-train",
     ]);

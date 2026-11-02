@@ -6,12 +6,12 @@ import type { FamilyKind } from "./families";
 import { loadLedger } from "./ledger";
 
 /**
- * The read-only Coach view the dashboard serves: the newest cycle, the filed
+ * The read-only MCP optimizer view the dashboard serves: the newest cycle, the filed
  * families from the ledger, the pending depth, and the retained cycle history.
  * It never carries an environment value.
  */
 
-export interface CoachIssue {
+export interface McpOptimizerIssue {
   url: string;
   family: string;
   /** The exact title the filed issue carries. */
@@ -20,7 +20,7 @@ export interface CoachIssue {
   filedAt: string;
 }
 
-export interface CoachStatus {
+export interface McpOptimizerStatus {
   cycle: string | null;
   action: string;
   reason?: string;
@@ -33,27 +33,27 @@ export interface CoachStatus {
   /** Pending proposals dropped by the newest cycle. */
   dropped: number;
   pending: number;
-  issues: CoachIssue[];
+  issues: McpOptimizerIssue[];
   cycles: AgentCycle[];
 }
 
-export function readCoachStatus(coachDir: string): CoachStatus {
+export function readMcpOptimizerStatus(mcpOptimizerDir: string): McpOptimizerStatus {
   let latest: Record<string, unknown> = {};
   try {
-    const parsed: unknown = JSON.parse(readFileSync(join(coachDir, "latest.json"), "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(join(mcpOptimizerDir, "latest.json"), "utf8"));
     if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
       latest = parsed as Record<string, unknown>;
     }
   } catch {
     // No cycle has run yet.
   }
-  const ledger = loadLedger(coachDir).ledger;
+  const ledger = loadLedger(mcpOptimizerDir).ledger;
   const issues = Object.entries(ledger.families)
     .filter(([, entry]) => entry.lastIssueUrl !== undefined)
     .map(([family, entry]) => ({
       url: entry.lastIssueUrl!,
       family,
-      title: entry.lastTitle ?? `[coach] ${family}`,
+      title: entry.lastTitle ?? `[mcp-optimizer] ${family}`,
       kind: entry.kind,
       filedAt: entry.lastFiledAt ?? entry.lastSeen,
     }))
@@ -72,7 +72,7 @@ export function readCoachStatus(coachDir: string): CoachStatus {
     pending: ledger.pendingFiling.length,
     issues,
     cycles: readWatchdogCycles(
-      coachDir,
+      mcpOptimizerDir,
       latestWatchdogCycle(latest, (family) => ledger.families[family]?.lastIssueUrl),
       (family) => ledger.families[family]?.lastIssueUrl,
     ),

@@ -16,7 +16,7 @@ export const DEFAULT_MAX_ISSUES_PER_CYCLE = 2;
 export const MAX_ALLOWLIST_ENTRIES = 50;
 export const MAX_ALLOWLIST_ENTRY = 200;
 
-export interface CoachSettings {
+export interface McpOptimizerSettings {
   intervalMinutes: number;
   /** Filings per rolling hour; null is unlimited. */
   maxPerHour: number | null;
@@ -28,7 +28,7 @@ export interface CoachSettings {
   allowlist: string[];
 }
 
-export const DEFAULT_COACH_SETTINGS: CoachSettings = Object.freeze({
+export const DEFAULT_MCP_OPTIMIZER_SETTINGS: McpOptimizerSettings = Object.freeze({
   intervalMinutes: DEFAULT_INTERVAL_MINUTES,
   maxPerHour: DEFAULT_MAX_PER_HOUR,
   maxPending: DEFAULT_MAX_PENDING,
@@ -65,7 +65,7 @@ export function isValidAllowlist(value: unknown): value is string[] {
  * Parses a settings file. A missing or unknown key falls back to its default
  * and never rejects the file; an invalid known key falls back on its own.
  */
-export function parseCoachSettings(text: string): CoachSettings | undefined {
+export function parseMcpOptimizerSettings(text: string): McpOptimizerSettings | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -76,35 +76,35 @@ export function parseCoachSettings(text: string): CoachSettings | undefined {
   return {
     intervalMinutes: isValidCadence(parsed.intervalMinutes)
       ? parsed.intervalMinutes
-      : DEFAULT_COACH_SETTINGS.intervalMinutes,
+      : DEFAULT_MCP_OPTIMIZER_SETTINGS.intervalMinutes,
     maxPerHour: isValidLimit(parsed.maxPerHour)
       ? parsed.maxPerHour
-      : DEFAULT_COACH_SETTINGS.maxPerHour,
+      : DEFAULT_MCP_OPTIMIZER_SETTINGS.maxPerHour,
     maxPending: isValidLimit(parsed.maxPending)
       ? parsed.maxPending
-      : DEFAULT_COACH_SETTINGS.maxPending,
+      : DEFAULT_MCP_OPTIMIZER_SETTINGS.maxPending,
     maxIssuesPerCycle: isValidIssuesPerCycle(parsed.maxIssuesPerCycle)
       ? parsed.maxIssuesPerCycle
-      : DEFAULT_COACH_SETTINGS.maxIssuesPerCycle,
+      : DEFAULT_MCP_OPTIMIZER_SETTINGS.maxIssuesPerCycle,
     allowlist: isValidAllowlist(parsed.allowlist)
       ? [...parsed.allowlist]
-      : [...DEFAULT_COACH_SETTINGS.allowlist],
+      : [...DEFAULT_MCP_OPTIMIZER_SETTINGS.allowlist],
   };
 }
 
-export function readCoachSettings(directory: string): CoachSettings {
+export function readMcpOptimizerSettings(directory: string): McpOptimizerSettings {
   try {
     return (
-      parseCoachSettings(readFileSync(settingsPath(directory), "utf8")) ?? {
-        ...DEFAULT_COACH_SETTINGS,
+      parseMcpOptimizerSettings(readFileSync(settingsPath(directory), "utf8")) ?? {
+        ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
         allowlist: [],
       }
     );
   } catch {
-    return { ...DEFAULT_COACH_SETTINGS, allowlist: [] };
+    return { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, allowlist: [] };
   }
 }
 
-export function writeCoachSettings(directory: string, settings: CoachSettings): void {
+export function writeMcpOptimizerSettings(directory: string, settings: McpOptimizerSettings): void {
   writeJsonAtomic(settingsPath(directory), settings);
 }

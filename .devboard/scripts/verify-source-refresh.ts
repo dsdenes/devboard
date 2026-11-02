@@ -265,7 +265,7 @@ async function prepareCheckout(): Promise<void> {
   await writeAt(checkout, ".gitignore", "node_modules/\n");
   // The dashboard needs the server and every module its startup imports; the
   // client sources are not run by a server, and the bundle comes from dist.
-  for (const entry of ["server", "lib", "issues", "coach", "watchdog", "mcp", "release-train", "prompts", "templates", "omp", "extensions"]) {
+  for (const entry of ["server", "lib", "issues", "mcp-optimizer", "watchdog", "mcp", "release-train", "prompts", "templates", "omp", "extensions"]) {
     await cp(join(harnessRoot, entry), join(scratchHarness, entry), {
       recursive: true,
       filter: (source) => !source.endsWith(".test.ts"),

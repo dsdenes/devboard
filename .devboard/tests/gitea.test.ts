@@ -490,7 +490,7 @@ describe("Gitea pagination", () => {
       fetchImpl: capped(150),
     });
 
-    // Coach's duplicate check reads exactly this window.
+    // MCP optimizer's duplicate check reads exactly this window.
     const window = await forge.list("open", 100);
     expect(window.map((issue) => issue.number)).toEqual(
       Array.from({ length: 100 }, (_, index) => 150 - index),

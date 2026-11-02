@@ -31,8 +31,8 @@
     "verify:agents": "bun run scripts/verify-agents.ts",
     "verify:design": "bun run scripts/verify-design.ts",
     "verify:dead-code": "bun run scripts/verify-dead-code.ts",
-    "coach": "bun run coach/main.ts",
-    "verify:coach": "bun run scripts/verify-coach.ts",
+    "mcp-optimizer": "bun run mcp-optimizer/main.ts",
+    "verify:mcp-optimizer": "bun run scripts/verify-mcp-optimizer.ts",
     "verify:mcp": "bun run scripts/verify-mcp.ts",
     "verify:api-standards": "bun run scripts/verify-api-standards.ts",
     "verify:discover": "bun run scripts/verify-discover.ts"
@@ -59,7 +59,7 @@
     "vite.config.ts",
     "svelte.config.js",
     "tsconfig.json",
-    "coach",
+    "mcp-optimizer",
     "release-train",
     "mcp"
   ],

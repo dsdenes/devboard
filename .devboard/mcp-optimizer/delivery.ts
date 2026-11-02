@@ -3,16 +3,16 @@ import { join, resolve } from "node:path";
 import { createForgeIssues } from "../lib/forge-issues";
 import { redactSecrets } from "../lib/secret-redaction";
 import { originForge } from "../issues/repository";
-import type { CoachOpenIssue } from "./issue";
+import type { McpOptimizerOpenIssue } from "./issue";
 import { registeredProviderSecrets } from "./providers";
 
 /**
- * Coach issue delivery. It uses the harness forge-auth path through the shared
+ * MCP optimizer issue delivery. It uses the harness forge-auth path through the shared
  * forge client, redacts every unseen secret before the bytes leave the
  * process, and never closes, reopens, renames, or comments on an issue. The
  * deduplication read is the same client: the open issues, with their bodies.
  *
- * A verification run injects `DEVBOARD_COACH_FORGE_STUB=<directory>`: the
+ * A verification run injects `DEVBOARD_MCP_OPTIMIZER_FORGE_STUB=<directory>`: the
  * delivery then records each call in `calls.jsonl`, answers a deterministic
  * issue URL, and lists the issues it created, so no test contacts a real
  * forge.
@@ -20,21 +20,21 @@ import { registeredProviderSecrets } from "./providers";
 
 export type DeliveryResult = { ok: true; url: string } | { ok: false; reason: string };
 
-export interface CoachDelivery {
+export interface McpOptimizerDelivery {
   repository: string;
   /** Every open issue, with the body deduplication reads. */
-  list(): Promise<CoachOpenIssue[]>;
+  list(): Promise<McpOptimizerOpenIssue[]>;
   create(title: string, body: string): Promise<DeliveryResult>;
 }
 
-export interface CoachDeliveryOptions {
+export interface McpOptimizerDeliveryOptions {
   repoDir: string;
   /** The dashboard state; the provider credential store lives under it. */
   stateDir: string;
   environment?: Record<string, string | undefined>;
 }
 
-export const COACH_FORGE_STUB_ENV = "DEVBOARD_COACH_FORGE_STUB";
+export const MCP_OPTIMIZER_FORGE_STUB_ENV = "DEVBOARD_MCP_OPTIMIZER_FORGE_STUB";
 
 function firstLine(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
@@ -85,7 +85,7 @@ function stubDelivery(
   directory: string,
   repository: string,
   redact: (text: string) => string,
-): CoachDelivery {
+): McpOptimizerDelivery {
   const target = resolve(directory);
   const record = (call: StubCall): void => {
     mkdirSync(target, { recursive: true });
@@ -114,7 +114,7 @@ function stubDelivery(
 }
 
 /** The delivery for this checkout's origin, or the injected stub. */
-export function createCoachDelivery(options: CoachDeliveryOptions): CoachDelivery {
+export function createMcpOptimizerDelivery(options: McpOptimizerDeliveryOptions): McpOptimizerDelivery {
   const environment = options.environment ?? process.env;
   // Peers receive these keys from the credential store, so a transcript can
   // echo a secret the worker process itself never held.
@@ -122,7 +122,7 @@ export function createCoachDelivery(options: CoachDeliveryOptions): CoachDeliver
   const redact = (text: string): string => redactSecrets(text, environment, secrets);
   const remote = originForge(options.repoDir, environment);
   const repository = remote?.project ?? "fixture/fixture";
-  const stub = environment[COACH_FORGE_STUB_ENV];
+  const stub = environment[MCP_OPTIMIZER_FORGE_STUB_ENV];
   if (typeof stub === "string" && stub.length > 0) {
     return stubDelivery(stub, repository, redact);
   }
@@ -134,7 +134,7 @@ export function createCoachDelivery(options: CoachDeliveryOptions): CoachDeliver
     repository: forge.repository,
     async list() {
       const summaries = await forge.list("open", 100);
-      const issues: CoachOpenIssue[] = [];
+      const issues: McpOptimizerOpenIssue[] = [];
       for (const summary of summaries) {
         const document = await forge.get(summary.number);
         issues.push({

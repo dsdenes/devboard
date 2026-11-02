@@ -89,9 +89,10 @@ The width survives a reload.
   session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
   overview at the blocker they name.
 - **Devboard** carries the **Background agents** group — Auto Scout, Watchdog, Design System,
-  Coach, and Release Train — then exactly two `data-testid="devboard-tab"` entries: `MCP tools`
-  (`data-command="devboard.tab.tools"`) and `Skills` (`data-command="devboard.tab.skills"`). Each
-  agent entry opens its page; the last two open the read-only MCP tool list and the Skills table.
+  MCP optimizer, and Release Train — then exactly two `data-testid="devboard-tab"` entries: `MCP
+  tools` (`data-command="devboard.tab.tools"`) and `Skills` (`data-command="devboard.tab.skills"`).
+  Each agent entry opens its page; the last two open the read-only MCP tool list and the Skills
+  table.
   Neither entry is repeated per tool or per skill, so adding or removing one never changes the
   menu. No tool or skill name appears in the sidebar.
 - **Discover** lists the overview, glossary, and contribution sections, the six skills under their
@@ -174,7 +175,7 @@ standard 8px horizontal padding, and stays fully visible while the page content 
 tabs or modes replaces its content with the new page's agent and collapses it.
 
 The surfaces are the four background-agent pages (`agent-page` for `scout`, `watchdog`, `design`,
-and `coach`), the Discover agent pages (`discover-agent`), the Discover run pages
+and `mcp-optimizer`), the Discover agent pages (`discover-agent`), the Discover run pages
 (`discover-panel` for overview, glossary, skill, and warnings), the Goal lane page
 (`lane-header`), the Goal single-record page (`record-header`), the Issues focus tab
 (`issues-agent-focus`), the Flow overview (`flow-view` overview), and a Flow conversation
@@ -610,9 +611,9 @@ resolves the provider again instead of inheriting the worker's original key. The
 resolves once per issue run, Auto Scout once per scan, and Design once per cycle; a run that
 started before a key was added keeps its key, and the next run uses the current selection. Every
 refresh also writes `<stateDir>/providers/selection.json` with the selected provider, subscription
-id, label, model, and headroom; the file carries no key material. The Coach finalizer cannot probe
-usage, so it reads that snapshot and leads with the dashboard's selected subscription, then falls
-back to the operator's list order when no snapshot exists.
+id, label, model, and headroom; the file carries no key material. The MCP optimizer finalizer
+cannot probe usage, so it reads that snapshot and leads with the dashboard's selected
+subscription, then falls back to the operator's list order when no snapshot exists.
 
 Remaining is `1 - percent/100` for each Go window and `limit_remaining / limit` for OpenRouter,
 or unlimited when the account has no limit. A subscription is eligible only when every gating
@@ -626,9 +627,10 @@ every peer start is refused with an error pointing at the Providers dialog, so a
 silently inherits the operator's OMP login.
 
 Every agent process — goal work, lifecycle lanes, Flow, issues, Auto Scout, Design, Ask, Discover,
-goal drafts, skills preparation, and the Coach finalizer — starts with `PI_CODING_AGENT_DIR`
-pointing at a generated directory under `<stateDir>/providers/agents/`. Its `config.yml` pins
-`default`, `plan`, `smol`, `slow`, and `task` to the selected model. A Go selection also sets
+goal drafts, skills preparation, and the MCP optimizer finalizer — starts with
+`PI_CODING_AGENT_DIR` pointing at a generated directory under `<stateDir>/providers/agents/`. Its
+`config.yml` pins `default`, `plan`, `smol`, `slow`, and `task` to the selected model. A Go
+selection also sets
 `retry.modelFallback: true`, `retry.fallbackOn: any`, and a chain from `opencode-go/*` to the
 OpenRouter fallback; an OpenRouter selection sets no chain. Every selection also names `ollama`,
 `lm-studio`, `llama.cpp`, and `apple` in `disabledProviders`: OMP discovers those implicit local
@@ -1942,7 +1944,7 @@ and is retried the same way.
 |`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
-|`DEVBOARD_COACH_SYNTHESIS_STUB`|unset|JSON file answering every Coach synthesis call; verification only, never a peer.|
+|`DEVBOARD_MCP_OPTIMIZER_SYNTHESIS_STUB`|unset|JSON file answering every MCP optimizer synthesis call; verification only, never a peer.|
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`|`30000`|How often a connected dashboard re-reads the origin's open issues for the Open issues list; at least 1000. Independent of the Issues worker.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
@@ -2028,7 +2030,7 @@ sudo userdel --remove <user>
 
 ## Background agents
 
-Auto Scout, Watchdog, Design System, Dead Code, Coach, and API Standards are the six continuous
+Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer, and API Standards are the six continuous
 instances of one background-agent contract; the Release Train is a seventh descriptor of the same
 shape. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
 description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
@@ -2062,7 +2064,7 @@ so a field never separates from its save control. Either save validates all thre
 sends one settings command. The Devboard sidebar has two groups in order: `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
 `open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`,
-`open-devboard-dead-code`, `open-devboard-coach`, `open-devboard-api-standards`, then
+`open-devboard-dead-code`, `open-devboard-mcp-optimizer`, `open-devboard-api-standards`, then
 `open-devboard-release-train`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
 `Devboard sections` (the `devboard-tab` MCP tools and Skills entries). The Issues sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
@@ -2071,9 +2073,9 @@ queue.
 
 ### Periodic forge reads
 
-All six filed-issues tables — Auto Scout, Watchdog, Design System, Dead Code, Coach, and API
-Standards — obtain, age, and
-fail their issue state through one shared read (`server/agents/forge-state.ts`) that names, for
+All six filed-issues tables — Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer, and
+API Standards — obtain, age, and fail their issue state through one shared read
+(`server/agents/forge-state.ts`) that names, for
 each row it lists, the issue's current forge state and its shipping release. The read runs in
 the dashboard and never depends on the agent's worker: a stopped agent's table reflects a
 closure in the origin forge within one interval, with no Start, no worker restart, no browser
@@ -2134,8 +2136,8 @@ opens: `.devboard/prompts/scout-recommendations.md`, `.devboard/prompts/design-s
 are shown complete in the scrollable monospace region `data-testid="agent-prompt-text"`, and are
 identical in a harness source checkout and an installed host. The Watchdog section contains
 `agent-prompt-absent`, naming that Watchdog runs no editable prompt; its deduplication turn is
-assembled from `prompts/watchdog-dedup.md` at run time. Coach renders its generated synthesis
-template instead, described below. Neither renders `agent-prompt-text`.
+assembled from `prompts/watchdog-dedup.md` at run time. MCP optimizer renders its generated
+synthesis template instead, described below. Neither renders `agent-prompt-text`.
 
 Every prompt file and every prompt assembled in code begins its body with a `## Manifesto` section
 whose first sentence names the agent's goal and the observable result it produces, and no prompt
@@ -2143,23 +2145,23 @@ body opens with a backticked or bare slash-command invocation of itself. The flo
 the complete flow and act through the Devboard MCP tools; no prompt asks for a JSON, JSON-lines, or
 staged answer document for deterministic code to parse or correct.
 
-The Coach section contains the one synthesis prompt template: exactly one
+The MCP optimizer section contains the one synthesis prompt template: exactly one
 `agent-prompt-template` element whose `agent-prompt-template-text` is the complete template in a
-scrollable monospace region. It is the same text every Coach synthesis call sends, rendered from
-one shared source: the manifesto, every section heading, every `Rules:` bullet, and the limits are
-character-for-character the synthesis prompt's fixed lines. The `Family:`,
+scrollable monospace region. It is the same text every MCP optimizer synthesis call sends,
+rendered from one shared source: the manifesto, every section heading, every `Rules:` bullet, and
+the limits are character-for-character the synthesis prompt's fixed lines. The `Family:`,
 `Fragments:`, and `Excerpts:` sections hold the literal placeholders `<family>`, `<fragments>`,
 and `<excerpts>`, so no family key, session, excerpt, or command occurrence is named and there is
 no per-family or per-kind copy. The live sections carry no snapshot: `MCP catalog:` is the
 `MCP_TOOLS` name/title pairs in catalog order plus every `MCP_COVERS` entry, `Command allowlist:`
 is `JSON.stringify(allowlist, null, 2)` for the allowlist in `<STATE_DIR>/coach/settings.json`
-read on every connect, and `Open Coach issues:` is the dashboard's own open-issue read filtered to
-issues whose title starts with `[coach]` or whose body contains `family:`, as `{number, title,
-url}` objects sorted by number. A successful read with no such issue shows `[]`; before any
-successful read the section states that the open Coach issues could not be read. The template is
-read-only in an installed host and in a harness source checkout: it renders no editor, Save,
-Reset, or chat control, opening, closing, restoring, or reloading it writes no file and starts or
-stops no agent.
+read on every connect, and `Open MCP optimizer issues:` is the dashboard's own open-issue read
+filtered to issues whose title starts with `[mcp-optimizer]` or whose body contains `family:`, as
+`{number, title, url}` objects sorted by number. A successful read with no such issue shows `[]`;
+before any successful read the section states that the open MCP optimizer issues could not be
+read. The template is read-only in an installed host and in a harness source checkout: it renders
+no editor, Save, Reset, or chat control, opening, closing, restoring, or reloading it writes no
+file and starts or stops no agent.
 
 No page renders `agent-prompt-editor`, `agent-prompt-save`, `agent-prompt-chat`,
 `agent-prompt-chat-log`, `agent-prompt-message`, `agent-prompt-send`, `agent-prompt-chat-error`,
@@ -2593,21 +2595,24 @@ seeded marker, asserts the ledger entry, title, and body, and closes the issue i
 `verify:agents` drives all five pages through headless Chrome; `verify:design` drives the Design
 System route through the same shared interface.
 
-## Coach
+## MCP optimizer
 
-Coach is the `coach` descriptor in the shared background-agent contract: label `Coach`, scope
-`repository`, cadence default 60 minutes, at most 2 issues per cycle, and 10 filings per rolling
-hour. `maxPending` remains a visible setting but no proposal is queued: the synthesis turn files
-directly or records a skip. Its page is the shared `agent-page` with `data-agent="coach"` and every
-shared core id; `agent-detail` renders the shared cycle history. Opening, selecting, restoring, or
-reloading the page starts nothing. Start and Stop command one detached worker per repository state
-directory.
+MCP optimizer is the `mcp-optimizer` descriptor in the shared background-agent contract: label
+`MCP optimizer`, scope `repository`, cadence default 60 minutes, at most 2 issues per cycle, and
+10 filings per rolling hour. `maxPending` remains a visible setting but no proposal is queued: the
+synthesis turn files directly or records a skip. Its page is the shared `agent-page` with
+`data-agent="mcp-optimizer"` and every shared core id; `agent-detail` renders the shared cycle
+history. Opening, selecting, restoring, or reloading the page starts nothing. Start and Stop
+command one detached worker per repository state directory.
 
-Coach's files live under `<STATE_DIR>/coach/`: `worker.json` (published lifecycle), `settings.json`,
-`control/`, `state.json` (the ledger), `lock`, `runs/<cycle>/report.json|report.md`, `latest.json`,
-and `projection.json` (the dashboard's last forge projection, rendered by the page). The
-synthesizer also needs the generated per-peer directory under `<STATE_DIR>/providers/agents/`,
-written with the same shared helpers every peer uses. Start reaches
+MCP optimizer's files live under `<STATE_DIR>/coach/`: `worker.json` (published lifecycle),
+`settings.json`, `control/`, `state.json` (the ledger), `lock`,
+`runs/<cycle>/report.json|report.md`, `latest.json`, and `projection.json` (the dashboard's last
+forge projection, rendered by the page). The directory keeps its historical `coach/` name: an
+upgrade can leave a worker of the previous harness version live on the same lock, control
+channel, and ledger, so moving the state would strand that worker and start a second one beside
+it. The synthesizer also needs the generated per-peer directory under
+`<STATE_DIR>/providers/agents/`, written with the same shared helpers every peer uses. Start reaches
 `starting` before the worker exists and `running` once its state is readable; Stop reaches
 `stopping` and then `stopped` after the running cycle ends and before any further cycle starts. A
 stopped worker is not restarted by a dashboard restart, a page open, or a tab restore; a live
@@ -2655,10 +2660,11 @@ other bash call attaches to its family as an occurrence; an errored mutating too
 a read-only tool error is ignored. A retry loop (one call identity at least three times, at least
 two after an error) adds weight to the repeated command's family and never forms its own family. A
 journal `question` repeated in at least two scopes becomes `question: <normalized text>`; an
-`acp-stderr` line repeated in at least two scopes becomes `run-failure: <normalized line>`. Sessions
-and commands owned by Coach (`.devboard/coach`, `verify:coach`, a Coach run cwd), fixture-only
-commands (`true`, a no-op `echo`, `i: noop`), and anything under `.worktree/` or `.devboard/.tmp/`
-are excluded from families and excerpts.
+`acp-stderr` line repeated in at least two scopes becomes `run-failure: <normalized line>`.
+Sessions and commands owned by MCP optimizer (`.devboard/mcp-optimizer`,
+`verify:mcp-optimizer`, an MCP optimizer run cwd), fixture-only commands (`true`, a no-op `echo`,
+`i: noop`), and anything under `.worktree/` or `.devboard/.tmp/` are excluded from families and
+excerpts.
 
 Each family carries `key`, `kind` (`command`, `question`, `run-failure`), `calls`, `sessions`,
 `days`, `firstAt`, `lastAt`, `fragments` with counts, and at most five excerpts. An excerpt holds
@@ -2674,26 +2680,26 @@ Each selected family gets exactly one ACP synthesis call, at most four at a time
 120-second timeout. The peer is `AGENT_COMMAND` (default `omp acp`) built from every enabled
 OpenCode Go subscription, led by the dashboard's published selection when it still names an enabled
 key and otherwise by the operator's list order, pinned to
-`opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The coach
-does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes, so it
-follows `selection.json` instead. A credential rejection the peer reports in its ACP error frame or
-stderr rotates to the next enabled Go subscription and, when none is left, fails closed; a 401 or
-"unauthorized" quoted inside assistant text never rotates. The prompt starts with a `## Manifesto`,
-carries the family summary, every fragment with its count, at most five excerpts, the MCP catalog
-as name/title pairs plus every `covers` entry, every open Coach issue as number/title/URL, the
-configured allowlist, `maxIssuesPerCycle`, the rolling-hour room, the family tag, and the exact
-body sections; it stays under 24 KiB. A cycle whose synthesis calls all fail records the failure
-and files nothing. A failed call among successful ones is recorded for its family and does not
-discard what the other calls filed.
+`opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The MCP
+optimizer does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes,
+so it follows `selection.json` instead. A credential rejection the peer reports in its ACP error
+frame or stderr rotates to the next enabled Go subscription and, when none is left, fails closed;
+a 401 or "unauthorized" quoted inside assistant text never rotates. The prompt starts with a
+`## Manifesto`, carries the family summary, every fragment with its count, at most five excerpts,
+the MCP catalog as name/title pairs plus every `covers` entry, every open MCP optimizer issue as
+number/title/URL, the configured allowlist, `maxIssuesPerCycle`, the rolling-hour room, the family
+tag, and the exact body sections; it stays under 24 KiB. A cycle whose synthesis calls all fail
+records the failure and files nothing. A failed call among successful ones is recorded for its
+family and does not discard what the other calls filed.
 
-The agent reads the open Coach issues through the MCP read tools and files at most one proposal
-itself through the MCP `issue_create` tool, or records why it filed nothing through
-`coach_proposal_skip`. There is no synthesis answer object, no deterministic proposal validator,
-and no `pendingFiling` queue. A proposal the agent does not file is recorded as `skipped` with its
-reason; the next cycle reconsiders the family. The tool records are the only filing evidence, and
-a tool error is recorded for that family.
+The agent reads the open MCP optimizer issues through the MCP read tools and files at most one
+proposal itself through the MCP `issue_create` tool, or records why it filed nothing through
+`mcp_optimizer_proposal_skip`. There is no synthesis answer object, no deterministic proposal
+validator, and no `pendingFiling` queue. A proposal the agent does not file is recorded as
+`skipped` with its reason; the next cycle reconsiders the family. The tool records are the only
+filing evidence, and a tool error is recorded for that family.
 
-The Coach page's Prompt disclosure shows that same prompt as one read-only template
+The MCP optimizer page's Prompt disclosure shows that same prompt as one read-only template
 (`agent-prompt-template`, with the text in `agent-prompt-template-text`), not as a prompt file and
 not as an absence. `synthesize.ts` renders both the call's prompt and the template from one fixed
 text and one catalog/allowlist/limit/issue rendering, so the manifesto, the section headings, and
@@ -2701,15 +2707,15 @@ the `Rules:` bullets cannot drift apart; a test builds a real prompt for a fixtu
 asserts the fixed lines are equal. The per-family sections show `<family>`, `<fragments>`, and
 `<excerpts>`; the live sections name the current catalog, read the allowlist and limits from
 `<STATE_DIR>/coach/settings.json` on each connect, and list the dashboard's current open issues
-filtered by `[coach]` title or `family:` body, sorted by number, or state that the open Coach
-issues could not be read before the first successful read. Opening, closing, restoring, or
-reloading the disclosure writes nothing and starts nothing, and no editor, Save, or chat exists
-for Coach.
+filtered by `[mcp-optimizer]` title or `family:` body, sorted by number, or state that the open
+MCP optimizer issues could not be read before the first successful read. Opening, closing,
+restoring, or reloading the disclosure writes nothing and starts nothing, and no editor, Save, or
+chat exists for MCP optimizer.
 
 ### Filing, caps, and the ledger
 
-A tool proposal files `[coach] <family key>`; a prompt proposal files
-`[coach] prompt: <family key>`. The body carries exactly one `## Family`, `## Evidence`,
+A tool proposal files `[mcp-optimizer] <family key>`; a prompt proposal files
+`[mcp-optimizer] prompt: <family key>`. The body carries exactly one `## Family`, `## Evidence`,
 `## Proposed tool` or `## Proposed prompt`, `## Acceptance`, and `## Rationale` section in that
 order. The tool section holds a fenced JSON block of the proposed tool, its covers list, and the
 exact allowlist entry the implementer must add. The body carries
@@ -2736,7 +2742,7 @@ discarded on load, the report states `ledgerReset: true`, and deduplication reli
 `report.json` and `report.md` carry the window, session and journal counts, total family count,
 selected keys with scores, omitted count, each synthesis call's model and duration, each recorded
 outcome with its rule or skip reason, filed URLs, duplicate skips, dropped count, and `pending: 0`.
-The dashboard's `CoachStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`, `failed`),
+The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`, `failed`),
 `reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`, and `cycles`.
 
 A cycle edits no prompt, wrapper, source, session file, or journal record, and writes only
@@ -2746,14 +2752,14 @@ page and worker send no command that starts, stops, or repairs another agent.
 Run it by hand from `.devboard`:
 
 ```bash
-bun run coach -- --collect --dry-run --root <checkout> --state-dir <state> --json
-bun run coach -- --once --root <checkout> --state-dir <state> [--now <ISO>] --json
+bun run mcp-optimizer -- --collect --dry-run --root <checkout> --state-dir <state> --json
+bun run mcp-optimizer -- --once --root <checkout> --state-dir <state> [--now <ISO>] --json
 ```
 
-`verify:coach` seeds exactly three command families under `.devboard/.tmp`, injects a deterministic
-synthesizer and a stub forge, and proves one synthesis call per family, the filed title and body
-sections, the fenced tool definition and allowlist entry, no second filing, a cap holding a
-proposal pending, and byte-identical session and journal directories.
+`verify:mcp-optimizer` seeds exactly three command families under `.devboard/.tmp`, injects a
+deterministic synthesizer and a stub forge, and proves one synthesis call per family, the filed
+title and body sections, the fenced tool definition and allowlist entry, no second filing, a cap
+holding a proposal pending, and byte-identical session and journal directories.
 
 ## Devboard MCP server
 
@@ -2808,7 +2814,7 @@ call; `getMcpTools` reports the table as the `invocations` map and a missing fil
 |`entry_point`|`surface`, `seed`|one repository-relative path, a line inside it, the surface, and the seed|
 
 The ACP session parser, token and cost summation, and tool-error fingerprint are the same module
-Coach reads, so a seeded session reports the same id, relative cwd, totals, cost, tool name, and
+MCP optimizer reads, so a seeded session reports the same id, relative cwd, totals, cost, tool name, and
 error fingerprint through both surfaces. Every truncated response states `truncated: true` and the
 next offset where paging exists. Selection stats each transcript and reads its `session` header;
 only the newest 1,000 selected transcripts are parsed, and `agent_session_read` resolves the id
@@ -2844,8 +2850,8 @@ from those headers and parses only the matching file, so one read does not cost 
   `<cycle>/release-request.json`; the Design System worker still performs the commit, push, release
   workflow wait, and publish.
 - `watchdog_duplicate_record` records one watchdog candidate's duplicate disposition for the
-  cycle, and `coach_proposal_skip` records why one Coach family filed nothing. Neither creates or
-  comments on an issue.
+  cycle, and `mcp_optimizer_proposal_skip` records why one MCP optimizer family filed nothing.
+  Neither creates or comments on an issue.
 - `issue_close` closes one issue through the repository's forge as `completed` or `not planned` and
   returns the resulting state. Every issue read and write shares one bounded forge client: a
   credential probe or forge command that outlives its deadline (60 seconds by default) fails the
@@ -4135,16 +4141,17 @@ its 60-minute, 10-per-hour, and 5-open defaults, the identical core test ids on 
 page, Start -> starting -> running and Stop -> stopping -> stopped, cadence and limit validation
 and persistence, the Watchdog cap, the shared table columns, freshness without a reload, no
 mutating command on reload, the timer-blocked state and one-click disable against a stub
-`systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
-detail and persisted settings, and the read-only prompt section: every page renders `agent-prompt`
-directly after `agent-header`, closed on load; Auto Scout, Design System, and Dead Code show complete prompt
-bytes in `agent-prompt-text`; Watchdog shows `agent-prompt-absent`; Coach shows the one read-only
-`agent-prompt-template` with the fixed intro, every heading and rule line, the three placeholders,
-every catalog tool name, the seeded allowlist, and the fixture's two Coach issues but not its
-unrelated issue; no page renders an editor, Save, or chat test id and no prompt carries a
-source-only marker; an installed fixture and a source-checkout fixture render the same bytes and
-template and both refuse the removed save as an unknown command, leaving `.devboard/prompts`
-byte-identical; editing Coach's settings file and reconnecting shows the new allowlist.
+`systemctl`, and the footer indicator with no console error. It also proves MCP optimizer's
+shared cycle detail and persisted settings, and the read-only prompt section: every page renders
+`agent-prompt` directly after `agent-header`, closed on load; Auto Scout, Design System, and Dead
+Code show complete prompt bytes in `agent-prompt-text`; Watchdog shows `agent-prompt-absent`; MCP
+optimizer shows the one read-only `agent-prompt-template` with the fixed intro, every heading and
+rule line, the three placeholders, every catalog tool name, the seeded allowlist, and the
+fixture's two MCP optimizer issues but not its unrelated issue; no page renders an editor, Save,
+or chat test id and no prompt carries a source-only marker; an installed fixture and a
+source-checkout fixture render the same bytes and template and both refuse the removed save as an
+unknown command, leaving `.devboard/prompts`
+byte-identical; editing MCP optimizer's settings file and reconnecting shows the new allowlist.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

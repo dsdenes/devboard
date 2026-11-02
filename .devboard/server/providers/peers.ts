@@ -12,7 +12,7 @@ import { readSelectionSnapshot } from "./snapshot";
 
 /**
  * The one generated peer binding every ACP role that spends model prose uses.
- * Coach's finalizer and the watchdog's deduplication agent both start
+ * MCP optimizer's finalizer and the watchdog's deduplication agent both start
  * `AGENT_COMMAND` with a per-peer directory and an OpenCode Go key.
  *
  * The usage endpoint is deliberately not consulted. It is shared with the

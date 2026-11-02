@@ -5,7 +5,7 @@ import { ProviderService } from "../server/providers/service";
 export type { Resolved };
 
 /**
- * The Coach's provider need: one ACP synthesizer peer per selected family. It
+ * The MCP optimizer's provider need: one ACP synthesizer peer per selected family. It
  * uses the same generated binding every other agent gets, pinned to OpenCode
  * Go, and never probes the usage endpoint. That endpoint is shared with the
  * dashboard's rotation, can be unreachable or transiently rejecting, and a
@@ -15,7 +15,7 @@ export type { Resolved };
  */
 
 /**
- * Every registered provider key, for outbound redaction. The Coach files
+ * Every registered provider key, for outbound redaction. The MCP optimizer files
  * evidence from peer sessions that received these values, so they belong to
  * the secret set even when the worker environment never held them.
  */

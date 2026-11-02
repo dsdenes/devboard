@@ -40,7 +40,7 @@ import {
 } from "./discover";
 import { requestDesignRelease } from "./design";
 import { recordWatchdogDuplicate } from "./watchdog";
-import { recordCoachSkip } from "./coach";
+import { recordMcpOptimizerSkip } from "./mcp-optimizer";
 import { pickEntryPoint } from "../lib/entry-point";
 import { logToolCall } from "./tool-log";
 
@@ -66,7 +66,7 @@ function stringArgument(args: Record<string, unknown>, name: string): string {
 /** Tools whose successful or failed call leaves a state change or a record. */
 const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "background_agent_control",
-  "coach_proposal_skip",
+  "mcp_optimizer_proposal_skip",
   "design_release_request",
   "discover_contribution_stage",
   "discover_glossary_stage",
@@ -360,8 +360,8 @@ async function dispatch(
         issue: args.issue,
         representative: args.representative,
       });
-    case "coach_proposal_skip":
-      return recordCoachSkip(context, { family: args.family, reason: args.reason });
+    case "mcp_optimizer_proposal_skip":
+      return recordMcpOptimizerSkip(context, { family: args.family, reason: args.reason });
     case "issue_get":
       return getIssue(context, args.number);
     case "issues_control":

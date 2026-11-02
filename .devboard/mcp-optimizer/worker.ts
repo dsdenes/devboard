@@ -3,20 +3,20 @@ import { dirname, join, resolve } from "node:path";
 import { acquireLock } from "../issues/lock";
 import { readHarnessVersion } from "../server/version";
 import { runCycle, describeCycle } from "./coordinator";
-import { takeCoachCommands, type CoachCommand } from "./control";
+import { takeMcpOptimizerCommands, type McpOptimizerCommand } from "./control";
 import {
-  coachDirectory,
+  mcpOptimizerDirectory,
   controlDirectory,
   cycleLockPath,
   versionedControlDirectory,
   versionedLockPath,
   versionedWorkerDirectory,
 } from "./paths";
-import { readCoachSettings, writeCoachSettings, type CoachSettings } from "./settings";
-import { readWorkerState, writeWorkerState, type CoachWorkerState } from "./worker-state";
+import { readMcpOptimizerSettings, writeMcpOptimizerSettings, type McpOptimizerSettings } from "./settings";
+import { readWorkerState, writeWorkerState, type McpOptimizerWorkerState } from "./worker-state";
 
 /**
- * The dashboard-started detached Coach worker. One instance exists per
+ * The dashboard-started detached MCP optimizer worker. One instance exists per
  * repository state directory and harness version; it owns that version's lock
  * and cadence, reads settings and control files between cycles, and survives
  * every dashboard restart. The versioned worker and cycle leases are what let a
@@ -27,7 +27,7 @@ import { readWorkerState, writeWorkerState, type CoachWorkerState } from "./work
 const CONTROL_POLL_MS = 250;
 /** Published when another version's worker holds the one cycle lease. */
 export const CYCLE_BUSY_NOTICE =
-  "Another Coach worker is running a cycle; this worker retries shortly.";
+  "Another MCP optimizer worker is running a cycle; this worker retries shortly.";
 
 interface Parsed {
   root: string;
@@ -71,10 +71,10 @@ function gitTopLevel(): string | undefined {
   return result.exitCode === 0 && top.length > 0 ? top : undefined;
 }
 
-export interface CoachWorkerOptions {
+export interface McpOptimizerWorkerOptions {
   /** The checkout the cycle reads. */
   root: string;
-  /** The dashboard's STATE_DIR; Coach files live under its `coach/`. */
+  /** The dashboard's STATE_DIR; MCP optimizer files live under its `coach/`. */
   stateDir: string;
   /** The STATE_DIR that decides ownership; defaults to `stateDir`. */
   ownerStateDir?: string;
@@ -92,11 +92,11 @@ export interface CoachWorkerOptions {
  * Runs one detached worker until Stop, Drain, or a signal ends it. Returns the
  * process exit code; the caller owns the process.
  */
-export async function runWorker(options: CoachWorkerOptions): Promise<number> {
+export async function runWorker(options: McpOptimizerWorkerOptions): Promise<number> {
   const root = resolve(options.root);
   const stateDir = resolve(options.stateDir);
   const ownerStateDir = resolve(options.ownerStateDir ?? stateDir);
-  const coachDir = coachDirectory(stateDir);
+  const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
   const harnessVersion =
     options.harnessVersion === undefined
       ? (process.env.DEVBOARD_HARNESS_VERSION ??
@@ -105,25 +105,25 @@ export async function runWorker(options: CoachWorkerOptions): Promise<number> {
   const cycle = options.cycle ?? runCycle;
   const log = options.log ?? ((line: string) => console.error(line));
   const controlPollMs = Math.max(10, options.controlPollMs ?? CONTROL_POLL_MS);
-  const versionDirectory = versionedWorkerDirectory(coachDir, harnessVersion);
-  const versionControlDirectory = versionedControlDirectory(coachDir, harnessVersion);
+  const versionDirectory = versionedWorkerDirectory(mcpOptimizerDir, harnessVersion);
+  const versionControlDirectory = versionedControlDirectory(mcpOptimizerDir, harnessVersion);
 
   // A worker of another version never holds this path, so a takeover can
   // start beside it; only the same version's live worker refuses this start.
-  const lock = acquireLock(versionedLockPath(coachDir, harnessVersion), {
+  const lock = acquireLock(versionedLockPath(mcpOptimizerDir, harnessVersion), {
     repo: root,
     stateDir: ownerStateDir,
     harnessVersion,
     argv: [...process.argv],
   });
   if (!lock.acquired) {
-    log(`coach worker: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner.pid})`}`);
+    log(`mcp-optimizer worker: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner.pid})`}`);
     return 0;
   }
 
-  const prior = readWorkerState(versionDirectory) ?? readWorkerState(coachDir);
+  const prior = readWorkerState(versionDirectory) ?? readWorkerState(mcpOptimizerDir);
   const startedAt = new Date().toISOString();
-  let settings: CoachSettings = readCoachSettings(coachDir);
+  let settings: McpOptimizerSettings = readMcpOptimizerSettings(mcpOptimizerDir);
   let stopping = false;
   let draining = false;
   let lastRunAt: string | null = prior?.lastRunAt ?? null;
@@ -131,7 +131,7 @@ export async function runWorker(options: CoachWorkerOptions): Promise<number> {
   let lastError: string | null = null;
   let notice: string | null = null;
 
-  const publish = (lifecycle: CoachWorkerState["lifecycle"], enabled: boolean): void => {
+  const publish = (lifecycle: McpOptimizerWorkerState["lifecycle"], enabled: boolean): void => {
     writeWorkerState(versionDirectory, {
       version: 1,
       pid: process.pid,
@@ -171,7 +171,7 @@ export async function runWorker(options: CoachWorkerOptions): Promise<number> {
   process.on("SIGTERM", requestStop);
   process.on("SIGINT", requestStop);
 
-  const apply = (command: CoachCommand): void => {
+  const apply = (command: McpOptimizerCommand): void => {
     switch (command.type) {
       case "stop":
         requestStop();
@@ -189,12 +189,12 @@ export async function runWorker(options: CoachWorkerOptions): Promise<number> {
         // replace the operator's allowlist and maxIssuesPerCycle with stale
         // values. Only the three cadence keys come from the command.
         settings = {
-          ...readCoachSettings(coachDir),
+          ...readMcpOptimizerSettings(mcpOptimizerDir),
           intervalMinutes: command.intervalMinutes,
           maxPerHour: command.maxPerHour,
           maxPending: command.maxPending,
         };
-        writeCoachSettings(coachDir, settings);
+        writeMcpOptimizerSettings(mcpOptimizerDir, settings);
         recomputeNext();
         notice = `Settings saved: every ${command.intervalMinutes} minute(s).`;
         publish("running", true);
@@ -207,10 +207,10 @@ export async function runWorker(options: CoachWorkerOptions): Promise<number> {
     // Settings and the legacy control directory are shared, so an operator
     // command written by an older dashboard is honoured alongside this
     // version's own control files.
-    if (existsSync(controlDirectory(coachDir))) {
-      for (const command of takeCoachCommands(controlDirectory(coachDir))) apply(command);
+    if (existsSync(controlDirectory(mcpOptimizerDir))) {
+      for (const command of takeMcpOptimizerCommands(controlDirectory(mcpOptimizerDir))) apply(command);
     }
-    for (const command of takeCoachCommands(versionControlDirectory)) apply(command);
+    for (const command of takeMcpOptimizerCommands(versionControlDirectory)) apply(command);
   };
 
   publish("running", true);
@@ -224,11 +224,11 @@ export async function runWorker(options: CoachWorkerOptions): Promise<number> {
       const now = Date.now();
       const next = nextRunAt === null ? now : Date.parse(nextRunAt);
       if (!Number.isFinite(next) || now >= next) {
-        settings = readCoachSettings(coachDir);
+        settings = readMcpOptimizerSettings(mcpOptimizerDir);
         // One cycle at a time across every version: the lease is held only for
         // the cycle, so a drained worker's in-flight unit is never re-run by
         // its replacement.
-        const lease = acquireLock(cycleLockPath(coachDir), {
+        const lease = acquireLock(cycleLockPath(mcpOptimizerDir), {
           repo: root,
           stateDir: ownerStateDir,
           harnessVersion,
@@ -262,7 +262,7 @@ export async function runWorker(options: CoachWorkerOptions): Promise<number> {
         }
         consume();
         if (stopping || draining) break;
-        settings = readCoachSettings(coachDir);
+        settings = readMcpOptimizerSettings(mcpOptimizerDir);
         recomputeNext();
         publish("running", true);
         continue;
@@ -284,12 +284,12 @@ async function main(): Promise<void> {
   const parsed = parseArguments(process.argv.slice(2));
   const top = parsed?.root ?? gitTopLevel();
   if (top === undefined) {
-    console.error("coach worker: the harness is not inside a git checkout");
+    console.error("mcp-optimizer worker: the harness is not inside a git checkout");
     process.exit(2);
   }
   const root = resolve(top);
   if (!existsSync(join(root, ".devboard"))) {
-    console.error(`coach worker: missing prerequisite: ${join(root, ".devboard")} does not exist`);
+    console.error(`mcp-optimizer worker: missing prerequisite: ${join(root, ".devboard")} does not exist`);
     process.exit(2);
   }
   const stateDir = resolve(parsed?.stateDir ?? join(root, ".devboard", ".tmp"));

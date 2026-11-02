@@ -6,9 +6,9 @@ import { writeJsonAtomic } from "../watchdog/settings";
 
 /**
  * The detached worker's published lifecycle. The dashboard reads only this to
- * know whether Coach is starting, running, stopping, stopped, or failed.
+ * know whether MCP optimizer is starting, running, stopping, stopped, or failed.
  */
-export interface CoachWorkerState {
+export interface McpOptimizerWorkerState {
   version: 1;
   pid: number;
   startedAt: string;
@@ -39,7 +39,7 @@ function isLifecycle(value: unknown): value is AgentLifecycle {
   );
 }
 
-export function parseWorkerState(text: string): CoachWorkerState | undefined {
+export function parseWorkerState(text: string): McpOptimizerWorkerState | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -79,7 +79,7 @@ export function parseWorkerState(text: string): CoachWorkerState | undefined {
   };
 }
 
-export function readWorkerState(directory: string): CoachWorkerState | undefined {
+export function readWorkerState(directory: string): McpOptimizerWorkerState | undefined {
   try {
     return parseWorkerState(readFileSync(workerStatePath(directory), "utf8"));
   } catch {
@@ -87,6 +87,6 @@ export function readWorkerState(directory: string): CoachWorkerState | undefined
   }
 }
 
-export function writeWorkerState(directory: string, state: CoachWorkerState): void {
+export function writeWorkerState(directory: string, state: McpOptimizerWorkerState): void {
   writeJsonAtomic(workerStatePath(directory), state);
 }

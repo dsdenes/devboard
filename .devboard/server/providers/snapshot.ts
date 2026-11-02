@@ -5,7 +5,7 @@ import { providersDirectory } from "./store";
 
 /**
  * The dashboard's last provider decision, written beside the credential store.
- * A detached worker that outlives the credential list (the Coach finalizer, for
+ * A detached worker that outlives the credential list (the MCP optimizer finalizer, for
  * one) reads it so every peer it starts follows the same selection the status
  * bar reports, without probing the usage endpoint itself.
  */

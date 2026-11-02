@@ -1451,7 +1451,7 @@ describe("issues protocol", () => {
         "watchdog",
         "design",
         "dead-code",
-        "coach",
+        "mcp-optimizer",
         "api-standards",
         "release-train",
       ]);

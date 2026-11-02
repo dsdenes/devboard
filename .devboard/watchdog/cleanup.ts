@@ -186,7 +186,7 @@ export function sweepStateDir(
     // worktree/PR bookkeeping Flow restore and History read. Nothing
     // recreates a swept session, so an untouched one must survive.
     join(directory, "flow"),
-    // Coach state: worker, settings, control, ledger, lock, runs, and the
+    // MCP optimizer state: worker, settings, control, ledger, lock, runs, and the
     // latest report are operator-visible history, not scratch.
     join(directory, "coach"),
     // Goal-draft owner state: run records, activity, the pending question, its

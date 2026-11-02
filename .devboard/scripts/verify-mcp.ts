@@ -478,7 +478,7 @@ try {
         "watchdog",
         "design",
         "dead-code",
-        "coach",
+        "mcp-optimizer",
         "api-standards",
         "release-train",
       ]),
@@ -499,8 +499,8 @@ try {
       releaseTrainDescriptor.commands.setSettings === "setAgentSettings",
     "verify:mcp: Release Train does not declare the shared commands",
   );
-  const coach = await client.call("background_agent_get", { id: "coach" });
-  assertTrue(coach.id === "coach", "verify:mcp: background_agent_get returned another agent");
+  const mcpOptimizer = await client.call("background_agent_get", { id: "mcp-optimizer" });
+  assertTrue(mcpOptimizer.id === "mcp-optimizer", "verify:mcp: background_agent_get returned another agent");
   const issues = await client.call("issues_list", { state: "all" });
   assertTrue(
     (issues.issues as Array<{ number: number }>).some((issue) => issue.number === 1),
@@ -762,8 +762,8 @@ try {
     issue: "https://github.com/acme/fixture/issues/1",
   });
   assertTrue(duplicate.error, "verify:mcp: a duplicate record without a run directory was accepted");
-  const skip = await client.callRaw("coach_proposal_skip", { family: "docs:build" });
-  assertTrue(skip.error, "verify:mcp: a coach skip without a reason was accepted");
+  const skip = await client.callRaw("mcp_optimizer_proposal_skip", { family: "docs:build" });
+  assertTrue(skip.error, "verify:mcp: an MCP optimizer skip without a reason was accepted");
   console.log("PASS mcp-write-tools");
 
   /* 4. verification_run allowlisting and the output cap. */
@@ -790,13 +790,13 @@ try {
 
   /* 5. Every control tool delegates to the live dashboard. */
   const agent = await client.call("background_agent_control", {
-    id: "coach",
+    id: "mcp-optimizer",
     action: "set_settings",
     minutes: 30,
     maxPerHour: 2,
     maxPending: null,
   });
-  assertTrue(agent.id === "coach", "verify:mcp: agent control returned another agent");
+  assertTrue(agent.id === "mcp-optimizer", "verify:mcp: agent control returned another agent");
   assertTrue(
     (agent.agent as Record<string, unknown>).cadence !== undefined,
     "verify:mcp: agent control returned no snapshot",

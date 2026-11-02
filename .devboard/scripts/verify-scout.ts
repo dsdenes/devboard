@@ -1222,7 +1222,7 @@ try {
           "watchdog",
           "design",
           "dead-code",
-          "coach",
+          "mcp-optimizer",
           "api-standards",
           "release-train",
         ]),

@@ -69,12 +69,12 @@ describe("agent prompt snapshot", () => {
   test("the source checkout and the installed prefix render the same prompt payload", async () => {
     const source = await fixtureRoot("same-source", true);
     const installed = await fixtureRoot("same-installed", false);
-    for (const id of ["scout", "design", "watchdog", "coach"]) {
+    for (const id of ["scout", "design", "watchdog", "mcp-optimizer"]) {
       expect(prompts(source).snapshot(id)).toEqual(prompts(installed).snapshot(id));
     }
   });
 
-  test("Watchdog states its absence and Coach renders its generated template", async () => {
+  test("Watchdog states its absence and MCP optimizer renders its generated template", async () => {
     const root = await fixtureRoot("absent", true);
     expect(prompts(root).snapshot("watchdog")).toEqual({
       id: "watchdog",
@@ -82,20 +82,20 @@ describe("agent prompt snapshot", () => {
       text: null,
       error: null,
     });
-    const coach = new AgentPromptController({
+    const mcpOptimizer = new AgentPromptController({
       registry: agentRegistry,
       repoDir: root,
       send: () => undefined,
-      templates: { coach: () => "# Coach synthesis template\n" },
-    }).snapshot("coach");
-    expect(coach).toEqual({
-      id: "coach",
+      templates: { "mcp-optimizer": () => "# MCP optimizer synthesis template\n" },
+    }).snapshot("mcp-optimizer");
+    expect(mcpOptimizer).toEqual({
+      id: "mcp-optimizer",
       absent: false,
       text: null,
       error: null,
-      template: "# Coach synthesis template\n",
+      template: "# MCP optimizer synthesis template\n",
     });
-    expect(Object.keys(coach ?? {})).not.toContain("editable");
+    expect(Object.keys(mcpOptimizer ?? {})).not.toContain("editable");
   });
 
   test("an unreadable prompt reports an error and no bytes", async () => {

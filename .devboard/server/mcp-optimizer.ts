@@ -8,22 +8,22 @@ import { giteaRepository } from "../lib/gitea";
 import { originForge } from "../issues/repository";
 import { liveLockOwners, readLock, type LockOwner } from "../issues/lock";
 import {
-  coachDirectory,
+  mcpOptimizerDirectory,
   controlDirectory,
   lockPath,
   versionedControlDirectory,
   workerStateDirectories,
-} from "../coach/paths";
-import { writeCoachCommand } from "../coach/control";
-import { readCoachStatus, type CoachStatus } from "../coach/status";
+} from "../mcp-optimizer/paths";
+import { writeMcpOptimizerCommand } from "../mcp-optimizer/control";
+import { readMcpOptimizerStatus, type McpOptimizerStatus } from "../mcp-optimizer/status";
 import {
   isValidCadence,
   isValidLimit,
-  readCoachSettings,
-  writeCoachSettings,
-  type CoachSettings,
-} from "../coach/settings";
-import { readWorkerState, type CoachWorkerState } from "../coach/worker-state";
+  readMcpOptimizerSettings,
+  writeMcpOptimizerSettings,
+  type McpOptimizerSettings,
+} from "../mcp-optimizer/settings";
+import { readWorkerState, type McpOptimizerWorkerState } from "../mcp-optimizer/worker-state";
 import { hostHarnessDir, readHarnessVersion } from "./version";
 import { readProjection, writeProjection } from "../watchdog/projection";
 import { AgentForgeState } from "./agents/forge-state";
@@ -35,23 +35,23 @@ import type { AgentDescriptor, AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 
 /**
- * The Coach page's server half and its background-agent adapter. It reads the
+ * The MCP optimizer page's server half and its background-agent adapter. It reads the
  * detached worker's state, overlays the forge projection that the filing caps
  * count, and starts or stops the worker. A page load, a reconnect, or a
  * dashboard restart only reads; it never starts a cycle.
  */
 
-export interface CoachActivityOptions {
+export interface McpOptimizerActivityOptions {
   descriptor: AgentDescriptor;
   repoDir: string;
-  /** This dashboard's STATE_DIR; Coach files live under its `coach/`. */
+  /** This dashboard's STATE_DIR; MCP optimizer files live under its `coach/`. */
   stateDir: string;
   harnessDir: string;
   /** The harness version this dashboard loaded, for parallel-worker takeover. */
   runningVersion?: string | null;
   send: (event: unknown, except?: { send(data: string): unknown }) => void;
   /** Test seam; production derives it from the state directory. */
-  coachDir?: string;
+  mcpOptimizerDir?: string;
   reader?: ForgeIssueReader;
   /** True while at least one dashboard client is connected. */
   hasClients?: () => boolean;
@@ -90,11 +90,11 @@ function processAlive(pid: number): boolean {
   }
 }
 
-export class CoachActivity implements AgentAdapter {
+export class McpOptimizerActivity implements AgentAdapter {
   readonly descriptor: AgentDescriptor;
   private readonly repoDir: string;
   private readonly stateDir: string;
-  private readonly coachDir: string;
+  private readonly mcpOptimizerDir: string;
   private readonly harnessDir: string;
   private readonly runningVersion: string | null;
   private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
@@ -102,8 +102,8 @@ export class CoachActivity implements AgentAdapter {
   private readonly now: () => number;
   private readonly environment: Record<string, string | undefined>;
   private readonly log: (line: string) => void;
-  private readonly preflight: NonNullable<CoachActivityOptions["preflight"]>;
-  private readonly spawnWorker: NonNullable<CoachActivityOptions["spawnWorker"]>;
+  private readonly preflight: NonNullable<McpOptimizerActivityOptions["preflight"]>;
+  private readonly spawnWorker: NonNullable<McpOptimizerActivityOptions["spawnWorker"]>;
 
   private starting = false;
   private startingSince: number | null = null;
@@ -115,11 +115,11 @@ export class CoachActivity implements AgentAdapter {
   private takeoverTask: Promise<void> | null = null;
   private takeoverDone = false;
 
-  constructor(options: CoachActivityOptions) {
+  constructor(options: McpOptimizerActivityOptions) {
     this.descriptor = options.descriptor;
     this.repoDir = resolve(options.repoDir);
     this.stateDir = resolve(options.stateDir);
-    this.coachDir = resolve(options.coachDir ?? coachDirectory(this.stateDir));
+    this.mcpOptimizerDir = resolve(options.mcpOptimizerDir ?? mcpOptimizerDirectory(this.stateDir));
     this.harnessDir = options.harnessDir;
     this.runningVersion = options.runningVersion ?? null;
     this.send = options.send;
@@ -133,12 +133,12 @@ export class CoachActivity implements AgentAdapter {
           repoDir: this.repoDir,
           ...(options.environment === undefined ? {} : { environment: options.environment }),
         }),
-      urls: () => readCoachStatus(this.coachDir).issues.map((issue) => issue.url),
+      urls: () => readMcpOptimizerStatus(this.mcpOptimizerDir).issues.map((issue) => issue.url),
       hasClients: options.hasClients ?? (() => false),
       now: this.now,
       ...(options.intervalMs === undefined ? {} : { intervalMs: options.intervalMs }),
       ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
-      seed: (readProjection(this.coachDir)?.issues ?? []).map(
+      seed: (readProjection(this.mcpOptimizerDir)?.issues ?? []).map(
         (issue) => [issue.url, { url: issue.url, state: issue.state, version: issue.version }] as const,
       ),
       onRead: () => {
@@ -146,7 +146,7 @@ export class CoachActivity implements AgentAdapter {
       },
       log: this.log,
     });
-    this.preflight = options.preflight ?? ((request) => preflightCoach(request));
+    this.preflight = options.preflight ?? ((request) => preflightMcpOptimizer(request));
     this.spawnWorker =
       options.spawnWorker ??
       ((argv, environment) => {
@@ -161,7 +161,7 @@ export class CoachActivity implements AgentAdapter {
           return child.pid;
         } catch (error) {
           this.log(
-            `could not start the Coach worker: ${
+            `could not start the MCP optimizer worker: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
@@ -190,7 +190,7 @@ export class CoachActivity implements AgentAdapter {
   }
 
   replay(_target: { send(data: string): unknown }): void {
-    // Coach detail is the retained cycle history carried by the snapshot.
+    // MCP optimizer detail is the retained cycle history carried by the snapshot.
   }
 
   /** A view opened this agent: read the forge now when the cadence allows. */
@@ -200,14 +200,14 @@ export class CoachActivity implements AgentAdapter {
 
   private shouldPersistProjection(): boolean {
     if (this.allStates().length > 0) return true;
-    const settings = readCoachSettings(this.coachDir);
+    const settings = readMcpOptimizerSettings(this.mcpOptimizerDir);
     return settings.maxPerHour !== null || settings.maxPending !== null;
   }
 
   private persistProjection(): void {
     const sync = this.forge.sync;
     try {
-      writeProjection(this.coachDir, {
+      writeProjection(this.mcpOptimizerDir, {
         version: 1,
         state: sync.state,
         at: sync.at,
@@ -220,7 +220,7 @@ export class CoachActivity implements AgentAdapter {
       });
     } catch (error) {
       this.log(
-        `could not persist the Coach projection: ${
+        `could not persist the MCP optimizer projection: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -228,11 +228,11 @@ export class CoachActivity implements AgentAdapter {
   }
 
   /** Every published worker state: the legacy file and each version's file. */
-  private allStates(): CoachWorkerState[] {
-    const states: CoachWorkerState[] = [];
-    const legacy = readWorkerState(this.coachDir);
+  private allStates(): McpOptimizerWorkerState[] {
+    const states: McpOptimizerWorkerState[] = [];
+    const legacy = readWorkerState(this.mcpOptimizerDir);
     if (legacy !== undefined) states.push(legacy);
-    for (const directory of workerStateDirectories(this.coachDir)) {
+    for (const directory of workerStateDirectories(this.mcpOptimizerDir)) {
       const state = readWorkerState(directory);
       if (state !== undefined) states.push(state);
     }
@@ -241,7 +241,7 @@ export class CoachActivity implements AgentAdapter {
 
   /** Live owners of this family whose STATE_DIR is this dashboard's. */
   private owners(): LockOwner[] {
-    return liveLockOwners(lockPath(this.coachDir)).filter(
+    return liveLockOwners(lockPath(this.mcpOptimizerDir)).filter(
       (owner) => resolve(owner.stateDir) === this.stateDir,
     );
   }
@@ -250,11 +250,11 @@ export class CoachActivity implements AgentAdapter {
   private controlFor(owner: LockOwner): string {
     // The legacy lock identifies a worker that predates versioned state, even
     // before that worker has published its state file.
-    const legacyOwner = readLock(lockPath(this.coachDir));
+    const legacyOwner = readLock(lockPath(this.mcpOptimizerDir));
     if (legacyOwner !== undefined && legacyOwner.pid === owner.pid) {
-      return controlDirectory(this.coachDir);
+      return controlDirectory(this.mcpOptimizerDir);
     }
-    return versionedControlDirectory(this.coachDir, owner.harnessVersion);
+    return versionedControlDirectory(this.mcpOptimizerDir, owner.harnessVersion);
   }
 
   snapshot(): AgentSnapshotInput {
@@ -285,13 +285,13 @@ export class CoachActivity implements AgentAdapter {
     ) {
       this.starting = false;
       this.startingSince = null;
-      this.startError = "the Coach worker did not publish its state within 5 seconds";
+      this.startError = "the MCP optimizer worker did not publish its state within 5 seconds";
     }
     if (this.stopRequested && !attached) this.stopRequested = false;
     if (!attached) this.clearStopProof();
 
-    const status: CoachStatus = readCoachStatus(this.coachDir);
-    const settings: CoachSettings = readCoachSettings(this.coachDir);
+    const status: McpOptimizerStatus = readMcpOptimizerStatus(this.mcpOptimizerDir);
+    const settings: McpOptimizerSettings = readMcpOptimizerSettings(this.mcpOptimizerDir);
     const lifecycle = this.starting
       ? "starting"
       : this.stopRequested || active?.lifecycle === "stopping"
@@ -374,16 +374,16 @@ export class CoachActivity implements AgentAdapter {
     if (owners.some((owner) => owner.harnessVersion === this.runningVersion)) return;
     const started = await this.spawn();
     if (!started.ok) {
-      this.log(`could not start the ${this.runningVersion} Coach worker: ${started.message}`);
+      this.log(`could not start the ${this.runningVersion} MCP optimizer worker: ${started.message}`);
       return;
     }
     for (const owner of owners) {
       if (owner.harnessVersion === this.runningVersion) continue;
       try {
-        writeCoachCommand(this.controlFor(owner), { type: "drain" });
+        writeMcpOptimizerCommand(this.controlFor(owner), { type: "drain" });
       } catch (error) {
         this.log(
-          `could not drain the ${owner.harnessVersion ?? "legacy"} Coach worker: ` +
+          `could not drain the ${owner.harnessVersion ?? "legacy"} MCP optimizer worker: ` +
             (error instanceof Error ? error.message : String(error)),
         );
       }
@@ -412,7 +412,7 @@ export class CoachActivity implements AgentAdapter {
       }
       const argv = [
         process.execPath,
-        join(this.harnessDir, "coach", "worker.ts"),
+        join(this.harnessDir, "mcp-optimizer", "worker.ts"),
         "--root",
         this.repoDir,
         "--state-dir",
@@ -426,7 +426,7 @@ export class CoachActivity implements AgentAdapter {
       if (pid === undefined) {
         this.starting = false;
         this.startingSince = null;
-        this.startError = "the Coach worker could not be started";
+        this.startError = "the MCP optimizer worker could not be started";
         return { ok: false, message: this.startError };
       }
       this.forge.requestSync();
@@ -443,12 +443,12 @@ export class CoachActivity implements AgentAdapter {
   stop(): AgentCommandResult {
     const owners = this.owners();
     if (owners.length === 0) {
-      return { ok: false, message: "No Coach worker is running for this repository." };
+      return { ok: false, message: "No MCP optimizer worker is running for this repository." };
     }
     const failures: string[] = [];
     for (const owner of owners) {
       try {
-        writeCoachCommand(this.controlFor(owner), { type: "stop" });
+        writeMcpOptimizerCommand(this.controlFor(owner), { type: "stop" });
         this.stopRequested = true;
         this.scheduleStopProof(owner.pid);
       } catch (error) {
@@ -469,9 +469,9 @@ export class CoachActivity implements AgentAdapter {
     if (!isValidLimit(maxPerHour) || !isValidLimit(maxPending)) {
       return { ok: false, message: "Both limits must be empty or integers from 1 through 100." };
     }
-    const settings = readCoachSettings(this.coachDir);
+    const settings = readMcpOptimizerSettings(this.mcpOptimizerDir);
     try {
-      writeCoachSettings(this.coachDir, {
+      writeMcpOptimizerSettings(this.mcpOptimizerDir, {
         ...settings,
         intervalMinutes: minutes,
         maxPerHour,
@@ -488,7 +488,7 @@ export class CoachActivity implements AgentAdapter {
     const failures: string[] = [];
     for (const owner of this.owners()) {
       try {
-        writeCoachCommand(this.controlFor(owner), {
+        writeMcpOptimizerCommand(this.controlFor(owner), {
           type: "settings",
           intervalMinutes: minutes,
           maxPerHour,
@@ -558,7 +558,7 @@ export class CoachActivity implements AgentAdapter {
     try {
       const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\u0000").filter(Boolean);
       return (
-        argv.some((entry) => entry.endsWith(join("coach", "worker.ts"))) &&
+        argv.some((entry) => entry.endsWith(join("mcp-optimizer", "worker.ts"))) &&
         argv.includes(this.repoDir)
       );
     } catch {
@@ -568,10 +568,10 @@ export class CoachActivity implements AgentAdapter {
 }
 
 /**
- * Coach's Start preflight: a supported origin and a write-capable account for
+ * MCP optimizer's Start preflight: a supported origin and a write-capable account for
  * the delivery. It names the missing fact, writes no state, and spawns nothing.
  */
-export async function preflightCoach(options: {
+export async function preflightMcpOptimizer(options: {
   repoDir: string;
   environment?: Record<string, string | undefined>;
   run?: (argv: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
@@ -586,7 +586,7 @@ export async function preflightCoach(options: {
   if (remote.forge === "gitlab") {
     return {
       ok: false,
-      message: `Coach supports a GitHub or Gitea origin, not a GitLab one: ${remote.host}`,
+      message: `MCP optimizer supports a GitHub or Gitea origin, not a GitLab one: ${remote.host}`,
     };
   }
   if (remote.forge === "github") {
@@ -649,4 +649,4 @@ export async function preflightCoach(options: {
   return { ok: true };
 }
 
-export { coachDirectory };
+export { mcpOptimizerDirectory };

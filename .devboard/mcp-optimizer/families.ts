@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { AgentSession, SessionToolCall, SessionToolResult } from "../lib/agent-sessions";
 import { normalizeSessionLine } from "../lib/agent-sessions";
-import type { CoachJournalRecord } from "./collect";
+import type { McpOptimizerJournalRecord } from "./collect";
 
 /**
  * Deterministic family detection. Nothing here calls a model: one normalized
@@ -91,7 +91,7 @@ export interface FamilyExcerpt {
   sessionTitle: string;
 }
 
-export interface CoachFamily {
+export interface McpOptimizerFamily {
   key: string;
   kind: FamilyKind;
   calls: number;
@@ -114,16 +114,16 @@ export interface FamilyWindow {
 
 export interface BuildFamiliesOptions {
   sessions: AgentSession[];
-  journal: CoachJournalRecord[];
+  journal: McpOptimizerJournalRecord[];
   window: FamilyWindow;
   repoDir: string;
 }
 
 export interface FamilySelection {
   /** Every family, sorted by key. */
-  families: CoachFamily[];
+  families: McpOptimizerFamily[];
   /** The selection, highest score first, ties by key ascending. */
-  selected: CoachFamily[];
+  selected: McpOptimizerFamily[];
   omitted: number;
 }
 
@@ -148,13 +148,13 @@ function excludedPath(value: string): boolean {
   return value.includes(".worktree/") || value.includes(".devboard/.tmp/");
 }
 
-function coachOwned(value: string): boolean {
-  return value.includes(".devboard/coach") || value.includes("verify:coach");
+function mcpOptimizerOwned(value: string): boolean {
+  return value.includes(".devboard/mcp-optimizer") || value.includes("verify:mcp-optimizer");
 }
 
 function excludedSession(session: AgentSession): boolean {
   const paths = [session.relativeCwd, session.relativePath];
-  return paths.some((value) => excludedPath(value) || coachOwned(value));
+  return paths.some((value) => excludedPath(value) || mcpOptimizerOwned(value));
 }
 
 /** Removes the repository root so a command that names it is judged relatively. */
@@ -419,7 +419,7 @@ function occurrences(options: BuildFamiliesOptions): Occurrence[] {
         const relative = repoRelative(command, repoDir);
         if (
           excludedPath(relative) ||
-          coachOwned(relative) ||
+          mcpOptimizerOwned(relative) ||
           fixtureCommand(command) ||
           excludedPath(session.relativeCwd)
         ) {
@@ -480,7 +480,7 @@ function occurrences(options: BuildFamiliesOptions): Occurrence[] {
       const command = typeof parsed?.["command"] === "string" ? parsed["command"] : undefined;
       if (command === undefined) continue;
       const relative = repoRelative(command, repoDir);
-      if (excludedPath(relative) || coachOwned(relative) || fixtureCommand(command)) continue;
+      if (excludedPath(relative) || mcpOptimizerOwned(relative) || fixtureCommand(command)) continue;
       const key = normalizeCommandSignature(command, repoDir);
       if (key.length === 0 || isTrivialCommand(key)) continue;
       found.push({
@@ -499,7 +499,7 @@ function occurrences(options: BuildFamiliesOptions): Occurrence[] {
 }
 
 function journalFamilies(
-  journal: CoachJournalRecord[],
+  journal: McpOptimizerJournalRecord[],
   window: FamilyWindow,
   repoDir: string,
 ): Occurrence[] {
@@ -522,7 +522,7 @@ function journalFamilies(
     if (!Number.isFinite(at) || at < start || at > end) continue;
     const scope = record.scope ?? "";
     if (scope.length === 0) continue;
-    if (coachOwned(scope) || excludedPath(scope)) continue;
+    if (mcpOptimizerOwned(scope) || excludedPath(scope)) continue;
     const text =
       record.kind === "question"
         ? normalizeSessionLine(record.text, { repoDir })
@@ -584,7 +584,7 @@ function scoreOf(builder: Builder): number {
   return builder.sessions.size * builder.days.size * builder.calls;
 }
 
-function toFamily(builder: Builder): CoachFamily {
+function toFamily(builder: Builder): McpOptimizerFamily {
   const fragments = [...builder.fragments.entries()]
     .map(([text, count]) => ({
       text: bound(text.replace(/\s+/g, " ").trim(), EXCERPT_COMMAND_MAX),

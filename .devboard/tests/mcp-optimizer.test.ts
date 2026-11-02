@@ -7,59 +7,59 @@ import { journalFile } from "../server/journal";
 import { agentRegistry } from "../server/agents/registry";
 import { saveSubscriptions, writeSelectionSnapshot } from "../server/providers";
 import { OPENCODE_GO_MODEL } from "../server/providers/catalog";
-import { openCodePeers } from "../coach/providers";
-import { CoachActivity, preflightCoach } from "../server/coach";
+import { openCodePeers } from "../mcp-optimizer/providers";
+import { McpOptimizerActivity, preflightMcpOptimizer } from "../server/mcp-optimizer";
 import type { ForgeIssueReader } from "../server/agents/forge-reader";
 import {
-  coachDirectory,
+  mcpOptimizerDirectory,
   controlDirectory,
   cycleLockPath,
   lockPath,
   versionedControlDirectory,
   versionedLockPath,
   versionedWorkerDirectory,
-} from "../coach/paths";
-import { writeCoachCommand, takeCoachCommands } from "../coach/control";
-import { runWorker, CYCLE_BUSY_NOTICE } from "../coach/worker";
+} from "../mcp-optimizer/paths";
+import { writeMcpOptimizerCommand, takeMcpOptimizerCommands } from "../mcp-optimizer/control";
+import { runWorker, CYCLE_BUSY_NOTICE } from "../mcp-optimizer/worker";
 import { liveLockOwner } from "../issues/lock";
 import { readHarnessVersion } from "../server/version";
 import {
-  DEFAULT_COACH_SETTINGS,
+  DEFAULT_MCP_OPTIMIZER_SETTINGS,
   isValidAllowlist,
   isValidIssuesPerCycle,
-  parseCoachSettings,
-  readCoachSettings,
-  writeCoachSettings,
-} from "../coach/settings";
-import { readWorkerState, writeWorkerState, type CoachWorkerState } from "../coach/worker-state";
-import { emptyLedger, loadLedger, saveLedger } from "../coach/ledger";
-import { readCoachStatus } from "../coach/status";
-import { describeCycle, runCycle, type CoachReport, type CycleResult } from "../coach/coordinator";
+  parseMcpOptimizerSettings,
+  readMcpOptimizerSettings,
+  writeMcpOptimizerSettings,
+} from "../mcp-optimizer/settings";
+import { readWorkerState, writeWorkerState, type McpOptimizerWorkerState } from "../mcp-optimizer/worker-state";
+import { emptyLedger, loadLedger, saveLedger } from "../mcp-optimizer/ledger";
+import { readMcpOptimizerStatus } from "../mcp-optimizer/status";
+import { describeCycle, runCycle, type McpOptimizerReport, type CycleResult } from "../mcp-optimizer/coordinator";
 import {
   buildFamilies,
   familyKey,
   isTrivialCommand,
   normalizeCommandSignature,
   TRIVIAL_COMMANDS,
-  type CoachFamily,
-} from "../coach/families";
-import { familyTag } from "../coach/issue";
+  type McpOptimizerFamily,
+} from "../mcp-optimizer/families";
+import { familyTag } from "../mcp-optimizer/issue";
 import {
-  COACH_PROMPT_ISSUES_UNAVAILABLE,
-  coachIssues,
-  coachPromptTemplate,
+  MCP_OPTIMIZER_PROMPT_ISSUES_UNAVAILABLE,
+  mcpOptimizerIssues,
+  mcpOptimizerPromptTemplate,
   synthesisPrompt,
   SYNTHESIS_PROMPT_MAX_BYTES,
   synthesizeFamily,
   type SynthesisPaths,
   type Synthesize,
-} from "../coach/synthesize";
+} from "../mcp-optimizer/synthesize";
 import { readToolLog } from "../lib/tool-log";
 import { MCP_COVERS, MCP_TOOLS } from "../mcp/catalog";
 import type { AgentSession, SessionToolCall, SessionToolResult } from "../lib/agent-sessions";
-import type { CoachCollection, CoachJournalRecord } from "../coach/collect";
-import type { CoachDelivery, DeliveryResult } from "../coach/delivery";
-import type { CoachOpenIssue } from "../coach/issue";
+import type { McpOptimizerCollection, McpOptimizerJournalRecord } from "../mcp-optimizer/collect";
+import type { McpOptimizerDelivery, DeliveryResult } from "../mcp-optimizer/delivery";
+import type { McpOptimizerOpenIssue } from "../mcp-optimizer/issue";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const directories: string[] = [];
@@ -70,7 +70,7 @@ afterAll(async () => {
 
 async function temporaryRoot(): Promise<string> {
   await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
-  const directory = await mkdtemp(join(harnessRoot, ".tmp", "coach-"));
+  const directory = await mkdtemp(join(harnessRoot, ".tmp", "mcp-optimizer-"));
   directories.push(directory);
   return directory;
 }
@@ -87,7 +87,7 @@ async function workspace(): Promise<{ root: string; repoDir: string; stateDir: s
   const repoDir = join(root, "checkout");
   const stateDir = join(root, "state");
   await mkdir(join(repoDir, ".devboard"), { recursive: true });
-  await mkdir(coachDirectory(stateDir), { recursive: true });
+  await mkdir(mcpOptimizerDirectory(stateDir), { recursive: true });
   return { root, repoDir, stateDir };
 }
 
@@ -96,13 +96,13 @@ function sourceVersion(): string | null {
   return readHarnessVersion(harnessRoot);
 }
 
-function versionedState(coachDir: string, version: string | null): CoachWorkerState | undefined {
-  return readWorkerState(versionedWorkerDirectory(coachDir, version));
+function versionedState(mcpOptimizerDir: string, version: string | null): McpOptimizerWorkerState | undefined {
+  return readWorkerState(versionedWorkerDirectory(mcpOptimizerDir, version));
 }
 
 /** The state this checkout's own worker publishes. */
-function currentWorkerState(coachDir: string): CoachWorkerState | undefined {
-  return versionedState(coachDir, sourceVersion());
+function currentWorkerState(mcpOptimizerDir: string): McpOptimizerWorkerState | undefined {
+  return versionedState(mcpOptimizerDir, sourceVersion());
 }
 
 /**
@@ -168,18 +168,18 @@ function spawnSleeper(): { pid: number; kill: () => void } {
 
 /** Publishes a versioned (or legacy) worker state as that worker would. */
 function publishWorkerState(options: {
-  coachDir: string;
+  mcpOptimizerDir: string;
   version: string;
   pid: number;
   repoDir: string;
   stateDir: string;
-  lifecycle: CoachWorkerState["lifecycle"];
+  lifecycle: McpOptimizerWorkerState["lifecycle"];
   legacy?: boolean;
 }): void {
   const directory =
     options.legacy === true
-      ? options.coachDir
-      : versionedWorkerDirectory(options.coachDir, options.version);
+      ? options.mcpOptimizerDir
+      : versionedWorkerDirectory(options.mcpOptimizerDir, options.version);
   writeWorkerState(directory, {
     version: 1,
     pid: options.pid,
@@ -238,8 +238,8 @@ function emptyCycleResult(): CycleResult {
   };
 }
 
-/** One filed family, so the Coach projection has an issue URL to read. */
-function seedCoachIssue(stateDir: string, url: string): void {
+/** One filed family, so the MCP optimizer projection has an issue URL to read. */
+function seedMcpOptimizerIssue(stateDir: string, url: string): void {
   const ledger = emptyLedger();
   ledger.families["bun run publish"] = {
     firstSeen: NOW.toISOString(),
@@ -249,13 +249,13 @@ function seedCoachIssue(stateDir: string, url: string): void {
     kind: "command",
     lastAction: "filed",
     lastIssueUrl: url,
-    lastTitle: "[coach] bun run publish",
+    lastTitle: "[mcp-optimizer] bun run publish",
     lastFiledAt: NOW.toISOString(),
   };
-  saveLedger(coachDirectory(stateDir), ledger);
+  saveLedger(mcpOptimizerDirectory(stateDir), ledger);
 }
 
-interface CoachRetryReader extends ForgeIssueReader {
+interface McpOptimizerRetryReader extends ForgeIssueReader {
   calls: number;
   /** One queued failure per attempt, consumed in order. */
   failures: string[];
@@ -263,8 +263,8 @@ interface CoachRetryReader extends ForgeIssueReader {
   failAll: string | null;
 }
 
-function coachRetryReader(): CoachRetryReader {
-  const reader: CoachRetryReader = {
+function mcpOptimizerRetryReader(): McpOptimizerRetryReader {
+  const reader: McpOptimizerRetryReader = {
     calls: 0,
     failures: [],
     failAll: null,
@@ -278,14 +278,14 @@ function coachRetryReader(): CoachRetryReader {
   return reader;
 }
 
-function coachActivity(options: {
+function mcpOptimizerActivity(options: {
   repoDir: string;
   stateDir: string;
   reader: ForgeIssueReader;
   now: () => number;
-}): CoachActivity {
-  return new CoachActivity({
-    descriptor: agentRegistry.require("coach"),
+}): McpOptimizerActivity {
+  return new McpOptimizerActivity({
+    descriptor: agentRegistry.require("mcp-optimizer"),
     repoDir: options.repoDir,
     stateDir: options.stateDir,
     harnessDir: harnessRoot,
@@ -298,7 +298,7 @@ function coachActivity(options: {
   });
 }
 
-async function readCoachOnce(activity: CoachActivity): Promise<void> {
+async function readMcpOptimizerOnce(activity: McpOptimizerActivity): Promise<void> {
   activity.snapshot();
   await activity.settled();
 }
@@ -375,8 +375,8 @@ function sessionOf(options: {
 
 function collectionOf(
   sessions: AgentSession[],
-  journal: CoachJournalRecord[] = [],
-): CoachCollection {
+  journal: McpOptimizerJournalRecord[] = [],
+): McpOptimizerCollection {
   return {
     window: { start: START.toISOString(), end: NOW.toISOString() },
     sessions,
@@ -390,7 +390,7 @@ function collectionOf(
   };
 }
 
-function familiesOf(sessions: AgentSession[], journal: CoachJournalRecord[] = []): CoachFamily[] {
+function familiesOf(sessions: AgentSession[], journal: McpOptimizerJournalRecord[] = []): McpOptimizerFamily[] {
   return buildFamilies({
     sessions,
     journal,
@@ -400,8 +400,8 @@ function familiesOf(sessions: AgentSession[], journal: CoachJournalRecord[] = []
 }
 
 function memoryDelivery(
-  open: CoachOpenIssue[] = [],
-): CoachDelivery & { created: Array<{ title: string; body: string }> } {
+  open: McpOptimizerOpenIssue[] = [],
+): McpOptimizerDelivery & { created: Array<{ title: string; body: string }> } {
   const created: Array<{ title: string; body: string }> = [];
   const issues = open.slice();
   return {
@@ -436,11 +436,11 @@ type Decision =
 
 /**
  * A peer replacement that performs the same MCP writes a real turn would: one
- * `issue_create` record in the tool log, or one `coach_proposal_skip` record in
+ * `issue_create` record in the tool log, or one `mcp_optimizer_proposal_skip` record in
  * the skip log. Nothing reads an answer document.
  */
 function stubSynthesis(
-  decide: (family: CoachFamily, prompt: string) => Decision,
+  decide: (family: McpOptimizerFamily, prompt: string) => Decision,
   calls: SynthesisCall[] = [],
 ): Synthesize {
   return async (family, prompt, paths) => {
@@ -453,7 +453,7 @@ function stubSynthesis(
       await writeFile(
         paths.skipLogPath,
         `${JSON.stringify({
-          tool: "coach_proposal_skip",
+          tool: "mcp_optimizer_proposal_skip",
           at: NOW.toISOString(),
           ok: true,
           value: {
@@ -466,7 +466,7 @@ function stubSynthesis(
       return { ok: true, model: "stub", durationMs: 1, text: "" };
     }
     const number = decision.number ?? 1;
-    const title = decision.title ?? `[coach] ${family.key}`;
+    const title = decision.title ?? `[mcp-optimizer] ${family.key}`;
     const url = decision.url ?? `https://forge.test/acme/fixture/issues/${number}`;
     await writeFile(
       paths.toolLogPath,
@@ -516,33 +516,33 @@ function threeFamilies(): AgentSession[] {
   ];
 }
 
-describe("Coach registration and lifecycle", () => {
-  test("the registry declares coach with its defaults", () => {
+describe("MCP optimizer registration and lifecycle", () => {
+  test("the registry declares mcp-optimizer with its defaults", () => {
     expect(agentRegistry.ids()).toEqual([
       "scout",
       "watchdog",
       "design",
       "dead-code",
-      "coach",
+      "mcp-optimizer",
       "api-standards",
       "release-train",
     ]);
-    const coach = agentRegistry.require("coach");
-    expect(coach.label).toBe("Coach");
-    expect(coach.scope).toBe("repository");
-    expect(coach.cadence.defaultMinutes).toBe(60);
-    expect(coach.limits.default).toEqual({ maxPerHour: 10, maxPending: 20 });
-    expect(coach.detail.panel).toBe("cycles");
-    expect(coach.tab.id).toBe("coach");
+    const mcpOptimizer = agentRegistry.require("mcp-optimizer");
+    expect(mcpOptimizer.label).toBe("MCP optimizer");
+    expect(mcpOptimizer.scope).toBe("repository");
+    expect(mcpOptimizer.cadence.defaultMinutes).toBe(60);
+    expect(mcpOptimizer.limits.default).toEqual({ maxPerHour: 10, maxPending: 20 });
+    expect(mcpOptimizer.detail.panel).toBe("cycles");
+    expect(mcpOptimizer.tab.id).toBe("mcp-optimizer");
   });
 
   test("start reaches starting before the worker and running once its state exists", async () => {
     const { repoDir, stateDir } = await workspace();
-    const coachDir = coachDirectory(stateDir);
+    const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
     const version = "test-version";
     let spawned = 0;
-    const adapter = new CoachActivity({
-      descriptor: agentRegistry.require("coach"),
+    const adapter = new McpOptimizerActivity({
+      descriptor: agentRegistry.require("mcp-optimizer"),
       repoDir,
       stateDir,
       harnessDir: harnessRoot,
@@ -550,14 +550,14 @@ describe("Coach registration and lifecycle", () => {
       preflight: async () => ({ ok: true }),
       spawnWorker: (argv) => {
         spawned += 1;
-        expect(argv).toContain(join(harnessRoot, "coach", "worker.ts"));
-        writeOwnerLock(versionedLockPath(coachDir, version), {
+        expect(argv).toContain(join(harnessRoot, "mcp-optimizer", "worker.ts"));
+        writeOwnerLock(versionedLockPath(mcpOptimizerDir, version), {
           pid: process.pid,
           repoDir,
           stateDir,
           harnessVersion: version,
         });
-        writeWorkerState(versionedWorkerDirectory(coachDir, version), {
+        writeWorkerState(versionedWorkerDirectory(mcpOptimizerDir, version), {
           version: 1,
           pid: process.pid,
           startedAt: new Date().toISOString(),
@@ -588,9 +588,9 @@ describe("Coach registration and lifecycle", () => {
 
     expect(adapter.stop().ok).toBe(true);
     expect(adapter.snapshot().lifecycle).toBe("stopping");
-    expect(controlFileCount(versionedControlDirectory(coachDir, version))).toBe(1);
-    writeWorkerState(versionedWorkerDirectory(coachDir, version), {
-      ...readWorkerState(versionedWorkerDirectory(coachDir, version))!,
+    expect(controlFileCount(versionedControlDirectory(mcpOptimizerDir, version))).toBe(1);
+    writeWorkerState(versionedWorkerDirectory(mcpOptimizerDir, version), {
+      ...readWorkerState(versionedWorkerDirectory(mcpOptimizerDir, version))!,
       lifecycle: "stopped",
       enabled: false,
     });
@@ -600,12 +600,12 @@ describe("Coach registration and lifecycle", () => {
 
   test("a slow prerequisite check is not charged to the worker's publication", async () => {
     const { repoDir, stateDir } = await workspace();
-    const coachDir = coachDirectory(stateDir);
+    const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
     const version = "test-version";
     let clock = 1_000_000;
     const preflight = Promise.withResolvers<{ ok: true }>();
-    const adapter = new CoachActivity({
-      descriptor: agentRegistry.require("coach"),
+    const adapter = new McpOptimizerActivity({
+      descriptor: agentRegistry.require("mcp-optimizer"),
       repoDir,
       stateDir,
       harnessDir: harnessRoot,
@@ -613,13 +613,13 @@ describe("Coach registration and lifecycle", () => {
       now: () => clock,
       preflight: () => preflight.promise,
       spawnWorker: (argv) => {
-        writeOwnerLock(versionedLockPath(coachDir, version), {
+        writeOwnerLock(versionedLockPath(mcpOptimizerDir, version), {
           pid: process.pid,
           repoDir,
           stateDir,
           harnessVersion: version,
         });
-        writeWorkerState(versionedWorkerDirectory(coachDir, version), {
+        writeWorkerState(versionedWorkerDirectory(mcpOptimizerDir, version), {
           version: 1,
           pid: process.pid,
           startedAt: new Date().toISOString(),
@@ -654,11 +654,11 @@ describe("Coach registration and lifecycle", () => {
 
   test("a start proof that expired clears once the worker publishes", async () => {
     const { repoDir, stateDir } = await workspace();
-    const coachDir = coachDirectory(stateDir);
+    const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
     const version = "test-version";
     let clock = 1_000_000;
-    const adapter = new CoachActivity({
-      descriptor: agentRegistry.require("coach"),
+    const adapter = new McpOptimizerActivity({
+      descriptor: agentRegistry.require("mcp-optimizer"),
       repoDir,
       stateDir,
       harnessDir: harnessRoot,
@@ -670,15 +670,15 @@ describe("Coach registration and lifecycle", () => {
     expect((await adapter.start()).ok).toBe(true);
     clock += 6_000;
     const expired = adapter.snapshot();
-    expect(expired.error).toBe("the Coach worker did not publish its state within 5 seconds");
+    expect(expired.error).toBe("the MCP optimizer worker did not publish its state within 5 seconds");
     expect(expired.lifecycle).toBe("stopped");
-    writeOwnerLock(versionedLockPath(coachDir, version), {
+    writeOwnerLock(versionedLockPath(mcpOptimizerDir, version), {
       pid: process.pid,
       repoDir,
       stateDir,
       harnessVersion: version,
     });
-    writeWorkerState(versionedWorkerDirectory(coachDir, version), {
+    writeWorkerState(versionedWorkerDirectory(mcpOptimizerDir, version), {
       version: 1,
       pid: process.pid,
       startedAt: new Date().toISOString(),
@@ -703,8 +703,8 @@ describe("Coach registration and lifecycle", () => {
   test("a refused preflight writes no state and spawns nothing", async () => {
     const { repoDir, stateDir } = await workspace();
     let spawned = 0;
-    const adapter = new CoachActivity({
-      descriptor: agentRegistry.require("coach"),
+    const adapter = new McpOptimizerActivity({
+      descriptor: agentRegistry.require("mcp-optimizer"),
       repoDir,
       stateDir,
       harnessDir: harnessRoot,
@@ -718,28 +718,28 @@ describe("Coach registration and lifecycle", () => {
     const result = await adapter.start();
     expect(result.ok).toBe(false);
     expect(spawned).toBe(0);
-    expect(existsSync(join(coachDirectory(stateDir), "worker.json"))).toBe(false);
+    expect(existsSync(join(mcpOptimizerDirectory(stateDir), "worker.json"))).toBe(false);
     adapter.dispose();
   });
 
   test("cadence and limits persist without dropping the family settings", async () => {
     const { repoDir, stateDir } = await workspace();
-    const coachDir = coachDirectory(stateDir);
-    await writeCoachSettings(coachDir, {
-      ...DEFAULT_COACH_SETTINGS,
+    const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
+    await writeMcpOptimizerSettings(mcpOptimizerDir, {
+      ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
       maxIssuesPerCycle: 5,
       allowlist: ["bun "],
     });
-    const adapter = new CoachActivity({
-      descriptor: agentRegistry.require("coach"),
+    const adapter = new McpOptimizerActivity({
+      descriptor: agentRegistry.require("mcp-optimizer"),
       repoDir,
       stateDir,
       harnessDir: harnessRoot,
       send: () => undefined,
     });
     expect(adapter.setSettings(30, 5, null).ok).toBe(true);
-    expect(readCoachSettings(coachDir)).toEqual({
-      ...DEFAULT_COACH_SETTINGS,
+    expect(readMcpOptimizerSettings(mcpOptimizerDir)).toEqual({
+      ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
       intervalMinutes: 30,
       maxPerHour: 5,
       maxPending: null,
@@ -755,17 +755,17 @@ describe("Coach registration and lifecycle", () => {
     // Integration: the real detached worker process is the subject, so the
     // test polls its published state instead of controlling a clock.
     const { repoDir, stateDir } = await workspace();
-    const coachDir = coachDirectory(stateDir);
-    await writeCoachSettings(coachDir, { ...DEFAULT_COACH_SETTINGS, allowlist: [] });
+    const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
+    await writeMcpOptimizerSettings(mcpOptimizerDir, { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, allowlist: [] });
     const child = spawn(
       process.execPath,
-      [join(harnessRoot, "coach", "worker.ts"), "--root", repoDir, "--state-dir", stateDir],
+      [join(harnessRoot, "mcp-optimizer", "worker.ts"), "--root", repoDir, "--state-dir", stateDir],
       { cwd: repoDir, stdio: "ignore" },
     );
     try {
       await waitFor(
         () => {
-          const state = currentWorkerState(coachDir);
+          const state = currentWorkerState(mcpOptimizerDir);
           const afterCycle =
             state !== undefined &&
             state.lastRunAt !== null &&
@@ -776,12 +776,12 @@ describe("Coach registration and lifecycle", () => {
       );
       // The dashboard rewrites the file after the worker's last read; the
       // command that follows must not persist the worker's older copy.
-      await writeCoachSettings(coachDir, {
-        ...DEFAULT_COACH_SETTINGS,
+      await writeMcpOptimizerSettings(mcpOptimizerDir, {
+        ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
         allowlist: ["bun ", "git "],
         maxIssuesPerCycle: 7,
       });
-      writeCoachCommand(versionedControlDirectory(coachDir, sourceVersion()), {
+      writeMcpOptimizerCommand(versionedControlDirectory(mcpOptimizerDir, sourceVersion()), {
         type: "settings",
         intervalMinutes: 30,
         maxPerHour: 5,
@@ -789,7 +789,7 @@ describe("Coach registration and lifecycle", () => {
       });
       const saved = await waitFor(
         () => {
-          const current = readCoachSettings(coachDir);
+          const current = readMcpOptimizerSettings(mcpOptimizerDir);
           return current.intervalMinutes === 30 && current.maxPerHour === 5 &&
             current.maxPending === null
             ? current
@@ -798,16 +798,16 @@ describe("Coach registration and lifecycle", () => {
         "the settings command to reach the file",
       );
       expect(saved).toEqual({
-        ...DEFAULT_COACH_SETTINGS,
+        ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
         intervalMinutes: 30,
         maxPerHour: 5,
         maxPending: null,
         maxIssuesPerCycle: 7,
         allowlist: ["bun ", "git "],
       });
-      writeCoachCommand(versionedControlDirectory(coachDir, sourceVersion()), { type: "stop" });
+      writeMcpOptimizerCommand(versionedControlDirectory(mcpOptimizerDir, sourceVersion()), { type: "stop" });
       await waitFor(
-        () => (currentWorkerState(coachDir)?.lifecycle === "stopped" ? true : undefined),
+        () => (currentWorkerState(mcpOptimizerDir)?.lifecycle === "stopped" ? true : undefined),
         "the worker to stop",
       );
     } finally {
@@ -823,35 +823,35 @@ describe("Coach registration and lifecycle", () => {
       stdout: "ignore",
       stderr: "ignore",
     });
-    const result = await preflightCoach({ repoDir, environment: {} });
+    const result = await preflightMcpOptimizer({ repoDir, environment: {} });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("GitLab");
   });
 });
 
-describe("Coach worker versions and takeover", () => {
+describe("MCP optimizer worker versions and takeover", () => {
   test("lists every live version, reaches both controls, and has no mismatch notice", async () => {
     const { repoDir, stateDir } = await workspace();
-    const coachDir = coachDirectory(stateDir);
+    const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
     const legacyVersion = "0.0.1";
     const versionedVersion = "0.0.2";
     const first = spawnSleeper();
     const second = spawnSleeper();
     try {
-      writeOwnerLock(lockPath(coachDir), {
+      writeOwnerLock(lockPath(mcpOptimizerDir), {
         pid: first.pid,
         repoDir,
         stateDir,
         harnessVersion: legacyVersion,
       });
-      writeOwnerLock(versionedLockPath(coachDir, versionedVersion), {
+      writeOwnerLock(versionedLockPath(mcpOptimizerDir, versionedVersion), {
         pid: second.pid,
         repoDir,
         stateDir,
         harnessVersion: versionedVersion,
       });
       publishWorkerState({
-        coachDir,
+        mcpOptimizerDir,
         version: legacyVersion,
         pid: first.pid,
         repoDir,
@@ -860,7 +860,7 @@ describe("Coach worker versions and takeover", () => {
         legacy: true,
       });
       publishWorkerState({
-        coachDir,
+        mcpOptimizerDir,
         version: versionedVersion,
         pid: second.pid,
         repoDir,
@@ -868,8 +868,8 @@ describe("Coach worker versions and takeover", () => {
         lifecycle: "running",
       });
       let spawned = 0;
-      const adapter = new CoachActivity({
-        descriptor: agentRegistry.require("coach"),
+      const adapter = new McpOptimizerActivity({
+        descriptor: agentRegistry.require("mcp-optimizer"),
         repoDir,
         stateDir,
         harnessDir: harnessRoot,
@@ -896,8 +896,8 @@ describe("Coach worker versions and takeover", () => {
 
       expect(adapter.stop().ok).toBe(true);
       expect(adapter.setSettings(15, 4, 2).ok).toBe(true);
-      expect(controlFileCount(controlDirectory(coachDir))).toBe(2);
-      expect(controlFileCount(versionedControlDirectory(coachDir, versionedVersion))).toBe(2);
+      expect(controlFileCount(controlDirectory(mcpOptimizerDir))).toBe(2);
+      expect(controlFileCount(versionedControlDirectory(mcpOptimizerDir, versionedVersion))).toBe(2);
       expect(adapter.snapshot().notice ?? null).toBeNull();
       adapter.dispose();
     } finally {
@@ -908,19 +908,19 @@ describe("Coach worker versions and takeover", () => {
 
   test("a newer harness starts once and drains the older worker", async () => {
     const { repoDir, stateDir } = await workspace();
-    const coachDir = coachDirectory(stateDir);
+    const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
     const oldVersion = "0.0.1";
     const newest = sourceVersion();
     const old = spawnSleeper();
     try {
-      writeOwnerLock(versionedLockPath(coachDir, oldVersion), {
+      writeOwnerLock(versionedLockPath(mcpOptimizerDir, oldVersion), {
         pid: old.pid,
         repoDir,
         stateDir,
         harnessVersion: oldVersion,
       });
       publishWorkerState({
-        coachDir,
+        mcpOptimizerDir,
         version: oldVersion,
         pid: old.pid,
         repoDir,
@@ -928,8 +928,8 @@ describe("Coach worker versions and takeover", () => {
         lifecycle: "running",
       });
       const spawned: string[][] = [];
-      const adapter = new CoachActivity({
-        descriptor: agentRegistry.require("coach"),
+      const adapter = new McpOptimizerActivity({
+        descriptor: agentRegistry.require("mcp-optimizer"),
         repoDir,
         stateDir,
         harnessDir: harnessRoot,
@@ -944,8 +944,8 @@ describe("Coach worker versions and takeover", () => {
       adapter.begin();
       await adapter.settled();
       expect(spawned).toHaveLength(1);
-      expect(spawned[0]).toContain(join(harnessRoot, "coach", "worker.ts"));
-      expect(takeCoachCommands(versionedControlDirectory(coachDir, oldVersion))).toEqual([
+      expect(spawned[0]).toContain(join(harnessRoot, "mcp-optimizer", "worker.ts"));
+      expect(takeMcpOptimizerCommands(versionedControlDirectory(mcpOptimizerDir, oldVersion))).toEqual([
         { type: "drain" },
       ]);
 
@@ -961,8 +961,8 @@ describe("Coach worker versions and takeover", () => {
   test("without a live worker the bridge starts nothing automatically", async () => {
     const { repoDir, stateDir } = await workspace();
     let spawned = 0;
-    const adapter = new CoachActivity({
-      descriptor: agentRegistry.require("coach"),
+    const adapter = new McpOptimizerActivity({
+      descriptor: agentRegistry.require("mcp-optimizer"),
       repoDir,
       stateDir,
       harnessDir: harnessRoot,
@@ -982,7 +982,7 @@ describe("Coach worker versions and takeover", () => {
 
   test("a drained worker finishes its cycle, exits, and the next version claims the next one", async () => {
     const { repoDir, stateDir } = await workspace();
-    const coachDir = coachDirectory(stateDir);
+    const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
     const oldVersion = "1.0.0";
     const newVersion = "1.0.1";
     const order: string[] = [];
@@ -1004,7 +1004,7 @@ describe("Coach worker versions and takeover", () => {
       },
     });
     await waitFor(() => (oldCycles === 1 ? true : undefined), "the old worker's cycle");
-    expect(liveLockOwner(cycleLockPath(coachDir))).toBeDefined();
+    expect(liveLockOwner(cycleLockPath(mcpOptimizerDir))).toBeDefined();
 
     const newRun = runWorker({
       root: repoDir,
@@ -1020,7 +1020,7 @@ describe("Coach worker versions and takeover", () => {
     });
     await waitFor(
       () => {
-        const state = versionedState(coachDir, newVersion);
+        const state = versionedState(mcpOptimizerDir, newVersion);
         return state?.notice === CYCLE_BUSY_NOTICE ? true : undefined;
       },
       "the new worker to find the cycle claimed",
@@ -1030,10 +1030,10 @@ describe("Coach worker versions and takeover", () => {
     expect(newCycles).toBe(0);
     expect(order).toEqual(["old:start"]);
 
-    writeCoachCommand(versionedControlDirectory(coachDir, oldVersion), { type: "drain" });
+    writeMcpOptimizerCommand(versionedControlDirectory(mcpOptimizerDir, oldVersion), { type: "drain" });
     const draining = await waitFor(
       () => {
-        const state = versionedState(coachDir, oldVersion);
+        const state = versionedState(mcpOptimizerDir, oldVersion);
         return state?.draining === true ? state : undefined;
       },
       "the old worker to publish draining",
@@ -1043,24 +1043,24 @@ describe("Coach worker versions and takeover", () => {
 
     gate.resolve();
     await oldRun;
-    expect(versionedState(coachDir, oldVersion)?.lifecycle).toBe("stopped");
-    expect(liveLockOwner(versionedLockPath(coachDir, oldVersion))).toBeUndefined();
+    expect(versionedState(mcpOptimizerDir, oldVersion)?.lifecycle).toBe("stopped");
+    expect(liveLockOwner(versionedLockPath(mcpOptimizerDir, oldVersion))).toBeUndefined();
     expect(order[0]).toBe("old:start");
     expect(order[1]).toBe("old:end");
 
     await waitFor(() => (newCycles === 1 ? true : undefined), "the new worker's cycle");
     expect(order).toEqual(["old:start", "old:end", "new:cycle"]);
 
-    writeCoachCommand(versionedControlDirectory(coachDir, newVersion), { type: "drain" });
+    writeMcpOptimizerCommand(versionedControlDirectory(mcpOptimizerDir, newVersion), { type: "drain" });
     await newRun;
-    expect(versionedState(coachDir, newVersion)?.lifecycle).toBe("stopped");
-    expect(liveLockOwner(versionedLockPath(coachDir, newVersion))).toBeUndefined();
+    expect(versionedState(mcpOptimizerDir, newVersion)?.lifecycle).toBe("stopped");
+    expect(liveLockOwner(versionedLockPath(mcpOptimizerDir, newVersion))).toBeUndefined();
     expect(oldCycles).toBe(1);
     expect(newCycles).toBe(1);
   }, 20_000);
 });
 
-describe("Coach normalization", () => {
+describe("MCP optimizer normalization", () => {
   const repo = "/checkout";
 
   test("pipes and redirections are output handling, not the family", () => {
@@ -1134,7 +1134,7 @@ describe("Coach normalization", () => {
   });
 });
 
-describe("Coach families", () => {
+describe("MCP optimizer families", () => {
   test("groups one normalized command and counts fragments", () => {
     const families = familiesOf([
       sessionOf({
@@ -1243,7 +1243,7 @@ describe("Coach families", () => {
   });
 
   test("journal questions and run failures need two scopes", () => {
-    const journal: CoachJournalRecord[] = [
+    const journal: McpOptimizerJournalRecord[] = [
       { kind: "question", text: "Should I rewrite it?", scope: "run-a", ts: instant(30) },
       { kind: "question", text: "Should I rewrite it?", scope: "run-b", ts: instant(20) },
       { kind: "acp-stderr", text: "fatal: provider exploded\nmore", scope: "run-a", ts: instant(30) },
@@ -1260,14 +1260,14 @@ describe("Coach families", () => {
     expect(question.score).toBe(2 * 1 * 2);
   });
 
-  test("coach-owned, worktree, tmp, and fixture evidence is excluded", () => {
+  test("mcp-optimizer-owned, worktree, tmp, and fixture evidence is excluded", () => {
     const families = familiesOf(
       [
         sessionOf({
           id: "a",
           startedAt: instant(60),
           calls: [
-            { command: "bun run verify:coach" },
+            { command: "bun run verify:mcp-optimizer" },
             { command: `cd ${"/checkout/.worktree/task"} && bun run publish` },
             { command: "bun .devboard/.tmp/script.ts" },
             { command: "true" },
@@ -1334,7 +1334,7 @@ describe("Coach families", () => {
   });
 });
 
-describe("Coach synthesis contract and prompt", () => {
+describe("MCP optimizer synthesis contract and prompt", () => {
   const family = familiesOf([
     sessionOf({
       id: "a",
@@ -1349,7 +1349,7 @@ describe("Coach synthesis contract and prompt", () => {
     "Fragments:",
     "Excerpts:",
     "MCP catalog:",
-    "Open Coach issues:",
+    "Open MCP optimizer issues:",
     "Command allowlist:",
     "Limits:",
   ];
@@ -1379,16 +1379,16 @@ describe("Coach synthesis contract and prompt", () => {
   }
 
   test("the prompt opens with the manifesto and states the allowlist, caps, tag, body and tool rules", () => {
-    const openIssues: CoachOpenIssue[] = [
+    const openIssues: McpOptimizerOpenIssue[] = [
       {
         number: 7,
-        title: "[coach] bun run publish",
+        title: "[mcp-optimizer] bun run publish",
         body: `family:${familyTag(family.key)}`,
         url: "https://forge.test/acme/fixture/issues/7",
       },
     ];
     const settings = {
-      ...DEFAULT_COACH_SETTINGS,
+      ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
       allowlist: ["bun "],
       maxIssuesPerCycle: 3,
       maxPerHour: 4,
@@ -1415,7 +1415,7 @@ describe("Coach synthesis contract and prompt", () => {
       expect(prompt).toContain(section);
     }
     expect(prompt).toContain("issue_create");
-    expect(prompt).toContain("coach_proposal_skip");
+    expect(prompt).toContain("mcp_optimizer_proposal_skip");
     expect(prompt).toContain("covers");
     expect(prompt).toContain("no labels");
     expect(prompt).not.toContain("pendingFiling");
@@ -1425,31 +1425,31 @@ describe("Coach synthesis contract and prompt", () => {
   });
 
   test("filingRoom is the cycle cap's remaining allowance for this family", () => {
-    const settings = { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 2, maxPerHour: 10 };
+    const settings = { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 2, maxPerHour: 10 };
     const room = synthesisPrompt({ family, settings, openIssues: [], filingRoom: 0 });
     expect(room).toContain('"filingRoom": 0');
     expect(room).toContain("only when `filingRoom` is greater than zero");
   });
 
   test("the page template repeats the prompt's fixed lines character for character", () => {
-    const settings = { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun ", "git "] };
-    const openIssues: CoachOpenIssue[] = [
+    const settings = { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, allowlist: ["bun ", "git "] };
+    const openIssues: McpOptimizerOpenIssue[] = [
       {
         number: 7,
-        title: "[coach] bun run publish",
+        title: "[mcp-optimizer] bun run publish",
         body: `family:${familyTag(family.key)}`,
         url: "https://forge.test/acme/fixture/issues/7",
       },
     ];
     const prompt = synthesisPrompt({ family, settings, openIssues, filingRoom: 1 });
-    const template = coachPromptTemplate({ settings, openIssues });
+    const template = mcpOptimizerPromptTemplate({ settings, openIssues });
     expect(fixedLines(template)).toEqual(fixedLines(prompt));
     expect(fixedLines(template)).toContain("## Manifesto");
     expect(fixedLines(template)).toContain(
       "- File with `issue_create` and no labels. Its returned number and URL are the record.",
     );
     expect(
-      fixedLines(template).some((line) => line.includes("call `coach_proposal_skip`")),
+      fixedLines(template).some((line) => line.includes("call `mcp_optimizer_proposal_skip`")),
     ).toBe(true);
     expect(sectionValue(template, "MCP catalog:")).toBe(sectionValue(prompt, "MCP catalog:"));
     expect(sectionValue(template, "Command allowlist:")).toBe(
@@ -1462,8 +1462,8 @@ describe("Coach synthesis contract and prompt", () => {
   });
 
   test("the template names its three per-family sections with placeholders", () => {
-    const template = coachPromptTemplate({
-      settings: { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun "] },
+    const template = mcpOptimizerPromptTemplate({
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, allowlist: ["bun "] },
       openIssues: [],
     });
     expect(sectionValue(template, "Family:")).toBe("<family>");
@@ -1477,33 +1477,33 @@ describe("Coach synthesis contract and prompt", () => {
   });
 
   test("the open-issue section filters, sorts, and states an unavailable read", () => {
-    const settings = { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun "] };
-    const issues: CoachOpenIssue[] = [
+    const settings = { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, allowlist: ["bun "] };
+    const issues: McpOptimizerOpenIssue[] = [
       { number: 9, title: "unrelated", body: "no tag", url: "https://forge.test/9" },
       { number: 5, title: "family evidence", body: "see family:abc", url: "https://forge.test/5" },
-      { number: 3, title: "[coach] later", body: "", url: "https://forge.test/3" },
+      { number: 3, title: "[mcp-optimizer] later", body: "", url: "https://forge.test/3" },
     ];
-    expect(coachIssues(issues).map((issue) => issue.number)).toEqual([5, 3]);
-    const template = coachPromptTemplate({ settings, openIssues: issues });
-    const value = sectionValue(template, "Open Coach issues:");
+    expect(mcpOptimizerIssues(issues).map((issue) => issue.number)).toEqual([5, 3]);
+    const template = mcpOptimizerPromptTemplate({ settings, openIssues: issues });
+    const value = sectionValue(template, "Open MCP optimizer issues:");
     expect(JSON.parse(value)).toEqual([
-      { number: 3, title: "[coach] later", url: "https://forge.test/3" },
+      { number: 3, title: "[mcp-optimizer] later", url: "https://forge.test/3" },
       { number: 5, title: "family evidence", url: "https://forge.test/5" },
     ]);
     expect(value).not.toContain("unrelated");
     expect(
-      sectionValue(coachPromptTemplate({ settings, openIssues: [] }), "Open Coach issues:"),
+      sectionValue(mcpOptimizerPromptTemplate({ settings, openIssues: [] }), "Open MCP optimizer issues:"),
     ).toBe("[]");
     const unavailable = sectionValue(
-      coachPromptTemplate({ settings, openIssues: null }),
-      "Open Coach issues:",
+      mcpOptimizerPromptTemplate({ settings, openIssues: null }),
+      "Open MCP optimizer issues:",
     );
-    expect(unavailable).toBe(COACH_PROMPT_ISSUES_UNAVAILABLE);
+    expect(unavailable).toBe(MCP_OPTIMIZER_PROMPT_ISSUES_UNAVAILABLE);
     expect(unavailable).not.toBe("[]");
   });
 
   test("a prompt above the byte budget is cut to the budget", () => {
-    const huge: CoachFamily = {
+    const huge: McpOptimizerFamily = {
       key: family.key,
       kind: "command",
       calls: 1,
@@ -1517,7 +1517,7 @@ describe("Coach synthesis contract and prompt", () => {
     };
     const prompt = synthesisPrompt({
       family: huge,
-      settings: DEFAULT_COACH_SETTINGS,
+      settings: DEFAULT_MCP_OPTIMIZER_SETTINGS,
       openIssues: [],
       filingRoom: 1,
     });
@@ -1525,7 +1525,7 @@ describe("Coach synthesis contract and prompt", () => {
   });
 });
 
-describe("Coach cycle", () => {
+describe("MCP optimizer cycle", () => {
   test("one synthesis call per family, recording each filed issue from its tool log", async () => {
     const { repoDir, stateDir } = await workspace();
     const collection = collectionOf(threeFamilies());
@@ -1538,7 +1538,7 @@ describe("Coach cycle", () => {
       collect: () => collection,
       delivery,
       synthesize: stubSynthesis(() => ({ action: "file" }), calls),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     const families = buildFamilies({ ...collection, repoDir });
     expect(result.report.action).toBe("filed");
@@ -1560,14 +1560,14 @@ describe("Coach cycle", () => {
       expect(records[0]?.ok).toBe(true);
     }
     for (const issue of result.report.issues) {
-      expect(issue.title).toBe(`[coach] ${issue.family}`);
+      expect(issue.title).toBe(`[mcp-optimizer] ${issue.family}`);
       expect(issue.url).toContain("https://forge.test/");
       expect(issue.kind).toBe("command");
     }
     expect(result.report.validations.filter((entry) => entry.outcome === "filed")).toHaveLength(
       families.selected.length,
     );
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    const ledger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
     for (const issue of result.report.issues) {
       const entry = ledger.families[issue.family];
       expect(entry?.lastAction).toBe("filed");
@@ -1591,7 +1591,7 @@ describe("Coach cycle", () => {
         action: "skip",
         reason: "the recurrence is expected and needs no change",
       }), calls),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("none");
     expect(result.report.issues).toEqual([]);
@@ -1605,10 +1605,10 @@ describe("Coach cycle", () => {
     for (const call of calls) {
       const records = readToolLog(call.paths.skipLogPath);
       expect(records).toHaveLength(1);
-      expect(records[0]?.tool).toBe("coach_proposal_skip");
+      expect(records[0]?.tool).toBe("mcp_optimizer_proposal_skip");
       expect(records[0]?.ok).toBe(true);
     }
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    const ledger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
     expect(Object.values(ledger.families).every((entry) => entry.lastAction === "none")).toBe(true);
   });
 
@@ -1621,7 +1621,7 @@ describe("Coach cycle", () => {
     const delivery = memoryDelivery([
       {
         number: 1,
-        title: `[coach] ${first.key}`,
+        title: `[mcp-optimizer] ${first.key}`,
         body: "unrelated",
         url: "https://forge.test/acme/fixture/issues/1",
       },
@@ -1634,7 +1634,7 @@ describe("Coach cycle", () => {
       {
         number: 3,
         title: "Fix the login page",
-        body: "unrelated to any coach family",
+        body: "unrelated to any mcp-optimizer family",
         url: "https://forge.test/acme/fixture/issues/3",
       },
     ]);
@@ -1646,11 +1646,11 @@ describe("Coach cycle", () => {
       collect: () => collection,
       delivery,
       synthesize: stubSynthesis(() => ({ action: "file" }), calls),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
     for (const call of calls) {
-      // Only the two Coach-relevant open issues reach the prompt.
+      // Only the two MCP optimizer-relevant open issues reach the prompt.
       expect(call.prompt).toContain("https://forge.test/acme/fixture/issues/1");
       expect(call.prompt).toContain("https://forge.test/acme/fixture/issues/2");
       expect(call.prompt).not.toContain("https://forge.test/acme/fixture/issues/3");
@@ -1676,11 +1676,11 @@ describe("Coach cycle", () => {
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: stubSynthesis(() => ({ action: "file", title: "[coach] shared tool" })),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      synthesize: stubSynthesis(() => ({ action: "file", title: "[mcp-optimizer] shared tool" })),
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.issues).toHaveLength(1);
-    expect(result.report.issues[0]?.title).toBe("[coach] shared tool");
+    expect(result.report.issues[0]?.title).toBe("[mcp-optimizer] shared tool");
     expect(
       result.report.validations.filter((entry) => entry.outcome === "duplicate"),
     ).toHaveLength(selected.length - 1);
@@ -1702,12 +1702,12 @@ describe("Coach cycle", () => {
         durationMs: 3,
         reason: `peer failed for ${family.key}`,
       }),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("failed");
     expect(result.report.reason).toContain("synthesis failed");
     expect(delivery.created).toEqual([]);
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    const ledger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
     expect(ledger.pendingFiling).toEqual([]);
   });
 
@@ -1874,13 +1874,13 @@ for await (const chunk of Bun.stdin.stream()) {
           ? { action: "fail", reason: "the synthesizer peer timed out after 5000ms" }
           : { action: "file" },
       ),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
     expect(result.report.issues).toHaveLength(families.selected.length - 1);
     expect(result.report.issues.some((entry) => entry.family === failed.key)).toBe(false);
     expect(result.report.synthesis.filter((entry) => !entry.ok)).toHaveLength(1);
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    const ledger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
     expect(ledger.families[failed.key]?.lastAction).toBe("failed");
     expect(ledger.families[failed.key]?.lastIssueUrl).toBeUndefined();
   });
@@ -1890,7 +1890,7 @@ for await (const chunk of Bun.stdin.stream()) {
     const collection = collectionOf(threeFamilies());
     const delivery = memoryDelivery();
     const settings = {
-      ...DEFAULT_COACH_SETTINGS,
+      ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
       maxIssuesPerCycle: 1,
       allowlist: ["bun "],
     };
@@ -1908,7 +1908,7 @@ for await (const chunk of Bun.stdin.stream()) {
     expect(first.report.issues).toHaveLength(1);
     expect(calls.map((call) => filingRoomOf(call.prompt)).sort()).toEqual([0, 0, 1]);
     expect(calls.filter((call) => filingRoomOf(call.prompt) > 0)).toHaveLength(1);
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    const ledger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
     expect(ledger.pendingFiling).toEqual([]);
     expect(first.report.pending).toBe(0);
   });
@@ -1918,7 +1918,7 @@ for await (const chunk of Bun.stdin.stream()) {
     const collection = collectionOf(threeFamilies());
     const delivery = memoryDelivery();
     const settings = {
-      ...DEFAULT_COACH_SETTINGS,
+      ...DEFAULT_MCP_OPTIMIZER_SETTINGS,
       maxPerHour: 1,
       maxIssuesPerCycle: 3,
       allowlist: ["bun "],
@@ -1971,14 +1971,14 @@ for await (const chunk of Bun.stdin.stream()) {
     const collection = collectionOf(threeFamilies());
     const delivery = memoryDelivery();
     const now = new Date().toISOString();
-    saveLedger(coachDirectory(stateDir), {
+    saveLedger(mcpOptimizerDirectory(stateDir), {
       version: 3,
       families: {},
       pendingFiling: [
         {
           family: "bun run publish",
           kind: "command",
-          title: "[coach] bun run publish",
+          title: "[mcp-optimizer] bun run publish",
           body: "## Family\n\nstored bytes\n",
           score: 6,
           createdAt: now,
@@ -1992,7 +1992,7 @@ for await (const chunk of Bun.stdin.stream()) {
       collect: () => collection,
       delivery,
       synthesize: stubSynthesis(() => ({ action: "skip", reason: "already covered" })),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.dropped).toBe(1);
     expect(result.report.pending).toBe(0);
@@ -2002,13 +2002,13 @@ for await (const chunk of Bun.stdin.stream()) {
     expect(dropped).toHaveLength(1);
     expect(dropped[0]?.rule).toBe("pending-queue-removed");
     expect(dropped[0]?.family).toBe("bun run publish");
-    expect(loadLedger(coachDirectory(stateDir)).ledger.pendingFiling).toEqual([]);
+    expect(loadLedger(mcpOptimizerDirectory(stateDir)).ledger.pendingFiling).toEqual([]);
   });
 
   test("a version-2 ledger is discarded and the report says so", async () => {
     const { repoDir, stateDir } = await workspace();
     await writeFile(
-      join(coachDirectory(stateDir), "state.json"),
+      join(mcpOptimizerDirectory(stateDir), "state.json"),
       JSON.stringify({ version: 2, findings: { old: {} }, pendingFiling: [] }),
     );
     const result = await runCycle({
@@ -2019,7 +2019,7 @@ for await (const chunk of Bun.stdin.stream()) {
       collect: () => collectionOf(threeFamilies()),
     });
     expect(result.report.ledgerReset).toBe(true);
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    const ledger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
     expect(ledger.families).toEqual({});
   });
 
@@ -2028,7 +2028,7 @@ for await (const chunk of Bun.stdin.stream()) {
     const delivery = memoryDelivery();
     const legacyEnvironment = {
       ["DEVBOARD_OPENROUTER_" + "DECISIONS_URL"]: "http://127.0.0.1:9/decisions",
-      ["DEVBOARD_COACH_" + "DECISIONS" + "_STUB"]: "/does/not/exist.json",
+      ["DEVBOARD_MCP_OPTIMIZER_" + "DECISIONS" + "_STUB"]: "/does/not/exist.json",
       ["JEV_" + "DECISION_MODEL"]: "typesafe/legacy-1.14",
     };
     const result = await runCycle({
@@ -2039,7 +2039,7 @@ for await (const chunk of Bun.stdin.stream()) {
       collect: () => collectionOf(threeFamilies()),
       delivery,
       synthesize: stubSynthesis(() => ({ action: "file" })),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
     expect(result.report.issues.length).toBeGreaterThan(0);
@@ -2056,9 +2056,9 @@ for await (const chunk of Bun.stdin.stream()) {
       collect: () => collectionOf(threeFamilies()),
       delivery,
       synthesize: stubSynthesis(() => ({ action: "file" })),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
-    const report: CoachReport = result.report;
+    const report: McpOptimizerReport = result.report;
     expect(report).toMatchObject({
       action: "filed",
       families: 3,
@@ -2077,16 +2077,16 @@ for await (const chunk of Bun.stdin.stream()) {
       expect(["filed", "duplicate", "skipped", "dropped", "failed"]).toContain(entry.outcome);
     }
     expect(describeCycle(result)).toContain("filed");
-    expect(existsSync(join(coachDirectory(stateDir), "runs", report.cycle.replace(/[:.]/g, "-"), "report.json"))).toBe(true);
+    expect(existsSync(join(mcpOptimizerDirectory(stateDir), "runs", report.cycle.replace(/[:.]/g, "-"), "report.json"))).toBe(true);
 
-    const status = readCoachStatus(coachDirectory(stateDir));
+    const status = readMcpOptimizerStatus(mcpOptimizerDirectory(stateDir));
     expect(status.families).toBe(3);
     expect(status.selected).toBe(3);
     expect(status.filed).toBe(3);
     expect(status.pending).toBe(0);
     expect(status.issues).toHaveLength(3);
     for (const issue of status.issues) {
-      expect(issue.title.startsWith("[coach] ")).toBe(true);
+      expect(issue.title.startsWith("[mcp-optimizer] ")).toBe(true);
       expect(issue.kind).toBe("command");
       expect(issue.family.length).toBeGreaterThan(0);
       expect(issue.url).toContain("https://forge.test/");
@@ -2096,7 +2096,7 @@ for await (const chunk of Bun.stdin.stream()) {
   test("a filed issue keeps the tool record's title and URL verbatim", async () => {
     const { repoDir, stateDir } = await workspace();
     const delivery = memoryDelivery();
-    const longTitle = `[coach] ${"z".repeat(300)}`;
+    const longTitle = `[mcp-optimizer] ${"z".repeat(300)}`;
     const url = "https://forge.test/acme/fixture/issues/42";
     const result = await runCycle({
       root: repoDir,
@@ -2112,21 +2112,21 @@ for await (const chunk of Bun.stdin.stream()) {
         ]),
       delivery,
       synthesize: stubSynthesis(() => ({ action: "file", title: longTitle, number: 42, url })),
-      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
     expect(delivery.created).toEqual([]);
     expect(result.report.issues).toHaveLength(1);
     expect(result.report.issues[0]?.title).toBe(longTitle);
     expect(result.report.issues[0]?.url).toBe(url);
-    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    const ledger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
     expect(ledger.families["bun run publish"]?.lastTitle).toBe(longTitle);
     expect(ledger.families["bun run publish"]?.lastIssueUrl).toBe(url);
     expect(ledger.pendingFiling).toEqual([]);
   });
 });
 
-describe("Coach settings compatibility", () => {
+describe("MCP optimizer settings compatibility", () => {
   test("an old file falls back on the new keys and ignores removed ones", async () => {
     const { stateDir } = await workspace();
     const legacy = Object.fromEntries([
@@ -2139,10 +2139,10 @@ describe("Coach settings compatibility", () => {
       ["reject" + "CooldownHours", 168],
     ]);
     await writeFile(
-      join(coachDirectory(stateDir), "settings.json"),
+      join(mcpOptimizerDirectory(stateDir), "settings.json"),
       JSON.stringify(legacy),
     );
-    expect(readCoachSettings(coachDirectory(stateDir))).toEqual({
+    expect(readMcpOptimizerSettings(mcpOptimizerDirectory(stateDir))).toEqual({
       intervalMinutes: 45,
       maxPerHour: 2,
       maxPending: null,
@@ -2152,20 +2152,20 @@ describe("Coach settings compatibility", () => {
   });
 
   test("missing and invalid values fall back without rejecting the file", () => {
-    expect(parseCoachSettings("{}")).toEqual(DEFAULT_COACH_SETTINGS);
+    expect(parseMcpOptimizerSettings("{}")).toEqual(DEFAULT_MCP_OPTIMIZER_SETTINGS);
     expect(
-      parseCoachSettings(
+      parseMcpOptimizerSettings(
         JSON.stringify({ intervalMinutes: 0, maxPerHour: 500, maxIssuesPerCycle: 99, allowlist: [""] }),
       ),
-    ).toEqual(DEFAULT_COACH_SETTINGS);
-    expect(parseCoachSettings("not json")).toBeUndefined();
+    ).toEqual(DEFAULT_MCP_OPTIMIZER_SETTINGS);
+    expect(parseMcpOptimizerSettings("not json")).toBeUndefined();
     expect(isValidIssuesPerCycle(20)).toBe(true);
     expect(isValidIssuesPerCycle(21)).toBe(false);
     expect(isValidAllowlist(["bun "])).toBe(true);
   });
 });
 
-describe("Coach journal families", () => {
+describe("MCP optimizer journal families", () => {
   test("the journal path records scopes and writes no comment", async () => {
     const { repoDir, stateDir } = await workspace();
     await mkdir(join(stateDir, "journal"), { recursive: true });
@@ -2189,16 +2189,16 @@ describe("Coach journal families", () => {
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: stubSynthesis(() => ({ action: "file", title: "[coach] question: Same?" })),
-      settings: { ...DEFAULT_COACH_SETTINGS, allowlist: ["question:"] },
+      synthesize: stubSynthesis(() => ({ action: "file", title: "[mcp-optimizer] question: Same?" })),
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, allowlist: ["question:"] },
     });
     expect(result.report.action).toBe("filed");
-    expect(result.report.issues[0]?.title).toBe("[coach] question: Same?");
+    expect(result.report.issues[0]?.title).toBe("[mcp-optimizer] question: Same?");
     expect(result.report.findings[0]?.kind).toBe("question");
   });
 });
 
-describe("Coach synthesizer provider order", () => {
+describe("MCP optimizer synthesizer provider order", () => {
   test("leads with the dashboard's published selection", async () => {
     const stateDir = await temporaryRoot();
     const now = NOW.toISOString();
@@ -2226,20 +2226,20 @@ describe("Coach synthesizer provider order", () => {
   });
 });
 
-describe("Coach periodic read retries", () => {
+describe("MCP optimizer periodic read retries", () => {
   const ISSUE_URL = "https://github.com/acme/fixture/issues/41";
 
   async function seededActivity(reader: ForgeIssueReader, now: () => number) {
     const { repoDir, stateDir } = await workspace();
-    seedCoachIssue(stateDir, ISSUE_URL);
-    return coachActivity({ repoDir, stateDir, reader, now });
+    seedMcpOptimizerIssue(stateDir, ISSUE_URL);
+    return mcpOptimizerActivity({ repoDir, stateDir, reader, now });
   }
 
   test("retries a transient read without an error and keeps the rows and read time", async () => {
-    const reader = coachRetryReader();
+    const reader = mcpOptimizerRetryReader();
     let clock = 1_000_000;
     const activity = await seededActivity(reader, () => clock);
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     const successAt = clock;
     const before = activity.snapshot().issues;
     expect(before).toHaveLength(1);
@@ -2247,7 +2247,7 @@ describe("Coach periodic read retries", () => {
 
     reader.failures.push("gh: HTTP 503: Service Unavailable");
     clock += 60_000;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     const retrying = activity.snapshot();
     expect(retrying.sync).toEqual({
       state: "stale",
@@ -2257,11 +2257,11 @@ describe("Coach periodic read retries", () => {
     expect(retrying.issues).toEqual(before);
 
     clock += 999;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(reads + 1);
 
     clock += 1;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(reads + 2);
     const recovered = activity.snapshot();
     expect(recovered.sync).toEqual({
@@ -2273,11 +2273,11 @@ describe("Coach periodic read retries", () => {
   });
 
   test("retries a transient read four times and surfaces the fifth failure", async () => {
-    const reader = coachRetryReader();
+    const reader = mcpOptimizerRetryReader();
     reader.failAll = "gh: HTTP 503: Service Unavailable";
     let clock = 5_000_000;
     const activity = await seededActivity(reader, () => clock);
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(1);
     expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
 
@@ -2285,13 +2285,13 @@ describe("Coach periodic read retries", () => {
     let attempts = 1;
     for (const delay of [1_000, 2_000, 4_000, 8_000]) {
       clock = now + delay - 1;
-      await readCoachOnce(activity);
+      await readMcpOptimizerOnce(activity);
       expect(reader.calls).toBe(attempts);
       expect(activity.snapshot().sync.state).toBe("stale");
       expect(activity.snapshot().sync.error).toBeNull();
 
       clock = now + delay;
-      await readCoachOnce(activity);
+      await readMcpOptimizerOnce(activity);
       now += delay;
       attempts += 1;
       expect(reader.calls).toBe(attempts);
@@ -2306,30 +2306,30 @@ describe("Coach periodic read retries", () => {
     expect(failed.error).toBeNull();
 
     clock = now + 1_000;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(attempts);
     expect(activity.snapshot().sync.state).toBe("error");
     clock = now + 60_000;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(attempts + 1);
     expect(activity.snapshot().sync.state).toBe("error");
   });
 
   test("a success during the retry schedule clears the state", async () => {
-    const reader = coachRetryReader();
+    const reader = mcpOptimizerRetryReader();
     reader.failures.push("gh: HTTP 502: Bad Gateway", "gh: HTTP 502: Bad Gateway");
     let clock = 7_000_000;
     const activity = await seededActivity(reader, () => clock);
     const start = clock;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(1);
     expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
     clock = start + 1_000;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(2);
     expect(activity.snapshot().sync).toEqual({ state: "stale", at: null, error: null });
     clock = start + 3_000;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(3);
     expect(activity.snapshot().sync).toEqual({
       state: "ok",
@@ -2342,33 +2342,33 @@ describe("Coach periodic read retries", () => {
     ["credentials", "gh: HTTP 401: Bad credentials"],
     ["a missing repository", "gh: HTTP 404: Not Found"],
     ["a malformed answer", "gh issue list did not print a JSON array"],
-    ["missing configuration", "the coach activity needs DEVBOARD_GITEA_URL for a Gitea origin"],
+    ["missing configuration", "the MCP optimizer activity needs DEVBOARD_GITEA_URL for a Gitea origin"],
   ] as const) {
     test(`a permanent read failure (${label}) is attempted once and surfaces at once`, async () => {
-      const reader = coachRetryReader();
+      const reader = mcpOptimizerRetryReader();
       reader.failAll = message;
       let clock = 9_000_000;
       const activity = await seededActivity(reader, () => clock);
-      await readCoachOnce(activity);
+      await readMcpOptimizerOnce(activity);
       expect(reader.calls).toBe(1);
       const failed = activity.snapshot();
       expect(failed.sync).toEqual({ state: "error", at: null, error: message });
       expect(failed.error).toBeNull();
 
       clock += 1_000;
-      await readCoachOnce(activity);
+      await readMcpOptimizerOnce(activity);
       expect(reader.calls).toBe(1);
       expect(activity.snapshot().sync.error).toBe(message);
     });
   }
 
   test("a rate-limited read surfaces once, raises no error, and waits a cadence", async () => {
-    const reader = coachRetryReader();
+    const reader = mcpOptimizerRetryReader();
     reader.failAll = "You have exceeded a secondary rate limit.";
     let clock = 11_000_000;
     const activity = await seededActivity(reader, () => clock);
     const start = clock;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(1);
     const limited = activity.snapshot();
     expect(limited.sync.state).toBe("error");
@@ -2376,13 +2376,13 @@ describe("Coach periodic read retries", () => {
     expect(limited.error).toBeNull();
 
     clock = start + 1_000;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(1);
     expect(activity.snapshot().sync.state).toBe("error");
 
     reader.failAll = null;
     clock = start + 60_000;
-    await readCoachOnce(activity);
+    await readMcpOptimizerOnce(activity);
     expect(reader.calls).toBe(2);
     expect(activity.snapshot().sync).toEqual({
       state: "ok",

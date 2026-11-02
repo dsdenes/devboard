@@ -47,7 +47,7 @@
     barState === "running" ? (snapshot?.cadence.lastRunAt ?? null) : null,
   );
   const cycles = $derived(detail?.panel === "cycles" ? detail.cycles : []);
-  // A Watchdog or Coach page follows cycles instead of a scan log; the bar's
+  // A Watchdog or MCP optimizer page follows cycles instead of a scan log; the bar's
   // expansion is the one place either history renders.
   const barActivity = $derived(
     detail?.panel === "cycles" ? cycles.slice().reverse().map(cycleLine) : activity,

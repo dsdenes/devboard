@@ -772,16 +772,16 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     tab: { id: "dead-code", kind: "dead-code", title: "Dead Code" },
   }),
   validateAgentDescriptor({
-    id: "coach",
-    label: "Coach",
+    id: "mcp-optimizer",
+    label: "MCP optimizer",
     description:
       "Reviews repeated agent mistakes and manual work and files one improvement issue per pattern.",
     scope: "repository",
     prompt: {
       kind: "template",
       message:
-        "Coach synthesizes its prompt from each cycle's evidence, so this generated template " +
-        "is read-only.",
+        "MCP optimizer synthesizes its prompt from each cycle's evidence, so this generated " +
+        "template is read-only.",
     },
     lifecycle: AGENT_LIFECYCLES,
     cadence: {
@@ -798,7 +798,7 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,
     detail: { panel: "cycles", testId: "agent-detail" },
-    tab: { id: "coach", kind: "coach", title: "Coach" },
+    tab: { id: "mcp-optimizer", kind: "mcp-optimizer", title: "MCP optimizer" },
   }),
   validateAgentDescriptor({
     id: "api-standards",

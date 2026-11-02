@@ -1,5 +1,5 @@
 /**
- * The one MCP catalog. `tools/list` and the Coach `tool-gap` filter both read
+ * The one MCP catalog. `tools/list` and the MCP optimizer `tool-gap` filter both read
  * this module: a tool name and its `covers` entries exist here and nowhere
  * else. The list is sorted by name so one unchanged state yields one stable
  * catalog byte for byte.
@@ -484,10 +484,10 @@ const TOOLS: readonly McpToolDefinition[] = [
     ),
   },
   {
-    name: "coach_proposal_skip",
-    title: "Record a Coach family with no proposal",
+    name: "mcp_optimizer_proposal_skip",
+    title: "Record an MCP optimizer family with no proposal",
     description:
-      "Records why a Coach family's synthesis turn filed no issue. The " +
+      "Records why an MCP optimizer family's synthesis turn filed no issue. The " +
       "coordinator records the family as skipped with this reason; nothing is " +
       "queued and no answer document is read.",
     inputSchema: object({ family: STRING, reason: STRING }, ["family", "reason"]),
@@ -513,7 +513,7 @@ const TOOLS: readonly McpToolDefinition[] = [
       "bun run build",
       "bunx tsc --noEmit",
       "bun run verify:agents",
-      "bun run verify:coach",
+      "bun run verify:mcp-optimizer",
       "bun run verify:install",
       "bun run verify:interface",
       "bun run verify:issues",
@@ -536,7 +536,7 @@ export const MCP_TOOL_NAMES: readonly string[] = Object.freeze(
   MCP_TOOLS.map((tool) => tool.name),
 );
 
-/** Every command signature an MCP tool replaces, for the Coach filter. */
+/** Every command signature an MCP tool replaces, for the MCP optimizer filter. */
 export const MCP_COVERS: readonly string[] = Object.freeze(
   [...new Set(MCP_TOOLS.flatMap((tool) => tool.covers ?? []))].sort(),
 );

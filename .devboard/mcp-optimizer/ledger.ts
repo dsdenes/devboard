@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isRecord } from "../issues/guards";
-import type { CoachFamily, FamilyKind } from "./families";
+import type { McpOptimizerFamily, FamilyKind } from "./families";
 import { LEDGER_VERSION, ledgerPath } from "./paths";
 
 /**
@@ -33,7 +33,7 @@ export const FAMILY_LAST_ACTIONS: readonly FamilyLastAction[] = Object.freeze([
   "failed",
 ]);
 
-export interface CoachFamilyEntry {
+export interface McpOptimizerFamilyEntry {
   firstSeen: string;
   lastSeen: string;
   calls: number;
@@ -57,19 +57,19 @@ export interface PendingFiling {
   createdAt: string;
 }
 
-export interface CoachLedger {
+export interface McpOptimizerLedger {
   version: typeof LEDGER_VERSION;
-  families: Record<string, CoachFamilyEntry>;
+  families: Record<string, McpOptimizerFamilyEntry>;
   pendingFiling: PendingFiling[];
 }
 
 export interface LedgerLoad {
-  ledger: CoachLedger;
+  ledger: McpOptimizerLedger;
   /** True when a non-version-3 ledger was discarded. */
   reset: boolean;
 }
 
-export function emptyLedger(): CoachLedger {
+export function emptyLedger(): McpOptimizerLedger {
   return { version: LEDGER_VERSION, families: {}, pendingFiling: [] };
 }
 
@@ -81,7 +81,7 @@ function isLastAction(value: unknown): value is FamilyLastAction {
   return typeof value === "string" && (FAMILY_LAST_ACTIONS as readonly string[]).includes(value);
 }
 
-function parseEntry(value: unknown): CoachFamilyEntry | undefined {
+function parseEntry(value: unknown): McpOptimizerFamilyEntry | undefined {
   if (!isRecord(value)) return undefined;
   if (
     typeof value.firstSeen !== "string" ||
@@ -140,7 +140,7 @@ export function loadLedger(directory: string): LedgerLoad {
   if (!isRecord(parsed) || parsed.version !== LEDGER_VERSION) {
     return { ledger: emptyLedger(), reset: true };
   }
-  const families: Record<string, CoachFamilyEntry> = {};
+  const families: Record<string, McpOptimizerFamilyEntry> = {};
   if (isRecord(parsed.families)) {
     for (const [key, value] of Object.entries(parsed.families)) {
       const entry = parseEntry(value);
@@ -158,7 +158,7 @@ export function loadLedger(directory: string): LedgerLoad {
   };
 }
 
-export function saveLedger(directory: string, ledger: CoachLedger): void {
+export function saveLedger(directory: string, ledger: McpOptimizerLedger): void {
   mkdirSync(directory, { recursive: true });
   const path = ledgerPath(directory);
   const temporary = `${path}.${process.pid}.tmp`;
@@ -171,8 +171,8 @@ export function saveLedger(directory: string, ledger: CoachLedger): void {
  * carries the newest window's counts; the last action is untouched.
  */
 export function recordFamilies(
-  ledger: CoachLedger,
-  families: CoachFamily[],
+  ledger: McpOptimizerLedger,
+  families: McpOptimizerFamily[],
   now: Date,
 ): void {
   const stamp = now.toISOString();
@@ -204,7 +204,7 @@ export interface MarkFamilyOptions {
 }
 
 export function markFamily(
-  ledger: CoachLedger,
+  ledger: McpOptimizerLedger,
   key: string,
   action: FamilyLastAction,
   options: MarkFamilyOptions,

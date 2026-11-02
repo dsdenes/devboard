@@ -8,7 +8,7 @@ import type { AgentAdapter } from "../server/agents/types";
 import { ScoutBridge } from "../server/scout";
 import { DesignBridge } from "../server/design";
 import { WatchdogActivity } from "../server/watchdog";
-import { CoachActivity } from "../server/coach";
+import { McpOptimizerActivity } from "../server/mcp-optimizer";
 import type { ForgeIssueFact, ForgeIssueReader } from "../server/agents/forge-reader";
 import {
   emptyState as emptyScoutState,
@@ -24,11 +24,11 @@ import {
 import { statePath as designStatePath } from "../issues/design/paths";
 import { saveLedger as saveWatchdogLedger, type Ledger } from "../watchdog/ledger";
 import {
-  saveLedger as saveCoachLedger,
-  emptyLedger as emptyCoachLedger,
-  type CoachLedger,
-} from "../coach/ledger";
-import { coachDirectory } from "../coach/paths";
+  saveLedger as saveMcpOptimizerLedger,
+  emptyLedger as emptyMcpOptimizerLedger,
+  type McpOptimizerLedger,
+} from "../mcp-optimizer/ledger";
+import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
 
 /**
  * The four filed-issues tables share one forge read. These cases drive the
@@ -164,9 +164,9 @@ function seedWatchdog(root: string, _stateDir: string, rows: RowSeed[]): string 
   return join(directory, "state.json");
 }
 
-function seedCoach(_root: string, stateDir: string, rows: RowSeed[]): string {
-  const coachDir = coachDirectory(stateDir);
-  const ledger: CoachLedger = emptyCoachLedger();
+function seedMcpOptimizer(_root: string, stateDir: string, rows: RowSeed[]): string {
+  const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
+  const ledger: McpOptimizerLedger = emptyMcpOptimizerLedger();
   for (const row of rows) {
     const family = `family-${row.number}`;
     ledger.families[family] = {
@@ -181,8 +181,8 @@ function seedCoach(_root: string, stateDir: string, rows: RowSeed[]): string {
       lastFiledAt: row.createdAt,
     };
   }
-  saveCoachLedger(coachDir, ledger);
-  return join(coachDir, "state.json");
+  saveMcpOptimizerLedger(mcpOptimizerDir, ledger);
+  return join(mcpOptimizerDir, "state.json");
 }
 
 interface Harness {
@@ -270,14 +270,14 @@ function watchdogAdapter(
   return { adapter, stateFile: join(watchdogDir, "state.json") };
 }
 
-function coachAdapter(
+function mcpOptimizerAdapter(
   root: string,
   stateDir: string,
   reader: ForgeIssueReader,
   options: { hasClients: () => boolean; now: () => number; onSpawn?: () => void },
 ): Harness {
-  const adapter = new CoachActivity({
-    descriptor: agentRegistry.require("coach"),
+  const adapter = new McpOptimizerActivity({
+    descriptor: agentRegistry.require("mcp-optimizer"),
     repoDir: root,
     stateDir,
     harnessDir: harnessRoot,
@@ -290,14 +290,14 @@ function coachAdapter(
       return undefined;
     },
   });
-  return { adapter, stateFile: join(coachDirectory(stateDir), "state.json") };
+  return { adapter, stateFile: join(mcpOptimizerDirectory(stateDir), "state.json") };
 }
 
 const adapters = [
   { name: "Auto Scout", seed: seedScout, build: scoutAdapter },
   { name: "Watchdog", seed: seedWatchdog, build: watchdogAdapter },
   { name: "Design System", seed: seedDesign, build: designAdapter },
-  { name: "Coach", seed: seedCoach, build: coachAdapter },
+  { name: "MCP optimizer", seed: seedMcpOptimizer, build: mcpOptimizerAdapter },
 ] as const;
 
 type AdapterFactory = (

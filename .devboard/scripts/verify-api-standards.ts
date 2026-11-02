@@ -624,7 +624,7 @@ try {
         "open-devboard-watchdog",
         "open-devboard-design",
         "open-devboard-dead-code",
-        "open-devboard-coach",
+        "open-devboard-mcp-optimizer",
         "open-devboard-api-standards",
         "open-devboard-release-train",
       ]),

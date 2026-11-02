@@ -508,7 +508,7 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   (none under `prefers-reduced-motion`), and the open summary gains a `border` rule under it.
   The body pads 8px and holds the prompt bytes in one 12px mono scrollable `PRE` on `background`
   with a 1px `border-subtle` outline, 4px radius, and a `clamp(240px, 46vh, 480px)` height cap.
-  The Coach template uses the same region, and a loading or absent line is one 12px
+  The MCP optimizer template uses the same region, and a loading or absent line is one 12px
   `muted-foreground` sentence. It is closed on every load and renders no source-only marker.
 - **Stage track** (`stage-track.svelte`) — five equal-width stage cells (Goal, Epics, ADRs,
   Implementation, Finished) at 11px/600, 4px gaps, 3px radius, `border-subtle` for future stages,

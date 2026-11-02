@@ -1,28 +1,28 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { collectEvidence, type CoachCollection } from "./collect";
+import { collectEvidence, type McpOptimizerCollection } from "./collect";
 import {
-  createCoachDelivery,
-  type CoachDelivery,
+  createMcpOptimizerDelivery,
+  type McpOptimizerDelivery,
 } from "./delivery";
 import {
   buildFamilies,
   EVIDENCE_WINDOW_MS,
-  type CoachFamily,
+  type McpOptimizerFamily,
   type FamilyKind,
 } from "./families";
-import { familyTag, type CoachOpenIssue } from "./issue";
+import { familyTag, type McpOptimizerOpenIssue } from "./issue";
 import {
   loadLedger,
   markFamily,
   recordFamilies,
   saveLedger,
-  type CoachLedger,
+  type McpOptimizerLedger,
 } from "./ledger";
-import { coachDirectory, latestPath, runsDirectory } from "./paths";
-import { readCoachSettings, type CoachSettings } from "./settings";
+import { mcpOptimizerDirectory, latestPath, runsDirectory } from "./paths";
+import { readMcpOptimizerSettings, type McpOptimizerSettings } from "./settings";
 import {
-  coachIssues,
+  mcpOptimizerIssues,
   readSynthesisStub,
   synthesisPrompt,
   synthesizeFamily,
@@ -35,7 +35,7 @@ import {
 import { readToolLog, toolValueNumber, toolValueString } from "../lib/tool-log";
 
 /**
- * One Coach cycle, in order: collect, families, triage, synthesize, validate,
+ * One MCP optimizer cycle, in order: collect, families, triage, synthesize, validate,
  * file. Every family is a normalized command or journal line; the top 20 by
  * recurrence each get exactly one ACP synthesis call, a deterministic validator
  * decides what the answer is worth, and filing stops at the configured caps.
@@ -48,7 +48,7 @@ import { readToolLog, toolValueNumber, toolValueString } from "../lib/tool-log";
  * synthesizer peer needs.
  */
 
-export interface CoachFamilySummary {
+export interface McpOptimizerFamilySummary {
   key: string;
   kind: FamilyKind;
   score: number;
@@ -57,7 +57,7 @@ export interface CoachFamilySummary {
   days: number;
 }
 
-export interface CoachSynthesisSummary {
+export interface McpOptimizerSynthesisSummary {
   family: string;
   model: string;
   durationMs: number;
@@ -65,7 +65,7 @@ export interface CoachSynthesisSummary {
   reason?: string;
 }
 
-export type CoachValidationOutcome =
+export type McpOptimizerValidationOutcome =
   | "filed"
   | "pending"
   | "none"
@@ -75,14 +75,14 @@ export type CoachValidationOutcome =
   | "dropped"
   | "failed";
 
-export interface CoachValidationSummary {
+export interface McpOptimizerValidationSummary {
   family: string;
-  outcome: CoachValidationOutcome;
+  outcome: McpOptimizerValidationOutcome;
   rule?: string;
   reason?: string;
 }
 
-export interface CoachReport {
+export interface McpOptimizerReport {
   cycle: string;
   window: { start: string; end: string; minutes: number };
   sessions: number;
@@ -94,12 +94,12 @@ export interface CoachReport {
   /** Total families in the window. */
   families: number;
   /** One entry per selected family, highest score first; cycle history reads this. */
-  findings: CoachFamilySummary[];
-  selected: CoachFamilySummary[];
+  findings: McpOptimizerFamilySummary[];
+  selected: McpOptimizerFamilySummary[];
   omitted: number;
   ledgerReset: boolean;
-  synthesis: CoachSynthesisSummary[];
-  validations: CoachValidationSummary[];
+  synthesis: McpOptimizerSynthesisSummary[];
+  validations: McpOptimizerValidationSummary[];
   action: "filed" | "none" | "capped" | "failed";
   reason?: string;
   issues: Array<{ url: string; family: string; kind: FamilyKind; title: string }>;
@@ -112,21 +112,21 @@ export interface CoachReport {
 export interface CycleOptions {
   /** The repository root the cycle reads. */
   root: string;
-  /** The dashboard's STATE_DIR; Coach files live under its `coach/`. */
+  /** The dashboard's STATE_DIR; MCP optimizer files live under its `coach/`. */
   stateDir: string;
   now?: Date;
   dryRun?: boolean;
-  settings?: CoachSettings;
+  settings?: McpOptimizerSettings;
   environment?: Record<string, string | undefined>;
   /** Test seams. */
-  collect?: () => CoachCollection;
-  delivery?: CoachDelivery;
-  openIssues?: CoachOpenIssue[];
+  collect?: () => McpOptimizerCollection;
+  delivery?: McpOptimizerDelivery;
+  openIssues?: McpOptimizerOpenIssue[];
   synthesize?: Synthesize;
 }
 
 export interface CycleResult {
-  report: CoachReport;
+  report: McpOptimizerReport;
   exitCode: number;
   runDir?: string;
 }
@@ -145,7 +145,7 @@ function firstLine(error: unknown): string {
   );
 }
 
-function summaryOf(family: CoachFamily): CoachFamilySummary {
+function summaryOf(family: McpOptimizerFamily): McpOptimizerFamilySummary {
   return {
     key: family.key,
     kind: family.kind,
@@ -156,9 +156,9 @@ function summaryOf(family: CoachFamily): CoachFamilySummary {
   };
 }
 
-function renderMarkdown(report: CoachReport): string {
+function renderMarkdown(report: McpOptimizerReport): string {
   return [
-    `# Coach cycle ${report.cycle}`,
+    `# MCP optimizer cycle ${report.cycle}`,
     "",
     `- Window: ${report.window.start} .. ${report.window.end}`,
     `- Action: ${report.action}`,
@@ -219,15 +219,15 @@ function renderMarkdown(report: CoachReport): string {
 }
 
 function duplicateOf(
-  openIssues: CoachOpenIssue[],
+  openIssues: McpOptimizerOpenIssue[],
   title: string,
   family: string,
-): CoachOpenIssue | undefined {
+): McpOptimizerOpenIssue | undefined {
   const tag = `family:${familyTag(family)}`;
   return openIssues.find((issue) => issue.title === title || issue.body.includes(tag));
 }
 
-function filingsThisHour(ledger: CoachLedger, now: Date): number {
+function filingsThisHour(ledger: McpOptimizerLedger, now: Date): number {
   const start = now.getTime() - 60 * 60_000;
   let count = 0;
   for (const entry of Object.values(ledger.families)) {
@@ -237,7 +237,7 @@ function filingsThisHour(ledger: CoachLedger, now: Date): number {
   return count;
 }
 
-function hourlyRoom(settings: CoachSettings, ledger: CoachLedger, now: Date): number {
+function hourlyRoom(settings: McpOptimizerSettings, ledger: McpOptimizerLedger, now: Date): number {
   if (settings.maxPerHour === null) return Number.POSITIVE_INFINITY;
   return Math.max(0, settings.maxPerHour - filingsThisHour(ledger, now));
 }
@@ -264,11 +264,11 @@ async function mapLimit<T, R>(
   return results;
 }
 
-/** Runs one Coach cycle. The caller owns the singleton lock. */
+/** Runs one MCP optimizer cycle. The caller owns the singleton lock. */
 export async function runCycle(options: CycleOptions): Promise<CycleResult> {
   const root = resolve(options.root);
   const stateDir = resolve(options.stateDir);
-  const coachDir = coachDirectory(stateDir);
+  const mcpOptimizerDir = mcpOptimizerDirectory(stateDir);
   const now = options.now ?? new Date();
   const dryRun = options.dryRun === true;
   const environment = options.environment ?? process.env;
@@ -276,7 +276,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     start: new Date(now.getTime() - EVIDENCE_WINDOW_MS),
     end: now,
   };
-  const settings = options.settings ?? readCoachSettings(coachDir);
+  const settings = options.settings ?? readMcpOptimizerSettings(mcpOptimizerDir);
   const collection =
     options.collect?.() ??
     collectEvidence({
@@ -290,14 +290,14 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     window: collection.window,
     repoDir: root,
   });
-  const loaded = loadLedger(coachDir);
+  const loaded = loadLedger(mcpOptimizerDir);
   const ledger = loaded.ledger;
   if (!dryRun) recordFamilies(ledger, selection.families, now);
 
-  const runDir = join(runsDirectory(coachDir), stamp(now));
+  const runDir = join(runsDirectory(mcpOptimizerDir), stamp(now));
   const reportPath = join(runDir, "report.json");
   const selected = selection.selected.map(summaryOf);
-  const report: CoachReport = {
+  const report: McpOptimizerReport = {
     cycle: now.toISOString(),
     window: { ...collection.window, minutes: EVIDENCE_WINDOW_MS / 60_000 },
     sessions: collection.sessions.length,
@@ -345,21 +345,21 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
       report.action = "none";
       report.reason = "no family filed a proposal";
     }
-    saveLedger(coachDir, ledger);
+    saveLedger(mcpOptimizerDir, ledger);
     mkdirSync(runDir, { recursive: true });
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-    writeFileSync(latestPath(coachDir), `${JSON.stringify(report, null, 2)}\n`);
+    writeFileSync(latestPath(mcpOptimizerDir), `${JSON.stringify(report, null, 2)}\n`);
     writeFileSync(join(runDir, "report.md"), renderMarkdown(report));
     return { report, exitCode: report.action === "failed" ? 1 : 0, runDir };
   };
 
   let delivery = options.delivery;
   let deliveryFailure: string | undefined;
-  const deliveryFor = (): CoachDelivery | undefined => {
+  const deliveryFor = (): McpOptimizerDelivery | undefined => {
     if (delivery !== undefined) return delivery;
     if (deliveryFailure !== undefined) return undefined;
     try {
-      delivery = createCoachDelivery({
+      delivery = createMcpOptimizerDelivery({
         repoDir: root,
         stateDir,
         ...(options.environment === undefined ? {} : { environment: options.environment }),
@@ -370,7 +370,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     return delivery;
   };
 
-  let openIssues: CoachOpenIssue[] = [];
+  let openIssues: McpOptimizerOpenIssue[] = [];
   let failure: string | undefined;
   // A queue written by an older revision is discarded, not filed: the
   // synthesis turn files its own proposal or records why it filed none.
@@ -389,7 +389,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
   if (selection.selected.length > 0) {
     const active = deliveryFor();
     if (active === undefined) {
-      failure = deliveryFailure ?? "the Coach delivery is unavailable";
+      failure = deliveryFailure ?? "the MCP optimizer delivery is unavailable";
     } else if (options.openIssues !== undefined) {
       openIssues = options.openIssues;
     } else {
@@ -457,7 +457,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
           ...(stub === undefined ? {} : { run: stub }),
         });
       });
-    const openCoachIssues = coachIssues(openIssues);
+    const openMcpOptimizerIssues = mcpOptimizerIssues(openIssues);
     const available = Math.max(
       0,
       Math.min(
@@ -478,7 +478,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
         prompt: synthesisPrompt({
           family,
           settings,
-          openIssues: openCoachIssues,
+          openIssues: openMcpOptimizerIssues,
           filingRoom: index < available ? 1 : 0,
         }),
       };
@@ -488,7 +488,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
       SYNTHESIS_CONCURRENCY,
       async (
         item,
-      ): Promise<{ family: CoachFamily; paths: SynthesisPaths; result: SynthesisResult }> => {
+      ): Promise<{ family: McpOptimizerFamily; paths: SynthesisPaths; result: SynthesisResult }> => {
         let result: SynthesisResult;
         try {
           result = await run(item.family, item.prompt, item.paths);
@@ -555,7 +555,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
         continue;
       }
       const skips = readToolLog(call.paths.skipLogPath).filter(
-        (entry) => entry.tool === "coach_proposal_skip" && entry.ok === true,
+        (entry) => entry.tool === "mcp_optimizer_proposal_skip" && entry.ok === true,
       );
       const skip = skips[skips.length - 1];
       const reason = skip === undefined ? undefined : toolValueString(skip.value, "reason");
@@ -576,7 +576,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
 export function describeCycle(result: CycleResult): string {
   const report = result.report;
   return (
-    `coach: ${report.action} — ${report.reason ?? "no reason"} ` +
+    `mcp-optimizer: ${report.action} — ${report.reason ?? "no reason"} ` +
     `(${report.families} family/families, ${report.selected.length} selected, ` +
     `${report.issues.length} filed, ${report.pending} pending)`
   );

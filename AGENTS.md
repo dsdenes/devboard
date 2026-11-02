@@ -97,10 +97,10 @@ waits for the new process, and reloads once. The replacement never kills a live 
 background worker. Every run owns a detached process that survives the dashboard, so its state and
 activity replay after reconnect, an answer reaches the same run, Stop ends it, and work in flight
 finishes on the version that started it. Each background worker family (Issues, Auto Scout, Design
-System, Coach, Watchdog, Release Train) accepts a live worker of more than one harness version:
-the running version starts its own worker when an older one is live, sends the older worker a
-drain, and every unit that arises afterwards is claimed by the newest worker. The older worker
-starts no new unit,
+System, MCP optimizer, Watchdog, Release Train) accepts a live worker of more than one harness
+version: the running version starts its own worker when an older one is live, sends the older
+worker a drain, and every unit that arises afterwards is claimed by the newest worker. The older
+worker starts no new unit,
 finishes its in-flight unit, exits when its last unit ends, releases its lock, and leaves its
 state and activity readable. Start launches the newest installed version when no worker is live;
 Pause, Resume, Check now, Stop, and settings apply to every live worker of the family. A worker

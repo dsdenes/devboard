@@ -90,7 +90,7 @@ describe("public package", () => {
       "lib/release.ts",
       "issues/worker.ts",
       "watchdog/main.ts",
-      "coach/worker.ts",
+      "mcp-optimizer/worker.ts",
       "mcp/index.ts",
       "omp/mcp.json",
       "templates/host-AGENTS.md",
