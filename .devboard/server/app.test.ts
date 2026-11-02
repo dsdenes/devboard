@@ -511,16 +511,56 @@ describe("createApp", () => {
     }
   });
 
+  test("declares the caching behavior of the static fallback", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      await mkdir(join(root, "static", "assets"), { recursive: true });
+      await writeFile(join(root, "static", "assets", "app-abc123.js"), "console.log(1);\n");
+      await writeFile(join(root, "static", "favicon.svg"), "<svg></svg>");
+
+      // The entry document is revalidated, so a replacement reaches the page.
+      const entry = await fetch(`http://${url}/`);
+      expect(entry.status).toBe(200);
+      expect(entry.headers.get("cache-control")).toBe("no-cache");
+
+      const head = await fetch(`http://${url}/`, { method: "HEAD" });
+      expect(head.headers.get("cache-control")).toBe("no-cache");
+
+      // An unhashed file beside the entry document is revalidated too.
+      const icon = await fetch(`http://${url}/favicon.svg`);
+      expect(icon.headers.get("cache-control")).toBe("no-cache");
+
+      // A content-hashed asset is immutable, and both encodings of it declare
+      // the same behavior.
+      const identity = await fetch(`http://${url}/assets/app-abc123.js`, {
+        headers: { "accept-encoding": "identity" },
+      });
+      expect(identity.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+
+      const compressed = await fetch(`http://${url}/assets/app-abc123.js`, {
+        headers: { "accept-encoding": "gzip" },
+        decompress: false,
+      });
+      expect(compressed.headers.get("content-encoding")).toBe("gzip");
+      expect(compressed.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("answers /ready for GET and HEAD and refuses every other method", async () => {
     const { server, url } = await startServer();
 
     try {
       const ready = await fetch(`http://${url}/ready`);
       expect(ready.status).toBe(200);
+      expect(ready.headers.get("cache-control")).toBe("no-store");
       expect(await ready.json()).toEqual({ pid: process.pid });
 
       const head = await fetch(`http://${url}/ready`, { method: "HEAD" });
       expect(head.status).toBe(200);
+      expect(head.headers.get("cache-control")).toBe("no-store");
       expect(head.headers.get("content-type")).toContain("application/json");
       expect(await head.text()).toBe("");
 

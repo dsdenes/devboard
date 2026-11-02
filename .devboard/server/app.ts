@@ -7689,7 +7689,12 @@ export function createApp(options: AppOptions) {
             }),
           );
         }
-        const ready = Response.json({ pid: process.pid });
+        // A readiness probe answers from the process that is running now, so
+        // neither a shared nor a private cache may reuse it.
+        const ready = Response.json(
+          { pid: process.pid },
+          { headers: { "Cache-Control": "no-store" } },
+        );
         // HEAD answers with GET's headers and no body.
         return reply(
           request.method === "HEAD" ? new Response(null, { headers: ready.headers }) : ready,
@@ -7771,9 +7776,16 @@ export function createApp(options: AppOptions) {
       }
 
       // The body differs by Accept-Encoding, so a shared cache must key on it.
+      // Every file under `assets/` carries a content hash in its name, so the
+      // same URL is a different body only when its name changes; the entry
+      // document and the unhashed files beside it must be revalidated, so a
+      // page never loads a bundle a replacement already replaced.
       const headers: Record<string, string> = {
         "Content-Type": file.type,
         Vary: "Accept-Encoding",
+        "Cache-Control": relative.startsWith("assets/")
+          ? "public, max-age=31536000, immutable"
+          : "no-cache",
       };
       // The document carries the page's credential; every other asset is inert.
       attachDashboardCookie(headers, relative, cookieName);
