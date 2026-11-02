@@ -58,36 +58,51 @@ function workspace(name: string): Workspace {
   return { root, repoDir, stateDir, directory: releaseTrainDirectory(stateDir) };
 }
 
+function gitIn(repoDir: string, args: string[]): string {
+  const result = Bun.spawnSync({
+    cmd: [
+      "git",
+      "-c",
+      "user.name=Train Test",
+      "-c",
+      "user.email=train@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "init.defaultBranch=main",
+      ...args,
+    ],
+    cwd: repoDir,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  return result.stdout.toString().trim();
+}
+
 /** A repository with one tagged commit, the shape a released run leaves. */
 function releasedRepository(name: string, tag = "v1.0.1"): { repoDir: string; head: string } {
   const repoDir = join(workspace(name).root, "repo");
   mkdirSync(repoDir, { recursive: true });
-  const run = (args: string[]): string => {
-    const result = Bun.spawnSync({
-      cmd: [
-        "git",
-        "-c",
-        "user.name=Train Test",
-        "-c",
-        "user.email=train@example.test",
-        "-c",
-        "commit.gpgsign=false",
-        "-c",
-        "init.defaultBranch=main",
-        ...args,
-      ],
-      cwd: repoDir,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-    return result.stdout.toString().trim();
-  };
-  run(["init", "-q"]);
-  run(["commit", "--allow-empty", "-q", "-m", "fix: the release"]);
-  const head = run(["rev-parse", "HEAD"]);
-  run(["tag", tag, head]);
+  gitIn(repoDir, ["init", "-q"]);
+  gitIn(repoDir, ["commit", "--allow-empty", "-q", "-m", "fix: the release"]);
+  const head = gitIn(repoDir, ["rev-parse", "HEAD"]);
+  gitIn(repoDir, ["tag", tag, head]);
   return { repoDir, head };
+}
+
+/** Two commits with `v1.0.1` naming either the first or the tip. */
+function taggedRepository(
+  repoDir: string,
+  tagAtTip: boolean,
+): { first: string; tip: string } {
+  gitIn(repoDir, ["init", "-q"]);
+  gitIn(repoDir, ["commit", "--allow-empty", "-q", "-m", "fix: the release"]);
+  const first = gitIn(repoDir, ["rev-parse", "HEAD"]);
+  gitIn(repoDir, ["commit", "--allow-empty", "-q", "-m", "fix: the next change"]);
+  const tip = gitIn(repoDir, ["rev-parse", "HEAD"]);
+  gitIn(repoDir, ["tag", "v1.0.1", tagAtTip ? tip : first]);
+  return { first, tip };
 }
 
 function unreleased(target = "a".repeat(40), version = "1.0.1"): ReleaseTrainUnreleased {
@@ -107,6 +122,7 @@ function workerAt(
   options: {
     gate: (repoDir: string) => ReleaseTrainGate | Promise<ReleaseTrainGate>;
     runRelease?: (input: ReleaseRunInput) => Promise<ReleaseRunResult>;
+    verify?: typeof verifyShipped;
     now?: () => Date;
     harnessVersion?: string | null;
     ownerStateDir?: string;
@@ -121,6 +137,7 @@ function workerAt(
     now: options.now ?? (() => new Date("2026-11-02T10:00:00.000Z")),
     gate: options.gate,
     runRelease: options.runRelease ?? (async () => ({ ok: true, version: "1.0.1", url: "https://forge.test/releases/tag/v1.0.1" })),
+    ...(options.verify === undefined ? {} : { verify: options.verify }),
     log: () => undefined,
   });
 }
@@ -479,41 +496,121 @@ describe("Release Train family", () => {
     }
   });
 
-  test("a failed run whose tag now exists is retried on the next tick", async () => {
-    const workspaceValue = workspace("retry-after-tag");
-    const now = { value: Date.parse("2026-11-02T10:00:00.000Z") };
-    const target = "c".repeat(40);
-    let phase = 0;
-    let runs = 0;
+  test("a stop after the agent published still records the release", async () => {
+    const workspaceValue = workspace("stopped-published");
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let sawStopping = false;
     const worker = workerAt(workspaceValue, {
-      now: () => new Date(now.value),
-      gate: () =>
-        phase === 0
-          ? unreleased(target)
-          : {
-              state: "nothing",
-              target,
-              previous: { tag: "v1.0.1", version: "1.0.1" },
-              range: `v1.0.1..${target}`,
-            },
-      runRelease: async () => {
-        runs += 1;
-        return runs === 1
-          ? { ok: false, detail: "the Gitea release v1.0.1 is missing devboard-1.0.1.tgz" }
-          : { ok: true, version: "1.0.1", url: "https://forge.test/releases/tag/v1.0.1" };
+      gate: () => unreleased(),
+      runRelease: async (input) => {
+        started.resolve();
+        await release.promise;
+        sawStopping = input.stopping();
+        return { ok: true, version: "1.0.1", url: "https://forge.test/releases/tag/v1.0.1" };
+      },
+    });
+    expect(worker.begin(false)).toBe(true);
+    const tick = worker.tickNow();
+    await started.promise;
+    const stop = worker.stop();
+    release.resolve();
+    await tick;
+    await stop;
+    expect(sawStopping).toBe(true);
+    expect(worker.currentState.release?.version).toBe("1.0.1");
+    expect(worker.currentState.failure).toBeNull();
+  });
+
+  test("a recorded failure whose version tag now exists is verified, not re-released", async () => {
+    for (const tagAtTip of [false, true]) {
+      const workspaceValue = workspace(`repair-tag-${tagAtTip ? "tip" : "first"}`);
+      const { first, tip } = taggedRepository(workspaceValue.repoDir, tagAtTip);
+      const range = `v1.0.0..${first}`;
+      writeState(workspaceValue.directory, {
+        ...emptyState({ repo: "", root: workspaceValue.repoDir }),
+        failure: {
+          at: "2026-11-02T09:00:00.000Z",
+          detail: "the release workflow concluded failure",
+          sha: first,
+          range,
+          version: "1.0.1",
+        },
+      });
+      const verifications: Array<{ target: string; version: string }> = [];
+      let runs = 0;
+      const worker = workerAt(workspaceValue, {
+        gate: () => ({
+          state: "nothing",
+          target: tip,
+          previous: { tag: "v1.0.1", version: "1.0.1" },
+          range: `v1.0.1..${tip}`,
+        }),
+        runRelease: async () => {
+          runs += 1;
+          return { ok: true, version: "9.9.9", url: "https://forge.test/releases/tag/v9.9.9" };
+        },
+        verify: async (options) => {
+          verifications.push({ target: options.target, version: options.version });
+          return {
+            ok: true,
+            version: options.version,
+            url: "https://forge.test/releases/tag/v1.0.1",
+          };
+        },
+      });
+      expect(worker.begin(false)).toBe(true);
+      try {
+        await worker.tickNow();
+        expect(runs).toBe(0);
+        expect(verifications).toEqual([{ target: first, version: "1.0.1" }]);
+        expect(worker.currentState.release).toEqual({
+          version: "1.0.1",
+          url: "https://forge.test/releases/tag/v1.0.1",
+          at: "2026-11-02T10:00:00.000Z",
+          sha: first,
+          range,
+        });
+        expect(worker.currentState.failure).toBeNull();
+        expect(worker.currentState.runs[0]?.state).toBe("released");
+      } finally {
+        await worker.stop();
+      }
+    }
+  });
+
+  test("a failure whose own version tag is absent is never verified", async () => {
+    const workspaceValue = workspace("repair-untagged");
+    const { first, tip } = taggedRepository(workspaceValue.repoDir, false);
+    writeState(workspaceValue.directory, {
+      ...emptyState({ repo: "", root: workspaceValue.repoDir }),
+      failure: {
+        at: "2026-11-02T09:00:00.000Z",
+        detail: "the release workflow concluded failure",
+        sha: first,
+        range: `v1.0.0..${first}`,
+        version: "2.0.0",
+      },
+    });
+    let verifications = 0;
+    const worker = workerAt(workspaceValue, {
+      gate: () => ({
+        state: "nothing",
+        target: tip,
+        previous: { tag: "v1.0.1", version: "1.0.1" },
+        range: `v1.0.1..${tip}`,
+      }),
+      verify: async (options) => {
+        verifications += 1;
+        return { ok: true, version: options.version, url: "https://forge.test/v2.0.0" };
       },
     });
     expect(worker.begin(false)).toBe(true);
     try {
       await worker.tickNow();
-      expect(runs).toBe(1);
-      expect(worker.currentState.failure?.version).toBe("1.0.1");
-      phase = 1;
-      now.value += 10 * 60_000;
-      await worker.tickNow();
-      expect(runs).toBe(2);
-      expect(worker.currentState.release?.version).toBe("1.0.1");
-      expect(worker.currentState.failure).toBeNull();
+      expect(verifications).toBe(0);
+      expect(worker.currentState.release).toBeNull();
+      expect(worker.currentState.failure?.version).toBe("2.0.0");
     } finally {
       await worker.stop();
     }
