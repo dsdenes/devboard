@@ -161,7 +161,6 @@ export class GoalStore {
   runningLanes = $state(0);
 
   skills = $state<SkillSummary[]>([]);
-  selectedSkill = $state<string | null>(null);
   contradictions = $state<SkillContradiction[]>([]);
 
   resetArmed = $state(false);
@@ -231,16 +230,6 @@ export class GoalStore {
 
   get skillsPrepared(): boolean {
     return this.skills.length > 0;
-  }
-
-  selectSkill(name: string | null): void {
-    this.selectedSkill = name;
-  }
-
-  private keepSelectedSkill(): void {
-    if (this.selectedSkill !== null && !this.skills.some((skill) => skill.name === this.selectedSkill)) {
-      this.selectedSkill = null;
-    }
   }
 
   get prepareDisabled(): boolean {
@@ -478,7 +467,6 @@ export class GoalStore {
       ) {
         this.skills = message.skills;
         this.contradictions = message.contradictions;
-        this.keepSelectedSkill();
       }
       return;
     }
@@ -502,7 +490,6 @@ export class GoalStore {
         this.contradictions = Array.isArray(message.contradictions)
           ? message.contradictions.filter(isContradiction)
           : [];
-        this.keepSelectedSkill();
       }
       return;
     }

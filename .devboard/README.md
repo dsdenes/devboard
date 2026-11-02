@@ -81,9 +81,10 @@ CSS px wide, constrained to 200–600 CSS px, and resized by dragging its separa
 arrow keys with that separator focused. Double-clicking the separator restores the default width.
 The width survives a reload.
 
-- **Goal** lists the goal workspace surfaces, one **Skills** entry that opens the prepared-skills
-  table, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
-  ADR records group is absent while no record is pending.
+- **Goal** lists the goal workspace surfaces, one **Skills** entry carrying the prepared-skill
+  count that opens the prepared-skills table, the pending ADR records (title, status, next marker,
+  file), and the lifecycle lanes. The entry never nests a per-skill menu, and the ADR records
+  group is absent while no record is pending.
 - **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
   session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
   overview at the blocker they name.
@@ -1473,11 +1474,13 @@ The goal lifecycle's skill prerequisite accepts a managed skill from either fami
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`
 carry `name`, `description`, `family` (`prepare` or `discover`), and `state` (`generated`, `edited`,
 or `missing`), and a managed skill with no `devboard-family` field belongs to `prepare`. The Skills
-page is one `data-testid="skills-table"` with a `data-testid="skill"` row per skill: a collapsed row
-shows the skill name and its description, a click or Enter expands it in place to the rendered
-document and its file path, and a second click collapses it. Both families appear, and every
-prepare-family row carries a Delete control that confirms before removing that one skill. Prepare
-Skills replaces only its
+page is one `data-testid="skills-table"` with a `data-testid="skill"` row per skill: a row shows the
+skill name and its description and is a link, not a disclosure — a click or Enter opens that skill's
+own page (`data-testid="skill-page"`) with its rendered document and file path, and Back to skills
+returns to the table. The sidebar's one Skills entry keeps the skill count and never lists a skill
+name, so the table is the only place the prepared skills are enumerated. Both families appear, and
+every prepare-family row carries a Delete control that confirms before removing that one skill.
+Prepare Skills replaces only its
 own family, and its contradiction review covers its family plus hand-authored unmanaged skills, so
 a project-specific Discover directive cannot fail a project-agnostic preparation. Discover's
 generated baselines must agree with each other and with the glossary; a contradiction there fails

@@ -499,10 +499,13 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
       id: `goal.skill.open.${skill.name}`,
       title: `Show skill ${skill.name}`,
       group: "Skills",
-      run: () => {
-        goal.selectSkill(skill.name);
-        ctx.openTab("goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" });
-      },
+      run: () =>
+        ctx.openTab("goal", {
+          id: `skill:${skill.name}`,
+          kind: "skill",
+          resourceId: skill.name,
+          title: skill.name,
+        }),
     });
   }
   for (const lane of goal.lanes) {

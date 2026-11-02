@@ -3,13 +3,12 @@
   import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
-  import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import type { WorkspaceTab } from "../layout.svelte";
   import { recordStatusTone } from "../record-status";
   import { renderSkillDocument } from "../skill-document";
   import { statusTone } from "../status-tone";
-  import type { AdrRecord, Lane } from "../types";
+  import type { AdrRecord, Lane, SkillSummary } from "../types";
   import AdrTable from "./AdrTable.svelte";
   import AgentActivityBar from "./AgentActivityBar.svelte";
   import CommandButton from "./CommandButton.svelte";
@@ -32,7 +31,6 @@
   type FilterMode = "all" | "pending" | "resolved";
   let filterMode = $state<FilterMode>("all");
   let filterQuery = $state("");
-  let skillsTable = $state<HTMLTableElement | undefined>();
   let deleteTarget = $state<string | null>(null);
 
   const answerPending = createCommandBusy({
@@ -43,10 +41,6 @@
     label: "Submit answer",
     evidence: () => goal.activity.length,
   });
-
-  function skillPanelId(name: string): string {
-    return `skill-content-${name.replace(/[^A-Za-z0-9_-]/g, "-")}`;
-  }
 
   const createGoalTitle = $derived(
     goal.creationActive
@@ -87,6 +81,12 @@
   const lane = $derived(tab?.kind === "lane" ? goal.lane(tab.resourceId) : null);
   const record = $derived(
     tab?.kind === "adr" ? (goal.records.find((entry) => entry.file === tab?.resourceId) ?? null) : null,
+  );
+  const skillRecord = $derived(
+    tab?.kind === "skill" ? (goal.skills.find((entry) => entry.name === tab?.resourceId) ?? null) : null,
+  );
+  const skillDocument = $derived(
+    skillRecord?.content === undefined ? "" : renderSkillDocument(skillRecord.content),
   );
 
   const laneBarState = $derived(
@@ -153,6 +153,14 @@
     openTab({ id: "overview", kind: "overview", resourceId: "overview", title: "Implementation" });
   }
 
+  function openSkills(): void {
+    openTab({ id: "skills", kind: "skills", resourceId: "skills", title: "Skills" });
+  }
+
+  function openSkill(entry: SkillSummary): void {
+    openTab({ id: `skill:${entry.name}`, kind: "skill", resourceId: entry.name, title: entry.name });
+  }
+
   function lanePanel(entry: Lane) {
     const activity = entry.activity;
     return {
@@ -171,15 +179,6 @@
     filterMode = "all";
     filterQuery = "";
   }
-
-  $effect(() => {
-    if (tab?.kind !== "skills" || goal.selectedSkill === null) return;
-    const selected = goal.selectedSkill;
-    const item = [...(skillsTable?.querySelectorAll<HTMLElement>("[data-name]") ?? [])].find(
-      (entry) => entry.dataset.name === selected,
-    );
-    item?.scrollIntoView({ block: "nearest" });
-  });
 </script>
 
 <div class="mode-body">
@@ -590,8 +589,7 @@
               variant="outline"
               data-command="goal.skills.open"
               data-testid="show-skills"
-              onclick={() =>
-                openTab({ id: "skills", kind: "skills", resourceId: "skills", title: "Skills" })}
+              onclick={openSkills}
             >
               Show skills ({goal.skills.length})
             </Button>
@@ -693,7 +691,7 @@
               No skills prepared yet. Prepare them from the saved goal before starting implementation.
             </p>
           {:else}
-            <table class="skill-table" data-testid="skills-table" bind:this={skillsTable}>
+            <table class="skill-table" data-testid="skills-table">
               <thead>
                 <tr>
                   <th scope="col" class="skill-table__name-heading">Skill</th>
@@ -703,38 +701,25 @@
               </thead>
               <tbody>
                 {#each goal.skills as skill (skill.name)}
-                  {@const expanded = goal.selectedSkill === skill.name}
-                  {@const panelId = skillPanelId(skill.name)}
-                  {@const skillHtml =
-                    skill.content === undefined ? "" : renderSkillDocument(skill.content)}
                   <tr
                     class="skill-table__row"
                     data-testid="skill"
                     data-name={skill.name}
-                    data-selected={expanded}
-                    aria-current={expanded ? "true" : undefined}
-                    aria-expanded={expanded}
-                    aria-controls={expanded ? panelId : undefined}
                     tabindex="0"
                     onclick={(event) => {
                       if ((event.target as HTMLElement).closest("button") !== null) return;
-                      goal.selectSkill(expanded ? null : skill.name);
+                      openSkill(skill);
                     }}
                     onkeydown={(event) => {
                       if (event.target !== event.currentTarget) return;
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        goal.selectSkill(expanded ? null : skill.name);
+                        openSkill(skill);
                       }
                     }}
                   >
                     <td class="skill-table__name">
                       <span class="mono skill__name">{skill.name}</span>
-                      <ChevronRight
-                        size={14}
-                        aria-hidden="true"
-                        class={expanded ? "skill__chevron skill__chevron--open" : "skill__chevron"}
-                      />
                     </td>
                     <td class="skill-table__description">{skill.description}</td>
                     <td class="skill-table__actions">
@@ -756,40 +741,6 @@
                       {/if}
                     </td>
                   </tr>
-                  {#if expanded}
-                    <tr class="skill-table__detail-row" data-testid="skill-detail">
-                      <td colspan="3" class="skill-table__detail-cell">
-                        <div
-                          class="skill__detail"
-                          id={panelId}
-                          data-testid="skill-content"
-                          data-name={skill.name}
-                          role="region"
-                          aria-label={`${skill.name} content`}
-                        >
-                          <p class="skill__path" title={`.omp/skills/${skill.name}/SKILL.md`}>
-                            .omp/skills/{skill.name}/SKILL.md
-                          </p>
-                          {#if skill.content !== undefined && skill.content.length > 0}
-                            {#if skillHtml.length > 0}
-                              <div class="skill__document" data-testid="skill-content-text">
-                                {@html skillHtml}
-                              </div>
-                            {:else}
-                              <p class="empty" style="padding: 0;">
-                                This skill's file carries only preparation metadata; there are no
-                                instructions to read.
-                              </p>
-                            {/if}
-                          {:else}
-                            <p class="empty" style="padding: 0;">
-                              This skill has no file on disk; prepare the skills again to write it.
-                            </p>
-                          {/if}
-                        </div>
-                      </td>
-                    </tr>
-                  {/if}
                 {/each}
               </tbody>
             </table>
@@ -808,9 +759,77 @@
           {/if}
         </div>
       </section>
-
-
     </div>
+  {:else if tab.kind === "skill"}
+    {#if skillRecord === null}
+      <div class="goal-page">
+        <section class="panel">
+          <div class="panel__body stack-sm">
+            <p class="empty" style="padding: 0;">This skill is no longer prepared.</p>
+            <div class="row-sm">
+              <Button variant="default" data-command="goal.skills.open" onclick={openSkills}>
+                Back to skills
+              </Button>
+            </div>
+          </div>
+        </section>
+      </div>
+    {:else}
+      <div class="goal-page goal-page--fill">
+        <PageHeader eyebrow="Skill" title={skillRecord.name} testid="skill-header">
+          {#snippet actions()}
+            <Button
+              variant="outline"
+              data-command="goal.skills.open"
+              data-testid="back-to-skills"
+              onclick={openSkills}
+            >
+              Back to skills
+            </Button>
+            <Button
+              variant="outline"
+              data-command={`tab.close.goal.${tab.id}`}
+              data-testid="close-skill"
+              onclick={() => closeTab(tab)}
+            >
+              Close
+            </Button>
+          {/snippet}
+        </PageHeader>
+
+        <section class="panel goal-skill" data-testid="skill-page">
+          <div class="panel__body">
+            <div
+              class="skill__detail"
+              data-testid="skill-content"
+              data-name={skillRecord.name}
+              role="region"
+              aria-label={`${skillRecord.name} content`}
+            >
+              <p class="skill__path" title={`.omp/skills/${skillRecord.name}/SKILL.md`}>
+                .omp/skills/{skillRecord.name}/SKILL.md
+              </p>
+              {#if skillRecord.content !== undefined && skillRecord.content.length > 0}
+                {#if skillDocument.length > 0}
+                  <div class="skill__document" data-testid="skill-content-text">
+                    {@html skillDocument}
+                  </div>
+                {:else}
+                  <p class="empty" style="padding: 0;">
+                    This skill's file carries only preparation metadata; there are no instructions
+                    to read.
+                  </p>
+                {/if}
+              {:else}
+                <p class="empty" style="padding: 0;">
+                  This skill has no file on disk; prepare the skills again to write it.
+                </p>
+              {/if}
+            </div>
+          </div>
+        </section>
+      </div>
+    {/if}
   {:else if tab.kind === "adr"}
     {#if record === null}
       <div class="goal-page">

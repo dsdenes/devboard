@@ -2723,7 +2723,8 @@ a.code-chip--link:focus-visible {
 }
 
 .goal-adrs-panel,
-.goal-skills {
+.goal-skills,
+.goal-skill {
   flex: 1;
   min-height: 0;
 }
@@ -2869,10 +2870,6 @@ a.code-chip--link:focus-visible {
   outline-offset: -2px;
 }
 
-.skill-table__row[data-selected="true"] {
-  background: var(--accent-surface);
-}
-
 .skill-table__row td {
   border-bottom: 1px solid var(--border-subtle);
   padding: 6px 8px;
@@ -2880,9 +2877,6 @@ a.code-chip--link:focus-visible {
 }
 
 .skill-table__name {
-  align-items: center;
-  display: flex;
-  gap: 6px;
   overflow-wrap: anywhere;
 }
 
@@ -2893,25 +2887,6 @@ a.code-chip--link:focus-visible {
 
 .skill-table__actions {
   text-align: right;
-}
-
-.skill-table__detail-row td {
-  border-bottom: 1px solid var(--border);
-  padding: 0 8px 8px;
-}
-
-.skill-table__detail-cell {
-  background: var(--background);
-}
-
-.skill__chevron {
-  color: var(--muted-foreground);
-  flex: 0 0 auto;
-  transition: transform 120ms ease;
-}
-
-.skill__chevron--open {
-  transform: rotate(90deg);
 }
 
 .skill__delete {
@@ -2942,9 +2917,7 @@ a.code-chip--link:focus-visible {
 }
 
 .skill__detail {
-  border-left: 2px solid var(--border-strong);
-  margin: 0 0 4px 8px;
-  padding: 4px 0 4px 8px;
+  min-width: 0;
 }
 
 .skill__path {

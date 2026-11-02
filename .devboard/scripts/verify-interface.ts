@@ -3820,108 +3820,69 @@ try {
     "the prepared skills table does not list every skill with its description",
     skillsTable,
   );
+  const expandingRows = await page.eval<number>(`[...document.querySelectorAll('[data-testid="skill"]')].filter(
+    (row) => row.hasAttribute("aria-expanded") || row.hasAttribute("data-selected"),
+  ).length`);
+  check(expandingRows === 0, "a prepared skills row still expands in place", expandingRows);
   const clickedSkill = await page.eval<string>(`(() => {
     const item = document.querySelector('[data-testid="skill"]');
     item?.click();
     return item?.getAttribute("data-name") ?? "";
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="skill"][data-selected="true"]')?.getAttribute("aria-expanded") === "true"`,
-    "the expanded skill row",
+    `document.querySelector('[data-testid="skill-content"]') !== null && document.querySelector('[data-testid="skills-table"]') === null`,
+    "the skill page opened from its table row",
   );
-  const goalSkillSurface = await page.eval<{
-    selected: string;
-    current: string;
-    expanded: string;
-    description: string;
-    collapsed: number;
-  }>(`(() => {
-    const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
-    return {
-      selected: item?.getAttribute("data-name") ?? "",
-      current: item?.getAttribute("aria-current") ?? "",
-      expanded: item?.getAttribute("aria-expanded") ?? "",
-      description: item?.querySelector(".skill-table__description")?.textContent?.trim() ?? "",
-      collapsed: document.querySelectorAll('[data-testid="skill"][aria-expanded="false"]').length,
-    };
-  })()`);
-  check(
-    goalSkillSurface.selected === clickedSkill &&
-      goalSkillSurface.current === "true" &&
-      goalSkillSurface.expanded === "true" &&
-      goalSkillSurface.description.length > 0 &&
-      goalSkillSurface.collapsed === skillsTable.rows - 1,
-    "clicking a prepared skill does not expand it in the table",
-    { clickedSkill, goalSkillSurface },
-  );
-  const skillDocument = await page.eval<{
+  const skillPage = await page.eval<{
     name: string;
+    title: string;
     text: string;
-    inline: boolean;
     blocks: number;
     path: string;
     frontmatter: boolean;
+    back: string;
   }>(`(() => {
-    const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
-    const detail = item?.nextElementSibling?.querySelector('[data-testid="skill-content"]') ?? null;
+    const detail = document.querySelector('[data-testid="skill-content"]');
     const doc = detail?.querySelector('[data-testid="skill-content-text"]') ?? null;
     return {
       name: detail?.getAttribute("data-name") ?? "",
+      title: document.querySelector('[data-testid="skill-header"] .page-header__title')?.textContent?.trim() ?? "",
       text: doc?.textContent?.trim() ?? "",
-      inline: detail !== null,
       blocks: doc?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
       path: detail?.querySelector('.skill__path')?.textContent?.trim() ?? "",
       frontmatter: (doc?.textContent ?? "").includes("devboard-managed"),
+      back: document.querySelector('[data-testid="back-to-skills"]')?.textContent?.trim() ?? "",
     };
   })()`);
   check(
-    skillDocument.inline &&
-      skillDocument.name === clickedSkill &&
-      skillDocument.text.length > 0 &&
-      skillDocument.blocks > 0,
-    "expanding a prepared skill does not show its whole document in the table",
-    { clickedSkill, skillDocument },
+    skillPage.name === clickedSkill && skillPage.title === clickedSkill,
+    "clicking a prepared skill does not open that skill's own page",
+    { clickedSkill, skillPage },
   );
   check(
-    !skillDocument.frontmatter,
-    "the skill document is rendered with its frontmatter",
-    skillDocument,
+    skillPage.text.length > 0 && skillPage.blocks > 0,
+    "the skill page does not render the whole document",
+    { clickedSkill, skillPage },
   );
+  check(!skillPage.frontmatter, "the skill page renders the document with its frontmatter", skillPage);
   check(
-    skillDocument.path === `.omp/skills/${clickedSkill}/SKILL.md`,
-    "the skill document does not name its file",
-    skillDocument,
+    skillPage.path === `.omp/skills/${clickedSkill}/SKILL.md`,
+    "the skill page does not name its file",
+    skillPage,
   );
-  const collapsingSkill = await page.eval<string>(`document.querySelector('[data-testid="skill"][data-selected="true"]')?.getAttribute("data-name") ?? ""`);
-  await page.click(`[data-testid="skill"][data-name="${collapsingSkill}"]`);
+  check(skillPage.back === "Back to skills", "the skill page has no way back to the skills table", skillPage);
+  await page.click('[data-testid="back-to-skills"]');
   await page.wait(
-    `document.querySelector('[data-testid="skill-content"]') === null`,
-    "the collapsed skill document",
+    `document.querySelector('[data-testid="skills-table"]') !== null && document.querySelector('[data-testid="skill-content"]') === null`,
+    "the skills table after going back",
   );
-  const collapsedSurface = await page.eval<{ selected: number; expanded: string }>(`(() => ({
-    selected: document.querySelectorAll('[data-testid="skill"][data-selected="true"]').length,
-    expanded: document.querySelector('[data-testid="skill"][aria-expanded="true"]')?.getAttribute("data-name") ?? "",
-  }))()`);
-  check(
-    collapsedSurface.selected === 0 && collapsedSurface.expanded === "",
-    "clicking an expanded skill does not collapse it",
-    collapsedSurface,
-  );
-  await page.click(`[data-testid="skill"][data-name="${collapsingSkill}"]`);
+  await runPalette(`goal.skill.open.${clickedSkill}`);
   await page.wait(
-    `document.querySelector('[data-testid="skill-content"]') !== null`,
-    "the reopened skill document",
+    `document.querySelector('[data-testid="skill-content"]')?.getAttribute("data-name") === "${clickedSkill}"`,
+    "the skill page from the command palette",
   );
-  check(
-    skillDocument.blocks > 0 && !skillDocument.frontmatter,
-    "the skill document is not rendered as a document without its frontmatter",
-    skillDocument,
-  );
-  check(
-    skillDocument.path === `.omp/skills/${clickedSkill}/SKILL.md`,
-    "the skill document does not name its file",
-    skillDocument,
-  );
+  await page.click('[data-testid="back-to-skills"]');
+  await page.wait(`document.querySelector('[data-testid="skills-table"]') !== null`, "the skills table from the palette page");
   const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="skill"]')];
     const controls = rows
@@ -3942,11 +3903,6 @@ try {
     "the delete control does not belong only to prepared skills",
     deletion,
   );
-  await page.click('[data-testid="skill"][data-name="fixture-conventions"]');
-  await page.wait(
-    `document.querySelector('[data-testid="skill"][data-name="fixture-conventions"]')?.getAttribute("aria-expanded") === "true"`,
-    "the prepared skill accordion",
-  );
   const skillsBeforeDelete = await page.eval<number>(`document.querySelectorAll('[data-testid="skill"]').length`);
   await page.click('[data-testid="delete-skill"][data-name="fixture-conventions"]');
   await page.wait(`document.querySelector('[data-testid="delete-skill-confirmation"]') !== null`, "the skill deletion confirmation");
@@ -3955,14 +3911,14 @@ try {
     `document.querySelectorAll('[data-testid="skill"]').length === ${skillsBeforeDelete - 1}`,
     "the deleted skill",
   );
-  const afterDelete = await page.eval<{ names: string[]; detail: boolean; files: number }>(`(() => ({
+  const afterDelete = await page.eval<{ names: string[]; page: boolean; files: number }>(`(() => ({
     names: [...document.querySelectorAll('[data-testid="skill"]')].map((row) => row.getAttribute("data-name") ?? ""),
-    detail: document.querySelector('[data-testid="skill-content"]') !== null,
+    page: document.querySelector('[data-testid="skill-content"]') !== null,
     files: Number(window.__viSkillFiles ?? -1),
   }))()`);
   check(
-    !afterDelete.names.includes("fixture-conventions") && !afterDelete.detail,
-    "deleting a skill left its row or its detail open",
+    !afterDelete.names.includes("fixture-conventions") && !afterDelete.page,
+    "deleting a skill left its row or its page open",
     afterDelete,
   );
 
