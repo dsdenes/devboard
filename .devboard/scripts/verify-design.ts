@@ -172,7 +172,7 @@ async function present(devtools: Devtools, testid: string): Promise<boolean> {
 async function text(devtools: Devtools, testid: string): Promise<string> {
   const value = await devtools.evaluate(`(() => {
     const element = document.querySelector('[data-testid="${testid}"]');
-    return element === null ? "" : (element.textContent ?? '').replace(/\\s+/g, ' ').trim();
+    return element === null ? "" : (element.textContent ?? '').trim();
   })()`);
   return typeof value === "string" ? value : "";
 }
@@ -249,11 +249,15 @@ async function setInput(devtools: Devtools, testid: string, value: string): Prom
 }
 
 const CORE_IDS = [
-  "agent-header",
-  "agent-lifecycle",
-  "agent-sync-at",
+  "agent-activity-bar",
+  "agent-activity-toggle",
+  "agent-activity-dot",
+  "agent-activity-last",
+  "agent-activity-control",
   "agent-start",
   "agent-stop",
+  "agent-header",
+  "agent-sync-at",
   "agent-cadence",
   "agent-last-run",
   "agent-next-run",
@@ -263,12 +267,52 @@ const CORE_IDS = [
   "agent-save-limits",
   "agent-issues-count",
   "agent-issues",
-  "agent-detail",
 ];
+
+async function pageLifecycle(devtools: Devtools): Promise<string> {
+  const value = await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const id = page?.dataset.agent ?? '';
+    return id.length === 0
+      ? ''
+      : document.querySelector('[data-testid="agent-state-' + id + '"]')?.dataset.state ?? '';
+  })()`);
+  return typeof value === "string" ? value : "";
+}
+
+async function barLog(devtools: Devtools): Promise<string> {
+  const expanded = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]')?.getAttribute('aria-expanded') === 'true'`,
+  );
+  if (expanded !== true) {
+    await devtools.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-toggle"]');
+      if (button === null) return false;
+      button.click();
+      return true;
+    })()`);
+  }
+  await waitFor(
+    async () =>
+      (await devtools.evaluate(
+        `document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-log"]') !== null`,
+      )) === true
+        ? true
+        : undefined,
+    "the activity bar log",
+    15_000,
+  );
+  const value = await devtools.evaluate(`(() => {
+    const element = document.querySelector('[data-testid="agent-page"] [data-testid="agent-activity-log"]');
+    return element === null ? "" : (element.textContent ?? '').trim();
+  })()`);
+  return typeof value === "string" ? value : "";
+}
 
 async function coreOrder(devtools: Devtools): Promise<string[]> {
   const value = await devtools.evaluate(`(() => {
-    const all = [...document.querySelectorAll('[data-testid]')]
+    const page = document.querySelector('[data-testid="agent-page"]');
+    const all = [...(page?.querySelectorAll('[data-testid]') ?? [])]
       .map((element) => element.getAttribute('data-testid') ?? '');
     const core = ${JSON.stringify(CORE_IDS)};
     return all.filter((id) => core.includes(id));
@@ -673,7 +717,7 @@ try {
     "the Design System core id order differs",
     order,
   );
-  check(await present(devtools, "design-activity"), "design-activity is missing");
+  check(!(await present(devtools, "agent-detail")), "the removed agent detail panel is still rendered");
   const emptyDocumentation = await documentationLayout(devtools);
   check(
     emptyDocumentation.present &&
@@ -693,14 +737,19 @@ try {
   const recordLifecycle = async (): Promise<void> => {
     const states = await devtools!.evaluate(`(() => {
       window.__designStates = window.__designStates ?? [];
-      const element = document.querySelector('[data-testid="agent-lifecycle"]');
-      const state = element?.dataset.state ?? '';
+      const pageId = document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? '';
+      const state = pageId.length === 0
+        ? ''
+        : document.querySelector('[data-testid="agent-state-' + pageId + '"]')?.dataset.state ?? '';
       if (state.length > 0 && window.__designStates[window.__designStates.length - 1] !== state) {
         window.__designStates.push(state);
       }
       clearInterval(window.__designTimer);
       window.__designTimer = setInterval(() => {
-        const next = document.querySelector('[data-testid="agent-lifecycle"]')?.dataset.state ?? '';
+        const id = document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? '';
+        const next = id.length === 0
+          ? ''
+          : document.querySelector('[data-testid="agent-state-' + id + '"]')?.dataset.state ?? '';
         if (next.length > 0 && window.__designStates[window.__designStates.length - 1] !== next) {
           window.__designStates.push(next);
         }
@@ -714,7 +763,7 @@ try {
   await recordLifecycle();
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the running Design System",
     15_000,
   );
@@ -729,7 +778,7 @@ try {
   check(firstRows[0]?.state === "pending", "the new design issue is not pending", firstRows);
   check(firstRows[0]?.category === "color", "the new design issue lost its category", firstRows);
   check(
-    (await text(devtools, "design-activity")).includes("filed #"),
+    (await barLog(devtools)).includes("filed #"),
     "the activity did not record the filing",
   );
   const firstIssueUrl = firstRows[0]?.url ?? "";
@@ -744,7 +793,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped Design System",
     15_000,
   );
@@ -758,16 +807,21 @@ try {
   const beforeCap = (await rows(devtools)).length;
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the capped Design System",
     15_000,
   );
-  await waitFor(
-    async () =>
-      (await text(devtools!, "design-activity")).includes("cap leaves no room") ? true : undefined,
+  const capLog = await waitFor(
+    async () => {
+      const log = await barLog(devtools!);
+      return log.includes("cap leaves no room") ? log : undefined;
+    },
     "the capped cycle to record its skips",
-    30_000,
-  );
+    60_000,
+  ).catch(async () => {
+    throw new Error(`the cap line never reached the bar: ${JSON.stringify(await barLog(devtools!))}`);
+  });
+  check(capLog.includes("cap leaves no room"), "the cap line is missing from the bar", capLog);
   check(
     (await rows(devtools)).length === beforeCap,
     "a full pending cap still filed an issue",
@@ -782,7 +836,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped capped Design System",
     15_000,
   );
@@ -794,7 +848,7 @@ try {
   await writeFile(join(stubDir, "mode"), "single\n");
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the single-literal Design System",
     15_000,
   );
@@ -810,7 +864,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped single-literal Design System",
     15_000,
   );
@@ -821,19 +875,19 @@ try {
   const headBeforeRelease = git(["rev-parse", "HEAD"]);
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the releasing Design System",
     15_000,
   );
   await waitFor(
     async () =>
-      /released \d+\.\d+\.\d+:/.test(await text(devtools!, "design-activity"))
+      /released \d+\.\d+\.\d+:/.test(await barLog(devtools!))
         ? true
         : undefined,
     "the documented standard to release",
     90_000,
   );
-  const activity = await text(devtools, "design-activity");
+  const activity = await barLog(devtools);
   const released = /released (\d+\.\d+\.\d+): (\S+)/.exec(activity);
   check(released !== null, "the activity does not name the release", activity);
   const version = released![1]!;
@@ -987,15 +1041,10 @@ try {
     "the release did not use one worktree under .worktree/",
     worktreeLines,
   );
-  check(
-    (await devtools.evaluate(
-      `document.querySelector('[data-testid="agent-lifecycle"]')?.dataset.state ?? ''`,
-    )) !== "",
-    "the page lost its lifecycle",
-  );
+  check((await pageLifecycle(devtools)) !== "", "the page lost its lifecycle");
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped releasing Design System",
     15_000,
   );
@@ -1022,7 +1071,7 @@ try {
   const cyclesBefore = new Set(readdirSync(cyclesDir));
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the no-op Design System",
     15_000,
   );
@@ -1044,7 +1093,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped no-op Design System",
     15_000,
   );
@@ -1066,19 +1115,19 @@ try {
   const pushesBefore = readFileSync(gitLog, "utf8").split("\n").filter((line) => line.includes(" push ")).length;
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the rejecting Design System",
     15_000,
   );
   await waitFor(
     async () =>
-      (await text(devtools!, "design-activity")).includes("push rejected") ? true : undefined,
+      (await barLog(devtools!)).includes("push rejected") ? true : undefined,
     "the rejected push to be recorded",
     60_000,
   );
   await waitFor(
     async () =>
-      /released \d+\.\d+\.\d+:/.test(await text(devtools!, "design-activity"))
+      /released \d+\.\d+\.\d+:/.test(await barLog(devtools!))
         ? true
         : undefined,
     "the retried push to release",
@@ -1086,7 +1135,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped rejecting Design System",
     15_000,
   );
@@ -1103,7 +1152,7 @@ try {
   const headBeforePublishFailure = git(["rev-parse", "HEAD"]);
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the failing-publish Design System",
     15_000,
   );
@@ -1121,7 +1170,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped failing-publish Design System",
     15_000,
   );
@@ -1138,7 +1187,7 @@ try {
   const publishBeforeDirty = readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length;
   await click(devtools, "agent-start");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "running" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
     "the dirty-checkout Design System",
     15_000,
   );
@@ -1160,7 +1209,7 @@ try {
   );
   await click(devtools, "agent-stop");
   await waitFor(
-    async () => ((await stateOf(devtools!, "agent-lifecycle")) === "stopped" ? true : undefined),
+    async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
     "the stopped dirty-checkout Design System",
     15_000,
   );
@@ -1182,7 +1231,7 @@ try {
         20_000,
       );
       check(
-        (await stateOf(devtools, "agent-lifecycle")) !== "running",
+        (await pageLifecycle(devtools)) !== "running",
         "a refused Start spawned a worker",
       );
     } finally {
@@ -1318,7 +1367,7 @@ try {
   }
 
   console.log(
-    "verify:design: the sidebar entry, shared page ids, design-activity, the filed-issue table, " +
+    "verify:design: the sidebar entry, shared page ids, the activity bar, the filed-issue table, " +
       "lifecycle, caps, the normative documents, the autonomous release, single flight, no-op, " +
       "rejected push, failed publish, dirty integration, preflight refusals, and freshness hold",
   );

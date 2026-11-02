@@ -45,6 +45,9 @@ import {
 } from "../coach/families";
 import { familyTag } from "../coach/issue";
 import {
+  COACH_PROMPT_ISSUES_UNAVAILABLE,
+  coachIssues,
+  coachPromptTemplate,
   synthesisPrompt,
   SYNTHESIS_PROMPT_MAX_BYTES,
   synthesizeFamily,
@@ -52,6 +55,7 @@ import {
   type Synthesize,
 } from "../coach/synthesize";
 import { readToolLog } from "../lib/tool-log";
+import { MCP_COVERS, MCP_TOOLS } from "../mcp/catalog";
 import type { AgentSession, SessionToolCall, SessionToolResult } from "../lib/agent-sessions";
 import type { CoachCollection, CoachJournalRecord } from "../coach/collect";
 import type { CoachDelivery, DeliveryResult } from "../coach/delivery";
@@ -1228,6 +1232,41 @@ describe("Coach synthesis contract and prompt", () => {
     }),
   ])[0]!;
 
+  /** The six headings whose following lines are a prompt's dynamic sections. */
+  const DYNAMIC_HEADINGS = [
+    "Family:",
+    "Fragments:",
+    "Excerpts:",
+    "MCP catalog:",
+    "Open Coach issues:",
+    "Command allowlist:",
+    "Limits:",
+  ];
+
+  /** One section's value lines, joined; a dynamic value never contains a blank line. */
+  function sectionValue(text: string, heading: string): string {
+    const lines = text.split("\n");
+    const start = lines.indexOf(heading);
+    if (start < 0) return "";
+    const value: string[] = [];
+    for (let index = start + 1; index < lines.length && lines[index] !== ""; index += 1) {
+      value.push(lines[index]!);
+    }
+    return value.join("\n");
+  }
+
+  /** Every line outside the six dynamic sections, in order. */
+  function fixedLines(text: string): string[] {
+    const lines = text.split("\n");
+    return lines.filter((line, index) => {
+      if (DYNAMIC_HEADINGS.includes(line)) return true;
+      for (let back = index - 1; back >= 0 && lines[back] !== ""; back -= 1) {
+        if (DYNAMIC_HEADINGS.includes(lines[back]!)) return false;
+      }
+      return true;
+    });
+  }
+
   test("the prompt opens with the manifesto and states the allowlist, caps, tag, body and tool rules", () => {
     const openIssues: CoachOpenIssue[] = [
       {
@@ -1279,6 +1318,77 @@ describe("Coach synthesis contract and prompt", () => {
     const room = synthesisPrompt({ family, settings, openIssues: [], filingRoom: 0 });
     expect(room).toContain('"filingRoom": 0');
     expect(room).toContain("only when `filingRoom` is greater than zero");
+  });
+
+  test("the page template repeats the prompt's fixed lines character for character", () => {
+    const settings = { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun ", "git "] };
+    const openIssues: CoachOpenIssue[] = [
+      {
+        number: 7,
+        title: "[coach] bun run publish",
+        body: `family:${familyTag(family.key)}`,
+        url: "https://forge.test/acme/fixture/issues/7",
+      },
+    ];
+    const prompt = synthesisPrompt({ family, settings, openIssues, filingRoom: 1 });
+    const template = coachPromptTemplate({ settings, openIssues });
+    expect(fixedLines(template)).toEqual(fixedLines(prompt));
+    expect(fixedLines(template)).toContain("## Manifesto");
+    expect(fixedLines(template)).toContain(
+      "- File with `issue_create` and no labels. Its returned number and URL are the record.",
+    );
+    expect(
+      fixedLines(template).some((line) => line.includes("call `coach_proposal_skip`")),
+    ).toBe(true);
+    expect(sectionValue(template, "MCP catalog:")).toBe(sectionValue(prompt, "MCP catalog:"));
+    expect(sectionValue(template, "Command allowlist:")).toBe(
+      JSON.stringify(settings.allowlist, null, 2),
+    );
+    expect(JSON.parse(sectionValue(template, "MCP catalog:"))).toEqual({
+      tools: MCP_TOOLS.map((tool) => ({ name: tool.name, title: tool.title })),
+      covers: [...MCP_COVERS],
+    });
+  });
+
+  test("the template names its three per-family sections with placeholders", () => {
+    const template = coachPromptTemplate({
+      settings: { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun "] },
+      openIssues: [],
+    });
+    expect(sectionValue(template, "Family:")).toBe("<family>");
+    expect(sectionValue(template, "Fragments:")).toBe("<fragments>");
+    expect(sectionValue(template, "Excerpts:")).toBe("<excerpts>");
+    expect(template).not.toContain(family.key);
+    expect(template).not.toContain(family.firstAt);
+    for (const excerpt of family.excerpts) {
+      expect(template).not.toContain(excerpt.command);
+    }
+  });
+
+  test("the open-issue section filters, sorts, and states an unavailable read", () => {
+    const settings = { ...DEFAULT_COACH_SETTINGS, allowlist: ["bun "] };
+    const issues: CoachOpenIssue[] = [
+      { number: 9, title: "unrelated", body: "no tag", url: "https://forge.test/9" },
+      { number: 5, title: "family evidence", body: "see family:abc", url: "https://forge.test/5" },
+      { number: 3, title: "[coach] later", body: "", url: "https://forge.test/3" },
+    ];
+    expect(coachIssues(issues).map((issue) => issue.number)).toEqual([5, 3]);
+    const template = coachPromptTemplate({ settings, openIssues: issues });
+    const value = sectionValue(template, "Open Coach issues:");
+    expect(JSON.parse(value)).toEqual([
+      { number: 3, title: "[coach] later", url: "https://forge.test/3" },
+      { number: 5, title: "family evidence", url: "https://forge.test/5" },
+    ]);
+    expect(value).not.toContain("unrelated");
+    expect(
+      sectionValue(coachPromptTemplate({ settings, openIssues: [] }), "Open Coach issues:"),
+    ).toBe("[]");
+    const unavailable = sectionValue(
+      coachPromptTemplate({ settings, openIssues: null }),
+      "Open Coach issues:",
+    );
+    expect(unavailable).toBe(COACH_PROMPT_ISSUES_UNAVAILABLE);
+    expect(unavailable).not.toBe("[]");
   });
 
   test("a prompt above the byte budget is cut to the budget", () => {

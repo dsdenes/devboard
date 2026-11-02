@@ -22,6 +22,7 @@ import {
 import { coachDirectory, latestPath, runsDirectory } from "./paths";
 import { readCoachSettings, type CoachSettings } from "./settings";
 import {
+  coachIssues,
   readSynthesisStub,
   synthesisPrompt,
   synthesizeFamily,
@@ -456,9 +457,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
           ...(stub === undefined ? {} : { run: stub }),
         });
       });
-    const coachIssues = openIssues.filter(
-      (issue) => issue.title.startsWith("[coach]") || issue.body.includes("family:"),
-    );
+    const openCoachIssues = coachIssues(openIssues);
     const available = Math.max(
       0,
       Math.min(
@@ -479,7 +478,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
         prompt: synthesisPrompt({
           family,
           settings,
-          openIssues: coachIssues,
+          openIssues: openCoachIssues,
           filingRoom: index < available ? 1 : 0,
         }),
       };

@@ -170,7 +170,7 @@ describe("background agent registry", () => {
     expect(coach.limits.default).toEqual({ maxPerHour: 10, maxPending: 20 });
     expect(coach.detail.panel).toBe("cycles");
     expect(coach.tab).toEqual({ id: "coach", kind: "coach", title: "Coach" });
-    expect(coach.prompt.kind).toBe("absent");
+    expect(coach.prompt.kind).toBe("template");
     for (const descriptor of DEFAULT_AGENT_DESCRIPTORS) {
       expect(descriptor.lifecycle).toEqual([...AGENT_LIFECYCLES]);
       expect(descriptor.commands.start).toBe("startAgent");
@@ -200,6 +200,8 @@ describe("background agent registry", () => {
       { kind: "file", file: "ok.md", chat: " " },
       { kind: "file", file: "ok.md", chat: "chat.md", notice: " " },
       { kind: "absent", message: "" },
+      { kind: "template", message: " " },
+      { kind: "template" },
       { kind: "neither" },
     ]) {
       expect(() => defineAgentRegistry([{ ...scout, prompt }])).toThrow(AgentRegistryError);

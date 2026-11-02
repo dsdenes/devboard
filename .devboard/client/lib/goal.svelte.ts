@@ -152,6 +152,9 @@ export class GoalStore {
   runTitle = $state<string | null>(null);
   runAction = $state<RunAction>("resolving");
   runState = $state<"idle" | "active" | "stopped">("idle");
+  /** When this dashboard saw the current run start; the server sends no stamp. */
+  runStartedAt = $state<string | null>(null);
+  laneStartedAt = $state<Record<string, string>>({});
   manualRunActive = $state(false);
   activity = $state<string[]>([]);
   question = $state<RunQuestion | null>(null);
@@ -597,6 +600,18 @@ export class GoalStore {
         this.lanes = message.lanes;
         this.openEpics = message.openEpics;
         this.runningLanes = message.runningLanes;
+        const starts = { ...this.laneStartedAt };
+        let changed = false;
+        for (const lane of this.lanes) {
+          if (
+            (lane.status === "running" || lane.status === "retrying") &&
+            starts[lane.id] === undefined
+          ) {
+            starts[lane.id] = new Date().toISOString();
+            changed = true;
+          }
+        }
+        if (changed) this.laneStartedAt = starts;
       }
       return;
     }
@@ -610,6 +625,7 @@ export class GoalStore {
             ? message.action
             : "resolving";
         this.runState = "active";
+        this.runStartedAt = new Date().toISOString();
         this.manualRunActive = message.manual === true;
         this.activity = [];
         this.question = null;
@@ -657,6 +673,7 @@ export class GoalStore {
       this.runFile = null;
       this.runTitle = null;
       this.runState = "stopped";
+      this.runStartedAt = null;
       this.manualRunActive = false;
       this.question = null;
       this.draft = "";

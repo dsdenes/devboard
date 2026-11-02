@@ -68,6 +68,108 @@ const PROPOSAL_TOOL_RULES = [
   "  agent id.",
 ];
 
+interface PromptSections {
+  family: string;
+  fragments: string;
+  excerpts: string;
+  catalog: string;
+  issues: string;
+  allowlist: string;
+  limits: string;
+}
+
+/** Every fixed line and dynamic section of the one synthesis prompt. */
+function promptText(sections: PromptSections): string {
+  return [
+    "## Manifesto",
+    "",
+    "You are the Devboard Coach synthesizer for one family. Your goal is to remove the recurring",
+    "friction this family evidences, and your observable result is at most one proposal issue",
+    "filed through the Devboard MCP issue tool, or one recorded reason the family needs no issue.",
+    "",
+    "Read this family's evidence, read the open Coach issues yourself, then act. Never answer",
+    "with a JSON document, fragment, diff, or summary.",
+    "",
+    "Family:",
+    sections.family,
+    "",
+    "Fragments:",
+    sections.fragments,
+    "",
+    "Excerpts:",
+    sections.excerpts,
+    "",
+    "MCP catalog:",
+    sections.catalog,
+    "",
+    "Open Coach issues:",
+    sections.issues,
+    "",
+    "Command allowlist:",
+    sections.allowlist,
+    "",
+    "Limits:",
+    sections.limits,
+    "",
+    "Rules:",
+    "- Read the open issues with `issues_list` and `issue_get`. A proposal duplicates an open",
+    "  issue when that issue carries this family's tag or the same title. A duplicate files and",
+    "  comments on nothing.",
+    "- File at most one issue for this family, and only when `filingRoom` is greater than zero.",
+    "- Prefer the smaller change: \"tool\" when a stable named capability removes the recurrence,",
+    "  \"prompt\" when one instruction is enough.",
+    ...PROPOSAL_TOOL_RULES,
+    "- The issue title is exactly `[coach] <family key>` for a tool proposal or",
+    "  `[coach] prompt: <family key>` for a prompt proposal.",
+    "- The issue body has exactly these level-two sections in order: `## Family`,",
+    "  `## Evidence`, `## Proposed tool` or `## Proposed prompt`, `## Acceptance`, `## Rationale`.",
+    "  `## Family` states the key, kind, call and session counts, first and last timestamps,",
+    "  and the family tag. `## Evidence` carries the fragments and the excerpts. `## Acceptance`",
+    "  carries one to five `- [ ]` criteria checkable from the evidence.",
+    "- File with `issue_create` and no labels. Its returned number and URL are the record.",
+    "- When the family needs no change, a duplicate exists, a cap leaves no room, or filing",
+    "  fails, call `coach_proposal_skip` with the family key and one reason sentence. Call either",
+    "  `issue_create` or `coach_proposal_skip` for this family, never both.",
+    "",
+  ].join("\n");
+}
+
+/** The catalog JSON every prompt carries: name/title pairs in catalog order. */
+function catalogJson(): string {
+  return json({
+    tools: MCP_TOOLS.map((tool) => ({ name: tool.name, title: tool.title })),
+    covers: [...MCP_COVERS],
+  });
+}
+
+/** The three fields of one open issue the prompt and the template publish. */
+function issueRows(issues: CoachOpenIssue[]): Array<{
+  number: number;
+  title: string;
+  url: string;
+}> {
+  return issues.map((issue) => ({
+    number: issue.number,
+    title: issue.title,
+    url: issue.url,
+  }));
+}
+
+/** The open issues one synthesis call sees. */
+export function coachIssues(issues: CoachOpenIssue[]): CoachOpenIssue[] {
+  return issues.filter(
+    (issue) => issue.title.startsWith("[coach]") || issue.body.includes("family:"),
+  );
+}
+
+/** What the template states when no successful open-issue read is available. */
+export const COACH_PROMPT_ISSUES_UNAVAILABLE = "Open Coach issues could not be read.";
+
+const FAMILY_PLACEHOLDER = "<family>";
+const FRAGMENTS_PLACEHOLDER = "<fragments>";
+const EXCERPTS_PLACEHOLDER = "<excerpts>";
+const FILING_ROOM_PLACEHOLDER = "<filingRoom>";
+
 /**
  * The prompt. It carries one family's summary, fragments, at most five
  * excerpts, the catalog, every open Coach issue, the configured allowlist, and
@@ -84,20 +186,8 @@ export function synthesisPrompt(input: {
   let excerpts = family.excerpts.slice();
   let issues = input.openIssues.slice().sort((left, right) => left.number - right.number);
   const render = (): string =>
-    [
-      "## Manifesto",
-      "",
-      `You are the Devboard Coach synthesizer for the ${family.kind} family \`${family.key}\`. ` +
-        "Your goal is to remove the",
-      "recurring friction this family evidences, and your observable result is at most one",
-      "proposal issue filed through the Devboard MCP issue tool, or one recorded reason the",
-      "family needs no issue.",
-      "",
-      "Read this family's evidence, read the open Coach issues yourself, then act. Never answer",
-      "with a JSON document, fragment, diff, or summary.",
-      "",
-      "Family:",
-      json({
+    promptText({
+      family: json({
         key: family.key,
         kind: family.kind,
         calls: family.calls,
@@ -105,57 +195,20 @@ export function synthesisPrompt(input: {
         days: family.days,
         first_at: family.firstAt,
         last_at: family.lastAt,
+        tag: `family:${familyTag(family.key)}`,
       }),
-      "",
-      "Fragments:",
-      json(family.fragments),
-      "",
-      "Excerpts:",
-      json(excerpts),
-      "",
-      "MCP catalog:",
-      json({
-        tools: MCP_TOOLS.map((tool) => ({ name: tool.name, title: tool.title })),
-        covers: [...MCP_COVERS],
-      }),
-      "",
-      "Open Coach issues:",
-      json(issues.map((issue) => ({ number: issue.number, title: issue.title, url: issue.url }))),
-      "",
-      "Command allowlist:",
-      json(input.settings.allowlist),
-      "",
-      "Limits:",
-      json({
+      fragments: json(family.fragments),
+      excerpts: json(excerpts),
+      catalog: catalogJson(),
+      issues: json(issueRows(issues)),
+      allowlist: json(input.settings.allowlist),
+      limits: json({
         maxIssuesPerCycle: input.settings.maxIssuesPerCycle,
         maxPerHour: input.settings.maxPerHour,
         maxPending: input.settings.maxPending,
         filingRoom: input.filingRoom,
       }),
-      "",
-      "Rules:",
-      "- Read the open issues with `issues_list` and `issue_get`. A proposal duplicates an open",
-      "  issue when that issue carries this family's tag or the same title. A duplicate files and",
-      "  comments on nothing.",
-      `- The family tag is \`family:${familyTag(family.key)}\`. The body carries it in the`,
-      "  `## Family` section.",
-      "- File at most one issue for this family, and only when `filingRoom` is greater than zero.",
-      "- Prefer the smaller change: \"tool\" when a stable named capability removes the recurrence,",
-      "  \"prompt\" when one instruction is enough.",
-      ...PROPOSAL_TOOL_RULES,
-      "- The issue title is exactly `[coach] <family key>` for a tool proposal or",
-      "  `[coach] prompt: <family key>` for a prompt proposal.",
-      "- The issue body has exactly these level-two sections in order: `## Family`,",
-      "  `## Evidence`, `## Proposed tool` or `## Proposed prompt`, `## Acceptance`, `## Rationale`.",
-      "  `## Family` states the key, kind, call and session counts, first and last timestamps,",
-      "  and the family tag. `## Evidence` carries the fragments and the excerpts. `## Acceptance`",
-      "  carries one to five `- [ ]` criteria checkable from the evidence.",
-      "- File with `issue_create` and no labels. Its returned number and URL are the record.",
-      "- When the family needs no change, a duplicate exists, a cap leaves no room, or filing",
-      "  fails, call `coach_proposal_skip` with the family key and one reason sentence. Call either",
-      "  `issue_create` or `coach_proposal_skip` for this family, never both.",
-      "",
-    ].join("\n");
+    });
 
   let text = render();
   while (Buffer.byteLength(text, "utf8") >= SYNTHESIS_PROMPT_MAX_BYTES) {
@@ -170,6 +223,36 @@ export function synthesisPrompt(input: {
     text = render();
   }
   return text;
+}
+
+/**
+ * The one read-only template the Coach page shows: the same fixed lines and
+ * live catalog, allowlist, limits, and open-issue sections a synthesis call
+ * sends, with the per-family sections named as placeholders. It reads nothing,
+ * writes nothing, and starts nothing.
+ */
+export function coachPromptTemplate(input: {
+  settings: CoachSettings;
+  openIssues: CoachOpenIssue[] | null;
+}): string {
+  const issues =
+    input.openIssues === null
+      ? COACH_PROMPT_ISSUES_UNAVAILABLE
+      : json(issueRows(coachIssues(input.openIssues).sort((left, right) => left.number - right.number)));
+  return promptText({
+    family: FAMILY_PLACEHOLDER,
+    fragments: FRAGMENTS_PLACEHOLDER,
+    excerpts: EXCERPTS_PLACEHOLDER,
+    catalog: catalogJson(),
+    issues,
+    allowlist: json(input.settings.allowlist),
+    limits: json({
+      maxIssuesPerCycle: input.settings.maxIssuesPerCycle,
+      maxPerHour: input.settings.maxPerHour,
+      maxPending: input.settings.maxPending,
+      filingRoom: FILING_ROOM_PLACEHOLDER,
+    }),
+  });
 }
 
 /** Verification seam: a JSON file that answers every synthesis call. */

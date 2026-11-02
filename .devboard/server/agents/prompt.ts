@@ -34,6 +34,11 @@ export interface AgentPromptState {
   /** The effective prompt file's bytes, or null when it cannot be read. */
   text: string | null;
   error: string | null;
+  /**
+   * The generated, read-only template an agent with no prompt file publishes.
+   * Absent from every file-backed or absent prompt.
+   */
+  template?: string | null;
 }
 
 export interface AgentPromptSocket {
@@ -50,6 +55,11 @@ export interface AgentPromptOptions {
   /** Sends an event to every connected client. */
   send: (event: unknown, except?: AgentPromptSocket) => void;
   log?: (line: string) => void;
+  /**
+   * The live text behind each `template` descriptor, keyed by agent id. Each
+   * call reads state only; it writes no file and starts no agent.
+   */
+  templates?: Record<string, () => string>;
 }
 
 /**
@@ -99,6 +109,7 @@ export class AgentPromptController {
   private emitChunk: ((chunk: string) => void) | undefined;
   private chatQueue: Promise<void> = Promise.resolve();
   private turn = 0;
+  private readonly templates: Record<string, () => string>;
 
   constructor(options: AgentPromptOptions) {
     this.registry = options.registry;
@@ -108,6 +119,7 @@ export class AgentPromptController {
     this.harnessDir = options.harnessDir;
     this.send = options.send;
     this.log = options.log ?? (() => undefined);
+    this.templates = options.templates ?? {};
   }
 
   dispose(): void {
@@ -143,6 +155,26 @@ export class AgentPromptController {
         error: null,
       };
     }
+    if (descriptor.prompt.kind === "template") {
+      let template: string | null = null;
+      let error: string | null = null;
+      try {
+        template = this.templates[id]?.() ?? null;
+        if (template === null) error = `${descriptor.label} has no generated prompt template.`;
+      } catch (cause) {
+        error =
+          `Could not build the ${descriptor.label} prompt template: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`;
+      }
+      return {
+        id,
+        absent: false,
+        editable: false,
+        text: null,
+        error,
+        template,
+      };
+    }
     const path = this.promptPath(descriptor);
     let text: string | null = null;
     let error: string | null = null;
@@ -160,6 +192,21 @@ export class AgentPromptController {
       text,
       error,
     };
+  }
+
+  /**
+   * Republishes every generated template after a read its text depends on
+   * changed. It sends the same frame a connect sends and touches nothing else.
+   */
+  publishTemplates(): void {
+    for (const descriptor of this.registry.descriptors) {
+      if (descriptor.prompt.kind !== "template") continue;
+      this.send({
+        type: "agentPromptState",
+        id: descriptor.id,
+        prompt: this.snapshot(descriptor.id),
+      });
+    }
   }
 
   /** Sends both agents' prompt state to one client on connect. */
@@ -188,7 +235,8 @@ export class AgentPromptController {
 
   /**
    * The one target every prompt command writes or chats about, or the refusal
-   * that stops it. Absent prompts and installed hosts are refused here.
+   * that stops it. Absent and generated prompts and installed hosts are refused
+   * here.
    */
   private target(id: string):
     | { ok: true; label: string; notice: string; path: string; descriptor: AgentDescriptor }
@@ -198,6 +246,9 @@ export class AgentPromptController {
       return { ok: false, message: `Unknown background agent: ${id}.` };
     }
     if (descriptor.prompt.kind === "absent") {
+      return { ok: false, message: descriptor.prompt.message };
+    }
+    if (descriptor.prompt.kind === "template") {
       return { ok: false, message: descriptor.prompt.message };
     }
     if (!isHarnessSourceCheckout(this.repoDir)) {

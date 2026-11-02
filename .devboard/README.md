@@ -70,8 +70,8 @@ The width survives a reload.
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
 surface that holds the same facts. The Flow overview opens with the flow-goal editor, which takes
 the full page height; while a goal interview is running the editor collapses to its header and the
-interview takes the next block. The overview ends with the implementation activity console, which
-also takes a full page height so agent output never shrinks to a thumbnail.
+interview takes the next block. The implementation activity moves to the pinned activity bar, so
+the overview keeps the goal editor, session facts, widgets, files, blockers, and verification.
 
 ### Workspace page
 
@@ -97,6 +97,61 @@ A reload restores the active mode, each mode's open page, sidebar and split size
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
 before Devboard existed still restores every stored mode and page; Devboard starts on its default
 `MCP tools` page.
+
+### Single-agent activity bar
+
+Every page whose work is exactly one agent leads its workspace with the same pinned bar. It is
+the first element of the page, outside every scrolling region, spans the workspace width with the
+standard 8px horizontal padding, and stays fully visible while the page content scrolls. Switching
+tabs or modes replaces its content with the new page's agent and collapses it.
+
+The surfaces are the four background-agent pages (`agent-page` for `scout`, `watchdog`, `design`,
+and `coach`), the Discover agent pages (`discover-agent`), the Discover run pages
+(`discover-panel` for overview, glossary, skill, and warnings), the Goal lane page
+(`lane-header`), the Goal single-record page (`record-header`), the Issues focus tab
+(`issues-agent-focus`), the Flow overview (`flow-view` overview), and a Flow conversation
+(`flow-conversation`). Pages that can host several agents at once — the Goal implementation
+overview, the Issues overview, the Issues Agents grid, Drafts, the Queue, and Runs — keep their
+current fleet controls and render no bar. The Goal decision-records, document, and skills pages,
+the MCP tools page, and the Flow decision board, checkpoint, and file pages also render none, and
+a page with no attached agent renders none.
+
+Collapsed, the bar is one row. `data-testid="agent-activity-dot"` carries no visible text and
+`data-state` `running`, `idle`, `succeeded`, `failed`, or `stopped`;
+`data-testid="agent-activity-last"` shows the newest non-empty activity line on one line with an
+ellipsis and the complete line in its `title`, or the muted `No activity yet.`;
+`data-testid="agent-activity-toggle"` carries `aria-expanded`; `data-testid="agent-activity-control"`
+holds at most one existing start/stop control; and `data-testid="agent-activity-question"` appears
+only while the page's agent waits for an answer. The collapsed row never shows a run identifier,
+`Run in progress`, `Running`, `started …`, or a lifecycle badge.
+
+While running, the dot uses the accent token and a continuous 1.8-second pulse, and hovering or
+focusing it reveals the current run's ISO 8601 start time in the `title` and the accessible name.
+Any other state uses the muted-foreground token and does not animate; no start time is claimed
+while idle. Under `prefers-reduced-motion: reduce` the pulse is removed while the running color and
+`data-state` remain.
+
+Activating `data-testid="agent-activity-toggle"` expands an inline
+`data-testid="agent-activity-log"` below the row, inside the same docked region and above the page
+content. It holds every retained activity line, newest last, in a scrollable region that follows
+the newest line only while the operator is at the bottom. Activating the toggle again collapses it;
+another tab, mode, or a reload starts collapsed. The expanded panel never contains a run identifier.
+
+Each existing control moved into `data-testid="agent-activity-control"` keeps its test id, command,
+label, disabled conditions, title, and effect, and the page no longer renders a second copy:
+`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` for Discover
+run pages, `discover-agent-start`/`discover-agent-stop` for Discover agent pages, the Goal record
+`start`, and `start-flow-implementation`/`stop-flow-implementation` for the Flow overview. The
+Goal lane, the Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal`
+remains a page action. Moving a control never adds a backend command or a per-agent Stop.
+
+The removed page content is `discover-run-tag`, `discover-agent-run-tag`, `discover-agent-status`,
+`agent-lifecycle`, `agent-detail`, `issues-agent-focus-run`, `issues-agent-focus-run-id`,
+`issues-agent-focus-run-started`, `issues-agent-focus-activity`, `lane-status`, `lane-activity`,
+`flow-status`, `flow-activity-section`, `flow-goal-activity`, and `flow-conversation-activity`.
+Titles, identity, questions and answer forms, errors, notices, interrupted banners, agent settings,
+filed issues, record facts, Flow messages and conclusions, and Discover artifact warnings stay in
+the page. The left mode rail and the footer status bar are unchanged.
 
 ### Split panes
 
@@ -184,11 +239,10 @@ renders; it replaces the previous confirmation and clears itself after three sec
 appears only after the server confirms the exact value it persisted; a refused or invalid save
 keeps its existing inline error or alert and shows no confirmation.
 
-xterm.js renders read-only agent output for Goal current activity and history, lane current
-activity and history, Flow goal creation, implementation activity, conversation activity, and
-Discover activity. Terminals preserve ANSI output, are selectable and copyable, auto-scroll
-unless the developer scrolls away, keep a bounded scrollback, and expose their full buffer to
-assistive technology.
+xterm.js renders read-only Goal current activity and history. Every single-agent page instead
+shows its activity through the shared activity bar. Terminals preserve ANSI output, are
+selectable and copyable, auto-scroll unless the developer scrolls away, keep a bounded
+scrollback, and expose their full buffer to assistive technology.
 
 ### Notifications and status bar
 
@@ -1788,6 +1842,24 @@ the complete flow and act through the Devboard MCP tools; no prompt asks for a J
 staged answer document for deterministic code to parse or correct. The chat prompts preserve those
 rules when they propose a revision.
 
+The Coach section contains the one synthesis prompt template instead of an absence: exactly one
+`agent-prompt-template` element whose `agent-prompt-template-text` is the complete template in a
+scrollable monospace region. It is the same text every Coach synthesis call sends, rendered from
+one shared source: the manifesto, every section heading, every `Rules:` bullet, and the limits are
+character-for-character the synthesis prompt's fixed lines. The `Family:`,
+`Fragments:`, and `Excerpts:` sections hold the literal placeholders `<family>`, `<fragments>`,
+and `<excerpts>`, so no family key, session, excerpt, or command occurrence is named and there is
+no per-family or per-kind copy. The live sections carry no snapshot: `MCP catalog:` is the
+`MCP_TOOLS` name/title pairs in catalog order plus every `MCP_COVERS` entry, `Command allowlist:`
+is `JSON.stringify(allowlist, null, 2)` for the allowlist in `<STATE_DIR>/coach/settings.json`
+read on every connect, and `Open Coach issues:` is the dashboard's own open-issue read filtered to
+issues whose title starts with `[coach]` or whose body contains `family:`, as `{number, title,
+url}` objects sorted by number. A successful read with no such issue shows `[]`; before any
+successful read the section states that the open Coach issues could not be read. The template is
+read-only in an installed host and in a harness source checkout: it renders no editor, Save,
+Reset, or chat control, opening, closing, restoring, or reloading it writes no file and starts or
+stops no agent, and every Prompt command for Coach is refused with the descriptor's statement.
+
 When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections'
 closed summary carries the source-only marker (`source-only-badge`, the word `devboard`), and they
 render `agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
@@ -1798,10 +1870,11 @@ error naming that the action requires a harness source checkout; no file changes
 absent or unreadable carries no marker either.
 
 `agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
-served checkout, adds nothing, strips nothing, and writes no other file; success shows the
-`save-feedback` notice and leaves the editor on the saved bytes, and failure shows
-`agent-prompt-error` with the file unchanged. The notice names the run that reads the file next:
-the next scan for Auto Scout and the next cycle for Design System. Only that click writes the file.
+served checkout, adds nothing, strips nothing, and writes no other file; success shows the shared
+`save-feedback` confirmation scoped `agent.prompt.<id>` and leaves the editor on the saved bytes,
+and failure shows `agent-prompt-error` with the file unchanged. The notice names the run that
+reads the file next: the next scan for Auto Scout and the next cycle for Design System. Only that
+click writes the file.
 A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
 proposed complete prompt in the editor without any copy; it writes no file, creates no scan, files
 no issue, and changes no agent state. A failed turn shows `agent-prompt-chat-error` and leaves the
@@ -2182,6 +2255,19 @@ itself through the MCP `issue_create` tool, or records why it filed nothing thro
 and no `pendingFiling` queue. A proposal the agent does not file is recorded as `skipped` with its
 reason; the next cycle reconsiders the family. The tool records are the only filing evidence, and
 a tool error is recorded for that family.
+
+The Coach page's Prompt disclosure shows that same prompt as one read-only template
+(`agent-prompt-template`, with the text in `agent-prompt-template-text`), not as a prompt file and
+not as an absence. `synthesize.ts` renders both the call's prompt and the template from one fixed
+text and one catalog/allowlist/limit/issue rendering, so the manifesto, the section headings, and
+the `Rules:` bullets cannot drift apart; a test builds a real prompt for a fixture family and
+asserts the fixed lines are equal. The per-family sections show `<family>`, `<fragments>`, and
+`<excerpts>`; the live sections name the current catalog, read the allowlist and limits from
+`<STATE_DIR>/coach/settings.json` on each connect, and list the dashboard's current open issues
+filtered by `[coach]` title or `family:` body, sorted by number, or state that the open Coach
+issues could not be read before the first successful read. Opening, closing, restoring, or
+reloading the disclosure writes nothing and starts nothing, and no editor, Save, or chat exists
+for Coach.
 
 ### Filing, caps, and the ledger
 
@@ -3516,13 +3602,18 @@ and persistence, the Watchdog cap, the shared table columns, freshness without a
 mutating command on reload, the timer-blocked state and one-click disable against a stub
 `systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
 detail and persisted settings, and the prompt section: every page renders `agent-prompt` directly
-after `agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach
-show `agent-prompt-absent`; an installed host is read-only, carries no source-only marker, and
-refuses a save with an error while its prompt files stay byte-identical; a source-checkout fixture
-renders the marker on the closed summary and the editor, chat, and save for both file-backed
-agents, opens and closes the disclosure with the marker still one, one chat turn streams a reply
-and changes the editor with the file untouched, Save makes each file byte-equal to its editor and
-a reload puts those bytes back in the editor.
+after `agent-header`; Auto Scout and Design System show their own prompt files and, in a source
+checkout, the source-only marker on their closed summary; Watchdog shows `agent-prompt-absent`;
+Coach shows the one read-only `agent-prompt-template` with the fixed intro, every heading and rule
+line, the three placeholders, every catalog tool name, the seeded allowlist, and the fixture's two
+Coach issues but not its unrelated issue, and renders no editor, Save, or chat and no source-only
+marker; an installed host is read-only, carries no source-only marker, and refuses a save with an
+error while its prompt files stay byte-identical; a reload closes the disclosure, reopening shows
+identical text, and the fixture tree is byte-identical afterwards; editing Coach's settings file
+and reconnecting shows the new allowlist; a source-checkout fixture renders the editor, chat, and
+save for both file-backed agents and the same read-only Coach template, one chat turn streams a
+reply and changes the editor with the file untouched, Save makes each file byte-equal to its
+editor and a reload puts those bytes back in the editor.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate
