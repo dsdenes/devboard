@@ -7558,6 +7558,11 @@ export function createApp(options: AppOptions) {
       }
 
       if (url.pathname === "/ws") {
+        // Only a GET can carry a WebSocket handshake: any other method is a
+        // method error, and never reaches the upgrade.
+        if (request.method !== "GET") {
+          return problemResponse(405, "This path serves GET only.", { Allow: "GET" });
+        }
         const refusal = requestRefusal(request, url, allowedHostnames);
         if (refusal !== null) {
           return problemResponse(
@@ -7568,7 +7573,9 @@ export function createApp(options: AppOptions) {
           );
         }
         if (server.upgrade(request)) return;
-        return problemResponse(426, "This path upgrades to a WebSocket.");
+        return problemResponse(426, "This path upgrades to a WebSocket.", {
+          Upgrade: "websocket",
+        });
       }
 
 

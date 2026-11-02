@@ -664,6 +664,52 @@ describe("createApp", () => {
     }
   });
 
+  test("refuses a non-GET upgrade with 405 and Allow: GET", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      for (const method of ["POST", "DELETE", "PATCH", "HEAD"]) {
+        const refused = await fetch(`http://${url}/ws`, {
+          method,
+          // A usable handshake still earns the method error: the method is
+          // refused before the upgrade is attempted.
+          headers: {
+            Upgrade: "websocket",
+            Connection: "Upgrade",
+            "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+            "Sec-WebSocket-Version": "13",
+          },
+        });
+        expect(refused.status).toBe(405);
+        expect(refused.headers.get("allow")).toBe("GET");
+        expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+        if (method !== "HEAD") {
+          expect(await refused.json()).toEqual(
+            problemBody("Method Not Allowed", 405, "This path serves GET only."),
+          );
+        }
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a GET without a WebSocket handshake answers 426 naming the upgrade", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const refused = await fetch(`http://${url}/ws`);
+      expect(refused.status).toBe(426);
+      expect(refused.headers.get("upgrade")).toBe("websocket");
+      expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await refused.json()).toEqual(
+        problemBody("Upgrade Required", 426, "This path upgrades to a WebSocket."),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("refuses a WebSocket upgrade whose Host is not one of the listener's names", async () => {
     const { server, url } = await startServer();
 
