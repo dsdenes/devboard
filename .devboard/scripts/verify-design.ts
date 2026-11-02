@@ -713,6 +713,7 @@ try {
         "open-devboard-design",
         "open-devboard-dead-code",
         "open-devboard-coach",
+        "open-devboard-api-standards",
         "open-devboard-release-train",
       ]),
     "the Background agents order is wrong",

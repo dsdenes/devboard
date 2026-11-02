@@ -171,6 +171,19 @@ if (args[0] === "api") {
     process.stdout.write("behind\n");
     process.exit(0);
   }
+  const issue = /\/issues\/(\d+)$/.exec(endpoint);
+  if (issue !== null) {
+    if (store.failReads === true) {
+      fail(store.failMessage ?? "the GitHub read is unavailable");
+    }
+    const number = Number(issue[1]);
+    const entry = store.issues.find((candidate) => candidate.number === number);
+    if (entry === undefined) fail(`no issue ${number}`);
+    process.stdout.write(
+      `${entry.state}\t${entry.createdAt}\t${entry.state === "closed" ? entry.createdAt : ""}\n`,
+    );
+    process.exit(0);
+  }
   fail(`unexpected api endpoint ${endpoint}`);
 }
 

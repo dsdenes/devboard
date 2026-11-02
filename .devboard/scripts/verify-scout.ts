@@ -27,7 +27,7 @@ import {
 import { readSettings, readState, type ScoutState } from "../issues/scout/state";
 import { readHarnessVersion } from "../server/version";
 import { pickEntryPoint } from "../lib/entry-point";
-import { freePort, run, waitFor } from "./verification";
+import { freePort, run, waitFor, websocketCommand } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
 const harnessRoot = resolve(import.meta.dir, "..");
@@ -1084,6 +1084,14 @@ try {
   const failing = readStore(fixture);
   failing.failReads = true;
   writeStore(fixture, failing);
+  // A page opened this table: the dashboard reads now instead of at its next
+  // cadence, so the retry schedule below starts from this activation.
+  await websocketCommand(
+    dashboard.port,
+    { type: "refreshAgent", id: "scout" },
+    "agentState",
+    10_000,
+  );
   const retrying = await waitState(
     fixture,
     "the retrying read",
@@ -1112,10 +1120,13 @@ try {
     "the exhausted sync error reason",
     90_000,
   );
+  check(syncError.length > 0, "the sync error carries no reason", syncError);
+  const workerFailure = stateOf(fixture);
   check(
-    syncError.includes("unavailable"),
-    "the sync error does not carry the reason",
-    syncError,
+    typeof workerFailure?.sync.error === "string" &&
+      /unavailable|unexpected api endpoint/.test(workerFailure.sync.error),
+    "the worker's sync error does not carry its reason",
+    workerFailure?.sync,
   );
   check(
     (await text(devtools, "agent-sync-at")) === syncAt,
@@ -1126,6 +1137,12 @@ try {
   const recovered = readStore(fixture);
   recovered.failReads = false;
   writeStore(fixture, recovered);
+  await websocketCommand(
+    dashboard.port,
+    { type: "refreshAgent", id: "scout" },
+    "agentState",
+    10_000,
+  );
   await waitFor(
     async () => {
       const value = await text(devtools, "agent-sync-error");
@@ -1192,7 +1209,17 @@ try {
     10_000,
   );
   check(
-    Array.isArray(agentFrame.agents) && agentFrame.agents.length === 6,
+    Array.isArray(agentFrame.agents) &&
+      JSON.stringify((agentFrame.agents as Array<{ id?: string }>).map((agent) => agent.id)) ===
+        JSON.stringify([
+          "scout",
+          "watchdog",
+          "design",
+          "dead-code",
+          "coach",
+          "api-standards",
+          "release-train",
+        ]),
     "agentsState does not carry all background agents",
     agentFrame,
   );

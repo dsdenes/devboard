@@ -3122,15 +3122,25 @@ try {
   })()`);
   check(
     devboardSidebar.entries === 2 &&
-      devboardSidebar.items === 7 &&
+      devboardSidebar.items === 9 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
-        JSON.stringify(["Auto Scout", "Watchdog", "Design System", "Coach", "Release Train"]) &&
+        JSON.stringify([
+          "Auto Scout",
+          "Watchdog",
+          "Design System",
+          "Dead Code",
+          "Coach",
+          "API Standards",
+          "Release Train",
+        ]) &&
       JSON.stringify(devboardSidebar.agentCommands) ===
         JSON.stringify([
           "open.devboard.scout",
           "open.devboard.watchdog",
           "open.devboard.design",
+          "open.devboard.dead-code",
           "open.devboard.coach",
+          "open.devboard.api-standards",
           "open.devboard.release-train",
         ]),
     "the Devboard sidebar does not carry the background agents beside the two page entries",
@@ -10633,6 +10643,8 @@ try {
     ["open.devboard.watchdog", "watchdog"],
     ["open.devboard.design", "design"],
     ["open.devboard.coach", "coach"],
+    ["open.devboard.api-standards", "api-standards"],
+    ["open.devboard.release-train", "release-train"],
   ]) {
     await runPalette(command);
     await page.wait(
@@ -11244,7 +11256,7 @@ try {
     }))`,
   );
   check(
-    devboardEntries.length === 5 &&
+    devboardEntries.length === 7 &&
       devboardEntries.every(
         (entry) => entry.run === devboardMapping[entry.lifecycle],
       ) &&

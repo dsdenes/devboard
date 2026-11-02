@@ -1147,6 +1147,7 @@ describe("issues protocol", () => {
         "design",
         "dead-code",
         "coach",
+        "api-standards",
         "release-train",
       ]);
     } finally {
