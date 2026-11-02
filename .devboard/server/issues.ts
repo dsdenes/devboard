@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { writeCommand, type IssuesCommand } from "../issues/control";
+import {
+  readDrainMarker,
+  writeCommand,
+  writeDrainMarker,
+  type IssuesCommand,
+} from "../issues/control";
 import { liveLockOwners, pidAlive, type LockOwner } from "../issues/lock";
 import {
   controlDirectory,
+  drainMarkerPath,
   lockPath,
   runDirectory,
   statePath,
@@ -58,6 +64,16 @@ const STOP_KILL_GRACE_MS = 2_000;
 const STOP_DEADLINE_MS = STOP_PROOF_MS + STOP_KILL_GRACE_MS;
 const STOP_POLL_MS = 50;
 
+/** One running issue's peer, attributed to the worker version that owns it. */
+export interface IssuesAgentView extends IssuesAgent {
+  /**
+   * The harness version recorded by the worker that owns this run. It comes
+   * from the run record when that summary carries one, so a label never shows
+   * the dashboard's own version for another worker's task.
+   */
+  harnessVersion: string | null;
+}
+
 export interface IssuesSnapshot {
   present: boolean;
   repo: string | null;
@@ -70,7 +86,7 @@ export interface IssuesSnapshot {
   poll: IssuesState["poll"] | null;
   queue: IssuesState["queue"];
   runs: IssuesState["runs"];
-  agents: IssuesAgent[];
+  agents: IssuesAgentView[];
   cooldowns: IssuesState["cooldowns"];
   lastError: string | null;
   lastExitCode: number | null;
@@ -158,6 +174,8 @@ export class IssuesBridge {
   private syncTimer: Timer | undefined;
   private lastSignature = "";
   private lastActivities = new Map<string, string[]>();
+  /** An owning version read from a run record an earlier summary omitted. */
+  private readonly runVersions = new Map<string, string | null>();
   /**
    * One proof per stopped pid. A proof belongs to its own pid alone, so
    * stopping a second owner never clears the first owner's timers.
@@ -359,6 +377,15 @@ export class IssuesBridge {
     for (const owner of owners) {
       if (owner.harnessVersion === this.runningVersion) continue;
       try {
+        // Recorded before the command, so the aggregate view can tell this
+        // automatic drain from a Pause even when the drained harness predates
+        // the pause source it would otherwise write.
+        writeDrainMarker(drainMarkerPath(this.stateDir, this.repoDir, owner.harnessVersion), {
+          version: owner.harnessVersion,
+          pid: owner.pid,
+          by: this.runningVersion,
+          at: new Date().toISOString(),
+        });
         writeCommand(this.controlFor(owner), { type: "drain" });
       } catch (error) {
         this.log(
@@ -451,6 +478,47 @@ export class IssuesBridge {
     return this.currentState() !== undefined || this.lockOwner() !== undefined;
   }
 
+  /**
+   * True when this dashboard, or a worker that records its own provenance,
+   * says the worker paused because a newer version took over. A marker is
+   * honoured only for the pid it was written for and only when the worker's
+   * state does not claim an operator pause, so a fresh worker of the same
+   * version never inherits an older drain.
+   */
+  private automaticDrain(owner: LockOwner, state: IssuesState): boolean {
+    if (state.pauseSource === "drain") return true;
+    if (state.pauseSource === "operator") return false;
+    if (!state.paused) return false;
+    const marker = readDrainMarker(
+      drainMarkerPath(this.stateDir, this.repoDir, owner.harnessVersion),
+    );
+    return marker !== undefined && marker.pid === owner.pid;
+  }
+
+  /**
+   * The harness version a run record itself carries. A summary an earlier
+   * harness wrote has no version to give, so the record is read once and its
+   * answer cached: a run's owning version never changes after it starts.
+   */
+  private runVersion(run: IssuesState["runs"][number]): string | null {
+    if (run.harnessVersion !== undefined && run.harnessVersion !== null) {
+      return run.harnessVersion;
+    }
+    const cached = this.runVersions.get(run.runId);
+    if (cached !== undefined) return cached;
+    let version: string | null = null;
+    try {
+      const record = parseRunFile(
+        readFileSync(runFilePath(runDirectory(this.stateDir, this.repoDir, run.runId)), "utf8"),
+      );
+      version = record?.harnessVersion ?? null;
+    } catch {
+      version = null;
+    }
+    this.runVersions.set(run.runId, version);
+    return version;
+  }
+
   snapshot(): IssuesSnapshot {
     const owners = this.owners();
     const attachedOwners = owners.filter((owner) => !this.foreignOwner(owner));
@@ -459,22 +527,59 @@ export class IssuesBridge {
       states.filter((state) => state.worker !== null).map((state) => [state.worker!.pid, state]),
     );
     const ownerless = states.find((state) => state.worker === null);
-    const attachedStates = attachedOwners
-      .map((owner) => byPid.get(owner.pid) ?? ownerless)
-      .filter((state): state is IssuesState => state !== undefined);
+    const attachedPairs = attachedOwners
+      .map((owner) => ({ owner, state: byPid.get(owner.pid) ?? ownerless }))
+      .filter((pair): pair is { owner: LockOwner; state: IssuesState } => pair.state !== undefined)
+      .map((pair) => ({ ...pair, drained: this.automaticDrain(pair.owner, pair.state) }));
+    const attachedStates = attachedPairs.map((pair) => pair.state);
+    const drainedStates = new Set(
+      attachedPairs.filter((pair) => pair.drained).map((pair) => pair.state),
+    );
     const attached = attachedOwners.length > 0;
     const sorted = [...states].sort((left, right) =>
       right.updatedAt.localeCompare(left.updatedAt),
     );
-    const active =
-      attachedStates.find(
-        (state) => state.lifecycle === "running" || state.lifecycle === "pausing",
-      ) ?? attachedStates[0] ?? sorted[0];
-    const repo = active !== undefined && active.repo.length > 0 ? active.repo : this.repository();
-    const lifecycle =
-      active === undefined || active.lifecycle === "stopped" || !attached
+    const newest = [...attachedStates].sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt),
+    );
+    // A drain is not the family's pause: while any attached member works or
+    // polls, the family reports that work instead of one member's shutdown.
+    const operatorPaused = newest.filter(
+      (state) => state.paused && !drainedStates.has(state),
+    );
+    const liveStates = newest.filter((state) => state.lifecycle !== "stopped");
+    const working = liveStates.some(
+      (state) => state.lifecycle === "running" || state.agents.length > 0,
+    );
+    const lifecycle: IssuesLifecycle =
+      !attached || liveStates.length === 0
         ? "stopped"
-        : active.lifecycle;
+        : operatorPaused.length > 0
+          ? working
+            ? "pausing"
+            : "paused"
+          : working
+            ? "running"
+            : liveStates.some((state) => state.lifecycle === "idle")
+              ? "idle"
+              : liveStates.some((state) => state.lifecycle === "failed")
+                ? "failed"
+                : "paused";
+    const candidates = attached && newest.length > 0 ? newest : sorted;
+    const active =
+      operatorPaused[0] ??
+      candidates.find((state) => state.lifecycle === "running") ??
+      candidates.find((state) => state.lifecycle === "idle") ??
+      candidates.find((state) => !drainedStates.has(state)) ??
+      candidates[0];
+    const repo = active !== undefined && active.repo.length > 0 ? active.repo : this.repository();
+    const versionByPid = new Map<number, string | null>();
+    for (const state of states) {
+      if (state.worker !== null) versionByPid.set(state.worker.pid, state.worker.harnessVersion);
+    }
+    for (const owner of owners) {
+      if (!versionByPid.has(owner.pid)) versionByPid.set(owner.pid, owner.harnessVersion);
+    }
     const workers = attachedOwners.map((owner) => {
       const state = byPid.get(owner.pid);
       return {
@@ -486,25 +591,46 @@ export class IssuesBridge {
     });
     const runs = new Map<string, IssuesState["runs"][number]>();
     for (const state of states) {
-      for (const run of state.runs) if (!runs.has(run.runId)) runs.set(run.runId, run);
+      for (const run of state.runs) {
+        if (runs.has(run.runId)) continue;
+        // The run record's own version wins; an earlier summary that lacks it
+        // falls back to the record itself, then to the pid that wrote the run.
+        runs.set(run.runId, {
+          ...run,
+          harnessVersion:
+            this.runVersion(run) ??
+            (run.workerPid === undefined ? null : versionByPid.get(run.workerPid) ?? null),
+        });
+      }
     }
     const cooldowns: IssuesState["cooldowns"] = {};
-    const agents: IssuesState["agents"] = [];
-    for (const state of attachedStates) {
+    const agents: IssuesAgentView[] = [];
+    for (const { state } of attachedPairs) {
       Object.assign(cooldowns, state.cooldowns);
-      agents.push(...state.agents);
+      for (const agent of state.agents) {
+        agents.push({
+          ...agent,
+          harnessVersion:
+            runs.get(agent.runId)?.harnessVersion ??
+            (state.worker === null ? null : versionByPid.get(state.worker.pid) ?? null),
+        });
+      }
     }
     return {
       present: states.length > 0 || owners.length > 0,
       repo,
       root: this.repoDir,
       lifecycle,
-      enabled: attached && active?.enabled === true && lifecycle !== "stopped",
-      paused: attached && active?.paused === true && lifecycle !== "stopped",
+      enabled:
+        attached &&
+        liveStates.length > 0 &&
+        lifecycle !== "stopped" &&
+        liveStates.some((state) => state.enabled),
+      paused: lifecycle === "pausing" || lifecycle === "paused",
       attached,
-      worker: attached && active !== undefined ? active.worker : null,
+      worker: attached && attachedPairs.length > 0 && active !== undefined ? active.worker : null,
       poll: active?.poll ?? null,
-      queue: this.queueFor(states, attachedStates, attached),
+      queue: this.queueFor(),
       runs: [...runs.values()].sort((left, right) =>
         right.startedAt.localeCompare(left.startedAt),
       ),
@@ -521,80 +647,24 @@ export class IssuesBridge {
   }
 
   /**
-   * The Open issues list. Every live worker's markers are merged, so the view
-   * never depends on which version answered last. A worker whose own read
-   * started no earlier than the dashboard's is authoritative; otherwise the
-   * dashboard's read is used, with the workers' handled and running markers
-   * merged in. Before the first dashboard read the workers' queues are the
-   * only list there is. Only an attached worker can be working an issue, so a
-   * stopped worker's leftover `agentRunId` is dropped instead of counting as
-   * running with no agent to run it.
+   * The Open issues list: exactly the open issues one forge read returned.
+   * No worker state adds, removes, or restates a row, so a stopped worker's
+   * stale list, a live worker's newer poll, and the ledger's history all
+   * decide nothing here. A row's running state is the `processing` label the
+   * forge returned for it; the worker-owned markers stay false so no second
+   * source can claim a row is handled or running.
    */
-  private queueFor(
-    states: IssuesState[],
-    attachedStates: IssuesState[],
-    attached: boolean,
-  ): IssuesState["queue"] {
-    const live = new Set(attachedStates);
-    const markers = new Map<number, IssuesState["queue"][number]>();
-    for (const state of states) {
-      for (const issue of state.queue) {
-        const marker =
-          attached && live.has(state)
-            ? issue
-            : issue.agentRunId === null
-              ? issue
-              : { ...issue, agentRunId: null };
-        const previous = markers.get(issue.number);
-        if (previous === undefined) {
-          markers.set(issue.number, marker);
-          continue;
-        }
-        markers.set(issue.number, {
-          ...previous,
-          handled: previous.handled || marker.handled,
-          runId: previous.runId ?? marker.runId,
-          agentRunId: previous.agentRunId ?? marker.agentRunId,
-        });
-      }
-    }
-    const workerQueue = [...markers.values()].sort((left, right) => left.number - right.number);
+  private queueFor(): IssuesState["queue"] {
     const open = this.tracker.openIssues;
-    if (open === null) return workerQueue;
-    const readStartedAt = this.tracker.freshStartedAt;
-    const workerIsNewer =
-      attached &&
-      readStartedAt !== null &&
-      attachedStates.some((state) => {
-        if ((state.poll.error ?? null) !== null || state.poll.lastPollAt === null) return false;
-        return Date.parse(state.poll.lastPollAt) >= Date.parse(readStartedAt);
-      });
-    if (workerIsNewer) return workerQueue;
-    const listed = new Set(open.map((issue) => issue.number));
-    const queue = open.map((issue) => {
-      const marker = markers.get(issue.number);
-      return {
+    if (open === null) return [];
+    return open
+      .map((issue) => ({
         ...issue,
-        handled: marker?.handled ?? false,
-        runId: marker?.runId ?? null,
-        agentRunId: marker?.agentRunId ?? null,
-      };
-    });
-    // A run younger than the read was never part of its answer: its issue is
-    // kept visible until a read that started after the run reports on it.
-    const cutoff = readStartedAt === null ? null : Date.parse(readStartedAt);
-    if (attached && cutoff !== null && Number.isFinite(cutoff)) {
-      for (const state of attachedStates) {
-        for (const agent of state.agents) {
-          if (listed.has(agent.issueNumber)) continue;
-          const startedAt = Date.parse(agent.startedAt);
-          if (!Number.isFinite(startedAt) || startedAt < cutoff) continue;
-          const marker = markers.get(agent.issueNumber);
-          if (marker !== undefined) queue.push(marker);
-        }
-      }
-    }
-    return queue.sort((left, right) => left.number - right.number);
+        handled: false,
+        runId: null,
+        agentRunId: null,
+      }))
+      .sort((left, right) => left.number - right.number);
   }
 
   /**

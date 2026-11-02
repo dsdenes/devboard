@@ -1,6 +1,7 @@
 <script lang="ts">
   import { issues, isGoalIssue } from "../issues.svelte";
-  import { queueCounts, queueSummary } from "../issues-queue";
+  import { versionLabel } from "../issues-label";
+  import { isProcessing, queueCounts, queueSummary } from "../issues-queue";
   import type { WorkspaceTab } from "../layout.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
@@ -220,7 +221,7 @@
               <dd class="mono">
                 {issues.snapshot?.worker === null || issues.snapshot?.worker === undefined
                   ? "none"
-                  : `pid ${issues.snapshot.worker.pid} · ${issues.snapshot.worker.harnessVersion ?? "unknown"}`}
+                  : `pid ${issues.snapshot.worker.pid} · ${versionLabel(issues.snapshot.worker.harnessVersion)}`}
               </dd>
             </div>
             <div>
@@ -297,6 +298,14 @@
                       {#if agent.question !== null}
                         <span class="badge" data-tone="warning">needs answer</span>
                       {/if}
+                      <span
+                        class="issues-version mono"
+                        data-testid="issues-agent-row-version"
+                        data-run={agent.runId}
+                        title={`Worker ${versionLabel(issues.versionForRun(agent.runId))}`}
+                      >
+                        {versionLabel(issues.versionForRun(agent.runId))}
+                      </span>
                       <span
                         class="issues-agent-row__elapsed mono"
                         title={`Started ${startedClock(agent.startedAt)}`}
@@ -392,10 +401,10 @@
               <span
                 class="mono"
                 data-testid="issues-worker"
-                data-version={worker.version ?? "unknown"}
+                data-version={versionLabel(worker.version)}
                 data-pid={worker.pid}
               >
-                {worker.version ?? "unknown"}
+                {versionLabel(worker.version)}
               </span>
             {/each}
           </span>
@@ -457,6 +466,14 @@
               {title}
             </h2>
             <p class="issues-agent__meta mono" title={`Started ${agent.startedAt}`}>
+              <span
+                class="issues-version"
+                data-testid="issues-agent-version"
+                data-run={agent.runId}
+              >
+                worker {versionLabel(issues.versionForRun(agent.runId))}
+              </span>
+              <span aria-hidden="true">·</span>
               <span>{elapsed(agent.startedAt)} elapsed</span>
               <span aria-hidden="true">·</span>
               <span>started {startedClock(agent.startedAt)}</span>
@@ -509,9 +526,8 @@
               class="issues-queue__item"
               data-testid="issues-queue-item"
               data-number={issue.number}
-              data-handled={issue.handled}
               data-goal={isGoalIssue(issue)}
-              data-run={issue.agentRunId ?? ""}
+              data-processing={isProcessing(issue)}
             >
               <a
                 class="issues-queue__number mono"
@@ -527,9 +543,7 @@
                 {#if isGoalIssue(issue)}
                   <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
                 {/if}
-                {#if issue.handled}
-                  <span class="badge" data-tone={statusTone("handled")}>handled</span>
-                {:else if issue.agentRunId !== null}
+                {#if isProcessing(issue)}
                   <span
                     class="badge"
                     data-tone={statusTone("running")}
@@ -584,6 +598,9 @@
                 <span class="badge" data-tone={statusTone(run.status)}>
                   {run.status}
                 </span>
+                <span class="issues-version mono" data-testid="issues-run-version" data-run={run.runId}>
+                  {versionLabel(run.harnessVersion)}
+                </span>
                 <span class="muted">{run.issueNumbers.map((number) => `#${number}`).join(" ")}</span>
               </Button>
             </li>
@@ -600,6 +617,9 @@
               </span>
             </div>
             <p class="muted mono">{issues.run.cwd}</p>
+            <p class="muted mono" data-testid="issues-run-version-detail">
+              worker pid {issues.run.workerPid} · harness {versionLabel(issues.run.harnessVersion)}
+            </p>
             <p class="muted">{issues.run.issues.map((issue) => `#${issue.number}`).join(" ")}</p>
             <pre class="issues-activity mono" data-testid="issues-run-activity">{issues.run.activityLines.join("\n") || "No activity."}</pre>
           </div>

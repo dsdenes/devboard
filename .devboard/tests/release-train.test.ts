@@ -1,14 +1,21 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { agentRegistry } from "../server/agents/registry";
+import { ReleaseTrainActivity } from "../server/release-train";
 import {
   DEFAULT_INTERVAL_MINUTES,
   readSettings,
 } from "../release-train/settings";
-import { releaseTrainDirectory } from "../release-train/paths";
+import { releaseTrainDirectory, runDirectory } from "../release-train/paths";
+import {
+  emptyState,
+  writeState,
+  type ReleaseTrainRun,
+} from "../release-train/state";
 import {
   ReleaseTrainWorker,
+  readResult,
   type ReleaseRunInput,
   type ReleaseRunResult,
 } from "../release-train/worker";
@@ -171,9 +178,25 @@ describe("Release Train family", () => {
         "released v1.0.1: https://forge.test/releases/tag/v1.0.1",
       );
       expect(worker.currentState.failure).toBeNull();
+      expect(worker.currentState.runs[0]?.commits).toBe(1);
     } finally {
       await worker.stop();
     }
+  });
+
+  test("the agent's result document is read from the run directory", () => {
+    const workspaceValue = workspace("result");
+    const runDir = runDirectory(workspaceValue.directory, "run-1");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "result.json"),
+      JSON.stringify({ ok: false, detail: "the release workflow concluded failure" }),
+    );
+    expect(readResult(runDir)).toEqual({
+      ok: false,
+      detail: "the release workflow concluded failure",
+    });
+    expect(readResult(runDirectory(workspaceValue.directory, "absent"))).toBeUndefined();
   });
 
   test("a second worker of the same version refuses while the first is live", async () => {
@@ -324,5 +347,89 @@ describe("Release Train family", () => {
     } finally {
       await worker.stop();
     }
+  });
+});
+
+describe("Release Train page", () => {
+  function run(patch: Partial<ReleaseTrainRun> & Pick<ReleaseTrainRun, "id">): ReleaseTrainRun {
+    return {
+      startedAt: "2026-11-02T09:00:00.000Z",
+      endedAt: null,
+      state: "running",
+      range: "v1.0.0.." + "a".repeat(40),
+      target: "a".repeat(40),
+      version: null,
+      url: null,
+      detail: null,
+      commits: null,
+      ...patch,
+    };
+  }
+
+  function activityAt(workspaceValue: Workspace): ReleaseTrainActivity {
+    return new ReleaseTrainActivity({
+      descriptor: agentRegistry.require("release-train"),
+      repoDir: workspaceValue.repoDir,
+      stateDir: workspaceValue.stateDir,
+      harnessDir: harnessRoot,
+    });
+  }
+
+  test("lists verified releases with their date, version, and commit count", () => {
+    const workspaceValue = workspace("page-history");
+    const legacy = run({
+      id: "legacy",
+      state: "released",
+      version: "1.0.0",
+      url: "https://forge.test/releases/tag/v1.0.0",
+      endedAt: "2026-11-02T09:30:00.000Z",
+    });
+    // A release recorded before the shared state carried the count: its agent
+    // request still holds the released list.
+    const legacyRun = runDirectory(workspaceValue.directory, legacy.id);
+    mkdirSync(legacyRun, { recursive: true });
+    writeFileSync(
+      join(legacyRun, "request.json"),
+      JSON.stringify({ releaseCommits: [{ sha: "b" }, { sha: "c" }, { sha: "d" }] }),
+    );
+    writeState(workspaceValue.directory, {
+      ...emptyState({ repo: "", root: workspaceValue.root }),
+      runs: [
+        run({
+          id: "failed",
+          state: "failed",
+          version: "2.0.0",
+          endedAt: "2026-11-02T11:00:00.000Z",
+        }),
+        run({
+          id: "released",
+          state: "released",
+          version: "1.1.0",
+          url: "https://forge.test/releases/tag/v1.1.0",
+          endedAt: "2026-11-02T10:00:00.000Z",
+          commits: 4,
+        }),
+        legacy,
+      ],
+    });
+    expect(activityAt(workspaceValue).snapshot().releases).toEqual([
+      {
+        at: "2026-11-02T10:00:00.000Z",
+        version: "1.1.0",
+        commits: 4,
+        url: "https://forge.test/releases/tag/v1.1.0",
+      },
+      {
+        at: "2026-11-02T09:30:00.000Z",
+        version: "1.0.0",
+        commits: 3,
+        url: "https://forge.test/releases/tag/v1.0.0",
+      },
+    ]);
+  });
+
+  test("a repository with no release yet lists an empty history", () => {
+    const workspaceValue = workspace("page-empty");
+    expect(activityAt(workspaceValue).snapshot().releases).toEqual([]);
   });
 });

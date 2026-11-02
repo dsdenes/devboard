@@ -3,10 +3,19 @@ import type { IssuesIssue } from "./state";
 import { configuredGiteaToken, type Forge } from "../lib/forge";
 import {
   GiteaError,
+  giteaAddIssueLabel,
+  giteaEnsureLabel,
   giteaIssue,
+  giteaLabels,
   giteaListIssues,
+  giteaRemoveIssueLabel,
   type FetchLike,
 } from "../lib/gitea";
+import {
+  PROCESSING_LABEL,
+  PROCESSING_LABEL_COLOR,
+  PROCESSING_LABEL_DESCRIPTION,
+} from "../lib/issue-labels";
 
 /**
  * The tracker read: the origin's open issues through the operator's `gh`
@@ -403,6 +412,120 @@ async function giteaIssueState(
       kind: "error",
       detail: error instanceof Error ? error.message : String(error),
     };
+  }
+}
+
+export type ProcessingWriteResult = { kind: "ok" } | { kind: "error"; detail: string };
+
+/**
+ * Writes or clears the one `processing` label on one issue. The label is the
+ * forge's record that a run is active, so it is added before a peer starts and
+ * removed when that run ends or a reconciler finds it stale. The label is
+ * created when the repository does not have it yet; no other label is touched.
+ */
+export async function writeIssueProcessing(
+  options: TrackerOptions,
+  number: number,
+  active: boolean,
+): Promise<ProcessingWriteResult> {
+  const forge = options.forge ?? "github";
+  if (forge === "gitea") {
+    return await writeGiteaProcessing(options, number, active);
+  }
+  if (forge !== "github") {
+    return { kind: "error", detail: GITLAB_TRACKER_UNSUPPORTED };
+  }
+  return await writeGhProcessing(options, number, active);
+}
+
+async function writeGiteaProcessing(
+  options: TrackerOptions,
+  number: number,
+  active: boolean,
+): Promise<ProcessingWriteResult> {
+  const environment = options.environment ?? process.env;
+  if (options.baseUrl === undefined || options.baseUrl.length === 0) {
+    return {
+      kind: "error",
+      detail: "the Gitea address is not configured; set DEVBOARD_GITEA_URL",
+    };
+  }
+  const token = configuredGiteaToken(environment);
+  const target = {
+    baseUrl: options.baseUrl,
+    project: options.repository,
+    ...(token === undefined ? {} : { token }),
+  };
+  try {
+    if (active) {
+      const labelId = await giteaEnsureLabel(
+        target,
+        PROCESSING_LABEL,
+        PROCESSING_LABEL_COLOR,
+        PROCESSING_LABEL_DESCRIPTION,
+        options.giteaFetch,
+      );
+      await giteaAddIssueLabel(target, number, labelId, options.giteaFetch);
+      return { kind: "ok" };
+    }
+    const label = (await giteaLabels(target, options.giteaFetch)).find(
+      (entry) => entry.name === PROCESSING_LABEL,
+    );
+    if (label === undefined) return { kind: "ok" };
+    await giteaRemoveIssueLabel(target, number, label.id, options.giteaFetch);
+    return { kind: "ok" };
+  } catch (error) {
+    return {
+      kind: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function writeGhProcessing(
+  options: TrackerOptions,
+  number: number,
+  active: boolean,
+): Promise<ProcessingWriteResult> {
+  const bound = deadline(options.timeoutMs ?? TRACKER_TIMEOUT_MS, options.signal);
+  const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment, bound.signal));
+  const runOne = async (argv: string[]): Promise<ProcessingWriteResult> => {
+    const outcome = await bound.read(() => Promise.resolve(execute(argv)));
+    if (outcome.code === 0) return { kind: "ok" };
+    return {
+      kind: "error",
+      detail: firstLine(outcome.stderr) ?? `gh exited with code ${outcome.code}`,
+    };
+  };
+  try {
+    if (active) {
+      const created = await runOne([
+        "label",
+        "create",
+        PROCESSING_LABEL,
+        "--repo",
+        options.repository,
+        "--color",
+        PROCESSING_LABEL_COLOR,
+        "--description",
+        PROCESSING_LABEL_DESCRIPTION,
+        "--force",
+      ]);
+      if (created.kind === "error") return created;
+    }
+    return await runOne([
+      "issue",
+      "edit",
+      String(number),
+      active ? "--add-label" : "--remove-label",
+      PROCESSING_LABEL,
+      "--repo",
+      options.repository,
+    ]);
+  } catch (error) {
+    return { kind: "error", detail: error instanceof Error ? error.message : String(error) };
+  } finally {
+    bound.dispose();
   }
 }
 

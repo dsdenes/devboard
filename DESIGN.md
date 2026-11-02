@@ -478,6 +478,18 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   is never clipped) with `unlimited` placeholders and a secondary `Save limits`. Both groups wrap
   as units, so a field never separates from its save control, and the filled Start/Stop stays
   alone in the header row above.
+- **Agent prompt disclosure** (`.agent-prompt` in `AgentPromptSection.svelte`) — the shared
+  read-only prompt region directly below an agent page header: a `surface` card with a 1px
+  `border`, 4px radius, and hidden overflow, so its 30px summary is the header band and its body
+  is the panel body. The summary carries the 12px/600 `Prompt` title on its leading edge, an
+  optional 11.5px mono code chip naming the prompt file (`.devboard/prompts/<file>`, ellipsized
+  with the full path as its tooltip) and a 14px `muted-foreground` chevron on its trailing edge.
+  Hover takes `row-hover`, focus a 2px inset `ring` ring, the chevron rotates 90° over 120ms
+  (none under `prefers-reduced-motion`), and the open summary gains a `border` rule under it.
+  The body pads 8px and holds the prompt bytes in one 12px mono scrollable `PRE` on `background`
+  with a 1px `border-subtle` outline, 4px radius, and a `clamp(240px, 46vh, 480px)` height cap.
+  The Coach template uses the same region, and a loading or absent line is one 12px
+  `muted-foreground` sentence. It is closed on every load and renders no source-only marker.
 - **Stage track** (`stage-track.svelte`) — five equal-width stage cells (Goal, Epics, ADRs,
   Implementation, Finished) at 11px/600, 4px gaps, 3px radius, `border-subtle` for future stages,
   `border` for complete stages, and `accent-surface` plus a 1px `accent` edge for the current

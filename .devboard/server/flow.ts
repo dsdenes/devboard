@@ -165,6 +165,23 @@ export interface FlowSnapshot {
   history: FlowHistoryEntry[];
 }
 
+/**
+ * Why the checkout is unavailable: the mode that owns it, the subject it is
+ * working on, and the exact sentence tail each Flow command prints. The
+ * dashboard supplies the mode name, so Flow never guesses which one blocks it.
+ */
+export interface CheckoutBlocker {
+  /**
+   * The refusal's first sentence without its period, e.g.
+   * `Discover is active on owner/repo (a repository checkout)`.
+   */
+  label: string;
+  /** What a Flow start prints, e.g. `Stop it in Discover before starting Flow work.` */
+  start: string;
+  /** What a pull-request merge prints. */
+  merge: string;
+}
+
 export interface FlowOptions {
   repoDir: string;
   stateDir: string;
@@ -185,8 +202,8 @@ export interface FlowOptions {
   analystTimeoutMs?: number;
   /** Bound on one git/gh/glab child; a stalled command settles as killed. */
   commandTimeoutMs?: number;
-  /** Describes active Goal Mode work, if any. */
-  goalWorkActive?: () => string | undefined;
+  /** Names the mode that owns the checkout, with the sentence Flow prints. */
+  checkoutBlocker?: () => CheckoutBlocker | undefined;
   /** The harness version that started this controller's runs. */
   harnessVersion?: string | null;
   /** The dashboard instance that owns this controller's detached runs. */
@@ -626,7 +643,7 @@ export class FlowController {
   readonly #watchMs: number;
   readonly #analystTimeoutMs: number;
   readonly #commandTimeoutMs: number;
-  readonly #goalWorkActive: () => string | undefined;
+  readonly #checkoutBlocker: () => CheckoutBlocker | undefined;
   readonly #harnessVersion: string | null;
   readonly #instance: string;
 
@@ -673,7 +690,7 @@ export class FlowController {
     this.#now = options.now ?? Date.now;
     this.#watchMs = Math.max(10, options.watchMs ?? DEFAULT_WATCH_MS);
     this.#analystTimeoutMs = Math.max(10, options.analystTimeoutMs ?? DEFAULT_ANALYST_TIMEOUT_MS);
-    this.#goalWorkActive = options.goalWorkActive ?? (() => undefined);
+    this.#checkoutBlocker = options.checkoutBlocker ?? (() => undefined);
     this.#harnessVersion = options.harnessVersion ?? null;
     this.#instance = options.instance ?? "flow-test";
     this.#startedAt = nowIso(this.#now);
@@ -735,8 +752,12 @@ export class FlowController {
     return this.#session !== undefined && this.#session.status !== "merged";
   }
 
-  #goalWorkLabel(): string | undefined {
-    return this.#goalWorkActive();
+  /** Prints the dashboard's blocker label, if another mode holds the checkout. */
+  #refuseCheckoutBlocked(action: "start" | "merge"): boolean {
+    const blocker = this.#checkoutBlocker();
+    if (blocker === undefined) return false;
+    this.#error(`${blocker.label}. ${action === "start" ? blocker.start : blocker.merge}`);
+    return true;
   }
 
   snapshot(): FlowSnapshot {
@@ -1219,11 +1240,7 @@ export class FlowController {
   // -------------------------------------------------------------- commands
 
   async createGoal(): Promise<void> {
-    const goalWork = this.#goalWorkLabel();
-    if (goalWork !== undefined) {
-      this.#error(`Goal Mode is active (${goalWork}). Stop it before starting Flow work.`);
-      return;
-    }
+    if (this.#refuseCheckoutBlocked("start")) return;
     if (this.#implementation !== undefined) {
       this.#error("The Flow implementation is running. Stop it before creating a new goal.");
       return;
@@ -1467,11 +1484,7 @@ export class FlowController {
   }
 
   async startImplementation(): Promise<void> {
-    const goalWork = this.#goalWorkLabel();
-    if (goalWork !== undefined) {
-      this.#error(`Goal Mode is active (${goalWork}). Stop it before starting Flow work.`);
-      return;
-    }
+    if (this.#refuseCheckoutBlocked("start")) return;
     const session = this.#session;
     if (session === undefined) {
       this.#error("Create a Flow goal before starting the implementation.");
@@ -2304,11 +2317,7 @@ export class FlowController {
       this.#error("Stop the Flow implementation before merging the pull request.");
       return;
     }
-    const goalWork = this.#goalWorkLabel();
-    if (goalWork !== undefined) {
-      this.#error(`Goal Mode is active (${goalWork}). Stop it before merging the Flow pull request.`);
-      return;
-    }
+    if (this.#refuseCheckoutBlocked("merge")) return;
     if (session.pr.state !== "live") {
       this.#error("Only a live pull request can be merged.");
       return;

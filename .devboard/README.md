@@ -81,16 +81,18 @@ CSS px wide, constrained to 200–600 CSS px, and resized by dragging its separa
 arrow keys with that separator focused. Double-clicking the separator restores the default width.
 The width survives a reload.
 
-- **Goal** lists the goal workspace surfaces, a **Skills** entry that discloses every prepared
-  skill, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
+- **Goal** lists the goal workspace surfaces, one **Skills** entry that opens the prepared-skills
+  table, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
   ADR records group is absent while no record is pending.
 - **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
   session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
   overview at the blocker they name.
 - **Devboard** carries the **Background agents** group — Auto Scout, Watchdog, Design System,
-  and Coach — and one `data-testid="devboard-tab"` entry labeled `MCP tools` with
-  `data-command="devboard.tab.tools"`. Each agent entry opens its page; the last entry opens the
-  read-only MCP tool list. No tool name appears in the sidebar.
+  Coach, and Release Train — then exactly two `data-testid="devboard-tab"` entries: `MCP tools`
+  (`data-command="devboard.tab.tools"`) and `Skills` (`data-command="devboard.tab.skills"`). Each
+  agent entry opens its page; the last two open the read-only MCP tool list and the Skills table.
+  Neither entry is repeated per tool or per skill, so adding or removing one never changes the
+  menu. No tool or skill name appears in the sidebar.
 - **Discover** lists the overview, glossary, and contribution sections, the six skills under their
   own group, and warnings only while at least one exists. The glossary entry carries the published
   term count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
@@ -125,6 +127,27 @@ catalog entry changes the page on the next server start with no client-source ed
 and its counts arrive through the dashboard's existing read-only `getMcpTools` command; no HTTP
 route or second socket is involved. While the socket is open the page asks for that frame every
 five seconds, so counts follow calls a peer makes without a reload.
+
+### Skills page
+
+The `Skills` sidebar entry opens the Devboard mode's other page. It renders one
+`data-testid="skills-table"` table with exactly two columns: every row's first cell names one
+skill installed under the repository's `.omp/skills` root verbatim, and its second cell holds
+exactly one `data-testid="skill-enabled"` checkbox on a row carrying `data-testid="skill-row"` and
+`data-skill="<name>"`. No description, family, state, document, or delete control appears. The
+rows come from that directory and nothing else: a skill directory holding a `SKILL.md` appears
+whether hand-authored, prepared, Discover-generated, or reached through a symlink, while a name
+only a Discover manifest carries and no directory backs produces no row. Creating or deleting a
+directory changes the rows after the next page load, and the sidebar entry count never changes.
+
+A fresh skill starts checked. Unchecking one adds exactly its name to `skills.ignoredSkills` in the
+project-level OMP settings at `.omp/settings.json`, the file a plain `omp` session at the
+repository root reads, so every OMP session, Task subagent, and dashboard-launched agent started
+there omits that skill; checking it removes exactly that name and leaves every other entry as it
+was. The skill stays installed with its bytes, row, and `SKILL.md`, and the exclusion survives a
+page reload, a dashboard restart, a harness update, and a rerun of `.devboard/install.sh`, which
+never copies that file. A toggle applies to sessions and runs started afterwards; opening the page
+starts no agent, and a toggle never stops, restarts, or edits a skill or a live run.
 
 A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
@@ -172,11 +195,13 @@ another tab, mode, or a reload starts collapsed. The expanded panel never contai
 
 Each existing control moved into `data-testid="agent-activity-control"` keeps its test id, command,
 label, disabled conditions, title, and effect, and the page no longer renders a second copy:
-`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` for Discover
-run pages, `discover-agent-start`/`discover-agent-stop` for Discover agent pages, the Goal record
+`agent-start`/`agent-stop` for background agents, `discover-start` and `discover-stop` on the
+Discover Overview, `discover-agent-start`/`discover-agent-stop` for a Discover agent card and for
+the Glossary and skill pages, which start and stop the agent that owns them, the Goal record
 `start`, and `start-flow-implementation`/`stop-flow-implementation` for the Flow overview. The
-Goal lane, the Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal`
-remains a page action. Moving a control never adds a backend command or a per-agent Stop.
+Discover warnings page follows the seven-agent suite and carries no control. The Goal lane, the
+Issues focus tab, and a Flow conversation show no bar control. `create-flow-goal` remains a page
+action. Moving a control never adds a backend command or a per-agent Stop.
 
 The removed page content is `discover-run-tag`, `discover-agent-run-tag`, `discover-agent-status`,
 `agent-lifecycle`, `agent-detail`, `issues-agent-focus-run`, `issues-agent-focus-run-id`,
@@ -667,10 +692,18 @@ worker a `drain`, and claims every unit that arises afterwards; the older worker
 unit, finishes its in-flight unit, exits when that unit ends, releases its lock, and leaves its
 state, run directories, and activity readable. The mode lists every live worker with its version
 and merges every running unit into one view, so no surface reports a worker/dashboard or
-front-end/backend version divergence. Start launches the newest installed version when no worker
-is live; Pause, Resume, Check now, Stop, and settings apply to every live worker of the family.
-With no worker live, installing a newer version starts none. A worker or run started by a version
-that predates this mechanism has no drain command; it is never killed mid-unit.
+front-end/backend version divergence. While a newer worker takes over, the issues status bar
+reports the family's running work, `issues working (N)` with N summed across every attached
+worker, instead of the older member's `pausing`; the drained worker still records its own truthful
+state, and the Overview's poll line keeps reporting whichever attached worker polls, so an
+automatic drain is never shown as an operator Pause. Every running Overview row, Agents card, and run detail names the harness version of the worker
+that owns that run: the label comes from the run record, backed by the owning worker's live lock while it is
+live, never from the dashboard's own version, and the older version stays named in history after
+its worker retires. Start launches the newest installed version when no worker is live; Pause,
+Resume, Check now, Stop, and settings apply to every live worker of the family. With no worker
+live, installing a newer version starts none. A worker or run started by a version that predates
+this mechanism has no drain command; it is never killed mid-unit, and the dashboard's own drain
+marker still distinguishes its automatic drain from a manual Pause.
 
 A closed or failed lane whose retention window expired while the server was down is not
 replayed; the remaining window is honored after a restart. An unreadable, truncated, or
@@ -965,9 +998,9 @@ The same vocabulary covers the other modes:
 - **Goal**: the Implementation entry (`data-testid="open-implementation"`) is `running` while a
   manual implementation run or the lifecycle's current step executes and `answer` while that run
   waits for an operator question; its stage, `manual`, or `idle` meta never moves into the badge.
-  The Skills toggle row (`data-testid="goal-skills-toggle"`) is `running` while skills preparation
-  executes, including while the submenu is collapsed. Goal records no failed terminal state, so
-  neither entry shows `failed`, and an operator stop is never relabelled a failure.
+  The Skills entry (`data-testid="goal-skills-open"`) is `running` while skills preparation
+  executes. Goal records no failed terminal state, so neither entry shows `failed`, and an
+  operator stop is never relabelled a failure.
 - **Issues**: the Overview entry (`data-testid="open-issues-overview"`) is `running` while the
   issues lifecycle runs, `failed` while it is failed, and `answer` while a running issue agent has a
   pending question, alongside its lifecycle badge and queue summary. The Draft goals entry
@@ -1054,13 +1087,19 @@ work is active, and the title names the reason. A start never happens on page lo
 switch, or page switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge
 account; it is accepted on a host with a dirty tree and no goal document.
 
-**One at a time.** A card's Start sends `discoverAgent { agent }`. The server starts exactly one ACP
-peer whose working directory is the active target root, whose prompt is exactly
-`<that agent's command> <staging-dir>`, and whose staging directory is
-`<target>/.omp/discover/staging/<run-id>/`. No other agent starts. While any discovery agent or Run
-all is active, every other Start control is disabled with a title naming the reason, and a
-programmatic `discoverAgent` for another agent is refused with one `discoverError` and spawns no
-peer. **Run all** runs the seven in this fixed order: `sheet`, `discover-glossary`,
+The Glossary page and every skill page carry the same bar for the one agent that produced them:
+the Glossary Agent on the Glossary page, and the agent that owns the skill on its skill page. Their
+bar shows only that agent's run state, activity, and pending question, and its control starts or
+stops that one agent — never the seven-agent Run all. The warnings page follows the seven-agent
+suite and carries no start or stop control.
+
+**One at a time.** A card's Start, the Glossary page's control, and a skill page's control each
+send `discoverAgent { agent }`. The server starts exactly one ACP peer whose working directory is
+the active target root, whose prompt is exactly `<that agent's command> <staging-dir>`, and whose
+staging directory is `<target>/.omp/discover/staging/<run-id>/`. No other agent starts. While any
+discovery agent or Run all is active, every other Start control is disabled with a title naming the
+reason, and a programmatic `discoverAgent` for another agent is refused with one `discoverError`
+and spawns no peer. **Run all** runs the seven in this fixed order: `sheet`, `discover-glossary`,
 `discover-testing-strategy`, `discover-naming-conventions`, `discover-coding-conventions`,
 `discover-architecture-boundaries`, `discover-contribution`. The agents run one at a time, and
 each successful agent publishes its slice before the next starts. The first failure or stop halts the sequence: the
@@ -1419,24 +1458,26 @@ Each skill has a page that shows the whole `SKILL.md` as read-only text
 (`data-testid="discover-skill-text"`), with no rendered preview, no split pane, and no editor. The
 page header holds only the skill's page title. The panel header is one 44px row: the skill's
 relative path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on
-the leading edge, and `data-testid="discover-skill-status"` names `generated`, `edited`, or
-`Live file missing`. The page renders no `discover-skill-save`, `discover-skill-restore`, or
-`discover-skill-dirty`, and no state badge or purpose line, because the sidebar already flags
-`edited` or `missing`. The text is the live file when it exists and the generated baseline while
-it is missing, including the contribution skill.
+the leading edge. The page renders no `discover-skill-save`, `discover-skill-restore`, or
+`discover-skill-dirty`, and no state badge, status pill, or purpose line, because the sidebar
+already flags `edited` or `missing` on the skill entry. The text is the live file when it exists
+and the generated baseline while it is missing, including the contribution skill.
 
 A later run compares each live hash with its last baseline: an unedited skill is replaced, an
 edited skill is preserved byte for byte with its new baseline published beside it, and a skill
-the developer deleted is not recreated but shows `Live file missing`. A generated name colliding
-with a prepare-family, unmanaged, or different Discover skill fails the run and publishes
-nothing.
+the developer deleted is not recreated but keeps rendering its generated baseline with the
+sidebar flagging it `missing`. A generated name colliding with a prepare-family, unmanaged, or
+different Discover skill fails the run and publishes nothing.
 
 The goal lifecycle's skill prerequisite accepts a managed skill from either family: at least one
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`
 carry `name`, `description`, `family` (`prepare` or `discover`), and `state` (`generated`, `edited`,
 or `missing`), and a managed skill with no `devboard-family` field belongs to `prepare`. The Skills
-panel lists both families with their family and Discover state, and every prepare-family row
-carries a Delete control that confirms before removing that one skill. Prepare Skills replaces only its
+page is one `data-testid="skills-table"` with a `data-testid="skill"` row per skill: a collapsed row
+shows the skill name and its description, a click or Enter expands it in place to the rendered
+document and its file path, and a second click collapses it. Both families appear, and every
+prepare-family row carries a Delete control that confirms before removing that one skill. Prepare
+Skills replaces only its
 own family, and its contradiction review covers its family plus hand-authored unmanaged skills, so
 a project-specific Discover directive cannot fail a project-agnostic preparation. Discover's
 generated baselines must agree with each other and with the glossary; a contradiction there fails
@@ -1898,7 +1939,7 @@ sends one settings command. The Devboard sidebar has two groups in order: `Backg
 `open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`,
 `open-devboard-coach`, `open-devboard-api-standards`, then `open-devboard-release-train`, badges
 `agent-state-<id>`, counts `agent-count-<id>`), and
-`Devboard sections` (the `devboard-tab` MCP tools entry). The Issues sidebar carries no
+`Devboard sections` (the `devboard-tab` MCP tools and Skills entries). The Issues sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
 queue.
@@ -1956,7 +1997,8 @@ the same Watchdog snapshot through the agent store.
 
 Directly below `agent-header`, before the alert region and `agent-main`, every background-agent
 page renders one prompt section `data-testid="agent-prompt"`. It is a `<details>` disclosure:
-closed on every page load, naming its summary `Prompt` (`agent-prompt-summary`), with all of its
+closed on every page load, its summary (`agent-prompt-summary`) carrying `Prompt`, the prompt
+file path as a mono code chip when the descriptor names one, and a chevron, with all of its
 content (`agent-prompt-body`) hidden until the operator opens it. A reload, tab restore, or
 reconnect renders it closed again; opening it changes no file and no agent state.
 
@@ -2687,31 +2729,41 @@ stopping worker to exit and only then spawns; if it still lives at the stop proo
 is refused with a message naming it instead of reporting it attached. Concurrent Starts share one
 preflight and spawn. Different repositories get independent workers.
 
-The poll is the GitHub issues endpoint through the operator's `gh` credential every 10 seconds,
+The poll is the origin's issues endpoint through the operator's forge credential every 10 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
 `Retry-After` or `X-RateLimit-Reset`. Each read has a 20-second deadline: a stalled `gh` is killed,
 the poll records the timeout in `poll.error`, and the next poll runs on schedule instead of
 leaving the loop blocked on the abandoned read. Pull requests returned by the endpoint are
-excluded, and every issue's labels are part of the poll result. Every open issue in the queue
-carries `handled`, the run id that last handled it, and `agentRunId` while an agent works it. An
-issue that already has a running agent never receives a second peer, so a poll while four peers
-run starts none of them again. An issue first seen while three peers run gets its own peer on the
-next poll without pausing, restarting, or shortening the others. A handled issue is never
-retriggered while it stays open; a closed issue leaves the ledger, so a reopened one is eligible
-again. A poll with no unhandled open issue starts no peer and publishes `idle`.
+excluded, and every issue's labels are part of the poll result. An issue that already has a
+running agent never receives a second peer, so a poll while four peers run starts none of them
+again. An issue first seen while three peers run gets its own peer on the next poll without
+pausing, restarting, or shortening the others. The worker's ledger records which issues a
+successful run already handled; it is bookkeeping that decides when a run may start, never a row
+or a count on any surface. A handled issue is never retriggered while it stays open; a closed issue
+leaves the ledger, so a reopened one is eligible again. A poll with no unhandled open issue starts
+no peer and publishes `idle`.
 
-The dashboard reads the tracker too, and that read never stops. While at least one client is
-connected it re-reads the origin's open issues every 30 seconds
+The Open issues list and every row's state come from one forge read: the dashboard's own read of
+the origin's open issues. While at least one client is connected it re-reads every 30 seconds
 (`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`) and immediately on connect, and publishes the result in the
-snapshot's `sync` field. The Open issues list uses the fresher of that read and the worker's last
-successful poll, so closing an issue in the forge removes it from the list within thirty seconds
-even when the worker is stopped, paused, or failing. A running issue that no longer appears is
-stopped: the dashboard sends one `abandon` command for that issue, the worker records its run
-`stopped` with no handled entry and no cooldown, and the issue stays out of the queue until a
-later read confirms it. A run younger than the read was never part of its answer, so it is
-neither hidden nor stopped; the next read covers it. With no connected client the dashboard makes
-no tracker call, and the worker's own poll still ends a run the moment it sees the issue leave the
-open list.
+snapshot's `sync` field. That read is the only source of a row: no worker state file, stopped
+worker's memory, or ledger entry adds, removes, or re-states one. The `processing` label is the
+one forge state that marks a run in progress: a running worker ensures the label exists, adds it
+to the issue before its peer starts, and removes it when the run finishes, fails, is abandoned, or
+stops. The pending count is every listed issue without that label; the running count is every
+listed issue with it, and the page badge, sidebar entry, overview `Queue` line, and status bar all
+read those numbers from the same queue. A failed read freezes the last successful answer and
+publishes its error in `sync.error`.
+
+A running issue that no longer appears in the dashboard's read is stopped: the dashboard sends one
+`abandon` command for that issue, and the worker records its run `stopped` with no handled entry
+and no cooldown. A live worker's own poll never changes the page's rows or counts, even when it
+lists a different set; only the dashboard's own fresh read does. With no connected client the
+dashboard makes no tracker call, and the worker's own poll still ends a run the moment it sees the
+issue leave the open list. Every running worker also reconciles the `processing` label against the
+repository's live claims: an open issue that carries the label with no live claim is repaired on
+the next poll, which covers a killed worker, a restarted dashboard, and an upgrade that leaves an
+older worker's state behind.
 
 That stop is a cancellation, never a completion. A run closes its own issue through
 `issue_close`, which records the closing run beside the issue's state under the worker's state
@@ -2782,8 +2834,9 @@ refused with that reason.
 Each agent has its own run directory, `run.json`, `activity.json`, first-stderr line, question,
 ACP child record, and retry gate keyed by issue number. No agent shares a run record or question
 slot with another. The published state carries `agents`, one entry per running issue with `runId`,
-`issueNumber`, `startedAt`, `question`, and `acp`; the queue carries each issue's `handled`, last
-handling `runId`, and `agentRunId`; and `cooldowns` maps an issue number to its ISO 8601 retry
+`issueNumber`, `startedAt`, `question`, and `acp`; the worker's own queue document carries each
+issue's `handled`, last handling `runId`, and `agentRunId` for its bookkeeping, never for the Open
+issues snapshot; and `cooldowns` maps an issue number to its ISO 8601 retry
 time. A failed agent finishes its run as `failed` with its first stderr line, leaves its issue
 open and unhandled, and writes only its own cooldown. A clean ACP turn is not proof of work: a
 refused slash command still ends the turn normally, so before a run can succeed the worker asks the
@@ -2824,7 +2877,13 @@ damaged state file is renamed aside and never prevents the mode from opening.
 
 The worker records the harness version it loaded, its pid, and its argv; a mismatched dashboard
 shows a notice and never kills the worker, and the state records each ACP child's pid, argv, and
-cwd so Stop or a fresh Start can terminate a proven orphan. The first worker to find no repo-keyed
+cwd so Stop or a fresh Start can terminate a proven orphan. The state also records why it stopped
+claiming work (`pauseSource: "operator"` for a Pause, `"drain"` for a newer version's takeover)
+and each run summary's owning `harnessVersion` and `workerPid`; both fields are optional, so a
+document from an earlier harness still loads, and a summary without them is attributed from its
+`run.json`. `workers/<version>/drain.json` records the dashboard's automatic drain for a worker
+whose harness predates the pause source; it is honoured only for the pid it names, so a later
+worker of the same version never inherits the drain. The first worker to find no repo-keyed
 ledger imports handled numbers from `<STATE_DIR>/orchestrator/state.json` and `ledger.json` when
 the legacy state parses and its `root` resolves to this `REPO_DIR`. A missing, damaged, or
 mismatched legacy file is ignored. The legacy files are otherwise left untouched.
@@ -2910,13 +2969,19 @@ The right column renders only the selected agent's output in
 `data-testid="issues-overview-activity"`, and its question in
 `data-testid="issues-overview-question"`. The first agent is selected by default, the row's select
 control switches the output, and the pane falls back to the first live agent when the selected run
-ends; the overview list selects instead of opening a tab. The queue keeps every open issue, its
-`goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
-active agent. The Runs page lists every run with its status and issue,
+ends; the overview list selects instead of opening a tab. The queue lists exactly the open issues the forge
+read returned, each with its `goal` badge and its `processing` state, and shows a running marker
+only for an issue whose labels carry `processing`; no handled badge, run id, or worker state adds a
+row or a marker. The Runs page lists every run with its status and issue,
 and a run's detail shows only that run's activity. The status bar's issues indicator reports the
-lifecycle and the running-agent count in its title, and activating it opens the Issues Overview
-from whichever Issues surface was open, so a click always lands on the automation state it
-reports.
+family's running work rather than an older member's drain: `issues working (N)` counts running
+agents across every attached worker, and neither the label nor its accessible name or title says
+`pausing` or `drain` while a newer worker takes over; an operator's Pause still reads
+`issues pausing`. Each running task names its owning worker's harness version on the Overview row,
+the Agents card, and the run detail, so granular version migration is visible at all times and a
+known version never reads `unknown`. Activating the indicator opens the
+Issues Overview from whichever Issues surface was open, so a click always lands on the automation
+state it reports.
 
 ## Draft goals and proposed goals
 
@@ -3041,9 +3106,9 @@ failure and any created issue URL. A successful completion removes the draft fro
 the spec under `.devboard/goals/`, and the next Issues poll lists the new open issue with its
 `goal` badge.
 
-The Open issues list shows every open issue with its `goal` badge and its handled state, from the
-dashboard's own 30-second tracker read while it is the fresher source, so an issue closed in the
-forge disappears there without waiting for the worker. Every
+The Open issues list shows exactly the open issues one forge read returns, each with its `goal`
+badge and its `processing` state, so an issue closed in the forge disappears there without waiting
+for the worker and the worker's own poll can never add, remove, or restate a row. Every
 open, unhandled issue gets its own concurrent peer: non-goal issues are prompted with exactly
 `/implement-issue <number>`, goal issues with exactly `/implement-goal-issue <number>`. Each has its
 own run record, activity, and question slot. The snapshot publishes
@@ -3398,10 +3463,10 @@ The client sends:
   at least one client is connected, the server forces a refresh and broadcasts a fresh
   `providersState` every 60 seconds; an idle server makes no provider call.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
-  lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, `handled`,
-  `runId`, and `agentRunId`, run summaries, the running `agents` (run id, issue number, startedAt,
-  question, ACP child), the per-issue `cooldowns` map, errors, and the harness version the worker
-  loaded. A missing state and no live lock answer `present: false`, `attached: false`, and
+  lifecycle, enabled, paused, repository, poll times, queue entries from the dashboard's forge read
+  with `labels` (and `handled: false`, `runId: null`, `agentRunId: null` because no worker state
+  supplies a row), run summaries, the running `agents` (run id, issue number, startedAt, question,
+  ACP child), the per-issue `cooldowns` map, errors, and the harness version the worker loaded. A missing state and no live lock answer `present: false`, `attached: false`, and
   `lifecycle: "stopped"`. A live worker from another harness version adds a non-blocking `notice`
   naming both versions. A connect also replays one `issuesActivity` with `replay: true` for every
   running agent; `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The

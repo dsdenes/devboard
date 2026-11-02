@@ -57,7 +57,7 @@ import {
   fileFeedbackIssue,
   parseFeedbackSubmission,
 } from "./feedback";
-import { FlowController, type FlowOptions } from "./flow";
+import { FlowController, type CheckoutBlocker, type FlowOptions } from "./flow";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { suggestGoalSlug } from "./goal-slug";
 import {
@@ -131,6 +131,7 @@ import {
   STATE_VERSION,
   terminateRecordedChildren,
   trimActivity,
+  writeFileAtomically,
   writeStateFile,
   type RecordedChild,
 } from "./state";
@@ -618,6 +619,8 @@ type ClientMessage =
   | { type: "getProject" }
   | { type: "getVersion" }
   | { type: "getMcpTools" }
+  | { type: "getInstalledSkills" }
+  | { type: "setInstalledSkillEnabled"; name?: unknown; enabled?: unknown }
   | { type: "getIssues" }
   | { type: "getIssuesRun"; runId?: unknown }
   | { type: "startIssues" }
@@ -735,6 +738,14 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getVersion" };
     case "getMcpTools":
       return { type: "getMcpTools" };
+    case "getInstalledSkills":
+      return { type: "getInstalledSkills" };
+    case "setInstalledSkillEnabled":
+      return {
+        type: "setInstalledSkillEnabled",
+        name: "name" in value ? value.name : undefined,
+        enabled: "enabled" in value ? value.enabled : undefined,
+      };
     case "getIssues":
       return { type: "getIssues" };
     case "getIssuesRun":
@@ -1357,6 +1368,108 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
   // skills only: a project-specific Discover directive cannot fail it.
   const contradictions = findContradictions([...prepare.values(), ...unmanaged.values()]);
   return { skills: summaries, managed, prepare, discover, unmanaged, errors, contradictions };
+}
+
+/** One installed skill and whether a fresh OMP session at the root loads it. */
+interface InstalledSkill {
+  name: string;
+  enabled: boolean;
+}
+
+/** The project-level settings file OMP reads at the repository root. */
+const PROJECT_SETTINGS_FILE = "settings.json";
+/** The OMP array of skill-name glob patterns a session must not load. */
+const SKILL_EXCLUSION_SETTING = "ignoredSkills";
+
+/**
+ * Every directory under the skills root OMP can load: a real directory or a
+ * symlink to one holding a readable `SKILL.md`. A name only the published
+ * Discover manifest carries contributes no row; the filesystem is the source.
+ */
+async function installedSkillNames(root: string): Promise<string[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (!(await skillEntryIsDirectory(root, entry))) continue;
+    if ((await readSkillAt(root, entry.name)) === undefined) continue;
+    names.push(entry.name);
+  }
+  names.sort((left, right) => left.localeCompare(right));
+  return names;
+}
+
+/**
+ * The project-level OMP settings document, or an empty one when the file does
+ * not exist. Every other key is returned untouched so a toggle never rewrites
+ * a setting this page does not own.
+ */
+async function readProjectSettings(path: string): Promise<Record<string, unknown>> {
+  let source: string;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  if (source.trim().length === 0) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    throw new Error("The project OMP settings are not valid JSON.");
+  }
+  const document = asObject(parsed);
+  if (document === undefined) {
+    throw new Error("The project OMP settings are not a JSON object.");
+  }
+  return document;
+}
+
+function projectIgnoredSkills(document: Record<string, unknown>): unknown[] {
+  const skills = asObject(document.skills);
+  if (skills === undefined) return [];
+  const ignored = skills[SKILL_EXCLUSION_SETTING];
+  return Array.isArray(ignored) ? ignored : [];
+}
+
+/**
+ * The array the setting takes when one skill toggles, or null when it already
+ * holds the requested state. Entries the dashboard did not write are kept as
+ * they are, so only the named skill changes.
+ */
+function nextIgnoredSkills(
+  current: readonly unknown[],
+  name: string,
+  enabled: boolean,
+): unknown[] | null {
+  if (enabled) {
+    if (!current.includes(name)) return null;
+    return current.filter((value) => value !== name);
+  }
+  if (current.includes(name)) return null;
+  return [...current, name];
+}
+
+async function writeSkillExclusion(path: string, name: string, enabled: boolean): Promise<void> {
+  const document = await readProjectSettings(path);
+  const skills = document.skills;
+  if (skills !== undefined && asObject(skills) === undefined) {
+    throw new Error("The project OMP skills setting is not an object.");
+  }
+  const ignored = asObject(skills)?.[SKILL_EXCLUSION_SETTING];
+  if (ignored !== undefined && !Array.isArray(ignored)) {
+    throw new Error("The project OMP skill exclusion is not an array.");
+  }
+  const next = nextIgnoredSkills(projectIgnoredSkills(document), name, enabled);
+  if (next === null) return;
+  document.skills = { ...(asObject(skills) ?? {}), [SKILL_EXCLUSION_SETTING]: next };
+  await writeFileAtomically(path, `${JSON.stringify(document, null, 2)}\n`);
 }
 
 function describeContradictions(
@@ -2082,6 +2195,9 @@ export function createApp(options: AppOptions) {
   // getGoal keeps using the configured goal file.
   const creationGoalFile = defaultGoalPath(repoDir);
   const skillsDir = join(repoDir, ".omp", "skills");
+  // OMP merges this project-level file into the settings a plain session reads
+  // at the repository root, so an exclusion here reaches every peer.
+  const projectSettingsPath = join(repoDir, ".omp", PROJECT_SETTINGS_FILE);
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
   // A draft name is chosen by an LLM; any failure falls back to the
   // deterministic slug inside `writeGoalProposal`.
@@ -2280,6 +2396,11 @@ export function createApp(options: AppOptions) {
   /** The run's checkout: a clone that never outlives the run that made it. */
   let remoteCheckout: { runId: string; dir: string; target: RemoteRepository } | null = null;
   let discoverCloning: { url: string; target: RemoteRepository } | null = null;
+  /**
+   * True between a finished clone and the run that takes its checkout. The
+   * gap crosses an await, so the checkout is owned even though no run exists.
+   */
+  let discoverStarting = false;
 
   /** True when both sides are absent or name the same lowercased owner/repo. */
   function sameRemoteTarget(
@@ -2299,6 +2420,7 @@ export function createApp(options: AppOptions) {
   function clearRemoteCheckout(): void {
     const checkout = remoteCheckout;
     remoteCheckout = null;
+    discoverStarting = false;
     if (checkout === null) return;
     try {
       rmSync(checkout.dir, { recursive: true, force: true });
@@ -2319,7 +2441,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     agentEnvironment: peerEnvironment,
     journal,
-    goalWorkActive: activeGoalWork,
+    checkoutBlocker: activeCheckoutBlocker,
     harnessVersion: runningVersion,
     instance,
     broadcast: (event) => broadcast(event),
@@ -3192,11 +3314,63 @@ export function createApp(options: AppOptions) {
     return undefined;
   }
 
-  /** Names the Goal Mode work Flow Mode would contend with, if any. */
-  function activeGoalWork(): string | undefined {
-    if (discoverCloning !== null) return "a repository clone";
-    if (remoteCheckout !== null) return "a repository checkout";
-    return goalWorkLabel() ?? (discoverRun === undefined ? undefined : "a Discover run");
+  /**
+   * Releases a remote checkout that no live Discover run, sequence, or clone
+   * owns. A checkout outlives its run only after a failure that skipped
+   * cleanup, and such a checkout must never keep another mode out.
+   */
+  function releaseOrphanedCheckout(): void {
+    if (remoteCheckout === null) return;
+    if (
+      discoverRun !== undefined ||
+      discoverAllActive ||
+      discoverCloning !== null ||
+      discoverStarting
+    ) {
+      return;
+    }
+    clearRemoteCheckout();
+    refreshDiscoverSnapshot();
+    broadcastDiscoverState();
+  }
+
+  /**
+   * Names the mode that holds the checkout and the exact sentence Flow Mode
+   * prints. A Discover checkout or clone carries its project so the operator
+   * knows which run to stop; Goal Mode keeps its own work label.
+   */
+  function activeCheckoutBlocker(): CheckoutBlocker | undefined {
+    releaseOrphanedCheckout();
+    if (discoverCloning !== null) {
+      const target = discoverCloning.target;
+      return {
+        label: `Discover is active on ${target.owner}/${target.repo} (a repository clone)`,
+        start: "Stop it in Discover before starting Flow work.",
+        merge: "Stop it in Discover before starting Flow work.",
+      };
+    }
+    if (remoteCheckout !== null) {
+      const target = remoteCheckout.target;
+      return {
+        label: `Discover is active on ${target.owner}/${target.repo} (a repository checkout)`,
+        start: "Stop it in Discover before starting Flow work.",
+        merge: "Stop it in Discover before starting Flow work.",
+      };
+    }
+    if (discoverRun !== undefined || discoverAllActive) {
+      return {
+        label: "Discover is active (a Discover run)",
+        start: "Stop it in Discover before starting Flow work.",
+        merge: "Stop it in Discover before starting Flow work.",
+      };
+    }
+    const work = goalWorkLabel();
+    if (work === undefined) return undefined;
+    return {
+      label: `Goal Mode is active (${work})`,
+      start: "Stop it before starting Flow work.",
+      merge: "Stop it before merging the Flow pull request.",
+    };
   }
 
   /** What blocks a Discover start, as a sentence the control shows verbatim. */
@@ -3481,13 +3655,15 @@ export function createApp(options: AppOptions) {
 
     discoverCloning = null;
     remoteCheckout = { runId, dir: staging, target };
+    // The next call takes this checkout; no mode may release it in between.
+    discoverStarting = true;
     broadcastDiscoverState();
     return true;
   }
 
   /** True while one agent or a Run all sequence holds the Discover gate. */
   function discoverActive(): boolean {
-    return discoverRun !== undefined || discoverAllActive;
+    return discoverRun !== undefined || discoverAllActive || discoverStarting;
   }
 
   /** The root and project name one command runs against, cloning first if needed. */
@@ -3522,7 +3698,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "Run all is active. Wait for it to finish or stop it.");
       return true;
     }
-    if (discoverRun !== undefined) {
+    if (discoverStarting || discoverRun !== undefined) {
       discoverFailure(ws, "A Discover run is already active.");
       return true;
     }
@@ -3569,6 +3745,15 @@ export function createApp(options: AppOptions) {
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      // The run never began, so nothing owns its checkout. Release it now
+      // rather than letting it block Flow Mode or a later target change.
+      if (remote !== undefined) {
+        discoverStarting = false;
+        discoverAllActive = false;
+        clearRemoteCheckout();
+        refreshDiscoverSnapshot();
+        broadcastDiscoverState();
+      }
       return false;
     }
 
@@ -3595,6 +3780,7 @@ export function createApp(options: AppOptions) {
       error: null,
     });
     discoverRun = run;
+    discoverStarting = false;
     discoverInterrupted = false;
     journal.write("lifecycle", "discover-start");
     broadcast({ type: "discoverStarted", runId, startedAt, agent: id, mode });
@@ -3807,8 +3993,12 @@ export function createApp(options: AppOptions) {
   }
 
   /** Runs the seven agents in the fixed order, publishing each slice as it lands. */
-  async function startDiscoverAll(ws: { send(data: string): unknown }): Promise<void> {
-    if (discoverStartRefusal(ws)) return;
+  async function startDiscoverAll(
+    ws: { send(data: string): unknown },
+    /** The caller already cloned and owns this checkout; skip the start gate. */
+    claimed = false,
+  ): Promise<void> {
+    if (!claimed && discoverStartRefusal(ws)) return;
     const target = await discoverRoot(ws);
     if (target === null) return;
     resetDiscoverStatuses();
@@ -3909,7 +4099,13 @@ export function createApp(options: AppOptions) {
     }
     if (!(await cloneRemoteProject(ws, parsed.repository))) return;
     if (resumed !== undefined) {
-      if (!isDiscoverAgentId(resumed.agent)) return;
+      if (!isDiscoverAgentId(resumed.agent)) {
+        // Nothing will run on this checkout, so it must not outlive the call.
+        clearRemoteCheckout();
+        refreshDiscoverSnapshot();
+        broadcastDiscoverState();
+        return;
+      }
       const target = await discoverRoot(ws);
       if (target === null) return;
       const published = await runDiscoverAgent(
@@ -3923,7 +4119,7 @@ export function createApp(options: AppOptions) {
       return;
     }
     // A repository URL discovers the whole project: Run all, once.
-    await startDiscoverAll(ws);
+    await startDiscoverAll(ws, true);
   }
 
   /** The retained project a submitted URL names, by lowercased owner/repo. */
@@ -3962,6 +4158,8 @@ export function createApp(options: AppOptions) {
   /** Switches to a retained project without cloning, crawling, or networking. */
   function switchDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
     if (remoteUnavailable(ws)) return;
+    // A checkout no run owns must not survive a target change.
+    releaseOrphanedCheckout();
     if (remoteChangeRefusal(ws, "switching projects")) return;
     const retained = retainedProjectFor(url);
     if (retained === null) {
@@ -3977,6 +4175,8 @@ export function createApp(options: AppOptions) {
   /** Deletes exactly one retained project, returning to the host when it was active. */
   function removeDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
     if (remoteUnavailable(ws)) return;
+    // A checkout no run owns must not survive a target change.
+    releaseOrphanedCheckout();
     if (remoteChangeRefusal(ws, "removing a project")) return;
     const retained = retainedProjectFor(url);
     if (retained === null) {
@@ -4003,6 +4203,8 @@ export function createApp(options: AppOptions) {
   /** Returns the Overview to this checkout's own published artifacts. */
   function clearDiscoverRemote(ws: { send(data: string): unknown }) {
     if (remoteUnavailable(ws)) return;
+    // A checkout no run owns must not survive a target change.
+    releaseOrphanedCheckout();
     if (discoverCloning !== null) {
       discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
       return;
@@ -4480,6 +4682,70 @@ export function createApp(options: AppOptions) {
         type: "error",
         message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
       });
+    }
+  }
+
+  /** Every installed skill with the state a fresh OMP session at the root sees. */
+  async function readInstalledSkills(): Promise<InstalledSkill[]> {
+    const document = await readProjectSettings(projectSettingsPath);
+    const patterns = projectIgnoredSkills(document).filter(
+      (value): value is string => typeof value === "string",
+    );
+    const names = await installedSkillNames(skillsDir);
+    return names.map((name) => ({
+      name,
+      enabled: !patterns.some((pattern) => new Bun.Glob(pattern).match(name)),
+    }));
+  }
+
+  async function sendInstalledSkills(target: { send(data: string): unknown }): Promise<void> {
+    try {
+      send(target, { type: "installedSkills", skills: await readInstalledSkills() });
+    } catch (error) {
+      send(target, {
+        type: "error",
+        message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  /**
+   * Adds or removes one installed skill's name in the project-level OMP
+   * exclusion. The skill's bytes are never touched, and no run is started,
+   * stopped, or altered: sessions started afterwards read the new setting.
+   */
+  async function setInstalledSkillEnabled(
+    target: { send(data: string): unknown },
+    name: unknown,
+    enabled: unknown,
+  ): Promise<void> {
+    if (typeof name !== "string" || typeof enabled !== "boolean") {
+      send(target, { type: "error", message: "A skill change needs its name and enabled value." });
+      return;
+    }
+    if (!SKILL_NAME_PATTERN.test(name) || name.length > SKILL_NAME_MAX) {
+      send(target, { type: "error", message: "Choose an installed skill to change." });
+      return;
+    }
+
+    try {
+      const names = await installedSkillNames(skillsDir);
+      if (!names.includes(name)) {
+        send(target, { type: "error", message: `No skill named "${name}" is installed.` });
+        await sendInstalledSkills(target);
+        return;
+      }
+      await writeSkillExclusion(projectSettingsPath, name, enabled);
+      const skills = await readInstalledSkills();
+      // No run holds this state, so every client gets the authoritative rows
+      // without persisting dashboard state or disturbing an active run.
+      sendAll({ type: "installedSkills", skills });
+    } catch (error) {
+      send(target, {
+        type: "error",
+        message: `Could not save the skill setting: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      await sendInstalledSkills(target);
     }
   }
 
@@ -7317,6 +7583,7 @@ export function createApp(options: AppOptions) {
           command.type === "getProject" ||
           command.type === "getVersion" ||
           command.type === "getMcpTools" ||
+          command.type === "getInstalledSkills" ||
           command.type === "getIssues" ||
           command.type === "getIssuesRun" ||
           command.type === "getGoalDrafts" ||
@@ -7350,6 +7617,10 @@ export function createApp(options: AppOptions) {
               tools: catalog.tools,
               invocations: toolInvocationCounts(stateDir, repoDir),
             });
+          } else if (command.type === "getInstalledSkills") {
+            await sendInstalledSkills(ws);
+          } else if (command.type === "setInstalledSkillEnabled") {
+            await setInstalledSkillEnabled(ws, command.name, command.enabled);
           } else if (command.type === "getIssues") {
             issues.replay(ws);
           } else if (command.type === "getIssuesRun") {

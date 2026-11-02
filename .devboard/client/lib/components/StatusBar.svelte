@@ -4,6 +4,7 @@
   import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
   import { issues } from "../issues.svelte";
+  import { issuesIndicatorTitle, issuesLabel as issuesLabelFor } from "../issues-label";
   import { layout } from "../layout.svelte";
   import { osNotifications } from "../os-notifications.svelte";
   import { providers } from "../providers.svelte";
@@ -33,26 +34,19 @@
     return segments[segments.length - 1] ?? path;
   });
 
-  const issuesLabel = $derived.by(() => {
-    const pending = issues.pending;
-    if (issues.lifecycle === "running") return `issues working (${issues.agents.length})`;
-    if (issues.lifecycle === "pausing") return "issues pausing";
-    if (issues.lifecycle === "paused") return "issues paused";
-    if (issues.lifecycle === "failed") return "issues failed";
-    if (issues.enabled) return pending > 0 ? `issues idle (${pending})` : "issues idle";
-    return "issues stopped";
-  });
+  const issuesLabel = $derived(
+    issuesLabelFor(issues.lifecycle, issues.agents.length, issues.pending),
+  );
 
-  const issuesTitle = $derived.by(() => {
-    const repo = issues.repo ?? "this checkout";
-    const detail =
-      issues.lifecycle === "failed" && issues.snapshot?.lastError !== null
-        ? ` · ${issues.snapshot?.lastError}`
-        : issues.snapshot?.worker === null || issues.snapshot?.worker === undefined
-          ? ""
-          : ` · worker pid ${issues.snapshot.worker.pid}`;
-    return `Issues automation for ${repo} · ${issues.lifecycle} · ${issues.agents.length} running agent(s)${detail}`;
-  });
+  const issuesTitle = $derived(
+    issuesIndicatorTitle({
+      repo: issues.repo,
+      lifecycle: issues.lifecycle,
+      agents: issues.agents.length,
+      workerPid: issues.snapshot?.worker?.pid ?? null,
+      lastError: issues.snapshot?.lastError ?? null,
+    }),
+  );
 
   const versions = $derived(
     `running ${connection.version?.running ?? "unknown"} · installed ${

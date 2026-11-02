@@ -1,12 +1,31 @@
 import { afterAll, describe, expect, test, vi } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { IssuesBridge } from "./issues";
 import { acquireLock, versionLockPath } from "../issues/lock";
-import { controlDirectory, lockPath, statePath } from "../issues/paths";
+import {
+  controlDirectory,
+  drainMarkerPath,
+  ledgerPath,
+  lockPath,
+  runsDirectory,
+  statePath,
+  versionedStatePath,
+} from "../issues/paths";
+import { writeLedger } from "../issues/ledger";
+import {
+  emptyState,
+  readState,
+  writeState,
+  type IssuesAgent,
+  type IssuesIssue,
+  type IssuesState,
+} from "../issues/state";
+import { writeDrainMarker } from "../issues/control";
 import { recordClosedByRun } from "../issues/self-close";
-import { emptyState, readState, writeState, type IssuesAgent, type IssuesIssue } from "../issues/state";
 import { GITLAB_TRACKER_UNSUPPORTED } from "../issues/tracker";
+import { queueCounts } from "../client/lib/issues-queue";
 import { createdDirectories, temporaryDirectory } from "../tests/fixtures/scout-helpers";
 
 afterAll(async () => {
@@ -554,13 +573,13 @@ describe("issues bridge commands", () => {
   });
 });
 
-function issue(number: number): IssuesIssue {
+function issue(number: number, labels: string[] = []): IssuesIssue {
   return {
     number,
     title: `Issue ${number}`,
     url: `https://gitea.test/acme/fixture/issues/${number}`,
     createdAt: "2026-10-29T00:00:00Z",
-    labels: [],
+    labels,
   };
 }
 
@@ -611,8 +630,8 @@ describe("dashboard tracker sync", () => {
     await writeState(statePath(stateDir, root), {
       ...emptyState({ repo: "acme/fixture", root }),
       queue: [
-        { ...issue(1), handled: false, runId: null, agentRunId: null },
-        { ...issue(2), handled: false, runId: null, agentRunId: null },
+        { ...issue(5), handled: false, runId: null, agentRunId: null },
+        { ...issue(7), handled: false, runId: null, agentRunId: null },
       ],
     });
     const subject = new IssuesBridge({
@@ -625,12 +644,15 @@ describe("dashboard tracker sync", () => {
       send: () => undefined,
       pollMs: 60_000,
       spawnWorker: () => undefined,
-      syncRead: async () => ({ kind: "issues", issues: [], etag: null }),
+      // Gitea has since closed #5; only #7 is open.
+      syncRead: async () => ({ kind: "issues", issues: [issue(7)], etag: null }),
     });
     try {
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([1, 2]);
-      await subject.syncNow();
+      // Before any read the page has no forge answer, never a worker's list.
       expect(subject.snapshot().queue).toEqual([]);
+      await subject.syncNow();
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([7]);
+      expect(queueCounts(subject.snapshot().queue)).toEqual({ pending: 1, working: 0 });
       expect(subject.snapshot().sync.lastSyncAt).not.toBeNull();
       expect(subject.snapshot().sync.error).toBeNull();
       expect(await controlCommands(stateDir, root)).toEqual([]);
@@ -654,12 +676,9 @@ describe("dashboard tracker sync", () => {
       const snapshot = subject.snapshot();
       expect(snapshot.attached).toBe(false);
       expect(snapshot.agents).toEqual([]);
-      // Handled and last-run markers are history; a running marker is not, so
-      // it survives only while a live worker owns the state.
-      expect(snapshot.queue).toEqual([
-        { ...issue(5), handled: false, runId: null, agentRunId: null },
-        { ...issue(6), handled: true, runId: "run-4", agentRunId: null },
-      ]);
+      // A stopped worker's queue supplies no row, handled marker, or run id;
+      // only a fresh forge read can list an issue.
+      expect(snapshot.queue).toEqual([]);
     } finally {
       subject.dispose();
     }
@@ -691,14 +710,14 @@ describe("dashboard tracker sync", () => {
       await subject.syncNow();
       expect(subject.snapshot().queue).toEqual([
         { ...issue(5), handled: false, runId: null, agentRunId: null },
-        { ...issue(6), handled: true, runId: "run-4", agentRunId: null },
+        { ...issue(6), handled: false, runId: null, agentRunId: null },
       ]);
     } finally {
       subject.dispose();
     }
   });
 
-  test("an attached worker's running markers survive the dashboard's open list", async () => {
+  test("an attached worker's running markers never overrule the forge read", async () => {
     const root = await temporaryDirectory("issues-sync-live-marker-list");
     const stateDir = join(root, "state");
     const lock = acquireLock(lockPath(root), {
@@ -732,8 +751,9 @@ describe("dashboard tracker sync", () => {
       const snapshot = subject.snapshot();
       expect(snapshot.attached).toBe(true);
       expect(snapshot.queue).toEqual([
-        { ...issue(5), handled: false, runId: null, agentRunId: "run-5" },
+        { ...issue(5), handled: false, runId: null, agentRunId: null },
       ]);
+      expect(queueCounts(snapshot.queue)).toEqual({ pending: 1, working: 0 });
     } finally {
       subject.dispose();
       lock.release();
@@ -916,7 +936,8 @@ describe("dashboard tracker sync", () => {
     });
     try {
       await subject.syncNow();
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([5, 6]);
+      // The younger run is never added back: the read lists the whole queue.
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([6]);
       expect(await controlCommands(stateDir, root)).toEqual([]);
     } finally {
       subject.dispose();
@@ -924,7 +945,7 @@ describe("dashboard tracker sync", () => {
     }
   });
 
-  test("a worker poll that started after the dashboard read keeps its running issue", async () => {
+  test("a worker poll that started after the dashboard read changes no row", async () => {
     const root = await temporaryDirectory("issues-sync-worker-newer");
     const stateDir = join(root, "state");
     const lock = acquireLock(lockPath(root), {
@@ -961,15 +982,18 @@ describe("dashboard tracker sync", () => {
     });
     try {
       await subject.syncNow();
+      // The worker's newer poll and its running marker decide nothing: the
+      // dashboard's own read is the only list, and no run is abandoned.
       expect(await controlCommands(stateDir, root)).toEqual([]);
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([5]);
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([6]);
+      expect(subject.snapshot().queue.every((entry) => entry.agentRunId === null)).toBe(true);
     } finally {
       subject.dispose();
       lock.release();
     }
   });
 
-  test("a worker poll that started after the read keeps the worker queue", async () => {
+  test("a worker poll that started after the read loses to the dashboard's own list", async () => {
     const root = await temporaryDirectory("issues-sync-worker-queue");
     const stateDir = join(root, "state");
     const lock = acquireLock(lockPath(root), {
@@ -983,7 +1007,7 @@ describe("dashboard tracker sync", () => {
     await writeState(statePath(stateDir, root), {
       ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" }),
       enabled: true,
-      queue: [{ ...issue(7), handled: false, runId: null, agentRunId: null }],
+      queue: [],
     });
     const subject = new IssuesBridge({
       repoDir: root,
@@ -1004,19 +1028,62 @@ describe("dashboard tracker sync", () => {
     try {
       await subject.syncNow();
       expect(subject.snapshot().sync.lastSyncAt).not.toBeNull();
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([7]);
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([6]);
+      expect(subject.snapshot().queue.every((entry) => entry.agentRunId === null)).toBe(true);
     } finally {
       subject.dispose();
       lock.release();
     }
   });
 
-  test("a read failure keeps the worker's queue and publishes the error", async () => {
+  test("a failed read freezes the last answer and publishes the error", async () => {
     const root = await temporaryDirectory("issues-sync-failed");
     const stateDir = join(root, "state");
     await writeState(statePath(stateDir, root), {
       ...emptyState({ repo: "acme/fixture", root }),
       queue: [{ ...issue(1), handled: false, runId: null, agentRunId: null }],
+    });
+    let calls = 0;
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => {
+        calls += 1;
+        return calls === 1
+          ? { kind: "issues", issues: [issue(3), issue(4, ["processing"])], etag: null }
+          : { kind: "error", detail: "HTTP 502" };
+      },
+    });
+    try {
+      await subject.syncNow();
+      const success = subject.snapshot();
+      expect(queueCounts(success.queue)).toEqual({ pending: 1, working: 1 });
+      await subject.syncNow();
+      const failed = subject.snapshot();
+      expect(failed.queue).toEqual(success.queue);
+      expect(queueCounts(failed.queue)).toEqual({ pending: 1, working: 1 });
+      expect(failed.sync.error).toBe("HTTP 502");
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("processing is the forge label and nothing else marks a row running", async () => {
+    const root = await temporaryDirectory("issues-sync-processing");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" }),
+      enabled: true,
+      // A worker's own run marker and an empty label list decide nothing.
+      agents: [runningAgent(3, "run-3")],
+      queue: [{ ...issue(3), handled: false, runId: null, agentRunId: "run-3" }],
     });
     const subject = new IssuesBridge({
       repoDir: root,
@@ -1028,12 +1095,52 @@ describe("dashboard tracker sync", () => {
       send: () => undefined,
       pollMs: 60_000,
       spawnWorker: () => undefined,
-      syncRead: async () => ({ kind: "error", detail: "HTTP 502" }),
+      syncRead: async () => ({
+        kind: "issues",
+        issues: [issue(3, ["processing"]), issue(4)],
+        etag: null,
+      }),
     });
     try {
       await subject.syncNow();
-      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([1]);
-      expect(subject.snapshot().sync.error).toBe("HTTP 502");
+      const queue = subject.snapshot().queue;
+      expect(queue.find((entry) => entry.number === 3)?.labels).toContain("processing");
+      expect(queue.find((entry) => entry.number === 3)?.agentRunId).toBeNull();
+      expect(queueCounts(queue)).toEqual({ pending: 1, working: 1 });
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("a ledger entry decides no row, no marker, and no count", async () => {
+    const root = await temporaryDirectory("issues-sync-ledger");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root }),
+      queue: [{ ...issue(8), handled: true, runId: "run-8", agentRunId: null }],
+    });
+    writeLedger(stateDir, root, {
+      version: 1,
+      handled: { "8": { number: 8, runId: "run-8", at: "2026-10-29T00:00:00Z" } },
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [issue(8)], etag: null }),
+    });
+    try {
+      await subject.syncNow();
+      const queue = subject.snapshot().queue;
+      expect(queue).toEqual([{ ...issue(8), handled: false, runId: null, agentRunId: null }]);
+      expect(queueCounts(queue)).toEqual({ pending: 1, working: 0 });
+      expect(readFileSync(ledgerPath(stateDir, root), "utf8")).toContain("run-8");
     } finally {
       subject.dispose();
     }
@@ -1136,4 +1243,377 @@ describe("dashboard tracker sync", () => {
       subject.dispose();
     }
   });
+});
+
+describe("issues bridge family view", () => {
+  const OLD = "0.1.900";
+  const NEW = "0.2.0";
+
+  /** The kernel's start instant, exactly as the lock's owner check reads it. */
+  function processStartedAt(pid: number): string {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(")");
+    const ticks = Number(stat.slice(close + 2).split(" ")[19]);
+    const uptime = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+    return new Date(Date.now() - uptime * 1000 + ticks * 10).toISOString();
+  }
+
+  /** Two distinct live pids, so two owners never collapse into one state. */
+  async function liveProcess(): Promise<{
+    pid: number;
+    startedAt: string;
+    stop: () => void;
+  }> {
+    const child = Bun.spawn({
+      cmd: [process.execPath, "-e", "setTimeout(() => undefined, 60000)"],
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        readFileSync(`/proc/${child.pid}/stat`, "utf8");
+        break;
+      } catch {
+        if (Date.now() > deadline) throw new Error("the fixture process never started");
+        await Bun.sleep(20);
+      }
+    }
+    return {
+      pid: child.pid,
+      startedAt: processStartedAt(child.pid),
+      stop: () => child.kill("SIGKILL"),
+    };
+  }
+
+  async function writeLiveLock(
+    path: string,
+    owner: { pid: number; startedAt: string; harnessVersion: string; stateDir: string },
+    repo: string,
+  ): Promise<void> {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify({ ...owner, repo, argv: [] }));
+  }
+
+  async function writeRunRecord(
+    stateDir: string,
+    repo: string,
+    runId: string,
+    issueNumber: number,
+    version: string,
+    workerPid: number,
+    status: "running" | "succeeded",
+  ): Promise<void> {
+    const directory = join(runsDirectory(stateDir, repo), runId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "run.json"),
+      JSON.stringify({
+        version: 1,
+        runId,
+        repo: "acme/fixture",
+        status,
+        argv: ["omp", "acp"],
+        cwd: repo,
+        startedAt: "2026-10-27T10:00:00.000Z",
+        finishedAt: status === "running" ? null : "2026-10-27T10:01:00.000Z",
+        exitCode: status === "running" ? null : 0,
+        issues: [
+          {
+            number: issueNumber,
+            title: `Fixture issue ${issueNumber}`,
+            url: `https://github.com/acme/fixture/issues/${issueNumber}`,
+            createdAt: "2026-10-20T00:00:00Z",
+            labels: [],
+          },
+        ],
+        firstStderrLine: null,
+        workerPid,
+        harnessVersion: version,
+      }),
+    );
+  }
+
+  function ownerState(options: {
+    root: string;
+    stateDir: string;
+    version: string;
+    pid: number;
+    startedAt: string;
+    lifecycle: "running" | "pausing";
+    paused: boolean;
+    pauseSource?: "operator" | "drain" | null;
+    runId: string;
+    issueNumber: number;
+    lastPollAt: string;
+    summaryVersion?: string | null;
+  }): IssuesState {
+    const agent: IssuesAgent = {
+      runId: options.runId,
+      issueNumber: options.issueNumber,
+      startedAt: "2026-10-27T10:00:00.000Z",
+      question: null,
+      acp: null,
+    };
+    const state: IssuesState = {
+      ...emptyState({ repo: "acme/fixture", root: options.root }),
+      lifecycle: options.lifecycle,
+      enabled: true,
+      paused: options.paused,
+      worker: {
+        pid: options.pid,
+        startedAt: options.startedAt,
+        stateDir: options.stateDir,
+        harnessVersion: options.version,
+        argv: ["bun", "issues/worker.ts"],
+      },
+      poll: {
+        intervalMs: 10_000,
+        lastPollAt: options.lastPollAt,
+        nextPollAt: null,
+        etag: null,
+        notModified: false,
+        rateLimitedUntil: null,
+        error: null,
+      },
+      queue: [
+        {
+          number: options.issueNumber,
+          title: `Fixture issue ${options.issueNumber}`,
+          url: `https://github.com/acme/fixture/issues/${options.issueNumber}`,
+          createdAt: "2026-10-20T00:00:00Z",
+          labels: [],
+          handled: false,
+          runId: null,
+          agentRunId: options.runId,
+        },
+      ],
+      runs: [
+        {
+          runId: options.runId,
+          status: "running",
+          startedAt: "2026-10-27T10:00:00.000Z",
+          finishedAt: null,
+          exitCode: null,
+          issueNumbers: [options.issueNumber],
+          activity: 1,
+          firstStderrLine: null,
+          ...(options.summaryVersion === undefined
+            ? {}
+            : { harnessVersion: options.summaryVersion }),
+        },
+      ],
+      agents: [agent],
+      updatedAt: options.lastPollAt,
+    };
+    if (options.pauseSource === undefined) delete state.pauseSource;
+    else state.pauseSource = options.pauseSource;
+    return state;
+  }
+
+  test("a draining older worker is the family's running work, not its pause", async () => {
+    const root = await temporaryDirectory("issues-family-repo");
+    const stateDir = join(root, "state");
+    const oldWorker = await liveProcess();
+    const newWorker = await liveProcess();
+    const subject = bridge(root, stateDir);
+    try {
+      const oldRun = "2026-10-27T10-00-01-000Z";
+      const newRun = "2026-10-27T10-00-02-000Z";
+      // The older document predates the pause source and the run summary's
+      // version: only the run record and the dashboard's marker can tell this
+      // pause was a takeover.
+      writeState(
+        versionedStatePath(stateDir, root, OLD),
+        ownerState({
+          root,
+          stateDir,
+          version: OLD,
+          pid: oldWorker.pid,
+          startedAt: oldWorker.startedAt,
+          lifecycle: "pausing",
+          paused: true,
+          runId: oldRun,
+          issueNumber: 17,
+          lastPollAt: "2026-10-27T09:59:00.000Z",
+        }),
+      );
+      writeState(
+        versionedStatePath(stateDir, root, NEW),
+        ownerState({
+          root,
+          stateDir,
+          version: NEW,
+          pid: newWorker.pid,
+          startedAt: newWorker.startedAt,
+          lifecycle: "running",
+          paused: false,
+          pauseSource: null,
+          runId: newRun,
+          issueNumber: 18,
+          lastPollAt: "2026-10-27T10:00:30.000Z",
+          summaryVersion: NEW,
+        }),
+      );
+      await writeRunRecord(stateDir, root, oldRun, 17, OLD, oldWorker.pid, "running");
+      await writeRunRecord(stateDir, root, newRun, 18, NEW, newWorker.pid, "running");
+      writeDrainMarker(drainMarkerPath(stateDir, root, OLD), {
+        version: OLD,
+        pid: oldWorker.pid,
+        by: NEW,
+        at: "2026-10-27T10:00:20.000Z",
+      });
+      await writeLiveLock(
+        versionLockPath(lockPath(root), OLD),
+        { pid: oldWorker.pid, startedAt: oldWorker.startedAt, harnessVersion: OLD, stateDir },
+        root,
+      );
+      await writeLiveLock(
+        versionLockPath(lockPath(root), NEW),
+        { pid: newWorker.pid, startedAt: newWorker.startedAt, harnessVersion: NEW, stateDir },
+        root,
+      );
+
+      const takeover = subject.snapshot();
+      expect(takeover.attached).toBe(true);
+      expect(takeover.lifecycle).toBe("running");
+      expect(takeover.paused).toBe(false);
+      expect(
+        takeover.workers.map((worker) => worker.version).sort(),
+      ).toEqual([OLD, NEW]);
+      expect(takeover.poll?.lastPollAt).toBe("2026-10-27T10:00:30.000Z");
+      expect(
+        takeover.agents.map((agent) => [agent.issueNumber, agent.harnessVersion]),
+      ).toEqual([
+        [17, OLD],
+        [18, NEW],
+      ]);
+      expect(takeover.runs.find((run) => run.runId === oldRun)?.harnessVersion).toBe(OLD);
+      expect(takeover.runs.find((run) => run.runId === oldRun)?.status).toBe("running");
+      // No forge read ran, so the page lists nothing from worker state.
+      expect(takeover.queue).toEqual([]);
+
+      // The older worker retires: its tasks and runs stay readable with their
+      // version, the live list drops it, and only the newer version runs.
+      await rm(versionLockPath(lockPath(root), OLD), { force: true });
+      const retired = subject.snapshot();
+      expect(retired.workers.map((worker) => worker.version)).toEqual([NEW]);
+      expect(retired.agents.map((agent) => agent.issueNumber)).toEqual([18]);
+      expect(retired.runs.find((run) => run.runId === oldRun)?.harnessVersion).toBe(OLD);
+    } finally {
+      subject.dispose();
+      oldWorker.stop();
+      newWorker.stop();
+      await rm(lockPath(root), { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("a stopped version's queue never reappears as pending", async () => {
+    const root = await temporaryDirectory("issues-family-stopped-queue-repo");
+    const stateDir = join(root, "state");
+    const worker = await liveProcess();
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: NEW,
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      now: readClock("2026-10-27T10:00:00.000Z", "2026-10-27T10:00:10.000Z"),
+      syncRead: async () => ({ kind: "issues", issues: [issue(20)], etag: null }),
+    });
+    try {
+      writeState(
+        versionedStatePath(stateDir, root, NEW),
+        ownerState({
+          root,
+          stateDir,
+          version: NEW,
+          pid: worker.pid,
+          startedAt: worker.startedAt,
+          lifecycle: "running",
+          paused: false,
+          runId: "2026-10-27T10-00-00-000Z",
+          issueNumber: 20,
+          lastPollAt: "2026-10-27T10:00:05.000Z",
+        }),
+      );
+      // A retired version keeps the open list of its last read on disk. Those
+      // rows are history: only the dashboard's own forge read publishes rows.
+      writeState(versionedStatePath(stateDir, root, OLD), {
+        ...emptyState({ repo: "acme/fixture", root }),
+        lifecycle: "stopped",
+        enabled: false,
+        worker: {
+          pid: 999_999,
+          startedAt: "2026-10-27T09:00:00.000Z",
+          stateDir,
+          harnessVersion: OLD,
+          argv: [],
+        },
+        queue: [
+          { ...issue(9), handled: false, runId: null, agentRunId: null },
+          { ...issue(20), handled: false, runId: null, agentRunId: null },
+        ],
+      });
+      await writeLiveLock(
+        versionLockPath(lockPath(root), NEW),
+        { pid: worker.pid, startedAt: worker.startedAt, harnessVersion: NEW, stateDir },
+        root,
+      );
+
+      await subject.syncNow();
+      const snapshot = subject.snapshot();
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.queue.map((entry) => entry.number)).toEqual([20]);
+    } finally {
+      subject.dispose();
+      worker.stop();
+      await rm(lockPath(root), { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("an operator's Pause still reads as pausing", async () => {
+    const root = await temporaryDirectory("issues-family-pause-repo");
+    const stateDir = join(root, "state");
+    const worker = await liveProcess();
+    const subject = bridge(root, stateDir);
+    try {
+      const runId = "2026-10-27T10-00-03-000Z";
+      writeState(
+        versionedStatePath(stateDir, root, NEW),
+        ownerState({
+          root,
+          stateDir,
+          version: NEW,
+          pid: worker.pid,
+          startedAt: worker.startedAt,
+          lifecycle: "pausing",
+          paused: true,
+          pauseSource: "operator",
+          runId,
+          issueNumber: 19,
+          lastPollAt: "2026-10-27T10:00:00.000Z",
+        }),
+      );
+      await writeRunRecord(stateDir, root, runId, 19, NEW, worker.pid, "running");
+      await writeLiveLock(
+        versionLockPath(lockPath(root), NEW),
+        { pid: worker.pid, startedAt: worker.startedAt, harnessVersion: NEW, stateDir },
+        root,
+      );
+      const paused = subject.snapshot();
+      expect(paused.lifecycle).toBe("pausing");
+      expect(paused.paused).toBe(true);
+      expect(paused.agents.map((agent) => agent.harnessVersion)).toEqual([NEW]);
+    } finally {
+      subject.dispose();
+      worker.stop();
+      await rm(lockPath(root), { recursive: true, force: true });
+    }
+  }, 20_000);
 });

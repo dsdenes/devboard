@@ -1,5 +1,5 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isInteger, isRecord } from "./guards";
 
 /**
@@ -20,6 +20,43 @@ export type IssuesCommand =
   | { type: "abandon"; number: number };
 
 let sequence = 0;
+
+/**
+ * A dashboard's record that it drained one worker on purpose: a newer harness
+ * version owns new work. The worker's own state says it paused; this marker is
+ * what lets the aggregate view tell that automatic drain from an operator's
+ * Pause, including for a worker whose harness predates the pause source.
+ */
+export interface DrainMarker {
+  version: string | null;
+  pid: number;
+  by: string | null;
+  at: string;
+}
+
+export function writeDrainMarker(path: string, marker: DrainMarker): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(marker, null, 2)}\n`);
+  renameSync(temporary, path);
+}
+
+export function readDrainMarker(path: string): DrainMarker | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!isRecord(parsed) || !isInteger(parsed.pid) || typeof parsed.at !== "string") {
+      return undefined;
+    }
+    return {
+      version: typeof parsed.version === "string" ? parsed.version : null,
+      pid: parsed.pid,
+      by: typeof parsed.by === "string" ? parsed.by : null,
+      at: parsed.at,
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 export function writeCommand(directory: string, command: IssuesCommand): string {
   mkdirSync(directory, { recursive: true });

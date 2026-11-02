@@ -1,6 +1,14 @@
 import { fixtureRecord, pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +20,12 @@ import {
   readDetachedRunState,
 } from "./detached-run";
 import { journalFile, journalKey } from "./journal";
+import {
+  remoteProjectDirectory,
+  remoteScratchRoot,
+  type RemoteCloneRequest,
+  type RemoteCloneRunner,
+} from "./discover";
 import {
   goalDraftControlDirectory,
   goalDraftHandoffPath,
@@ -40,6 +54,116 @@ afterAll(async () => {
   );
 });
 
+const GUARD_TEST_ROOT = join(import.meta.dir, "..", ".tmp", "flow-guard-app-tests");
+mkdirSync(GUARD_TEST_ROOT, { recursive: true });
+
+/** One fixture directory under the harness, never the system temporary root. */
+function guardDirectory(name: string): string {
+  const directory = join(
+    GUARD_TEST_ROOT,
+    `${name}-${process.pid}-${Math.random().toString(16).slice(2, 8)}`,
+  );
+  mkdirSync(directory, { recursive: true });
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+/** Makes a fixture a harness source checkout so Discover's remote target exists. */
+function sourceCheckout(root: string): void {
+  mkdirSync(join(root, ".devboard"), { recursive: true });
+  writeFileSync(
+    join(root, ".devboard", "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.0.0" }, null, 2)}\n`,
+  );
+}
+
+/** A directory an injected clone copies; no test reaches the network. */
+function cloneSource(name: string, breakStaging = false): string {
+  const root = guardDirectory(name);
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "README.md"), `# ${name}\n\nA remote fixture.\n`);
+  writeFileSync(join(root, "src", "main.txt"), "remote\n");
+  // A file where the run needs `.omp/discover/staging` makes the staging
+  // preparation throw after the clone succeeded.
+  if (breakStaging) writeFileSync(join(root, ".omp"), "not a directory\n");
+  return root;
+}
+
+/** Records every clone and copies `source` into the destination it names. */
+function cloneRecorder(source: string): {
+  calls: RemoteCloneRequest[];
+  runner: RemoteCloneRunner;
+} {
+  const calls: RemoteCloneRequest[] = [];
+  const runner: RemoteCloneRunner = async (request) => {
+    calls.push(request);
+    const destination = join(request.cwd, request.argv[request.argv.length - 1] ?? "");
+    cpSync(source, destination, { recursive: true, force: true });
+    return { code: 0, stderr: "", timedOut: false };
+  };
+  return { calls, runner };
+}
+
+/** Writes one retained remote project the snapshot lists and switches to. */
+function seedRetainedProject(root: string, owner: string, repo: string, marker: string): string {
+  const stateDir = join(root, "state");
+  const directory = remoteProjectDirectory(remoteScratchRoot(stateDir), owner, repo);
+  mkdirSync(join(directory, ".omp", "discover"), { recursive: true });
+  mkdirSync(join(directory, ".omp", "skills"), { recursive: true });
+  writeFileSync(join(directory, ".omp", "discover", "marker.txt"), marker);
+  writeFileSync(join(directory, ".omp", "skills", "marker.txt"), marker);
+  writeFileSync(
+    join(directory, "project.json"),
+    `${JSON.stringify(
+      {
+        url: `https://github.com/${owner}/${repo}`,
+        owner,
+        repo,
+        completedAt: "2026-01-01T00:00:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  return directory;
+}
+
+/** True when a Discover snapshot reports a remote checkout. */
+function snapshotCheckout(frame: Record<string, unknown>): boolean {
+  const state = frame.state;
+  if (state === null || typeof state !== "object" || !("target" in state)) return false;
+  const target = state.target;
+  if (target === null || typeof target !== "object" || !("checkout" in target)) return false;
+  return target.checkout === true;
+}
+
+/** The repository a Discover snapshot names, or undefined for the host. */
+function snapshotRepository(frame: Record<string, unknown>): string | undefined {
+  const state = frame.state;
+  if (state === null || typeof state !== "object" || !("repository" in state)) return undefined;
+  const repository = state.repository;
+  return typeof repository === "string" ? repository : undefined;
+}
+
+/** The kind of target a Discover snapshot names: `remote` or `host`. */
+function snapshotTargetKind(frame: Record<string, unknown>): string | undefined {
+  const state = frame.state;
+  if (state === null || typeof state !== "object" || !("target" in state)) return undefined;
+  const target = state.target;
+  if (target === null || typeof target !== "object" || !("kind" in target)) return undefined;
+  return typeof target.kind === "string" ? target.kind : undefined;
+}
+
+/** Every transient `.staging-*` entry under the harness remote scratch root. */
+function stagingEntries(root: string): string[] {
+  const scratch = remoteScratchRoot(join(root, "state"));
+  try {
+    return readdirSync(scratch).filter((entry) => entry.startsWith(".staging-"));
+  } catch {
+    return [];
+  }
+}
+
 async function startServer(
   options: {
     goalText?: string;
@@ -67,6 +191,8 @@ async function startServer(
     tracker?: (repoDir: string) => Promise<OpenEpic | undefined>;
     /** Seeds one managed prepare-family skill. */
     prepareSkill?: boolean;
+    /** Injects the Discover clone so no test reaches the network. */
+    discoverClone?: RemoteCloneRunner;
     issues?: {
       closeIssue?: (request: {
         repoDir: string;
@@ -133,6 +259,7 @@ async function startServer(
     tracker: options.tracker,
     versionState: options.versionState,
     runningVersion: options.runningVersion,
+    ...(options.discoverClone === undefined ? {} : { discoverClone: options.discoverClone }),
     ...(options.issues === undefined
       ? { issues: { syncRead } }
       : { issues: { ...options.issues, syncRead } }),
@@ -224,7 +351,10 @@ interface WatchedFrames {
     predicate: (frame: Record<string, unknown>) => boolean,
     label: string,
     timeoutMs?: number,
+    from?: number,
   ): Promise<Record<string, unknown>>;
+  mark(): number;
+  frames(): Record<string, unknown>[];
   close(): void;
 }
 
@@ -257,8 +387,8 @@ async function watchFrames(url: string): Promise<WatchedFrames> {
     send(command) {
       socket.send(JSON.stringify(command));
     },
-    waitFor(predicate, label, timeoutMs = 15_000) {
-      const received = frames.find(predicate);
+    waitFor(predicate, label, timeoutMs = 15_000, from = 0) {
+      const received = frames.slice(from).find(predicate);
       if (received !== undefined) return Promise.resolve(received);
       const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
       const waiter = { predicate, settle: resolve };
@@ -280,6 +410,12 @@ async function watchFrames(url: string): Promise<WatchedFrames> {
         );
       }, timeoutMs);
       return promise;
+    },
+    mark() {
+      return frames.length;
+    },
+    frames() {
+      return [...frames];
     },
     close() {
       socket.close();
@@ -1046,9 +1182,9 @@ describe("issues protocol", () => {
       expect(message.attached).toBe(true);
       expect(message.lifecycle).toBe("running");
       expect(message.repo).toBe("acme/fixture");
-      expect((message.queue as Array<{ number: number }>).map((entry) => entry.number)).toEqual([
-        7, 8, 9,
-      ]);
+      // The Open issues list is the dashboard's own forge read; a seeded
+      // worker state never supplies a row, and this fixture has no read yet.
+      expect(message.queue).toEqual([]);
       const agents = message.agents as Array<{ runId: string; issueNumber: number }>;
       expect(agents.map((agent) => agent.issueNumber)).toEqual([7, 9]);
       expect(message.cooldowns).toEqual({ "10": "2026-10-27T10:05:00.000Z" });
@@ -1851,5 +1987,281 @@ describe("prepared replacement handoff", () => {
       }
     },
     40_000,
+  );
+});
+
+describe("Discover checkout lifecycle", () => {
+  test(
+    "a staging-preparation failure releases the checkout and never blocks Flow",
+    async () => {
+      const root = guardDirectory("staging-failure");
+      sourceCheckout(root);
+      seedRetainedProject(root, "octocat", "Hello-World", "hello");
+      const broken = cloneSource("staging-failure-source", true);
+      const clones = cloneRecorder(broken);
+      const started = await startServer({
+        root,
+        agentCommand: `bun ${STUB_AGENT} --flow-goal --log=${join(root, "agent.log")}`,
+        discoverClone: clones.runner,
+      });
+      const tab = await watchFrames(started.url);
+      try {
+        tab.send({ type: "discoverRemote", url: "https://github.com/coollabsio/coolify" });
+        const failed = await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverError" && String(frame.message).includes("Could not prepare"),
+          "the staging failure",
+        );
+        expect(String(failed.message)).toContain("staging directory");
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" &&
+            snapshotRepository(frame) === "coollabsio/coolify" &&
+            !snapshotCheckout(frame),
+          "the released Discover snapshot",
+        );
+        expect(stagingEntries(root)).toEqual([]);
+        expect(
+          existsSync(
+            remoteProjectDirectory(
+              remoteScratchRoot(join(root, "state")),
+              "coollabsio",
+              "coolify",
+            ),
+          ),
+        ).toBe(false);
+
+        const flowMark = tab.waitFor(
+          (frame) => frame.type === "flowGoalStarted",
+          "a Flow start after the failed Discover run",
+        );
+        tab.send({ type: "createFlowGoal" });
+        await flowMark;
+        expect(
+          tab.frames().some(
+            (frame) =>
+              frame.type === "error" &&
+              String(frame.message).toLowerCase().includes("is active"),
+          ),
+        ).toBe(false);
+      } finally {
+        tab.close();
+        started.server.stop(true);
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "a live Discover run refuses every remote target change and keeps its checkout",
+    async () => {
+      const root = guardDirectory("live-target-change");
+      sourceCheckout(root);
+      const hello = seedRetainedProject(root, "octocat", "Hello-World", "hello");
+      seedRetainedProject(root, "octocat", "Second", "second");
+      const source = cloneSource("live-target-change-source");
+      const clones = cloneRecorder(source);
+      const started = await startServer({
+        root,
+        agentCommand:
+          `bun ${STUB_AGENT} --discover --discover-no-exit ` +
+          `--log=${join(root, "agent.log")}`,
+        discoverClone: clones.runner,
+      });
+      const tab = await watchFrames(started.url);
+      try {
+        tab.send({ type: "switchDiscoverRemote", url: "https://github.com/octocat/Hello-World" });
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" &&
+            snapshotRepository(frame) === "octocat/Hello-World",
+          "the switched remote target",
+        );
+        const runMark = tab.mark();
+        tab.send({ type: "discoverProject" });
+        await tab.waitFor(
+          (frame) => frame.type === "discoverStarted",
+          "the remote Discover run",
+          15_000,
+          runMark,
+        );
+        await tab.waitFor(
+          (frame) => frame.type === "discoverState" && snapshotCheckout(frame),
+          "the live remote checkout",
+          15_000,
+          runMark,
+        );
+        expect(clones.calls.at(-1)?.argv).toContain("https://github.com/octocat/Hello-World");
+
+        for (const command of [
+          { type: "switchDiscoverRemote", url: "https://github.com/octocat/Second" },
+          { type: "removeDiscoverRemote", url: "https://github.com/octocat/Hello-World" },
+          { type: "clearDiscoverRemote" },
+        ]) {
+          const from = tab.mark();
+          tab.send(command);
+          const refused = await tab.waitFor(
+            (frame) =>
+              frame.type === "discoverError" && String(frame.message).includes("Discover run"),
+            `the refusal of ${command.type}`,
+            15_000,
+            from,
+          );
+          expect(String(refused.message)).toContain("Stop it");
+        }
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" &&
+            snapshotRepository(frame) === "octocat/Hello-World" &&
+            snapshotCheckout(frame),
+          "the unchanged live target",
+        );
+        expect(existsSync(hello)).toBe(true);
+        expect(stagingEntries(root)).toHaveLength(1);
+
+        const stopMark = tab.mark();
+        tab.send({ type: "stopDiscover" });
+        await tab.waitFor(
+          (frame) => frame.type === "discoverStopped",
+          "the run stop",
+          15_000,
+          stopMark,
+        );
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" &&
+            snapshotRepository(frame) === "octocat/Hello-World" &&
+            !snapshotCheckout(frame),
+          "the released checkout",
+          15_000,
+          stopMark,
+        );
+        expect(stagingEntries(root)).toEqual([]);
+
+        const switchMark = tab.mark();
+        tab.send({ type: "switchDiscoverRemote", url: "https://github.com/octocat/Second" });
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" && snapshotRepository(frame) === "octocat/Second",
+          "the switched target after Stop",
+          15_000,
+          switchMark,
+        );
+        const secondMark = tab.mark();
+        const cloneCount = clones.calls.length;
+        tab.send({ type: "discoverProject" });
+        await tab.waitFor(
+          (frame) => frame.type === "discoverStarted",
+          "the second run",
+          15_000,
+          secondMark,
+        );
+        expect(clones.calls.length).toBeGreaterThan(cloneCount);
+        expect(clones.calls.at(-1)?.argv).toContain("https://github.com/octocat/Second");
+      } finally {
+        tab.close();
+        started.server.stop(true);
+      }
+    },
+    90_000,
+  );
+});
+
+describe("Discover remote target changes", () => {
+  test(
+    "switch, removal, and clear leave no checkout and clone the next command again",
+    async () => {
+      const root = guardDirectory("target-change");
+      sourceCheckout(root);
+      const hello = seedRetainedProject(root, "octocat", "Hello-World", "hello");
+      const second = seedRetainedProject(root, "octocat", "Second", "second");
+      const source = cloneSource("target-change-source");
+      const clones = cloneRecorder(source);
+      const started = await startServer({
+        root,
+        agentCommand:
+          `bun ${STUB_AGENT} --discover --discover-no-exit ` +
+          `--log=${join(root, "agent.log")}`,
+        discoverClone: clones.runner,
+      });
+      const tab = await watchFrames(started.url);
+      try {
+        let mark = tab.mark();
+        tab.send({
+          type: "switchDiscoverRemote",
+          url: "https://github.com/octocat/Hello-World",
+        });
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" &&
+            snapshotRepository(frame) === "octocat/Hello-World" &&
+            !snapshotCheckout(frame),
+          "the switched target",
+          15_000,
+          mark,
+        );
+
+        mark = tab.mark();
+        tab.send({
+          type: "removeDiscoverRemote",
+          url: "https://github.com/octocat/Second",
+        });
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" &&
+            snapshotRepository(frame) === "octocat/Hello-World",
+          "the removal",
+          15_000,
+          mark,
+        );
+        expect(existsSync(second)).toBe(false);
+        expect(existsSync(hello)).toBe(true);
+
+        mark = tab.mark();
+        tab.send({ type: "clearDiscoverRemote" });
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" &&
+            snapshotTargetKind(frame) === "host" &&
+            !snapshotCheckout(frame),
+          "the cleared target",
+          15_000,
+          mark,
+        );
+
+        mark = tab.mark();
+        tab.send({
+          type: "switchDiscoverRemote",
+          url: "https://github.com/octocat/Hello-World",
+        });
+        await tab.waitFor(
+          (frame) =>
+            frame.type === "discoverState" &&
+            snapshotRepository(frame) === "octocat/Hello-World" &&
+            !snapshotCheckout(frame),
+          "the restored target",
+          15_000,
+          mark,
+        );
+
+        const runMark = tab.mark();
+        const cloneCount = clones.calls.length;
+        tab.send({ type: "discoverProject" });
+        await tab.waitFor(
+          (frame) => frame.type === "discoverStarted",
+          "the cloned run",
+          15_000,
+          runMark,
+        );
+        expect(clones.calls.length).toBe(cloneCount + 1);
+        expect(clones.calls.at(-1)?.argv).toContain(
+          "https://github.com/octocat/Hello-World",
+        );
+      } finally {
+        tab.close();
+        started.server.stop(true);
+      }
+    },
+    60_000,
   );
 });

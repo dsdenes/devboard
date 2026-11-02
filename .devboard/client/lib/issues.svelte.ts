@@ -8,6 +8,7 @@ import type {
   GoalDraftSummary,
   IssuesActivityEntry,
   IssuesAgent,
+  IssuesLifecycle,
   IssuesRunDetail,
   IssuesRunSummary,
   IssuesSnapshot,
@@ -127,7 +128,7 @@ export class IssuesStore {
     return this.snapshot !== null;
   }
 
-  get lifecycle(): string {
+  get lifecycle(): IssuesLifecycle {
     return this.snapshot?.lifecycle ?? "stopped";
   }
 
@@ -181,6 +182,17 @@ export class IssuesStore {
   /** The run status a card shows: the live run's status, else its history. */
   statusFor(runId: string): string {
     return this.snapshot?.runs.find((run) => run.runId === runId)?.status ?? "running";
+  }
+
+  /**
+   * The harness version of the worker that owns a run. The run record's own
+   * value is authoritative; a live agent carries it for a run record an older
+   * server did not annotate.
+   */
+  versionForRun(runId: string): string | null {
+    const agent = this.agentFor(runId);
+    if (agent?.harnessVersion != null) return agent.harnessVersion;
+    return this.snapshot?.runs.find((run) => run.runId === runId)?.harnessVersion ?? null;
   }
 
   get notice(): string | null {

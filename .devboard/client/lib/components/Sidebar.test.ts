@@ -342,9 +342,10 @@ test("the Goal entries read only the Goal store", async () => {
   layout.mode = "goal";
   mount();
   await tick();
-  const skills = document.querySelector('[data-testid="goal-skills-toggle"]');
+  const skills = document.querySelector('[data-testid="goal-skills-open"]');
   expect(skills?.getAttribute("data-run-state")).toBe("running");
   expect(badgeText(skills)).toBe("running");
+  expect(document.querySelector('[data-testid="goal-skill"]')).toBeNull();
 
   goal.question = { id: "prep", message: "Which standard?", options: [] };
   await tick();
@@ -371,7 +372,7 @@ test("the Goal entries read only the Goal store", async () => {
   expect(document.querySelector('[data-testid="open-implementation"]')?.getAttribute("data-run-state")).toBe(
     "running",
   );
-  expect(document.querySelector('[data-testid="goal-skills-toggle"]')?.getAttribute("data-run-state")).toBe(
+  expect(document.querySelector('[data-testid="goal-skills-open"]')?.getAttribute("data-run-state")).toBe(
     "idle",
   );
 

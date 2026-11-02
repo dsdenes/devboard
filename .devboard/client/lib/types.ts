@@ -68,6 +68,8 @@ export interface IssuesRunSummary {
   issueNumbers: number[];
   activity: number;
   firstStderrLine: string | null;
+  /** The harness version that owned the run; absent from an older server. */
+  harnessVersion?: string | null;
 }
 
 export interface IssuesRunDetail extends IssuesRunSummary {
@@ -145,6 +147,8 @@ export interface IssuesAgent {
   startedAt: string;
   question: RunQuestion | null;
   acp: { pid: number; argv: string[]; cwd: string } | null;
+  /** The harness version of the worker that owns this run. */
+  harnessVersion?: string | null;
 }
 
 export interface GoalDraftSummary {
@@ -182,6 +186,7 @@ export type {
   AgentIssueState,
   AgentLifecycle,
   AgentLimits,
+  AgentReleaseRow,
   AgentScope,
   AgentSnapshot,
   AgentSync,

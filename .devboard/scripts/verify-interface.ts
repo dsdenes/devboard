@@ -16,6 +16,17 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { remoteCloneName } from "../server/discover";
+import {
+  drainMarkerPath,
+  lockPath,
+  runsDirectory,
+  statePath as issueStatePath,
+  versionedStatePath,
+  workerStateDirectories,
+} from "../issues/paths";
+import { readState, type QueuedIssue } from "../issues/state";
+import { versionLockPath } from "../issues/lock";
+import { writeDrainMarker } from "../issues/control";
 import { fixtureRecord, pendingRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
 import { saveSubscriptions } from "../server/providers";
@@ -32,10 +43,16 @@ const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
 // The source dashboard reports the commit-count version, not the unpacked
 // manifest's placeholder.
 const sourceVersion = readHarnessVersion(runningHarnessDir());
+/** The version every seeded fixture worker records. */
+const seedVersion = sourceVersion ?? "0.1.0";
 /** The version the fixture installs, distinct from the source checkout's. */
 const INSTALLED_VERSION = "9.9.9";
 /** A newer install that makes the running replacement stale again. */
 const NEXT_INSTALLED_VERSION = "9.9.10";
+/** The older harness version a mixed-version takeover fixture keeps live. */
+const MIXED_OLD_VERSION = "0.1.900";
+const MIXED_OLD_RUN = "2026-10-27T10-10-01-000Z";
+const MIXED_NEW_RUN = "2026-10-27T10-10-02-000Z";
 // The deterministic `gh` stub always answers with this issue URL.
 const stubIssueUrl = "https://gitea.example/dsdenes/devboard/issues/42";
 // A tracker title longer than any supported line: it must truncate instead of
@@ -665,6 +682,48 @@ async function seedFlow(stateDir: string, host: string): Promise<void> {
 }
 
 /**
+ * The fixture forge's open issues: the seeded worker states' queue merged into
+ * one list, with the `processing` label on each issue a seeded agent owns.
+ * This is the one read the dashboard's Open issues page and counts use.
+ */
+function fixtureOpenIssues(
+  stateDir: string,
+  host: string,
+): Array<Record<string, unknown>> {
+  const root = resolve(host);
+  const paths = [
+    issueStatePath(stateDir, root),
+    ...workerStateDirectories(stateDir, root).map((directory) => join(directory, "state.json")),
+  ];
+  const merged = new Map<number, { issue: QueuedIssue; labels: Set<string> }>();
+  for (const path of paths) {
+    const state = readState(path);
+    if (state === undefined) continue;
+    for (const issue of state.queue) {
+      const labels = new Set(issue.labels ?? []);
+      if (issue.agentRunId !== null) labels.add("processing");
+      const entry = merged.get(issue.number);
+      if (entry === undefined) {
+        merged.set(issue.number, { issue, labels });
+        continue;
+      }
+      for (const label of labels) entry.labels.add(label);
+    }
+  }
+  return [...merged.values()]
+    .sort((left, right) => left.issue.number - right.issue.number)
+    .map(({ issue, labels }) => ({
+      number: issue.number,
+      title: issue.title,
+      html_url: issue.url,
+      created_at: issue.createdAt,
+      state: "open",
+      body: "",
+      labels: [...labels].map((name) => ({ name })),
+    }));
+}
+
+/**
  * Publishes one repo-scoped issues state for the fixture host and holds its
  * repo-anchored lock with this process's live pid, exactly the shape a worker
  * leaves. The dashboard reads it through `getIssues` and its events.
@@ -778,7 +837,7 @@ async function seedIssuesState(
           pid: process.pid,
           startedAt: "2026-10-27T10:00:00.000Z",
           stateDir,
-          harnessVersion: sourceVersion ?? "0.1.0",
+          harnessVersion: seedVersion,
           argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
         }
       : null,
@@ -844,7 +903,7 @@ async function seedIssuesState(
         ],
         firstStderrLine: status === "failed" ? "the agent exited with code 1" : null,
         workerPid: process.pid,
-        harnessVersion: sourceVersion ?? "0.1.0",
+        harnessVersion: seedVersion,
       }),
     );
   };
@@ -867,10 +926,242 @@ async function seedIssuesState(
       startedAt: lockStartedAt,
       repo: resolve(host),
       stateDir,
-      harnessVersion: sourceVersion ?? "0.1.0",
+      harnessVersion: seedVersion,
       argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
     }),
   );
+}
+
+/**
+ * Two live issues workers of different harness versions, exactly as a takeover
+ * leaves them: the older one drained with its unit still running, the newer
+ * one polling and working. The older document predates the pause source, so
+ * only the dashboard's drain marker can tell its pause from an operator Pause.
+ */
+let mixedWorkerPids: number[] = [];
+
+function fixtureProcessStartedAt(pid: number): string {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const close = stat.lastIndexOf(")");
+  const ticks = Number(stat.slice(close + 2).split(" ")[19]);
+  const uptime = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+  return new Date(Date.now() - uptime * 1000 + ticks * 10).toISOString();
+}
+
+async function liveFixtureProcess(): Promise<{ pid: number; startedAt: string }> {
+  const child = Bun.spawn({
+    cmd: [process.execPath, "-e", "setTimeout(() => undefined, 600000)"],
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      readFileSync(`/proc/${child.pid}/stat`, "utf8");
+      break;
+    } catch {
+      if (Date.now() > deadline) throw new Error("verify:interface: the fixture worker did not start");
+      await Bun.sleep(20);
+    }
+  }
+  mixedWorkerPids.push(child.pid);
+  return { pid: child.pid, startedAt: fixtureProcessStartedAt(child.pid) };
+}
+
+async function seedMixedIssuesState(stateDir: string, host: string): Promise<void> {
+  const root = resolve(host);
+  const oldWorker = await liveFixtureProcess();
+  const newWorker = await liveFixtureProcess();
+  const runsDir = runsDirectory(stateDir, root);
+  const now = new Date().toISOString();
+  const queue = (issueNumber: number, runId: string) =>
+    [17, 18, 20, 21].map((number) => ({
+      number,
+      title: `Fixture issue ${number}`,
+      url: `https://github.com/fixture/host/issues/${number}`,
+      createdAt: "2026-10-26T00:00:00Z",
+      labels: [] as string[],
+      handled: false,
+      runId: null,
+      agentRunId: number === issueNumber ? runId : null,
+    }));
+  const state = (options: {
+    version: string;
+    pid: number;
+    startedAt: string;
+    lifecycle: "running" | "pausing";
+    paused: boolean;
+    issueNumber: number;
+    runId: string;
+    lastPollAt: string;
+    pauseSource?: "drain" | null;
+  }) => ({
+    version: 2,
+    repo: "fixture/host",
+    root,
+    lifecycle: options.lifecycle,
+    enabled: true,
+    paused: options.paused,
+    ...(options.pauseSource === undefined ? {} : { pauseSource: options.pauseSource }),
+    worker: {
+      pid: options.pid,
+      startedAt: options.startedAt,
+      stateDir,
+      harnessVersion: options.version,
+      argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
+    },
+    poll: {
+      intervalMs: 10_000,
+      lastPollAt: options.lastPollAt,
+      nextPollAt: new Date(Date.parse(options.lastPollAt) + 10_000).toISOString(),
+      etag: null,
+      notModified: false,
+      rateLimitedUntil: null,
+      error: null,
+    },
+    queue: queue(options.issueNumber, options.runId),
+    runs: [
+      {
+        runId: options.runId,
+        status: "running",
+        startedAt: "2026-10-27T10:10:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        issueNumbers: [options.issueNumber],
+        activity: 2,
+        firstStderrLine: null,
+        harnessVersion: options.version,
+        workerPid: options.pid,
+      },
+    ],
+    agents: [
+      {
+        runId: options.runId,
+        issueNumber: options.issueNumber,
+        startedAt: "2026-10-27T10:10:00.000Z",
+        question: null,
+        acp: null,
+      },
+    ],
+    cooldowns: {},
+    lastError: null,
+    lastExitCode: null,
+    finishedAt: null,
+    notice: null,
+    updatedAt: now,
+  });
+  const publish = async (path: string, document: unknown): Promise<void> => {
+    await mkdir(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`);
+    await rename(temporary, path);
+  };
+  // The older worker's document predates the pause source on purpose.
+  await publish(
+    versionedStatePath(stateDir, root, MIXED_OLD_VERSION),
+    state({
+      version: MIXED_OLD_VERSION,
+      pid: oldWorker.pid,
+      startedAt: oldWorker.startedAt,
+      lifecycle: "pausing",
+      paused: true,
+      issueNumber: 17,
+      runId: MIXED_OLD_RUN,
+      lastPollAt: "2026-10-27T10:09:00.000Z",
+    }),
+  );
+  await publish(
+    versionedStatePath(stateDir, root, seedVersion),
+    state({
+      version: seedVersion,
+      pid: newWorker.pid,
+      startedAt: newWorker.startedAt,
+      lifecycle: "running",
+      paused: false,
+      pauseSource: null,
+      issueNumber: 18,
+      runId: MIXED_NEW_RUN,
+      lastPollAt: new Date(Date.now() - 1_000).toISOString(),
+    }),
+  );
+  for (const [runId, issueNumber, version, workerPid] of [
+    [MIXED_OLD_RUN, 17, MIXED_OLD_VERSION, oldWorker.pid],
+    [MIXED_NEW_RUN, 18, seedVersion, newWorker.pid],
+  ] as const) {
+    const directory = join(runsDir, runId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "run.json"),
+      JSON.stringify({
+        version: 1,
+        runId,
+        repo: "fixture/host",
+        status: "running",
+        argv: ["omp", "acp"],
+        cwd: root,
+        startedAt: "2026-10-27T10:10:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        issues: [
+          {
+            number: issueNumber,
+            title: `Fixture issue ${issueNumber}`,
+            url: `https://github.com/fixture/host/issues/${issueNumber}`,
+            createdAt: "2026-10-26T00:00:00Z",
+            labels: [],
+          },
+        ],
+        firstStderrLine: null,
+        workerPid,
+        harnessVersion: version,
+      }),
+    );
+    await writeFile(
+      join(directory, "activity.json"),
+      JSON.stringify([`Reading issue ${issueNumber}`, `Implementing issue ${issueNumber}`]),
+    );
+  }
+  // The dashboard wrote this before sending the drain, so the merge reports the
+  // family's running work while the older worker's own state says `pausing`.
+  writeDrainMarker(drainMarkerPath(stateDir, root, MIXED_OLD_VERSION), {
+    version: MIXED_OLD_VERSION,
+    pid: oldWorker.pid,
+    by: seedVersion,
+    at: now,
+  });
+  for (const worker of [
+    { version: MIXED_OLD_VERSION, ...oldWorker },
+    { version: seedVersion, ...newWorker },
+  ]) {
+    const path = versionLockPath(lockPath(root), worker.version);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(
+      path,
+      JSON.stringify({
+        pid: worker.pid,
+        startedAt: worker.startedAt,
+        repo: root,
+        stateDir,
+        harnessVersion: worker.version,
+        argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
+      }),
+    );
+  }
+}
+
+/** Ends the mixed-version fixture: every worker, lock, and its records. */
+async function clearMixedIssuesState(stateDir: string, host: string): Promise<void> {
+  for (const pid of mixedWorkerPids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+  mixedWorkerPids = [];
+  await rm(join(stateDir, "issues", journalKey(host)), { recursive: true, force: true });
+  await rm(join(resolve(host), ".devboard", ".tmp", "issues"), { recursive: true, force: true });
 }
 
 async function clearIssuesState(stateDir: string, host: string): Promise<void> {
@@ -1405,6 +1696,13 @@ try {
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      // The dashboard's own Issues read, served from the seeded worker states.
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/v1/repos/fixture/host/issues"
+      ) {
+        return Response.json(fixtureOpenIssues(stateDir, host));
+      }
       if (
         request.method !== "POST" ||
         !/^\/api\/v1\/repos\/[^/]+\/[^/]+\/issues$/.test(url.pathname)
@@ -1434,6 +1732,14 @@ try {
     },
   });
   feedbackApi = feedbackServer;
+  // The host's origin names the fixture forge, so the dashboard's Issues read
+  // resolves to the stub instead of an unconfigured GitHub repository.
+  await git(host, [
+    "remote",
+    "add",
+    "origin",
+    `http://127.0.0.1:${feedbackServer.port}/fixture/host.git`,
+  ]);
   const serverEnv = {
     ...process.env,
     HOST: "127.0.0.1",
@@ -1451,6 +1757,9 @@ try {
     DEVBOARD_RELEASE_REPO: "dsdenes/devboard",
     DEVBOARD_RELEASE_DIR: releaseDir,
     DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+    // The Issues queue follows the dashboard's own forge read; a one-second
+    // cadence keeps the fixture's seeded changes visible without a 30-second wait.
+    DEVBOARD_ISSUES_SYNC_INTERVAL_MS: "1000",
     DEVBOARD_OPENCODE_GO_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/zen/go`,
     DEVBOARD_OPENROUTER_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/api`,
     GIT_TERMINAL_PROMPT: "0",
@@ -2489,7 +2798,7 @@ try {
   const ids = new Set(palette.items.map((item) => item.id));
   const requiredCommands = [
     "view.mode.goal", "view.mode.issues", "view.mode.flow", "view.mode.discover",
-    "view.mode.devboard", "devboard.tab.tools",
+    "view.mode.devboard", "devboard.tab.tools", "devboard.tab.skills",
     "issues.start", "issues.pause", "issues.resume", "issues.stop", "issues.check",
     "open.issues.overview", "open.issues.agents", "open.issues.issues", "open.issues.runs",
     "open.issues.drafts",
@@ -2642,12 +2951,6 @@ try {
     description,
     invocations: expectedInvocations[name] ?? 0,
   }));
-  const layoutBeforeDevboard = await page.eval<string>(
-    `localStorage.getItem("devboard.layout.v1") ?? ""`,
-  );
-  const framesBeforeDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
-  );
   await page.click('[data-testid="mode-devboard"]');
   await page.wait(
     `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
@@ -2790,8 +3093,8 @@ try {
   const devboardSidebar = await page.eval<{
     entries: number;
     items: number;
-    label: string;
-    command: string;
+    labels: string[];
+    commands: string[];
     agentLabels: string[];
     agentCommands: string[];
     toolNames: string[];
@@ -2803,8 +3106,10 @@ try {
     return {
       entries: entries.length,
       items: sidebar?.querySelectorAll('.sidebar-item').length ?? 0,
-      label: entries[0]?.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
-      command: entries[0]?.getAttribute("data-command") ?? "",
+      labels: entries.map(
+        (entry) => entry.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
+      ),
+      commands: entries.map((entry) => entry.getAttribute("data-command") ?? ""),
       agentLabels: agents.map(
         (button) =>
           button.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
@@ -2816,8 +3121,8 @@ try {
     };
   })()`);
   check(
-    devboardSidebar.entries === 1 &&
-      devboardSidebar.items === 7 &&
+    devboardSidebar.entries === 2 &&
+      devboardSidebar.items === 8 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify([
           "Auto Scout",
@@ -2836,16 +3141,191 @@ try {
           "open.devboard.api-standards",
           "open.devboard.release-train",
         ]),
-    "the Devboard sidebar does not carry the background agents beside the MCP tools entry",
+    "the Devboard sidebar does not carry the background agents beside the two page entries",
     devboardSidebar,
   );
   check(
-    devboardSidebar.label === "MCP tools" && devboardSidebar.command === "devboard.tab.tools",
-    "the Devboard sidebar entry is not the MCP tools entry",
+    JSON.stringify(devboardSidebar.labels) === JSON.stringify(["MCP tools", "Skills"]) &&
+      JSON.stringify(devboardSidebar.commands) ===
+        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills"]),
+    "the Devboard sidebar entries are not the MCP tools and Skills pages",
     devboardSidebar,
   );
   check(devboardSidebar.toolNames.length === 0, "a tool name leaked into the sidebar", devboardSidebar);
   check((await sourceOnlyMarkers(page)) === 0, "the Devboard MCP tools page renders a source-only marker");
+
+  // 5c. The Skills page lists the fixture host's installed skills, one entry
+  // opens it, and the checkbox mirrors and writes the project-level exclusion.
+  async function showDevboardSkills(): Promise<void> {
+    await page.click('[data-testid="mode-devboard"]');
+    await page.wait(
+      `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
+      "the Devboard mode before the Skills page",
+    );
+    await page.click('[data-testid="devboard-tab"][data-command="devboard.tab.skills"]');
+    await page.wait(`document.querySelector('[data-testid="skills-table"]') !== null`, "the Skills table");
+  }
+
+  await showDevboardSkills();
+
+  const devboardSkillsTable = await page.eval<{
+    tables: number;
+    columns: number;
+    controls: string[];
+    names: string[];
+    checked: boolean[];
+    cells: number[];
+    text: string;
+  }>(`(() => {
+    const table = document.querySelector('[data-testid="skills-table"]');
+    const rows = [...document.querySelectorAll('[data-testid="skill-row"]')];
+    return {
+      tables: document.querySelectorAll('[data-testid="skills-table"] table, [data-testid="skills-table"]').length,
+      columns: table?.rows[0]?.cells.length ?? -1,
+      controls: [...(table?.querySelectorAll('button, input, select, textarea, a, [role="button"]') ?? [])].map(
+        (control) => control.getAttribute("data-testid") ?? control.tagName,
+      ),
+      names: rows.map((row) => row.getAttribute("data-skill") ?? ""),
+      checked: rows.map((row) => row.querySelector('[data-testid="skill-enabled"]')?.checked === true),
+      cells: rows.map((row) => row.querySelectorAll("td").length),
+      text: table?.textContent ?? "",
+    };
+  })()`);
+  const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
+  check(devboardSkillsTable.tables === 1, "the Skills page does not render one table", devboardSkillsTable);
+  check(devboardSkillsTable.columns === 2, "the Skills table does not have two columns", devboardSkillsTable);
+  check(
+    JSON.stringify(devboardSkillsTable.names) === JSON.stringify(devboardInstalledSkills),
+    "the Skills rows do not equal the installed directories",
+    { rendered: devboardSkillsTable.names, installed: devboardInstalledSkills },
+  );
+  check(
+    devboardSkillsTable.cells.every((cells) => cells === 2) &&
+      devboardSkillsTable.controls.every((control) => control === "skill-enabled"),
+    "a Skills row does not hold exactly one checkbox beside its name",
+    devboardSkillsTable,
+  );
+  check(
+    devboardSkillsTable.checked.every((checked) => checked),
+    "an installed skill does not start checked",
+    devboardSkillsTable,
+  );
+  check(
+    !/devboard-managed|devboard-family|Delete|description/i.test(devboardSkillsTable.text),
+    "the Skills table renders skill content, family, or an action",
+    devboardSkillsTable,
+  );
+
+  const devboardSettingsFile = join(host, ".omp", "settings.json");
+  const devboardSkillCheckbox = (name: string): string =>
+    `[data-testid="skill-row"][data-skill="${name}"] [data-testid="skill-enabled"]`;
+  const devboardFirstSkill = devboardInstalledSkills[0] ?? "";
+  await page.click(devboardSkillCheckbox(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === false`,
+    "the unchecked skill",
+  );
+  const devboardIgnoredAfterUncheck = (): unknown =>
+    JSON.parse(readFileSync(devboardSettingsFile, "utf8")).skills?.ignoredSkills;
+  await waitFor(() => {
+    try {
+      const ignored = devboardIgnoredAfterUncheck();
+      return Array.isArray(ignored) && ignored.length === 1 && ignored[0] === devboardFirstSkill
+        ? true
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }, "the unchecked skill in the project OMP settings");
+  await page.click(devboardSkillCheckbox(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === true`,
+    "the rechecked skill",
+  );
+  await waitFor(() => {
+    try {
+      const ignored = devboardIgnoredAfterUncheck();
+      return Array.isArray(ignored) && !ignored.includes(devboardFirstSkill) && ignored.length === 0
+        ? true
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }, "the rechecked skill removed from the project OMP settings");
+
+  const devboardExtraSkill = join(host, ".omp", "skills", "extra-skill");
+  await mkdir(devboardExtraSkill, { recursive: true });
+  await writeFile(
+    join(devboardExtraSkill, "SKILL.md"),
+    "---\nname: extra-skill\ndescription: Extra fixture guidance.\n---\n\n# Extra skill\n",
+  );
+  await page.reload();
+  await showDevboardSkills();
+  await page.wait(
+    `document.querySelectorAll('[data-testid="skill-row"]').length === ${devboardInstalledSkills.length + 1}`,
+    "the added skill row",
+  );
+  const devboardWithExtra = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
+  );
+  check(
+    JSON.stringify(devboardWithExtra) === JSON.stringify([...devboardInstalledSkills, "extra-skill"].sort()),
+    "an added skill directory does not add exactly its row",
+    devboardWithExtra,
+  );
+  const devboardSidebarAfterAdd = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="sidebar"] [data-testid="devboard-tab"]').length`,
+  );
+  check(devboardSidebarAfterAdd === 2, "a skill directory changed the sidebar entry count", devboardSidebarAfterAdd);
+  await rm(devboardExtraSkill, { recursive: true, force: true });
+  await page.reload();
+  await showDevboardSkills();
+  await page.wait(
+    `document.querySelectorAll('[data-testid="skill-row"]').length === ${devboardInstalledSkills.length}`,
+    "the removed skill row",
+  );
+
+  await writeFile(devboardSettingsFile, `${JSON.stringify({ skills: { ignoredSkills: ["ghost-skill"] } })}\n`);
+  await page.reload();
+  await showDevboardSkills();
+  const devboardGhostRows = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
+  );
+  check(
+    JSON.stringify(devboardGhostRows) === JSON.stringify(devboardInstalledSkills) && !devboardGhostRows.includes("ghost-skill"),
+    "an exclusion name without a directory produced a row",
+    devboardGhostRows,
+  );
+
+  await page.click(devboardSkillCheckbox(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === false`,
+    "the unchecked skill before a reload",
+  );
+  await page.reload();
+  await showDevboardSkills();
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === false`,
+    "the unchecked skill after a reload",
+  );
+  await rm(devboardSettingsFile, { force: true });
+  await page.click(devboardSkillCheckbox(devboardFirstSkill));
+  await page.wait(
+    `document.querySelector('${devboardSkillCheckbox(devboardFirstSkill)}')?.checked === true`,
+    "the rechecked skill after the persistence check",
+  );
+  await page.click('[data-testid="devboard-tab"][data-command="devboard.tab.tools"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="mcp-tool"]').length === ${catalog.length}`,
+    "the MCP tool list after the Skills page",
+  );
+
+  const layoutBeforeDevboard = await page.eval<string>(
+    `localStorage.getItem("devboard.layout.v1") ?? ""`,
+  );
+  const framesBeforeDevboard = await page.eval<string[]>(
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools") && !String(frame).includes("getInstalledSkills"))`,
+  );
 
   await page.key("1", 1);
   await page.wait(
@@ -2898,7 +3378,7 @@ try {
     "Devboard from the palette",
   );
   const framesAfterDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools") && !String(frame).includes("getInstalledSkills"))`,
   );
   check(
     JSON.stringify(framesAfterDevboard) === JSON.stringify(framesBeforeDevboard),
@@ -3291,134 +3771,102 @@ try {
   })`);
   check(!reopenedPanel.table && reopenedPanel.detail && reopenedPanel.tabs === 0, "a surface no longer replaces the open page", reopenedPanel);
 
-  // The Goal sidebar has one Skills entry that discloses the prepared skills.
+  // The Goal sidebar has one Skills entry that opens the prepared-skills table.
   const goalSkills = await page.eval<{
     sections: number;
-    toggle: null | { expanded: string; disclosure: boolean };
-    menu: boolean;
+    entry: null | { expanded: string; menu: boolean; label: string; command: string };
   }>(`(() => {
-    const toggle = document.querySelector('[data-testid="goal-skills-toggle"]');
+    const entry = document.querySelector('[data-testid="goal-skills-open"]');
     return {
       sections: document.querySelectorAll('[data-testid="sidebar"] section[aria-label="Skills"]').length,
-      toggle: toggle === null ? null : {
-        expanded: toggle.getAttribute("aria-expanded") ?? "",
-        disclosure: document.querySelector('[data-testid="goal-skills-disclosure"]') !== null,
+      entry: entry === null ? null : {
+        expanded: entry.getAttribute("aria-expanded") ?? "",
+        menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
+        label: entry.querySelector(".sidebar-item__label")?.textContent?.trim() ?? "",
+        command: entry.getAttribute("data-command") ?? "",
       },
-      menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
     };
   })()`);
   check(
     goalSkills.sections === 0 &&
-      goalSkills.toggle !== null &&
-      goalSkills.toggle.expanded === "false" &&
-      !goalSkills.toggle.disclosure &&
-      !goalSkills.menu,
-    "the Goal sidebar still splits the skills toggle from its disclosure",
+      goalSkills.entry !== null &&
+      goalSkills.entry.expanded === "" &&
+      !goalSkills.entry.menu &&
+      goalSkills.entry.label === "Skills" &&
+      goalSkills.entry.command === "goal.skills.open",
+    "the Goal sidebar does not open the skills table from one Skills entry",
     goalSkills,
   );
-  await page.click('[data-testid="goal-skills-toggle"]');
-  await page.wait(`document.querySelector('[data-testid="goal-skills-menu"]') !== null`, "the prepared skills disclosure");
-  const goalSkillNames = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="goal-skill"]')].map((item) => item.getAttribute("data-name") ?? "")`);
-  check(goalSkillNames.length >= 5 && goalSkillNames.every((name) => name.length > 0), "the skills disclosure is empty", goalSkillNames);
+  await page.click('[data-testid="goal-skills-open"]');
+  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the sidebar entry");
+  const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
+  check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
+  const skillsTable = await page.eval<{ table: boolean; rows: number; names: string[]; descriptions: string[] }>(`(() => {
+    const table = document.querySelector('[data-testid="skills-table"]');
+    const rows = [...(table?.querySelectorAll('[data-testid="skill"]') ?? [])];
+    return {
+      table: table !== null,
+      rows: rows.length,
+      names: rows.map((row) => row.getAttribute("data-name") ?? ""),
+      descriptions: rows.map((row) => row.querySelector(".skill-table__description")?.textContent?.trim() ?? ""),
+    };
+  })()`);
+  check(
+    skillsTable.table &&
+      skillsTable.rows >= 5 &&
+      skillsTable.descriptions.every((description) => description.length > 0),
+    "the prepared skills table does not list every skill with its description",
+    skillsTable,
+  );
   const clickedSkill = await page.eval<string>(`(() => {
-    const item = document.querySelector('[data-testid="goal-skill"]');
+    const item = document.querySelector('[data-testid="skill"]');
     item?.click();
     return item?.getAttribute("data-name") ?? "";
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="goal-skill-content"]') !== null`,
-    "the skill content inside the sidebar list",
+    `document.querySelector('[data-testid="skill"][data-selected="true"]')?.getAttribute("aria-expanded") === "true"`,
+    "the expanded skill row",
   );
-  const sidebarSkill = await page.eval<{
-    name: string;
-    expanded: string;
-    text: string;
-    path: string;
-    blocks: number;
-    frontmatter: boolean;
-    overlay: boolean;
-    page: boolean;
-  }>(`(() => {
-    const content = document.querySelector('[data-testid="goal-skill-content"]');
-    const text = content?.querySelector('[data-testid="goal-skill-content-text"]');
-    const row = document.querySelector('[data-testid="goal-skill"][data-name="${clickedSkill}"]');
-    return {
-      name: content?.getAttribute("data-name") ?? "",
-      expanded: row?.getAttribute("aria-expanded") ?? "",
-      text: text?.textContent?.trim() ?? "",
-      path: content?.querySelector('.sidebar-skill__path')?.textContent?.trim() ?? "",
-      blocks: text?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
-      frontmatter: (text?.textContent ?? "").includes("devboard-managed"),
-      overlay: document.querySelector('[data-testid="skills-overlay"]') !== null,
-      page: document.querySelector('[data-testid="goal-skills-page"]') !== null,
-    };
-  })()`);
-  check(
-    sidebarSkill.name === clickedSkill &&
-      sidebarSkill.expanded === "true" &&
-      sidebarSkill.text.length > 0 &&
-      sidebarSkill.blocks > 0 &&
-      !sidebarSkill.frontmatter,
-    "expanding a sidebar skill does not show its rendered document",
-    { clickedSkill, sidebarSkill },
-  );
-  check(
-    sidebarSkill.path === `.omp/skills/${clickedSkill}/SKILL.md`,
-    "the sidebar skill document does not name its file",
-    sidebarSkill,
-  );
-  check(
-    !sidebarSkill.overlay && sidebarSkill.page,
-    "a sidebar skill expands content without opening the Skills page",
-    sidebarSkill,
-  );
-  await page.click('[data-testid="goal-skills-page"]');
-  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the sidebar list");
-  const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
-  check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
   const goalSkillSurface = await page.eval<{
     selected: string;
     current: string;
     expanded: string;
-    description: boolean;
+    description: string;
+    collapsed: number;
   }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     return {
       selected: item?.getAttribute("data-name") ?? "",
       current: item?.getAttribute("aria-current") ?? "",
       expanded: item?.getAttribute("aria-expanded") ?? "",
-      description: item?.querySelector(".skill__description") !== null,
+      description: item?.querySelector(".skill-table__description")?.textContent?.trim() ?? "",
+      collapsed: document.querySelectorAll('[data-testid="skill"][aria-expanded="false"]').length,
     };
   })()`);
   check(
     goalSkillSurface.selected === clickedSkill &&
       goalSkillSurface.current === "true" &&
-      goalSkillSurface.expanded === "true",
-    "clicking a prepared skill does not expand it",
+      goalSkillSurface.expanded === "true" &&
+      goalSkillSurface.description.length > 0 &&
+      goalSkillSurface.collapsed === skillsTable.rows - 1,
+    "clicking a prepared skill does not expand it in the table",
     { clickedSkill, goalSkillSurface },
-  );
-  check(
-    !goalSkillSurface.description,
-    "the prepared skill row still shows its description",
-    goalSkillSurface,
   );
   const skillDocument = await page.eval<{
     name: string;
     text: string;
     inline: boolean;
-    description: boolean;
     blocks: number;
     path: string;
     frontmatter: boolean;
   }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
-    const detail = item?.closest("li")?.querySelector('[data-testid="skill-content"]') ?? null;
+    const detail = item?.nextElementSibling?.querySelector('[data-testid="skill-content"]') ?? null;
     const doc = detail?.querySelector('[data-testid="skill-content-text"]') ?? null;
     return {
       name: detail?.getAttribute("data-name") ?? "",
       text: doc?.textContent?.trim() ?? "",
       inline: detail !== null,
-      description: detail?.querySelector(".muted") !== null,
       blocks: doc?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
       path: detail?.querySelector('.skill__path')?.textContent?.trim() ?? "",
       frontmatter: (doc?.textContent ?? "").includes("devboard-managed"),
@@ -3428,13 +3876,13 @@ try {
     skillDocument.inline &&
       skillDocument.name === clickedSkill &&
       skillDocument.text.length > 0 &&
-      !skillDocument.description,
-    "expanding a prepared skill does not show its document in the list without a description",
+      skillDocument.blocks > 0,
+    "expanding a prepared skill does not show its whole document in the table",
     { clickedSkill, skillDocument },
   );
   check(
-    skillDocument.blocks > 0 && !skillDocument.frontmatter,
-    "the skill document is not rendered as a document without its frontmatter",
+    !skillDocument.frontmatter,
+    "the skill document is rendered with its frontmatter",
     skillDocument,
   );
   check(
@@ -3475,7 +3923,7 @@ try {
   const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="skill"]')];
     const controls = rows
-      .map((row) => row.closest("li")?.querySelector('[data-testid="delete-skill"]')?.getAttribute("data-name") ?? "")
+      .map((row) => row.closest("tr")?.querySelector('[data-testid="delete-skill"]')?.getAttribute("data-name") ?? "")
       .filter((name) => name.length > 0);
     return {
       rows: rows.length,
@@ -3483,7 +3931,7 @@ try {
       discoverControls: rows.filter(
         (row) =>
           (row.getAttribute("data-name") ?? "").startsWith("discover-") &&
-          row.closest("li")?.querySelector('[data-testid="delete-skill"]') !== null,
+          row.closest("tr")?.querySelector('[data-testid="delete-skill"]') !== null,
       ).length,
     };
   })()`);
@@ -5146,9 +5594,8 @@ try {
   const skillText = await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? ""`);
   check(skillText === originalSkill, "the skill page does not show the live file bytes");
   check(
-    (await page.eval<string>(`document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? ""`)) ===
-      "generated",
-    "the generated skill status is not named",
+    (await page.eval<number>(`document.querySelectorAll('[data-testid="discover-skill-status"]').length`)) === 0,
+    "the skill page still names a draft state",
   );
   for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
     check(
@@ -5175,7 +5622,7 @@ try {
   await page.reload();
   await runPalette("discover.tab.testing-strategy");
   await page.wait(
-    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "Live file missing"`,
+    `document.querySelector('[data-testid="discover-tab"][data-skill="discover-testing-strategy"]')?.getAttribute("data-state") === "missing"`,
     "the missing skill state",
   );
   const baselineSkill = await readFile(baselineSkillPath, "utf8");
@@ -5194,7 +5641,7 @@ try {
   await page.reload();
   await runPalette("discover.tab.testing-strategy");
   await page.wait(
-    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "generated"`,
+    `document.querySelector('[data-testid="discover-tab"][data-skill="discover-testing-strategy"]')?.getAttribute("data-state") === "generated"`,
     "the restored generated skill state",
   );
 
@@ -5202,39 +5649,24 @@ try {
     preview: boolean;
     split: number;
     badge: boolean;
+    status: boolean;
     editor: number;
     panel: number;
     header: number;
-    inline: boolean;
     title: string;
-    state: string;
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
     headerSurface: string;
     raised: string;
-    dotWidth: number;
-    dotHeight: number;
-    dot: string;
-    success: string;
     chip: boolean;
     chipRadius: string;
-    pillSurface: string;
-    successSurface: string;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
     const index = document.querySelector('#workspace-discover .discover-skill-page');
     const header = panel?.querySelector('.discover-skill__header');
-    const identity = header?.querySelector('.discover-skill__identity');
-    const actions = header?.querySelector('.discover-skill__actions');
-    const dot = header?.querySelector('.discover-skill__state-dot');
     const chip = header?.querySelector('.discover-skill__path');
-    const pill = header?.querySelector('[data-testid="discover-skill-status"]');
-    const center = (element) => {
-      const box = element?.getBoundingClientRect();
-      return box === undefined ? 0 : box.top + box.height / 2;
-    };
     const token = (name) => {
       const probe = document.createElement("div");
       probe.style.background = \`var(\${name})\`;
@@ -5243,62 +5675,41 @@ try {
       probe.remove();
       return value;
     };
-    const dotBox = dot?.getBoundingClientRect();
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
       badge: document.querySelector('[data-testid="discover-skill-state"]') !== null,
+      status: Boolean(header?.querySelector('[data-testid="discover-skill-status"]')),
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
       header: header === null ? 0 : Math.round(header.getBoundingClientRect().height),
-      inline: identity != null && actions != null &&
-        Math.abs(center(identity) - center(actions)) <= 2,
       title: panel?.querySelector('.panel__title')?.textContent?.trim() ?? "",
-      state: panel
-        ?.querySelector('[data-testid="discover-skill-status"]')
-        ?.textContent?.trim() ?? "",
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
       headerSurface: header === null ? "" : getComputedStyle(header).backgroundColor,
       raised: token("--surface-raised"),
-      dotWidth: dotBox === undefined ? 0 : Math.round(dotBox.width),
-      dotHeight: dotBox === undefined ? 0 : Math.round(dotBox.height),
-      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
-      success: token("--success"),
       chip: chip !== null && chip !== undefined && chip.classList.contains("code-chip"),
       chipRadius: chip === null || chip === undefined ? "" : getComputedStyle(chip).borderRadius,
-      pillSurface: pill === null || pill === undefined ? "" : getComputedStyle(pill).backgroundColor,
-      successSurface: token("--success-surface"),
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
   check(!skillLayout.badge, "the skill tab still renders a state badge");
+  check(!skillLayout.status, "the skill tab still renders a status pill");
   check(
     skillLayout.title === "discover-testing-strategy/SKILL.md",
     "the skill panel is not titled with the relative path",
     skillLayout.title,
   );
+  check(skillLayout.header === 44, "the skill header is not one 44px row", skillLayout);
   check(
-    skillLayout.state === "generated",
-    "the clean skill header does not name the generated state",
+    skillLayout.headerSurface === skillLayout.raised,
+    "the skill header is not a surface-raised band",
     skillLayout,
   );
   check(
-    skillLayout.header === 44 && skillLayout.inline,
-    "the skill header is not one 44px row with the state and actions",
-    skillLayout,
-  );
-  check(
-    skillLayout.headerSurface === skillLayout.raised && skillLayout.dotWidth === 6 &&
-      skillLayout.dotHeight === 6 && skillLayout.dot === skillLayout.success,
-    "the skill header is not a surface-raised band with a success state dot",
-    skillLayout,
-  );
-  check(
-    skillLayout.chip && skillLayout.chipRadius === "3px" &&
-      skillLayout.pillSurface === skillLayout.successSurface,
-    "the skill header does not read as a path chip beside a success state pill",
+    skillLayout.chip && skillLayout.chipRadius === "3px",
+    "the skill header does not read as a path chip",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
@@ -5354,7 +5765,6 @@ try {
     theme: string;
     stored: string;
     text: string;
-    status: string;
     tabs: number;
   }>(`(() => ({
     mode: ["goal", "flow", "discover"].find((mode) => document.querySelector('[data-testid="mode-' + mode + '"]')?.getAttribute("aria-selected") === "true") ?? "",
@@ -5364,7 +5774,6 @@ try {
     theme: document.documentElement.dataset.theme,
     stored: localStorage.getItem("devboard.layout.v1") ?? "",
     text: (document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? "").slice(-20),
-    status: document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
     tabs: document.querySelectorAll('[data-testid="workspace-tab"]').length,
   }))()`);
   check(afterReload.mode === beforeReload.mode && afterReload.theme === beforeReload.theme, "mode or theme did not survive reload", { beforeReload, afterReload });
@@ -5373,9 +5782,9 @@ try {
   check(afterReload.panes.length === beforeReload.panes.length && afterReload.panes.every((width, index) => Math.abs(width - (beforeReload.panes[index] ?? 0)) <= 2), "split sizes did not survive reload", { before: beforeReload.panes, after: afterReload.panes });
   const restoredBaseline = (await readFile(join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"), "utf8")).slice(-20);
   check(
-    afterReload.text === restoredBaseline && afterReload.status === "generated",
+    afterReload.text === restoredBaseline,
     "the restored skill text did not survive reload",
-    { text: afterReload.text, baseline: restoredBaseline, status: afterReload.status },
+    { text: afterReload.text, baseline: restoredBaseline },
   );
   check(afterReload.stored.includes('"theme":"light"'), "layout localStorage lost the theme", afterReload.stored.slice(0, 120));
   check(!afterReload.stored.includes('"sidebarVisible"'), "layout localStorage still stores sidebar visibility", afterReload.stored.slice(0, 120));
@@ -7208,6 +7617,13 @@ try {
     "the issues indicator title omits the lifecycle or the agent count",
     runningIndicatorTitle,
   );
+  // The status bar counts workers; the queue counts the forge read. Wait for
+  // that read to list the seeded issues before its rows and links are read.
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent?.trim() === "2 pending · 3 running"`,
+    "the forge-derived queue summary",
+    10_000,
+  );
 
   // The Overview counts the fleet, lists it in the left column below the
   // Automation panel, and streams the selected agent's output on the right.
@@ -7220,6 +7636,7 @@ try {
     cooldowns: string;
     facts: string[];
     summaryIssues: string[];
+    summaryVersions: string[];
     summaryIssueLinks: Array<{ tag: string; text: string; href: string; target: string }>;
     sideBeforeOutput: boolean;
     leftOfOutput: boolean;
@@ -7249,6 +7666,9 @@ try {
       ),
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
+      ),
+      summaryVersions: [...(summary?.querySelectorAll('[data-testid="issues-agent-row-version"]') ?? [])].map(
+        (item) => item.textContent?.trim() ?? "",
       ),
       summaryIssueLinks: [...(summary?.querySelectorAll(".issues-agent-row__issue") ?? [])].map(
         (link) => ({
@@ -7362,6 +7782,12 @@ try {
     overview,
   );
   check(
+    overview.summaryVersions.length === 3 &&
+      overview.summaryVersions.every((version) => version === seedVersion),
+    "an overview running row does not name its worker version",
+    overview.summaryVersions,
+  );
+  check(
     overview.summaryIssueLinks.length === 3 &&
       overview.summaryIssueLinks.every(
         (link, index) =>
@@ -7472,6 +7898,7 @@ try {
       activity: string;
       question: string;
       linked: string;
+      version: string;
     }>
   >(`[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => ({
     issue: card.getAttribute("data-issue") ?? "",
@@ -7480,6 +7907,7 @@ try {
     activity: card.querySelector('[data-testid="issues-agent-activity"]')?.textContent ?? "",
     question: card.querySelector('[data-testid="issues-agent-question"]')?.textContent ?? "",
     linked: card.querySelector("a")?.getAttribute("href") ?? "",
+    version: card.querySelector('[data-testid="issues-agent-version"]')?.textContent?.trim() ?? "",
   }))`);
   check(cards.length === 3, "the Agents page lost an agent", cards);
   check(cards.map((card) => card.issue).join(",") === "17,18,19", "the cards are not sorted by issue", cards);
@@ -7505,6 +7933,11 @@ try {
     cards,
   );
   check(cards.every((card) => card.status === "running"), "a card has the wrong status", cards);
+  check(
+    cards.every((card) => card.version.includes(seedVersion)),
+    "an Agents card does not name its worker version",
+    cards.map((card) => card.version),
+  );
   const agentsHeader = await page.eval<{ count: string; asking: string; title: string; eyebrow: string }>(`(() => ({
     count: document.querySelector('[data-testid="issues-agents-count"]')?.textContent?.trim() ?? "",
     asking: document.querySelector('[data-testid="issues-agents-asking"]')?.textContent?.trim() ?? "",
@@ -7925,13 +8358,16 @@ try {
   );
 
   await page.click('[data-testid="open-issues-queue"]');
-  await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
-  const queue = await page.eval<Array<{ number: string; handled: string; goal: string; run: string }>>(
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-queue-item"]').length === 5`,
+    "the issues queue rows",
+    8_000,
+  );
+  const queue = await page.eval<Array<{ number: string; processing: string; goal: string }>>(
     `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
       number: item.getAttribute("data-number") ?? "",
-      handled: item.getAttribute("data-handled") ?? "",
+      processing: item.getAttribute("data-processing") ?? "",
       goal: item.getAttribute("data-goal") ?? "",
-      run: item.getAttribute("data-run") ?? "",
     }))`,
   );
   check(queue.length === 5, "the queue does not list every open issue", queue);
@@ -7945,16 +8381,14 @@ try {
     "a goal label is not visible on its issue",
     queue,
   );
-  check(queue.every((entry) => entry.handled === "false"), "a pending issue is not marked pending", queue);
   check(
-    queue.slice(0, 3).every((entry) => entry.run.length > 0) &&
-      queue.slice(3).every((entry) => entry.run === ""),
-    "the queue does not show each issue's running agent",
+    queue.every((entry, index) => entry.processing === (index < 3 ? "true" : "false")),
+    "a row's state is not the forge's processing label",
     queue,
   );
   check(
     await page.eval<number>(`document.querySelectorAll('[data-testid="issues-running-marker"]').length`) === 3,
-    "the queue has no running marker for an active agent",
+    "the queue has no running marker for a processing label",
   );
   const goalBadges = await page.eval<number>(
     `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
@@ -8076,6 +8510,20 @@ try {
     `document.querySelector('[data-testid="issues-run-activity"]')?.textContent ?? ""`,
   );
   check(runActivity.includes("Implementing issue"), "the run detail does not show its activity", runActivity);
+  const runVersions = await page.eval<{ rows: string[]; detail: string }>(`(() => ({
+    rows: [...document.querySelectorAll('[data-testid="issues-run-version"]')].map((item) => item.textContent?.trim() ?? ""),
+    detail: document.querySelector('[data-testid="issues-run-version-detail"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    runVersions.rows.length === 4 && runVersions.rows.every((version) => version === seedVersion),
+    "an issues run row does not name its worker version",
+    runVersions.rows,
+  );
+  check(
+    runVersions.detail.includes(seedVersion),
+    "the run detail does not name the worker that owns it",
+    runVersions.detail,
+  );
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview again");
 
@@ -9242,6 +9690,218 @@ try {
     8_000,
   );
 
+  // 15b. Two live worker versions: every running task names the version that
+  // owns it, and the older worker's drain never becomes the family's pause.
+  await seedMixedIssuesState(stateDir, host);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues working (2)"`,
+    "the family headline during the mixed-version takeover",
+    10_000,
+  );
+  const mixedIndicator = await page.eval<{
+    text: string;
+    title: string;
+    label: string;
+  }>(`(() => {
+    const item = document.querySelector('[data-testid="issues-indicator"]');
+    return {
+      text: item?.textContent?.trim() ?? "",
+      title: item?.getAttribute("title") ?? "",
+      label: item?.getAttribute("aria-label") ?? "",
+    };
+  })()`);
+  check(
+    mixedIndicator.text === "issues working (2)" &&
+      mixedIndicator.title.includes("2 running agent") &&
+      !/pausing|draining|drain/i.test(mixedIndicator.text) &&
+      !/pausing|draining|drain/i.test(mixedIndicator.title) &&
+      !/pausing|draining|drain/i.test(mixedIndicator.label),
+    "the status indicator reports the older worker's drain instead of the family's work",
+    mixedIndicator,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-poll-text"]')?.textContent?.trim()?.startsWith("Every 10s · checked ") === true`,
+    "the takeover poll line to report polling",
+    10_000,
+  );
+  const mixedPoll = await page.eval<{ text: string; title: string }>(`(() => {
+    const poll = document.querySelector('[data-testid="issues-poll"]');
+    return {
+      text: poll?.querySelector('[data-testid="issues-poll-text"]')?.textContent?.trim() ?? "",
+      title: poll?.getAttribute("title") ?? "",
+    };
+  })()`);
+  check(
+    !/pausing|draining|drain/i.test(mixedPoll.text) && !/pausing|draining|drain/i.test(mixedPoll.title),
+    "the takeover poll line reports the drained worker as paused",
+    mixedPoll,
+  );
+  const mixedRows = await page.eval<Array<{ issue: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-agent-summary"] .issues-agent-row')].map((row) => ({
+      issue: row.getAttribute("data-issue") ?? "",
+      version: row.querySelector('[data-testid="issues-agent-row-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    mixedRows.length === 2 &&
+      mixedRows.some((row) => row.issue === "17" && row.version === MIXED_OLD_VERSION) &&
+      mixedRows.some((row) => row.issue === "18" && row.version === seedVersion),
+    "the overview does not attribute a mixed-version takeover's tasks",
+    mixedRows,
+  );
+  await saveShot("issues-mixed-version-overview");
+
+  await runPalette("open.issues.agents");
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-agent"]').length === 2`,
+    "the two mixed-version agent cards",
+    8_000,
+  );
+  const mixedCards = await page.eval<Array<{ issue: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => ({
+      issue: card.getAttribute("data-issue") ?? "",
+      version: card.querySelector('[data-testid="issues-agent-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    mixedCards.some((card) => card.issue === "17" && card.version.includes(MIXED_OLD_VERSION)) &&
+      mixedCards.some((card) => card.issue === "18" && card.version.includes(seedVersion)),
+    "an agents card does not attribute a mixed-version takeover's task",
+    mixedCards,
+  );
+  const mixedWorkerList = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-worker"]')].map((item) => item.textContent?.trim() ?? "")`,
+  );
+  check(
+    mixedWorkerList.includes(MIXED_OLD_VERSION) && mixedWorkerList.includes(seedVersion),
+    "the Agents header does not list both live worker versions",
+    mixedWorkerList,
+  );
+
+  await page.click('[data-testid="open-issues-queue"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-queue-item"]').length === 4`,
+    "the takeover queue rows",
+    8_000,
+  );
+  const mixedQueue = await page.eval<Array<{ issue: string; processing: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
+      issue: item.getAttribute("data-number") ?? "",
+      processing: item.getAttribute("data-processing") ?? "",
+    }))`,
+  );
+  check(
+    mixedQueue.length === 4 &&
+      mixedQueue.some((row) => row.issue === "17" && row.processing === "true") &&
+      mixedQueue.some((row) => row.issue === "18" && row.processing === "true") &&
+      mixedQueue.filter((row) => row.processing === "true").length === 2,
+    "the queue does not show the takeover's processing labels",
+    mixedQueue,
+  );
+
+  await runPalette("open.issues.runs");
+  await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the takeover runs page");
+  const mixedRunRows = await page.eval<Array<{ run: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-run"]')].map((item) => ({
+      run: item.getAttribute("data-run") ?? "",
+      version: item.querySelector('[data-testid="issues-run-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    mixedRunRows.some((row) => row.run === MIXED_OLD_RUN && row.version === MIXED_OLD_VERSION) &&
+      mixedRunRows.some((row) => row.run === MIXED_NEW_RUN && row.version === seedVersion),
+    "the run history does not name both owning versions",
+    mixedRunRows,
+  );
+  await page.click(`[data-testid="issues-run"][data-run="${MIXED_OLD_RUN}"]`);
+  await page.wait(`document.querySelector('[data-testid="issues-run-detail"]') !== null`, "the old run detail");
+  const mixedDetail = await page.eval<{ run: string; status: string; version: string }>(`(() => {
+    const detail = document.querySelector('[data-testid="issues-run-detail"]');
+    return {
+      run: detail?.getAttribute("data-run") ?? "",
+      status: detail?.querySelector('.badge')?.textContent?.trim() ?? "",
+      version: detail?.querySelector('[data-testid="issues-run-version-detail"]')?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    mixedDetail.run === MIXED_OLD_RUN &&
+      mixedDetail.status === "running" &&
+      mixedDetail.version.includes(MIXED_OLD_VERSION),
+    "the draining task's run detail is not intact and attributed",
+    mixedDetail,
+  );
+
+  const drainVocabulary = await page.eval<string[]>(`(() => {
+    const found = [];
+    const scan = (scope, name) => {
+      if (scope === null) return;
+      const text = scope.innerText ?? "";
+      if (/pausing|draining|drain/i.test(text)) found.push(name + ":text:" + text.slice(0, 160));
+      for (const node of [scope, ...scope.querySelectorAll("[title], [aria-label]")]) {
+        if (!(node instanceof Element)) continue;
+        for (const attribute of ["title", "aria-label"]) {
+          const value = node.getAttribute(attribute) ?? "";
+          if (/pausing|draining|drain/i.test(value)) found.push(name + ":" + attribute + ":" + value);
+        }
+      }
+    };
+    scan(document.getElementById("workspace-issues"), "issues");
+    scan(document.querySelector('[data-testid="issues-indicator"]'), "indicator");
+    return found;
+  })()`);
+  check(drainVocabulary.length === 0, "the takeover renders drain vocabulary", drainVocabulary);
+
+  // The older worker retires: its run stays readable with its own version,
+  // the live list drops it, and every running task names the newer version.
+  try {
+    process.kill(mixedWorkerPids[0]!, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+  await rm(versionLockPath(lockPath(resolve(host)), MIXED_OLD_VERSION), { force: true });
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues working (1)"`,
+    "the family headline after the older worker retired",
+    10_000,
+  );
+  await runPalette("open.issues.agents");
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-agent"]').length === 1`,
+    "the single running task after retirement",
+    8_000,
+  );
+  const retiredWorkers = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-worker"]')].map((item) => item.textContent?.trim() ?? "")`,
+  );
+  check(
+    retiredWorkers.length === 1 && retiredWorkers[0] === seedVersion,
+    "the live worker list still contains the retired worker",
+    retiredWorkers,
+  );
+  const retiredCard = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-agent"] [data-testid="issues-agent-version"]')?.textContent?.trim() ?? ""`,
+  );
+  check(retiredCard.includes(seedVersion), "the surviving task does not name the newer version", retiredCard);
+  await runPalette("open.issues.runs");
+  await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the history after retirement");
+  const retiredRuns = await page.eval<Array<{ run: string; version: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-run"]')].map((item) => ({
+      run: item.getAttribute("data-run") ?? "",
+      version: item.querySelector('[data-testid="issues-run-version"]')?.textContent?.trim() ?? "",
+    }))`,
+  );
+  check(
+    retiredRuns.some((row) => row.run === MIXED_OLD_RUN && row.version === MIXED_OLD_VERSION),
+    "the retired worker's run lost its version in history",
+    retiredRuns,
+  );
+  await clearMixedIssuesState(stateDir, host);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues stopped"`,
+    "the stopped indicator after the mixed-version fixture",
+    10_000,
+  );
+
   // Leave a running state so the 1024×720 clipping check sees the item.
   await seedIssuesState(stateDir, host, "running");
   await page.wait(
@@ -10153,6 +10813,7 @@ try {
     ["open.issues.issues", "issues"],
     ["open.issues.runs", "issues"],
     ["devboard.tab.tools", "devboard"],
+    ["devboard.tab.skills", "devboard"],
     ["open.discover.contribution", "discover"],
     ["open.flow.decisions", "flow"],
     ["flow.checkpoint.open.cp-1", "flow"],
@@ -10346,36 +11007,31 @@ try {
     page.eval<string>(
       `document.querySelector(${JSON.stringify(selector)})?.getAttribute("data-run-state") ?? ""`,
     );
-  const framesNow = (): Promise<number> =>
-    page.eval<number>(`(window.__viFrames ?? []).length`);
+  // Periodic reads (the 3s version poll and the MCP page's count refresh) are
+  // not caused by a click, so a menu check counts only the frames a click could
+  // have sent.
+  const countedFrames = `(window.__viFrames ?? []).filter((frame) => !/getVersion|getMcpTools/.test(String(frame)))`;
+  const framesNow = (): Promise<number> => page.eval<number>(`${countedFrames}.length`);
+  const framesSince = (count: number): Promise<string[]> =>
+    page.eval<string[]>(`${countedFrames}.slice(${count})`);
 
   // Goal: the Skills row and Implementation read only the Goal store, and
-  // opening or expanding a menu entry sends nothing.
+  // opening a menu entry sends nothing.
   check(
     (await runStateOf('[data-testid="open-implementation"]')) === "idle" &&
-      (await runStateOf('[data-testid="goal-skills-toggle"]')) === "idle",
+      (await runStateOf('[data-testid="goal-skills-open"]')) === "idle",
     "the idle Goal entries are not idle",
   );
   const menuFrames = await framesNow();
   await page.click('[data-testid="open-implementation"]');
-  await page.click('[data-testid="goal-skills-toggle"]');
+  await page.click('[data-testid="goal-skills-open"]');
   await delay(200);
   check((await framesNow()) === menuFrames, "opening a Goal sidebar entry sent a frame");
-  await page.click('[data-testid="goal-skills-toggle"]');
-
-  await page.click('[data-testid="goal-skills-toggle"]');
-  await page.wait(
-    `document.querySelector('[data-testid="goal-skills-page"]') !== null`,
-    "the Skills submenu",
-    20_000,
-  );
-  await page.click('[data-testid="goal-skills-page"]');
   await page.wait(
     `document.querySelector('[data-testid="prepare-skills-overlay"]') !== null`,
     "the Skills page prepare control",
     20_000,
   );
-  await page.click('[data-testid="goal-skills-toggle"]');
   await page.wait(
     `(() => {
       const button = document.querySelector('[data-testid="prepare-skills-overlay"]');
@@ -10386,8 +11042,8 @@ try {
   );
   await pageCommand({ type: "prepareSkills" });
   await page.wait(
-    `document.querySelector('[data-testid="goal-skills-toggle"]')?.getAttribute("data-run-state") === "running"`,
-    "the running Skills toggle",
+    `document.querySelector('[data-testid="goal-skills-open"]')?.getAttribute("data-run-state") === "running"`,
+    "the running Skills entry",
     20_000,
   );
   check(
@@ -10395,9 +11051,9 @@ try {
     "skills preparation marked the Implementation entry",
   );
   const skillsBadge = await page.eval<string>(
-    `document.querySelector('[data-testid="goal-skills-toggle"] [data-testid="run-state-badge"]')?.textContent?.trim() ?? ""`,
+    `document.querySelector('[data-testid="goal-skills-open"] [data-testid="run-state-badge"]')?.textContent?.trim() ?? ""`,
   );
-  check(skillsBadge === "running", "the Skills toggle has no running badge", skillsBadge);
+  check(skillsBadge === "running", "the Skills entry has no running badge", skillsBadge);
   await page.wait(
     `document.querySelector('[data-testid="choice"]') !== null`,
     "the preparation question",
@@ -10405,7 +11061,7 @@ try {
   );
   await page.click('[data-testid="choice"]');
   await page.wait(
-    `document.querySelector('[data-testid="goal-skills-toggle"]')?.getAttribute("data-run-state") === "idle"`,
+    `document.querySelector('[data-testid="goal-skills-open"]')?.getAttribute("data-run-state") === "idle"`,
     "the finished skills preparation",
     30_000,
   );
@@ -10431,8 +11087,8 @@ try {
     20_000,
   );
   check(
-    (await runStateOf('[data-testid="goal-skills-toggle"]')) === "idle",
-    "a manual run marked the Skills toggle",
+    (await runStateOf('[data-testid="goal-skills-open"]')) === "idle",
+    "a manual run marked the Skills entry",
   );
   const implementationMeta = await page.eval<string>(
     `document.querySelector('[data-testid="open-implementation"] .sidebar-item__meta')?.textContent?.trim() ?? ""`,
@@ -10514,7 +11170,10 @@ try {
     20_000,
   );
   await delay(200);
-  check((await framesNow()) === discoverFrames, "opening a Discover sidebar entry sent a frame");
+  check(
+    (await framesNow()) === discoverFrames,
+    `opening a Discover sidebar entry sent a frame: ${JSON.stringify(await framesSince(discoverFrames))}`,
+  );
   const contributionStart = await page.eval<{ present: boolean; disabled: boolean; title: string }>(
     `(() => {
       const button = document.querySelector('[data-testid="discover-agent-start"]');
