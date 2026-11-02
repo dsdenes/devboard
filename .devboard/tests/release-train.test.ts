@@ -1,14 +1,15 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { agentRegistry } from "../server/agents/registry";
 import {
   DEFAULT_INTERVAL_MINUTES,
   readSettings,
 } from "../release-train/settings";
-import { releaseTrainDirectory } from "../release-train/paths";
+import { releaseTrainDirectory, runDirectory } from "../release-train/paths";
 import {
   ReleaseTrainWorker,
+  readResult,
   type ReleaseRunInput,
   type ReleaseRunResult,
 } from "../release-train/worker";
@@ -174,6 +175,21 @@ describe("Release Train family", () => {
     } finally {
       await worker.stop();
     }
+  });
+
+  test("the agent's result document is read from the run directory", () => {
+    const workspaceValue = workspace("result");
+    const runDir = runDirectory(workspaceValue.directory, "run-1");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "result.json"),
+      JSON.stringify({ ok: false, detail: "the release workflow concluded failure" }),
+    );
+    expect(readResult(runDir)).toEqual({
+      ok: false,
+      detail: "the release workflow concluded failure",
+    });
+    expect(readResult(runDirectory(workspaceValue.directory, "absent"))).toBeUndefined();
   });
 
   test("a second worker of the same version refuses while the first is live", async () => {
