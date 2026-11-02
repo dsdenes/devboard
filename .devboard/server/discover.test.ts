@@ -312,6 +312,7 @@ interface DiscoverState {
   runId: string | null;
   activeAgent: string | null;
   runningAll: boolean;
+  allFailed: string | null;
   agents: DiscoverAgentRow[];
   interrupted: boolean;
   stale: boolean;
@@ -359,7 +360,10 @@ async function runDiscover(client: TestClient): Promise<DiscoverState> {
   await client.waitFor((message) => message.type === "discoverStarted");
   const stopped = await client.waitFor((message) => message.type === "discoverStopped");
   expect(stopped.completed).toBe(true);
-  return discoverState(client);
+  const state = await discoverState(client);
+  expect(state.runningAll).toBe(false);
+  expect(state.allFailed).toBeNull();
+  return state;
 }
 
 /** File bytes of one tree, keyed by relative path, for byte-for-byte checks. */
@@ -2263,6 +2267,7 @@ describe("discovery agents", () => {
 
         const state = await discoverState(client);
         expect(state.runningAll).toBe(false);
+        expect(state.allFailed).toBe("discover-naming-conventions");
         expect(agentRow(state, "sheet")?.state).toBe("succeeded");
         expect(agentRow(state, "discover-glossary")?.state).toBe("succeeded");
         expect(agentRow(state, "discover-testing-strategy")?.state).toBe("succeeded");

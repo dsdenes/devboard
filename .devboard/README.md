@@ -103,8 +103,8 @@ surface that holds the same facts. The Flow overview opens with the read-only fl
 takes the full page height; while a goal interview is running the panel collapses to its header.
 The `flow-goal-active` interview block follows it only while the interview holds a pending
 question, so an answered interview leaves no empty panel behind. The implementation activity
-moves to the pinned activity bar, so the overview keeps the read-only goal, session facts,
-widgets, files, blockers, and verification.
+moves to the pinned activity bar, so the overview keeps the read-only goal, the pending
+implementation question, widgets, files, blockers, and verification.
 
 ### Workspace page
 
@@ -921,11 +921,70 @@ render. The `contribution` entry carries `data-testid="discover-tab"`, `data-tab
 and the label `Contribution`; the `contribution-skill` entry carries
 `data-skill="discover-contribution"` and follows `glossary-skill` directly.
 The sidebar has no header, so its first entry is its mode's navigation. The active panel carries
-`data-testid="discover-panel"` and the same `data-tab`. While a discovery agent runs, the
-`Overview` entry carries a `running` badge (`data-testid="discover-running"`), matching the Issues
-overview; the badge disappears when the run stops.
+`data-testid="discover-panel"` and the same `data-tab`.
 Warnings appears as its own group with a count only while at least one warning exists; the sidebar
 keeps no freshness group and no recent-notice list.
+
+### Sidebar run state
+
+Every sidebar entry whose page can start, or is produced by, an agent carries `data-run-state` with
+exactly one of `idle`, `running`, `failed`, or `answer`, and renders a visible badge with the text
+of the three non-idle values. `idle` renders no run badge. Existing counts, artifact-state meta
+(including the Contribution skill's `missing`), and lifecycle badges stay exactly as they were.
+Entries outside this contract carry no `data-run-state`.
+
+The Discover Overview entry is marked only by the full seven-agent Run all suite; starting a single
+agent never marks it. Every other Discover entry reads only its own agent:
+
+| Sidebar entry | Test hook | State source |
+|---|---|---|
+| Overview | `discover-tab` `data-tab="overview"` | the seven-agent Run all suite |
+| Data Sheet | `discover-agent-tab` `data-agent="sheet"` | the `sheet` agent |
+| Contribution Agent | `discover-agent-tab` `data-agent="discover-contribution"` | that agent |
+| Contribution page | `discover-tab` `data-tab="contribution"` | that agent |
+| Contribution skill | `discover-tab` `data-tab="contribution-skill"` | that agent |
+| Testing Strategy Agent | `discover-agent-tab` `data-agent="discover-testing-strategy"` | that agent |
+| Testing Strategy skill | `discover-tab` `data-tab="testing-strategy"` | that agent |
+| Naming Conventions Agent | `discover-agent-tab` `data-agent="discover-naming-conventions"` | that agent |
+| Naming Conventions skill | `discover-tab` `data-tab="naming-conventions"` | that agent |
+| Coding Conventions Agent | `discover-agent-tab` `data-agent="discover-coding-conventions"` | that agent |
+| Coding Conventions skill | `discover-tab` `data-tab="coding-conventions"` | that agent |
+| Architecture & Boundaries Agent | `discover-agent-tab` `data-agent="discover-architecture-boundaries"` | that agent |
+| Architecture & Boundaries skill | `discover-tab` `data-tab="architecture-boundaries"` | that agent |
+| Glossary Agent | `discover-agent-tab` `data-agent="discover-glossary"` | that agent |
+| Glossary page | `discover-tab` `data-tab="glossary"` | that agent |
+| Glossary skill | `discover-tab` `data-tab="glossary-skill"` | that agent |
+
+The Overview entry keeps `data-testid="discover-running"` for its suite run badge. During Run all
+the Overview is `running` and the current step's entries are `running`; a question on the step makes
+both `answer`, and a step failure ends the step's entries and the Overview `failed` while later
+agents stay `idle`. A successful suite returns every Discover entry to `idle`.
+
+The same vocabulary covers the other modes:
+
+- **Goal**: the Implementation entry (`data-testid="open-implementation"`) is `running` while a
+  manual implementation run or the lifecycle's current step executes and `answer` while that run
+  waits for an operator question; its stage, `manual`, or `idle` meta never moves into the badge.
+  The Skills toggle row (`data-testid="goal-skills-toggle"`) is `running` while skills preparation
+  executes, including while the submenu is collapsed. Goal records no failed terminal state, so
+  neither entry shows `failed`, and an operator stop is never relabelled a failure.
+- **Issues**: the Overview entry (`data-testid="open-issues-overview"`) is `running` while the
+  issues lifecycle runs, `failed` while it is failed, and `answer` while a running issue agent has a
+  pending question, alongside its lifecycle badge and queue summary. The Draft goals entry
+  (`data-testid="open-issues-drafts"`) is `running` while any draft elaboration runs, `failed` when
+  the most recent elaboration failed, and `answer` while one waits for an operator question.
+- **Flow**: the Overview entry (`data-command="open.flow.overview"`) and the Session `Status` entry
+  are `running` while `flow.status` is `running` and `answer` while a Flow question is pending; the
+  `stopped` and `merged` badges stay as they are.
+- **Devboard**: each background-agent entry (`data-testid="open-devboard-<id>"`, with its
+  `data-testid="agent-state-<id>"` lifecycle badge) carries `data-run-state` matching that
+  lifecycle: `running` for `running` and `starting`, `failed` for `failed`, and `idle` for `stopped`
+  and `stopping`. Its badge text, tone, and issue count do not change, and a future pending question
+  makes the entry `answer`.
+
+No menu interaction sends a frame or starts an agent: every value is derived from the snapshot the
+dashboard already delivers, so a reload during a live run restores the same entries, and a finished,
+stopped, or failed run clears `running` everywhere it was marked.
 
 ## Discovery agent cards
 

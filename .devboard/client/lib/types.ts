@@ -507,6 +507,11 @@ export interface DiscoverStatePayload {
   activeAgent: string | null;
   /** True while the seven agents run as one Run all sequence. */
   runningAll: boolean;
+  /**
+   * The step a Run all sequence halted on, or null. Additive: an older server
+   * sends neither field, so the Overview entry stays idle after its failure.
+   */
+  allFailed?: string | null;
   /** The seven discovery cards in sidebar order. */
   agents: DiscoverAgentState[];
   interrupted: boolean;

@@ -23,6 +23,7 @@ import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as rem
 import { toolListPayload } from "../mcp/catalog";
 import { recordToolInvocation } from "../mcp/invocations";
 import { stateFile } from "../server/state";
+import { statePath } from "../issues/scout/paths";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { dashboardsFor, freePort, processRunning, run, waitFor } from "./verification";
 
@@ -714,7 +715,8 @@ async function seedIssuesState(
     },
   ].map((agent) => ({
     ...agent,
-    question: agent.runId === answeredRunId ? null : agent.question,
+    question:
+      answeredRunId === "*" || agent.runId === answeredRunId ? null : agent.question,
   }));
   const queue = running
     ? [
@@ -929,7 +931,16 @@ async function installHarnessCopy(host: string, version = INSTALLED_VERSION): Pr
   const home = installedPackageHome(host);
   await rm(join(prefix, "node_modules"), { recursive: true, force: true });
   await mkdir(home, { recursive: true });
-  for (const entry of ["server", "issues", "lib", "watchdog", "coach", "mcp", "dist"]) {
+  for (const entry of [
+    "server",
+    "issues",
+    "lib",
+    "watchdog",
+    "coach",
+    "mcp",
+    "release-train",
+    "dist",
+  ]) {
     await cp(join(harnessRoot, entry), join(home, entry), {
       recursive: true,
       filter: (source) => !source.endsWith(".test.ts"),
@@ -1279,6 +1290,9 @@ async function waitDiscoverIdle(port: number, timeoutMs = 120_000): Promise<void
 
 let serverProcess: ReturnType<typeof spawn> | undefined;
 let fixtureHost: string | undefined;
+/** The second fixture the sidebar run-state phase drives. */
+let extraServerProcess: ReturnType<typeof spawn> | undefined;
+let extraFixtureHost: string | undefined;
 let feedbackApi: ReturnType<typeof Bun.serve> | undefined;
 let gateOffProcess: ReturnType<typeof spawn> | undefined;
 let feedbackOffProcess: ReturnType<typeof spawn> | undefined;
@@ -2803,15 +2817,16 @@ try {
   })()`);
   check(
     devboardSidebar.entries === 1 &&
-      devboardSidebar.items === 5 &&
+      devboardSidebar.items === 6 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
-        JSON.stringify(["Auto Scout", "Watchdog", "Design System", "Coach"]) &&
+        JSON.stringify(["Auto Scout", "Watchdog", "Design System", "Coach", "Release Train"]) &&
       JSON.stringify(devboardSidebar.agentCommands) ===
         JSON.stringify([
           "open.devboard.scout",
           "open.devboard.watchdog",
           "open.devboard.design",
           "open.devboard.coach",
+          "open.devboard.release-train",
         ]),
     "the Devboard sidebar does not carry the background agents beside the MCP tools entry",
     devboardSidebar,
@@ -3714,10 +3729,11 @@ try {
     };
   })()`);
   check(
-    flowSurfaces.session && flowSurfaces.pr && flowSurfaces.widgets && flowSurfaces.files && flowSurfaces.bar,
+    flowSurfaces.pr && flowSurfaces.widgets && flowSurfaces.files && flowSurfaces.bar,
     "a Flow surface or the activity bar is missing",
     flowSurfaces,
   );
+  check(!flowSurfaces.session, "the removed Flow session facts panel is still rendered", flowSurfaces);
   check(!flowSurfaces.removed, "a removed Flow activity surface is still rendered", flowSurfaces);
   const flowMenu = await page.eval<{ items: number; icons: number }>(`(() => {
     const group = document.querySelector('[data-testid="sidebar"] section[aria-label="Flow surfaces"]');
@@ -3731,7 +3747,6 @@ try {
   );
   const flowData = await page.eval<{
     status: string;
-    branch: string;
     pr: string;
     widgets: number;
     files: number;
@@ -3740,7 +3755,6 @@ try {
     readyEnabled: boolean;
   }>(`(() => ({
     status: document.querySelector('[data-testid="flow-view"]')?.getAttribute("data-status") ?? "",
-    branch: document.querySelector('[data-testid="flow-branch"]')?.textContent?.trim() ?? "",
     pr: document.querySelector('[data-testid="flow-pr"]')?.getAttribute("data-state") ?? "",
     widgets: document.querySelectorAll('[data-testid="flow-widget"]').length,
     files: document.querySelectorAll('[data-testid="flow-file"]').length,
@@ -3748,7 +3762,7 @@ try {
     blockers: document.querySelectorAll('[data-testid="flow-blocker"]').length,
     readyEnabled: !(document.querySelector('[data-testid="mark-flow-pr-ready"]')?.disabled ?? true),
   }))()`);
-  check(flowData.status === "stopped" && flowData.branch.length > 0 && flowData.pr === "draft", "the Flow session is not restored", flowData);
+  check(flowData.status === "stopped" && flowData.pr === "draft", "the Flow session is not restored", flowData);
   check(flowData.widgets === 1 && flowData.files === 1 && flowData.blockers === 1 && flowData.readyEnabled, "Flow data surfaces are incomplete", flowData);
   check((await sourceOnlyMarkers(page)) === 0, "the Flow surface renders a source-only marker");
   const flowVerification = await page.eval<{ status: string; text: string; tone: string }>(`(() => {
@@ -10215,7 +10229,585 @@ try {
   await delay(120);
   check((await barIn("goal")).bars === 0, "the Goal implementation page rendered an activity bar");
 
-  // 20. No runtime failures or overflow.
+  // 21. Sidebar run state: each entry follows only its own page's run.
+  // A second fixture keeps these live runs from disturbing the main one.
+  const runStateRoot = join(root, "run-state");
+  const runStateHost = await writeFixture(runStateRoot);
+  extraFixtureHost = runStateHost;
+  const runStateDir = join(runStateHost, ".devboard", ".tmp", "state");
+  await mkdir(runStateDir, { recursive: true });
+  // Every live operation needs a configured provider before it spawns a peer.
+  const runStateProviderStamp = new Date().toISOString();
+  saveSubscriptions(runStateDir, [
+    {
+      id: "verify-go",
+      provider: "opencode-go",
+      label: "Primary Go",
+      key: PROVIDER_GO_KEY,
+      enabled: true,
+      createdAt: runStateProviderStamp,
+      updatedAt: runStateProviderStamp,
+    },
+  ]);
+  await seedFlow(runStateDir, runStateHost);
+  // One failed background agent proves the Devboard failure mapping; every
+  // other entry starts stopped.
+  await mkdir(dirname(statePath(runStateDir, runStateHost)), { recursive: true });
+  await writeFile(
+    statePath(runStateDir, runStateHost),
+    `${JSON.stringify(
+      {
+        version: 2,
+        repo: "fixture/run-state",
+        root: runStateHost,
+        lifecycle: "failed",
+        enabled: true,
+        worker: null,
+        limits: { maxPerHour: 10, maxPending: 5 },
+        intervalMinutes: 60,
+        lastScanStartedAt: null,
+        issues: [],
+        openTitles: [],
+        releaseSignature: null,
+        sync: { state: "ok", at: "2026-01-01T00:00:00.000Z", error: null },
+        scan: null,
+        newestScanId: null,
+        nextAttemptAt: null,
+        lastError: "fixture failure",
+        notice: null,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const runStatePort = await freePort();
+  const runStateBase = `http://127.0.0.1:${runStatePort}`;
+  const runStateLog = join(root, "run-state-acp.log");
+  extraServerProcess = spawn("bun", ["run", "server/index.ts"], {
+    cwd: harnessRoot,
+    env: {
+      ...serverEnv,
+      PORT: String(runStatePort),
+      REPO_DIR: runStateHost,
+      ADRS_DIR: join(runStateHost, "adrs"),
+      GOAL_FILE: join(runStateHost, "GOAL.md"),
+      STATE_DIR: runStateDir,
+      AGENT_COMMAND:
+        `bun ${stubAgent} --log=${runStateLog} --delay-ms=2500 --questions=1 ` +
+        `--prepare-skills --discover --discover-delay-ms=15000 --goal-draft ` +
+        `--flow-implement --flow-question`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  extraServerProcess.stdout?.on("data", (chunk) => logWriter.write(chunk));
+  extraServerProcess.stderr?.on("data", (chunk) => logWriter.write(chunk));
+  await waitForHttp(runStateBase);
+  await devtools.send("Page.navigate", { url: runStateBase });
+  await page.wait(
+    `location.port === "${runStatePort}" &&
+      document.readyState === "complete" &&
+      document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected" &&
+      document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`,
+    "the run-state fixture dashboard",
+    40_000,
+  );
+  /** Sends one product command over a page socket, exactly as a control does. */
+  const pageCommand = async (command: Record<string, unknown>): Promise<void> => {
+    const sent = await page.eval<boolean>(`(async () => {
+      const socket = new WebSocket("ws://" + location.host + "/ws");
+      const opened = await new Promise((resolve) => {
+        socket.onopen = () => resolve(true);
+        socket.onerror = () => resolve(false);
+      });
+      if (!opened) return false;
+      socket.send(${JSON.stringify(JSON.stringify(command))});
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      socket.close();
+      return true;
+    })()`);
+    check(sent, "the page command socket did not open");
+  };
+
+  const runStateOf = (selector: string): Promise<string> =>
+    page.eval<string>(
+      `document.querySelector(${JSON.stringify(selector)})?.getAttribute("data-run-state") ?? ""`,
+    );
+  const framesNow = (): Promise<number> =>
+    page.eval<number>(`(window.__viFrames ?? []).length`);
+
+  // Goal: the Skills row and Implementation read only the Goal store, and
+  // opening or expanding a menu entry sends nothing.
+  check(
+    (await runStateOf('[data-testid="open-implementation"]')) === "idle" &&
+      (await runStateOf('[data-testid="goal-skills-toggle"]')) === "idle",
+    "the idle Goal entries are not idle",
+  );
+  const menuFrames = await framesNow();
+  await page.click('[data-testid="open-implementation"]');
+  await page.click('[data-testid="goal-skills-toggle"]');
+  await delay(200);
+  check((await framesNow()) === menuFrames, "opening a Goal sidebar entry sent a frame");
+  await page.click('[data-testid="goal-skills-toggle"]');
+
+  await page.click('[data-testid="goal-skills-toggle"]');
+  await page.wait(
+    `document.querySelector('[data-testid="goal-skills-page"]') !== null`,
+    "the Skills submenu",
+    20_000,
+  );
+  await page.click('[data-testid="goal-skills-page"]');
+  await page.wait(
+    `document.querySelector('[data-testid="prepare-skills-overlay"]') !== null`,
+    "the Skills page prepare control",
+    20_000,
+  );
+  await page.click('[data-testid="goal-skills-toggle"]');
+  await page.wait(
+    `(() => {
+      const button = document.querySelector('[data-testid="prepare-skills-overlay"]');
+      return button instanceof HTMLButtonElement && !button.disabled;
+    })()`,
+    "the enabled Skills prepare control",
+    20_000,
+  );
+  await pageCommand({ type: "prepareSkills" });
+  await page.wait(
+    `document.querySelector('[data-testid="goal-skills-toggle"]')?.getAttribute("data-run-state") === "running"`,
+    "the running Skills toggle",
+    20_000,
+  );
+  check(
+    (await runStateOf('[data-testid="open-implementation"]')) === "idle",
+    "skills preparation marked the Implementation entry",
+  );
+  const skillsBadge = await page.eval<string>(
+    `document.querySelector('[data-testid="goal-skills-toggle"] [data-testid="run-state-badge"]')?.textContent?.trim() ?? ""`,
+  );
+  check(skillsBadge === "running", "the Skills toggle has no running badge", skillsBadge);
+  await page.wait(
+    `document.querySelector('[data-testid="choice"]') !== null`,
+    "the preparation question",
+    20_000,
+  );
+  await page.click('[data-testid="choice"]');
+  await page.wait(
+    `document.querySelector('[data-testid="goal-skills-toggle"]')?.getAttribute("data-run-state") === "idle"`,
+    "the finished skills preparation",
+    30_000,
+  );
+
+  await runPalette("open.goal.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="start-next"]') !== null`,
+    "the Goal overview start control",
+    20_000,
+  );
+  await page.wait(
+    `(() => {
+      const button = document.querySelector('[data-testid="start-next"]');
+      return button instanceof HTMLButtonElement && !button.disabled;
+    })()`,
+    "the enabled Goal start control",
+    20_000,
+  );
+  await pageCommand({ type: "startRun" });
+  await page.wait(
+    `document.querySelector('[data-testid="open-implementation"]')?.getAttribute("data-run-state") === "running"`,
+    "the running Implementation entry",
+    20_000,
+  );
+  check(
+    (await runStateOf('[data-testid="goal-skills-toggle"]')) === "idle",
+    "a manual run marked the Skills toggle",
+  );
+  const implementationMeta = await page.eval<string>(
+    `document.querySelector('[data-testid="open-implementation"] .sidebar-item__meta')?.textContent?.trim() ?? ""`,
+  );
+  check(implementationMeta === "manual", "the running Implementation meta changed", implementationMeta);
+  await page.wait(
+    `document.querySelector('[data-testid="open-implementation"]')?.getAttribute("data-run-state") === "answer"`,
+    "the Implementation answer state",
+    30_000,
+  );
+  const implementationBadge = await page.eval<string>(
+    `document.querySelector('[data-testid="open-implementation"] [data-testid="run-state-badge"]')?.textContent?.trim() ?? ""`,
+  );
+  check(implementationBadge === "answer", "the Implementation entry has no answer badge", implementationBadge);
+  // The manual sequence resolves every pending ADR, asking after each one;
+  // answer each question and stop when the sequence reports idle.
+  // A sequence hands off between records with a brief idle gap, so only an
+  // idle window that outlasts the handoff ends the loop.
+  const manualDeadline = Date.now() + 120_000;
+  let manualSnapshot = { state: "", choices: 0, question: "" };
+  let idleSince: number | null = null;
+  while (Date.now() < manualDeadline) {
+    manualSnapshot = await page.eval<{ state: string; choices: number; question: string }>(`(() => ({
+      state:
+        document.querySelector('[data-testid="open-implementation"]')?.getAttribute("data-run-state") ?? "",
+      choices: document.querySelectorAll('[data-testid="choice"]').length,
+      question: document.querySelector('[data-testid="question"]')?.textContent?.trim() ?? "",
+    }))()`);
+    if (manualSnapshot.state === "idle") {
+      idleSince ??= Date.now();
+      if (Date.now() - idleSince >= 1_500) break;
+    } else {
+      idleSince = null;
+      if (manualSnapshot.state === "answer" && manualSnapshot.choices > 0) {
+        await page.eval(`document.querySelector('[data-testid="choice"]')?.click()`);
+        await delay(200);
+        continue;
+      }
+    }
+    await delay(100);
+  }
+  check(
+    manualSnapshot.state === "idle",
+    "the manual run did not finish",
+    manualSnapshot,
+  );
+
+  // Discover: a contribution run marks exactly its three entries, a reload
+  // restores them, and the finished suite-less run clears them.
+  await page.click('[data-testid="mode-discover"]');
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agents"]') !== null`,
+    "the Discover sidebar on the run-state fixture",
+    20_000,
+  );
+  // One published slice makes the six skill entries render, so the
+  // contribution run below can mark its own skill entry too.
+  await pageCommand({ type: "discoverAgent", agent: "sheet" });
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agent-tab"][data-agent="sheet"]')
+      ?.getAttribute("data-run-state") === "running"`,
+    "the Data Sheet run before the contribution pass",
+    20_000,
+  );
+  await page.wait(
+    `(() => {
+      const tab = document.querySelector('[data-testid="discover-agent-tab"][data-agent="sheet"]');
+      return tab?.getAttribute("data-state") === "succeeded" &&
+        tab?.getAttribute("data-run-state") === "idle";
+    })()`,
+    "the finished Data Sheet run",
+    60_000,
+  );
+  const discoverFrames = await framesNow();
+  await page.click('[data-testid="discover-agent-tab"][data-agent="discover-contribution"]');
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agent"][data-agent="discover-contribution"]') !== null`,
+    "the Contribution card",
+    20_000,
+  );
+  await delay(200);
+  check((await framesNow()) === discoverFrames, "opening a Discover sidebar entry sent a frame");
+  const contributionStart = await page.eval<{ present: boolean; disabled: boolean; title: string }>(
+    `(() => {
+      const button = document.querySelector('[data-testid="discover-agent-start"]');
+      return {
+        present: button !== null,
+        disabled: button instanceof HTMLButtonElement ? button.disabled : true,
+        title: button?.getAttribute("title") ?? "",
+      };
+    })()`,
+  );
+  check(
+    contributionStart.present,
+    "the Contribution start control is missing",
+    contributionStart,
+  );
+  await pageCommand({ type: "discoverAgent", agent: "discover-contribution" });
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agent-tab"][data-agent="discover-contribution"]')
+      ?.getAttribute("data-run-state") === "running"`,
+    "the running Contribution entries",
+    30_000,
+  );
+
+  const discoverStates = async (): Promise<{
+    tabs: Record<string, string>;
+    agents: Record<string, string>;
+  }> =>
+    page.eval<{ tabs: Record<string, string>; agents: Record<string, string> }>(`(() => {
+      const tabs = {};
+      for (const element of document.querySelectorAll('[data-testid="discover-tab"]')) {
+        tabs[element.getAttribute("data-tab") ?? ""] = element.getAttribute("data-run-state") ?? "";
+      }
+      const agents = {};
+      for (const element of document.querySelectorAll('[data-testid="discover-agent-tab"]')) {
+        agents[element.getAttribute("data-agent") ?? ""] = element.getAttribute("data-run-state") ?? "";
+      }
+      return { tabs, agents };
+    })()`);
+  const contributionRunState = await discoverStates();
+  check(
+    contributionRunState.tabs.contribution === "running" &&
+      contributionRunState.tabs["contribution-skill"] === "running" &&
+      contributionRunState.agents["discover-contribution"] === "running" &&
+      contributionRunState.tabs.overview === "idle" &&
+      contributionRunState.agents.sheet === "idle" &&
+      contributionRunState.tabs.glossary === "idle" &&
+      contributionRunState.tabs["glossary-skill"] === "idle" &&
+      Object.entries(contributionRunState.tabs).every(
+        ([id, state]) => ["contribution", "contribution-skill"].includes(id) === (state === "running"),
+      ) &&
+      Object.entries(contributionRunState.agents).every(
+        ([id, state]) => (id === "discover-contribution") === (state === "running"),
+      ),
+    "a contribution-only run marked another Discover entry",
+    contributionRunState,
+  );
+
+  // No other mode is marked by the live Discover run.
+  await page.click('[data-testid="mode-devboard"]');
+  await page.wait(
+    `document.querySelector('[data-testid="open-devboard-scout"]') !== null`,
+    "the Devboard sidebar beside the Discover run",
+    20_000,
+  );
+  const devboardMapping: Record<string, string> = {
+    running: "running",
+    starting: "running",
+    failed: "failed",
+    stopped: "idle",
+    stopping: "idle",
+  };
+  const devboardEntries = await page.eval<Array<{ id: string; lifecycle: string; run: string }>>(
+    `[...document.querySelectorAll('[data-testid^="open-devboard-"]')].map((button) => ({
+      id: button.getAttribute("data-testid") ?? "",
+      lifecycle:
+        button.querySelector('[data-testid^="agent-state-"]')?.getAttribute("data-state") ?? "",
+      run: button.getAttribute("data-run-state") ?? "",
+    }))`,
+  );
+  check(
+    devboardEntries.length === 5 &&
+      devboardEntries.every(
+        (entry) => entry.run === devboardMapping[entry.lifecycle],
+      ) &&
+      devboardEntries.some(
+        (entry) => entry.id === "open-devboard-scout" && entry.run === "failed" && entry.lifecycle === "failed",
+      ),
+    "a background-agent entry's run state does not match its lifecycle",
+    devboardEntries,
+  );
+  await page.click('[data-testid="mode-discover"]');
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agent-tab"][data-agent="discover-contribution"]')
+      ?.getAttribute("data-run-state") === "running"`,
+    "the Contribution entries after the mode switch",
+    20_000,
+  );
+
+  // A reload during the live run restores the same entries.
+  await devtools.send("Page.reload");
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reconnected run-state dashboard",
+    40_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="discover-agent-tab"][data-agent="discover-contribution"]')
+      ?.getAttribute("data-run-state") === "running"`,
+    "the Contribution entries after the reconnect",
+    30_000,
+  );
+  const reconnected = await discoverStates();
+  check(
+    reconnected.tabs.contribution === "running" &&
+      reconnected.tabs["contribution-skill"] === "running" &&
+      reconnected.agents["discover-contribution"] === "running" &&
+      reconnected.tabs.overview === "idle",
+    "a reconnect changed the running Discover entries",
+    reconnected,
+  );
+  await page.wait(
+    `(() => {
+      const tabs = [...document.querySelectorAll('[data-testid="discover-tab"][data-run-state]')];
+      const agents = [...document.querySelectorAll('[data-testid="discover-agent-tab"]')];
+      return [...tabs, ...agents].every((element) => element.getAttribute("data-run-state") === "idle");
+    })()`,
+    "the finished contribution run to clear its entries",
+    40_000,
+  );
+
+  // Issues: the Overview follows the issues lifecycle and its agents' questions.
+  await page.click('[data-testid="mode-issues"]');
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-overview"]') !== null`,
+    "the Issues sidebar",
+    20_000,
+  );
+  await seedIssuesState(runStateDir, runStateHost, "running", "*");
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-overview"]')?.getAttribute("data-run-state") === "running"`,
+    "the running Issues Overview entry",
+    20_000,
+  );
+  check(
+    (await runStateOf('[data-testid="open-issues-drafts"]')) === "idle",
+    "the running issues lifecycle marked Draft goals",
+  );
+  await seedIssuesState(runStateDir, runStateHost, "running");
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-overview"]')?.getAttribute("data-run-state") === "answer"`,
+    "the answering Issues Overview entry",
+    20_000,
+  );
+  const issuesAnswerBadge = await page.eval<string>(
+    `document.querySelector('[data-testid="open-issues-overview"] [data-testid="run-state-badge"]')?.textContent?.trim() ?? ""`,
+  );
+  check(issuesAnswerBadge === "answer", "the Issues Overview has no answer badge", issuesAnswerBadge);
+  await seedIssuesState(runStateDir, runStateHost, "failed");
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-overview"]')?.getAttribute("data-run-state") === "failed"`,
+    "the failed Issues Overview entry",
+    20_000,
+  );
+
+  // Issues: Draft goals follows each elaboration's own run.
+  const draftsDirectory = join(runStateHost, ".devboard", "goal-proposals");
+  await mkdir(draftsDirectory, { recursive: true });
+  const questionDraft = ".devboard/goal-proposals/010-question.md";
+  const hangDraft = ".devboard/goal-proposals/011-hang.md";
+  const failDraft = ".devboard/goal-proposals/012-fail.md";
+  await writeFile(
+    join(runStateHost, questionDraft),
+    "# Question draft\n\n> Unprocessed draft. STUB-QUESTION\n\nAsk about the scope.\n",
+  );
+  await writeFile(
+    join(runStateHost, hangDraft),
+    "# Hang draft\n\n> Unprocessed draft. STUB-HANG\n\nKeep this elaboration running.\n",
+  );
+  await writeFile(
+    join(runStateHost, failDraft),
+    "# Failing draft\n\n> Unprocessed draft. STUB-FAIL\n\nFail the label verification.\n",
+  );
+  await page.click('[data-testid="open-issues-drafts"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-draft"]').length >= 3`,
+    "the three run-state drafts",
+    20_000,
+  );
+  const sendCommand = async (command: Record<string, unknown>): Promise<void> => {
+    await page.eval(`(async () => {
+      const socket = new WebSocket("ws://" + location.host + "/ws");
+      await new Promise((resolve, reject) => {
+        socket.onopen = resolve;
+        socket.onerror = reject;
+      });
+      socket.send(${JSON.stringify(JSON.stringify(command))});
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      socket.close();
+    })()`);
+  };
+  await sendCommand({ type: "startGoalDraft", path: hangDraft });
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-drafts"]')?.getAttribute("data-run-state") === "running"`,
+    "the running Draft goals entry",
+    20_000,
+  );
+  await sendCommand({ type: "stopGoalDraft", path: hangDraft });
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-drafts"]')?.getAttribute("data-run-state") === "idle"`,
+    "the stopped Draft goals entry",
+    20_000,
+  );
+  await sendCommand({ type: "startGoalDraft", path: questionDraft });
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-drafts"]')?.getAttribute("data-run-state") === "answer"`,
+    "the answering Draft goals entry",
+    20_000,
+  );
+  await sendCommand({ type: "stopGoalDraft", path: questionDraft });
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-drafts"]')?.getAttribute("data-run-state") === "idle"`,
+    "the stopped question draft",
+    20_000,
+  );
+  await sendCommand({ type: "startGoalDraft", path: failDraft });
+  await page.wait(
+    `document.querySelector('[data-testid="open-issues-drafts"]')?.getAttribute("data-run-state") === "failed"`,
+    "the failed Draft goals entry",
+    30_000,
+  );
+  const draftsFailedBadge = await page.eval<string>(
+    `document.querySelector('[data-testid="open-issues-drafts"] [data-testid="run-state-badge"]')?.textContent?.trim() ?? ""`,
+  );
+  check(draftsFailedBadge === "failed", "the Draft goals entry has no failed badge", draftsFailedBadge);
+  await seedIssuesState(runStateDir, runStateHost, "stopped");
+
+  // Flow: the Overview and Session Status follow flow.status and its question.
+  await page.click('[data-testid="mode-flow"]');
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal"]') !== null`,
+    "the Flow overview on the run-state fixture",
+    20_000,
+  );
+  const flowEntries = (): Promise<Array<{ label: string; run: string; badge: string }>> =>
+    page.eval<Array<{ label: string; run: string; badge: string }>>(
+      `[...document.querySelectorAll('[data-command="open.flow.overview"][data-run-state]')].map((entry) => ({
+        label: entry.querySelector(".sidebar-item__label")?.textContent?.trim() ?? "",
+        run: entry.getAttribute("data-run-state") ?? "",
+        badge:
+          entry.querySelector('[data-testid="run-state-badge"]')?.textContent?.trim() ??
+          entry.querySelector(".badge")?.textContent?.trim() ??
+          "",
+      }))`,
+    );
+  check(
+    JSON.stringify(await flowEntries()) ===
+      JSON.stringify([
+        { label: "Overview", run: "idle", badge: "stopped" },
+        { label: "Status", run: "idle", badge: "stopped" },
+      ]),
+    "the idle Flow entries are wrong",
+    await flowEntries(),
+  );
+  const flowSequence = await page.eval<string[]>(`(async () => {
+    const socket = new WebSocket("ws://" + location.host + "/ws");
+    const opened = await new Promise((resolve) => {
+      socket.onopen = () => resolve(true);
+      socket.onerror = () => resolve(false);
+    });
+    if (!opened) return [];
+    socket.send(JSON.stringify({ type: "startFlowImplementation" }));
+    const seen = [];
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      const states = [...document.querySelectorAll('[data-command="open.flow.overview"][data-run-state]')]
+        .map((entry) => entry.getAttribute("data-run-state") ?? "")
+        .join(",");
+      if (seen[seen.length - 1] !== states) seen.push(states);
+      if (states === "answer,answer" || states === "failed,failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    socket.close();
+    return seen;
+  })()`);
+  check(
+    flowSequence.includes("running,running") && flowSequence.includes("answer,answer"),
+    "the Flow entries never ran and then waited for the question",
+    flowSequence,
+  );
+  const answeringFlow = await flowEntries();
+  check(
+    answeringFlow.every((entry) => entry.run === "answer" && entry.badge === "answer"),
+    "the Flow entries do not show the answer state and badge",
+    answeringFlow,
+  );
+  await pageCommand({ type: "stopFlowImplementation" });
+  await page.wait(
+    `(() => {
+      const entries = [...document.querySelectorAll('[data-command="open.flow.overview"][data-run-state]')];
+      return entries.length === 2 && entries.every((entry) => entry.getAttribute("data-run-state") === "idle");
+    })()`,
+    "the stopped Flow entries",
+    20_000,
+  );
+
+
   const runtime = await page.eval<{ exceptions: string[]; overflow: number[] }>(`(() => {
     const doc = document.documentElement;
     return {
@@ -10237,7 +10829,7 @@ try {
 
   devtools.close();
   console.log(
-    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, read-only documents, terminals, accessibility, notifications, status bar, issues mode, ask transcript, persistence, and boundary passed",
+    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, read-only documents, terminals, accessibility, notifications, status bar, issues mode, ask transcript, persistence, sidebar run state, and boundary passed",
   );
 } finally {
   try {
@@ -10256,19 +10848,25 @@ try {
     // Already gone.
   }
   try {
+    extraServerProcess?.kill("SIGTERM");
+  } catch {
+    // Already gone.
+  }
+  try {
     serverProcess?.kill("SIGTERM");
   } catch {
     // Already gone.
   }
-  if (fixtureHost !== undefined) {
-    for (const entry of dashboardsFor(fixtureHost)) {
+  for (const host of [fixtureHost, extraFixtureHost]) {
+    if (host === undefined) continue;
+    for (const entry of dashboardsFor(host)) {
       try {
         process.kill(entry.pid, "SIGTERM");
       } catch {
         // Already gone.
       }
     }
-    for (const pid of goalDraftOwnerPids(fixtureHost)) {
+    for (const pid of goalDraftOwnerPids(host)) {
       try {
         process.kill(pid, "SIGKILL");
       } catch {

@@ -3,6 +3,13 @@
   import Button from "./ui/button.svelte";
   import { DISCOVER_AGENTS } from "../../../server/agents/registry";
   import { SECTION_TABS, SKILL_TABS } from "../discover-format";
+  import {
+    agentLifecycleRunState,
+    discoverAgentRunState,
+    discoverSuiteRunState,
+    runStateTone,
+    type RunState,
+  } from "../run-state";
   import { DEVBOARD_SIDEBAR, DEVBOARD_TAB } from "../devboard.svelte";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
@@ -14,7 +21,7 @@
   import { layout } from "../layout.svelte";
   import { renderSkillDocument } from "../skill-document";
   import type { WorkspaceTab } from "../layout.svelte";
-  import type { Mode } from "../types";
+  import type { DiscoverTab, Mode } from "../types";
 
   interface Props {
     openTab: (mode: Mode, tab: WorkspaceTab) => void;
@@ -74,6 +81,73 @@
     return `goal-skill-content-${name.replace(/[^A-Za-z0-9_-]/g, "-")}`;
   }
 
+  /** One Discover agent's own entry state; never another agent's or the suite's. */
+  function agentRun(id: string): RunState {
+    return discoverAgentRunState(
+      discover.agent(id)?.state ?? null,
+      discover.agentQuestionOf(id) !== null,
+    );
+  }
+
+  /**
+   * A Discover section or skill entry reads only the source its page belongs
+   * to: the Overview reads the seven-agent suite, the two page entries read
+   * their own agent, and every skill entry reads the agent that owns it.
+   */
+  function tabRun(tab: DiscoverTab): RunState {
+    if (tab.id === "overview") {
+      return discoverSuiteRunState(
+        discover.runningAll,
+        discover.suiteFailed !== null,
+        discover.question !== null,
+      );
+    }
+    if (tab.id === "glossary") return agentRun("discover-glossary");
+    if (tab.id === "contribution") return agentRun("discover-contribution");
+    return tab.skill === null ? "idle" : agentRun(tab.skill);
+  }
+
+  /** The Goal implementation entry: a manual run or the lifecycle's live step. */
+  function implementationRun(): RunState {
+    const executing = goal.running || (goal.lifecycleActive && !goal.lifecycle.paused);
+    if (goal.question !== null && executing) return "answer";
+    if (executing) return "running";
+    return "idle";
+  }
+
+  /** The Issues overview entry: the issues lifecycle and its agents' questions. */
+  function issuesOverviewRun(): RunState {
+    if (issues.agents.some((agent) => agent.question !== null)) return "answer";
+    if (issues.lifecycle === "running" || issues.lifecycle === "pausing") return "running";
+    if (issues.lifecycle === "failed") return "failed";
+    return "idle";
+  }
+
+  /** The Draft goals entry: any live elaboration, a waiting question, its last failure. */
+  function draftsRun(): RunState {
+    const runs = Object.values(issues.draftRuns);
+    if (runs.some((run) => run.question !== null)) return "answer";
+    if (runs.some((run) => run.status === "running")) return "running";
+    const finished = runs
+      .filter((run) => run.finishedAt !== null)
+      .sort(
+        (left, right) =>
+          (Date.parse(right.finishedAt ?? "") || 0) - (Date.parse(left.finishedAt ?? "") || 0),
+      );
+    return finished[0]?.status === "failed" ? "failed" : "idle";
+  }
+
+  /** The Flow overview and Session status entries read only the Flow session. */
+  function flowRun(): RunState {
+    if (flow.question !== null) return "answer";
+    return flow.status === "running" ? "running" : "idle";
+  }
+
+  /** One background-agent entry reads only its own lifecycle. */
+  function agentRunState(id: string): RunState {
+    return agentLifecycleRunState(agents.lifecycle(id), agents.question(id) !== null);
+  }
+
   function isActive(id: string): boolean {
     return active === id;
   }
@@ -114,10 +188,16 @@
           aria-expanded={skillsOpen}
           aria-controls={skillsOpen ? "goal-skills-menu" : undefined}
           data-testid="goal-skills-toggle"
+          data-run-state={goal.skillsPrepActive ? "running" : "idle"}
           onclick={() => (skillsOpen = !skillsOpen)}
         >
           <span class="sidebar-item__label">Skills</span>
           <span class="sidebar-item__meta">{goal.skills.length}</span>
+          {#if goal.skillsPrepActive}
+            <span class="badge" data-tone={runStateTone("running")} data-testid="run-state-badge">
+              running
+            </span>
+          {/if}
           <ChevronRight
             size={12}
             aria-hidden="true"
@@ -217,13 +297,19 @@
           aria-current={isActive("overview")}
           data-command="open.goal.overview"
           data-testid="open-implementation"
+          data-run-state={implementationRun()}
           onclick={() => open("goal", "overview", "overview", "overview", "Implementation")}
         >
           <span class="sidebar-item__label">Implementation</span>
-          {#if goal.question !== null}
-            <span class="badge" data-tone="warning">answer</span>
-          {:else}
-            <span class="sidebar-item__meta">{goal.lifecycleActive ? stageWord : goal.running ? "manual" : "idle"}</span>
+          <span class="sidebar-item__meta">{goal.lifecycleActive ? stageWord : goal.running ? "manual" : "idle"}</span>
+          {#if implementationRun() !== "idle"}
+            <span
+              class="badge"
+              data-tone={runStateTone(implementationRun())}
+              data-testid="run-state-badge"
+            >
+              {implementationRun()}
+            </span>
           {/if}
         </Button>
       </section>
@@ -328,12 +414,18 @@
           aria-current={isActive("overview")}
           data-command="open.issues.overview"
           data-testid="open-issues-overview"
+          data-run-state={issuesOverviewRun()}
           onclick={() => open("issues", "overview", "overview", "overview", "Overview")}
         >
           <span class="sidebar-item__label">Overview</span>
           <span class="badge" data-tone={statusTone(issues.lifecycle)}>
             {issues.lifecycle}
           </span>
+          {#if issuesOverviewRun() === "answer"}
+            <span class="badge" data-tone={runStateTone("answer")} data-testid="run-state-badge">
+              answer
+            </span>
+          {/if}
         </Button>
         <Button
           bare
@@ -353,10 +445,16 @@
           aria-label="Draft goals, Issues mode, Alt+2"
           data-command="open.issues.drafts"
           data-testid="open-issues-drafts"
+          data-run-state={draftsRun()}
           onclick={() => open("issues", "drafts", "drafts", "drafts", "Draft goals")}
         >
           <span class="sidebar-item__label">Draft goals</span>
           <span class="sidebar-item__meta">{issues.drafts.length}</span>
+          {#if draftsRun() !== "idle"}
+            <span class="badge" data-tone={runStateTone(draftsRun())} data-testid="run-state-badge">
+              {draftsRun()}
+            </span>
+          {/if}
         </Button>
       </section>
     {:else if layout.mode === "flow"}
@@ -366,12 +464,18 @@
           class="sidebar-item"
           aria-current={isActive("overview")}
           data-command="open.flow.overview"
+          data-run-state={flowRun()}
           onclick={() => open("flow", "overview", "overview", "overview", "Overview")}
         >
           <span class="sidebar-item__label">Overview</span>
           {#if flow.status !== "none"}
             <span class="badge" data-tone={statusTone(flow.status)}>
               {flow.status}
+            </span>
+          {/if}
+          {#if flowRun() === "answer"}
+            <span class="badge" data-tone={runStateTone("answer")} data-testid="run-state-badge">
+              answer
             </span>
           {/if}
         </Button>
@@ -412,12 +516,18 @@
           bare
           class="sidebar-item"
           data-command="open.flow.overview"
+          data-run-state={flowRun()}
           onclick={() => open("flow", "overview", "overview", "overview", "Overview")}
         >
           <span class="sidebar-item__label">Status</span>
           {#if flow.status !== "none"}
             <span class="badge" data-tone={statusTone(flow.status)}>
               {flow.status}
+            </span>
+          {/if}
+          {#if flowRun() === "answer"}
+            <span class="badge" data-tone={runStateTone("answer")} data-testid="run-state-badge">
+              answer
             </span>
           {/if}
         </Button>
@@ -555,6 +665,7 @@
     {:else if layout.mode === "discover"}
       <section class="sidebar-group" aria-label="Discover sections">
         {#each SECTION_TABS as tab (tab.id)}
+          {@const runState = tabRun(tab)}
           <Button
             bare
             class="sidebar-item"
@@ -563,13 +674,18 @@
             aria-selected={isActive(tab.id)}
             data-testid="discover-tab"
             data-tab={tab.id}
+            data-run-state={runState}
             data-command={`discover.tab.${tab.id}`}
             onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
           >
             <span class="sidebar-item__label">{tab.label}</span>
-            {#if tab.id === "overview" && discover.active}
-              <span class="badge" data-tone={statusTone("running")} data-testid="discover-running">
-                running
+            {#if runState !== "idle"}
+              <span
+                class="badge"
+                data-tone={runStateTone(runState)}
+                data-testid={tab.id === "overview" ? "discover-running" : "run-state-badge"}
+              >
+                {runState}
               </span>
             {/if}
             {#if tab.id === "glossary"}
@@ -591,6 +707,7 @@
         </div>
         {#each DISCOVER_AGENTS as agent (agent.id)}
           {@const status = discover.agent(agent.id)?.state ?? "idle"}
+          {@const runState = agentRun(agent.id)}
           <Button
             bare
             class="sidebar-item"
@@ -600,17 +717,20 @@
             data-testid="discover-agent-tab"
             data-agent={agent.id}
             data-state={status}
+            data-run-state={runState}
             data-command={`discover.agent.${agent.id}`}
             title={`${agent.command} — ${status}`}
             onclick={() => open("discover", agent.id, "agent", agent.id, agent.label)}
           >
             <span class="sidebar-item__label">{agent.label}</span>
-            {#if status === "running"}
-              <span class="badge" data-tone={statusTone("running")} data-testid="discover-agent-running">
-                running
+            {#if runState !== "idle"}
+              <span
+                class="badge"
+                data-tone={runStateTone(runState)}
+                data-testid={runState === "running" ? "discover-agent-running" : "run-state-badge"}
+              >
+                {runState}
               </span>
-            {:else if status === "failed"}
-              <span class="badge" data-tone={statusTone("error")}>failed</span>
             {/if}
           </Button>
         {/each}
@@ -623,6 +743,7 @@
         </div>
         {#each SKILL_TABS as tab (tab.id)}
           {@const state = tab.skill === null ? "generated" : skillState(tab.skill)}
+          {@const runState = tabRun(tab)}
           <Button
             bare
             class="sidebar-item"
@@ -633,6 +754,7 @@
             data-tab={tab.id}
             data-skill={tab.skill ?? undefined}
             data-state={state}
+            data-run-state={runState}
             data-command={`discover.tab.${tab.id}`}
             onclick={() => open("discover", tab.id, "skill", tab.skill ?? tab.id, tab.label)}
           >
@@ -640,6 +762,11 @@
             {#if state !== "generated"}
               <span class="sidebar-item__meta" data-tone={state === "missing" ? "error" : "warning"}>
                 {state}
+              </span>
+            {/if}
+            {#if runState !== "idle"}
+              <span class="badge" data-tone={runStateTone(runState)} data-testid="run-state-badge">
+                {runState}
               </span>
             {/if}
           </Button>
@@ -672,6 +799,7 @@
         <div class="sidebar-group__title">Background agents</div>
         {#each agents.descriptors as descriptor (descriptor.id)}
           {@const snapshot = agents.snapshot(descriptor.id)}
+          {@const runState = agentRunState(descriptor.id)}
           <Button
             bare
             class="sidebar-item"
@@ -679,6 +807,7 @@
             aria-label={`${descriptor.label} (${modeLabel})`}
             data-command={`open.devboard.${descriptor.id}`}
             data-testid={`open-devboard-${descriptor.id}`}
+            data-run-state={runState}
             onclick={() =>
               open(
                 "devboard",
@@ -694,9 +823,15 @@
               data-tone={statusTone(snapshot?.lifecycle ?? "stopped")}
               data-testid={`agent-state-${descriptor.id}`}
               data-state={snapshot?.lifecycle ?? "stopped"}
+              data-run-state={runState}
             >
               {snapshot?.lifecycle ?? "stopped"}
             </span>
+            {#if runState === "answer"}
+              <span class="badge" data-tone={runStateTone("answer")} data-testid="run-state-badge">
+                answer
+              </span>
+            {/if}
             <span class="sidebar-item__meta" data-testid={`agent-count-${descriptor.id}`}>
               {agents.count(descriptor.id)}
             </span>

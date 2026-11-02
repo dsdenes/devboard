@@ -2230,6 +2230,12 @@ export function createApp(options: AppOptions) {
   }
   /** True while a Run all sequence owns the checkout. */
   let discoverAllActive = false;
+  /**
+   * The step a Run all sequence halted on, or null. The suite keeps this after
+   * it ends so the Overview entry can report the suite's own failure; the next
+   * Run all clears it. A single run never sets it.
+   */
+  let discoverAllFailed: DiscoverAgentId | null = null;
 
   function discoverStatus(id: string): DiscoverAgentStatus {
     return (
@@ -2247,6 +2253,7 @@ export function createApp(options: AppOptions) {
   }
 
   function resetDiscoverStatuses(): void {
+    discoverAllFailed = null;
     for (const descriptor of DISCOVER_AGENTS) {
       setDiscoverStatus(descriptor.id, {
         state: "idle",
@@ -3217,6 +3224,8 @@ export function createApp(options: AppOptions) {
       startedAt: discoverRun?.startedAt ?? null,
       activeAgent: discoverRun?.id ?? null,
       runningAll: discoverAllActive,
+      /** The step a Run all halted on; null while it runs or after success. */
+      allFailed: discoverAllFailed,
       agents: DISCOVER_AGENTS.map((descriptor) => {
         const status = discoverStatus(descriptor.id);
         return {
@@ -3308,6 +3317,7 @@ export function createApp(options: AppOptions) {
     if (discoverRun !== run) return;
     discoverRun = undefined;
     discoverAllActive = false;
+    if (run.mode === "all") discoverAllFailed = run.id;
     run.question = null;
     run.peer?.close();
     try {
@@ -6738,6 +6748,7 @@ export function createApp(options: AppOptions) {
     discoverRequest += 1;
     const discovering = discoverRun;
     discoverAllActive = false;
+    discoverAllFailed = null;
     if (discovering !== undefined) {
       discoverRun = undefined;
       discovering.question = null;
