@@ -2310,6 +2310,14 @@ async function gzipStaticFile(
 }
 
 /**
+ * A C0 control character or DEL in a decoded request path.
+ *
+ * No file name carries one, and a NUL byte makes the filesystem calls that
+ * serve a static file throw, so such a path is refused before it is resolved.
+ */
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
+/**
  * The path one static request selects, relative to the static root, or null
  * when the request path is not normalized.
  *
@@ -7848,60 +7856,79 @@ export function createApp(options: AppOptions) {
         );
       }
 
+      // A control character is not a name this server serves, and the file
+      // calls below cannot address one: a NUL byte makes them throw, which is
+      // no path at all rather than a missing file.
+      if (CONTROL_CHARACTER.test(pathname)) {
+        return reply(
+          problemResponse(
+            400,
+            `The request path ${JSON.stringify(url.pathname)} carries a control character.`,
+          ),
+        );
+      }
+
       const relative = staticRelativePath(url.pathname, pathname);
       if (relative === null) {
         return reply(problemResponse(404, "The requested file was not found."));
       }
 
-      const filePath = resolve(staticRoot, relative);
-      if (filePath !== staticRoot && !filePath.startsWith(staticRoot + sep)) {
-        return reply(problemResponse(404, "The requested file was not found."));
-      }
+      // A filesystem failure while serving a static file answers like every
+      // other unexpected failure: Problem JSON from this server, never Bun's
+      // default error page, with the exception journaled once.
+      try {
+        const filePath = resolve(staticRoot, relative);
+        if (filePath !== staticRoot && !filePath.startsWith(staticRoot + sep)) {
+          return reply(problemResponse(404, "The requested file was not found."));
+        }
 
-      const file = Bun.file(filePath);
-      if (!(await file.exists())) {
-        return reply(problemResponse(404, "The requested file was not found."));
-      }
+        const file = Bun.file(filePath);
+        if (!(await file.exists())) {
+          return reply(problemResponse(404, "The requested file was not found."));
+        }
 
-      const fileStat = await stat(filePath);
-      if (!fileStat.isFile()) {
-        return reply(problemResponse(404, "The requested file was not found."));
-      }
+        const fileStat = await stat(filePath);
+        if (!fileStat.isFile()) {
+          return reply(problemResponse(404, "The requested file was not found."));
+        }
 
-      // A method the static fallback cannot serve is refused only for a file
-      // that exists: an unknown path is a 404 on every method.
-      if (request.method !== "GET" && request.method !== "HEAD") {
+        // A method the static fallback cannot serve is refused only for a file
+        // that exists: an unknown path is a 404 on every method.
+        if (request.method !== "GET" && request.method !== "HEAD") {
+          return reply(
+            problemResponse(405, "This path serves GET and HEAD only.", {
+              Allow: "GET, HEAD",
+            }),
+          );
+        }
+
+        // The body differs by Accept-Encoding, so a shared cache must key on it.
+        // Every file under `assets/` carries a content hash in its name, so the
+        // same URL is a different body only when its name changes; the entry
+        // document and the unhashed files beside it must be revalidated, so a
+        // page never loads a bundle a replacement already replaced.
+        const headers: Record<string, string> = {
+          "Content-Type": file.type,
+          Vary: "Accept-Encoding",
+          "Cache-Control": relative.startsWith("assets/")
+            ? "public, max-age=31536000, immutable"
+            : "no-cache",
+        };
+        // The document carries the page's credential; every other asset is inert.
+        attachDashboardCookie(headers, relative, cookieName);
+        const head = request.method === "HEAD";
+        if (!acceptsGzip(request.headers.get("accept-encoding"))) {
+          return reply(new Response(head ? null : file, { headers }));
+        }
+        headers["Content-Encoding"] = "gzip";
+        // A HEAD response keeps the negotiated headers without paying for a body
+        // it never carries.
         return reply(
-          problemResponse(405, "This path serves GET and HEAD only.", {
-            Allow: "GET, HEAD",
-          }),
+          new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers }),
         );
+      } catch (error) {
+        return reply(internalErrorResponse("GET static", error, flowId));
       }
-
-      // The body differs by Accept-Encoding, so a shared cache must key on it.
-      // Every file under `assets/` carries a content hash in its name, so the
-      // same URL is a different body only when its name changes; the entry
-      // document and the unhashed files beside it must be revalidated, so a
-      // page never loads a bundle a replacement already replaced.
-      const headers: Record<string, string> = {
-        "Content-Type": file.type,
-        Vary: "Accept-Encoding",
-        "Cache-Control": relative.startsWith("assets/")
-          ? "public, max-age=31536000, immutable"
-          : "no-cache",
-      };
-      // The document carries the page's credential; every other asset is inert.
-      attachDashboardCookie(headers, relative, cookieName);
-      const head = request.method === "HEAD";
-      if (!acceptsGzip(request.headers.get("accept-encoding"))) {
-        return reply(new Response(head ? null : file, { headers }));
-      }
-      headers["Content-Encoding"] = "gzip";
-      // A HEAD response keeps the negotiated headers without paying for a body
-      // it never carries.
-      return reply(
-        new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers }),
-      );
     },
 
     websocket: {

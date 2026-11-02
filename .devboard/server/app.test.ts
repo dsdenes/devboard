@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -618,6 +618,72 @@ describe("createApp", () => {
         problemBody("Not Found", 404, "The requested file was not found."),
       );
     } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a control character in the request path with Problem JSON", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      // `fetch` normalizes or rejects such a path before sending it, so the raw
+      // request line is the only way to observe the server's answer.
+      const rawGet = (path: string): Promise<string> => {
+        const { promise, resolve: settle, reject: fail } = Promise.withResolvers<string>();
+        const [host, port] = url.split(":");
+        const socket = connect({ host, port: Number(port) });
+        let response = "";
+        socket.setEncoding("utf8");
+        socket.on("connect", () => {
+          socket.write(`GET ${path} HTTP/1.1\r\nHost: ${url}\r\nConnection: close\r\n\r\n`);
+        });
+        socket.on("data", (chunk) => {
+          response += chunk;
+        });
+        socket.on("end", () => settle(response));
+        socket.on("error", fail);
+        return promise;
+      };
+
+      const raw = await rawGet("/%00");
+
+      expect(raw.startsWith("HTTP/1.1 400 ")).toBe(true);
+      expect(raw.toLowerCase()).toContain(`content-type: ${PROBLEM_CONTENT_TYPE}`);
+      const body = raw.slice(raw.indexOf("\r\n\r\n") + 4);
+      expect(JSON.parse(body)).toEqual(
+        problemBody("Bad Request", 400, 'The request path "/%00" carries a control character.'),
+      );
+
+      // The entry document is still the served path a browser asks for.
+      const entry = await fetch(`http://${url}/`);
+      expect(entry.status).toBe(200);
+      expect(await entry.text()).toContain("<title>ADR overview</title>");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers a static file read failure with Problem JSON", async () => {
+    const { server, root, url } = await startServer();
+    const lockedPath = join(root, "static", "locked.txt");
+    await writeFile(lockedPath, "locked\n");
+    // A file the process cannot read fails inside the static fallback instead of
+    // reaching Bun's default error page.
+    await chmod(lockedPath, 0o000);
+
+    try {
+      const response = await fetch(`http://${url}/locked.txt`, {
+        headers: { "accept-encoding": "gzip" },
+        decompress: false,
+      });
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Internal Server Error", 500, "An internal error occurred."),
+      );
+    } finally {
+      await chmod(lockedPath, 0o644);
       server.stop(true);
     }
   });
