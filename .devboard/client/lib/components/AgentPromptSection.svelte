@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ChevronRight from "lucide-svelte/icons/chevron-right";
   import { agentRegistry } from "../../../server/agents/registry";
   import { agents } from "../agents.svelte";
 
@@ -11,6 +12,11 @@
   const descriptor = $derived(agentRegistry.get(agentId));
   const prompt = $derived(agents.prompts[agentId] ?? null);
   const error = $derived(prompt?.error ?? null);
+  const promptFile = $derived(
+    descriptor !== undefined && descriptor.prompt.kind === "file"
+      ? `.devboard/prompts/${descriptor.prompt.file}`
+      : null,
+  );
 </script>
 
 <details
@@ -21,6 +27,14 @@
 >
   <summary class="agent-prompt__summary" data-testid="agent-prompt-summary">
     <span class="agent-prompt__title">Prompt</span>
+    <span class="agent-prompt__meta">
+      {#if promptFile !== null}
+        <span class="agent-prompt__file mono" title={promptFile}>{promptFile}</span>
+      {/if}
+      <span class="agent-prompt__chevron">
+        <ChevronRight size={14} aria-hidden="true" />
+      </span>
+    </span>
   </summary>
   <div class="agent-prompt__body" data-testid="agent-prompt-body">
     {#if prompt === null}
@@ -49,73 +63,115 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 4px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px;
+    overflow: hidden;
   }
 
   .agent-prompt__summary {
-    align-items: baseline;
+    align-items: center;
     cursor: pointer;
     display: flex;
-    gap: 10px;
-    list-style-position: inside;
+    gap: 8px;
+    height: 30px;
+    list-style: none;
+    padding: 0 8px;
+  }
+
+  .agent-prompt__summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .agent-prompt__summary:hover {
+    background: var(--row-hover);
+  }
+
+  .agent-prompt__summary:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+  }
+
+  .agent-prompt[open] .agent-prompt__summary {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .agent-prompt__title {
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+
+  .agent-prompt__meta {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+    min-width: 0;
+  }
+
+  .agent-prompt__file {
+    background: var(--background);
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    color: var(--muted-foreground);
+    flex: 0 1 auto;
+    font-size: 11.5px;
+    line-height: 1.4;
+    min-width: 0;
+    overflow: hidden;
+    padding: 2px 6px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-prompt__chevron {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: inline-flex;
+    flex: 0 0 auto;
+    transition: transform 120ms ease;
+  }
+
+  .agent-prompt[open] .agent-prompt__chevron {
+    transform: rotate(90deg);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .agent-prompt__chevron {
+      transition: none;
+    }
   }
 
   .agent-prompt__body {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    min-height: 0;
+    padding: 8px;
   }
 
-  .agent-prompt__title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    line-height: 1.2;
-    margin: 0;
-    text-transform: uppercase;
-  }
-
-  .agent-prompt__hint {
-    color: var(--muted-foreground);
-    font-size: 11px;
-    margin: 0;
-  }
-
+  .agent-prompt__hint,
   .agent-prompt__absent {
+    color: var(--muted-foreground);
     font-size: 12px;
-    margin: 0;
-  }
-
-  .agent-prompt__text {
-    background: var(--background);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    font-size: 11px;
     line-height: 1.45;
     margin: 0;
-    max-height: 320px;
-    overflow: auto;
-    padding: 8px;
-    white-space: pre;
   }
 
   .agent-prompt__template {
     display: flex;
     flex-direction: column;
+    min-width: 0;
   }
 
+  .agent-prompt__text,
   .agent-prompt__template-text {
     background: var(--background);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    font-size: 11px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    font-size: 12px;
     line-height: 1.45;
     margin: 0;
-    max-height: 360px;
+    max-height: clamp(240px, 46vh, 480px);
     overflow: auto;
     padding: 8px;
     white-space: pre;
