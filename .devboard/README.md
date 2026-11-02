@@ -1428,17 +1428,16 @@ Each skill has a page that shows the whole `SKILL.md` as read-only text
 (`data-testid="discover-skill-text"`), with no rendered preview, no split pane, and no editor. The
 page header holds only the skill's page title. The panel header is one 44px row: the skill's
 relative path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on
-the leading edge, and `data-testid="discover-skill-status"` names `generated`, `edited`, or
-`Live file missing`. The page renders no `discover-skill-save`, `discover-skill-restore`, or
-`discover-skill-dirty`, and no state badge or purpose line, because the sidebar already flags
-`edited` or `missing`. The text is the live file when it exists and the generated baseline while
-it is missing, including the contribution skill.
+the leading edge. The page renders no `discover-skill-save`, `discover-skill-restore`, or
+`discover-skill-dirty`, and no state badge, status pill, or purpose line, because the sidebar
+already flags `edited` or `missing` on the skill entry. The text is the live file when it exists
+and the generated baseline while it is missing, including the contribution skill.
 
 A later run compares each live hash with its last baseline: an unedited skill is replaced, an
 edited skill is preserved byte for byte with its new baseline published beside it, and a skill
-the developer deleted is not recreated but shows `Live file missing`. A generated name colliding
-with a prepare-family, unmanaged, or different Discover skill fails the run and publishes
-nothing.
+the developer deleted is not recreated but keeps rendering its generated baseline with the
+sidebar flagging it `missing`. A generated name colliding with a prepare-family, unmanaged, or
+different Discover skill fails the run and publishes nothing.
 
 The goal lifecycle's skill prerequisite accepts a managed skill from either family: at least one
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`

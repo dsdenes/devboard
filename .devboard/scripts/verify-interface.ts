@@ -5384,9 +5384,8 @@ try {
   const skillText = await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? ""`);
   check(skillText === originalSkill, "the skill page does not show the live file bytes");
   check(
-    (await page.eval<string>(`document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? ""`)) ===
-      "generated",
-    "the generated skill status is not named",
+    (await page.eval<number>(`document.querySelectorAll('[data-testid="discover-skill-status"]').length`)) === 0,
+    "the skill page still names a draft state",
   );
   for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
     check(
@@ -5413,7 +5412,7 @@ try {
   await page.reload();
   await runPalette("discover.tab.testing-strategy");
   await page.wait(
-    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "Live file missing"`,
+    `document.querySelector('[data-testid="discover-tab"][data-skill="discover-testing-strategy"]')?.getAttribute("data-state") === "missing"`,
     "the missing skill state",
   );
   const baselineSkill = await readFile(baselineSkillPath, "utf8");
@@ -5432,7 +5431,7 @@ try {
   await page.reload();
   await runPalette("discover.tab.testing-strategy");
   await page.wait(
-    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "generated"`,
+    `document.querySelector('[data-testid="discover-tab"][data-skill="discover-testing-strategy"]')?.getAttribute("data-state") === "generated"`,
     "the restored generated skill state",
   );
 
@@ -5440,39 +5439,24 @@ try {
     preview: boolean;
     split: number;
     badge: boolean;
+    status: boolean;
     editor: number;
     panel: number;
     header: number;
-    inline: boolean;
     title: string;
-    state: string;
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
     headerSurface: string;
     raised: string;
-    dotWidth: number;
-    dotHeight: number;
-    dot: string;
-    success: string;
     chip: boolean;
     chipRadius: string;
-    pillSurface: string;
-    successSurface: string;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
     const index = document.querySelector('#workspace-discover .discover-skill-page');
     const header = panel?.querySelector('.discover-skill__header');
-    const identity = header?.querySelector('.discover-skill__identity');
-    const actions = header?.querySelector('.discover-skill__actions');
-    const dot = header?.querySelector('.discover-skill__state-dot');
     const chip = header?.querySelector('.discover-skill__path');
-    const pill = header?.querySelector('[data-testid="discover-skill-status"]');
-    const center = (element) => {
-      const box = element?.getBoundingClientRect();
-      return box === undefined ? 0 : box.top + box.height / 2;
-    };
     const token = (name) => {
       const probe = document.createElement("div");
       probe.style.background = \`var(\${name})\`;
@@ -5481,62 +5465,41 @@ try {
       probe.remove();
       return value;
     };
-    const dotBox = dot?.getBoundingClientRect();
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
       badge: document.querySelector('[data-testid="discover-skill-state"]') !== null,
+      status: Boolean(header?.querySelector('[data-testid="discover-skill-status"]')),
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
       header: header === null ? 0 : Math.round(header.getBoundingClientRect().height),
-      inline: identity != null && actions != null &&
-        Math.abs(center(identity) - center(actions)) <= 2,
       title: panel?.querySelector('.panel__title')?.textContent?.trim() ?? "",
-      state: panel
-        ?.querySelector('[data-testid="discover-skill-status"]')
-        ?.textContent?.trim() ?? "",
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
       headerSurface: header === null ? "" : getComputedStyle(header).backgroundColor,
       raised: token("--surface-raised"),
-      dotWidth: dotBox === undefined ? 0 : Math.round(dotBox.width),
-      dotHeight: dotBox === undefined ? 0 : Math.round(dotBox.height),
-      dot: dot === null || dot === undefined ? "" : getComputedStyle(dot).backgroundColor,
-      success: token("--success"),
       chip: chip !== null && chip !== undefined && chip.classList.contains("code-chip"),
       chipRadius: chip === null || chip === undefined ? "" : getComputedStyle(chip).borderRadius,
-      pillSurface: pill === null || pill === undefined ? "" : getComputedStyle(pill).backgroundColor,
-      successSurface: token("--success-surface"),
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
   check(!skillLayout.badge, "the skill tab still renders a state badge");
+  check(!skillLayout.status, "the skill tab still renders a status pill");
   check(
     skillLayout.title === "discover-testing-strategy/SKILL.md",
     "the skill panel is not titled with the relative path",
     skillLayout.title,
   );
+  check(skillLayout.header === 44, "the skill header is not one 44px row", skillLayout);
   check(
-    skillLayout.state === "generated",
-    "the clean skill header does not name the generated state",
+    skillLayout.headerSurface === skillLayout.raised,
+    "the skill header is not a surface-raised band",
     skillLayout,
   );
   check(
-    skillLayout.header === 44 && skillLayout.inline,
-    "the skill header is not one 44px row with the state and actions",
-    skillLayout,
-  );
-  check(
-    skillLayout.headerSurface === skillLayout.raised && skillLayout.dotWidth === 6 &&
-      skillLayout.dotHeight === 6 && skillLayout.dot === skillLayout.success,
-    "the skill header is not a surface-raised band with a success state dot",
-    skillLayout,
-  );
-  check(
-    skillLayout.chip && skillLayout.chipRadius === "3px" &&
-      skillLayout.pillSurface === skillLayout.successSurface,
-    "the skill header does not read as a path chip beside a success state pill",
+    skillLayout.chip && skillLayout.chipRadius === "3px",
+    "the skill header does not read as a path chip",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
@@ -5592,7 +5555,6 @@ try {
     theme: string;
     stored: string;
     text: string;
-    status: string;
     tabs: number;
   }>(`(() => ({
     mode: ["goal", "flow", "discover"].find((mode) => document.querySelector('[data-testid="mode-' + mode + '"]')?.getAttribute("aria-selected") === "true") ?? "",
@@ -5602,7 +5564,6 @@ try {
     theme: document.documentElement.dataset.theme,
     stored: localStorage.getItem("devboard.layout.v1") ?? "",
     text: (document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? "").slice(-20),
-    status: document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
     tabs: document.querySelectorAll('[data-testid="workspace-tab"]').length,
   }))()`);
   check(afterReload.mode === beforeReload.mode && afterReload.theme === beforeReload.theme, "mode or theme did not survive reload", { beforeReload, afterReload });
@@ -5611,9 +5572,9 @@ try {
   check(afterReload.panes.length === beforeReload.panes.length && afterReload.panes.every((width, index) => Math.abs(width - (beforeReload.panes[index] ?? 0)) <= 2), "split sizes did not survive reload", { before: beforeReload.panes, after: afterReload.panes });
   const restoredBaseline = (await readFile(join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"), "utf8")).slice(-20);
   check(
-    afterReload.text === restoredBaseline && afterReload.status === "generated",
+    afterReload.text === restoredBaseline,
     "the restored skill text did not survive reload",
-    { text: afterReload.text, baseline: restoredBaseline, status: afterReload.status },
+    { text: afterReload.text, baseline: restoredBaseline },
   );
   check(afterReload.stored.includes('"theme":"light"'), "layout localStorage lost the theme", afterReload.stored.slice(0, 120));
   check(!afterReload.stored.includes('"sidebarVisible"'), "layout localStorage still stores sidebar visibility", afterReload.stored.slice(0, 120));

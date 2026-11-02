@@ -2123,9 +2123,8 @@ kbd {
 }
 
 /* The skill header is the editor's chrome bar: one 44px `surface-raised` band
-   between the page title and the pane, so the path chip and the 28px controls
-   share the row with 8px above and below. The path yields first; the state and
-   controls never shrink. */
+   between the page title and the pane, so the path chip shares the row with 8px
+   above and below. The path yields first and never shrinks the row. */
 .discover-skill__header {
   align-items: center;
   background: var(--surface-raised);
@@ -2169,52 +2168,6 @@ kbd {
 .discover-skill__file {
   color: var(--muted-foreground);
   font-weight: 400;
-}
-
-/* The draft state is one pill beside the Save it qualifies: its 6px dot and
-   word sit on the tinted surface of the state, so success, warning, and error
-   read at a glance while the word still carries the meaning. */
-.discover-skill__state {
-  align-items: center;
-  border-radius: 999px;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 500;
-  gap: 6px;
-  line-height: 1.2;
-  padding: 2px 8px;
-  white-space: nowrap;
-}
-
-.discover-skill__state-dot {
-  background: currentColor;
-  border-radius: 999px;
-  flex: 0 0 6px;
-  height: 6px;
-  width: 6px;
-}
-
-.discover-skill__state[data-state="generated"] {
-  background: var(--success-surface);
-  color: var(--success);
-}
-
-.discover-skill__state[data-state="edited"] {
-  background: var(--warning-surface);
-  color: var(--warning);
-}
-
-.discover-skill__state[data-state="missing"] {
-  background: var(--error-surface);
-  color: var(--error);
-}
-
-.discover-skill__actions {
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
-  justify-content: flex-end;
-  margin-left: auto;
 }
 
 .discover-skill__body {
