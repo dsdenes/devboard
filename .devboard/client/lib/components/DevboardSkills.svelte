@@ -234,7 +234,7 @@
     border-top: 1px solid var(--border-subtle);
     max-height: 320px;
     overflow: auto;
-    padding: 10px 12px 12px 30px;
+    padding: 10px 12px 12px 28px;
   }
 
   .skills-table__empty {
