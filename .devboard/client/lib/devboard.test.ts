@@ -88,8 +88,8 @@ test("installed-skill rows keep the server's names and states and drop malformed
       "not-an-object",
     ]),
   ).toEqual([
-    { name: "benchmark-methodology", enabled: true, content: "" },
-    { name: "wire-format-conformance", enabled: false, content: "" },
+    { name: "benchmark-methodology", enabled: true, content: "", builtin: false, deletable: false },
+    { name: "wire-format-conformance", enabled: false, content: "", builtin: false, deletable: false },
   ]);
   expect(skillRows(undefined)).toEqual([]);
 });
@@ -97,7 +97,29 @@ test("installed-skill rows keep the server's names and states and drop malformed
 test("an installed-skill row keeps the SKILL.md text it was sent", () => {
   expect(
     skillRows([{ name: "benchmark-methodology", enabled: true, content: "# Benchmark\n" }]),
-  ).toEqual([{ name: "benchmark-methodology", enabled: true, content: "# Benchmark\n" }]);
+  ).toEqual([
+    {
+      name: "benchmark-methodology",
+      enabled: true,
+      content: "# Benchmark\n",
+      builtin: false,
+      deletable: false,
+    },
+  ]);
+});
+
+test("an installed-skill row keeps the server's built-in and deletable classification", () => {
+  expect(
+    skillRows([
+      { name: "devboard-ui-ux", enabled: true, builtin: true, deletable: false },
+      { name: "tidy-commits", enabled: true, builtin: false, deletable: true },
+      { name: "house-style", enabled: true, builtin: "true", deletable: "true" },
+    ]),
+  ).toEqual([
+    { name: "devboard-ui-ux", enabled: true, content: "", builtin: true, deletable: false },
+    { name: "tidy-commits", enabled: true, content: "", builtin: false, deletable: true },
+    { name: "house-style", enabled: true, content: "", builtin: false, deletable: false },
+  ]);
 });
 
 test("each frame replaces its own rows and leaves the other page alone", () => {
@@ -126,8 +148,8 @@ test("each frame replaces its own rows and leaves the other page alone", () => {
 
   expect(store.skillsLoaded).toBe(true);
   expect(store.skills).toEqual([
-    { name: "benchmark-methodology", enabled: true, content: "" },
-    { name: "wire-format-conformance", enabled: false, content: "" },
+    { name: "benchmark-methodology", enabled: true, content: "", builtin: false, deletable: false },
+    { name: "wire-format-conformance", enabled: false, content: "", builtin: false, deletable: false },
   ]);
   expect(store.tools.length).toBe(payload.tools.length);
 });

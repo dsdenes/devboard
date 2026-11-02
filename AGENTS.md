@@ -208,6 +208,10 @@ The package ships three project-scoped skills, canonical under `.devboard/omp/sk
 copies them as real files into `<host>/.omp/skills/<name>/`, where a plain `omp` session at the
 host root discovers them at project scope.
 
+Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
+Devboard Skills page renders that row as `Managed` and offers no delete control for it; only a
+prepare-family skill directory can be deleted.
+
 The `devboard-` prefix is the ownership marker, and the marked namespace is reserved for the
 package:
 

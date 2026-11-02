@@ -370,6 +370,8 @@ interface SkillFile {
   name: string;
   description: string;
   managed: boolean;
+  /** The package ships this skill; no operator-created family may own it. */
+  builtin: boolean;
   family: SkillFamily;
   directives: { polarity: "positive" | "negative"; text: string; source: string }[];
   /** The whole SKILL.md, so the interface can open a skill without a second read. */
@@ -547,6 +549,8 @@ const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKILL_NAME_MAX = 64;
 const SKILL_DESCRIPTION_MAX = 1024;
 const MANAGED_MARKER = "devboard-managed";
+/** Marks a skill the package ships; such a skill is never deletable. */
+const BUILTIN_MARKER = "devboard-builtin";
 /** Top-level entries an implementation reset keeps, besides the goal file. */
 const RESET_KEEP_NAMES = [".devboard", ".omp", "AGENTS.md", ".gitignore", "GOAL.md"] as const;
 /** Repository internals a reset preserves without committing them. */
@@ -1137,6 +1141,7 @@ async function readSkillAt(root: string, directory: string): Promise<SkillFile |
     name: fields.get("name") ?? "",
     description,
     managed: fields.get(`metadata.${MANAGED_MARKER}`) === "true",
+    builtin: fields.get(`metadata.${BUILTIN_MARKER}`) === "true",
     // A managed skill without a family belongs to the prepare family, so
     // skills written before the family marker keep working.
     family: familyField === "discover" ? "discover" : "prepare",
@@ -1394,6 +1399,10 @@ interface InstalledSkill {
   enabled: boolean;
   /** The whole SKILL.md, so an expanded row opens without a second read. */
   content: string;
+  /** The package ships this skill and the table marks it `Managed`. */
+  builtin: boolean;
+  /** This row is a prepare-family skill the Skills page may delete. */
+  deletable: boolean;
 }
 
 /** The project-level settings file OMP reads at the repository root. */
@@ -1406,7 +1415,9 @@ const SKILL_EXCLUSION_SETTING = "ignoredSkills";
  * symlink to one holding a readable `SKILL.md`. A name only the published
  * Discover manifest carries contributes no row; the filesystem is the source.
  */
-async function installedSkillFiles(root: string): Promise<Array<{ name: string; content: string }>> {
+async function installedSkillFiles(root: string): Promise<
+  Array<{ name: string; content: string; builtin: boolean; deletable: boolean }>
+> {
   let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -1414,12 +1425,19 @@ async function installedSkillFiles(root: string): Promise<Array<{ name: string; 
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  const files: Array<{ name: string; content: string }> = [];
+  const files: Array<{ name: string; content: string; builtin: boolean; deletable: boolean }> = [];
   for (const entry of entries) {
     if (!(await skillEntryIsDirectory(root, entry))) continue;
     const skill = await readSkillAt(root, entry.name);
     if (skill === undefined) continue;
-    files.push({ name: entry.name, content: skill.content });
+    files.push({
+      name: entry.name,
+      content: skill.content,
+      builtin: skill.builtin,
+      // A link is the operator's entry, so it is never a target this page
+      // deletes; only a marked prepare-family directory it created itself is.
+      deletable: !skill.builtin && skill.managed && skill.family === "prepare" && !entry.isSymbolicLink(),
+    });
   }
   files.sort((left, right) => left.name.localeCompare(right.name));
   return files;
@@ -1475,6 +1493,28 @@ function nextIgnoredSkills(
   }
   if (current.includes(name)) return null;
   return [...current, name];
+}
+
+/**
+ * The settings document after a deleted skill's name leaves
+ * `skills.ignoredSkills`, or null when the name is not there. Every other key
+ * and entry is carried through untouched, so deleting an enabled skill writes
+ * nothing at all.
+ */
+async function skillExclusionAfterRemoval(
+  path: string,
+  name: string,
+): Promise<Record<string, unknown> | null> {
+  const document = await readProjectSettings(path);
+  const skills = asObject(document.skills);
+  if (skills === undefined) return null;
+  const ignored = skills[SKILL_EXCLUSION_SETTING];
+  if (!Array.isArray(ignored) || !ignored.includes(name)) return null;
+  document.skills = {
+    ...skills,
+    [SKILL_EXCLUSION_SETTING]: ignored.filter((value) => value !== name),
+  };
+  return document;
 }
 
 async function writeSkillExclusion(path: string, name: string, enabled: boolean): Promise<void> {
@@ -4885,10 +4925,12 @@ export function createApp(options: AppOptions) {
       (value): value is string => typeof value === "string",
     );
     const files = await installedSkillFiles(skillsDir);
-    return files.map(({ name, content }) => ({
+    return files.map(({ name, content, builtin, deletable }) => ({
       name,
       enabled: !patterns.some((pattern) => new Bun.Glob(pattern).match(name)),
       content,
+      builtin,
+      deletable,
     }));
   }
 
@@ -4897,6 +4939,18 @@ export function createApp(options: AppOptions) {
       send(target, { type: "installedSkills", skills: await readInstalledSkills() });
     } catch (error) {
       send(target, {
+        type: "error",
+        message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  /** Every client's Skills row list, after a change no run holds. */
+  async function broadcastInstalledSkills(): Promise<void> {
+    try {
+      sendAll({ type: "installedSkills", skills: await readInstalledSkills() });
+    } catch (error) {
+      broadcast({
         type: "error",
         message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
       });
@@ -4952,15 +5006,18 @@ export function createApp(options: AppOptions) {
   async function deleteSkill(target: { send(data: string): unknown }, name: unknown): Promise<void> {
     if (typeof name !== "string" || !SKILL_NAME_PATTERN.test(name) || name.length > SKILL_NAME_MAX) {
       send(target, { type: "error", message: "Choose a prepared skill to delete." });
+      await sendInstalledSkills(target);
       return;
     }
     const work = goalWorkLabel();
     if (work !== undefined) {
       send(target, { type: "error", message: `Cannot delete a skill while ${work} is active.` });
+      await sendInstalledSkills(target);
       return;
     }
     if (flow.hasActiveWork()) {
       send(target, { type: "error", message: "Cannot delete a skill while Flow Mode is active." });
+      await sendInstalledSkills(target);
       return;
     }
 
@@ -4972,11 +5029,38 @@ export function createApp(options: AppOptions) {
         type: "error",
         message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
       });
+      await sendInstalledSkills(target);
       return;
     }
     const skill = inspection.managed.get(name);
+    if (
+      skill?.builtin === true ||
+      inspection.unmanaged.get(name)?.builtin === true
+    ) {
+      send(target, {
+        type: "error",
+        message: `"${name}" is a built-in skill and cannot be deleted.`,
+      });
+      await sendInstalledSkills(target);
+      return;
+    }
     if (skill === undefined || skill.family !== "prepare") {
       send(target, { type: "error", message: `No prepared skill named "${name}" is installed.` });
+      await sendInstalledSkills(target);
+      return;
+    }
+
+    // Read and validate the settings before the directory goes: an
+    // unreadable settings file must leave both the skill and its setting.
+    let settings: Record<string, unknown> | null;
+    try {
+      settings = await skillExclusionAfterRemoval(projectSettingsPath, name);
+    } catch (error) {
+      send(target, {
+        type: "error",
+        message: `Could not read the project skill settings: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      await sendInstalledSkills(target);
       return;
     }
 
@@ -4987,9 +5071,28 @@ export function createApp(options: AppOptions) {
         type: "error",
         message: `Could not delete "${name}": ${error instanceof Error ? error.message : String(error)}`,
       });
+      await sendInstalledSkills(target);
       return;
     }
+
+    let settingsError: unknown;
+    if (settings !== null) {
+      try {
+        await writeFileAtomically(projectSettingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+      } catch (error) {
+        settingsError = error;
+      }
+    }
+    // Both tables follow one deletion: Goal reads `skillsState`, the Devboard
+    // Skills page reads `installedSkills`.
     await broadcastSkillsState();
+    await broadcastInstalledSkills();
+    if (settingsError !== undefined) {
+      send(target, {
+        type: "error",
+        message: `Deleted "${name}", but could not update the skill setting: ${settingsError instanceof Error ? settingsError.message : String(settingsError)}`,
+      });
+    }
   }
 
   /**

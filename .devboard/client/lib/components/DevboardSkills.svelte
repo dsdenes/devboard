@@ -1,5 +1,7 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
+  import Trash2 from "lucide-svelte/icons/trash-2";
+  import CommandButton from "./CommandButton.svelte";
   import { connection } from "../connection.svelte";
   import { devboard } from "../devboard.svelte";
   import { renderSkillDocument } from "../skill-document";
@@ -42,6 +44,7 @@
         <tr>
           <th scope="col">Skill</th>
           <th scope="col" class="skills-table__toggle">Enabled</th>
+          <th scope="col" class="skills-table__actions" aria-label="Actions"></th>
         </tr>
       </thead>
       <tbody>
@@ -80,6 +83,15 @@
                 </span>
                 {skill.name}
               </Button>
+              {#if skill.builtin}
+                <span
+                  class="skills-table__managed"
+                  data-testid="skill-managed"
+                  title="Shipped with Devboard and never deleted"
+                >
+                  Managed
+                </span>
+              {/if}
             </td>
             <td class="skills-table__toggle">
               <input
@@ -90,6 +102,24 @@
                 onchange={(event) => toggle(skill.name, event)}
               />
             </td>
+            <td class="skills-table__actions">
+              {#if skill.deletable}
+                <CommandButton
+                  bare
+                  label="Delete"
+                  class="skills-table__delete"
+                  data-testid="delete-skill"
+                  data-name={skill.name}
+                  aria-label={`Delete ${skill.name}`}
+                  title={`Delete ${skill.name} from .omp/skills/`}
+                  evidence={() => devboard.skills}
+                  command={() => devboard.deleteSkill(skill.name)}
+                  disabled={!connection.open}
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                </CommandButton>
+              {/if}
+            </td>
           </tr>
           {#if open}
             <tr
@@ -97,7 +127,7 @@
               data-testid="skill-content-row"
               data-skill={skill.name}
             >
-              <td colspan="2" class="skills-table__content-cell">
+              <td colspan="3" class="skills-table__content-cell">
                 <div
                   id={`devboard-skill-content-${skill.name}`}
                   class="skills-table__content"
@@ -119,7 +149,7 @@
           {/if}
         {:else}
           <tr>
-            <td colspan="2" class="empty">
+            <td colspan="3" class="empty">
               {devboard.skillsLoaded
                 ? "No skills are installed in .omp/skills."
                 : "Loading the installed skills…"}
@@ -227,5 +257,39 @@
     cursor: pointer;
     margin: 0;
     vertical-align: middle;
+  }
+
+  .skills-table__managed {
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    font-family: var(--font-sans);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    margin-left: 8px;
+    padding: 1px 6px;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+
+  .skills-table__actions {
+    text-align: right;
+    white-space: nowrap;
+    width: 1%;
+  }
+
+  :global(.skills-table__delete) {
+    background: none;
+    border: 0;
+    border-radius: 3px;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    padding: 2px 4px;
+    vertical-align: middle;
+  }
+
+  :global(.skills-table__delete:hover) {
+    background: var(--row-hover);
+    color: var(--destructive);
   }
 </style>

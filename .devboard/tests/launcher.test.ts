@@ -145,6 +145,7 @@ describe("public package", () => {
       const declared = /^name: (.+)$/m.exec(frontmatter)?.[1]?.trim();
       expect(declared).toBe(name);
       expect(name).toMatch(/^devboard-[a-z0-9]+(-[a-z0-9]+)*$/);
+      expect(frontmatter).toContain('devboard-builtin: "true"');
       expect(frontmatter).not.toContain("devboard-managed");
     }
   });

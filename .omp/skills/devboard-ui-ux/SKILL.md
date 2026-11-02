@@ -9,6 +9,8 @@ description: >-
   significance, A2UI wireframes, OpenUI component discovery, Storybook CSF
   states, DESIGN.md, DTCG, designmd.ai MCP research, and Playwright validation.
   Do not use for backend-only work, data pipelines, or non-visual CLIs.
+metadata:
+  devboard-builtin: "true"
 ---
 
 # UI/UX
