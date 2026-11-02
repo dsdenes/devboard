@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -545,6 +546,54 @@ describe("createApp", () => {
       expect(await response.json()).toEqual(
         problemBody("Not Found", 404, "The requested file was not found."),
       );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a non-normalized static path instead of resolving it", async () => {
+    const { server, url, root } = await startServer();
+
+    try {
+      await mkdir(join(root, "static", "assets"), { recursive: true });
+      await writeFile(join(root, "static", "assets", "app.js"), "console.log(1);\n");
+
+      // `fetch` normalizes a request path before sending it, so the raw
+      // request line is the only way to observe how the server treats one.
+      const rawStatus = (path: string): Promise<number> => {
+        const { promise, resolve: resolveStatus, reject: rejectStatus } =
+          Promise.withResolvers<number>();
+        const [host, port] = url.split(":");
+        const socket = connect({ host, port: Number(port) });
+        let response = "";
+        socket.setEncoding("utf8");
+        socket.on("connect", () => {
+          socket.write(`GET ${path} HTTP/1.1\r\nHost: ${url}\r\nConnection: close\r\n\r\n`);
+        });
+        socket.on("data", (chunk) => {
+          response += chunk;
+        });
+        socket.on("end", () => {
+          resolveStatus(Number.parseInt(response.split(" ")[1] ?? "", 10));
+        });
+        socket.on("error", rejectStatus);
+        return promise;
+      };
+
+      for (const path of [
+        "//index.html",
+        "/index.html/",
+        "/assets%2Fapp.js",
+        "/assets%5Capp.js",
+        "/assets//app.js",
+      ]) {
+        expect(await rawStatus(path)).toBe(404);
+      }
+
+      const asset = await fetch(`http://${url}/assets/app.js`);
+      expect(asset.status).toBe(200);
+      expect(asset.headers.get("content-type")).toContain("javascript");
+      expect(await asset.text()).toBe("console.log(1);\n");
     } finally {
       server.stop(true);
     }
