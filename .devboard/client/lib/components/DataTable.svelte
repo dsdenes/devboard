@@ -185,13 +185,8 @@
   td {
     border-bottom: 1px solid var(--border-subtle);
     color: var(--foreground);
-    padding: 0 8px;
+    padding: 5px 8px;
     vertical-align: middle;
-  }
-
-  tbody tr {
-    height: 28px;
-    max-height: 32px;
   }
 
   tbody tr[tabindex="0"] {
@@ -209,24 +204,15 @@
   }
 
   .compact td {
-    line-height: 26px;
     max-width: 320px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .wrap tbody tr {
-    height: auto;
-    max-height: none;
-  }
-
   .wrap td {
-    line-height: 1.45;
     max-width: none;
     overflow: visible;
-    padding-bottom: 5px;
-    padding-top: 5px;
     text-overflow: clip;
     vertical-align: top;
     white-space: normal;

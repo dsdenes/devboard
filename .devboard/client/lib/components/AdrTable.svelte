@@ -158,18 +158,15 @@
 
   td {
     border-bottom: 1px solid var(--border-subtle);
-    height: 28px;
-    line-height: 26px;
     max-width: 0;
     overflow: hidden;
-    padding: 0 8px;
+    padding: 5px 8px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   tbody tr {
     cursor: pointer;
-    height: 28px;
   }
 
   tbody tr:hover {
@@ -223,8 +220,16 @@
   }
 
   .adr-action {
-    line-height: 24px;
     text-align: center;
+    vertical-align: middle;
+  }
+
+  /* The cell's 5px 8px padding leaves an 18px content box, which the 24px
+     `sm` control exceeds by 6px. The -3px margins remove that excess from the
+     line box, so the row derives its documented 28px from the padding and the
+     control's margin box instead of a hard-coded row height. */
+  .adr-action :global(button) {
+    margin-block: -3px;
     vertical-align: middle;
   }
 
