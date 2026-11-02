@@ -2769,7 +2769,9 @@ ends; the overview list selects instead of opening a tab. The queue keeps every 
 `goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
 active agent. The Runs page lists every run with its status and issue,
 and a run's detail shows only that run's activity. The status bar's issues indicator reports the
-lifecycle and the running-agent count in its title and still opens Issues mode.
+lifecycle and the running-agent count in its title, and activating it opens the Issues Overview
+from whichever Issues surface was open, so a click always lands on the automation state it
+reports.
 
 ## Draft goals and proposed goals
 

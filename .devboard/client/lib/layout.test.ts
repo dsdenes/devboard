@@ -180,3 +180,22 @@ test("drops a Background agent page stored in Issues mode", () => {
   ]);
   expect(store.activeTab.issues).toBe("overview");
 });
+
+test("the Issues indicator lands on Overview from another surface", () => {
+  const store = new LayoutStore();
+  store.openTab("issues", {
+    id: "agents",
+    kind: "agents",
+    resourceId: "agents",
+    title: "Agents",
+  });
+  store.setMode("devboard");
+
+  store.showIssuesOverview();
+
+  expect(store.mode).toBe("issues");
+  expect(store.tabs.issues).toEqual([
+    { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
+  ]);
+  expect(store.activeTab.issues).toBe("overview");
+});

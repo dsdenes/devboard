@@ -172,6 +172,15 @@ export class LayoutStore {
     this.mode = mode;
   }
 
+  /**
+   * The status-bar indicator reports issue automation state, so activating it
+   * lands on the Overview instead of whichever Issues surface was open before.
+   */
+  showIssuesOverview(): void {
+    this.setMode("issues");
+    this.openTab("issues", defaultTab("issues"));
+  }
+
   setTheme(theme: Theme): void {
     this.theme = theme;
     applyTheme(theme);
