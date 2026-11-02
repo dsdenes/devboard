@@ -3908,7 +3908,6 @@ a.code-chip--link:focus-visible {
   gap: 8px;
   min-height: 0;
   overflow: hidden;
-  padding: 8px;
 }
 
 .issues-agent-focus__scroll {

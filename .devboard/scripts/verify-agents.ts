@@ -1236,6 +1236,16 @@ try {
     (await pageLifecycle(devtools)) === "stopped",
     "Watchdog does not start stopped",
   );
+  const pagePadding = (await devtools.evaluate(`(() => {
+    const page = document.querySelector('[data-testid="agent-page"]');
+    if (page === null) return null;
+    const style = getComputedStyle(page);
+    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+  })()`)) as string[] | null;
+  assertTrue(
+    JSON.stringify(pagePadding) === JSON.stringify(["16px", "16px", "16px", "16px"]),
+    `the agent page padding is ${JSON.stringify(pagePadding)}`,
+  );
   console.log("PASS shared-page-shape");
 
   await click(devtools, "open-devboard-coach");

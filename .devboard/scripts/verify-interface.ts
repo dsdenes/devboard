@@ -8352,9 +8352,11 @@ try {
     closeCommand: string;
     runIdText: boolean;
     removed: boolean;
+    padding: string[];
   }>(`(() => {
     const surface = document.querySelector('#workspace-issues [data-testid="issues-agent-focus"]');
     const text = surface?.textContent ?? "";
+    const style = surface === null ? null : getComputedStyle(surface);
     return {
       bars: surface?.querySelectorAll('[data-testid="agent-activity-bar"]').length ?? 0,
       dot: surface?.querySelector('[data-testid="agent-activity-dot"]')?.getAttribute("data-state") ?? "",
@@ -8362,6 +8364,10 @@ try {
       question: surface?.querySelector('[data-testid="issues-agent-focus-question"]')?.textContent ?? "",
       closeCommand: surface?.querySelector('[data-testid="issues-agent-focus-close"]')?.getAttribute("data-command") ?? "",
       runIdText: text.includes("2026-10-27T10-00-01-000Z"),
+      padding:
+        surface === null
+          ? []
+          : [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
       removed:
         surface?.querySelector('[data-testid="issues-agent-focus-status"]') !== null ||
         surface?.querySelector('[data-testid="issues-agent-focus-run"]') !== null ||
@@ -8378,6 +8384,11 @@ try {
     focus,
   );
   check(focus.closeCommand === "tab.close", "the focus tab has no close control", focus);
+  check(
+    JSON.stringify(focus.padding) === JSON.stringify(["16px", "16px", "16px", "16px"]),
+    "the Issues agent focus does not use the page padding",
+    focus,
+  );
   check(!focus.removed, "a removed focus run surface is still rendered", focus);
   check(!focus.runIdText, "the focus tab still renders its run identifier", focus);
   const longFocusTitle = await page.eval<{
