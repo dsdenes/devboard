@@ -2,6 +2,7 @@ import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -20,6 +21,7 @@ import { recordedChildAlive, stateFile, type RecordedChild } from "./state";
 import { StubForge } from "./fixtures/stub-forge";
 import { UNTRACKED_BODY_MAX_BYTES } from "./flow";
 import { journalKey } from "./journal";
+import { remoteScratchRoot, type RemoteCloneRequest, type RemoteCloneRunner } from "./discover";
 import { testProviderService } from "./fixtures/test-providers";
 import type { ProviderService } from "./providers";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "../scripts/provider-fixture";
@@ -148,6 +150,8 @@ interface StartOptions {
   restart?: () => void;
   /** Replaces the deterministic provider service, to defer peer preparation. */
   providers?: ProviderService;
+  /** Injects the Discover clone so no test reaches the network. */
+  discoverClone?: RemoteCloneRunner;
 }
 
 function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
@@ -174,6 +178,7 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
       }),
     trackerSettle: { attempts: 1 },
     restart: options.restart,
+    ...(options.discoverClone === undefined ? {} : { discoverClone: options.discoverClone }),
     flow: {
       forge,
       forgeTarget: { forge: "github", host: "forge.test", project: "acme/fixture" },
@@ -376,18 +381,21 @@ function seedSession(
   id: string,
   status: "idle" | "stopped" | "merged",
   goal: string,
+  prState?: "live" | "merged",
 ): string {
   const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
   mkdirSync(directory, { recursive: true });
+  mkdirSync(join(fixture.root, ".worktree", `flow-${id}`), { recursive: true });
+  const state = prState ?? (status === "merged" ? "merged" : null);
   const pr =
-    status === "merged"
-      ? {
+    state === null
+      ? null
+      : {
           forge: "github",
           number: 1,
           url: "https://forge.test/acme/fixture/pull/1",
-          state: "merged",
-        }
-      : null;
+          state,
+        };
   writeFileSync(
     join(directory, "session.json"),
     `${JSON.stringify(
@@ -423,6 +431,59 @@ function seedSession(
   );
   writeFileSync(join(directory, "goal.md"), goal);
   return directory;
+}
+
+/** Makes the fixture a harness source checkout, so Discover's remote target exists. */
+function markSourceCheckout(fixture: Fixture): void {
+  mkdirSync(join(fixture.root, ".devboard"), { recursive: true });
+  writeFileSync(
+    join(fixture.root, ".devboard", "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.0.0" }, null, 2)}\n`,
+  );
+}
+
+/** A directory an injected Discover clone copies; no test reaches the network. */
+function createCloneSource(name: string): string {
+  const root = testDirectory(`clone-source-${name}`);
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "README.md"), `# ${name}\n\nA remote fixture.\n`);
+  writeFileSync(join(root, "src", "main.txt"), "remote\n");
+  return root;
+}
+
+/** Records every clone and copies `source` into the requested destination. */
+function cloneHarness(
+  source: string,
+  gate?: Promise<void>,
+): { calls: RemoteCloneRequest[]; runner: RemoteCloneRunner } {
+  const calls: RemoteCloneRequest[] = [];
+  const runner: RemoteCloneRunner = async (request) => {
+    calls.push(request);
+    if (gate !== undefined) await gate;
+    const destination = join(request.cwd, request.argv[request.argv.length - 1] ?? "");
+    cpSync(source, destination, { recursive: true, force: true });
+    return { code: 0, stderr: "", timedOut: false };
+  };
+  return { calls, runner };
+}
+
+/** True when a Discover snapshot reports a live remote checkout. */
+function reportsCheckout(event: Event): boolean {
+  const state = event.state;
+  if (state === null || typeof state !== "object" || !("target" in state)) return false;
+  const target = state.target;
+  if (target === null || typeof target !== "object" || !("checkout" in target)) return false;
+  return target.checkout === true;
+}
+
+/** The transient `.staging-*` entries of the harness remote scratch root. */
+function checkoutEntries(fixture: Fixture): string[] {
+  const root = remoteScratchRoot(fixture.stateDir);
+  try {
+    return readdirSync(root).filter((entry) => entry.startsWith(".staging-"));
+  } catch {
+    return [];
+  }
 }
 
 async function createGoal(client: TestClient, fixture: Fixture): Promise<void> {
@@ -1066,7 +1127,9 @@ describe("Flow Mode contract", () => {
       (event) => event.type === "error" && String(event.message).includes("Flow Mode"),
       { from: mark },
     );
-    expect(String(lifecycleError.message)).toContain("Flow Mode");
+    expect(String(lifecycleError.message)).toBe(
+      "Flow Mode is active. Finish or stop its work first.",
+    );
 
     for (const command of [
       { type: "startRun" },
@@ -1080,7 +1143,7 @@ describe("Flow Mode contract", () => {
         (event) => event.type === "error" && String(event.message).includes("Flow Mode"),
         { from: before },
       );
-      expect(String(error.message)).toContain("Flow Mode");
+      expect(String(error.message)).toBe("Flow Mode is active. Finish or stop its work first.");
     }
     await waitForStub(fixture, (line) => line.startsWith("prompt /flow-implement "));
     const flows = spawns(fixture);
@@ -1106,6 +1169,116 @@ describe("Flow Mode contract", () => {
     const error = await client.waitFor((event) => event.type === "flowError", { from: mark });
     expect(String(error.message)).toContain("Goal Mode");
     expect(prompts(fixture).filter((line) => line.startsWith("prompt /flow-goal "))).toHaveLength(0);
+    client.close();
+  }, 30_000);
+
+  test("Discover's clone names its mode and project in every Flow refusal", async () => {
+    const fixture = createFixture("discover-clone-refusal");
+    markSourceCheckout(fixture);
+    seedSession(fixture, "live1", "idle", FLOW_GOAL, "live");
+    const gate = Promise.withResolvers<void>();
+    const clones = cloneHarness(createCloneSource("clone-refusal"), gate.promise);
+    const testServer = startServer(fixture, {
+      stub: ["--discover", "--discover-no-exit", "--flow-goal"],
+      discoverClone: clones.runner,
+    });
+    const client = await connect(testServer);
+    await connected(client);
+
+    client.send({ type: "discoverRemote", url: "https://github.com/coollabsio/coolify" });
+    await waitUntil(() => clones.calls.length === 1, "the Discover clone to start");
+    const expected =
+      "Discover is active on coollabsio/coolify (a repository clone). " +
+      "Stop it in Discover before starting Flow work.";
+    for (const command of [
+      { type: "createFlowGoal" },
+      { type: "startFlowImplementation" },
+      { type: "mergeFlowPr" },
+    ]) {
+      const from = client.mark();
+      client.send(command);
+      const error = await client.waitFor((event) => event.type === "flowError", { from });
+      expect(String(error.message)).toBe(expected);
+    }
+    gate.resolve();
+    client.close();
+  }, 30_000);
+
+  test("Discover's checkout names its mode and project, and releases for Flow after Stop", async () => {
+    const fixture = createFixture("discover-checkout-refusal");
+    markSourceCheckout(fixture);
+    seedSession(fixture, "live1", "idle", FLOW_GOAL, "live");
+    const clones = cloneHarness(createCloneSource("checkout-refusal"));
+    const testServer = startServer(fixture, {
+      stub: ["--discover", "--discover-no-exit", "--flow-goal"],
+      discoverClone: clones.runner,
+    });
+    const client = await connect(testServer);
+    await connected(client);
+
+    const from = client.mark();
+    client.send({ type: "discoverRemote", url: "https://github.com/coollabsio/coolify" });
+    await client.waitFor((event) => event.type === "discoverStarted", { from });
+    await waitUntil(
+      () =>
+        client.events.some(
+          (event) => event.type === "discoverState" && reportsCheckout(event),
+        ),
+      "the remote Discover checkout",
+    );
+    const expected =
+      "Discover is active on coollabsio/coolify (a repository checkout). " +
+      "Stop it in Discover before starting Flow work.";
+    for (const command of [
+      { type: "createFlowGoal" },
+      { type: "startFlowImplementation" },
+      { type: "mergeFlowPr" },
+    ]) {
+      const before = client.mark();
+      client.send(command);
+      const error = await client.waitFor((event) => event.type === "flowError", { from: before });
+      expect(String(error.message)).toBe(expected);
+    }
+
+    const stopped = client.mark();
+    client.send({ type: "stopDiscover" });
+    await client.waitFor((event) => event.type === "discoverStopped", { from: stopped });
+    expect(checkoutEntries(fixture)).toEqual([]);
+
+    const flowMark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    await client.waitFor((event) => event.type === "flowGoalStarted", { from: flowMark });
+    client.send({ type: "cancelFlowGoal" });
+    client.close();
+  }, 40_000);
+
+  test("Goal Mode's label names its work in every Flow refusal", async () => {
+    const fixture = createFixture("goal-mode-refusal");
+    seedSession(fixture, "live1", "idle", FLOW_GOAL, "live");
+    const testServer = startServer(fixture, {
+      stub: ["--create-goal", `--goal=${join("GOAL.md")}`, "--flow-goal"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+
+    client.send({ type: "createGoal" });
+    await client.waitFor((event) => event.type === "goalCreationStarted");
+    const expectedStart =
+      "Goal Mode is active (a goal creation). Stop it before starting Flow work.";
+    for (const command of [{ type: "createFlowGoal" }, { type: "startFlowImplementation" }]) {
+      const from = client.mark();
+      client.send(command);
+      const error = await client.waitFor((event) => event.type === "flowError", { from });
+      expect(String(error.message)).toBe(expectedStart);
+    }
+    const mergeMark = client.mark();
+    client.send({ type: "mergeFlowPr" });
+    const mergeError = await client.waitFor((event) => event.type === "flowError", {
+      from: mergeMark,
+    });
+    expect(String(mergeError.message)).toBe(
+      "Goal Mode is active (a goal creation). Stop it before merging the Flow pull request.",
+    );
     client.close();
   }, 30_000);
 
