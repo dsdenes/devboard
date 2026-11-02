@@ -349,7 +349,7 @@ try {
   await mkdir(join(repo, ".devboard", "server"), { recursive: true });
   await mkdir(join(repo, ".devboard", "prompts"), { recursive: true });
   await mkdir(join(repo, ".devboard", ".tmp"), { recursive: true });
-  await mkdir(join(repo, ".omp", "skills", "restful-api-implementation", "references"), {
+  await mkdir(join(repo, ".omp", "skills", "devboard-restful-api-implementation", "references"), {
     recursive: true,
   });
   await mkdir(join(repo, "adrs"), { recursive: true });
@@ -389,7 +389,7 @@ try {
     ].join("\n"),
   );
   await writeFile(
-    join(repo, ".omp", "skills", "restful-api-implementation", "SKILL.md"),
+    join(repo, ".omp", "skills", "devboard-restful-api-implementation", "SKILL.md"),
     [
       "# RESTful API Implementation",
       "",
@@ -406,7 +406,7 @@ try {
     ].join("\n"),
   );
   await writeFile(
-    join(repo, ".omp", "skills", "restful-api-implementation", "references", "zalando-rest-rules.md"),
+    join(repo, ".omp", "skills", "devboard-restful-api-implementation", "references", "zalando-rest-rules.md"),
     [
       "# Zalando RESTful API Guidelines — REST rule set",
       "",
@@ -784,8 +784,8 @@ try {
     "HTTP requests",
     "**148 — MUST**",
     "> Use HTTP methods according to RFC 9110.",
-    ".omp/skills/restful-api-implementation/SKILL.md",
-    ".omp/skills/restful-api-implementation/references/zalando-rest-rules.md",
+    ".omp/skills/devboard-restful-api-implementation/SKILL.md",
+    ".omp/skills/devboard-restful-api-implementation/references/zalando-rest-rules.md",
     ".devboard/server/app.ts:1",
     "- `POST /api/ready`",
     "## Proposed change",
@@ -793,6 +793,11 @@ try {
   ]) {
     check(mustIssue.body.includes(expected), `the MUST issue body lacks ${expected}`, mustIssue.body);
   }
+  console.log(
+    "verify-api-standards: the MUST issue names " +
+      ".omp/skills/devboard-restful-api-implementation/SKILL.md and " +
+      ".omp/skills/devboard-restful-api-implementation/references/zalando-rest-rules.md",
+  );
   await waitFor(
     async () => ((await rows(devtools!)).length === 2 ? true : undefined),
     "the filed-issue rows",
@@ -1047,24 +1052,24 @@ try {
     {
       name: "missing skill",
       breakIt: () => renameSync(
-        join(repo, ".omp", "skills", "restful-api-implementation", "SKILL.md"),
+        join(repo, ".omp", "skills", "devboard-restful-api-implementation", "SKILL.md"),
         join(root, "SKILL.md.aside"),
       ),
       restore: () => renameSync(
         join(root, "SKILL.md.aside"),
-        join(repo, ".omp", "skills", "restful-api-implementation", "SKILL.md"),
+        join(repo, ".omp", "skills", "devboard-restful-api-implementation", "SKILL.md"),
       ),
       expected: "SKILL.md is not readable",
     },
     {
       name: "missing reference",
       breakIt: () => renameSync(
-        join(repo, ".omp", "skills", "restful-api-implementation", "references", "zalando-rest-rules.md"),
+        join(repo, ".omp", "skills", "devboard-restful-api-implementation", "references", "zalando-rest-rules.md"),
         join(root, "rules.md.aside"),
       ),
       restore: () => renameSync(
         join(root, "rules.md.aside"),
-        join(repo, ".omp", "skills", "restful-api-implementation", "references", "zalando-rest-rules.md"),
+        join(repo, ".omp", "skills", "devboard-restful-api-implementation", "references", "zalando-rest-rules.md"),
       ),
       expected: "zalando-rest-rules.md is not readable",
     },

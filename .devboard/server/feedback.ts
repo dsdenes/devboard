@@ -47,7 +47,7 @@ export const REMOVAL_INSTRUCTION = "Remove the selected UI element from the inte
  */
 export const REDESIGN_INSTRUCTION =
   "Check the selected UI element and redesign it because it does not look good. " +
-  "Use the global OMP UI/UX standard (the ui-ux skill) and this repository's " +
+  "Use the project UI/UX skill (devboard-ui-ux) and this repository's " +
   "DESIGN.md and design/tokens.json as the normative design system.";
 
 const ACTION_ERROR = "action must be one of report, remove, redesign.";

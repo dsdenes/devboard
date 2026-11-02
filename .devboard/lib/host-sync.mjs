@@ -25,6 +25,14 @@ import { dirname, join, resolve, sep } from "node:path";
  */
 export const HOST_HARNESS_PATHS = ["prompts", "extensions", "lib", "scripts/forge-auth.ts"];
 
+/**
+ * The name prefix that marks a skill directory as package-owned. The package
+ * always wins a marked name: it overwrites every marked file, removes entries
+ * it does not ship, and deletes a marked directory a newer release drops. An
+ * unmarked skill belongs to the host and is never read, rewritten, or deleted.
+ */
+export const MANAGED_SKILL_PREFIX = "devboard-";
+
 async function lstatOrUndefined(path) {
   try {
     return await lstat(path);
@@ -144,6 +152,30 @@ export async function syncWrappers(host, harness, skip) {
 }
 
 /**
+ * Copies every package-owned skill into `<host>/.omp/skills/<name>/` and
+ * deletes a marked directory the package no longer ships. The marked namespace
+ * is reserved, so a marked entry is replaced even when it is a symlink or a
+ * file and even when git tracks it; only names outside the marked namespace
+ * survive untouched.
+ */
+export async function syncSkills(host, harness) {
+  const source = join(harness, "omp", "skills");
+  if (!existsSync(source)) return;
+  const target = join(host, ".omp", "skills");
+  await ensureFixedDirectory(target);
+  const shipped = new Set();
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(MANAGED_SKILL_PREFIX)) continue;
+    shipped.add(entry.name);
+    await syncTree(join(source, entry.name), join(target, entry.name));
+  }
+  for (const name of await readdir(target)) {
+    if (shipped.has(name) || !name.startsWith(MANAGED_SKILL_PREFIX)) continue;
+    await rm(join(target, name), { recursive: true, force: true });
+  }
+}
+
+/**
  * Absolute host paths under `paths` that git tracks. A probe that cannot
  * answer rejects: an empty set would let the sync replace files git tracks,
  * so "unknown" is never treated as "none".
@@ -184,10 +216,10 @@ export function trackedPaths(host, paths) {
 
 /**
  * The full host sync an install, an update, or an automatic update runs after
- * the package is in place: wrappers with tracked-path protection, then the
- * harness trees the wrappers import, protected the same way. Rejects before
- * copying anything when git cannot answer, so an unanswerable probe never
- * turns into an empty protection set.
+ * the package is in place: wrappers with tracked-path protection, the
+ * package-owned skills, then the harness trees the wrappers import, protected
+ * the same way. Rejects before copying anything when git cannot answer, so an
+ * unanswerable probe never turns into an empty protection set.
  */
 export async function syncHostCopies(host, harness) {
   const wrappers = await trackedPaths(host, [
@@ -196,5 +228,6 @@ export async function syncHostCopies(host, harness) {
     ".omp/mcp.json",
   ]);
   await syncWrappers(host, harness, wrappers);
+  await syncSkills(host, harness);
   await syncHarnessTrees(host, harness, await trackedPaths(host, [".devboard"]));
 }

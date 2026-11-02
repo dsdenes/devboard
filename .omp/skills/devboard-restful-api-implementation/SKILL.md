@@ -1,5 +1,5 @@
 ---
-name: restful-api-implementation
+name: devboard-restful-api-implementation
 description: Apply Zalando's RESTful API Guidelines when designing, specifying, or implementing an HTTP API - resources, URLs, JSON payloads, HTTP methods, status codes, headers, hypermedia, performance, pagination, compatibility, and deprecation. Use when writing or reviewing an API specification or API code.
 ---
 
@@ -9,7 +9,7 @@ Design and implementation policy for HTTP APIs, taken from Zalando's RESTful API
 https://opensource.zalando.com/restful-api-guidelines/.
 
 The chapters below restate the guideline's REST chapters as directives, and the bundled rule
-reference at `skill://restful-api-implementation/references/zalando-rest-rules.md` carries one row
+reference at `skill://devboard-restful-api-implementation/references/zalando-rest-rules.md` carries one row
 per published rule with its identifier and level. This skill is a working summary, not the source:
 
 - Read https://opensource.zalando.com/restful-api-guidelines/ whenever a rule is not restated here,

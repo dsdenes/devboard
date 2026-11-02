@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createReleaseDirectory, packedPaths } from "../scripts/harness-package";
@@ -103,6 +103,23 @@ describe("public package", () => {
     expect(files.some((path) => path.startsWith("prompts/"))).toBe(true);
     expect(files.some((path) => path.startsWith("omp/commands/"))).toBe(true);
     expect(files.some((path) => path.startsWith("omp/extensions/"))).toBe(true);
+    for (const name of [
+      "devboard-ui-ux",
+      "devboard-restful-api-implementation",
+      "devboard-single-responsibility-principle",
+    ]) {
+      expect(present.has(`omp/skills/${name}/SKILL.md`)).toBe(true);
+    }
+    expect(present.has("omp/skills/devboard-ui-ux/scripts/preflight.mjs")).toBe(true);
+    expect(present.has("omp/skills/devboard-ui-ux/references/design-system.md")).toBe(true);
+    expect(present.has("omp/skills/devboard-ui-ux/references/templates.md")).toBe(true);
+    expect(present.has("omp/skills/devboard-ui-ux/references/validation.md")).toBe(true);
+    expect(present.has("omp/skills/devboard-ui-ux/references/wireframe.md")).toBe(true);
+    expect(
+      present.has(
+        "omp/skills/devboard-restful-api-implementation/references/zalando-rest-rules.md",
+      ),
+    ).toBe(true);
     const mcp = JSON.parse(readFileSync(join(harnessRoot, "omp", "mcp.json"), "utf8")) as {
       mcpServers: Record<string, { type: string }>;
     };
@@ -112,6 +129,24 @@ describe("public package", () => {
       expect(files.some((path) => path.startsWith(forbidden))).toBe(false);
     }
     expect(paths).toContain("bin/devboard.mjs");
+  });
+
+  test("ships managed skill directories whose frontmatter names match", () => {
+    const skills = join(harnessRoot, "omp", "skills");
+    const names = readdirSync(skills).filter((name) => name.startsWith("devboard-"));
+    expect(names.sort()).toEqual([
+      "devboard-restful-api-implementation",
+      "devboard-single-responsibility-principle",
+      "devboard-ui-ux",
+    ]);
+    for (const name of names) {
+      const document = readFileSync(join(skills, name, "SKILL.md"), "utf8");
+      const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(document)?.[1] ?? "";
+      const declared = /^name: (.+)$/m.exec(frontmatter)?.[1]?.trim();
+      expect(declared).toBe(name);
+      expect(name).toMatch(/^devboard-[a-z0-9]+(-[a-z0-9]+)*$/);
+      expect(frontmatter).not.toContain("devboard-managed");
+    }
   });
 
   test("--help lists install, update, and doctor", () => {

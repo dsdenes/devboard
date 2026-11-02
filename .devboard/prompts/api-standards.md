@@ -27,7 +27,7 @@ install, and never start another agent.
 ## Normative source
 
 The REST skill is the only normative text for this turn: `documents` in `input.json`, which are
-`<REPO_DIR>/.omp/skills/restful-api-implementation/SKILL.md` and its
+`<REPO_DIR>/.omp/skills/devboard-restful-api-implementation/SKILL.md` and its
 `references/zalando-rest-rules.md`. The rule table's rows read
 `| <rule id> | <MUST|SHOULD|MAY> | <directive> |` under the guideline's 15 REST chapter headings.
 
@@ -108,8 +108,8 @@ For each admissible, non-duplicate finding within the room, call `issue_create` 
 
 ## Skill
 
-`<REPO_DIR>/.omp/skills/restful-api-implementation/SKILL.md`
-`<REPO_DIR>/.omp/skills/restful-api-implementation/references/zalando-rest-rules.md`
+`<REPO_DIR>/.omp/skills/devboard-restful-api-implementation/SKILL.md`
+`<REPO_DIR>/.omp/skills/devboard-restful-api-implementation/references/zalando-rest-rules.md`
 
 ## Evidence
 

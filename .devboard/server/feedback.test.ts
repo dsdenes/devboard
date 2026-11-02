@@ -430,7 +430,8 @@ describe("feedback endpoint", () => {
       const call = calls[0]!;
       expect(call.body.startsWith("## Redesign request\n\n")).toBe(true);
       expect(call.body).toContain(REDESIGN_INSTRUCTION);
-      expect(call.body).toContain("ui-ux skill");
+      expect(call.body).toContain("project UI/UX skill (devboard-ui-ux)");
+      expect(call.body).not.toContain("global OMP UI/UX");
       expect(call.body).toContain("DESIGN.md");
       expect(call.body).toContain("design/tokens.json");
       expect(call.body).not.toContain("ignored operator text");

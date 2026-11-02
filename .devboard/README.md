@@ -431,16 +431,17 @@ a dubious-ownership refusal aborts `install` and `update` instead of letting eit
 tree it cannot protect.
 
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
-`.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
-package's files. It keeps `.devboard/.tmp`: when the old `.devboard` was a symlink, every
+`.omp/commands`, `.omp/extensions`, and `.omp/skills/devboard-*` symlinks with real directories
+that hold the installed package's files. It keeps `.devboard/.tmp`: when the old `.devboard` was a symlink, every
 non-disposable child of its `.tmp` — `state`, `journal`, `providers`, `issues`, `flow`, `coach`,
 `scout`, `design`, `watchdog`, `orchestrator`, `mcp`, and `install.json` — is copied across
 byte-identically before the symlink is replaced; only `serving/`, `updates/`, and
 `dashboard.log` are scratch the new prefix recreates. It copies the package's `prompts/`,
 `extensions/`, and `lib/` trees to `<host>/.devboard/`, copies `templates/host-AGENTS.md` to
 `<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
-and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
-dashboard running from the installed package. The copied trees are what the command wrappers
+and reported as drift), adds the fixed ignored paths plus one `/.omp/skills/devboard-<name>`
+line per shipped skill to `.gitignore`, and leaves exactly one dashboard running from the
+installed package. The copied trees are what the command wrappers
 open by repo-root-relative path: each command reads `.devboard/prompts/<name>.md`, each omp
 extension re-exports `.devboard/extensions/<name>.ts`, and those extensions import
 `../lib/*.ts`. The package itself stays under `.devboard/node_modules`. A reinstall keeps the
@@ -454,8 +455,9 @@ no dashboard behind.
 `doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
 configured Gitea fallback and its digest), the installed package, the installed version against
 the newest version, `omp` and its authenticated probe, wrapper byte-equality, byte-equality of
-the copied `prompts/`, `extensions/`, and `lib/` trees, `AGENTS.md`, the dashboard's package and
-HTTP response, a non-symlinked `.devboard`, and a recorded update failure. Drift in a regular
+the copied `prompts/`, `extensions/`, and `lib/` trees, byte-equality of every shipped
+`.omp/skills/devboard-*` directory, `AGENTS.md`, the dashboard's package and HTTP response, a
+non-symlinked `.devboard`, and a recorded update failure. Drift in a regular
 `AGENTS.md` is reported without failing the check; every other mismatch exits nonzero. Gitea is
 never required: with no address configured the checks consult npm only.
 
@@ -472,7 +474,41 @@ selects a different npm executable for those fixtures.
 
 The host must already contain a `.devboard/` directory. Every file under `omp/` is copied to the
 same relative path under `<host>/.omp/`; matching files are left alone, unrelated host files are
-never removed, and a differing file stops the run unless `--force` is given.
+never removed, and a differing file stops the run unless `--force` is given. Skills under
+`omp/skills/devboard-*` are the exception described under [Skills](#skills), and the script adds
+their `/.omp/skills/devboard-<name>` lines to the host `.gitignore`, adding nothing on a rerun.
+
+## Skills
+
+The package ships three project-scoped skills, canonical under `.devboard/omp/skills/` and
+installed on every install and update into `<host>/.omp/skills/<name>/` as real files:
+
+|Skill|Carries|
+|---|---|
+|`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.mjs`.|
+|`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
+|`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs.|
+
+A plain `omp` session started at the host root discovers them at project scope; `omp skill list`
+prints one line per skill. `.devboard/install.sh`, `install`, `update`, and the automatic
+replacement path all write the same bytes.
+
+The name prefix is the ownership marker, and the marked namespace is reserved for the package:
+
+- The package wins a `devboard-*` name. A differing file is restored to package bytes without
+  `--force`, an extra file inside a shipped marked directory is removed, a marked directory the
+  package no longer ships is deleted, and a marked symlink or file is replaced with a real
+  directory without writing its target.
+- Every unmarked skill belongs to the host. A hand-authored `house-style`, a prepare-family
+  skill, or a Discover-family skill keeps its exact bytes and is never deleted by install, update,
+  or prune; a host that wants a skill of its own uses an unmarked name.
+
+`install` adds exactly one `/.omp/skills/devboard-<name>` line per shipped skill to the host
+`.gitignore` and adds nothing on a rerun. The three entries are `/.omp/skills/devboard-ui-ux`,
+`/.omp/skills/devboard-restful-api-implementation`, and
+`/.omp/skills/devboard-single-responsibility-principle`. `doctor` and the update verification
+compare each shipped skill directory with the installed package and exit nonzero when one byte
+differs; an unmarked host skill is never inspected and never fails the check.
 
 The global `/setup-devboard` command runs the launcher against the invoking session's working
 directory. It lives here as `omp/commands/setup-devboard.md` and is linked into the user-level
@@ -2120,7 +2156,7 @@ rendered row count. Its prompt section shows `.devboard/prompts/api-standards.md
 `/api-standards-audit` command reads, as read-only bytes exactly like the Auto Scout prompt.
 
 The normative source is the project OMP skill
-`<REPO_DIR>/.omp/skills/restful-api-implementation/` — `SKILL.md` and its
+`<REPO_DIR>/.omp/skills/devboard-restful-api-implementation/` — `SKILL.md` and its
 `references/zalando-rest-rules.md`, whose rows read `| <rule id> | <MUST|SHOULD|MAY> |
 <directive> |` grouped under the guideline's 15 REST chapter headings. Every cycle reads both
 files; the skill is the sole normative text, the cycle makes no network request to the guideline
@@ -3451,9 +3487,9 @@ context rather than operator prose. The title is `[ui] Remove element: <selector
 clamped to 200 characters; an empty selector leaves `[ui] Remove element`. A removal body starts
 with `## Removal request` and the instruction `Remove the selected UI element from the
 interface.`. A redesign body starts with `## Redesign request` and the instruction `Check the
-selected UI element and redesign it because it does not look good. Use the global OMP UI/UX
-standard (the ui-ux skill) and this repository's DESIGN.md and design/tokens.json as the normative
-design system.` Both bodies end with the same `## Captured UI context` block: route, URL, selected
+selected UI element and redesign it because it does not look good. Use the project UI/UX skill
+(devboard-ui-ux) and this repository's DESIGN.md and design/tokens.json as the normative design
+system.` Both bodies end with the same `## Captured UI context` block: route, URL, selected
 element, viewport, capture time, visible text, and DOM excerpt.
 
 The report title is `[ui] ` plus the first line of the report, at most 200 characters; its body is

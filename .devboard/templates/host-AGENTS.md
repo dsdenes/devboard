@@ -14,7 +14,7 @@ Two layers. Identify yours before reading or editing.
 | Path | Identity |
 | --- | --- |
 | `.devboard/` | Agentic development harness. Project-agnostic. Owns the browser interface and its toolchain. Works *on* the host. Never the host product. |
-| `.devboard/omp/` | Canonical agent wrappers; installed into the host's `.omp/`. |
+| `.devboard/omp/` | Canonical agent commands, extensions, and skills; installed into the host's `.omp/`. |
 | `adrs/`, `GOAL.md` | Host data at the root; never harness artifacts. |
 | everything else | Host project. |
 
@@ -85,8 +85,9 @@ push mirror of this repository; it carries no release the dashboard reads.
 
 A host installs a real npm prefix at `<host>/.devboard` with
 `npx @dsdenes/devboard install`. The launcher never discovers, reads, copies, or waits on another
-local Devboard installation or source checkout. `<host>/.omp/commands`, `<host>/.omp/extensions`, and
-`<host>/AGENTS.md` are real copies from the installed package; no harness path is a symlink.
+local Devboard installation or source checkout. `<host>/.omp/commands`, `<host>/.omp/extensions`,
+`<host>/.omp/skills/devboard-*`, and `<host>/AGENTS.md` are real copies from the installed package;
+no harness path is a symlink.
 The canonical `.devboard/` in this checkout is the source tree and is never an npm install.
 
 Every installed dashboard checks the newest npm version at startup and every 60 seconds and
@@ -175,13 +176,43 @@ Guardrails:
 
 ## Wrappers
 
-`.devboard/omp/` is canonical: agent commands live in `omp/commands/` and extensions in
-`omp/extensions/`, never in the root `.omp/`. `.devboard/install.sh` copies every file under
-`.devboard/omp/` to the same relative path under `<host>/.omp/`. The host path is an argument or
-is discovered with `git rev-parse --show-toplevel`; the script refuses a host without a
-`.devboard/` directory, refuses to overwrite a differing file without `--force`, never touches
+`.devboard/omp/` is canonical: agent commands live in `omp/commands/`, extensions in
+`omp/extensions/`, and host skills in `omp/skills/`, never in the root `.omp/`.
+`.devboard/install.sh` copies every file under `.devboard/omp/` to the same relative path under
+`<host>/.omp/`. The host path is an argument or is discovered with
+`git rev-parse --show-toplevel`; the script refuses a host without a `.devboard/` directory,
+refuses to overwrite a differing file outside `skills/devboard-*` without `--force`, never touches
 unrelated files, and is safe to rerun. Edit `.devboard/omp/`, rerun `install.sh`, and never
 hand-edit the installed `.omp/`.
+
+## Skills
+
+The package ships three project-scoped skills, canonical under `.devboard/omp/skills/`:
+`devboard-ui-ux`, `devboard-restful-api-implementation`, and
+`devboard-single-responsibility-principle`. Every install, manual update, and automatic update
+copies them as real files into `<host>/.omp/skills/<name>/`, where a plain `omp` session at the
+host root discovers them at project scope.
+
+The `devboard-` prefix is the ownership marker, and the marked namespace is reserved for the
+package:
+
+- The package always wins a marked name: a differing file is restored to package bytes without
+  `--force`, an extra file inside a shipped marked directory is removed, and a marked directory
+  the package no longer ships is deleted.
+- A marked entry that is a symlink or a file is replaced with a real directory; nothing writes
+  through it to its target.
+- An unmarked skill — a host's own, a prepare-family skill, or a Discover-family skill — belongs
+  to the host and is never read, rewritten, or deleted. A host that wants a skill of its own uses
+  an unmarked name.
+
+`install` adds one `/.omp/skills/devboard-<name>` line per shipped skill to the host
+`.gitignore`; a rerun adds nothing. `doctor` compares each shipped skill directory with the
+installed package and exits nonzero on one differing byte; an unmarked host skill never fails that
+check.
+
+The API Standards worker reads the project copy: `apiStandardsConfig().skillDocument` is
+`.omp/skills/devboard-restful-api-implementation/SKILL.md` and its rule table is
+`references/zalando-rest-rules.md` under the same directory.
 
 ## Cross-boundary changes
 
@@ -249,7 +280,9 @@ never hand-edit them.
   this file.
 - `.gitea/workflows/devboard-release.yml` — CI on the canonical Gitea instance: install, build,
   test, typecheck, and release. GitHub receives a push mirror only.
-- `.devboard/omp/` — canonical agent commands and extensions.
+- `.devboard/omp/` — canonical agent commands, extensions, and skills.
+- `.devboard/omp/skills/` — canonical project-scoped skills; `devboard-*` names are
+  package-owned and installed into `<host>/.omp/skills/` on every install and update.
 - `.omp/` — installed copy of `.devboard/omp/`; never edited by hand.
 - `adrs/`, `GOAL.md` — host data at the root; not harness artifacts.
 - `.devboard/AGENTS.md` — harness-internal instructions, when present.

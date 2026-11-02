@@ -45,6 +45,12 @@ import {
 
 const OLD = "0.1.900";
 const NEW = "0.1.901";
+/** The skill directories every install and update writes into the host. */
+const MANAGED_SKILLS = [
+  "devboard-ui-ux",
+  "devboard-restful-api-implementation",
+  "devboard-single-responsibility-principle",
+] as const;
 const root = await makeRoot("verify-install");
 const startedHosts: string[] = [];
 
@@ -146,6 +152,16 @@ try {
     treesMatch(join(harness, "omp", "extensions"), join(host.directory, ".omp", "extensions")),
     "extensions match the installed package",
   );
+  for (const name of MANAGED_SKILLS) {
+    assertTrue(
+      treesMatch(
+        join(harness, "omp", "skills", name),
+        join(host.directory, ".omp", "skills", name),
+      ),
+      `.omp/skills/${name} matches the installed package`,
+    );
+  }
+  step(`installed project skills ${MANAGED_SKILLS.join(", ")}`);
   const installedMcp = join(host.directory, ".omp", "mcp.json");
   assertTrue(existsSync(installedMcp), ".omp/mcp.json is missing");
   assertTrue(!isSymlink(installedMcp), ".omp/mcp.json is a symlink");
@@ -172,7 +188,12 @@ try {
     "AGENTS.md matches the template",
   );
   const ignore = readFileSync(join(host.directory, ".gitignore"), "utf8").split("\n");
-  for (const entry of ["/.devboard", "/.omp/commands", "/.omp/extensions"]) {
+  for (const entry of [
+    "/.devboard",
+    "/.omp/commands",
+    "/.omp/extensions",
+    ...MANAGED_SKILLS.map((name) => `/.omp/skills/${name}`),
+  ]) {
     assertTrue(ignore.includes(entry), `.gitignore contains ${entry}`);
   }
   assertEquals(readFileSync(join(host.directory, "tracked.txt"), "utf8"), "modified by the host\n", "tracked change preserved");
@@ -184,6 +205,60 @@ try {
     status.split("\n").some((line) => line.includes("D .omp/commands/host-local.md")),
     "the tracked-and-deleted wrapper stays absent",
   );
+
+  step("owning managed skills on every install");
+  const skills = join(host.directory, ".omp", "skills");
+  await writeFile(join(skills, "devboard-ui-ux", "SKILL.md"), "tampered\n");
+  await writeFile(join(skills, "devboard-ui-ux", "extra.md"), "extra\n");
+  await mkdir(join(skills, "devboard-retired"), { recursive: true });
+  await writeFile(
+    join(skills, "devboard-retired", "SKILL.md"),
+    "---\nname: devboard-retired\ndescription: retired\n---\n",
+  );
+  await mkdir(join(skills, "house-style"), { recursive: true });
+  await writeFile(
+    join(skills, "house-style", "SKILL.md"),
+    "---\nname: house-style\ndescription: host owned\n---\n",
+  );
+  const hostSkill = readFileSync(join(skills, "house-style", "SKILL.md"));
+  const skillTarget = join(root, "skill-target");
+  await mkdir(skillTarget, { recursive: true });
+  await writeFile(join(skillTarget, "sentinel.md"), "outside\n");
+  await rm(join(skills, "devboard-restful-api-implementation"), { recursive: true, force: true });
+  await symlink(skillTarget, join(skills, "devboard-restful-api-implementation"));
+  const owned = launcher(["install", "--host", host.directory], oldEnv);
+  assertTrue(owned.code === 0, `ownership install failed:\n${owned.stdout}\n${owned.stderr}`);
+  for (const name of MANAGED_SKILLS) {
+    assertTrue(
+      treesMatch(
+        join(installedPackage(prefix), "omp", "skills", name),
+        join(skills, name),
+      ),
+      `.omp/skills/${name} is restored to package bytes`,
+    );
+  }
+  assertTrue(
+    !existsSync(join(skills, "devboard-ui-ux", "extra.md")),
+    "an extra file inside a shipped skill directory is removed",
+  );
+  assertTrue(
+    !existsSync(join(skills, "devboard-retired")),
+    "a marked directory the package does not ship is pruned",
+  );
+  assertTrue(
+    !isSymlink(join(skills, "devboard-restful-api-implementation")),
+    "a symlinked managed skill becomes a real directory",
+  );
+  assertEquals(
+    readdirSync(skillTarget),
+    ["sentinel.md"],
+    "the symlinked skill target is never written",
+  );
+  assertTrue(
+    readFileSync(join(skills, "house-style", "SKILL.md")).equals(hostSkill),
+    "an unmarked host skill keeps its bytes",
+  );
+  step("ownership restored a tampered skill, pruned a retired one, and kept house-style");
 
   const state = installState(prefix);
   const port = Number(state.port);
@@ -276,6 +351,16 @@ try {
       `.devboard/${name} matches the installed package`,
     );
   }
+  for (const name of MANAGED_SKILLS) {
+    assertTrue(
+      treesMatch(
+        join(freshHarness, "omp", "skills", name),
+        join(fresh.directory, ".omp", "skills", name),
+      ),
+      `.omp/skills/${name} arrived in the fresh host`,
+    );
+  }
+  step(`fresh install wrote ${MANAGED_SKILLS.join(", ")}`);
   const installedPrompt = join(freshPrefix, "prompts", "implement-issue.md");
   assertTrue(
     existsSync(installedPrompt) && readFileSync(installedPrompt, "utf8").length > 0,
@@ -315,6 +400,10 @@ try {
   step("re-copying prompts and extensions on update");
   await writeFile(join(freshPrefix, "prompts", "implement-issue.md"), "stale prompt\n");
   await writeFile(join(freshPrefix, "extensions", "implement-next-epic.ts"), "stale extension\n");
+  await writeFile(
+    join(fresh.directory, ".omp", "skills", "devboard-single-responsibility-principle", "SKILL.md"),
+    "stale skill\n",
+  );
   const freshUpdate = launcher(["update", "--host", fresh.directory], newEnv);
   assertTrue(freshUpdate.code === 0, `fresh update failed:\n${freshUpdate.stderr}`);
   assertEquals(installedVersion(freshPrefix), NEW, "the fresh host updates");
@@ -330,6 +419,15 @@ try {
     ),
     "update re-copies .devboard/scripts/forge-auth.ts from the installed package",
   );
+  for (const name of MANAGED_SKILLS) {
+    assertTrue(
+      treesMatch(
+        join(installedPackage(freshPrefix), "omp", "skills", name),
+        join(fresh.directory, ".omp", "skills", name),
+      ),
+      `update re-copies .omp/skills/${name} from the installed package`,
+    );
+  }
 
   step("reinstalling over a tracked nested wrapper");
   const nestedTracked = join(host.directory, ".omp", "commands", "custom", "deploy.md");
@@ -424,6 +522,15 @@ try {
     "extension kept\n",
     "migration preserves omp extensions",
   );
+  for (const name of MANAGED_SKILLS) {
+    assertTrue(
+      treesMatch(
+        join(installedPackage(legacyPrefix), "omp", "skills", name),
+        join(legacyHost.directory, ".omp", "skills", name),
+      ),
+      `migration writes .omp/skills/${name}`,
+    );
+  }
 
   step("doctor passing");
   const doctor = launcher(["doctor", "--host", host.directory], newEnv);
@@ -431,6 +538,21 @@ try {
   for (const line of doctor.stdout.trim().split("\n")) {
     assertTrue(line.startsWith("PASS "), `unexpected doctor line: ${line}`);
   }
+  assertTrue(
+    doctor.stdout
+      .split("\n")
+      .some((line) => line.startsWith("PASS skills:") && line.includes("devboard-ui-ux")),
+    "doctor reports the managed skills",
+  );
+  step("doctor passes with the managed skills and the unmarked host skill");
+
+  step("doctor failing on one differing skill byte");
+  await writeFile(join(skills, "devboard-ui-ux", "SKILL.md"), "tampered\n");
+  expectFailure(launcher(["doctor", "--host", host.directory], newEnv), "skills");
+  await writeFile(
+    join(skills, "devboard-ui-ux", "SKILL.md"),
+    readFileSync(join(installedPackage(prefix), "omp", "skills", "devboard-ui-ux", "SKILL.md")),
+  );
 
   step("doctor failing on a missing harness tree");
   await rm(join(prefix, "prompts"), { recursive: true, force: true });

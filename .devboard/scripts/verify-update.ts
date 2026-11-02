@@ -32,6 +32,7 @@ import {
   startInstalledDashboard,
   stopDashboard,
   toolPath,
+  treesMatch,
   waitFor,
   waitForInstalledVersion,
   websocketCommand,
@@ -113,6 +114,13 @@ function ownerPids(host: string): number[] {
   return found;
 }
 
+/** The skill directories every install and update writes into the host. */
+const MANAGED_SKILLS = [
+  "devboard-ui-ux",
+  "devboard-restful-api-implementation",
+  "devboard-single-responsibility-principle",
+] as const;
+
 let failingNpm = "";
 
 async function installFixture(name: string, releaseDir: string): Promise<string> {
@@ -131,8 +139,19 @@ async function installFixture(name: string, releaseDir: string): Promise<string>
   );
   step(fallbackLine ?? "tarball fallback used");
   await assertInstalledMcp(host.directory);
+  await assertInstalledSkills(host.directory);
   startedHosts.push(host.directory);
   return host.directory;
+}
+
+async function assertInstalledSkills(host: string): Promise<void> {
+  const harness = installedPackage(join(host, ".devboard"));
+  for (const name of MANAGED_SKILLS) {
+    assertTrue(
+      treesMatch(join(harness, "omp", "skills", name), join(host, ".omp", "skills", name)),
+      `the installed .omp/skills/${name} differs from the package`,
+    );
+  }
 }
 
 async function assertInstalledMcp(host: string): Promise<void> {
@@ -160,6 +179,16 @@ try {
   const host = await installFixture("auto", oldRelease);
   const prefix = join(host, ".devboard");
   const previousPort = Number(installState(prefix).port);
+  // The automatic path is package-owned too: it restores a tampered managed
+  // skill and leaves an unmarked host skill byte-identical.
+  const skills = join(host, ".omp", "skills");
+  await writeFile(join(skills, "devboard-ui-ux", "SKILL.md"), "tampered\n");
+  const hostSkill = join(skills, "house-style");
+  await mkdir(hostSkill, { recursive: true });
+  await writeFile(
+    join(hostSkill, "SKILL.md"),
+    "---\nname: house-style\ndescription: host owned\n---\n",
+  );
   await stopDashboard(host);
   const server = await startInstalledDashboard(host, {
     DEVBOARD_RELEASE_DIR: newRelease,
@@ -171,7 +200,13 @@ try {
   const restarting = websocketCommand(server.port, { type: "getVersion" }, "serverRestarting", 30_000);
   await waitForInstalledVersion(prefix, NEW);
   await assertInstalledMcp(host);
+  await assertInstalledSkills(host);
+  assertTrue(
+    readFileSync(join(hostSkill, "SKILL.md"), "utf8").includes("name: house-style"),
+    "the automatic path leaves an unmarked host skill untouched",
+  );
   await restarting;
+  step(`automatic install wrote and restored ${MANAGED_SKILLS.join(", ")}`);
   step("the connected page received serverRestarting and reloads once");
   const replaced = await waitFor(
     () => {

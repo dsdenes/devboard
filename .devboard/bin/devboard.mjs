@@ -47,14 +47,22 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   HOST_HARNESS_PATHS,
+  MANAGED_SKILL_PREFIX,
   syncHarnessTrees,
   syncHostCopies,
+  syncSkills,
   syncWrappers,
 } from "../lib/host-sync.mjs";
 
 // The sync helpers moved to lib/host-sync.mjs so the dashboard updater runs the
 // same code; they stay re-exported here for the launcher's tests.
-export { HOST_HARNESS_PATHS, syncHarnessTrees, syncTree } from "../lib/host-sync.mjs";
+export {
+  HOST_HARNESS_PATHS,
+  MANAGED_SKILL_PREFIX,
+  syncHarnessTrees,
+  syncSkills,
+  syncTree,
+} from "../lib/host-sync.mjs";
 // The guards are exported for the same tests: the installer's refusal of the
 // source checkout and its tracked-path protection.
 export { canonicalSource, trackedPaths };
@@ -913,7 +921,19 @@ async function syncAgents(host, harness, skip) {
   return current.equals(template) ? "current" : "drift";
 }
 
-async function ensureGitignore(host) {
+/** The skill directories the installed package owns, in stable order. */
+function managedSkillNames(harness) {
+  try {
+    return readdirSync(join(harness, "omp", "skills"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(MANAGED_SKILL_PREFIX))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+async function ensureGitignore(host, harness) {
   const path = join(host, ".gitignore");
   let source = "";
   try {
@@ -922,7 +942,13 @@ async function ensureGitignore(host) {
     source = "";
   }
   const lines = source.split("\n");
-  const wanted = ["/.devboard", "/.omp/commands", "/.omp/extensions", "/.omp/mcp.json"];
+  const wanted = [
+    "/.devboard",
+    "/.omp/commands",
+    "/.omp/extensions",
+    "/.omp/mcp.json",
+    ...managedSkillNames(harness).map((name) => `/.omp/skills/${name}`),
+  ];
   const missing = wanted.filter((entry) => !lines.includes(entry));
   if (missing.length === 0) return [];
   const prefix = source.length > 0 && !source.endsWith("\n") ? `${source}\n` : source;
@@ -1215,9 +1241,10 @@ async function installCommand(options) {
   }
   const harness = packageDir(prefix);
   await syncWrappers(host, harness, skip);
+  await syncSkills(host, harness);
   await syncHarnessTrees(host, harness);
   const agents = await syncAgents(host, harness, skip);
-  const ignored = await ensureGitignore(host);
+  const ignored = await ensureGitignore(host, harness);
   const portOption = Number(options.port);
   const dashboard = await ensureOneDashboard(
     host,
@@ -1309,8 +1336,10 @@ async function updateCommand(options) {
     await syncHostCopies(host, harness);
   } else {
     // A legacy host keeps its wrapper copies and AGENTS.md; migration only
-    // replaces the package and leaves local content byte-for-byte intact.
+    // replaces the package and leaves local content byte-for-byte intact. The
+    // package-owned skills are new content, so they arrive like any install.
     console.log("devboard: kept the existing omp wrappers and AGENTS.md");
+    await syncSkills(host, harness);
     await syncHarnessTrees(host, harness, trackedPaths(host, [".devboard"]));
   }
   console.log(`devboard: ${PACKAGE_NAME} ${before} -> ${resolved.version} (${resolved.via})`);
@@ -1381,6 +1410,31 @@ function wrapperMismatches(host, harness) {
     }
   }
   return { failures, drift };
+}
+
+/**
+ * The package-owned skill directories compared with the installed package. An
+ * unmarked host skill is never inspected, so it can never fail this check.
+ */
+function skillMismatches(host, harness) {
+  const failures = [];
+  for (const name of managedSkillNames(harness)) {
+    const expected = join(harness, "omp", "skills", name);
+    const actual = join(host, ".omp", "skills", name);
+    const info = lstatOrUndefined(actual);
+    if (info === undefined) {
+      failures.push(`.omp/skills/${name} is missing`);
+      continue;
+    }
+    if (!info.isDirectory()) {
+      failures.push(`.omp/skills/${name} is not a real directory`);
+      continue;
+    }
+    for (const path of treeMismatches(expected, actual)) {
+      failures.push(`.omp/skills/${name}/${path}`);
+    }
+  }
+  return failures;
 }
 
 /** The host copies of the paths the wrappers open by repo-root-relative path. */
@@ -1575,6 +1629,20 @@ const CHECKS = [
     },
   },
   {
+    name: "skills",
+    run: async (host, prefix) => {
+      const harness = packageDir(prefix);
+      const failures = skillMismatches(host, harness);
+      if (failures.length > 0) {
+        throw new LauncherError(`does not match the installed package: ${failures.join(", ")}`);
+      }
+      const names = managedSkillNames(harness);
+      return names.length > 0
+        ? `${names.join(", ")} match the package`
+        : "the package ships no managed skills";
+    },
+  },
+  {
     name: "AGENTS.md",
     run: async (host, prefix) => {
       const target = join(host, "AGENTS.md");
@@ -1616,7 +1684,7 @@ const CHECKS = [
       const info = lstatOrUndefined(prefix);
       if (info === undefined) throw new LauncherError(`${prefix} is missing`);
       if (info.isSymbolicLink()) throw new LauncherError(`${prefix} is a symlink`);
-      for (const name of ["commands", "extensions"]) {
+      for (const name of ["commands", "extensions", "skills"]) {
         const path = join(host, ".omp", name);
         if (lstatOrUndefined(path)?.isSymbolicLink() ?? false) {
           throw new LauncherError(`${path} is a symlink`);

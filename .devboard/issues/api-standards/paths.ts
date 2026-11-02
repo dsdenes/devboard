@@ -66,7 +66,7 @@ export interface ApiStandardsConfig {
 }
 
 export const DEFAULT_API_SOURCE_DIRECTORY = ".devboard/server";
-export const DEFAULT_SKILL_DIRECTORY = ".omp/skills/restful-api-implementation";
+export const DEFAULT_SKILL_DIRECTORY = ".omp/skills/devboard-restful-api-implementation";
 export const SKILL_FILE = "SKILL.md";
 export const RULES_FILE = "references/zalando-rest-rules.md";
 

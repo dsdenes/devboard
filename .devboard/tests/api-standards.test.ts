@@ -146,18 +146,18 @@ async function fixture(name: string): Promise<{
   await mkdir(join(repo, ".devboard", "server"), { recursive: true });
   await mkdir(join(repo, ".devboard", "prompts"), { recursive: true });
   await mkdir(join(repo, ".devboard", ".tmp"), { recursive: true });
-  await mkdir(join(repo, ".omp", "skills", "restful-api-implementation", "references"), {
+  await mkdir(join(repo, ".omp", "skills", "devboard-restful-api-implementation", "references"), {
     recursive: true,
   });
   await writeFile(join(repo, ".devboard", "server", "app.ts"), SERVER_SOURCE);
   await writeFile(join(repo, ".devboard", "server", "app.test.ts"), "export {};\n");
   await writeFile(join(repo, ".devboard", ".gitignore"), ".tmp/\n");
   await writeFile(
-    join(repo, ".omp", "skills", "restful-api-implementation", "SKILL.md"),
+    join(repo, ".omp", "skills", "devboard-restful-api-implementation", "SKILL.md"),
     SKILL,
   );
   await writeFile(
-    join(repo, ".omp", "skills", "restful-api-implementation", "references", "zalando-rest-rules.md"),
+    join(repo, ".omp", "skills", "devboard-restful-api-implementation", "references", "zalando-rest-rules.md"),
     RULES,
   );
   await writeFile(join(repo, "tracked.txt"), "original\n");
@@ -219,7 +219,7 @@ function findingBody(entry: Finding): string {
     "",
     "## Skill",
     "",
-    "`.omp/skills/restful-api-implementation/SKILL.md`",
+    "`.omp/skills/devboard-restful-api-implementation/SKILL.md`",
     "",
     "## Evidence",
     "",
@@ -464,7 +464,7 @@ describe("api-standards registry", () => {
       "api-standards",
       "issue_create",
       "findings.json",
-      ".omp/skills/restful-api-implementation/SKILL.md",
+      ".omp/skills/devboard-restful-api-implementation/SKILL.md",
       "zalando-rest-rules.md",
       "MUST",
       "SHOULD",
@@ -483,9 +483,9 @@ describe("REST skill", () => {
   test("reads both files and every row's id, level, chapter, and directive", async () => {
     const { repo } = await fixture("rules");
     const skill = readRestSkill(repo, apiStandardsConfig());
-    expect(skill.skillPath).toBe(".omp/skills/restful-api-implementation/SKILL.md");
+    expect(skill.skillPath).toBe(".omp/skills/devboard-restful-api-implementation/SKILL.md");
     expect(skill.rulesPath).toBe(
-      ".omp/skills/restful-api-implementation/references/zalando-rest-rules.md",
+      ".omp/skills/devboard-restful-api-implementation/references/zalando-rest-rules.md",
     );
     expect(skill.chapters).toEqual(["URLs", "HTTP requests"]);
     expect(skill.rules).toEqual([
@@ -530,11 +530,11 @@ describe("REST skill", () => {
 
   test("a missing skill file or reference names the absent path", async () => {
     const { repo } = await fixture("missing-skill");
-    rmSync(join(repo, ".omp", "skills", "restful-api-implementation", "SKILL.md"));
+    rmSync(join(repo, ".omp", "skills", "devboard-restful-api-implementation", "SKILL.md"));
     expect(() => readRestSkill(repo, apiStandardsConfig())).toThrow(/SKILL\.md is not readable/);
     const other = await fixture("missing-rules");
     rmSync(
-      join(other.repo, ".omp", "skills", "restful-api-implementation", "references", "zalando-rest-rules.md"),
+      join(other.repo, ".omp", "skills", "devboard-restful-api-implementation", "references", "zalando-rest-rules.md"),
     );
     expect(() => readRestSkill(other.repo, apiStandardsConfig())).toThrow(
       /zalando-rest-rules\.md is not readable/,
@@ -803,7 +803,7 @@ describe("api-standards worker", () => {
     expect(issue.body).toContain("## Chapter\n\nHTTP requests");
     expect(issue.body).toContain("## Rule\n\n**148 — MUST**");
     expect(issue.body).toContain("> Use HTTP methods according to RFC 9110.");
-    expect(issue.body).toContain(".omp/skills/restful-api-implementation/SKILL.md");
+    expect(issue.body).toContain(".omp/skills/devboard-restful-api-implementation/SKILL.md");
     expect(issue.body).toContain("`.devboard/server/app.ts:6-7`");
     expect(issue.body).toContain("- `POST /api/ready`");
     expect(issue.body).toContain("## Proposed change");
@@ -1234,7 +1234,7 @@ describe("api-standards preflight", () => {
 
   test("refuses a missing skill or reference and names the path", async () => {
     const { repo, stateDir } = await fixture("preflight-skill");
-    rmSync(join(repo, ".omp", "skills", "restful-api-implementation", "SKILL.md"));
+    rmSync(join(repo, ".omp", "skills", "devboard-restful-api-implementation", "SKILL.md"));
     const missingSkill = await preflightApiStandards({ repoDir: repo, stateDir, origin });
     expect(missingSkill).toEqual({
       ok: false,
@@ -1243,7 +1243,7 @@ describe("api-standards preflight", () => {
 
     const other = await fixture("preflight-reference");
     rmSync(
-      join(other.repo, ".omp", "skills", "restful-api-implementation", "references", "zalando-rest-rules.md"),
+      join(other.repo, ".omp", "skills", "devboard-restful-api-implementation", "references", "zalando-rest-rules.md"),
     );
     const missingRules = await preflightApiStandards({
       repoDir: other.repo,
@@ -1259,7 +1259,7 @@ describe("api-standards preflight", () => {
   test("refuses a header-only rule table", async () => {
     const { repo, stateDir } = await fixture("preflight-empty-rules");
     writeFileSync(
-      join(repo, ".omp", "skills", "restful-api-implementation", "references", "zalando-rest-rules.md"),
+      join(repo, ".omp", "skills", "devboard-restful-api-implementation", "references", "zalando-rest-rules.md"),
       "## URLs\n\n| Rule | Level | Directive |\n| --- | --- | --- |\n",
     );
     const result = await preflightApiStandards({ repoDir: repo, stateDir, origin });

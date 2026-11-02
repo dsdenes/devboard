@@ -2,24 +2,32 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const HARNESS = join(import.meta.dir, "..");
 const INSTALLER = join(HARNESS, "install.sh");
 const OMP_SOURCE = join(HARNESS, "omp");
+const FIXTURES = join(HARNESS, ".tmp");
+const MANAGED_SKILLS = [
+  "devboard-ui-ux",
+  "devboard-restful-api-implementation",
+  "devboard-single-responsibility-principle",
+] as const;
 
 let root: string;
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "devboard-install-"));
+  mkdirSync(FIXTURES, { recursive: true });
+  root = mkdtempSync(join(FIXTURES, "install-test-"));
 });
 
 afterEach(() => {
@@ -41,6 +49,21 @@ function snapshot(directory: string): Map<string, string> {
     (file) => [file, readFileSync(join(directory, file), "utf8")] as const,
   );
   return new Map(entries);
+}
+
+/** Writes one skill directory under a `.omp/skills` root. */
+function writeSkill(skillsRoot: string, name: string, description: string): void {
+  mkdirSync(join(skillsRoot, name), { recursive: true });
+  writeFileSync(
+    join(skillsRoot, name, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${description}\n---\n`,
+  );
+}
+
+function ignoreLines(host: string): string[] {
+  return readFileSync(join(host, ".gitignore"), "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("/.omp/skills/devboard-"));
 }
 
 function makeHost(name = "host"): string {
@@ -138,5 +161,65 @@ describe("install.sh", () => {
     expect(result.stderr).toBe("");
     expect(result.code).toBe(0);
     expect(snapshot(join(host, ".omp"))).toEqual(snapshot(OMP_SOURCE));
+  });
+
+  test("restores a tampered managed skill, prunes an omitted one, and keeps unmarked skills", () => {
+    const host = makeHost();
+    expect(install([host]).code).toBe(0);
+    const skills = join(host, ".omp", "skills");
+    writeFileSync(join(skills, "devboard-ui-ux", "SKILL.md"), "tampered\n");
+    writeFileSync(join(skills, "devboard-ui-ux", "extra.md"), "extra\n");
+    writeSkill(skills, "devboard-retired", "retired");
+    writeSkill(skills, "house-style", "host owned");
+    writeSkill(skills, "behavior-first-testing", "prepare family");
+    writeSkill(skills, "discover-testing-strategy", "discover family");
+    const unmarked = new Map(
+      ["house-style", "behavior-first-testing", "discover-testing-strategy"].map(
+        (name) => [name, readFileSync(join(skills, name, "SKILL.md"), "utf8")] as const,
+      ),
+    );
+
+    const result = install([host]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    for (const name of MANAGED_SKILLS) {
+      expect(snapshot(join(skills, name))).toEqual(snapshot(join(OMP_SOURCE, "skills", name)));
+    }
+    expect(existsSync(join(skills, "devboard-ui-ux", "extra.md"))).toBe(false);
+    expect(existsSync(join(skills, "devboard-retired"))).toBe(false);
+    for (const [name, contents] of unmarked) {
+      expect(readFileSync(join(skills, name, "SKILL.md"), "utf8")).toBe(contents);
+    }
+  });
+
+  test("replaces a symlinked managed skill with a real directory without writing its target", () => {
+    const host = makeHost();
+    expect(install([host]).code).toBe(0);
+    const skills = join(host, ".omp", "skills");
+    const target = join(root, "outside-target");
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, "sentinel.md"), "outside\n");
+    rmSync(join(skills, "devboard-ui-ux"), { recursive: true, force: true });
+    symlinkSync(target, join(skills, "devboard-ui-ux"));
+
+    const result = install([host]);
+    expect(result.code).toBe(0);
+    expect(lstatSync(join(skills, "devboard-ui-ux")).isSymbolicLink()).toBe(false);
+    expect(snapshot(join(skills, "devboard-ui-ux"))).toEqual(
+      snapshot(join(OMP_SOURCE, "skills", "devboard-ui-ux")),
+    );
+    expect(readdirSync(target)).toEqual(["sentinel.md"]);
+  });
+
+  test("ignores one line per shipped skill and adds nothing on a rerun", () => {
+    const host = makeHost();
+    expect(install([host]).code).toBe(0);
+    expect(ignoreLines(host).sort()).toEqual(
+      MANAGED_SKILLS.map((name) => `/.omp/skills/${name}`).sort(),
+    );
+    const before = readFileSync(join(host, ".gitignore"), "utf8");
+    expect(install([host]).code).toBe(0);
+    expect(readFileSync(join(host, ".gitignore"), "utf8")).toBe(before);
+    expect(ignoreLines(host)).toHaveLength(3);
   });
 });

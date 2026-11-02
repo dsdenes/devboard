@@ -1,5 +1,5 @@
 ---
-name: single-responsibility-principle
+name: devboard-single-responsibility-principle
 description: State the single-responsibility policy that every unit of code has one cohesive purpose and one reason to change, and apply it when deciding where behavior belongs during design, implementation, review, or refactoring.
 ---
 
