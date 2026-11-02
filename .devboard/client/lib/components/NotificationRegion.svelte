@@ -116,7 +116,7 @@
         class="notification__file"
         aria-label="File an issue from this notification"
         title="File an issue from this notification"
-        disabled={filing !== null && filing !== item.id}
+        disabled={filing !== null}
       >
         File issue
       </CommandButton>
