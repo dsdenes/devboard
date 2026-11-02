@@ -223,7 +223,7 @@
   }
 
   .skills-table__toggle input {
-    accent-color: var(--foreground);
+    accent-color: var(--accent);
     cursor: pointer;
     margin: 0;
     vertical-align: middle;
