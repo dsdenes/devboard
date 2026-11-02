@@ -1,78 +1,86 @@
 # Bounded contexts widget — structure
 
-The widget replaces the body of the existing architecture card. It stays in the main column of the
-Discover Overview, sixth region of the page; the page frame, cards around it, and rail are
-unchanged.
+The sheet's architecture reaches the Discover Overview as three cards: the `Bounded contexts` list
+card in the main column, and the `External boundaries` and `Shared kernels` cards in the facts rail
+beside it. The page frame, the other Discover cards, and the rail are unchanged.
 
 ## Regions and order
 
 |Order|A2UI ID|Region|Journey|Items|Priority|
 |---|---|---|---|---|---|
-|1|region_contexts|Context list, each row one bounded context|1, 2|A1 A2 A3 A4|P0|
-|2|region_contexts_empty|Missing or empty context state|4|A8|P1 conditional|
-|3|region_boundary_map|Role rows: shared kernels, external boundaries, direction|2|A5 A6 A7|P1|
-|4|region_boundary_unknown|One line naming groups the crawl did not observe|4|A8|P1 conditional|
+|1|region_contexts_card|`Bounded contexts` card, main column, last card: one stacked row per context|1, 2|A1 A2 A4|P0|
+|2|region_contexts_empty|Missing or empty context state inside the same card|4|A8|P1 conditional|
+|3|region_external_boundaries_card|`External boundaries` card in the facts rail: one chip per outside system|2|A6 A8|P1|
+|4|region_shared_kernels_card|`Shared kernels` card in the facts rail: one chip per shared kernel|2|A5 A8|P1|
 
-A context row is a stacked unit, not a grid row: name and path share the first line, responsibility
-the second, entry-point chips a third. Rows are separated by a hairline; there is no table header
-and no column grid, so long responsibilities and paths never collide.
+A context row is a stacked unit, not a grid row: the name on the first line, the responsibility on
+the second, the entry-point chips on a third. Rows are separated by a hairline; there is no table
+header and no column grid, so long responsibilities never collide. The card renders no per-context
+path (#230) and no dependency-direction row (#1091).
 
-The boundary map is a definition list of role rows. Each role label owns its items; items are
-chips for the two string lists and a sentence for the direction. The map is separated from the
-context list by a hairline and starts with the roles that describe what a context may touch,
-ending with the rule that governs the direction.
+The two boundary cards sit in the rail below `Stack`. Each owns its header, an optional count
+subtitle, a chip list, its unknown-reason line, and its own empty line. A boundary card renders
+whenever the sheet carries its leaf, observed or unknown.
 
-Reading order: what exists → what is shared → what is outside → which way imports may point.
+Visual order at wide width is the facts rail on the left (Platform, Delivery, Stack, then the two
+group cards) and the wide main column on the right, whose last card is the context list. When the
+sheet collapses to one column, the rail cards come first and the context list follows them.
 
 ## State coverage
 
 |State|Structure|
 |---|---|
-|Default (observed)|Context rows, then the role rows that carry values; empty observed groups are omitted|
-|Empty (no contexts)|`No bounded context was detected.` in place of the list; the boundary map still renders if it carries values|
-|Empty (no boundaries)|Context rows, then the dependency-direction row alone; observed-empty groups are omitted rather than shown as empty boxes|
-|Missing section|The card is absent, as shipped; the page already omits an absent section|
-|Unknown group|The known rows render; one line names the unknown groups and the crawl's reason; the reason is stated once, not per group|
-|Unknown contexts|The reason replaces the list; boundary rows still render|
-|Partial values|Only observed, non-empty groups render; no placeholder row per empty group|
-|Loading|The page-level run region owns loading; this card stays absent until the sheet publishes|
-|Error|The page-level error owns failure; the last published card stays readable|
+|Default (observed)|Context rows with name, optional responsibility, optional entry-point chips; each boundary card renders one chip per value and a count subtitle|
+|Empty (no contexts)|`No bounded context was detected.` in place of the list; the boundary cards are unaffected|
+|Unknown contexts|The contexts leaf's reason replaces the list; the boundary cards are unaffected|
+|Empty boundaries|The `External boundaries` card renders `None detected.`; the `Shared kernels` card renders `No shared kernel was detected.`|
+|Unknown boundaries|The affected card renders its leaf's reason in place of chips; the other card is unaffected|
+|Partial row|A context with no responsibility or no entry points renders its name alone|
+|Missing boundary leaf|That boundary card is absent; the other cards still render|
+|Missing section|No architecture card renders, as shipped; the page already omits an absent section|
+|Loading|The page-level run region owns loading; these cards stay absent until the sheet publishes|
+|Error|The page-level error owns failure; the last published cards stay readable|
 |Permission denied|Not applicable: the dashboard has no per-region permission model|
-|Success|The published sheet is the success state; no toast or badge inside the card|
+|Success|The published sheet is the success state; no toast or badge inside a card|
 
 ## Responsive order
 
-- Wide workspace: one stacked card in the main column, unchanged order; role labels take a fixed
-  104px label column, as the shipped fact lists do.
-- 1024×720: the page collapses to one column; the card keeps its order. Role labels keep the
-  104px column; chips wrap; a context head wraps name and path onto two lines when needed.
+- Wide workspace: the sheet is two columns. The facts rail is the narrow left column (320–420px),
+  holding Platform, Delivery, Stack, External boundaries, and Shared kernels in that order; the
+  main column is the wide right column, holding Commands, Testing, Quality gates, and Bounded
+  contexts in that order.
+- 1240px and narrower: the sheet collapses to one column. Both column wrappers become
+  `display: contents`, so the cards flow in document order — rail cards first, then the main
+  column's cards. Chip lists wrap; long responsibilities use the full width.
 - There is no mobile layout below 1024×720; the shell is replaced by the viewport guard.
 
 ## Primary action
 
-None. The card is read-only; the page keeps exactly one filled action in its header. The widget
+None. The cards are read-only; the page keeps exactly one filled action in its header. The widget
 adds no control, so focus order and keyboard paths in the shell are unchanged.
 
 ## Rationale
 
 - **List beats table.** In the shipped four-column table at a 630px card width, responsibility and
   entry points wrapped into two or three lines while the header consumed a row; scanning a name
-  meant reading across the grid. Stacked rows put the name first, the locator beside it, and let
-  the explanation use the full width. Selected over the alternative of two-column context tiles:
-  tiles lose density above four contexts and make responsibilities ragged.
-- **Roles beat symmetric group boxes.** Two identical boxes for kernels and boundaries implied an
-  equal, isolated status and produced two empty boxes with "None detected." on the shipped fixture.
-  A labeled role list shows exactly the groups that exist, states a missing group in one line, and
-  lets the dependency direction join them as the rule that binds the groups.
-- **No diagram in this list.** The role list carries no mapping from a boundary to a context, so
-  a graph beside it would have to invent those edges. The observed context-to-context edges are
-  drawn by the separate dependency graph widget below the role list. A role list states exactly
-  what the crawl observed.
-- **Dependency direction promoted.** It was present in the sheet and rendered nowhere. It is the
-  sentence that turns the group list into a decision about where a change belongs.
+  meant reading across the grid. Stacked rows put the name first and let the explanation use the
+  full width. Selected over the alternative of two-column context tiles: tiles lose density above
+  four contexts and make responsibilities ragged.
+- **One card per boundary group beats role rows.** Kernels and external systems are group-level
+  facts, not per-context values. Two identical boxes inside the context card implied equal,
+  isolated status; a separate card per group gives each its own header, count, chip list, and
+  empty or unknown line, and a missing leaf removes one card instead of a row inside another.
+- **No diagram.** The sheet records context-to-context edges, but #2ee5ffb6 dropped the dependency
+  graph widget and nothing in Discover draws them. A graph would have to invent edges the crawl
+  did not observe.
+- **Removed: the context path.** #230 dropped the per-context path chip; entry-point chips are the
+  locator the card renders.
+- **Removed: the dependency direction.** #1091 dropped the direction fact row; the sheet still
+  carries the value, and restoring it as a rendered fact is a page-level decision, not this
+  widget's.
 - **Rejected: keep the table and restyle it.** Styling the table cannot fix column pressure at the
   supported minimum width, and it preserves the header row as a second naming layer.
 - **Rejected: a count in the header.** The list is the count; the page inventory already scored
   the count P3.
-- **Rejected: empty-state boxes per group.** Two boxes that only say "Not observed." occupy more
-  attention than the observed data; one line is the honest minimum.
+- **Rejected: empty-state boxes per group.** A box that only says "Not observed." occupies more
+  attention than the observed data; one line per card is the honest minimum.

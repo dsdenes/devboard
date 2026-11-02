@@ -10,6 +10,7 @@
   import CommandNotice from "./lib/components/CommandNotice.svelte";
   import { createCommandBusy } from "./lib/command-busy.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
+  import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints.ts";
 
   /**
    * Operator issue reporter. The activity bar's three issue actions start a
@@ -538,16 +539,17 @@
     { ok: true; url: string } | { ok: false; error: string }
   > {
     try {
-      const response = await fetch("/feedback", {
+      const response = await fetch(FEEDBACK_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
       const body = (await response.json().catch(() => null)) as {
-        url?: unknown;
+        links?: { issue?: { href?: unknown } };
         detail?: unknown;
       } | null;
-      if (!response.ok || typeof body?.url !== "string") {
+      const href = body?.links?.issue?.href;
+      if (!response.ok || typeof href !== "string") {
         return {
           ok: false,
           error:
@@ -556,7 +558,7 @@
               : `The server refused the report (${response.status}).`,
         };
       }
-      return { ok: true, url: body.url };
+      return { ok: true, url: href };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
@@ -586,7 +588,7 @@
     payload: Record<string, unknown>,
   ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
     try {
-      const response = await fetch("/goal-proposals", {
+      const response = await fetch(GOAL_PROPOSALS_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),

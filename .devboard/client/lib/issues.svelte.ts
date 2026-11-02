@@ -1,5 +1,6 @@
 import { connection } from "./connection.svelte";
 import { queueCounts } from "./issues-queue";
+import { GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
 import { notifications } from "./notifications.svelte";
 import type {
   GoalDraftDetail,
@@ -316,7 +317,7 @@ export class IssuesStore {
     this.draftCreating = true;
     this.draftCreateError = null;
     try {
-      const response = await fetch("/goal-proposals", {
+      const response = await fetch(GOAL_PROPOSALS_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ report }),

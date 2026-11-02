@@ -12,114 +12,138 @@
   .wf-title { font-size:15px; font-weight:700; margin:0 0 2px; }
   .wf-note { color:var(--muted); font-size:11px; margin:0 0 16px; }
   .wf-ann { color:var(--accent); display:block; font-size:9px; font-weight:700; letter-spacing:.06em; margin:0 0 4px; text-transform:uppercase; }
-  .card { border:1px solid var(--line); margin:0 0 20px; padding:10px; }
-  .col { display:flex; flex-direction:column; gap:6px; min-width:0; }
-  .card-head { border-bottom:1px solid var(--line); margin-bottom:2px; padding-bottom:6px; }
-  h1 { font-size:18px; margin:0; }
+  .sheet { display:grid; gap:16px; grid-template-columns:minmax(200px,280px) minmax(0,1fr); margin:0 0 20px; }
+  .rail, .main { display:flex; flex-direction:column; gap:12px; min-width:0; }
+  .card { border:1px solid var(--line); padding:10px; }
+  .panel-head { align-items:baseline; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:8px; padding-bottom:6px; }
   h2 { font-size:12px; margin:0; }
+  h3 { font-size:11px; margin:0; text-transform:uppercase; letter-spacing:.06em; }
   p { margin:0; overflow-wrap:anywhere; }
+  .stack { display:flex; flex-direction:column; gap:6px; }
   .ctx { border-top:1px solid var(--line); padding-top:8px; }
-  .ctx:first-of-type { border-top:0; padding-top:2px; }
-  .ctx-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+  .ctx:first-child { border-top:0; padding-top:2px; }
   .ctx-name { font-weight:600; overflow-wrap:anywhere; }
-  .ctx-path { color:var(--muted); font-family:ui-monospace,monospace; font-size:11px; text-align:right; overflow-wrap:anywhere; }
   .ctx-resp { color:var(--muted); font-size:12px; }
-  .entries { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px; }
+  .entries { align-items:baseline; display:flex; flex-wrap:wrap; gap:4px 8px; }
   .micro { color:var(--muted); font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; }
   .chip { border:1px solid var(--line); border-radius:3px; font-family:ui-monospace,monospace; font-size:11px; padding:1px 5px; }
-  .map { border-top:1px solid var(--line); display:flex; flex-direction:column; margin-top:8px; padding-top:2px; }
-  .role { border-top:1px solid var(--line); display:grid; gap:4px 12px; grid-template-columns:104px minmax(0,1fr); padding:8px 0; }
-  .role:first-of-type { border-top:0; }
-  .role:last-of-type { padding-bottom:0; }
-  .role dt { color:var(--muted); font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
-  .role dd { margin:0; overflow-wrap:anywhere; }
-  .role dd .chips { display:flex; flex-wrap:wrap; gap:4px; }
+  .count { color:var(--muted); font-size:11px; }
   .note { color:var(--muted); font-size:12px; margin-top:8px; }
   .empty { color:var(--muted); font-size:12px; }
   @media (max-width:768px) {
-    .ctx-head { flex-direction:column; gap:2px; }
-    .ctx-path { text-align:left; }
-    .role { grid-template-columns:1fr; }
+    .sheet { grid-template-columns:minmax(0,1fr); }
   }
 </style>
 </head>
 <body>
 <div class="wf">
   <p class="wf-title">Wireframe — Discover · Bounded contexts</p>
-  <p class="wf-note">Structure only. One read-only card inside Discover › Overview. Neutral primitives;
-    no production components, tokens, or brand assets.</p>
+  <p class="wf-note">Structure only. Three read-only cards in Discover › Overview: the context list in
+    the main column, the two boundary groups in the facts rail. Neutral primitives; no production
+    components, tokens, or brand assets.</p>
 
-  <article class="card">
-    <span class="wf-ann">region_card · P0 context list, P1 boundary map</span>
-    <div class="card-head"><h2>Bounded contexts</h2></div>
+  <h3>Default (observed)</h3>
+  <div class="sheet">
+    <div class="rail">
+      <section class="card">
+        <span class="wf-ann">region_external_boundaries_card · P1 · A6 A8 · rail</span>
+        <div class="panel-head"><h2>External boundaries</h2><span class="count">2 systems</span></div>
+        <div class="stack">
+          <div class="chips">
+            <code class="chip">Stripe API</code>
+            <code class="chip">PostgreSQL</code>
+          </div>
+        </div>
+      </section>
+      <section class="card">
+        <span class="wf-ann">region_shared_kernels_card · P1 · A5 A8 · rail</span>
+        <div class="panel-head"><h2>Shared kernels</h2><span class="count">2 kernels</span></div>
+        <div class="stack">
+          <div class="chips">
+            <code class="chip">shared/money</code>
+            <code class="chip">shared/errors</code>
+          </div>
+        </div>
+      </section>
+    </div>
+    <div class="main">
+      <section class="card">
+        <span class="wf-ann">region_contexts_card · P0 · A1 A2 A4 · main column</span>
+        <div class="panel-head"><h2>Bounded contexts</h2><span class="count">2 contexts</span></div>
+        <div class="stack">
+          <div class="ctx">
+            <div class="ctx-name">Orders</div>
+            <p class="ctx-resp">Owns order records, order totals, and checkout rules.</p>
+            <div class="entries">
+              <span class="micro">Entry points</span>
+              <code class="chip">src/orders/api.ts</code>
+              <code class="chip">src/orders/cli.ts</code>
+            </div>
+          </div>
+          <div class="ctx">
+            <div class="ctx-name">Billing</div>
+            <p class="ctx-resp">Charges an order and records its invoice.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
 
-    <section class="col">
-      <span class="wf-ann">region_contexts · P0 · A1 A2 A3 A4</span>
-      <div class="ctx">
-        <div class="ctx-head">
-          <span class="ctx-name">Orders</span>
-          <code class="ctx-path">src/orders</code>
-        </div>
-        <p class="ctx-resp">Owns order records, order totals, and checkout rules.</p>
-        <div class="entries">
-          <span class="micro">Entry points</span>
-          <code class="chip">src/orders/api.ts</code>
-          <code class="chip">src/orders/cli.ts</code>
-        </div>
-      </div>
-      <div class="ctx">
-        <div class="ctx-head">
-          <span class="ctx-name">Billing</span>
-          <code class="ctx-path">src/billing</code>
-        </div>
-        <p class="ctx-resp">Charges an order and records its invoice.</p>
-      </div>
-    </section>
+  <h3>No contexts observed</h3>
+  <div class="sheet">
+    <div class="rail">
+      <section class="card">
+        <span class="wf-ann">region_external_boundaries_card · P1 · unchanged</span>
+        <div class="panel-head"><h2>External boundaries</h2><span class="count">1 system</span></div>
+        <div class="chips"><code class="chip">Stripe API</code></div>
+      </section>
+      <section class="card">
+        <span class="wf-ann">region_shared_kernels_card · P1 · unchanged</span>
+        <div class="panel-head"><h2>Shared kernels</h2><span class="count">1 kernel</span></div>
+        <div class="chips"><code class="chip">shared/money</code></div>
+      </section>
+    </div>
+    <div class="main">
+      <section class="card">
+        <span class="wf-ann">region_contexts_empty · P1 · A8 · empty</span>
+        <div class="panel-head"><h2>Bounded contexts</h2></div>
+        <p class="empty">No bounded context was detected.</p>
+      </section>
+    </div>
+  </div>
 
-    <section class="map">
-      <span class="wf-ann">region_boundary_map · P1 · A5 A6 A7</span>
-      <dl>
-        <div class="role">
-          <dt>Shared kernels</dt>
-          <dd><div class="chips"><code class="chip">shared/money</code><code class="chip">shared/errors</code></div></dd>
+  <h3>Unknown and empty boundary groups</h3>
+  <div class="sheet">
+    <div class="rail">
+      <section class="card">
+        <span class="wf-ann">region_external_boundaries_card · P1 · unknown leaf</span>
+        <div class="panel-head"><h2>External boundaries</h2></div>
+        <p class="empty">unknown — No package manifest was found in the crawled files.</p>
+      </section>
+      <section class="card">
+        <span class="wf-ann">region_shared_kernels_card · P1 · observed empty</span>
+        <div class="panel-head"><h2>Shared kernels</h2></div>
+        <p class="empty">No shared kernel was detected.</p>
+      </section>
+    </div>
+    <div class="main">
+      <section class="card">
+        <span class="wf-ann">region_contexts_card · P0 · partial rows</span>
+        <div class="panel-head"><h2>Bounded contexts</h2><span class="count">1 context</span></div>
+        <div class="stack">
+          <div class="ctx">
+            <div class="ctx-name">Orders</div>
+            <p class="ctx-resp">Owns order records, order totals, and checkout rules.</p>
+          </div>
         </div>
-        <div class="role">
-          <dt>External boundaries</dt>
-          <dd><div class="chips"><code class="chip">Stripe API</code><code class="chip">PostgreSQL</code></div></dd>
-        </div>
-        <div class="role">
-          <dt>Dependency direction</dt>
-          <dd>Adapters depend on contexts; contexts never depend on adapters.</dd>
-        </div>
-      </dl>
-    </section>
-  </article>
+        <p class="note">A context with no responsibility and no entry points renders its name alone.</p>
+      </section>
+    </div>
+  </div>
 
-  <article class="card">
-    <span class="wf-ann">observed-empty groups · region_contexts · P0</span>
-    <div class="card-head"><h2>Bounded contexts</h2></div>
-    <section class="col">
-      <div class="ctx">
-        <div class="ctx-head"><span class="ctx-name">Orders</span><code class="ctx-path">src/orders</code></div>
-        <p class="ctx-resp">Owns order records, order totals, and checkout rules.</p>
-      </div>
-    </section>
-    <p class="note">Shared kernels and external boundaries are observed as empty, so no role row renders.</p>
-  </article>
-
-  <article class="card">
-    <span class="wf-ann">conditional states · unknown groups · A8</span>
-    <div class="card-head"><h2>Bounded contexts</h2></div>
-    <p class="empty">unknown — No source directory was found in the crawled files.</p>
-    <dl class="map">
-      <div class="role">
-        <dt>Dependency direction</dt>
-        <dd>Dependencies point inward toward the Orders domain code.</dd>
-      </div>
-    </dl>
-    <p class="note">Not observed: external boundaries, shared kernels.
-      No source directory was found in the crawled files.</p>
-  </article>
+  <p class="wf-note">At 1240px and narrower the sheet collapses to one column and the cards flow in
+    document order: the two boundary cards, then the context list.</p>
 </div>
 </body>
 </html>

@@ -1,12 +1,16 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
+import { MUTATION_ENDPOINTS } from "./lib/endpoints.ts";
 
 /**
- * The Bun server owns every WebSocket frame and both browser endpoints, so a
- * Vite dev page must reach them through the backend rather than answering
- * them itself. `/ws` would otherwise hang in CONNECTING behind Vite's own
- * socket, and the interface would never leave `Connecting`.
+ * The Bun server owns every WebSocket frame and every mutating browser
+ * endpoint, so a Vite dev page must reach them through the backend rather than
+ * answering them itself. `/ws` would otherwise hang in CONNECTING behind
+ * Vite's own socket, and the interface would never leave `Connecting`; a
+ * missed `/feedback` or `/goal-proposals` would 404 the issue report. Both
+ * endpoints come from the client's own constants, so a moved path cannot be
+ * proxied under its old name.
  */
 const backend = process.env.DEVBOARD_BACKEND ?? "http://127.0.0.1:8080";
 
@@ -15,6 +19,7 @@ const backend = process.env.DEVBOARD_BACKEND ?? "http://127.0.0.1:8080";
 const backendProxy = {
   "/ws": { target: backend, ws: true },
   "/api": { target: backend },
+  ...Object.fromEntries(MUTATION_ENDPOINTS.map((endpoint) => [endpoint, { target: backend }])),
 };
 
 /**

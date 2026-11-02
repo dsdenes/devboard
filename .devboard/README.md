@@ -403,11 +403,14 @@ bun run start   # backend, http://127.0.0.1:8080 by default
 bun run dev     # client with HMR, http://127.0.0.1:5173 by default
 ```
 
-Vite proxies `/ws` and `/api` to `DEVBOARD_BACKEND` (default `http://127.0.0.1:8080`). Set it to
-the server's address when the backend runs elsewhere, for example
-`DEVBOARD_BACKEND=http://127.0.0.1:9000 bun run dev`. Without that proxy the interface loads but
-its status bar stays on `Connecting`: Vite answers the `/ws` upgrade itself and the backend never
-sees the socket.
+Vite proxies `/ws`, `/api`, `/feedback`, and `/goal-proposals` to `DEVBOARD_BACKEND` (default
+`http://127.0.0.1:8080`). Set it to the server's address when the backend runs elsewhere, for
+example `DEVBOARD_BACKEND=http://127.0.0.1:9000 bun run dev`. Without the `/ws` proxy the
+interface loads but its status bar stays on `Connecting`: Vite answers the `/ws` upgrade itself
+and the backend never sees the socket. Without the `/feedback` and `/goal-proposals` entries the
+dev page answers its own 404, so `File issue` reports `The server refused the report (404)` and
+goal drafting fails the same way. Both entries come from `lib/endpoints.ts`, which the client and
+the server read too, so the three cannot disagree about a path.
 
 The dev server ignores the generated trees (`.tmp`, `.test-tmp`, `dist`, `coverage`). A busy
 checkout writes hundreds of thousands of files under `.tmp`; watching them reloads the page for
@@ -3586,7 +3589,9 @@ failing request is reported in the filing toast and creates nothing. The endpoin
 same-origin `POST` requests, bounds the body to 64 KB, and gives the request 60 seconds.
 
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
-`title`, `status`, and `detail`, so a client reads one media type and one body shape.
+`title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
+`POST /feedback` answers `201` with `title` and the `links.issue.href` hypertext control carrying
+the filed issue's absolute URL; no top-level `url` property remains.
 
 An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
 detail "An internal error occurred.": `POST /feedback` and

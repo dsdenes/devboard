@@ -470,6 +470,19 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   snippet adds a full-width secondary band under a `border-subtle` hairline (6px 12px padding)
   for controls that configure the primary action; it renders inside the header surface, its
   groups wrap as units, and it never holds the filled primary.
+- **Agent activity bar** (`.agent-activity-bar` in `AgentActivityBar.svelte`) — the one pinned bar
+  every single-agent page shares: a `surface` card with a 1px `border` and 4px radius that never
+  scrolls, because the page below it owns the scrolling region. Its 30px row expands the retained
+  log on a click, and the toggle inside it is the focusable control with the 2px `ring`. The row
+  holds, 8px apart, an 8px state dot (`accent` and pulsing while the agent runs,
+  `muted-foreground` otherwise, and still under `prefers-reduced-motion`) whose accessible name
+  states the agent and its state; the newest activity line at 12px, ellipsized on one line and
+  `muted-foreground` while the log is empty; an `overline` `Question` pill in `warning` while the
+  agent waits on an answer; and at most one page-supplied start/stop control in a trailing
+  6px-gap slot. Expanding reveals the retained activity as 11.5px mono lines in a `background`
+  log under a 1px `border` top edge, with 6px 10px padding and a 180px cap that scrolls and
+  follows the newest line only while the operator stays at the bottom. The bar collapses whenever
+  the page identity changes.
 - **Agent settings footer** (`.agent-settings` in `AgentPage.svelte`) — the header footer shared
   by Auto Scout and Watchdog: two `overline` groups 24px apart, each with 10px column and 6px row
   gaps. `Cadence` holds the Every field (64px, centered, 4px from its label and the `min` unit),

@@ -5804,8 +5804,80 @@ try {
   const liveSkillPath = join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md");
   const baselineSkillPath = join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md");
   const originalSkill = await readFile(liveSkillPath, "utf8");
+  const readSkillStatePill = () =>
+    page.eval<{
+      count: number;
+      word: string;
+      tone: string;
+      background: string;
+      color: string;
+      fontSize: string;
+      radius: string;
+      dot: { width: string; height: string; background: string } | null;
+      success: string;
+      warning: string;
+      error: string;
+      successSurface: string;
+      warningSurface: string;
+      errorSurface: string;
+    }>(`(() => {
+      const pill = document.querySelector('[data-testid="discover-skill-state"]');
+      const dot = pill === null ? null : pill.querySelector('.discover-skill__state-dot');
+      const token = (name) => {
+        const probe = document.createElement("div");
+        probe.style.background = \`var(\${name})\`;
+        document.body.append(probe);
+        const value = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return value;
+      };
+      const pillStyle = pill === null ? null : getComputedStyle(pill);
+      const dotStyle = dot === null ? null : getComputedStyle(dot);
+      return {
+        count: document.querySelectorAll('[data-testid="discover-skill-state"]').length,
+        word: pill?.querySelector('.discover-skill__state-word')?.textContent?.trim() ?? "",
+        tone: pill?.getAttribute("data-tone") ?? "",
+        background: pillStyle?.backgroundColor ?? "",
+        color: pillStyle?.color ?? "",
+        fontSize: pillStyle?.fontSize ?? "",
+        radius: pillStyle?.borderRadius ?? "",
+        dot: dotStyle === null ? null : {
+          width: dotStyle.width,
+          height: dotStyle.height,
+          background: dotStyle.backgroundColor,
+        },
+        success: token("--success"),
+        warning: token("--warning"),
+        error: token("--error"),
+        successSurface: token("--success-surface"),
+        warningSurface: token("--warning-surface"),
+        errorSurface: token("--error-surface"),
+      };
+    })()`);
   const skillText = await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? ""`);
   check(skillText === originalSkill, "the skill page does not show the live file bytes");
+  const generatedPill = await readSkillStatePill();
+  check(generatedPill.count === 1, "the skill header does not render exactly one state pill", generatedPill);
+  check(
+    generatedPill.word === "generated" && generatedPill.tone === "success",
+    "the generated skill header does not name its state",
+    generatedPill,
+  );
+  check(
+    generatedPill.background === generatedPill.successSurface &&
+      generatedPill.color === generatedPill.success &&
+      generatedPill.dot?.background === generatedPill.success,
+    "the generated skill state is not on the success tint",
+    generatedPill,
+  );
+  check(
+    generatedPill.fontSize === "11px" &&
+      generatedPill.radius === "999px" &&
+      generatedPill.dot?.width === "6px" &&
+      generatedPill.dot?.height === "6px",
+    "the skill state pill does not take the 11px pill shape with a 6px dot",
+    generatedPill,
+  );
   check(
     (await page.eval<number>(`document.querySelectorAll('[data-testid="discover-skill-status"]').length`)) === 0,
     "the skill page still names a draft state",
@@ -5830,6 +5902,35 @@ try {
     "Ctrl+S changed the live skill file",
   );
 
+  // An edited live file names its own state on the warning tint.
+  await writeFile(liveSkillPath, `${originalSkill.trimEnd()}\n- Edited for the state pill.\n`);
+  await page.reload();
+  await runPalette("discover.tab.testing-strategy");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-tab"][data-skill="discover-testing-strategy"]')?.getAttribute("data-state") === "edited"`,
+    "the edited skill state",
+  );
+  const editedPill = await readSkillStatePill();
+  check(
+    editedPill.word === "edited" && editedPill.tone === "warning",
+    "the edited skill header does not name its state",
+    editedPill,
+  );
+  check(
+    editedPill.background === editedPill.warningSurface &&
+      editedPill.color === editedPill.warning &&
+      editedPill.dot?.background === editedPill.warning,
+    "the edited skill state is not on the warning tint",
+    editedPill,
+  );
+  await writeFile(liveSkillPath, originalSkill);
+  await page.reload();
+  await runPalette("discover.tab.testing-strategy");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-tab"][data-skill="discover-testing-strategy"]')?.getAttribute("data-state") === "generated"`,
+    "the restored generated skill state",
+  );
+
   // A missing live file names its state and renders the generated baseline.
   await rm(liveSkillPath);
   await page.reload();
@@ -5843,6 +5944,19 @@ try {
     (await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"]')?.textContent ?? ""`)) ===
       baselineSkill,
     "the missing skill does not render its generated baseline",
+  );
+  const missingPill = await readSkillStatePill();
+  check(
+    missingPill.word === "Live file missing" && missingPill.tone === "error",
+    "the missing skill header does not name its state",
+    missingPill,
+  );
+  check(
+    missingPill.background === missingPill.errorSurface &&
+      missingPill.color === missingPill.error &&
+      missingPill.dot?.background === missingPill.error,
+    "the missing skill state is not on the error tint",
+    missingPill,
   );
   for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
     check(
@@ -5861,7 +5975,7 @@ try {
   const skillLayout = await page.eval<{
     preview: boolean;
     split: number;
-    badge: boolean;
+    statePill: boolean;
     status: boolean;
     editor: number;
     panel: number;
@@ -5891,7 +6005,7 @@ try {
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
-      badge: document.querySelector('[data-testid="discover-skill-state"]') !== null,
+      statePill: document.querySelector('[data-testid="discover-skill-state"]') !== null,
       status: Boolean(header?.querySelector('[data-testid="discover-skill-status"]')),
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
@@ -5907,7 +6021,7 @@ try {
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
-  check(!skillLayout.badge, "the skill tab still renders a state badge");
+  check(skillLayout.statePill, "the skill header does not render its state pill");
   check(!skillLayout.status, "the skill tab still renders a status pill");
   check(
     skillLayout.title === "discover-testing-strategy/SKILL.md",

@@ -9,6 +9,16 @@
 
   let element = $state<HTMLPreElement | null>(null);
   let follow = $state(true);
+  let shownRunId = $state<string | undefined>(undefined);
+
+  // The offset and follow flag belong to the run the operator scrolled, so a
+  // switch to another run starts at that run's newest line.
+  $effect(() => {
+    if (runId === shownRunId) return;
+    shownRunId = runId;
+    follow = true;
+    if (element !== null) element.scrollTop = element.scrollHeight;
+  });
 
   // Tracked so the log follows its newest line unless the operator scrolled up.
   $effect(() => {

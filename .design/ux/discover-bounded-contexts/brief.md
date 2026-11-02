@@ -17,13 +17,14 @@ brief lives in `.design/ux/discover/brief.md` and still applies.
 ## Primary goal
 
 Let the developer answer "where does this change live, and what may it depend on?" from the
-crawled project sheet. Observable success: the reader names the owning context and its repository
-path, and can state whether the code sits inside a context, in shared kernel code, or across an
-external boundary, without leaving the card.
+crawled project sheet. Observable success: the reader names the owning context and the entry points
+that open it, and can state whether the code sits inside a context, in shared kernel code, or
+across an external boundary, without leaving the page.
 
 ## Secondary goals
 
-- Establish the allowed dependency direction so a change that points the wrong way is visible.
+- Name the shared kernels and external systems the project touches, each in its own card, so a
+  change that crosses either is visible.
 - Connect the context vocabulary to the glossary, which is grouped by the same bounded contexts.
 
 These support the primary goal; they never displace the context list.
@@ -35,10 +36,11 @@ These support the primary goal; they never displace the context list.
 - They know the repository, not necessarily the crawler's vocabulary; "bounded context", "shared
   kernel", and "external boundary" are DDD terms the sheet uses deliberately.
 - They may arrive with a glossary term in mind (journey 5 of the page brief) and need the owning
-  code area, or with a change in mind and need the allowed dependency direction.
+  code area, or with a change in mind and need to know whether it crosses a shared kernel or an
+  external system.
 - Desktop only: the shell requires at least 1024×720; there is no mobile layout.
-- Partial data is normal: the crawl may not observe sources, may find no boundary, or may infer the
-  direction instead of observing it.
+- Partial data is normal: the crawl may not observe sources, may find no boundary, or may infer a
+  boundary group instead of observing it.
 
 ## Relationship to other pages
 
@@ -57,8 +59,8 @@ Trigger: the reader needs to place a change in the project.
 
 1. Scan the context list for the business area named in the requirement.
 2. Read the context's responsibility to confirm the match.
-3. Read the path and the entry points to know where to open the code.
-4. Success: one context owns the change and its paths are known.
+3. Read the entry-point chips to know which files to open.
+4. Success: one context owns the change and its entry points are known.
 5. Failure: no context matches. The card states that no context was detected or that the crawl did
    not observe the section; the reader falls back to the repository itself.
 6. Recovery: re-discover after adding or clarifying source, or use the glossary term's usage data.
@@ -71,13 +73,12 @@ Trigger: the change crosses code owned by more than one area or touches an exter
 1. Find the owning context.
 2. Check shared kernels: code that more than one context may import.
 3. Check external boundaries: systems outside the domain that the change must talk to.
-4. Read the dependency direction to know which way an import may point.
-5. Success: the reader knows whether the change belongs in a context, a shared kernel, or an
+4. Success: the reader knows whether the change belongs in a context, a shared kernel, or an
    adapter to an external system.
-6. Failure: a boundary group was not observed. The card states which group and why, rather than
+5. Failure: a boundary group was not observed. The card states which group and why, rather than
    implying that no such code exists.
-7. Recovery: re-discover; inspect the repository for the named group.
-8. Exit: proceed, or raise the coupling with the team.
+6. Recovery: re-discover; inspect the repository for the named group.
+7. Exit: proceed, or raise the coupling with the team.
 
 ### Journey 3 — Re-crawl and compare
 
@@ -106,8 +107,8 @@ Trigger: the crawl could not observe source code, or observed only some boundary
 
 - Editing contexts, boundaries, or dependencies. Only the glossary decisions and the five skills
   are editable in Discover.
-- Drawing dependency edges inside this list; the separate dependency graph widget below the role
-  rows owns that drawing, and an edge the crawl does not record is never invented.
+- Drawing dependency edges: #2ee5ffb6 dropped the dependency graph widget, no Discover card draws
+  the recorded edges, and an edge the crawl does not record is never invented.
 - Repeating glossary term lists, test strategy, or commands inside this card.
 - Showing command, build, or CI facts; those have their own cards.
 - Aggregating a project "architecture score" or metric.
@@ -116,7 +117,8 @@ Trigger: the crawl could not observe source code, or observed only some boundary
 
 - `sheet.architecture` carries `contexts`, `dependencies`, `dependencyDirection`,
   `externalBoundaries`, and `sharedKernels` exactly as the prompt schema defines them.
-- Boundary values are free strings without per-context association, so grouping by role is the
-  only honest visualization.
+- Boundary values are free strings without per-context association, so each group is its own card
+  and no value is assigned to a context.
 - The crawler sorts contexts and values canonically; the card preserves that order.
-- A context's `path` and an `entryPoints` value may repeat; the card shows the path once.
+- A context records a `path`, but the card renders entry points only (#230); duplicate entry points
+  collapse to one chip.

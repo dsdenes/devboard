@@ -2,6 +2,7 @@
   import { Dialog } from "bits-ui";
   import X from "lucide-svelte/icons/x";
   import { notificationReport } from "../notification-issue";
+  import { FEEDBACK_ENDPOINT } from "../../../lib/endpoints.ts";
   import { notifications, type AppNotification } from "../notifications.svelte";
   import Button from "./ui/button.svelte";
   import CommandButton from "./CommandButton.svelte";
@@ -63,23 +64,24 @@
       captured_at: new Date().toISOString(),
     };
     try {
-      const response = await fetch("/feedback", {
+      const response = await fetch(FEEDBACK_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
       const body = (await response.json().catch(() => null)) as {
-        url?: unknown;
+        links?: { issue?: { href?: unknown } };
         detail?: unknown;
       } | null;
-      if (!response.ok || typeof body?.url !== "string") {
+      const href = body?.links?.issue?.href;
+      if (!response.ok || typeof href !== "string") {
         throw new Error(
           typeof body?.detail === "string"
             ? body.detail
             : `The server refused the report (${response.status}).`,
         );
       }
-      filed = { ...filed, [item.id]: body.url };
+      filed = { ...filed, [item.id]: href };
     } catch (error) {
       failed = {
         ...failed,

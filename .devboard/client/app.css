@@ -1653,20 +1653,6 @@ kbd {
   padding: 0;
 }
 
-.flow-goal-activity {
-  height: 180px;
-}
-
-.flow-activity-panel {
-  flex: 0 0 auto;
-  min-height: 100%;
-}
-
-.flow-activity-body {
-  display: flex;
-  padding: 4px;
-}
-
 /* The decision board is the page's lead editor: one title line, a status badge,
    and the save action on a 44px row, matching the Flow goal header. */
 .flow-decisions__header {
@@ -2168,6 +2154,51 @@ kbd {
 .discover-skill__file {
   color: var(--muted-foreground);
   font-weight: 400;
+}
+
+/* The read-only state is one full-radius pill on the tint of the state it
+   names: the word states the meaning and the 6px dot pairs with it. The pill
+   never shrinks, so the path chip beside it ellipsizes first. */
+.discover-skill__state {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 5px;
+  line-height: 1.2;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.discover-skill__state-dot {
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 6px;
+  width: 6px;
+}
+
+.discover-skill__state[data-tone="success"] {
+  background: var(--success-surface);
+  color: var(--success);
+}
+.discover-skill__state[data-tone="success"] .discover-skill__state-dot {
+  background: var(--success);
+}
+.discover-skill__state[data-tone="warning"] {
+  background: var(--warning-surface);
+  color: var(--warning);
+}
+.discover-skill__state[data-tone="warning"] .discover-skill__state-dot {
+  background: var(--warning);
+}
+.discover-skill__state[data-tone="error"] {
+  background: var(--error-surface);
+  color: var(--error);
+}
+.discover-skill__state[data-tone="error"] .discover-skill__state-dot {
+  background: var(--error);
 }
 
 .discover-skill__body {

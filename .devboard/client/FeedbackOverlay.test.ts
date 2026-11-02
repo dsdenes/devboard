@@ -179,7 +179,9 @@ test("a report answer that lands after Close leaves the overlay idle and unarmed
   await tick();
   expectClosed(snapshot);
 
-  pending[0]?.resolve(reply({ url: "http://localhost:3001/dsdenes/devboard/issues/1" }));
+  pending[0]?.resolve(
+    reply({ links: { issue: { href: "http://localhost:3001/dsdenes/devboard/issues/1" } } }),
+  );
   await tick();
   await tick();
 

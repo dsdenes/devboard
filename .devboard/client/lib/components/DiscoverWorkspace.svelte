@@ -42,6 +42,13 @@
   const skillTab = $derived(
     activeSkill === null ? null : (TABS.find((entry) => entry.skill === activeSkill) ?? null),
   );
+  const skillState = $derived(
+    activeSkill === null ? "missing" : (discover.skill(activeSkill)?.state ?? "missing"),
+  );
+  const skillStateTone = $derived(
+    skillState === "generated" ? "success" : skillState === "edited" ? "warning" : "error",
+  );
+  const skillStateLabel = $derived(skillState === "missing" ? "Live file missing" : skillState);
 
   const totalTerms = $derived(
     discover.contexts.reduce(
@@ -308,6 +315,15 @@
                 </span>
               </h2>
             </div>
+            <span
+              class="discover-skill__state"
+              data-testid="discover-skill-state"
+              data-state={skillState}
+              data-tone={skillStateTone}
+            >
+              <span class="discover-skill__state-dot" aria-hidden="true"></span>
+              <span class="discover-skill__state-word">{skillStateLabel}</span>
+            </span>
           </div>
           <div class="grow discover-skill__body">
             <pre class="discover-skill__text mono" data-testid="discover-skill-text" aria-label={`${activeSkill} skill text`}>{skillText}</pre>
