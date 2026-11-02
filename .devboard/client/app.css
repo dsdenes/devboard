@@ -3322,7 +3322,7 @@ a.code-chip--link:focus-visible {
   color: var(--foreground);
   font-size: 13px;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
@@ -3562,7 +3562,7 @@ a.code-chip--link:focus-visible {
 
 .issues-draft__heading {
   color: var(--muted-foreground);
-  line-height: 1.35;
+  line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
