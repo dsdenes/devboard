@@ -5,9 +5,18 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Server } from "bun";
-import { createApp, projectLabel } from "./app";
-import { detachedRunDirectory, readDetachedRunState } from "./detached-run";
+import { createApp, projectLabel, type InstallerHooks } from "./app";
+import {
+  detachedRunDirectory,
+  detachedRunHandoffPath,
+  readDetachedRunState,
+} from "./detached-run";
 import { journalFile, journalKey } from "./journal";
+import {
+  goalDraftControlDirectory,
+  goalDraftHandoffPath,
+  readGoalDraftOwnerState,
+} from "./goal-draft-owner";
 import { toolListPayload } from "../mcp/catalog";
 import { recordToolInvocation } from "../mcp/invocations";
 import { ProviderService, saveSubscriptions } from "./providers";
@@ -208,11 +217,8 @@ function collect(
   return promise;
 }
 
-/**
- * Keeps every frame a socket receives so a test can observe what a second
- * connected tab holds. Resolves once the socket is open and able to send.
- */
-async function watchFrames(url: string): Promise<{
+/** A connected tab that keeps every frame it received. */
+interface WatchedFrames {
   send(command: unknown): void;
   waitFor(
     predicate: (frame: Record<string, unknown>) => boolean,
@@ -220,7 +226,13 @@ async function watchFrames(url: string): Promise<{
     timeoutMs?: number,
   ): Promise<Record<string, unknown>>;
   close(): void;
-}> {
+}
+
+/**
+ * Keeps every frame a socket receives so a test can observe what a second
+ * connected tab holds. Resolves once the socket is open and able to send.
+ */
+async function watchFrames(url: string): Promise<WatchedFrames> {
   const socket = new WebSocket(`ws://${url}/ws`);
   const frames: Record<string, unknown>[] = [];
   const waiters: {
@@ -1383,6 +1395,14 @@ interface StartedServer {
   url: string;
 }
 
+/** A started dashboard whose installer hooks are reachable from the test. */
+interface StartedDashboard {
+  server: { stop(closeActiveConnections?: boolean): void } & InstallerHooks;
+  adrDir: string;
+  root: string;
+  url: string;
+}
+
 describe("detached runs", () => {
   test("a goal creation answers and finishes on the same run after a replacement", async () => {
     const root = await detachedRoot();
@@ -1701,4 +1721,133 @@ describe("detached runs", () => {
       second?.server.stop(true);
     }
   }, 40_000);
+});
+
+const DRAFT_PATH = ".devboard/goal-proposals/prepared.md";
+
+/** One running draft elaboration, its connected tab, and the owner peer. */
+async function startDraftElaboration(root: string): Promise<{
+  started: StartedDashboard;
+  tab: WatchedFrames;
+  stateDir: string;
+  peer: number;
+  startedAt: string | null | undefined;
+}> {
+  await mkdir(join(root, ".devboard", "goal-proposals"), { recursive: true });
+  await writeFile(
+    join(root, ".devboard", "goal-proposals", "prepared.md"),
+    "# Prepared draft\n\n> Unprocessed draft. STUB-HANG\n",
+  );
+  const started = await startServer({
+    root,
+    agentCommand: `bun ${STUB_AGENT} --goal-draft --log=${join(root, "agent.log")}`,
+  });
+  const tab = await watchFrames(started.url);
+  const stateDir = join(root, "state");
+  try {
+    tab.send({ type: "startGoalDraft", path: DRAFT_PATH });
+    await tab.waitFor(
+      (frame) =>
+        frame.type === "issuesDraftState" &&
+        (frame.draft as { status?: unknown } | undefined)?.status === "running",
+      "the running elaboration",
+    );
+    await waitForCondition(
+      () => readGoalDraftOwnerState(stateDir, root, DRAFT_PATH)?.peer != null,
+      "the draft owner's peer",
+    );
+    const owner = readGoalDraftOwnerState(stateDir, root, DRAFT_PATH);
+    return {
+      started,
+      tab,
+      stateDir,
+      peer: owner?.peer?.pid ?? 0,
+      startedAt: owner?.run.startedAt,
+    };
+  } catch (error) {
+    tab.close();
+    started.server.stop(true);
+    throw error;
+  }
+}
+
+function draftCommands(stateDir: string, root: string): string[] {
+  const control = goalDraftControlDirectory(stateDir, root, DRAFT_PATH);
+  if (!existsSync(control)) return [];
+  return readdirSync(control).map((name) => readFileSync(join(control, name), "utf8"));
+}
+
+/**
+ * The installer's automatic update prepares the replacement without a click,
+ * then stops. That shutdown is not terminal: the successor owns the draft and
+ * the detached runs. An operator Stop takes the same shutdown without the
+ * preparation, so it interrupts the draft and removes both handoffs.
+ */
+describe("prepared replacement handoff", () => {
+  test(
+    "an automatic replacement leaves the draft and detached handoffs to the successor",
+    async () => {
+      const root = await detachedRoot();
+      const { started, tab, stateDir, peer, startedAt } = await startDraftElaboration(root);
+      let firstStopped = false;
+      let second: StartedDashboard | undefined;
+      try {
+        expect(pidAlive(peer)).toBe(true);
+
+        started.server.prepareReplacement();
+        started.server.stop(true);
+        firstStopped = true;
+
+        expect(existsSync(goalDraftHandoffPath(stateDir, root))).toBe(true);
+        expect(existsSync(detachedRunHandoffPath(stateDir, root))).toBe(true);
+        expect(draftCommands(stateDir, root)).not.toContain('{"type":"interrupt"}\n');
+        expect(pidAlive(peer)).toBe(true);
+
+        second = await startServer({
+          root,
+          agentCommand: `bun ${STUB_AGENT} --goal-draft --log=${join(root, "agent.log")}`,
+        });
+        const list = (await exchange(second.url, { type: "getGoalDrafts" })) as Record<
+          string,
+          unknown
+        >;
+        const adopted = (list.runs as Record<string, unknown>[]).find(
+          (run) => run.path === DRAFT_PATH,
+        );
+        expect(adopted?.status).toBe("running");
+        expect(adopted?.startedAt).toBe(startedAt);
+        expect(pidAlive(peer)).toBe(true);
+      } finally {
+        tab.close();
+        if (!firstStopped) started.server.stop(true);
+        second?.server.stop(true);
+      }
+      await waitForCondition(() => !pidAlive(peer), "the adopted peer to exit");
+    },
+    40_000,
+  );
+
+  test(
+    "an operator Stop interrupts the elaboration and removes both handoffs",
+    async () => {
+      const root = await detachedRoot();
+      const { started, tab, stateDir, peer } = await startDraftElaboration(root);
+      let stopped = false;
+      try {
+        expect(pidAlive(peer)).toBe(true);
+
+        started.server.stop(true);
+        stopped = true;
+
+        expect(existsSync(goalDraftHandoffPath(stateDir, root))).toBe(false);
+        expect(existsSync(detachedRunHandoffPath(stateDir, root))).toBe(false);
+        expect(draftCommands(stateDir, root)).toContain('{"type":"interrupt"}\n');
+        await waitForCondition(() => !pidAlive(peer), "the interrupted peer to exit");
+      } finally {
+        tab.close();
+        if (!stopped) started.server.stop(true);
+      }
+    },
+    40_000,
+  );
 });

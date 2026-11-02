@@ -168,6 +168,20 @@ export interface FeedbackOptions {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * The installer-facing surface of a running dashboard: the update path
+ * prepares the replacement without a browser command, then stops the app.
+ */
+export interface InstallerHooks {
+  /**
+   * Hands the running state to the replacement. The shutdown that follows is
+   * not terminal, so owned draft, detached-run, and Discover state survives.
+   */
+  prepareReplacement(): void;
+  /** Withdraws a prepared handoff after a replacement that could not start. */
+  noteReplacementFailure(error: unknown): string;
+}
+
 export interface AppOptions {
   adrDir: string;
   staticDir: string;
@@ -4069,20 +4083,37 @@ export function createApp(options: AppOptions) {
    * Tells every connected page to wait for the replacement and hands the
    * detached runs and workers to it. The process that installs a newer
    * harness calls this before it exits, so no click is involved.
+   *
+   * A prepared replacement is not a terminal stop: the `restarting` state set
+   * here is what keeps `server.stop` from interrupting owned goal-draft runs,
+   * deleting the detached-run handoff, and removing a live Discover run's
+   * staging directory. Both the reload control and the automatic update path
+   * come through this function, so both shutdowns hand the same state over.
    */
   function prepareReplacement(): void {
+    restarting = true;
+    restartWhenIdle = false;
+    if (restartWhenIdleTimer !== undefined) {
+      clearInterval(restartWhenIdleTimer);
+      restartWhenIdleTimer = undefined;
+    }
     beginDetachedHandoff(stateDir, repoDir, instance);
     goalDrafts.handoff();
     broadcast({ type: "serverRestarting" });
   }
 
   /**
-   * Records a replacement that could not start. This process keeps serving
-   * and the fallback control retries the same launcher.
+   * Records a replacement that could not start. This process keeps serving,
+   * the prepared handoff is withdrawn, and the fallback control retries the
+   * same launcher. Returns the failure detail.
    */
-  function noteReplacementFailure(error: unknown): void {
-    replacementFailure = error instanceof Error ? error.message : String(error);
+  function noteReplacementFailure(error: unknown): string {
+    if (restarting) endDetachedHandoff(stateDir, repoDir, instance);
+    restarting = false;
+    const failure = error instanceof Error ? error.message : String(error);
+    replacementFailure = failure;
     broadcast({ type: "versionState", ...readVersion(), feedbackEnabled });
+    return failure;
   }
 
   /**
@@ -4091,24 +4122,13 @@ export function createApp(options: AppOptions) {
    * the failure detail, or undefined once the launcher owns the process.
    */
   function beginRestart(): string | undefined {
-    restarting = true;
-    restartWhenIdle = false;
-    if (restartWhenIdleTimer !== undefined) {
-      clearInterval(restartWhenIdleTimer);
-      restartWhenIdleTimer = undefined;
-    }
-    // Running runs belong to the replacement, not to this process.
-    prepareReplacement();
     try {
+      // Running runs belong to the replacement, not to this process.
+      prepareReplacement();
       options.restart?.();
       return undefined;
     } catch (error) {
-      restarting = false;
-      endDetachedHandoff(stateDir, repoDir, instance);
-      const failure = error instanceof Error ? error.message : String(error);
-      replacementFailure = failure;
-      broadcast({ type: "versionState", ...readVersion(), feedbackEnabled });
-      return `Could not restart the server: ${failure}`;
+      return `Could not restart the server: ${noteReplacementFailure(error)}`;
     }
   }
 
@@ -7645,5 +7665,5 @@ export function createApp(options: AppOptions) {
   return Object.assign(server, {
     prepareReplacement,
     noteReplacementFailure,
-  });
+  } satisfies InstallerHooks);
 }

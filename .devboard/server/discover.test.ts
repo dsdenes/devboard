@@ -12,7 +12,6 @@ import {
 } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Server } from "bun";
 import { createApp } from "./app";
 import {
   type ArtifactsRead,
@@ -157,8 +156,9 @@ function createFixture(name: string, options: { goal?: boolean; dirty?: boolean 
   };
 }
 
+/** The app surface these tests drive: the listener plus the installer hooks. */
 interface TestServer {
-  server: Server<unknown>;
+  server: { stop(closeActiveConnections?: boolean): void; prepareReplacement(): void };
   fixture: Fixture;
   url: string;
 }
@@ -1568,6 +1568,65 @@ describe("discover mode", () => {
       } finally {
         after.close();
         replacement.server.stop(true);
+      }
+    },
+    90000,
+  );
+
+  test(
+    "a prepared replacement keeps a live run's staging for its successor, and Stop removes it",
+    async () => {
+      const stagingPath = (root: string, runId: string): string =>
+        join(root, ".omp", "discover", "staging", runId);
+      const liveStub = ["--discover", "--discover-no-exit", "--delay-ms=60000"];
+
+      // The automatic update path prepares the same handoff the reload control
+      // does, so the shutdown that follows must leave the staging directory to
+      // the successor instead of deleting the crawl's work.
+      const handingOff = createFixture("handoff-staging");
+      const live = startServer({ fixture: handingOff, stub: liveStub });
+      const liveClient = await connect(live.url);
+      let liveRunId = "";
+      let liveStopped = false;
+      try {
+        liveClient.send({ type: "discoverProject" });
+        liveRunId = String(
+          (await liveClient.waitFor((message) => message.type === "discoverStarted")).runId,
+        );
+        await waitUntil(
+          () => existsSync(stagingPath(handingOff.root, liveRunId)),
+          "the live run's staging directory",
+        );
+        live.server.prepareReplacement();
+        live.server.stop(true);
+        liveStopped = true;
+        expect(existsSync(stagingPath(handingOff.root, liveRunId))).toBe(true);
+      } finally {
+        liveClient.close();
+        if (!liveStopped) live.server.stop(true);
+      }
+
+      // An operator Stop is terminal: the same live run loses its staging.
+      const stopping = createFixture("stop-staging");
+      const stopped = startServer({ fixture: stopping, stub: liveStub });
+      const stopClient = await connect(stopped.url);
+      let stopRunId = "";
+      let operatorStopped = false;
+      try {
+        stopClient.send({ type: "discoverProject" });
+        stopRunId = String(
+          (await stopClient.waitFor((message) => message.type === "discoverStarted")).runId,
+        );
+        await waitUntil(
+          () => existsSync(stagingPath(stopping.root, stopRunId)),
+          "the operator run's staging directory",
+        );
+        stopped.server.stop(true);
+        operatorStopped = true;
+        expect(existsSync(stagingPath(stopping.root, stopRunId))).toBe(false);
+      } finally {
+        stopClient.close();
+        if (!operatorStopped) stopped.server.stop(true);
       }
     },
     90000,
