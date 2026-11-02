@@ -2788,26 +2788,31 @@ state, any open issue title, or any draft goal heading. A duplicate is dropped, 
 activity, and consumes no cap slot.
 
 An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
-reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the commit that shipped it — the close entry's commit when present, otherwise the `commit_ref`
-entries of earlier commits whose message names the issue, otherwise every 7–40 character hex token
-of the newest comments, most recent first — to one unambiguous full commit through the checkout or
-the forge. Each candidate is verified rather than trusted: comment prose carries fingerprints,
-process ids, and epoch stamps that look like a SHA, so a candidate the forge reports as no such
-commit is skipped and the next one is tried, up to twelve candidates per issue. The first commit
-that resolves and appears in a published release decides the version. It then selects the earliest
-published release tag whose history contains that commit, ordered by `publishedAt` and breaking
-ties by tag name. A tag the checkout already carries answers containment offline; a release the
-checkout has not fetched is compared on the forge, so a host without local release tags still
-reports the version. A closed issue that names no commit at all — an API close records none, and a
-commit message that omits the issue number leaves the timeline empty — reports the release
-published closest to its close: the newest release published at or before the close, restricted to
-releases published after the issue was filed, and otherwise the earliest release published after
-the close. That fallback is an approximation: an issue closed long after the release that fixed it
-reports the newest release published before that close. The row shows `—` when a resolved commit
-has no published release yet, or when no commit resolves and no release falls after the filing;
-a release published later fills a blank version on the next read. A commit message names its issue
-with a trailing `(#<number>)` to give the forge the exact link.
+reopened issue returns to `pending` on the next read. For an implemented issue the worker first
+reads the checkout: every commit whose landed subject ends with `(#<number>)` names the issue, and
+the earliest published release containing any of them is the exact shipped version. That local
+answer outranks the forge and is re-read on every sync while the version is blank, so a release
+published later fills the row without waiting out the negative backoff. When the checkout names
+none, the worker resolves the commit that shipped it from the forge — the close entry's commit
+when present, otherwise the `commit_ref` entries of earlier commits whose message names the issue,
+otherwise every 7–40 character hex token of the newest comments, most recent first — to one
+unambiguous full commit through the checkout or the forge. Each candidate is verified rather than
+trusted: comment prose carries fingerprints, process ids, and epoch stamps that look like a SHA, so
+a candidate the forge reports as no such commit is skipped and the next one is tried, up to twelve
+candidates per issue. The first commit that resolves and appears in a published release decides
+the version. It then selects the earliest published release tag whose history contains that
+commit, ordered by `publishedAt` and breaking ties by tag name. A tag the checkout already carries
+answers containment offline; a release the checkout has not fetched is compared on the forge, so a
+host without local release tags still reports the version. A closed issue that names no commit at
+all — an API close records none, and a commit message that omits the issue number leaves the
+timeline empty — reports the release published closest to its close: the newest release published
+at or before the close, restricted to releases published after the issue was filed, and otherwise
+the earliest release published after the close. That fallback is an approximation: an issue closed
+long after the release that fixed it reports the newest release published before that close. The
+row shows `—` when a resolved commit has no published release yet, or when no commit resolves and
+no release falls after the filing; a release published later fills a blank version on the next
+read. A commit message names its issue with a trailing `(#<number>)`, which is both the forge's
+exact link and the checkout's landed reference.
 
 ### Periodic check
 

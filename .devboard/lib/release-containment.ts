@@ -1,4 +1,5 @@
 import { git } from "../issues/repository";
+import { COMMIT_CANDIDATE_LIMIT, isFullSha } from "./commit";
 import type { GitHubRelease } from "./github-release";
 
 /**
@@ -27,6 +28,32 @@ function tagNames(output: string): Set<string> {
       .map((line) => line.trim())
       .filter((line) => line.length > 0),
   );
+}
+
+/**
+ * The landed commits that name an issue, newest first. The harness ends the
+ * subject of the commit that lands a fix with `(#<number>)`, so the checkout's
+ * own history answers which commit shipped the work even when the forge records
+ * no closing commit and no comment carries a SHA. Only `HEAD`'s history is read:
+ * a commit on an unlanded branch is not shipped. The list is bounded like the
+ * forge's candidates, so one issue never turns into an unbounded history walk.
+ */
+export function landedCommits(repoDir: string, issueNumber: number): string[] {
+  if (!Number.isInteger(issueNumber) || issueNumber <= 0) return [];
+  const marker = `(#${issueNumber})`;
+  const result = git(repoDir, "log", "HEAD", "--format=%H%x09%s");
+  if (result.code !== 0) return [];
+  const commits: string[] = [];
+  for (const line of result.stdout.split("\n")) {
+    const separator = line.indexOf("\t");
+    if (separator <= 0) continue;
+    const sha = line.slice(0, separator);
+    const subject = line.slice(separator + 1);
+    if (!isFullSha(sha) || !subject.endsWith(marker)) continue;
+    commits.push(sha);
+    if (commits.length >= COMMIT_CANDIDATE_LIMIT) break;
+  }
+  return commits;
 }
 
 /**

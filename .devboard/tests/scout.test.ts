@@ -195,6 +195,8 @@ class FakeGitHub implements ScoutGitHubClient {
   readonly closing = new Map<number, string | null>();
   readonly commits = new Map<string, string>();
   readonly containing = new Map<string, string[]>();
+  readonly landed = new Map<number, string[]>();
+  landedCalls = 0;
   failIssues = false;
   /** Replaces the generic issue-read failure when set. */
   issuesError: string | null = null;
@@ -241,6 +243,11 @@ class FakeGitHub implements ScoutGitHubClient {
 
   async closingCommit(issueNumber: number): Promise<string | null> {
     return this.closing.get(issueNumber) ?? null;
+  }
+
+  landedCommits(issueNumber: number): string[] {
+    this.landedCalls += 1;
+    return this.landed.get(issueNumber) ?? [];
   }
 
   async resolveCommit(short: string): Promise<string | null> {
@@ -956,6 +963,41 @@ describe("periodic reads and state mapping", () => {
         "the retry after the backoff",
       );
       expect(f.state().issues[0]?.versionAttemptAt).toBe(f.clock.now.toISOString());
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a landed commit is re-resolved on every read without waiting out the backoff", async () => {
+    const github = new FakeGitHub();
+    github.add({
+      number: 12,
+      title: "Landed after the close",
+      state: "closed",
+      createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    const f = await fixture({ label: "landed-every-read", github, now: startClock });
+    try {
+      const first = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      expect(first.issues[0]?.versionError).toBe("no closing commit was found");
+
+      const commit = "e".repeat(40);
+      github.landed.set(12, [commit]);
+      github.commits.set(commit, commit);
+      github.containing.set(commit, []);
+      await f.worker.refresh();
+
+      const second = await waitFor(
+        () =>
+          f.state().issues[0]?.versionError === `no published release contains ${commit}`
+            ? f.state()
+            : undefined,
+        "the landed retry",
+      );
+      expect(second.issues[0]?.version).toBeNull();
     } finally {
       await f.worker.stop();
     }

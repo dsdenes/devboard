@@ -60,7 +60,7 @@ function repository(): string {
   return directory;
 }
 
-function committedRepository(): { directory: string; commit: string } {
+function committedRepository(subject = "shipped"): { directory: string; commit: string } {
   const directory = repository();
   const git = (args: string[]): string => {
     const result = Bun.spawnSync({
@@ -80,13 +80,13 @@ function committedRepository(): { directory: string; commit: string } {
     "--allow-empty",
     "-q",
     "-m",
-    "shipped",
+    subject,
   ]);
   return { directory, commit: git(["rev-parse", "HEAD"]) };
 }
 
-function taggedRepository(tag: string): { directory: string; commit: string } {
-  const { directory, commit } = committedRepository();
+function taggedRepository(tag: string, subject?: string): { directory: string; commit: string } {
+  const { directory, commit } = committedRepository(subject);
   const result = Bun.spawnSync({
     cmd: ["git", "-C", directory, "tag", tag],
     stdout: "pipe",
@@ -1031,6 +1031,91 @@ describe("Gitea watchdog activity", () => {
         state: "implemented",
         version: "v1.0.0",
       },
+    ]);
+  });
+
+  test("reads the landed commit the checkout carries when the forge names none", async () => {
+    const tagged = taggedRepository("v1.0.0", "fix(agents): settle the row (#5)");
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (/\/issues\/5$/.test(url.pathname)) return Response.json({ state: "closed" });
+      if (url.pathname.endsWith("/issues/5/timeline")) {
+        return Response.json([{ type: "close", ref_commit_sha: "" }]);
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/5"])).toEqual([
+      {
+        url: "http://gitea.test/acme/fixture/issues/5",
+        state: "implemented",
+        version: "v1.0.0",
+      },
+    ]);
+    expect(calls.some((call) => call.includes("/timeline"))).toBe(false);
+  });
+
+  test("a landed commit outside every release stays unresolved instead of inferring", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const committed = Bun.spawnSync({
+      cmd: [
+        "git",
+        "-C",
+        tagged.directory,
+        "-c",
+        "user.name=Devboard Tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "fix(agents): land after the release (#5)",
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(committed.exitCode).toBe(0);
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      if (/\/issues\/5$/.test(url.pathname)) {
+        return Response.json({
+          state: "closed",
+          created_at: "2026-08-01T00:00:00Z",
+          closed_at: "2026-10-01T00:00:00Z",
+        });
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/5"])).toEqual([
+      { url: "http://gitea.test/acme/fixture/issues/5", state: "implemented", version: null },
     ]);
   });
 

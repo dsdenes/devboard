@@ -769,7 +769,14 @@ export class ScoutWorker {
       };
       rows.push(row);
       if (row.state !== "implemented" || row.version !== null || github === undefined) continue;
-      if (!releasesChanged && now - attemptTime(row) < RESOLUTION_RETRY_MS) continue;
+      // A landed commit is local and cheap to read, so a row it names is
+      // re-resolved on every read rather than waiting out the negative
+      // backoff: a release published since the last attempt fills the version
+      // without the row staying blank until the interval expires.
+      const landed = github.landedCommits?.(issue.number) ?? [];
+      if (landed.length === 0 && !releasesChanged && now - attemptTime(row) < RESOLUTION_RETRY_MS) {
+        continue;
+      }
       withheld.push({ issue, row });
     }
     // The longest-waiting row goes first, so a read that runs out of time

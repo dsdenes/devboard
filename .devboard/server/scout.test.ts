@@ -461,6 +461,76 @@ describe("shipped version", () => {
     expect(version).toBe("v1.0.0");
   });
 
+  test("a landed commit answers when the forge names no closing commit", async () => {
+    const commit = "c".repeat(40);
+    const client = fakeGitHub({
+      closingCommit: async () => null,
+      landedCommits: () => [commit],
+      resolveCommit: async () => commit,
+      containingReleaseTags: async () => ["v1.0.0"],
+    });
+    const resolution = await resolveShippedVersion(
+      {
+        number: 4,
+        state: "closed",
+        createdAt: "2026-01-01T00:00:00Z",
+        closedAt: "2026-03-01T00:00:00Z",
+      },
+      client,
+      [release("v1.0.0", "2026-02-01T00:00:00Z")],
+    );
+    expect(resolution).toEqual({ version: "v1.0.0", error: null, inferred: false });
+  });
+
+  test("the earliest release containing any landed commit wins", async () => {
+    const older = "a".repeat(40);
+    const newer = "b".repeat(40);
+    const client = fakeGitHub({
+      closingCommit: async () => null,
+      landedCommits: () => [newer, older],
+      resolveCommit: async (short) => short,
+      containingReleaseTags: async (commit) => (commit === older ? ["v2.0.0"] : ["v1.0.0"]),
+    });
+    const version = await shippedVersion(
+      {
+        number: 4,
+        state: "closed",
+        createdAt: "2026-01-01T00:00:00Z",
+        closedAt: "2026-03-01T00:00:00Z",
+      },
+      client,
+      [
+        release("v1.0.0", "2026-01-15T00:00:00Z"),
+        release("v2.0.0", "2026-02-15T00:00:00Z"),
+      ],
+    );
+    expect(version).toBe("v1.0.0");
+  });
+
+  test("a landed commit no release contains is never replaced by the close fallback", async () => {
+    const commit = "c".repeat(40);
+    const resolution = await resolveShippedVersion(
+      {
+        number: 4,
+        state: "closed",
+        createdAt: "2026-01-01T00:00:00Z",
+        closedAt: "2026-03-01T00:00:00Z",
+      },
+      fakeGitHub({
+        closingCommit: async () => null,
+        landedCommits: () => [commit],
+        resolveCommit: async () => commit,
+        containingReleaseTags: async () => [],
+      }),
+      [release("v1.0.0", "2026-02-01T00:00:00Z")],
+    );
+    expect(resolution).toEqual({
+      version: null,
+      error: `no published release contains ${commit}`,
+      inferred: false,
+    });
+  });
+
   test("a blank version is the answer when nothing resolves", async () => {
     const issue = {
       number: 4,
