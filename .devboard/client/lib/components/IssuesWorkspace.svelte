@@ -120,15 +120,6 @@
   function runStatus(runId: string): string {
     return issues.runs.find((run) => run.runId === runId)?.status ?? "unknown";
   }
-
-  /**
-   * The server-written confirmation that a close landed: the issue is gone
-   * from the queue in the next snapshot. `issues.closing` is set on send and
-   * cannot confirm anything.
-   */
-  function issueOpen(number: number): boolean {
-    return (issues.snapshot?.queue ?? []).some((issue) => issue.number === number);
-  }
 </script>
 
 {#if page === "overview"}
@@ -315,10 +306,12 @@
                     </span>
                   </Button>
                 </div>
+                <!-- The server's answer for this issue, accepted or refused: a
+                     refusal releases the label on the frame that carries it. -->
                 <CommandButton
                   bare
                   label="Close"
-                  evidence={() => issueOpen(agent.issueNumber)}
+                  evidence={() => issues.closeRevision(agent.issueNumber)}
                   command={() => issues.closeIssue(agent.issueNumber)}
                   class="issues-agent-row__close"
                   data-testid="issues-close-issue"

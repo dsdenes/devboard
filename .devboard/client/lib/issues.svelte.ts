@@ -101,6 +101,14 @@ export class IssuesStore {
   private requestedRun: string | null = null;
   /** Issue numbers whose close request is still unanswered. */
   closing = $state<number[]>([]);
+  /**
+   * One revision per issue, bumped by every `issuesClosed` frame whether the
+   * server accepted the close or refused it. A row's Close control latches
+   * this as its confirming evidence, so a refusal releases that row's label on
+   * the frame that carries its reason; `closing` alone never changes on a
+   * refusal, because the issue stays in the queue.
+   */
+  closeAnswers = $state<Record<number, number>>({});
 
   drafts = $state<GoalDraftSummary[]>([]);
   /** One elaboration run per draft path; a path with no entry is idle. */
@@ -410,6 +418,15 @@ export class IssuesStore {
     return connection.open && !this.closing.includes(number);
   }
 
+  /**
+   * The revision of the last answer the server gave for one issue's close,
+   * `0` before any. A close control reads it as evidence: every answer, the
+   * refusal included, changes it.
+   */
+  closeRevision(number: number): number {
+    return this.closeAnswers[number] ?? 0;
+  }
+
   /** Closes one issue on the tracker as not planned. */
   closeIssue(number: number): void {
     if (!Number.isInteger(number) || number <= 0) return;
@@ -492,6 +509,10 @@ export class IssuesStore {
     }
     if (message.type === "issuesClosed" && typeof message.number === "number") {
       const number = message.number;
+      // Every answer changes the evidence a close control latched: a refusal
+      // must release that row's label at once instead of holding it until the
+      // ceiling, because the refused issue stays in the queue.
+      this.closeAnswers = { ...this.closeAnswers, [number]: this.closeRevision(number) + 1 };
       // A successful closure stays pending until the queue no longer lists the
       // issue, so a paused or stopped worker cannot invite a duplicate call.
       if (message.ok === true) {

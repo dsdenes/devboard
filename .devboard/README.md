@@ -3158,10 +3158,10 @@ count is not repeated in that header because the Automation panel states it.
 Each row also carries `data-testid="issues-close-issue"` with `data-issue`; it closes that issue on
 the tracker as `not planned`, so an issue the operator does not want implemented leaves the next
 poll without stopping the agent already working it. A refused or failed closure leaves the issue
-open and reports the reason as an error notification; a stalled credential probe or `gh`/`glab`
-close fails at its 60-second deadline with that timeout as the reason instead of leaving the
-control pending; a successful one reports `Closed issue #<number>.` and disables the control until
-the queue drops the issue.
+open, reports the reason as an error notification, and releases that row's control at once so it
+takes a retry; a stalled credential probe or `gh`/`glab` close fails at its 60-second deadline with
+that timeout as the reason instead of leaving the control pending; a successful one reports
+`Closed issue #<number>.` and disables the control until the queue drops the issue.
 The right column renders only the selected agent's output in
 `data-testid="issues-overview-output"` with `data-run`, its stream in
 `data-testid="issues-overview-activity"`, and its question in
