@@ -24,6 +24,7 @@ import {
 import { releaseTrainWorkerStates } from "../release-train/worker";
 import type { AgentDescriptor, AgentReleaseRow, AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
+import { hostHarnessDir, readHarnessVersion } from "./version";
 
 /**
  * The Release Train page's server half. It reads the detached worker's state
@@ -75,6 +76,8 @@ export class ReleaseTrainActivity implements AgentAdapter {
   private startingSince: number | null = null;
   private stopRequested = false;
   private startError: string | null = null;
+  /** The takeover attempt in flight, so begin and Start never race two spawns. */
+  private takeoverTask: Promise<AgentCommandResult> | null = null;
   /** Commit counts read from a legacy run's request, keyed by run id. */
   private readonly releaseCommitCounts = new Map<string, number | null>();
 
@@ -112,13 +115,16 @@ export class ReleaseTrainActivity implements AgentAdapter {
   }
 
   begin(): void {
-    // The page reads persisted state; Start owns spawning.
+    // The page reads persisted state; Start owns spawning. A live worker of an
+    // older version is taken over here, because an update never restarts it.
+    void this.takeoverOldWorkers();
   }
 
   dispose(): void {}
 
   settled(): Promise<void> {
-    return Promise.resolve();
+    const task = this.takeoverTask;
+    return task === null ? Promise.resolve() : task.then(() => undefined);
   }
 
   replay(_target: { send(data: string): unknown }): void {
@@ -279,7 +285,79 @@ export class ReleaseTrainActivity implements AgentAdapter {
 
   async start(): Promise<AgentCommandResult> {
     if (this.starting) return { ok: true };
-    if (this.owners().length > 0) return { ok: true };
+    if (this.owners().length === 0) return this.spawn();
+    return this.takeoverOldWorkers();
+  }
+
+  /**
+   * Starts this version's worker when only older versions' workers are live
+   * and this process runs the newest harness. Every older worker is told to
+   * drain: it finishes its in-flight unit, starts no new one, and exits on its
+   * own. Concurrent begin and Start calls share one attempt.
+   */
+  private takeoverOldWorkers(): Promise<AgentCommandResult> {
+    if (this.takeoverTask === null) {
+      this.takeoverTask = this.runTakeover().finally(() => {
+        this.takeoverTask = null;
+      });
+    }
+    return this.takeoverTask;
+  }
+
+  private async runTakeover(): Promise<AgentCommandResult> {
+    const owners = this.owners();
+    if (owners.length === 0) {
+      return { ok: false, message: "No Release Train worker is running for this repository." };
+    }
+    if (owners.some((owner) => owner.harnessVersion === this.runningVersion)) {
+      return { ok: true };
+    }
+    const newest =
+      this.runningVersion === null ? null : readHarnessVersion(hostHarnessDir(this.repoDir));
+    if (this.runningVersion === null || newest !== this.runningVersion) {
+      return { ok: false, message: this.takeoverRefusal(owners, newest) };
+    }
+    const started = await this.spawn();
+    if (!started.ok) return started;
+    for (const owner of owners) {
+      try {
+        writeCommand(this.controlFor(owner), { type: "drain" });
+      } catch (error) {
+        this.log(
+          `could not drain the ${owner.harnessVersion ?? "unversioned"} Release Train worker: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return { ok: true };
+  }
+
+  /** Why only an older version's worker can serve the family right now. */
+  private takeoverRefusal(owners: LockOwner[], newest: string | null): string {
+    const running = owners
+      .map((owner) => owner.harnessVersion ?? "an unversioned harness")
+      .join(", ");
+    if (this.runningVersion === null) {
+      return (
+        `A Release Train worker of version ${running} is running, and this dashboard does not ` +
+        "know its own harness version, so it cannot take the worker over."
+      );
+    }
+    if (newest === null) {
+      return (
+        `A Release Train worker of version ${running} is running, and the harness version under ` +
+        `this repository could not be read, so this ${this.runningVersion} dashboard cannot take ` +
+        "the worker over."
+      );
+    }
+    return (
+      `A Release Train worker of version ${running} is running, and the newest harness here is ` +
+      `${newest}, so this ${this.runningVersion} dashboard cannot take the worker over.`
+    );
+  }
+
+  private spawn(): AgentCommandResult {
     const problem = rootProblem(this.repoDir);
     if (problem !== undefined) {
       this.startError = problem;

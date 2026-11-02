@@ -1,13 +1,19 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { acquireLock } from "../issues/lock";
 import { agentRegistry } from "../server/agents/registry";
 import { ReleaseTrainActivity } from "../server/release-train";
 import {
   DEFAULT_INTERVAL_MINUTES,
   readSettings,
 } from "../release-train/settings";
-import { releaseTrainDirectory, runDirectory } from "../release-train/paths";
+import {
+  releaseTrainDirectory,
+  runDirectory,
+  versionedControlDirectory,
+  versionedLockPath,
+} from "../release-train/paths";
 import {
   emptyState,
   writeState,
@@ -735,5 +741,218 @@ describe("Release Train page", () => {
   test("a repository with no release yet lists an empty history", () => {
     const workspaceValue = workspace("page-empty");
     expect(activityAt(workspaceValue).snapshot().releases).toEqual([]);
+  });
+});
+
+describe("Release Train takeover", () => {
+  /**
+   * Start refuses a repository that is not a checkout root, so the takeover
+   * fixtures are real repositories rather than bare directories.
+   */
+  function checkout(name: string): Workspace {
+    const workspaceValue = workspace(name);
+    const result = Bun.spawnSync({
+      cmd: ["git", "init", "-q"],
+      cwd: workspaceValue.repoDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return workspaceValue;
+  }
+
+  /** The harness version a host would start next, read from its prefix. */
+  function hostHarnessVersion(workspaceValue: Workspace, version: string): void {
+    writeFileSync(
+      join(workspaceValue.repoDir, ".devboard", "package.json"),
+      JSON.stringify({ name: "@dsdenes/devboard", version }),
+    );
+  }
+
+  /** A live worker of one harness version, as an older dashboard left it. */
+  function liveOwner(workspaceValue: Workspace, version: string): { release: () => void } {
+    const result = acquireLock(versionedLockPath(workspaceValue.directory, version), {
+      repo: workspaceValue.repoDir,
+      stateDir: workspaceValue.stateDir,
+      harnessVersion: version,
+      argv: [],
+    });
+    if (!result.acquired) throw new Error("the fixture worker lock was not acquired");
+    return { release: result.release };
+  }
+
+  function commandsIn(directory: string): unknown[] {
+    let names: string[];
+    try {
+      names = readdirSync(directory);
+    } catch {
+      return [];
+    }
+    return names
+      .sort()
+      .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as unknown);
+  }
+
+  interface TakeoverOptions {
+    runningVersion: string;
+    spawnWorker: (
+      argv: string[],
+      environment: Record<string, string | undefined>,
+    ) => number | undefined;
+  }
+
+  function trainAt(workspaceValue: Workspace, options: TakeoverOptions): ReleaseTrainActivity {
+    return new ReleaseTrainActivity({
+      descriptor: agentRegistry.require("release-train"),
+      repoDir: workspaceValue.repoDir,
+      stateDir: workspaceValue.stateDir,
+      harnessDir: harnessRoot,
+      runningVersion: options.runningVersion,
+      environment: {},
+      log: () => undefined,
+      spawnWorker: options.spawnWorker,
+    });
+  }
+
+  test("Start takes over an older live worker and drains it", async () => {
+    const workspaceValue = checkout("takeover-start");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const older = liveOwner(workspaceValue, "0.0.9");
+    const spawned: string[][] = [];
+    const environments: Record<string, string | undefined>[] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv, environment) => {
+        spawned.push(argv);
+        environments.push(environment);
+        return 4242;
+      },
+    });
+    try {
+      expect(await activity.start()).toEqual({ ok: true });
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.join(" ")).toContain(join("release-train", "main.ts"));
+      expect(spawned[0]!.join(" ")).toContain(`--state-dir ${workspaceValue.stateDir}`);
+      expect(environments[0]?.DEVBOARD_HARNESS_VERSION).toBe("1.0.0");
+      expect(commandsIn(versionedControlDirectory(workspaceValue.directory, "0.0.9"))).toEqual([
+        { type: "drain" },
+      ]);
+    } finally {
+      older.release();
+    }
+  });
+
+  test("pressing Start twice spawns exactly one worker", async () => {
+    const workspaceValue = checkout("takeover-twice");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const older = liveOwner(workspaceValue, "0.0.9");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      expect(await activity.start()).toEqual({ ok: true });
+      expect(await activity.start()).toEqual({ ok: true });
+      expect(spawned).toHaveLength(1);
+      expect(commandsIn(versionedControlDirectory(workspaceValue.directory, "0.0.9"))).toEqual([
+        { type: "drain" },
+      ]);
+    } finally {
+      older.release();
+    }
+  });
+
+  test("Start reports success without spawning when this version's worker is live", async () => {
+    const workspaceValue = checkout("takeover-same-version");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const live = liveOwner(workspaceValue, "1.0.0");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      expect(await activity.start()).toEqual({ ok: true });
+      expect(spawned).toHaveLength(0);
+    } finally {
+      live.release();
+    }
+  });
+
+  test("Start never claims success when only an older version's worker is live and takeover is not allowed", async () => {
+    const workspaceValue = checkout("takeover-refused");
+    // The host prefix already holds a newer harness than this process.
+    hostHarnessVersion(workspaceValue, "1.0.1");
+    const older = liveOwner(workspaceValue, "0.0.9");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      const result = await activity.start();
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain("0.0.9");
+      expect(result.message).toContain("1.0.1");
+      expect(spawned).toHaveLength(0);
+      expect(commandsIn(versionedControlDirectory(workspaceValue.directory, "0.0.9"))).toEqual([]);
+    } finally {
+      older.release();
+    }
+  });
+
+  test("begin takes over an older live worker without an operator", async () => {
+    const workspaceValue = checkout("takeover-begin");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const older = liveOwner(workspaceValue, "0.0.9");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      activity.begin();
+      await activity.settled();
+      expect(spawned).toHaveLength(1);
+      expect(commandsIn(versionedControlDirectory(workspaceValue.directory, "0.0.9"))).toEqual([
+        { type: "drain" },
+      ]);
+    } finally {
+      activity.dispose();
+      older.release();
+    }
+  });
+
+  test("begin starts nothing when no worker is live", async () => {
+    const workspaceValue = checkout("takeover-begin-idle");
+    hostHarnessVersion(workspaceValue, "1.0.0");
+    const spawned: string[][] = [];
+    const activity = trainAt(workspaceValue, {
+      runningVersion: "1.0.0",
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      activity.begin();
+      await activity.settled();
+      expect(spawned).toHaveLength(0);
+    } finally {
+      activity.dispose();
+    }
   });
 });
