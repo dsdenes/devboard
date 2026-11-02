@@ -46,6 +46,10 @@ export interface IssuesRunSummary {
   issueNumbers: number[];
   activity: number;
   firstStderrLine: string | null;
+  /** The harness version that owned the run; absent before it was recorded. */
+  harnessVersion?: string | null;
+  /** The worker process that ran it; absent before it was recorded. */
+  workerPid?: number;
 }
 
 export interface IssuesRunDetail extends IssuesRunSummary {
@@ -107,6 +111,13 @@ export interface IssuesState {
   lifecycle: IssuesLifecycle;
   enabled: boolean;
   paused: boolean;
+  /**
+   * Why this worker stopped claiming work. `drain` is a newer version taking
+   * over (automatic), `operator` is a Pause. Absent from documents written
+   * before the provenance existed; a live drain is then proven by the
+   * dashboard's own drain marker.
+   */
+  pauseSource?: "operator" | "drain" | null;
   worker: IssuesWorkerRecord | null;
   poll: IssuesPollState;
   queue: QueuedIssue[];
@@ -181,8 +192,15 @@ function isRunSummary(value: unknown): value is IssuesRunSummary {
     Array.isArray(value.issueNumbers) &&
     value.issueNumbers.every(isInteger) &&
     isInteger(value.activity) &&
-    nullableString(value.firstStderrLine)
+    nullableString(value.firstStderrLine) &&
+    (value.harnessVersion === undefined || nullableString(value.harnessVersion)) &&
+    (value.workerPid === undefined || isInteger(value.workerPid))
   );
+}
+
+/** A run summary from either document version, with its version explicit. */
+function normalizedRunSummary(value: IssuesRunSummary): IssuesRunSummary {
+  return { ...value, harnessVersion: value.harnessVersion ?? null };
 }
 
 function isQuestion(value: unknown): value is IssuesQuestion {
@@ -273,6 +291,7 @@ export function emptyState(options: {
     lifecycle: options.lifecycle ?? "stopped",
     enabled: false,
     paused: false,
+    pauseSource: null,
     worker: null,
     poll: emptyPoll(options.intervalMs ?? 10_000),
     queue: [],
@@ -311,6 +330,14 @@ export function parseState(text: string): IssuesState | undefined {
     return undefined;
   }
   if (typeof parsed.enabled !== "boolean" || typeof parsed.paused !== "boolean") return undefined;
+  if (
+    parsed.pauseSource !== undefined &&
+    parsed.pauseSource !== null &&
+    parsed.pauseSource !== "operator" &&
+    parsed.pauseSource !== "drain"
+  ) {
+    return undefined;
+  }
   if (parsed.worker !== null && !isWorker(parsed.worker)) return undefined;
   if (!isPoll(parsed.poll)) return undefined;
   if (!Array.isArray(parsed.queue) || !parsed.queue.every(isQueued)) return undefined;
@@ -350,10 +377,11 @@ export function parseState(text: string): IssuesState | undefined {
     lifecycle,
     enabled: parsed.enabled,
     paused: parsed.paused,
+    pauseSource: (parsed.pauseSource as "operator" | "drain" | null | undefined) ?? null,
     worker: parsed.worker as IssuesWorkerRecord | null,
     poll: parsed.poll,
     queue: parsed.queue.map((entry) => normalizedQueued(entry)),
-    runs: parsed.runs,
+    runs: parsed.runs.map((run) => normalizedRunSummary(run)),
     agents: previous ? [] : (parsed.agents as IssuesAgent[]),
     cooldowns: { ...cooldowns },
     lastError: parsed.lastError,
@@ -575,6 +603,8 @@ export function runSummary(run: RunFile, activity: number): IssuesRunSummary {
     issueNumbers: run.issues.map((issue) => issue.number),
     activity,
     firstStderrLine: run.firstStderrLine,
+    harnessVersion: run.harnessVersion,
+    workerPid: run.workerPid,
   };
 }
 

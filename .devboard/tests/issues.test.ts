@@ -7,6 +7,7 @@ import { IssuesBridge } from "../server/issues";
 import { recordedChildAlive } from "../server/state";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { writeCommand } from "../issues/control";
+import { claimIssue } from "../issues/claims";
 import { migrateLegacyLedger, legacyLiveLock, legacyLockRefusal } from "../issues/legacy";
 import { pruneLedger } from "../issues/ledger";
 import { acquireLock, liveLockOwner, pidAlive, readLock, versionLockPath, type LockResult } from "../issues/lock";
@@ -44,6 +45,7 @@ import {
   fetchIssueState,
   parseResponse,
   pollOpenIssues,
+  writeIssueProcessing,
   type IssueStateResult,
 } from "../issues/tracker";
 import {
@@ -52,6 +54,7 @@ import {
   MAX_FOLLOW_UP_TURNS,
   isGoalIssue,
   promptFor,
+  reconcileProcessingLabels,
   type AcpPeer,
   type IssuesPeerOptions,
   type WorkerOptions,
@@ -258,6 +261,7 @@ async function fixture(options: {
   now?: () => Date;
   beforeStart?: (root: string, stateDir: string) => void;
   issueState?: (number: number) => Promise<IssueStateResult>;
+  writeProcessing?: WorkerOptions["writeProcessing"];
   listIssues?: WorkerOptions["listIssues"];
   providerEnvironment?: WorkerOptions["providerEnvironment"];
   pollTimeoutMs?: number;
@@ -284,6 +288,7 @@ async function fixture(options: {
       options.listIssues ??
       (async () => ({ kind: "issues", issues: [...issues], etag: "etag-1" })),
     issueState: options.issueState ?? (async () => ({ kind: "state", state: "closed" })),
+    writeProcessing: options.writeProcessing ?? (async () => ({ kind: "ok" })),
     connect: (peerOptions) => {
       const peer = new ControlledPeer(peerOptions);
       peers.push(peer);
@@ -929,8 +934,14 @@ describe("lifecycle", () => {
     const f = await fixture({ issues: [issue(1), issue(2), goalIssue(3)] });
     try {
       await waitFor(() => (f.peers.length === 3 ? true : undefined), "three peers");
+      const workerVersion = f.state().worker?.harnessVersion ?? null;
+      const liveRuns = f.state().runs.filter((run) => run.status === "running");
+      expect(liveRuns).toHaveLength(3);
+      expect(liveRuns.every((run) => run.harnessVersion === workerVersion)).toBe(true);
+      expect(liveRuns.every((run) => run.workerPid === f.state().worker?.pid)).toBe(true);
       writeCommand(controlDirectory(f.stateDir, f.root), { type: "pause" });
       await waitFor(() => (f.state().lifecycle === "pausing" ? true : undefined), "pausing");
+      expect(f.state().pauseSource).toBe("operator");
       expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
       f.peers[0]!.succeed();
       expect(f.state().lifecycle).toBe("pausing");
@@ -1696,6 +1707,107 @@ describe("preflight", () => {
   });
 });
 
+describe("processing label", () => {
+  test("a run writes processing before its peer and clears it when it ends", async () => {
+    const labels: Array<[number, boolean]> = [];
+    const f = await fixture({
+      issues: [issue(4)],
+      writeProcessing: async (number, active) => {
+        labels.push([number, active]);
+        return { kind: "ok" };
+      },
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "one peer");
+      expect(labels).toEqual([[4, true]]);
+      f.peers[0]!.succeed();
+      await waitFor(() => (labels.length === 2 ? true : undefined), "the cleared label");
+      expect(labels).toEqual([
+        [4, true],
+        [4, false],
+      ]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a Gitea processing write ensures, adds, and removes only that label", async () => {
+    const calls: Array<{ method: string; url: string }> = [];
+    let created = false;
+    const giteaFetch = async (input: string, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ method, url });
+      if (method === "GET" && url.includes("/labels?")) {
+        // Page two repeats the same entry, which ends the paging loop.
+        return Response.json(created ? [{ id: 15, name: "processing" }] : []);
+      }
+      if (method === "POST" && url.endsWith("/labels")) {
+        created = true;
+        return Response.json({ id: 15, name: "processing" });
+      }
+      if (method === "POST" && url.endsWith("/issues/4/labels")) {
+        return Response.json([]);
+      }
+      if (method === "DELETE" && url.endsWith("/issues/4/labels/15")) {
+        return new Response(null, { status: 204 });
+      }
+      return new Response("not found", { status: 404 });
+    };
+    const options = {
+      repository: "acme/fixture",
+      forge: "gitea" as const,
+      baseUrl: "http://gitea.test",
+      environment: {},
+      giteaFetch,
+    };
+    expect(await writeIssueProcessing(options, 4, true)).toEqual({ kind: "ok" });
+    expect(created).toBe(true);
+    expect(calls).toContainEqual({ method: "POST", url: "http://gitea.test/api/v1/repos/acme/fixture/issues/4/labels" });
+    expect(await writeIssueProcessing(options, 4, false)).toEqual({ kind: "ok" });
+    expect(calls).toContainEqual({ method: "DELETE", url: "http://gitea.test/api/v1/repos/acme/fixture/issues/4/labels/15" });
+  });
+
+  test("a reconciler clears a processing label with no live claim", async () => {
+    const root = await temporaryDirectory("processing-stale");
+    const cleared: number[] = [];
+    const listed = issue(9);
+    listed.labels = ["processing", "goal"];
+    await reconcileProcessingLabels({
+      issues: [listed],
+      repoDir: root,
+      active: new Set<number>(),
+      write: async (number) => {
+        cleared.push(number);
+        return { kind: "ok" };
+      },
+    });
+    expect(cleared).toEqual([9]);
+    expect(listed.labels).toEqual(["goal"]);
+  });
+
+  test("a reconciler leaves a processing label whose claim is live", async () => {
+    const root = await temporaryDirectory("processing-claim");
+    const cleared: number[] = [];
+    const listed = issue(11);
+    listed.labels = ["processing"];
+    expect(
+      claimIssue(root, 11, { runId: "pending-test", harnessVersion: null }),
+    ).toBe(true);
+    await reconcileProcessingLabels({
+      issues: [listed],
+      repoDir: root,
+      active: new Set<number>(),
+      write: async (number) => {
+        cleared.push(number);
+        return { kind: "ok" };
+      },
+    });
+    expect(cleared).toEqual([]);
+    expect(listed.labels).toEqual(["processing"]);
+  });
+});
+
 describe("ledger", () => {
   test("drops a closed issue so a reopened one is new again", () => {
     const ledger = {
@@ -2249,12 +2361,24 @@ describe("parallel version workers", () => {
         expect(b.state().agents.map((agent) => agent.issueNumber)).toEqual([2]);
 
         writeCommand(versionedControlDirectory(stateDir, root, "0.1.A"), { type: "drain" });
+        await waitFor(
+          () => (a.state().pauseSource === "drain" ? true : undefined),
+          "the drained A worker to record its provenance",
+        );
+        // The in-flight unit is untouched and stays attributed to its own
+        // worker version throughout the takeover.
+        expect(a.state().lifecycle).toBe("pausing");
+        const drainingRuns = a.state().runs.filter((run) => run.status === "running");
+        expect(drainingRuns.map((run) => run.harnessVersion)).toEqual(["0.1.A"]);
         a.peers[0]!.succeed();
         await waitFor(
           () => (a.state().lifecycle === "stopped" ? true : undefined),
           "the A worker to drain",
         );
         expect(a.peers).toHaveLength(1);
+        const settled = a.state().runs.find((run) => run.issueNumbers.includes(1));
+        expect(settled?.status).toBe("succeeded");
+        expect(settled?.harnessVersion).toBe("0.1.A");
         expect(liveLockOwner(lockPath(root))).toBeUndefined();
         expect(existsSync(versionedStatePath(stateDir, root, "0.1.A"))).toBe(true);
         expect(existsSync(versionedStatePath(stateDir, root, "0.1.B"))).toBe(true);
@@ -2268,6 +2392,9 @@ describe("parallel version workers", () => {
           handled: Record<string, unknown>;
         };
         expect(Object.keys(ledger.handled).sort()).toEqual(["1", "2"]);
+        expect(
+          b.state().runs.find((run) => run.issueNumbers.includes(2))?.harnessVersion,
+        ).toBe("0.1.B");
       } finally {
         await stop(b);
       }

@@ -27,6 +27,9 @@ import {
   workerStateDirectories,
 } from "../issues/paths";
 import { readState, type IssuesState } from "../issues/state";
+import { issuesIndicatorTitle, issuesLabel, versionLabel } from "../client/lib/issues-label";
+import { pollStatus } from "../client/lib/poll-status";
+import type { IssuesSnapshot as ClientIssuesSnapshot } from "../client/lib/types";
 import { freePort, run, waitFor } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
@@ -1016,6 +1019,29 @@ try {
   check(peerPids.length >= 4, "the state does not record every ACP child", beforePause.agents);
   await click(devtools, "issues-pause");
   await waitState(a, "pausing", (state) => state.lifecycle === "pausing");
+  const pauseLabel = await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() ?? ""`,
+        )
+        .catch(() => "")) === "issues pausing"
+        ? "issues pausing"
+        : undefined,
+    "the manual-pause status label",
+    10_000,
+  );
+  const pausePollLine = await devtools!.evaluate(
+    `document.querySelector('[data-testid="issues-poll-text"]')?.textContent?.trim() ?? ""`,
+  );
+  check(
+    pausePollLine === "Polling paused",
+    "the manual pause does not report polling paused",
+    pausePollLine,
+  );
+  console.log(
+    `verify:issues: manual Pause reads "${pauseLabel}" with "${String(pausePollLine)}"`,
+  );
   check(peerPids.every(processAlive), "Pause killed an ACP peer");
   await writeFile(a.finish, "finish\n");
   const paused = await waitState(a, "paused after the drain", (state) => state.lifecycle === "paused", 20_000);
@@ -1305,24 +1331,44 @@ try {
     const takeover = await waitFor(
       () => {
         const states = fleetReplies.filter((reply) => reply.type === "issuesState");
-        const state = states[states.length - 1];
-        const workers = (state?.workers ?? []) as Array<{ version?: string | null }>;
-        return workers.length >= 2 ? state : undefined;
+        const state = states[states.length - 1] as unknown as ClientIssuesSnapshot | undefined;
+        const workers = state?.workers ?? [];
+        const older = workers.find((worker) => worker.version === oldVersion);
+        const newer = workers.find((worker) => worker.version !== oldVersion);
+        // The older worker has consumed its drain and keeps its unit; the
+        // newer one is live. This is the takeover window under test.
+        return older?.lifecycle === "pausing" && newer !== undefined ? state : undefined;
       },
-      "both worker versions in the merged view",
+      "both worker versions with the older worker draining",
       30_000,
     );
-    const versions = (takeover.workers as Array<{ version: string | null }>)
+    const versions = (takeover.workers ?? [])
       .map((worker) => worker.version)
       .sort();
     check(versions.includes(oldVersion), "the merged view lost the old worker", versions);
+    const newerVersion = versions.find((version) => version !== oldVersion) ?? null;
     check(
-      versions.some((version) => version !== oldVersion && version !== null),
+      newerVersion !== null,
       "the newer worker did not become live",
       versions,
     );
     console.log(
-      `verify:issues: takeover: old ${oldVersion} and new ${versions.find((version) => version !== oldVersion)} are both live`,
+      `verify:issues: takeover: old ${oldVersion} and new ${newerVersion} are both live`,
+    );
+    const takeoverLabel = issuesLabel(
+      takeover.lifecycle,
+      takeover.agents.length,
+      takeover.queue.filter((entry) => !entry.handled && entry.agentRunId === null).length,
+    );
+    check(
+      takeoverLabel === `issues working (${takeover.agents.length})`,
+      "the older worker's drain replaced the family's running headline",
+      { takeoverLabel, lifecycle: takeover.lifecycle, workers: takeover.workers },
+    );
+    check(
+      !/pausing|draining|drain/i.test(takeoverLabel),
+      "the running headline carries drain vocabulary",
+      takeoverLabel,
     );
 
     // An issue opened after the newer worker is live is claimed by it alone.
@@ -1342,6 +1388,82 @@ try {
     check(
       oldState()?.agents.some((agent) => agent.issueNumber === 2) !== true,
       "the old worker claimed an issue after the newer worker was live",
+    );
+    const attributed = await waitFor(
+      () => {
+        const states = fleetReplies.filter((reply) => reply.type === "issuesState");
+        const state = states[states.length - 1] as unknown as ClientIssuesSnapshot | undefined;
+        if (state === undefined) return undefined;
+        const issues = state.agents.map((agent) => agent.issueNumber).sort();
+        return issues.join(",") === "1,2" ? state : undefined;
+      },
+      "both running tasks in the merged view",
+      30_000,
+    );
+    const attributedLabel = issuesLabel(
+      attributed.lifecycle,
+      attributed.agents.length,
+      attributed.queue.filter((entry) => !entry.handled && entry.agentRunId === null).length,
+    );
+    const attributedTitle = issuesIndicatorTitle({
+      repo: attributed.repo,
+      lifecycle: attributed.lifecycle,
+      agents: attributed.agents.length,
+      workerPid: attributed.worker?.pid ?? null,
+      lastError: attributed.lastError,
+    });
+    const attributedPoll = pollStatus(attributed, Date.now());
+    const forbidden = /pausing|draining|drain/i;
+    check(
+      attributedLabel === `issues working (${attributed.agents.length})` &&
+        !forbidden.test(attributedLabel) &&
+        !forbidden.test(attributedTitle) &&
+        !forbidden.test(attributedPoll.text) &&
+        !forbidden.test(attributedPoll.title),
+      "the takeover reports a pause instead of running automation",
+      { attributedLabel, attributedTitle, poll: attributedPoll },
+    );
+    check(
+      attributed.workers.some(
+        (worker) => worker.version === oldVersion && worker.lifecycle === "pausing",
+      ),
+      "the older worker's own state no longer reports its drain",
+      attributed.workers,
+    );
+    const taskVersions = attributed.agents.map((agent) => ({
+      issue: agent.issueNumber,
+      version: agent.harnessVersion ?? null,
+    }));
+    check(
+      taskVersions.some((task) => task.issue === 1 && task.version === oldVersion) &&
+        taskVersions.some((task) => task.issue === 2 && task.version === newerVersion),
+      "a running task is not attributed to the worker that owns it",
+      taskVersions,
+    );
+    for (const task of taskVersions) {
+      const run = attributed.runs.find((entry) => entry.issueNumbers.includes(task.issue));
+      check(
+        run?.harnessVersion === task.version,
+        "a task's label differs from its run record's version",
+        { task, run },
+      );
+      check(
+        versionLabel(task.version) === task.version,
+        "a known worker version renders as unknown",
+        task,
+      );
+    }
+    const oldInFlight = attributed.runs.find((run) => run.issueNumbers.includes(1));
+    check(
+      oldInFlight?.status === "running" && oldInFlight.harnessVersion === oldVersion,
+      "the takeover interrupted the older worker's run",
+      oldInFlight,
+    );
+    console.log(
+      `verify:issues: takeover: the status bar reads "${attributedLabel}" and the poll line "${attributedPoll.text}" ` +
+        `while ${oldVersion} drains; tasks ${taskVersions
+          .map((task) => `#${task.issue}@${versionLabel(task.version)}`)
+          .join(", ")}`,
     );
     console.log("verify:issues: takeover: the issue opened after the new worker is handled only by it");
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { connection } from "../connection.svelte";
   import { issues } from "../issues.svelte";
+  import { versionLabel } from "../issues-label";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import AgentActivityBar from "./AgentActivityBar.svelte";
@@ -20,6 +21,7 @@
   const detail = $derived(issues.run?.runId === runId ? issues.run : null);
   const lines = $derived(agent !== null ? issues.activityFor(runId) : (detail?.activityLines ?? []));
   const unavailable = $derived(agent === null && detail === null && issues.runError !== null);
+  const workerVersion = $derived(detail?.harnessVersion ?? issues.versionForRun(runId));
   const startedAt = $derived(agent?.startedAt ?? detail?.startedAt ?? null);
   const barState = $derived(
     agent !== null
@@ -59,6 +61,9 @@
         <p class="muted">Issues · agent</p>
         <h1 class="issues-overview__title" title={tab.title}>{tab.title}</h1>
         <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
+        <p class="muted mono" data-testid="issues-agent-focus-version">
+          worker {versionLabel(workerVersion)}
+        </p>
       </div>
       <Button
         variant="outline"
