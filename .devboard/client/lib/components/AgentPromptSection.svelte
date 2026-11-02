@@ -2,6 +2,7 @@
   import { agentRegistry } from "../../../server/agents/registry";
   import { agents } from "../agents.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
+  import SourceOnlyBadge from "./SourceOnlyBadge.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -58,6 +59,9 @@
 >
   <summary class="agent-prompt__summary" data-testid="agent-prompt-summary">
     <span class="agent-prompt__title">Prompt</span>
+    {#if prompt !== null && prompt.editable && prompt.text !== null}
+      <SourceOnlyBadge />
+    {/if}
   </summary>
   <div class="agent-prompt__body" data-testid="agent-prompt-body">
     {#if prompt === null}

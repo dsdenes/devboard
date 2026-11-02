@@ -154,6 +154,18 @@ terminal output, and IDs are monospace, one-line data rows are at most 32 CSS px
 data rows stay within 120 CSS px. The shell uses
 the full viewport with no application max-width.
 
+### Source-only marker
+
+A control that exists only while Devboard serves its own harness source checkout carries one
+shared marker: `data-testid="source-only-badge"`, the word `devboard`, the tooltip
+`Only available when Devboard serves a harness source checkout`, the `.badge` primitive with no
+tone, and `SourceOnlyBadge.svelte` as its only implementation. It is a child of its region header
+immediately after the title, and a trailing count or subtitle stays on the header's trailing edge.
+
+Four surfaces carry it: each of the six Discover agent prompt headers, Discover's manual-testing
+target panel header, and the Auto Scout and Design System prompt summaries. An installed host
+renders no marker anywhere and keeps the read-only prompt state unchanged.
+
 ### Editors and terminals
 
 Monaco Editor provides the Goal document (`goal-text`), Flow goal (`flow-goal-text`), Flow
@@ -838,8 +850,9 @@ share a prompt file, and each staged turn writes only its own slice; a prompt ma
 `.omp/discover/sheet.json` and `.omp/discover/glossary/` as optional reference, but no agent needs
 another agent's artifact to succeed.
 
-When the dashboard serves a harness source checkout, every card renders an editor initialized
-to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
+When the dashboard serves a harness source checkout, every card's Prompt header carries the
+source-only marker (`source-only-badge`) and renders an editor initialized to the prompt file's
+bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
 (`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
 `discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
 `discover-agent-prompt-save`. One chat turn streams one visible reply; a turn that revises the
@@ -847,7 +860,8 @@ prompt replaces the editor text with a complete replacement. Chat never writes a
 starts an agent. Save writes exactly the editor's UTF-8 bytes to that one agent's prompt file and
 no other file, and the next trigger of that agent reads those bytes. An installed host has no
 prompt view and renders no editor, chat, or save; `saveDiscoverPrompt` and `chatDiscoverPrompt`
-are refused there with an error naming the harness source checkout.
+are refused there with an error naming the harness source checkout, and the header carries no
+marker while its `Read-only here` subtitle stays.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
@@ -1404,9 +1418,10 @@ client still receives it before its own command replies.
 
 While `remoteAvailable` is true the Overview renders a manual-testing target panel as its first
 region, above the project header and the sheet or the empty state. The panel header states the
-title and, with retained projects, their count. Its body separates the two scopes: a `Retained
-project` toolbar pairs its label with a dropdown (`data-testid="discover-remote-select"`) whose
-options are the retained URLs, newest first, with the active project selected and no host option;
+title, carries the source-only marker, and, with retained projects, their count on the trailing
+edge. Its body separates the two scopes: a `Retained project` toolbar pairs its label with a
+dropdown (`data-testid="discover-remote-select"`) whose options are the retained URLs, newest
+first, with the active project selected and no host option;
 a bordered list carries one 28px row per retained project with the URL and a remove control
 (`data-testid="discover-remote-remove"`, carrying the URL in `data-url`), the active row taking the
 accent surface, a 2px accent edge, and an `Active` badge; a surface-raised block labelled
@@ -1756,12 +1771,14 @@ Coach section contains it too, naming that Coach assembles its prompt from each 
 Both render no other prompt test id, and a prompt command for either is refused with that same
 descriptor statement and has no effect.
 
-When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections render
-`agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
+When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections'
+closed summary carries the source-only marker (`source-only-badge`, the word `devboard`), and they
+render `agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
 `agent-prompt-chat-log` (present only once the chat has a turn), `agent-prompt-message`,
-`agent-prompt-send`, and `agent-prompt-save`. In every other host those three controls are absent
-and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action
-requires a harness source checkout; no file changes.
+`agent-prompt-send`, and `agent-prompt-save`. In every other host the summary carries no marker,
+those three controls are absent, and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an
+error naming that the action requires a harness source checkout; no file changes. A prompt that is
+absent or unreadable carries no marker either.
 
 `agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
 served checkout, adds nothing, strips nothing, and writes no other file; success shows the
@@ -3463,11 +3480,12 @@ mutating command on reload, the timer-blocked state and one-click disable agains
 `systemctl`, and the footer indicator with no console error. It also proves Coach's shared cycle
 detail and persisted settings, and the prompt section: every page renders `agent-prompt` directly
 after `agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach
-show `agent-prompt-absent`; an installed host is read-only and refuses a save with an error while
-its prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save
-for both file-backed agents, one chat turn streams a reply and changes the editor with the file
-untouched, Save makes each file byte-equal to its editor and a reload puts those bytes back in the
-editor.
+show `agent-prompt-absent`; an installed host is read-only, carries no source-only marker, and
+refuses a save with an error while its prompt files stay byte-identical; a source-checkout fixture
+renders the marker on the closed summary and the editor, chat, and save for both file-backed
+agents, opens and closes the disclosure with the marker still one, one chat turn streams a reply
+and changes the editor with the file untouched, Save makes each file byte-equal to its editor and
+a reload puts those bytes back in the editor.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

@@ -192,30 +192,71 @@ async function promptDisclosure(devtools: Devtools): Promise<{
   open: boolean;
   summary: string;
   contentHidden: boolean;
+  badgeCount: number;
+  badgeText: string;
+  badgeTitle: string | null;
 }> {
   const value = await devtools.evaluate(`(() => {
     const all = document.querySelectorAll('[data-testid="agent-prompt"]');
     const details = all[0] ?? null;
     const summary = document.querySelector('[data-testid="agent-prompt-summary"]');
     const body = document.querySelector('[data-testid="agent-prompt-body"]');
+    const badges = summary === null
+      ? []
+      : [...summary.querySelectorAll('[data-testid="source-only-badge"]')];
     return {
       present: all.length === 1 && details !== null,
       open: details !== null && details.open === true,
-      summary: summary === null ? '' : (summary.textContent ?? '').trim(),
+      summary:
+        summary?.querySelector('.agent-prompt__title')?.textContent?.trim() ?? '',
       contentHidden:
         body === null
           ? true
           : typeof body.checkVisibility === "function"
             ? !body.checkVisibility()
             : body.getBoundingClientRect().height === 0,
+      badgeCount: badges.length,
+      badgeText: (badges[0]?.textContent ?? '').trim(),
+      badgeTitle: badges[0]?.getAttribute('title') ?? null,
     };
   })()`);
-  return (value ?? { present: false, open: false, summary: "", contentHidden: false }) as {
+  return (value ?? {
+    present: false,
+    open: false,
+    summary: "",
+    contentHidden: false,
+    badgeCount: 0,
+    badgeText: "",
+    badgeTitle: null,
+  }) as {
     present: boolean;
     open: boolean;
     summary: string;
     contentHidden: boolean;
+    badgeCount: number;
+    badgeText: string;
+    badgeTitle: string | null;
   };
+}
+
+/** The summary is the only marker site: none or exactly the one shared word. */
+async function assertPromptMarker(
+  devtools: Devtools,
+  page: string,
+  expected: boolean,
+): Promise<void> {
+  const disclosure = await promptDisclosure(devtools);
+  assertTrue(disclosure.present, `${page} renders no single agent-prompt disclosure`);
+  assertTrue(
+    disclosure.badgeCount === (expected ? 1 : 0),
+    `${page} carries ${disclosure.badgeCount} source-only markers`,
+  );
+  if (!expected) return;
+  assertTrue(disclosure.badgeText === "devboard", `${page} marker is ${disclosure.badgeText}`);
+  assertTrue(
+    disclosure.badgeTitle === "Only available when Devboard serves a harness source checkout",
+    `${page} marker tooltip is ${String(disclosure.badgeTitle)}`,
+  );
 }
 
 async function assertPromptClosed(devtools: Devtools, page: string): Promise<void> {
@@ -902,6 +943,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Coach");
+  await assertPromptMarker(devtools, "Coach", false);
   await openPrompt(devtools, "Coach");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
@@ -922,6 +964,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Auto Scout");
+  await assertPromptMarker(devtools, "Auto Scout", false);
   const installedLayout = await promptLayout(devtools);
   assertTrue(
     installedLayout.one &&
@@ -975,6 +1018,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Design System");
+  await assertPromptMarker(devtools, "Design System", false);
   await openPrompt(devtools, "Design System");
   assertTrue(
     (await countOf(devtools, "agent-prompt-absent")) === 0,
@@ -999,6 +1043,7 @@ try {
     10_000,
   );
   await assertPromptClosed(devtools, "Watchdog");
+  await assertPromptMarker(devtools, "Watchdog", false);
   await openPrompt(devtools, "Watchdog");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
@@ -1624,6 +1669,7 @@ try {
     15_000,
   );
   await assertPromptClosed(devtools, "source Auto Scout");
+  await assertPromptMarker(devtools, "source Auto Scout", true);
   const sourceLayout = await promptLayout(devtools);
   assertTrue(
     sourceLayout.one &&
@@ -1633,6 +1679,7 @@ try {
     `the source prompt section is misplaced: ${JSON.stringify(sourceLayout)}`,
   );
   await openPrompt(devtools, "source Auto Scout");
+  await assertPromptMarker(devtools, "open source Auto Scout", true);
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-editor")) ? true : undefined),
     "the source prompt editor",
@@ -1744,6 +1791,7 @@ try {
     15_000,
   );
   await assertPromptClosed(devtools, "source Design System");
+  await assertPromptMarker(devtools, "source Design System", true);
   const designLayout = await promptLayout(devtools);
   assertTrue(
     designLayout.one &&
@@ -1753,6 +1801,7 @@ try {
     `the source Design System prompt section is misplaced: ${JSON.stringify(designLayout)}`,
   );
   await openPrompt(devtools, "source Design System");
+  await assertPromptMarker(devtools, "open source Design System", true);
   await waitFor(
     async () =>
       (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === SOURCE_DESIGN_PROMPT

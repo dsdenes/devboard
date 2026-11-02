@@ -491,6 +491,47 @@ async function openCard(devtools: Devtools, agent: string): Promise<void> {
 }
 
 /** Opens the Overview page, which owns the single Run all control. */
+/** The Discover card's prompt header and its one source-only marker, if any. */
+async function cardPromptMarker(devtools: Devtools): Promise<{
+  count: number;
+  text: string;
+  title: string | null;
+  afterTitle: boolean;
+  subtitle: string;
+}> {
+  const value = await devtools.evaluate(`(() => {
+    const header = document.querySelector('.discover-agent__prompt .panel__header');
+    const title = header?.querySelector('.panel__title') ?? null;
+    const badges = header === null
+      ? []
+      : [...header.querySelectorAll('[data-testid="source-only-badge"]')];
+    return {
+      count: badges.length,
+      text: (badges[0]?.textContent ?? '').trim(),
+      title: badges[0]?.getAttribute('title') ?? null,
+      afterTitle: title !== null && title.nextElementSibling === badges[0],
+      subtitle: header?.querySelector('.panel__subtitle')?.textContent?.trim() ?? '',
+    };
+  })()`);
+  return (value ?? { count: 0, text: "", title: null, afterTitle: false, subtitle: "" }) as {
+    count: number;
+    text: string;
+    title: string | null;
+    afterTitle: boolean;
+    subtitle: string;
+  };
+}
+
+/** True when no rendered text still claims the retired source-mode subtitle. */
+async function retiredSubtitle(devtools: Devtools): Promise<boolean> {
+  const value = await devtools.evaluate(
+    `(document.body.innerText ?? '').includes(${JSON.stringify(
+      ["Editable", "in", "this", "source", "checkout"].join(" "),
+    )})`,
+  );
+  return value === true;
+}
+
 async function openOverview(devtools: Devtools): Promise<void> {
   const clicked = await devtools.evaluate(`(() => {
     const button = document.querySelector('[data-testid="discover-tab"][data-tab="overview"]');
@@ -688,6 +729,15 @@ try {
         (await countOf(devtools, "discover-agent-prompt-reset")) === 0,
         `the removed Reset control is still rendered on the ${agent.id} card`,
       );
+      const marker = await cardPromptMarker(devtools);
+      check(
+        marker.count === 1 &&
+          marker.text === "devboard" &&
+          marker.title === "Only available when Devboard serves a harness source checkout" &&
+          marker.afterTitle,
+        `the ${agent.id} prompt header does not carry the one source-only marker`,
+        marker,
+      );
       check(
         (await countOf(devtools, "discover-agent-activity")) === 0,
         `the ${agent.id} card still renders an activity log`,
@@ -700,6 +750,7 @@ try {
       shown.add(await valueOf(devtools, "discover-agent-prompt-editor"));
     }
     check(shown.size === 7, "two cards share one prompt text");
+    check(!(await retiredSubtitle(devtools)), "the retired source-mode subtitle is still rendered");
     console.log("PASS per-agent-prompts");
   }
 
@@ -1270,6 +1321,12 @@ try {
           `${testid} is rendered in an installed host`,
         );
       }
+      const marker = await cardPromptMarker(devtools);
+      check(
+        marker.count === 0 && marker.subtitle === "Read-only here",
+        `the installed ${agent.id} prompt header is not read-only without a marker`,
+        marker,
+      );
     }
     const refusedSave = await wsCommand(
       devtools,
