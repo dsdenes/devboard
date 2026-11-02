@@ -15,7 +15,6 @@ export const COACH_DIRECTORY = "coach";
 export const WORKERS_DIRECTORY = "workers";
 export const WORKER_VERSION = 1;
 export const LEDGER_VERSION = 3;
-export const PROJECTION_VERSION = 1;
 
 export function coachDirectory(stateDir: string): string {
   return join(resolve(stateDir), COACH_DIRECTORY);
@@ -87,9 +86,4 @@ export function runsDirectory(directory: string): string {
 
 export function latestPath(directory: string): string {
   return join(directory, "latest.json");
-}
-
-/** The last successful forge projection the filing caps count. */
-export function projectionPath(directory: string): string {
-  return join(directory, "projection.json");
 }
