@@ -159,7 +159,7 @@ const answeringServer = [
   '  hostname: process.env.HOST ?? "127.0.0.1",',
   "  port: Number(process.env.PORT),",
   "  fetch: (request) =>",
-  '    new URL(request.url).pathname === "/api/ready"',
+  '    new URL(request.url).pathname === "/ready"',
   "      ? Response.json({ pid: process.pid })",
   '      : new Response("ok"),',
   "});",

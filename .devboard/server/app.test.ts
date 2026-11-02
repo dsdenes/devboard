@@ -466,23 +466,56 @@ describe("createApp", () => {
     }
   });
 
-  test("answers /api/ready for GET and HEAD and refuses every other method", async () => {
+  test("answers /ready for GET and HEAD and refuses every other method", async () => {
     const { server, url } = await startServer();
 
     try {
-      const ready = await fetch(`http://${url}/api/ready`);
+      const ready = await fetch(`http://${url}/ready`);
       expect(ready.status).toBe(200);
       expect(await ready.json()).toEqual({ pid: process.pid });
 
-      const head = await fetch(`http://${url}/api/ready`, { method: "HEAD" });
+      const head = await fetch(`http://${url}/ready`, { method: "HEAD" });
       expect(head.status).toBe(200);
       expect(head.headers.get("content-type")).toContain("application/json");
       expect(await head.text()).toBe("");
 
-      const post = await fetch(`http://${url}/api/ready`, { method: "POST" });
+      const post = await fetch(`http://${url}/ready`, { method: "POST" });
       expect(post.status).toBe(405);
       expect(post.headers.get("allow")).toBe("GET, HEAD");
       expect(await post.text()).toBe("Method Not Allowed");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("serves no /api prefix", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      expect((await fetch(`http://${url}/api/ready`)).status).toBe(404);
+      for (const path of ["/api/feedback", "/api/goal-proposals"]) {
+        const response = await fetch(`http://${url}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        expect(response.status).toBe(404);
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers an unknown path with 404 before refusing its method", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const unknown = await fetch(`http://${url}/missing.html`, { method: "POST" });
+      expect(unknown.status).toBe(404);
+
+      const existing = await fetch(`http://${url}/index.html`, { method: "POST" });
+      expect(existing.status).toBe(405);
+      expect(existing.headers.get("allow")).toBe("GET, HEAD");
     } finally {
       server.stop(true);
     }

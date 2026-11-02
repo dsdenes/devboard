@@ -648,7 +648,7 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   and actions, so filing and dismissal stay available there.
 - **Notification entry action** (`.notification__actions` in `NotificationRegion.svelte`) — every
   error and warning notification carries one `File issue` ghost `sm` button beside its dismiss
-  icon. It files that notification's text as a UI issue through `/api/feedback` at once, without
+  icon. It files that notification's text as a UI issue through `/feedback` at once, without
   a panel, and carries the card as the captured context; while filing it reads `Filing…` and is
   disabled, a success replaces it with the filed issue URL as an `accent` `Open issue` link, and a
   failure adds an 11px `error` line naming the server's message. Notices and successes carry no

@@ -325,7 +325,7 @@ Server errors and notices appear in the notification region (`data-testid="notif
 severity, the subsystem or the exact agent label that raised them, text, and dismissal. Each card
 closes itself after five seconds; every entry stays in the history opened from the status bar.
 Every error and warning card also carries `File issue`: it files that notification's text and card
-context as a UI issue through `/api/feedback` at once, then replaces itself with the issue URL.
+context as a UI issue through `/feedback` at once, then replaces itself with the issue URL.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's
@@ -2210,8 +2210,8 @@ rule id, its level, its chapter, the skill's directive verbatim, and both skill 
 chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
-currently `POST /api/feedback`, `/api/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
-HEAD` for every other method, `POST /api/goal-proposals`, the `/ws` upgrade
+currently `POST /feedback`, `/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
+HEAD` for every other method, `POST /goal-proposals`, the `/ws` upgrade
 with its refusal and method handling, and the static-file fallback, together with any route added
 later. The audit input carries every TypeScript file under `<REPO_DIR>/.devboard/server` that
 defines routing, request parsing, or responses (tests and fixtures excluded), so a route added to
@@ -3199,7 +3199,7 @@ page, and opens the popover. Activating the control opens
 one instructions field (`issues-draft-new-input`), a submit control (`issues-draft-new-submit`),
 and Cancel (`issues-draft-new-cancel`); Escape and Cancel close it without writing a draft or
 starting a peer. One submit posts `{ "report": <instructions> }` with no captured page context to
-`POST /api/goal-proposals`, so exactly one draft lands with the heading, the line
+`POST /goal-proposals`, so exactly one draft lands with the heading, the line
 `> Unprocessed draft. ...`, the instructions verbatim, and a `## Captured UI context` section that
 states `No page context was captured.`; it invents no route, element, viewport, visible text, or
 DOM excerpt. Naming, the exclusive create, and the `-2`, `-3`, … suffix are the report panel's. A
@@ -3236,7 +3236,7 @@ exists; the captured UI context itself is not shown. A pending elaboration quest
 `issues-draft-answer-input`, and `issues-draft-answer-submit`. Selecting another draft switches the
 detail to that path's own state, activity, and question, and reselecting the first restores its
 transcript and still-pending question. The detail refreshes when the page opens, after the report
-panel writes a draft through `POST /api/goal-proposals`, after an elaboration finishes or stops,
+panel writes a draft through `POST /goal-proposals`, after an elaboration finishes or stops,
 and when a listed draft disappears. The page polls the list every two seconds while it is mounted,
 so an external deletion is visible without a reload, and the report panel's write broadcast
 reaches an open page immediately. A browser reload restores the Draft goals page and the selected
@@ -3455,7 +3455,7 @@ click or one double-click files at most one issue.
 `Report UI issue` enters element-selection mode: the element under the pointer is outlined, and a
 click opens a report panel anchored beside it, without filing anything yet. The panel shows the
 selected element's selector path; the report text is free-form. `File issue` posts the report and
-the captured context to `POST /api/feedback`, the server files the issue through the configured
+the captured context to `POST /feedback`, the server files the issue through the configured
 Gitea API, and the panel closes back into report selection mode so another
 element can be picked without leaving and re-entering the mode. A successful filing shows a
 `Report filed.` toast with an `Open issue` link to the created issue. `Esc`, the control again, or
@@ -3482,7 +3482,7 @@ buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A fai
 agent, a prompt the agent never answered inside its deadline, or a rejected prompt shows the error
 in the panel, keeps the question and earlier answers, and accepts the next question: the failed
 turn's question returns to the composer, so `File issue`, `Ask`, and `Goal` are enabled again and
-one click or one `Enter` re-asks it. `Ask` never calls `POST /api/feedback` and creates no issue.
+one click or one `Enter` re-asks it. `Ask` never calls `POST /feedback` and creates no issue.
 
 Filing or proposing from a panel that has answered questions carries the visible Ask conversation
 into the issue or draft as a `## Ask conversation` block between the request and
@@ -3493,7 +3493,7 @@ a conversation is never resumed from storage.
 
 `Goal` turns the composer text into a raw proposed goal instead of an issue. With non-whitespace
 text it posts `report`, the Ask conversation when the panel has one, and the same captured element
-context to `POST /api/goal-proposals`; the server writes one Markdown draft under
+context to `POST /goal-proposals`; the server writes one Markdown draft under
 `<REPO_DIR>/.devboard/goal-proposals/` and answers
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
@@ -3516,7 +3516,7 @@ stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
 
-Both `POST /api/feedback` and `POST /api/goal-proposals` accept an `Idempotency-Key` header. The
+Both `POST /feedback` and `POST /goal-proposals` accept an `Idempotency-Key` header. The
 server retains each key's result under `<STATE_DIR>/idempotency/` for 24 hours, so a retry with the
 same key answers with the first issue or draft instead of creating a second resource, while a
 failed attempt is never retained. A key is 1–255 characters with no control characters; an empty
@@ -3564,8 +3564,8 @@ failing request is reported in the filing toast and creates nothing. The endpoin
 same-origin `POST` requests, bounds the body to 64 KB, and gives the request 60 seconds.
 
 An unexpected exception in either mutating endpoint answers
-`500 { "error": "An internal error occurred." }`: `POST /api/feedback` and
-`POST /api/goal-proposals` share that one fixed detail, record the exception text as a
+`500 { "error": "An internal error occurred." }`: `POST /feedback` and
+`POST /goal-proposals` share that one fixed detail, record the exception text as a
 `server-error` journal record prefixed with the endpoint, and never return the text to the
 client.
 

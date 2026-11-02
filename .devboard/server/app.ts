@@ -7428,7 +7428,7 @@ export function createApp(options: AppOptions) {
       if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
         return Response.json({ error: error.message }, { status: error.status });
       }
-      return internalErrorResponse("POST /api/feedback", error);
+      return internalErrorResponse("POST /feedback", error);
     }
   }
 
@@ -7453,7 +7453,7 @@ export function createApp(options: AppOptions) {
       if (error instanceof FeedbackRequestError) {
         return Response.json({ error: error.message }, { status: error.status });
       }
-      return internalErrorResponse("POST /api/goal-proposals", error);
+      return internalErrorResponse("POST /goal-proposals", error);
     }
   }
 
@@ -7464,13 +7464,13 @@ export function createApp(options: AppOptions) {
     async fetch(request, server) {
       const url = new URL(request.url);
 
-      if (url.pathname === "/api/feedback") {
+      if (url.pathname === "/feedback") {
         return handleFeedbackRequest(request, url);
       }
 
       // Readiness for the launcher that owns this process: the pid proves that
       // this dashboard, and not another server on the port, answered.
-      if (url.pathname === "/api/ready") {
+      if (url.pathname === "/ready") {
         if (request.method !== "GET" && request.method !== "HEAD") {
           return new Response("Method Not Allowed", {
             status: 405,
@@ -7482,7 +7482,7 @@ export function createApp(options: AppOptions) {
         return request.method === "HEAD" ? new Response(null, { headers: ready.headers }) : ready;
       }
 
-      if (url.pathname === "/api/goal-proposals") {
+      if (url.pathname === "/goal-proposals") {
         return handleGoalProposalRequest(request, url);
       }
 
@@ -7498,13 +7498,6 @@ export function createApp(options: AppOptions) {
         }
         if (server.upgrade(request)) return;
         return new Response("Expected a WebSocket upgrade", { status: 426 });
-      }
-
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        return new Response("Method Not Allowed", {
-          status: 405,
-          headers: { Allow: "GET, HEAD" },
-        });
       }
 
       let pathname: string;
@@ -7528,6 +7521,15 @@ export function createApp(options: AppOptions) {
       const fileStat = await stat(filePath);
       if (!fileStat.isFile()) {
         return new Response("Not Found", { status: 404 });
+      }
+
+      // A method the static fallback cannot serve is refused only for a file
+      // that exists: an unknown path is a 404 on every method.
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method Not Allowed", {
+          status: 405,
+          headers: { Allow: "GET, HEAD" },
+        });
       }
 
       return new Response(request.method === "HEAD" ? null : file, {

@@ -63,7 +63,7 @@
       captured_at: new Date().toISOString(),
     };
     try {
-      const response = await fetch("/api/feedback", {
+      const response = await fetch("/feedback", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),

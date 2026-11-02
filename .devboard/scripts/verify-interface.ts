@@ -1854,7 +1854,7 @@ try {
     if (
       typeof request?.url === "string" &&
       request.method === "POST" &&
-      request.url.includes("/api/feedback")
+      request.url.endsWith("/feedback")
     ) {
       feedbackPosts.push(request.url);
     }
@@ -1863,7 +1863,7 @@ try {
     }
     if (
       request?.method === "POST" &&
-      (request.url ?? "").endsWith("/api/feedback") &&
+      (request.url ?? "").endsWith("/feedback") &&
       typeof request.postData === "string"
     ) {
       try {
@@ -1877,7 +1877,7 @@ try {
     }
     if (
       request?.method === "POST" &&
-      (request.url ?? "").endsWith("/api/goal-proposals") &&
+      (request.url ?? "").endsWith("/goal-proposals") &&
       typeof request.postData === "string"
     ) {
       goalPosts.push(request.url ?? "");
@@ -1911,7 +1911,7 @@ try {
       const url = String(response.url ?? "");
       if (url.includes("favicon")) return;
       // The feedback failure case is asserted directly below.
-      if (url.endsWith("/api/feedback")) return;
+      if (url.endsWith("/feedback")) return;
       networkProblems.push({
         kind: "response",
         text: `${String(response.url ?? "")}: HTTP ${response.status}`,
@@ -6453,7 +6453,7 @@ try {
     "the client rendered a reporting control without DEVBOARD_GITEA_URL",
     reportingOff,
   );
-  const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/api/feedback`, {
+  const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/feedback`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action: "report", report: "disabled check" }),
@@ -7375,7 +7375,7 @@ try {
     "the ask broke the filing path",
     filingReady,
   );
-  check(feedbackPosts.length === postsBeforeAsk, "an ask posted to /api/feedback", feedbackPosts);
+  check(feedbackPosts.length === postsBeforeAsk, "an ask posted to /feedback", feedbackPosts);
 
   const transcriptSurface = await page.eval<{
     role: string;
