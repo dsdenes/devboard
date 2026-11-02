@@ -8,8 +8,8 @@
   import AgentDocumentationPanel from "./AgentDocumentationPanel.svelte";
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
   import AgentPromptSection from "./AgentPromptSection.svelte";
+  import CommandButton from "./CommandButton.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
-  import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
@@ -152,29 +152,33 @@
     >
       {#snippet control()}
         {#if showStop}
-          <Button
+          <CommandButton
             variant="default"
+            label="Stop"
+            evidence={() => agents.lifecycle(agentId)}
+            command={() => agents.stop(agentId)}
             data-testid="agent-stop"
             data-agent={agentId}
             data-id={agentId}
             data-command={`issues.${agentId}.stop`}
             disabled={lifecycle === "stopping"}
-            onclick={() => agents.stop(agentId)}
           >
             Stop
-          </Button>
+          </CommandButton>
         {:else}
-          <Button
+          <CommandButton
             variant="default"
+            label="Start"
+            evidence={() => agents.lifecycle(agentId)}
+            command={() => agents.start(agentId)}
             data-testid="agent-start"
             data-agent={agentId}
             data-id={agentId}
             data-command={`issues.${agentId}.start`}
             disabled={!connection.open || blocked || snapshot === null}
-            onclick={() => agents.start(agentId)}
           >
             Start
-          </Button>
+          </CommandButton>
         {/if}
       {/snippet}
     </AgentActivityBar>
@@ -243,14 +247,17 @@
                 {stamp(snapshot?.cadence.nextRunAt ?? null)}
               </span>
             </span>
-            <Button
+            <CommandButton
               variant="secondary"
+              label="Save cadence"
+              busyLabel="Saving…"
+              evidence={() => agents.snapshot(agentId)?.detail}
+              command={() => saveSettings(`agent.cadence.${agentId}`)}
               data-testid="agent-save-cadence"
               data-command={`issues.${agentId}.settings.cadence`}
-              onclick={() => saveSettings(`agent.cadence.${agentId}`)}
             >
               Save cadence
-            </Button>
+            </CommandButton>
             <SaveFeedback scope={`agent.cadence.${agentId}`} />
           </div>
           <div class="agent-settings__group" role="group" aria-label="Filing limits">
@@ -285,14 +292,17 @@
                 oninput={(event) => (maxPendingText = event.currentTarget.value)}
               />
             </label>
-            <Button
+            <CommandButton
               variant="secondary"
+              label="Save limits"
+              busyLabel="Saving…"
+              evidence={() => agents.snapshot(agentId)?.detail}
+              command={() => saveSettings(`agent.limits.${agentId}`)}
               data-testid="agent-save-limits"
               data-command={`issues.${agentId}.settings.limits`}
-              onclick={() => saveSettings(`agent.limits.${agentId}`)}
             >
               Save limits
-            </Button>
+            </CommandButton>
             <SaveFeedback scope={`agent.limits.${agentId}`} />
           </div>
         </div>
@@ -312,14 +322,17 @@
         {#if snapshot.timer.error !== null}
           <p class="issues-error" role="alert">{snapshot.timer.error}</p>
         {/if}
-        <Button
+        <CommandButton
           variant="secondary"
+          label="Disable legacy timer"
+          busyLabel="Disabling…"
+          evidence={() => agents.snapshot(agentId)?.detail}
+          command={() => agents.disableTimer(agentId)}
           data-testid="agent-disable-timer"
           data-agent={agentId}
-          onclick={() => agents.disableTimer(agentId)}
         >
           Disable legacy timer
-        </Button>
+        </CommandButton>
       </div>
     {/if}
 

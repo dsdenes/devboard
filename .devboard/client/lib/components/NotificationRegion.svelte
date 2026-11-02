@@ -4,6 +4,7 @@
   import { notificationReport } from "../notification-issue";
   import { notifications, type AppNotification } from "../notifications.svelte";
   import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
   import IconButton from "./ui/icon-button.svelte";
 
   interface Props {
@@ -23,6 +24,8 @@
   let filed = $state<Record<number, string>>({});
   /** Filing failures, keyed by notification id; an empty value is cleared. */
   let failed = $state<Record<number, string>>({});
+  /** Counts each answered filing: the busy word's evidence. */
+  let filedSeq = $state(0);
 
   function setHistoryOpen(open: boolean): void {
     if (open) notifications.openHistory();
@@ -35,9 +38,14 @@
   }
 
   /** Files one notification as a UI issue, with the card as its captured context. */
-  async function fileIssue(item: AppNotification, event: MouseEvent): Promise<void> {
-    const element = (event.currentTarget as Element | null)?.closest(".notification") ?? null;
-    if (element === null || filing !== null || filed[item.id] !== undefined) return;
+  async function fileIssue(item: AppNotification): Promise<void> {
+    if (filing !== null || filed[item.id] !== undefined) return;
+    const scope = notifications.historyOpen
+      ? document.querySelector('[data-testid="notification-history"]')
+      : document.querySelector(".notification-region");
+    const element =
+      scope?.querySelector(`.notification[data-notification-id="${item.id}"]`) ?? null;
+    if (element === null) return;
     filing = item.id;
     failed = { ...failed, [item.id]: "" };
     const payload = {
@@ -79,6 +87,7 @@
       };
     } finally {
       filing = null;
+      filedSeq += 1;
     }
   }
 </script>
@@ -96,17 +105,19 @@
         Open issue
       </a>
     {:else if feedbackenabled && (item.severity === "error" || item.severity === "warning")}
-      <Button
+      <CommandButton
         variant="ghost"
         size="sm"
+        label="File issue"
+        evidence={() => filedSeq}
+        command={() => void fileIssue(item)}
         class="notification__file"
         aria-label="File an issue from this notification"
         title="File an issue from this notification"
-        disabled={filing !== null}
-        onclick={(event) => void fileIssue(item, event)}
+        disabled={filing !== null && filing !== item.id}
       >
-        {filing === item.id ? "Filing…" : "File issue"}
-      </Button>
+        File issue
+      </CommandButton>
     {/if}
     <IconButton
       label="Dismiss notification"

@@ -17,10 +17,13 @@
   } from "../discover-format";
   import { connection } from "../connection.svelte";
   import { discover } from "../discover.svelte";
+  import { createCommandBusy } from "../command-busy.svelte";
   import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
   import SourceOnlyBadge from "./SourceOnlyBadge.svelte";
   import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
+  import CommandNotice from "./CommandNotice.svelte";
   import Input from "./ui/input.svelte";
 
   const COMMAND_TOTAL = Object.keys(COMMAND_LABELS).length;
@@ -49,6 +52,18 @@
 
   /** Platform leaves that name technologies rather than facts about them. */
   const TECHNOLOGY_FIELDS = new Set(["languages", "runtimes"]);
+
+  /** The answer form's in-flight state; the run's next output line confirms it. */
+  const answerPending = createCommandBusy({
+    label: "Answer",
+    evidence: () => discover.activity.length,
+  });
+
+  /** The remote start form's in-flight state; the server's clone answer confirms it. */
+  const remoteStartPending = createCommandBusy({
+    label: "Discover from URL",
+    evidence: () => discover.cloning,
+  });
 
   const sheet = $derived(discover.sheet);
   const freshness = $derived(discover.freshness);
@@ -260,12 +275,16 @@
         {#if discover.question.options.length > 0}
           <div class="choice-list">
             {#each discover.question.options as option (option.label)}
-              <button
+              <CommandButton
+                bare
                 type="button"
                 class="choice"
+                label={option.label}
+                busyLabel="Answering…"
+                evidence={() => discover.activity.length}
+                command={() => discover.answer(option.label)}
                 data-testid="discover-choice"
                 data-command="discover.answer.submit"
-                onclick={() => discover.answer(option.label)}
               >
                 <span class="choice__label">
                   {option.label}
@@ -276,7 +295,7 @@
                 {#if option.description}
                   <span class="choice__description">{option.description}</span>
                 {/if}
-              </button>
+              </CommandButton>
             {/each}
           </div>
         {/if}
@@ -284,6 +303,8 @@
           class="discover-answer"
           onsubmit={(event) => {
             event.preventDefault();
+            if (discover.answerDraft.trim().length === 0) return;
+            answerPending.start();
             discover.answer(discover.answerDraft);
           }}
         >
@@ -299,6 +320,8 @@
           <Button
             variant="default"
             type="submit"
+            label="Answer"
+            busy={answerPending.busy}
             data-command="discover.answer.submit"
             data-testid="discover-answer"
             disabled={discover.answerDraft.trim().length === 0}
@@ -306,6 +329,12 @@
             Answer
           </Button>
         </form>
+        {#if answerPending.notice !== null}
+          <CommandNotice
+            text={answerPending.notice}
+            ondismiss={() => answerPending.dismiss()}
+          />
+        {/if}
       </div>
     </section>
   {/if}
@@ -538,18 +567,20 @@
                   {#if project.url === discover.remoteTarget?.url}
                     <span class="badge" data-tone="accent">Active</span>
                   {/if}
-                  <Button
+                  <CommandButton
                     variant="ghost"
                     size="sm"
                     class="discover-remote__remove"
+                    label="Remove"
+                    evidence={() => discover.retained}
+                    command={() => discover.removeRemote(project.url)}
                     data-testid="discover-remote-remove"
                     data-url={project.url}
                     disabled={discover.remoteChangeDisabled}
                     title={discover.remoteChangeTitle}
-                    onclick={() => discover.removeRemote(project.url)}
                   >
                     Remove
-                  </Button>
+                  </CommandButton>
                 </li>
               {/each}
             </ul>
@@ -558,6 +589,8 @@
             class="discover-remote__form"
             onsubmit={(event) => {
               event.preventDefault();
+              if (discover.remoteUrl.trim().length === 0 || discover.remoteStartDisabled) return;
+              remoteStartPending.start();
               discover.startRemote();
             }}
           >
@@ -579,6 +612,8 @@
               <Button
                 variant="outline"
                 type="submit"
+                label="Discover from URL"
+                busy={remoteStartPending.busy}
                 data-testid="discover-remote-start"
                 disabled={discover.remoteStartDisabled}
                 title={discover.remoteStartTitle}
@@ -587,6 +622,12 @@
               </Button>
             </div>
           </form>
+          {#if remoteStartPending.notice !== null}
+            <CommandNotice
+              text={remoteStartPending.notice}
+              ondismiss={() => remoteStartPending.dismiss()}
+            />
+          {/if}
           {#if discover.cloning !== null}
             <p class="discover-remote__cloning" data-testid="discover-remote-cloning">
               Cloning <code>{discover.cloning.url}</code>…
@@ -595,16 +636,18 @@
         </div>
         {#if discover.remoteTarget !== null}
           <div class="panel__footer">
-            <Button
+            <CommandButton
               variant="ghost"
               size="sm"
+              label="Clear remote target"
+              evidence={() => discover.remoteTarget}
+              command={() => discover.clearRemote()}
               data-testid="discover-remote-clear"
               disabled={discover.remoteChangeDisabled}
               title={discover.remoteChangeTitle}
-              onclick={() => discover.clearRemote()}
             >
               Clear remote target
-            </Button>
+            </CommandButton>
           </div>
         {/if}
       </section>
@@ -651,7 +694,8 @@
           <section class="panel discover-card" data-testid="discover-card" data-field="commands">
             <div class="panel__header">
               <h2 class="panel__title">Commands</h2>
-              <button
+              <Button
+                bare
                 type="button"
                 class="discover-coverage"
                 data-testid="discover-command-coverage"
@@ -664,7 +708,7 @@
               >
                 {foundCommandRows.length}
                 of {COMMAND_TOTAL} found
-              </button>
+              </Button>
             </div>
             <div class="panel__body">
               {#if isLeaf(commandsSection)}

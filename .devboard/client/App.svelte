@@ -4,6 +4,7 @@
   import { Tooltip } from "bits-ui";
   import ActivityBar from "./lib/components/ActivityBar.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
+  import CommandButton from "./lib/components/CommandButton.svelte";
   import DevboardWorkspace from "./lib/components/DevboardWorkspace.svelte";
   import DiscoverWorkspace from "./lib/components/DiscoverWorkspace.svelte";
   import FeedbackOverlay from "./FeedbackOverlay.svelte";
@@ -15,7 +16,6 @@
   import ProvidersDialog from "./lib/components/ProvidersDialog.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
-  import Button from "./lib/components/ui/button.svelte";
   import { buildCommands } from "./lib/commands";
   import { connection } from "./lib/connection.svelte";
   import { devboard } from "./lib/devboard.svelte";
@@ -397,8 +397,11 @@
       display.
     </p>
     {#if connection.version?.replacement != null}
-      <Button
+      <CommandButton
         variant="default"
+        label="Reload"
+        evidence={() => connection.version?.running}
+        command={() => connection.requestRestart()}
         data-command="app.reload"
         data-testid="reload-devboard"
         title={`Devboard ${connection.version.replacement.running ?? "unknown"} is still running; the automatic replacement with ${
@@ -408,10 +411,9 @@
           connection.version.replacement.running ?? "unknown"
         } to version ${connection.version.replacement.installed ?? "unknown"}`}
         disabled={connection.restarting}
-        onclick={() => connection.requestRestart()}
       >
         Restart devboard
-      </Button>
+      </CommandButton>
     {/if}
   </div>
 {:else}

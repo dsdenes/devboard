@@ -4,7 +4,7 @@
   import { goal } from "../goal.svelte";
   import { recordStatusTone } from "../record-status";
   import type { AdrRecord } from "../types";
-  import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
 
   interface Props {
     /** The rows to render; the page owns filtering, the table owns density. */
@@ -64,7 +64,10 @@
           data-active={goal.runFile === record.file}
           data-command={`goal.adr.open.${record.file}`}
           tabindex="0"
-          onclick={() => activate(record)}
+          onclick={(event) => {
+            if ((event.target as HTMLElement).closest("button") !== null) return;
+            activate(record);
+          }}
           onkeydown={(event) => {
             if (event.target !== event.currentTarget) return;
             if (event.key === "Enter" || event.key === " ") {
@@ -95,23 +98,22 @@
           </td>
           <td class="adr-action">
             {#if record.pending}
-              <Button
+              <CommandButton
                 variant={goal.next === record.file ? "default" : "outline"}
                 size="sm"
                 class="cursor-pointer"
+                label="Start"
+                evidence={() => goal.runState}
+                command={() => onstart(record)}
                 data-testid="start"
                 data-file={record.file}
                 data-command={`goal.adr.start.${record.file}`}
                 title={goal.startLifecycleTitle}
                 aria-label={`Start the implementation of ${record.title}`}
                 disabled={goal.runStartDisabled}
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onstart(record);
-                }}
               >
                 Start
-              </Button>
+              </CommandButton>
             {/if}
           </td>
         </tr>

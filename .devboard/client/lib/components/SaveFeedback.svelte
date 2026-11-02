@@ -2,6 +2,7 @@
   import Check from "lucide-svelte/icons/check";
   import X from "lucide-svelte/icons/x";
   import { saveFeedback } from "../save-feedback.svelte";
+  import Button from "./ui/button.svelte";
 
   interface Props {
     /** Names the Save control this confirmation belongs beside. */
@@ -24,15 +25,15 @@
       <Check size={14} />
     </span>
     <p class="save-feedback__text">{saveFeedback.text}</p>
-    <button
-      type="button"
+    <Button
+      bare
       class="save-feedback__close"
       aria-label="Dismiss save confirmation"
       title="Dismiss"
       onclick={() => saveFeedback.dismiss()}
     >
       <X size={12} aria-hidden="true" />
-    </button>
+    </Button>
   </div>
 {/if}
 
@@ -63,20 +64,6 @@
     font-weight: 600;
     margin: 0;
     overflow-wrap: anywhere;
-  }
-
-  .save-feedback__close {
-    align-items: center;
-    background: none;
-    border: 0;
-    color: var(--muted-foreground);
-    cursor: pointer;
-    display: flex;
-    padding: 1px;
-  }
-
-  .save-feedback__close:hover {
-    color: var(--foreground);
   }
 
   @keyframes save-feedback-in {

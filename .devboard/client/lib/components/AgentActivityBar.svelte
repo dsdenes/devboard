@@ -9,6 +9,7 @@
 
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import Button from "./ui/button.svelte";
 
   interface Props {
     /** The agent or page this bar follows; a change collapses the panel. */
@@ -100,8 +101,8 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="agent-activity-bar__row" onclick={onRowClick}>
-    <button
-      type="button"
+    <Button
+      bare
       class="agent-activity-bar__toggle"
       data-testid="agent-activity-toggle"
       aria-expanded={expanded}
@@ -127,7 +128,7 @@
       >
         {shown}
       </span>
-    </button>
+    </Button>
     {#if waiting}
       <span
         class="agent-activity-bar__question"

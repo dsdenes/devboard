@@ -15,6 +15,7 @@
   import DiscoverContribution from "./DiscoverContribution.svelte";
   import DiscoverOverview from "./DiscoverOverview.svelte";
   import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
   import Input from "./ui/input.svelte";
 
   interface Props {
@@ -386,49 +387,61 @@
       {#snippet control()}
         {#if isAgentPage}
           {#if agentRunActive}
-            <button
+            <CommandButton
+              bare
               type="button"
               class="discover-run__stop"
+              label="Stop"
+              evidence={() => discover.active}
+              command={() => discover.stop()}
               data-testid="discover-agent-stop"
               data-command={`discover.agent.stop.${tab.resourceId}`}
               title="Stop this discovery agent"
-              onclick={() => discover.stop()}
             >
               Stop
-            </button>
+            </CommandButton>
           {:else}
-            <Button
+            <CommandButton
               variant="default"
+              label={(agentCard?.state ?? "idle") === "idle" ? "Start" : "Re-run"}
+              busyLabel={(agentCard?.state ?? "idle") === "idle"
+                ? "Starting…"
+                : "Re-running…"}
+              evidence={() => discover.agent(tab?.resourceId ?? "")?.state}
+              command={() => discover.startAgent(tab.resourceId)}
               data-command={`discover.agent.start.${tab.resourceId}`}
               data-testid="discover-agent-start"
               disabled={discover.agentStartDisabled(tab.resourceId)}
               title={discover.agentStartTitle(tab.resourceId)}
-              onclick={() => discover.startAgent(tab.resourceId)}
             >
               {(agentCard?.state ?? "idle") === "idle" ? "Start" : "Re-run"}
-            </Button>
+            </CommandButton>
           {/if}
         {:else if discover.active}
-          <Button
+          <CommandButton
             variant="destructive"
+            label="Stop"
+            evidence={() => discover.active}
+            command={() => discover.stop()}
             data-command="discover.stop"
             data-testid="discover-stop"
             title="Stop this Discover run"
-            onclick={() => discover.stop()}
           >
             Stop
-          </Button>
+          </CommandButton>
         {:else}
-          <Button
+          <CommandButton
             variant="default"
+            label={discover.hasArtifacts ? "Re-discover" : "Discover project"}
+            evidence={() => discover.active}
+            command={() => discover.start()}
             data-command="discover.start"
             data-testid="discover-start"
             disabled={discover.startDisabled}
             title={discover.startTitle}
-            onclick={() => discover.start()}
           >
             {discover.hasArtifacts ? "Re-discover" : "Discover project"}
-          </Button>
+          </CommandButton>
         {/if}
       {/snippet}
     </AgentActivityBar>

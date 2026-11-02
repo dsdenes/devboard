@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createCommandBusy } from "../command-busy.svelte";
   import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
@@ -11,6 +12,8 @@
   import type { AdrRecord, Lane } from "../types";
   import AdrTable from "./AdrTable.svelte";
   import AgentActivityBar from "./AgentActivityBar.svelte";
+  import CommandButton from "./CommandButton.svelte";
+  import CommandNotice from "./CommandNotice.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
@@ -31,6 +34,15 @@
   let filterQuery = $state("");
   let skillsList = $state<HTMLUListElement | undefined>();
   let deleteTarget = $state<string | null>(null);
+
+  const answerPending = createCommandBusy({
+    label: "Submit answer",
+    evidence: () => goal.activity.length,
+  });
+  const laneAnswerPending = createCommandBusy({
+    label: "Submit answer",
+    evidence: () => goal.activity.length,
+  });
 
   function skillPanelId(name: string): string {
     return `skill-content-${name.replace(/[^A-Za-z0-9_-]/g, "-")}`;
@@ -191,17 +203,19 @@
       waiting={recordQuestion !== null}
     >
       {#snippet control()}
-        <Button
+        <CommandButton
           variant="default"
+          label="Start this record"
+          evidence={() => goal.runState}
+          command={() => goal.startRecord(record)}
           data-command={`goal.adr.start.${record.file}`}
           data-testid="start"
           data-file={record.file}
           title={runStartTitle}
           disabled={goal.runStartDisabled}
-          onclick={() => goal.startRecord(record)}
         >
           Start this record
-        </Button>
+        </CommandButton>
       {/snippet}
     </AgentActivityBar>
   {:else}
@@ -228,12 +242,16 @@
         {#if pending.options.length > 0}
           <div class="choice-list">
             {#each pending.options as option (option.label)}
-              <button
+              <CommandButton
+                bare
                 type="button"
                 class="choice"
+                label={option.label}
+                busyLabel="Answering…"
+                evidence={() => goal.activity.length}
+                command={() => submitAnswer(option.label)}
                 data-testid="choice"
                 data-command="goal.answer.submit"
-                onclick={() => submitAnswer(option.label)}
               >
                 <span class="choice__label">
                   {option.label}
@@ -244,7 +262,7 @@
                 {#if option.description}
                   <span class="choice__description">{option.description}</span>
                 {/if}
-              </button>
+              </CommandButton>
             {/each}
           </div>
         {/if}
@@ -252,6 +270,8 @@
           class="answer-form"
           onsubmit={(event) => {
             event.preventDefault();
+            if (goal.draft.trim().length === 0) return;
+            answerPending.start();
             goal.submitAnswer(goal.draft);
           }}
         >
@@ -268,6 +288,8 @@
           <Button
             variant="default"
             type="submit"
+            label="Submit answer"
+            busy={answerPending.busy}
             data-command="goal.answer.submit"
             data-testid="submit-answer"
             disabled={goal.draft.trim().length === 0}
@@ -275,6 +297,12 @@
             Submit answer
           </Button>
         </form>
+        {#if answerPending.notice !== null}
+          <CommandNotice
+            text={answerPending.notice}
+            ondismiss={() => answerPending.dismiss()}
+          />
+        {/if}
       </div>
     </section>
   {/if}
@@ -352,24 +380,29 @@
         {/snippet}
         {#snippet actions()}
           {#if goal.lifecycleActive}
-            <Button
+            <CommandButton
               variant="secondary"
+              label={goal.lifecycle.paused ? "Resume" : "Pause"}
+              evidence={() => goal.lifecycle.paused}
+              command={() =>
+                goal.lifecycle.paused ? goal.resumeLifecycle() : goal.pauseLifecycle()}
               data-command={goal.lifecycle.paused ? "goal.lifecycle.resume" : "goal.lifecycle.pause"}
-              onclick={() => (goal.lifecycle.paused ? goal.resumeLifecycle() : goal.pauseLifecycle())}
             >
               {goal.lifecycle.paused ? "Resume" : "Pause"}
-            </Button>
+            </CommandButton>
           {/if}
-          <Button
+          <CommandButton
             variant="outline"
+            label="Resolve next ADR"
+            evidence={() => goal.runState}
+            command={() => goal.startNext()}
             data-command="goal.adr.start-next"
             data-testid="start-next"
             title={runStartTitle}
             disabled={goal.runStartDisabled || goal.next === null}
-            onclick={() => goal.startNext()}
           >
             Resolve next ADR
-          </Button>
+          </CommandButton>
           <Button
             variant="outline"
             data-command="goal.reset"
@@ -379,16 +412,18 @@
           >
             Reset implementation
           </Button>
-          <Button
+          <CommandButton
             variant={goal.lifecycleActive ? "destructive" : "default"}
+            label={goal.lifecycleActive ? "Stop implementation" : "Start implementation"}
+            evidence={() => goal.lifecycleActive}
+            command={() => goal.toggleLifecycle()}
             data-command="goal.lifecycle.toggle"
             data-testid="lifecycle-control"
             title={goal.lifecycleButtonTitle}
             disabled={goal.lifecycleButtonDisabled}
-            onclick={() => goal.toggleLifecycle()}
           >
             {goal.lifecycleActive ? "Stop implementation" : "Start implementation"}
-          </Button>
+          </CommandButton>
         {/snippet}
       </PageHeader>
 
@@ -512,7 +547,8 @@
             />
             <div class="filter-chips" role="group" aria-label="Implementation state">
               {#each filters as entry (entry.id)}
-                <button
+                <Button
+                  bare
                   type="button"
                   class="filter-chip"
                   aria-pressed={filterMode === entry.id}
@@ -520,7 +556,7 @@
                   onclick={() => (filterMode = entry.id)}
                 >
                   {entry.label}
-                </button>
+                </Button>
               {/each}
               {#if filterMode !== "all" || filterQuery.trim().length > 0}
                 <Button variant="ghost" size="sm" data-testid="clear-adr-filter" onclick={clearFilters}>
@@ -560,26 +596,30 @@
               Show skills ({goal.skills.length})
             </Button>
           {:else}
-            <Button
+            <CommandButton
               variant="outline"
+              label="Prepare skills"
+              evidence={() => goal.skillsPrepActive}
+              command={() => goal.prepareSkills()}
               data-command="goal.skills.prepare"
               data-testid="prepare-skills"
               disabled={goal.prepareDisabled}
-              onclick={() => goal.prepareSkills()}
             >
               Prepare skills
-            </Button>
+            </CommandButton>
           {/if}
-          <Button
+          <CommandButton
             variant="secondary"
+            label={goal.goalReady ? "Recreate goal" : "Create goal"}
+            evidence={() => goal.creationActive}
+            command={() => goal.createGoal()}
             data-command="goal.create"
             data-testid="create-goal"
             title={createGoalTitle}
             disabled={!connection.open}
-            onclick={() => goal.createGoal()}
           >
             {goal.goalReady ? "Recreate goal" : "Create goal"}
-          </Button>
+          </CommandButton>
         {/snippet}
       </PageHeader>
 
@@ -589,15 +629,17 @@
         </div>
         <div class="panel__footer goal-revision">
           <div class="goal-revision__heading">
-            <Button
+            <CommandButton
               variant="secondary"
+              label="Revise goal"
+              evidence={() => goal.revisionActive}
+              command={() => goal.reviseGoal()}
               data-command="goal.revise"
               data-testid="revise-goal"
               disabled={goal.revisionDisabled}
-              onclick={() => goal.reviseGoal()}
             >
               Revise goal
-            </Button>
+            </CommandButton>
           </div>
           <p class="goal-revision__hint">
             Revision rewrites the document through the revision agent.
@@ -616,15 +658,17 @@
           {/if}
         {/snippet}
         {#snippet actions()}
-          <Button
+          <CommandButton
             variant="secondary"
+            label="Prepare skills again"
+            evidence={() => goal.skillsPrepActive}
+            command={() => goal.prepareSkills()}
             data-command="goal.skills.prepare"
             data-testid="prepare-skills-overlay"
             disabled={goal.prepareDisabled}
-            onclick={() => goal.prepareSkills()}
           >
             Prepare skills again
-          </Button>
+          </CommandButton>
           <Button
             variant="outline"
             data-command={`tab.close.goal.${tab.id}`}
@@ -657,7 +701,8 @@
                   skill.content === undefined ? "" : renderSkillDocument(skill.content)}
                 <li class="skill">
                   <div class="skill__row">
-                    <button
+                    <Button
+                      bare
                       type="button"
                       class="skill__button"
                       data-testid="skill"
@@ -676,9 +721,10 @@
                         aria-hidden="true"
                         class={expanded ? "skill__chevron skill__chevron--open" : "skill__chevron"}
                       />
-                    </button>
+                    </Button>
                     {#if (skill.family ?? "prepare") === "prepare"}
-                      <button
+                      <Button
+                        bare
                         type="button"
                         class="skill__delete"
                         data-command={`goal.skills.delete.${skill.name}`}
@@ -690,7 +736,7 @@
                         onclick={() => (deleteTarget = skill.name)}
                       >
                         <Trash2 size={14} aria-hidden="true" />
-                      </button>
+                      </Button>
                     {/if}
                   </div>
                   {#if expanded}
@@ -925,12 +971,16 @@
               {#if pending.options.length > 0}
                 <div class="choice-list">
                   {#each pending.options as option (option.label)}
-                    <button
+                    <CommandButton
+                      bare
                       type="button"
                       class="choice"
+                      label={option.label}
+                      busyLabel="Answering…"
+                      evidence={() => goal.activity.length}
+                      command={() => goal.submitLaneAnswer(lane.id, option.label)}
                       data-testid="lane-choice"
                       data-command={`goal.lane.answer.submit.${lane.id}`}
-                      onclick={() => goal.submitLaneAnswer(lane.id, option.label)}
                     >
                       <span class="choice__label">
                         {option.label}
@@ -941,7 +991,7 @@
                       {#if option.description}
                         <span class="choice__description">{option.description}</span>
                       {/if}
-                    </button>
+                    </CommandButton>
                   {/each}
                 </div>
               {/if}
@@ -949,6 +999,8 @@
                 class="answer-form"
                 onsubmit={(event) => {
                   event.preventDefault();
+                  if (goal.laneDraft.trim().length === 0) return;
+                  laneAnswerPending.start();
                   goal.submitLaneAnswer(lane.id, goal.laneDraft);
                 }}
               >
@@ -965,6 +1017,8 @@
                 <Button
                   variant="default"
                   type="submit"
+                  label="Submit answer"
+                  busy={laneAnswerPending.busy}
                   data-command={`goal.lane.answer.submit.${lane.id}`}
                   data-testid="lane-submit-answer"
                   disabled={goal.laneDraft.trim().length === 0}
@@ -972,6 +1026,12 @@
                   Submit answer
                 </Button>
               </form>
+              {#if laneAnswerPending.notice !== null}
+                <CommandNotice
+                  text={laneAnswerPending.notice}
+                  ondismiss={() => laneAnswerPending.dismiss()}
+                />
+              {/if}
             </div>
           </section>
         {/if}
@@ -990,6 +1050,7 @@
   testid="reset-confirmation"
   confirmCommand="goal.reset.confirm"
   cancelCommand="goal.reset.cancel"
+  evidence={() => goal.resetStatus}
   onconfirm={() => goal.confirmReset()}
   oncancel={() => goal.cancelReset()}
 />
@@ -1005,6 +1066,7 @@
   testid="delete-skill-confirmation"
   confirmCommand="goal.skills.delete.confirm"
   cancelCommand="goal.skills.delete.cancel"
+  evidence={() => goal.skills}
   onconfirm={() => {
     if (deleteTarget !== null) goal.deleteSkill(deleteTarget);
     deleteTarget = null;

@@ -4341,3 +4341,90 @@ a.code-chip--link:focus-visible {
   padding: 0;
 }
 
+/* One button primitive: every activation paints a pressed fill from
+   pointer-down until pointer-up and while Enter or Space activates the
+   control. The rules read existing role tokens only; press adds no color role,
+   so `design/tokens.json` never gains an entry. */
+button[data-slot="button"][data-pressed="true"]:not(:disabled) {
+  background: color-mix(in srgb, var(--foreground) 14%, transparent);
+}
+
+button[data-slot="button"][data-variant="default"][data-pressed="true"]:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 80%, var(--foreground));
+}
+
+button[data-slot="button"][data-variant="secondary"][data-pressed="true"]:not(:disabled) {
+  background: color-mix(in srgb, var(--secondary) 75%, var(--foreground));
+}
+
+button[data-slot="button"][data-variant="outline"][data-pressed="true"]:not(:disabled),
+button[data-slot="button"][data-variant="ghost"][data-pressed="true"]:not(:disabled) {
+  background: color-mix(in srgb, var(--secondary-hover) 70%, var(--foreground));
+}
+
+button[data-slot="button"][data-variant="destructive"][data-pressed="true"]:not(:disabled) {
+  background: color-mix(in srgb, var(--destructive) 80%, var(--foreground));
+}
+
+button[data-slot="button"][data-variant="link"][data-pressed="true"]:not(:disabled) {
+  background: var(--secondary);
+}
+
+/* A control awaiting its confirming server state states the work in words. */
+button[data-slot="button"][aria-busy="true"] {
+  cursor: progress;
+}
+
+/* The ceiling notice sits beside the control it qualifies, never over another
+   message, and dismisses itself through its own control. */
+.command-notice {
+  align-items: center;
+  background: var(--warning-surface);
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+  color: var(--foreground);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 11px;
+  gap: 6px;
+  margin: 0;
+  max-width: min(360px, 100%);
+  padding: 2px 6px;
+}
+
+.command-notice__text {
+  overflow-wrap: anywhere;
+}
+
+.command-notice__dismiss {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  padding: 1px;
+}
+
+.command-notice__dismiss:hover {
+  color: var(--foreground);
+}
+
+.save-feedback__close {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  padding: 1px;
+}
+
+.save-feedback__close:hover {
+  color: var(--foreground);
+}
+
+.watchdog-trigger {
+  max-width: 260px;
+}
+

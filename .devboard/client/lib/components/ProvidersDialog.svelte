@@ -1,8 +1,11 @@
 <script lang="ts">
   import { Dialog } from "bits-ui";
+  import { createCommandBusy } from "../command-busy.svelte";
   import { providers, percentText, statusText } from "../providers.svelte";
   import { PROVIDERS } from "../../../server/providers/catalog";
   import type { ProviderId, ProviderSubscription } from "../types";
+  import CommandButton from "./CommandButton.svelte";
+  import CommandNotice from "./CommandNotice.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
@@ -14,6 +17,26 @@
   let pendingDelete = $state<string | null>(null);
   /** The save request this form is waiting on, by id. */
   let saving = $state<number | null>(null);
+
+  /**
+   * Counts each settled provider change, success or failure. The store's
+   * `busy` flag flips on send and clears on the answer, so a transition from
+   * busy to idle is the confirmation every change kind reports.
+   */
+  let changeSeq = $state(0);
+  let wasBusy = false;
+  $effect(() => {
+    const busy = providers.busy;
+    if (wasBusy && !busy) changeSeq += 1;
+    wasBusy = busy;
+  });
+
+  // The form button submits, so the dispatch happens in the submit handler and
+  // this helper owns its in-flight label instead of a CommandButton.
+  const savePending = createCommandBusy({
+    label: () => (editing === null ? "Add key" : "Save changes"),
+    evidence: () => changeSeq,
+  });
 
   function resetForm(): void {
     editing = null;
@@ -31,6 +54,7 @@
 
   function save(): void {
     if (editing === null && key.trim().length === 0) return;
+    savePending.start();
     saving = providers.save({
       ...(editing === null ? {} : { id: editing.id }),
       provider,
@@ -82,15 +106,17 @@
     <Dialog.Content class="dialog-content providers-dialog" data-testid="providers-dialog">
       <div class="dialog-header">
         <Dialog.Title class="dialog-title">Providers</Dialog.Title>
-        <Button
+        <CommandButton
           variant="outline"
           size="sm"
+          label="Refresh"
+          evidence={() => providers.subscriptions}
+          command={() => providers.refresh()}
           data-testid="provider-refresh"
           data-command="settings.providers.refresh"
-          onclick={() => providers.refresh()}
         >
           Refresh
-        </Button>
+        </CommandButton>
       </div>
       <div class="dialog-body providers-body">
         <Dialog.Description class="providers-rule" data-testid="provider-rule">
@@ -154,6 +180,8 @@
               variant="default"
               size="sm"
               type="submit"
+              busy={savePending.busy}
+              busyLabel={editing === null ? "Adding…" : "Saving…"}
               data-testid="provider-save"
               data-command="settings.providers.save"
               disabled={editing === null && key.trim().length === 0}
@@ -163,6 +191,9 @@
             <SaveFeedback scope="providers.form" />
           </div>
         </form>
+        {#if savePending.notice !== null}
+          <CommandNotice text={savePending.notice} ondismiss={() => savePending.dismiss()} />
+        {/if}
 
         <div class="providers-list" data-testid="provider-list">
           {#if providers.subscriptions.length === 0}
@@ -231,14 +262,16 @@
                   Edit
                 </Button>
                 {#if pendingDelete === subscription.id}
-                  <Button
+                  <CommandButton
                     variant="destructive"
                     size="sm"
+                    label="Confirm delete"
+                    evidence={() => changeSeq}
+                    command={confirmDelete}
                     data-testid="provider-delete-confirm"
-                    onclick={confirmDelete}
                   >
                     Confirm delete
-                  </Button>
+                  </CommandButton>
                   <Button
                     variant="ghost"
                     size="sm"

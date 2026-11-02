@@ -5,6 +5,10 @@
   import X from "lucide-svelte/icons/x";
   import { connection } from "./lib/connection.svelte";
   import { issues } from "./lib/issues.svelte";
+  import Button from "./lib/components/ui/button.svelte";
+  import CommandButton from "./lib/components/CommandButton.svelte";
+  import CommandNotice from "./lib/components/CommandNotice.svelte";
+  import { createCommandBusy } from "./lib/command-busy.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
 
   /**
@@ -78,8 +82,14 @@
   let transcript = $state<AskTurn[]>([]);
   let askPending = $state(false);
   let askError = $state<string | null>(null);
+  /** Counts each server answer to an Ask turn: the busy word's evidence. */
+  let answerSeq = $state(0);
   /** True while the proposed-goal draft is being written. */
   let goalPending = $state(false);
+  /** Counts each answered filing or proposal: the busy word's evidence. */
+  let filingSeq = $state(0);
+  /** Both the Ask button and the composer's Enter path dispatch this command. */
+  const askPendingCommand = createCommandBusy({ label: "Ask", evidence: () => answerSeq });
   /**
    * Invalidates the answer to a filing whose panel the operator closed. Every
    * reset bumps it, so a late response writes nothing into a panel that is
@@ -292,6 +302,7 @@
     const question = report.trim();
     if (target === null || question.length === 0 || askPending || sending) return;
     const id = conversationId ?? crypto.randomUUID();
+    askPendingCommand.start();
     conversationId = id;
     askPending = true;
     askError = null;
@@ -343,6 +354,7 @@
     if (message.type === "askDone") {
       askPending = false;
       askError = null;
+      answerSeq += 1;
       focusComposer();
       return;
     }
@@ -353,6 +365,7 @@
         typeof message.message === "string" && message.message.length > 0
           ? message.message
           : "The agent could not answer.";
+      answerSeq += 1;
       focusComposer();
     }
   }
@@ -610,6 +623,7 @@
       ...captured(element),
     });
     if (attempt !== generation) return;
+    filingSeq += 1;
     goalPending = false;
     if (!response.ok) {
       errorMessage = response.error;
@@ -637,6 +651,7 @@
       ...captured(element),
     });
     if (attempt !== generation) return;
+    filingSeq += 1;
     if (!response.ok) {
       errorMessage = response.error;
       phase = "failed";
@@ -706,8 +721,8 @@
     bind:this={panelElement}
   >
     <header>
-      <button
-        type="button"
+      <Button
+        bare
         class="feedback-drag"
         aria-label="Move the report panel"
         title="Drag to move, or use the arrow keys"
@@ -718,13 +733,13 @@
         onkeydown={moveWithKeys}
       >
         <strong>Report a UI issue</strong>
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        bare
         class="feedback-close"
         aria-label="Close"
         data-command="app.report.cancel"
-        onclick={reset}>×</button>
+        onclick={reset}>×</Button>
     </header>
     <code class="feedback-selector" title={selector}>{selector}</code>
     {#if transcript.length > 0}
@@ -762,41 +777,54 @@
       <p class="feedback-error">{errorMessage}</p>
     {/if}
     <div class="feedback-actions">
-      <button
-        type="button"
+      <CommandButton
+        bare
         class="feedback-primary"
-        onclick={send}
-        disabled={sending || askPending || goalPending || report.trim().length === 0}
+        label="File issue"
+        evidence={() => filingSeq}
+        command={() => void send()}
+        disabled={askPending || goalPending || report.trim().length === 0}
       >
-        {sending ? "Filing…" : "File issue"}
-      </button>
-      <button
-        type="button"
+        File issue
+      </CommandButton>
+      <Button
+        bare
         data-testid="feedback-ask"
         aria-label="Ask the agent about this element"
-        onclick={ask}
-        disabled={askPending || sending || goalPending || report.trim().length === 0}
+        label="Ask"
+        busy={askPendingCommand.busy}
+        onclick={() => ask()}
+        disabled={sending || goalPending || report.trim().length === 0}
       >
-        {askPending ? "Asking…" : "Ask"}
-      </button>
-      <button
-        type="button"
+        Ask
+      </Button>
+      <CommandButton
+        bare
         data-testid="feedback-goal"
         aria-label="Goal: propose a draft from this element"
-        onclick={proposeGoal}
-        disabled={goalPending || sending || askPending || report.trim().length === 0}
+        label="Goal"
+        busyLabel="Saving…"
+        evidence={() => filingSeq}
+        command={() => void proposeGoal()}
+        disabled={sending || askPending || report.trim().length === 0}
       >
-        {goalPending ? "Saving…" : "Goal"}
-      </button>
-      <button
-        type="button"
+        Goal
+      </CommandButton>
+      <Button
+        bare
         data-command="app.report.cancel"
         onclick={reset}
         disabled={sending || goalPending}
       >
         Cancel
-      </button>
+      </Button>
     </div>
+    {#if askPendingCommand.notice !== null}
+      <CommandNotice
+        text={askPendingCommand.notice}
+        ondismiss={() => askPendingCommand.dismiss()}
+      />
+    {/if}
   </div>
 {/if}
 
@@ -823,15 +851,15 @@
         </a>
       {/if}
     </div>
-    <button
-      type="button"
+    <Button
+      bare
       class="feedback-result__close"
       aria-label="Dismiss"
       title="Dismiss"
       onclick={dismissToast}
     >
       <X size={12} aria-hidden="true" />
-    </button>
+    </Button>
   </div>
 {/if}
 
@@ -888,7 +916,7 @@
     overflow-wrap: anywhere;
   }
 
-  .feedback-result__close {
+  :global(.feedback-result__close) {
     align-items: center;
     background: none;
     border: 0;
@@ -898,7 +926,7 @@
     padding: 2px;
   }
 
-  .feedback-result__close:hover {
+  :global(.feedback-result__close:hover) {
     color: var(--foreground);
   }
 
@@ -962,7 +990,7 @@
     justify-content: space-between;
   }
 
-  .feedback-drag {
+  :global(.feedback-drag) {
     align-items: center;
     background: none;
     border: 0;
@@ -980,16 +1008,16 @@
     user-select: none;
   }
 
-  .feedback-drag:focus-visible {
+  :global(.feedback-drag:focus-visible) {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
 
-  .feedback-panel--dragging .feedback-drag {
+  :global(.feedback-panel--dragging .feedback-drag) {
     cursor: grabbing;
   }
 
-  .feedback-close {
+  :global(.feedback-close) {
     background: none;
     border: none;
     color: var(--muted-foreground);
@@ -999,7 +1027,7 @@
     padding: 0 2px;
   }
 
-  .feedback-close:hover {
+  :global(.feedback-close:hover) {
     color: var(--foreground);
   }
 
@@ -1094,7 +1122,7 @@
     gap: 8px;
   }
 
-  .feedback-actions button {
+  :global(.feedback-actions button) {
     background: var(--secondary);
     border: 1px solid var(--border-strong);
     border-radius: 6px;
@@ -1106,13 +1134,13 @@
     padding: 6px 12px;
   }
 
-  .feedback-actions .feedback-primary {
+  :global(.feedback-actions .feedback-primary) {
     background: var(--primary);
     border-color: var(--primary);
     color: var(--primary-foreground);
   }
 
-  .feedback-actions button:disabled {
+  :global(.feedback-actions button:disabled) {
     cursor: not-allowed;
     opacity: 0.5;
   }

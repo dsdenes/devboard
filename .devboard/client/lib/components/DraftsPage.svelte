@@ -6,6 +6,7 @@
   import { issues, markDraftsPage } from "../issues.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesQuestion from "./IssuesQuestion.svelte";
 
@@ -131,15 +132,17 @@
             >
               Cancel
             </Button>
-            <Button
+            <CommandButton
               variant="default"
+              label="Create draft"
+              evidence={() => issues.draftCreateError ?? issues.draftCreateOpen}
+              command={() => void submitNewGoal()}
               data-testid="issues-draft-new-submit"
               data-command="issues.draft.new.submit"
               disabled={issues.draftCreating || instructions.trim().length === 0}
-              onclick={() => void submitNewGoal()}
             >
               {issues.draftCreating ? "Creating…" : "Create draft"}
-            </Button>
+            </CommandButton>
           </div>
         </div>
       {/if}
@@ -167,8 +170,8 @@
                 class="issues-draft-row"
                 data-current={issues.draftPath === draft.path}
               >
-                <button
-                  type="button"
+                <Button
+                  bare
                   class="issues-draft"
                   data-testid="issues-draft"
                   data-path={draft.path}
@@ -197,21 +200,23 @@
                     {/if}
                     <span class="badge" data-tone={statusTone(draftStatus)}>{draftStatus}</span>
                   </span>
-                </button>
+                </Button>
                 <div class="issues-draft-row__action">
-                  <Button
+                  <CommandButton
                     variant="outline"
                     size="sm"
+                    label="Start"
+                    evidence={() => issues.draftRunFor(draft.path)?.status}
+                    command={() => issues.startDraft(draft.path)}
                     data-testid="issues-draft-row-start"
                     data-command="issues.draft.start"
                     data-path={draft.path}
                     aria-label={`Start ${draft.name}`}
                     disabled={issues.draftRunning(draft.path)}
                     title={blocker ?? "Start the elaboration agent"}
-                    onclick={() => issues.startDraft(draft.path)}
                   >
                     Start
-                  </Button>
+                  </CommandButton>
                 </div>
               </li>
             {/each}
@@ -242,15 +247,17 @@
                 {status}
               </span>
               {#if running}
-                <Button
+                <CommandButton
                   variant="ghost"
+                  label="Stop"
+                  evidence={() => issues.draftRunFor(issues.draftPath)?.status}
+                  command={() => issues.stopDraft()}
                   class="issues-draft-detail__stop"
                   data-testid="issues-draft-stop"
                   data-command="issues.draft.stop"
-                  onclick={() => issues.stopDraft()}
                 >
                   Stop
-                </Button>
+                </CommandButton>
               {/if}
             </div>
           {/if}

@@ -8,6 +8,8 @@
   import { osNotifications } from "../os-notifications.svelte";
   import { providers } from "../providers.svelte";
   import { statusTone } from "../status-tone";
+  import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
   import WatchdogIndicator from "./watchdog-indicator.svelte";
 
   const connectionLabel = $derived(
@@ -76,8 +78,8 @@
       <FolderGit2 size={12} aria-hidden="true" />
       <span class="mono" data-testid="status-project">{projectName}</span>
     </span>
-    <button
-      type="button"
+    <Button
+      bare
       class="status-item status-item--button status-providers"
       data-testid="providers-indicator"
       data-command="settings.providers"
@@ -88,7 +90,7 @@
     >
       <span class="status-providers__dot" aria-hidden="true"></span>
       <span class="status-providers__label">{providers.indicatorLabel}</span>
-    </button>
+    </Button>
   </div>
   <span class="status-bar__spacer" aria-hidden="true"></span>
   <div class="status-group status-group--metrics">
@@ -96,8 +98,8 @@
       <span class="status-metric__label">lanes</span>
       <span class="mono status-metric__value">{goal.runningLanes}/{goal.lanes.length}</span>
     </span>
-    <button
-      type="button"
+    <Button
+      bare
       class="status-item status-item--button status-issues"
       data-testid="issues-indicator"
       data-command="view.mode.issues"
@@ -109,10 +111,10 @@
     >
       <span class="status-issues__dot" aria-hidden="true"></span>
       <span class="status-issues__label">{issuesLabel}</span>
-    </button>
+    </Button>
     <WatchdogIndicator />
-    <button
-      type="button"
+    <Button
+      bare
       class="status-item status-item--button status-notifications"
       data-testid="os-notifications"
       data-state={osNotifications.state}
@@ -122,7 +124,7 @@
     >
       <span class="status-notifications__dot" aria-hidden="true"></span>
       <span class="status-notifications__label">notifications {osNotifications.state}</span>
-    </button>
+    </Button>
     <span class="status-item status-versions" title={versions}>
       <span class="status-versions__entry">
         <span class="status-metric__label">running</span>
@@ -134,19 +136,21 @@
       </span>
     </span>
     {#if connection.version?.replacement != null || connection.version?.stale === true}
-      <button
-        type="button"
+      <CommandButton
+        bare
+        label="Reload"
+        evidence={() => connection.version?.running}
+        command={() => connection.requestRestart()}
         class="status-item status-item--button"
         data-testid="reload-devboard"
         data-command="app.reload"
         title={reloadLabel}
         aria-label={reloadLabel}
         disabled={connection.restarting}
-        onclick={() => connection.requestRestart()}
       >
         <RefreshCw size={12} aria-hidden="true" />
         <span>reload</span>
-      </button>
+      </CommandButton>
     {/if}
   </div>
 </footer>

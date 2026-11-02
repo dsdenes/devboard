@@ -28,6 +28,38 @@ The status bar stays visible while panes resize, and the document itself never s
 vertically or horizontally. Each mode's panel keeps its scroll position, focus, and open page while
 another mode is shown.
 
+### Buttons
+
+Every button in the interface is the one primitive in
+`.devboard/client/lib/components/ui/button.svelte`. A component never renders its own `<button>`
+element; a bespoke control such as a sidebar row, a choice, a palette item, or a status item uses
+that primitive's `bare` form and keeps its own class and geometry. `IconButton` is the square icon
+form built from the same variant table, and `CommandButton` composes the primitive for a control
+that dispatches a WebSocket command; it renders no button of its own.
+
+- An activation paints a pressed fill immediately, from pointer-down until pointer-up and while
+  `Enter` or `Space` activates the control, in both the dark and the light theme. The pressed rule
+  reuses existing role tokens and adds no color token.
+- A control whose activation dispatches a WebSocket command replaces its visible label with the
+  present participle of its own verb followed by `…` — `Start` → `Starting…`, `Save` → `Saving…`,
+  `Check` → `Checking…`, `Discover project` → `Discovering…` — carries `aria-busy="true"`, and
+  takes no second frame from a pointer or the keyboard while it waits.
+- Busy ends when the confirming server state arrives, and the control then renders the resting
+  label from that state. No control flips a domain flag to fake immediacy.
+- A control that only changes client state — a mode switch, a tab, an accordion, the palette, a
+  notification dismiss, a dialog cancel — never enters busy and shows the pressed fill only. A
+  disabled control never enters busy and keeps its 45% opacity.
+- A 28px icon control that dispatches a command sets `aria-busy="true"` and changes its accessible
+  name and `title` to the busy phrase (`Reloading…`, `Filing issue…`), keeping its square and
+  adding no inline text.
+- If no confirming state arrives within 10 seconds, the control returns to its resting label and a
+  `role="status"` notice beside it states that the action received no answer and names the action
+  in words. The notice is dismissed by its own control or by the next activation of that control.
+
+A control added later follows the same rule: use `Button`, or `CommandButton` when it dispatches,
+pass its resting label, and let the primitive paint the pressed fill and own the busy word. A raw
+`<button>` in a component is a defect.
+
 ### Mode rail
 
 The 72px rail presents exactly five modes in this order as `role="tab"` controls:

@@ -4,6 +4,7 @@
   import type { WorkspaceTab } from "../layout.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
   import DraftsPage from "./DraftsPage.svelte";
   import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
@@ -118,6 +119,15 @@
   function runStatus(runId: string): string {
     return issues.runs.find((run) => run.runId === runId)?.status ?? "unknown";
   }
+
+  /**
+   * The server-written confirmation that a close landed: the issue is gone
+   * from the queue in the next snapshot. `issues.closing` is set on send and
+   * cannot confirm anything.
+   */
+  function issueOpen(number: number): boolean {
+    return (issues.snapshot?.queue ?? []).some((issue) => issue.number === number);
+  }
 </script>
 
 {#if page === "overview"}
@@ -148,51 +158,61 @@
         </div>
         <div class="panel__body stack-sm">
           <div class="toolbar">
-            <Button
+            <CommandButton
               variant="default"
+              label="Start"
+              evidence={() => issues.lifecycle}
+              command={() => issues.start()}
               data-testid="issues-start"
               data-command="issues.start"
               disabled={!issues.canStart}
-              onclick={() => issues.start()}
             >
               Start
-            </Button>
-            <Button
+            </CommandButton>
+            <CommandButton
               variant="outline"
+              label="Pause"
+              evidence={() => issues.lifecycle}
+              command={() => issues.pause()}
               data-testid="issues-pause"
               data-command="issues.pause"
               disabled={!issues.canPause}
-              onclick={() => issues.pause()}
             >
               Pause
-            </Button>
-            <Button
+            </CommandButton>
+            <CommandButton
               variant="outline"
+              label="Resume"
+              evidence={() => issues.lifecycle}
+              command={() => issues.resume()}
               data-testid="issues-resume"
               data-command="issues.resume"
               disabled={!issues.canResume}
-              onclick={() => issues.resume()}
             >
               Resume
-            </Button>
-            <Button
+            </CommandButton>
+            <CommandButton
               variant="destructive"
+              label="Stop"
+              evidence={() => issues.lifecycle}
+              command={() => issues.stop()}
               data-testid="issues-stop"
               data-command="issues.stop"
               disabled={!issues.canStop}
-              onclick={() => issues.stop()}
             >
               Stop
-            </Button>
-            <Button
+            </CommandButton>
+            <CommandButton
               variant="outline"
+              label="Check now"
+              evidence={() => issues.snapshot}
+              command={() => issues.check()}
               data-testid="issues-check-now"
               data-command="issues.check"
               disabled={!issues.canCheck}
-              onclick={() => issues.check()}
             >
               Check now
-            </Button>
+            </CommandButton>
           </div>
           <dl class="issues-facts">
             <div>
@@ -264,8 +284,8 @@
                   >
                     #{agent.issueNumber}
                   </a>
-                  <button
-                    type="button"
+                  <Button
+                    bare
                     class="issues-agent-row__open"
                     data-command="issues.agent.open"
                     data-run={agent.runId}
@@ -284,20 +304,22 @@
                         {elapsedShort(agent.startedAt)}
                       </span>
                     </span>
-                  </button>
+                  </Button>
                 </div>
-                <button
-                  type="button"
+                <CommandButton
+                  bare
+                  label="Close"
+                  evidence={() => issueOpen(agent.issueNumber)}
+                  command={() => issues.closeIssue(agent.issueNumber)}
                   class="issues-agent-row__close"
                   data-testid="issues-close-issue"
                   data-issue={agent.issueNumber}
                   title={`Close issue #${agent.issueNumber} as not planned`}
                   aria-label={`Close issue #${agent.issueNumber}`}
                   disabled={!issues.canClose(agent.issueNumber)}
-                  onclick={() => issues.closeIssue(agent.issueNumber)}
                 >
                   Close
-                </button>
+                </CommandButton>
               </li>
             {:else}
               <li class="issues-agent-summary__empty">No agents running.</li>
@@ -548,8 +570,8 @@
         <ol class="issues-runs" data-testid="issues-runs">
           {#each issues.runs as run (run.runId)}
             <li>
-              <button
-                type="button"
+              <Button
+                bare
                 class="issues-run"
                 data-testid="issues-run"
                 data-run={run.runId}
@@ -563,7 +585,7 @@
                   {run.status}
                 </span>
                 <span class="muted">{run.issueNumbers.map((number) => `#${number}`).join(" ")}</span>
-              </button>
+              </Button>
             </li>
           {:else}
             <li class="muted">No runs yet.</li>

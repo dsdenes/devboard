@@ -2,11 +2,14 @@
   import { html as diffHtml } from "diff2html";
   import "diff2html/bundles/css/diff2html.min.css";
   import { flow } from "./lib/flow.svelte";
+  import { createCommandBusy } from "./lib/command-busy.svelte";
   import { layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { verificationTone } from "./lib/status-tone";
   import type { FlowFile, FlowWidget, RunQuestion } from "./lib/types";
   import AgentActivityBar from "./lib/components/AgentActivityBar.svelte";
+  import CommandButton from "./lib/components/CommandButton.svelte";
+  import CommandNotice from "./lib/components/CommandNotice.svelte";
   import DetailSplit from "./lib/components/DetailSplit.svelte";
   import Terminal from "./lib/components/Terminal.svelte";
   import Button from "./lib/components/ui/button.svelte";
@@ -74,6 +77,22 @@
     flow.answerQuestion(pending, flow.answers[target], target);
   }
 
+  const answerPending = {
+    goal: createCommandBusy({ label: "Submit answer", evidence: () => flow.activity.length }),
+    implementation: createCommandBusy({
+      label: "Submit answer",
+      evidence: () => flow.activity.length,
+    }),
+    conversation: createCommandBusy({
+      label: "Submit answer",
+      evidence: () => flow.activity.length,
+    }),
+  };
+  const conversationSendPending = createCommandBusy({
+    label: "Send",
+    evidence: () => flow.conversation?.messages.length,
+  });
+
   const hasGoal = $derived(flow.goal.trim().length > 0);
   const goalHeaderState = $derived.by(() => {
     if (flow.goalCreation !== null) {
@@ -96,12 +115,16 @@
     {#if pending.options.length > 0}
       <div class="choice-list">
         {#each pending.options as option (option.label)}
-          <button
+          <CommandButton
+            bare
             type="button"
             class="choice"
+            label={option.label}
+            busyLabel="Answering…"
+            evidence={() => flow.activity.length}
+            command={() => flow.answerQuestion(pending, option.label, target)}
             data-testid="flow-choice"
             data-command={`flow.answer.submit.${target}`}
-            onclick={() => flow.answerQuestion(pending, option.label, target)}
           >
             <span class="choice__label">
               {option.label}
@@ -112,7 +135,7 @@
             {#if option.description}
               <span class="choice__description">{option.description}</span>
             {/if}
-          </button>
+          </CommandButton>
         {/each}
       </div>
     {/if}
@@ -121,6 +144,8 @@
       style="margin-top: 6px;"
       onsubmit={(event) => {
         event.preventDefault();
+        if (flow.answers[target].trim().length === 0) return;
+        answerPending[target].start();
         submitAnswer(pending, target);
       }}
     >
@@ -138,6 +163,8 @@
       <Button
         variant="default"
         type="submit"
+        label="Submit answer"
+        busy={answerPending[target].busy}
         data-command={`flow.answer.submit.${target}`}
         data-testid="flow-submit-answer"
         disabled={flow.answers[target].trim().length === 0}
@@ -145,6 +172,12 @@
         Submit answer
       </Button>
     </form>
+    {#if answerPending[target].notice !== null}
+      <CommandNotice
+        text={answerPending[target].notice}
+        ondismiss={() => answerPending[target].dismiss()}
+      />
+    {/if}
   </div>
 {/snippet}
 
@@ -213,7 +246,8 @@
         <ul class="history-list">
           {#each flow.detailFiles(entry) as file (file.path)}
             <li>
-              <button
+              <Button
+                bare
                 type="button"
                 class="sidebar-item"
                 data-testid="flow-widget-file"
@@ -225,28 +259,33 @@
                   {file.status}
                 </span>
                 <span class="mono muted">+{file.insertions}/-{file.deletions}</span>
-              </button>
+              </Button>
             </li>
           {/each}
         </ul>
       </div>
       <div class="row-sm">
-        <Button
+        <CommandButton
           variant="secondary"
+          label={entry.accepted ? "Unaccept change" : "Accept change"}
+          busyLabel={entry.accepted ? "Unaccepting…" : "Accepting…"}
+          evidence={() => flow.widget(entry.id)?.accepted}
+          command={() => flow.toggleWidget(entry)}
           data-command={`flow.widget.accept.${entry.id}`}
           data-testid="flow-widget-accept"
-          onclick={() => flow.toggleWidget(entry)}
         >
           {entry.accepted ? "Unaccept change" : "Accept change"}
-        </Button>
-        <Button
+        </CommandButton>
+        <CommandButton
           variant="secondary"
+          label="Discuss"
+          evidence={() => flow.conversation}
+          command={() => flow.discuss(entry)}
           data-command={`flow.widget.discuss.${entry.id}`}
           data-testid="flow-widget-discuss"
-          onclick={() => flow.discuss(entry)}
         >
           Discuss
-        </Button>
+        </CommandButton>
         <Button
           variant="outline"
           data-command={`flow.widget.refuse.${entry.id}`}
@@ -266,14 +305,16 @@
             bind:value={flow.refuseReason}
           ></textarea>
           <div class="row-sm" style="justify-content: flex-end; margin-top: 4px;">
-            <Button
+            <CommandButton
               variant="destructive"
+              label="Confirm refuse"
+              evidence={() => flow.widgets}
+              command={() => flow.confirmRefuse(entry)}
               data-command={`flow.widget.refuse.confirm.${entry.id}`}
               data-testid="confirm-refuse-widget"
-              onclick={() => flow.confirmRefuse(entry)}
             >
               Confirm refuse
-            </Button>
+            </CommandButton>
             <Button
               variant="outline"
               data-command={`flow.widget.refuse.cancel.${entry.id}`}
@@ -308,7 +349,8 @@
           <span class="badge" data-tone="accent" data-category={widget.category}>
             {widget.category}
           </span>
-          <button
+          <Button
+            bare
             type="button"
             class="sidebar-item grow"
             data-testid="flow-widget-open"
@@ -320,7 +362,7 @@
               {widget.summary}
             </span>
             <span class="mono muted">{widget.files.length} files</span>
-          </button>
+          </Button>
           <label class="row-sm" style="gap: 4px;">
             <input
               type="checkbox"
@@ -331,15 +373,17 @@
             />
             <span class="muted">accepted</span>
           </label>
-          <Button
+          <CommandButton
             variant="secondary"
             size="sm"
+            label="Discuss"
+            evidence={() => flow.conversation}
+            command={() => flow.discuss(widget)}
             data-command={`flow.widget.discuss.${widget.id}`}
             data-testid="flow-widget-discuss"
-            onclick={() => flow.discuss(widget)}
           >
             Discuss
-          </Button>
+          </CommandButton>
           <Button
             variant="outline"
             size="sm"
@@ -360,14 +404,16 @@
               bind:value={flow.refuseReason}
             ></textarea>
             <div class="row-sm" style="justify-content: flex-end; margin-top: 4px;">
-              <Button
+              <CommandButton
                 variant="destructive"
+                label="Confirm refuse"
+                evidence={() => flow.widgets}
+                command={() => flow.confirmRefuse(widget)}
                 data-command={`flow.widget.refuse.confirm.${widget.id}`}
                 data-testid="confirm-refuse-widget"
-                onclick={() => flow.confirmRefuse(widget)}
               >
                 Confirm refuse
-              </Button>
+              </CommandButton>
               <Button
                 variant="outline"
                 data-command={`flow.widget.refuse.cancel.${widget.id}`}
@@ -406,14 +452,16 @@
         </span>
       </div>
       <div class="row-sm flow-goal__actions">
-        <Button
+        <CommandButton
           variant={hasGoal ? "outline" : "default"}
+          label={hasGoal ? "Recreate flow goal" : "Create flow goal"}
+          evidence={() => flow.goalCreation}
+          command={() => flow.createGoal()}
           data-command="flow.goal.create"
           data-testid="create-flow-goal"
-          onclick={() => flow.createGoal()}
         >
           {hasGoal ? "Recreate flow goal" : "Create flow goal"}
-        </Button>
+        </CommandButton>
       </div>
     </div>
     {#if flow.goalCreation === null}
@@ -473,35 +521,41 @@
       <div class="panel__header">
         <h2 class="panel__title">Pull request</h2>
         <div class="row-sm">
-          <Button
+          <CommandButton
             variant="secondary"
+            label="Retry PR"
+            evidence={() => flow.pr}
+            command={() => flow.retryPr()}
             data-command="flow.pr.retry"
             data-testid="retry-flow-pr"
             disabled={flow.prError === null}
-            onclick={() => flow.retryPr()}
           >
             Retry PR
-          </Button>
-          <Button
+          </CommandButton>
+          <CommandButton
             variant="secondary"
+            label="Mark ready"
+            evidence={() => flow.pr?.state}
+            command={() => flow.markPrReady()}
             data-command="flow.pr.ready"
             data-testid="mark-flow-pr-ready"
             title={flow.readyDisabled ? "Only a stopped session with a draft PR can be marked ready." : undefined}
             disabled={flow.readyDisabled}
-            onclick={() => flow.markPrReady()}
           >
             Mark ready
-          </Button>
-          <Button
+          </CommandButton>
+          <CommandButton
             variant="default"
+            label="Merge"
+            evidence={() => flow.pr?.state}
+            command={() => flow.mergePr()}
             data-command="flow.pr.merge"
             data-testid="merge-flow-pr"
             title={flow.mergeDisabled ? "Only a stopped session with a live PR can be merged." : undefined}
             disabled={flow.mergeDisabled}
-            onclick={() => flow.mergePr()}
           >
             Merge
-          </Button>
+          </CommandButton>
         </div>
       </div>
       <div class="panel__body">
@@ -555,7 +609,8 @@
       </div>
       <div class="panel__body panel__body--flush">
         {#each flow.files as file (file.path)}
-          <button
+          <Button
+            bare
             type="button"
             class="sidebar-item"
             data-testid="flow-file"
@@ -569,7 +624,7 @@
               {file.status}
             </span>
             <span class="mono muted">+{file.insertions}/-{file.deletions}</span>
-          </button>
+          </Button>
         {:else}
           <p class="empty">No changed files.</p>
         {/each}
@@ -593,15 +648,17 @@
               {#if blocker.dismissed}
                 <span class="badge" data-tone="success">Dismissed</span>
               {:else}
-                <Button
+                <CommandButton
                   variant="outline"
                   size="sm"
+                  label="Dismiss"
+                  evidence={() => flow.blockers}
+                  command={() => flow.dismissBlocker(blocker)}
                   data-command={`flow.blocker.dismiss.${blocker.id}`}
                   data-testid="dismiss-flow-blocker"
-                  onclick={() => flow.dismissBlocker(blocker)}
                 >
                   Dismiss
-                </Button>
+                </CommandButton>
               {/if}
             </div>
           {/each}
@@ -622,25 +679,29 @@
       waiting={overviewBarQuestion !== null}
     >
       {#snippet control()}
-        <Button
+        <CommandButton
           variant="default"
+          label="Start implementation"
+          evidence={() => flow.status}
+          command={() => flow.startImplementation()}
           data-command="flow.start"
           data-testid="start-flow-implementation"
           title={flow.startDisabled ? "A flow goal and an idle session are required." : undefined}
           disabled={flow.startDisabled}
-          onclick={() => flow.startImplementation()}
         >
           Start implementation
-        </Button>
-        <Button
+        </CommandButton>
+        <CommandButton
           variant="destructive"
+          label="Stop implementation"
+          evidence={() => flow.status}
+          command={() => flow.stopImplementation()}
           data-command="flow.stop"
           data-testid="stop-flow-implementation"
           disabled={flow.stopDisabled}
-          onclick={() => flow.stopImplementation()}
         >
           Stop implementation
-        </Button>
+        </CommandButton>
       {/snippet}
     </AgentActivityBar>
   {:else if tab?.kind === "conversation" && flow.conversation !== null}
@@ -722,15 +783,17 @@
               bind:value={flow.steeringDraft}
             ></textarea>
             <div class="steering-composer__actions">
-              <Button
+              <CommandButton
                 variant="default"
+                label="Send"
+                evidence={() => flow.steering.length}
+                command={() => flow.sendSteering()}
                 data-command="flow.steering.send"
                 data-testid="send-flow-steering"
                 disabled={flow.steeringDraft.trim().length === 0}
-                onclick={() => flow.sendSteering()}
               >
                 Send
-              </Button>
+              </CommandButton>
             </div>
           </div>
           {#each flow.steering as note (note.id)}
@@ -884,14 +947,16 @@
                 <span class="muted" data-testid="flow-conversation-widget">
                   Widget <code>{convo.widgetId}</code>
                 </span>
-                <Button
+                <CommandButton
                   variant="outline"
+                  label="Close"
+                  evidence={() => flow.conversation}
+                  command={() => flow.closeConversation()}
                   data-command="flow.conversation.close"
                   data-testid="close-flow-conversation"
-                  onclick={() => flow.closeConversation()}
                 >
                   Close
-                </Button>
+                </CommandButton>
               </div>
             </div>
             <div class="panel__body stack-sm">
@@ -918,6 +983,7 @@
                 class="answer-form"
                 onsubmit={(event) => {
                   event.preventDefault();
+                  conversationSendPending.start();
                   flow.sendConversation();
                 }}
               >
@@ -933,6 +999,8 @@
                 <Button
                   variant="default"
                   type="submit"
+                  label="Send"
+                  busy={conversationSendPending.busy}
                   data-command="flow.conversation.send"
                   data-testid="send-flow-conversation"
                   disabled={flow.conversationDraft.trim().length === 0}
@@ -940,6 +1008,12 @@
                   Send
                 </Button>
               </form>
+              {#if conversationSendPending.notice !== null}
+                <CommandNotice
+                  text={conversationSendPending.notice}
+                  ondismiss={() => conversationSendPending.dismiss()}
+                />
+              {/if}
               <div class="field">
                 <label class="field__label" for="flow-conclusion">Conclusion</label>
                 <textarea
@@ -950,15 +1024,17 @@
                 ></textarea>
               </div>
               <div class="row-sm" style="justify-content: flex-end;">
-                <Button
+                <CommandButton
                   variant="secondary"
+                  label="Send conclusion to implementation"
+                  evidence={() => flow.notice}
+                  command={() => flow.sendConclusion()}
                   data-command="flow.conclusion.send"
                   data-testid="send-flow-conclusion"
                   disabled={flow.conclusionDraft.trim().length === 0}
-                  onclick={() => flow.sendConclusion()}
                 >
                   Send conclusion to implementation
-                </Button>
+                </CommandButton>
               </div>
             </div>
           </section>

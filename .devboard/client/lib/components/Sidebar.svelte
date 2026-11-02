@@ -1,5 +1,6 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
+  import Button from "./ui/button.svelte";
   import { DISCOVER_AGENTS } from "../../../server/agents/registry";
   import { SECTION_TABS, SKILL_TABS } from "../discover-format";
   import { DEVBOARD_SIDEBAR, DEVBOARD_TAB } from "../devboard.svelte";
@@ -86,8 +87,8 @@
   <div class="sidebar__body">
     {#if layout.mode === "goal"}
       <section class="sidebar-group" aria-label="Plan">
-        <button
-          type="button"
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("goal-document")}
           data-command="goal.document.open"
@@ -95,9 +96,9 @@
             open("goal", "goal-document", "goal-document", "goal-document", "Goal document")}
         >
           <span class="sidebar-item__label">Goal document</span>
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("adrs")}
           data-command="goal.adrs.open"
@@ -106,9 +107,9 @@
         >
           <span class="sidebar-item__label">ADRs</span>
           <span class="sidebar-item__meta">{goal.pendingCount} pending</span>
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          bare
           class="sidebar-item"
           aria-expanded={skillsOpen}
           aria-controls={skillsOpen ? "goal-skills-menu" : undefined}
@@ -124,7 +125,7 @@
               ? "sidebar-item__chevron sidebar-item__chevron--open"
               : "sidebar-item__chevron"}
           />
-        </button>
+        </Button>
         {#if skillsOpen}
           <div
             class="sidebar-submenu"
@@ -138,8 +139,8 @@
               {@const panelId = skillContentId(skill.name)}
               {@const skillHtml =
                 skill.content === undefined ? "" : renderSkillDocument(skill.content)}
-              <button
-                type="button"
+              <Button
+                bare
                 class="sidebar-item sidebar-item--nested"
                 aria-expanded={expanded}
                 aria-controls={expanded ? panelId : undefined}
@@ -157,7 +158,7 @@
                     ? "sidebar-item__chevron sidebar-item__chevron--open"
                     : "sidebar-item__chevron"}
                 />
-              </button>
+              </Button>
               {#if expanded}
                 <div
                   class="sidebar-skill"
@@ -194,8 +195,8 @@
             {:else}
               <p class="sidebar-empty">No skills prepared.</p>
             {/each}
-            <button
-              type="button"
+            <Button
+              bare
               class="sidebar-item sidebar-item--nested"
               aria-current={isActive("skills")}
               data-command="goal.skills.open"
@@ -203,15 +204,15 @@
               onclick={() => open("goal", "skills", "skills", "skills", "Skills")}
             >
               <span class="sidebar-item__label">All skills</span>
-            </button>
+            </Button>
           </div>
         {/if}
       </section>
 
       <section class="sidebar-group" aria-label="Run">
         <div class="sidebar-group__title">Run</div>
-        <button
-          type="button"
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("overview")}
           data-command="open.goal.overview"
@@ -224,7 +225,7 @@
           {:else}
             <span class="sidebar-item__meta">{goal.lifecycleActive ? stageWord : goal.running ? "manual" : "idle"}</span>
           {/if}
-        </button>
+        </Button>
       </section>
 
       {#if goal.pendingCount > 0}
@@ -247,8 +248,8 @@
           <p class="sidebar-empty">No records yet.</p>
         {:else}
           {#each pendingRecords as entry (entry.file)}
-            <button
-              type="button"
+            <Button
+              bare
               class="sidebar-item"
               aria-current={isActive(`adr:${entry.file}`)}
               data-command={`goal.adr.open.${entry.file}`}
@@ -264,10 +265,10 @@
               {:else}
                 <span class="sidebar-item__meta">{entry.status || "Unknown"}</span>
               {/if}
-            </button>
+            </Button>
           {/each}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             data-command="goal.adrs.open"
             data-testid="sidebar-all-records"
@@ -275,7 +276,7 @@
           >
             <span class="sidebar-item__label">All records</span>
             <span class="sidebar-item__meta">{goal.records.length}</span>
-          </button>
+          </Button>
         {/if}
       </section>
       {/if}
@@ -290,8 +291,8 @@
         <div role="tablist" aria-label="Agent lanes">
           {#each goal.lanes as lane (lane.id)}
             {@const label = goal.laneLabel(lane)}
-            <button
-              type="button"
+            <Button
+              bare
               class="sidebar-item"
               role="tab"
               aria-selected={isActive(`lane:${lane.id}`)}
@@ -310,7 +311,7 @@
               <span class="badge" data-tone={statusTone(lane.status)}>
                 {lane.status}
               </span>
-            </button>
+            </Button>
           {/each}
         </div>
         {#if goal.lanes.length === 0}
@@ -321,8 +322,8 @@
     {:else if layout.mode === "issues"}
       <section class="sidebar-group" aria-label="Issues surfaces">
         <div class="sidebar-group__title">Issues surfaces</div>
-        <button
-          type="button"
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("overview")}
           data-command="open.issues.overview"
@@ -333,9 +334,9 @@
           <span class="badge" data-tone={statusTone(issues.lifecycle)}>
             {issues.lifecycle}
           </span>
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("issues")}
           data-command="open.issues.issues"
@@ -344,9 +345,9 @@
         >
           <span class="sidebar-item__label">Issues</span>
           <span class="sidebar-item__meta">{queueSummary(issueQueue)}</span>
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("drafts")}
           aria-label="Draft goals, Issues mode, Alt+2"
@@ -356,12 +357,12 @@
         >
           <span class="sidebar-item__label">Draft goals</span>
           <span class="sidebar-item__meta">{issues.drafts.length}</span>
-        </button>
+        </Button>
       </section>
     {:else if layout.mode === "flow"}
       <section class="sidebar-group" aria-label="Flow surfaces">
-        <button
-          type="button"
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("overview")}
           data-command="open.flow.overview"
@@ -373,18 +374,18 @@
               {flow.status}
             </span>
           {/if}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("decisions")}
           data-command="open.flow.decisions"
           onclick={() => open("flow", "decisions", "decisions", "decisions", "Decision board")}
         >
           <span class="sidebar-item__label">Decision board</span>
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("steering")}
           data-command="open.flow.steering"
@@ -392,9 +393,9 @@
         >
           <span class="sidebar-item__label">Steering</span>
           <span class="sidebar-item__meta">{flow.steering.length}</span>
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          bare
           class="sidebar-item"
           aria-current={isActive("history")}
           data-command="open.flow.history"
@@ -402,13 +403,13 @@
         >
           <span class="sidebar-item__label">History</span>
           <span class="sidebar-item__meta">{flow.history.length}</span>
-        </button>
+        </Button>
       </section>
 
       <section class="sidebar-group" aria-label="Session">
         <div class="sidebar-group__title">Session</div>
-        <button
-          type="button"
+        <Button
+          bare
           class="sidebar-item"
           data-command="open.flow.overview"
           onclick={() => open("flow", "overview", "overview", "overview", "Overview")}
@@ -419,13 +420,13 @@
               {flow.status}
             </span>
           {/if}
-        </button>
+        </Button>
         {#if flow.branch !== null}
           <div class="sidebar-item__meta" style="padding: 0 6px 4px;">branch {flow.branch}</div>
         {/if}
         {#if flow.pr !== null}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             data-command="open.flow.overview"
             title={flow.pr.url}
@@ -435,7 +436,7 @@
             <span class="badge" data-tone={flow.pr.state === "merged" ? "success" : "accent"}>
               #{flow.pr.number} {flow.pr.state}
             </span>
-          </button>
+          </Button>
         {:else}
           <div class="sidebar-item__meta" style="padding: 0 6px 4px;">no pull request</div>
         {/if}
@@ -447,8 +448,8 @@
           <span>{flow.widgets.length}</span>
         </div>
         {#each flow.widgets as widget (widget.id)}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             aria-current={isActive(`widget:${widget.id}`)}
             data-command={`flow.widget.open.${widget.id}`}
@@ -463,7 +464,7 @@
             <span class="badge" data-tone={widget.accepted ? "success" : "warning"}>
               {widget.accepted ? "accepted" : "open"}
             </span>
-          </button>
+          </Button>
         {:else}
           <p class="sidebar-empty">No widgets yet.</p>
         {/each}
@@ -475,8 +476,8 @@
           <span>{flow.files.length}</span>
         </div>
         {#each flow.files as file (file.path)}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             aria-current={isActive(`file:${file.path}`)}
             data-command={`flow.file.open.${file.path}`}
@@ -488,7 +489,7 @@
             <span class="badge" data-tone={file.status === "deleted" ? "error" : "accent"}>
               {file.status}
             </span>
-          </button>
+          </Button>
         {:else}
           <p class="sidebar-empty">No changed files.</p>
         {/each}
@@ -500,8 +501,8 @@
           <span>{flow.checkpoints.length}</span>
         </div>
         {#each flow.checkpoints as checkpoint (checkpoint.id)}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             aria-current={isActive(`checkpoint:${checkpoint.id}`)}
             data-command={`flow.checkpoint.open.${checkpoint.id}`}
@@ -519,7 +520,7 @@
             <span class="badge" data-tone={checkpoint.verification === "failed" ? "error" : "success"}>
               {checkpoint.verification}
             </span>
-          </button>
+          </Button>
         {:else}
           <p class="sidebar-empty">No checkpoints.</p>
         {/each}
@@ -531,8 +532,8 @@
           <span>{flow.blockers.filter((blocker) => !blocker.dismissed).length} open</span>
         </div>
         {#each flow.blockers as blocker (blocker.id)}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             data-command={`flow.blocker.open.${blocker.id}`}
             data-dismissed={blocker.dismissed ? "true" : "false"}
@@ -546,7 +547,7 @@
             <span class="badge" data-tone={blocker.dismissed ? "success" : "error"}>
               {blocker.dismissed ? "dismissed" : "open"}
             </span>
-          </button>
+          </Button>
         {:else}
           <p class="sidebar-empty">No blockers.</p>
         {/each}
@@ -554,8 +555,8 @@
     {:else if layout.mode === "discover"}
       <section class="sidebar-group" aria-label="Discover sections">
         {#each SECTION_TABS as tab (tab.id)}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             aria-current={isActive(tab.id)}
             role="tab"
@@ -576,7 +577,7 @@
                 {termCount} {termCount === 1 ? "term" : "terms"}
               </span>
             {/if}
-          </button>
+          </Button>
         {/each}
       </section>
 
@@ -590,8 +591,8 @@
         </div>
         {#each DISCOVER_AGENTS as agent (agent.id)}
           {@const status = discover.agent(agent.id)?.state ?? "idle"}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             aria-current={isActive(agent.id)}
             role="tab"
@@ -611,7 +612,7 @@
             {:else if status === "failed"}
               <span class="badge" data-tone={statusTone("error")}>failed</span>
             {/if}
-          </button>
+          </Button>
         {/each}
       </section>
 
@@ -622,8 +623,8 @@
         </div>
         {#each SKILL_TABS as tab (tab.id)}
           {@const state = tab.skill === null ? "generated" : skillState(tab.skill)}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             aria-current={isActive(tab.id)}
             role="tab"
@@ -641,7 +642,7 @@
                 {state}
               </span>
             {/if}
-          </button>
+          </Button>
         {/each}
       </section>
       {/if}
@@ -652,14 +653,14 @@
             <span>Warnings</span>
             <span>{discover.displayedWarnings.length}</span>
           </div>
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             data-command="open.discover.warnings"
             onclick={() => open("discover", "warnings", "warnings", "warnings", "Warnings")}
           >
             <span class="sidebar-item__label">Review warnings</span>
-          </button>
+          </Button>
         </section>
       {/if}
     {:else}
@@ -671,8 +672,8 @@
         <div class="sidebar-group__title">Background agents</div>
         {#each agents.descriptors as descriptor (descriptor.id)}
           {@const snapshot = agents.snapshot(descriptor.id)}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             aria-current={isActive(descriptor.tab.id) ? "true" : undefined}
             aria-label={`${descriptor.label} (${modeLabel})`}
@@ -699,14 +700,14 @@
             <span class="sidebar-item__meta" data-testid={`agent-count-${descriptor.id}`}>
               {agents.count(descriptor.id)}
             </span>
-          </button>
+          </Button>
         {/each}
       </section>
 
       <section class="sidebar-group" aria-label="Devboard sections">
         {#each DEVBOARD_SIDEBAR as entry (entry.id)}
-          <button
-            type="button"
+          <Button
+            bare
             class="sidebar-item"
             aria-current={isActive(DEVBOARD_TAB.id)}
             data-testid="devboard-tab"
@@ -714,7 +715,7 @@
             onclick={() => open("devboard", DEVBOARD_TAB.id, DEVBOARD_TAB.kind, DEVBOARD_TAB.resourceId, DEVBOARD_TAB.title)}
           >
             <span class="sidebar-item__label">{entry.label}</span>
-          </button>
+          </Button>
         {/each}
       </section>
     {/if}

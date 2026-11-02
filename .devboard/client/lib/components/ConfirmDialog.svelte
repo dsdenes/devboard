@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Dialog } from "bits-ui";
+  import CommandButton from "./CommandButton.svelte";
   import Button from "./ui/button.svelte";
 
   interface Props {
@@ -12,6 +13,8 @@
     testid?: string;
     confirmCommand?: string;
     cancelCommand?: string;
+    /** Reactive read of the server state that confirms the command. */
+    evidence?: () => unknown;
     onconfirm: () => void;
     oncancel: () => void;
   }
@@ -26,6 +29,7 @@
     testid,
     confirmCommand,
     cancelCommand,
+    evidence,
     onconfirm,
     oncancel,
   }: Props = $props();
@@ -49,13 +53,23 @@
         >
           {cancelLabel}
         </Button>
-        <Button
-          variant={destructive ? "destructive" : "default"}
-          data-command={confirmCommand}
-          onclick={onconfirm}
-        >
-          {confirmLabel}
-        </Button>
+        {#if evidence !== undefined}
+          <CommandButton
+            variant={destructive ? "destructive" : "default"}
+            label={confirmLabel}
+            evidence={evidence}
+            command={onconfirm}
+            data-command={confirmCommand}
+          />
+        {:else}
+          <Button
+            variant={destructive ? "destructive" : "default"}
+            data-command={confirmCommand}
+            onclick={onconfirm}
+          >
+            {confirmLabel}
+          </Button>
+        {/if}
       </div>
     </Dialog.Content>
   </Dialog.Portal>

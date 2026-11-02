@@ -2,7 +2,7 @@
   import { discoverAgent } from "../../../server/agents/registry";
   import { discover } from "../discover.svelte";
   import { relativeTime } from "../discover-format";
-  import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
 
   interface Props {
     agent: string;
@@ -59,11 +59,14 @@
           {#if question.options.length > 0}
             <div class="choice-list">
               {#each question.options as option (option.label)}
-                <button
-                  type="button"
+                <CommandButton
+                  bare
                   class="choice"
+                  label={option.label}
+                  busyLabel="Answering…"
+                  evidence={() => discover.agentQuestionOf(agent)}
+                  command={() => discover.answer(option.label)}
                   data-testid="discover-agent-choice"
-                  onclick={() => discover.answer(option.label)}
                 >
                   <span class="choice__label">
                     {option.label}
@@ -71,7 +74,7 @@
                       <span class="choice__recommended">Recommended</span>
                     {/if}
                   </span>
-                </button>
+                </CommandButton>
               {/each}
             </div>
           {/if}

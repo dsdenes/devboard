@@ -267,7 +267,14 @@ invented for this document.
 4. **Destructive actions name their cost.** The control names what it deletes and confirms
    before deleting; no destructive action fires on hover or a stray click.
 5. **Feedback is immediate and local.** Saves, filings, and failures report beside the control
-   that caused them; a transient notice clears itself and keeps its history entry.
+   that caused them; a transient notice clears itself and keeps its history entry. Every button
+   acknowledges an activation: it paints a pressed fill from pointer-down until pointer-up and
+   while `Enter` or `Space` holds it. A button that dispatches work states the work in words —
+   its visible label becomes the present participle of its own verb (`Start` → `Starting…`) with
+   `aria-busy="true"` — until the confirming server state arrives, or for at most 10 seconds,
+   after which it returns to its resting label and a `role="status"` notice beside it states
+   that the action received no answer. A control that only changes client state shows the
+   pressed fill alone and never claims work is under way.
 6. **Keyboard parity.** Every mode and primary command is reachable from the command palette,
    and focus is always a 2px `ring`.
 7. **Density stays scannable.** Prose at 12–13px, tabular mono for counts, one state word per
@@ -428,13 +435,24 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
 `icon-button.svelte`, and `input.svelte`. All consume `app.css` custom properties through
 `var(--token)`; they hold no literal colors.
 
-- **Button** — 28px tall, 4px radius, `control` type. Variants `default` (filled `primary`),
-  `secondary` (default), `outline`, `ghost`, `destructive`, `link`; sizes `default` (28px),
-  `sm` (24px, 11px type), `icon` (28px square). Disabled is 45% opacity and non-interactive.
-  Focus is a 2px `ring` ring with a 1px offset.
+- **Button** — the one button primitive: the literal `<button>` element exists nowhere else in
+  the client, so every button in the application is this control, including a sidebar row, a
+  choice, a palette item, and a status item through its `bare` form, which keeps the caller's
+  own class and geometry. 28px tall, 4px radius, `control` type. Variants `default` (filled
+  `primary`), `secondary` (default), `outline`, `ghost`, `destructive`, `link`; sizes `default`
+  (28px), `sm` (24px, 11px type), `icon` (28px square). Disabled is 45% opacity and
+  non-interactive. Focus is a 2px `ring` ring with a 1px offset. An activation paints a pressed
+  fill in both themes from `pointerdown` until `pointerup` and while `Enter` or `Space` holds
+  the control; the pressed rule mixes the variant's own role tokens with `foreground` (or
+  `secondary` for `link`), so no pressed color token exists and `design/tokens.json` carries no
+  entry for it. A command control shows its busy word with `aria-busy="true"` until evidence or
+  the ceiling; `CommandButton` composes this primitive with that state and the ceiling notice
+  and renders no button of its own.
 - **IconButton** — square ghost icon button built from the `Button` variant table, 28px, requires
   an accessible `label`; `active` renders the `secondary-hover` fill and `aria-pressed="true"`.
-  Its tooltip uses `surface-raised`, `control`-sized text, and the `lg` radius.
+  A command icon control sets `aria-busy="true"` while in flight and changes its accessible name
+  and `title` to the busy phrase (`Reloading…`, `Filing issue…`) without adding inline text. Its
+  tooltip uses `surface-raised`, `control`-sized text, and the `lg` radius.
 - **Input** — 28px tall, `background` fill, `border-strong` outline, 4px radius, `control` type
   at 12px, `muted-foreground` placeholder, `ring` focus ring. Disabled is 50% opacity.
 - **Panel** (`.panel` in `app.css`) — `surface` fill, 1px `border`, 4px radius, 30px header,

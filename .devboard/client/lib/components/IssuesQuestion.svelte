@@ -1,7 +1,10 @@
 <script lang="ts">
   import { issues } from "../issues.svelte";
   import type { RunQuestion } from "../types";
+  import { createCommandBusy } from "../command-busy.svelte";
   import Button from "./ui/button.svelte";
+  import CommandButton from "./CommandButton.svelte";
+  import CommandNotice from "./CommandNotice.svelte";
   import Input from "./ui/input.svelte";
 
   interface Props {
@@ -30,9 +33,13 @@
 
   let answer = $state("");
 
+  /** One answer at a time; the question this control answers is the evidence. */
+  const answerPending = createCommandBusy({ label: "Answer", evidence: () => question });
+
   function submit(value: string): void {
     const trimmed = value.trim();
     if (trimmed.length === 0) return;
+    answerPending.start();
     if (onanswer !== undefined) onanswer(trimmed);
     else if (runId !== undefined) issues.submitAgentAnswer(runId, question.id, trimmed);
     answer = "";
@@ -44,13 +51,16 @@
   {#if question.options.length > 0}
     <div class="choice-list">
       {#each question.options as option (option.label)}
-        <button
-          type="button"
+        <CommandButton
+          bare
           class="choice"
+          label={option.label}
+          busyLabel="Answering…"
+          evidence={() => question}
+          command={() => submit(option.label)}
           data-testid={choiceTestid}
           data-run={runId}
           data-command={command}
-          onclick={() => submit(option.label)}
         >
           <span class="choice__label">
             {option.label}
@@ -61,7 +71,7 @@
           {#if option.description}
             <span class="choice__description">{option.description}</span>
           {/if}
-        </button>
+        </CommandButton>
       {/each}
     </div>
   {/if}
@@ -84,6 +94,8 @@
     <Button
       variant="default"
       type="submit"
+      label="Answer"
+      busy={answerPending.busy}
       data-command={command}
       data-testid={submitTestid}
       data-run={runId}
@@ -92,4 +104,7 @@
       Answer
     </Button>
   </form>
+  {#if answerPending.notice !== null}
+    <CommandNotice text={answerPending.notice} ondismiss={() => answerPending.dismiss()} />
+  {/if}
 </div>

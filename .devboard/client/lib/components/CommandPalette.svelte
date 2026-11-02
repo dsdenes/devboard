@@ -3,6 +3,7 @@
   import { Dialog } from "bits-ui";
   import { notifications } from "../notifications.svelte";
   import type { CommandDef } from "../commands";
+  import Button from "./ui/button.svelte";
 
   interface Props {
     open: boolean;
@@ -168,8 +169,8 @@
             {#if index === 0 || filtered[index - 1]?.group !== command.group}
               <div class="palette__group">{command.group}</div>
             {/if}
-            <button
-              type="button"
+            <Button
+              bare
               id={`palette-item-${index}`}
               class="palette__item"
               role="option"
@@ -189,7 +190,7 @@
               {#if command.shortcut !== undefined}
                 <kbd class="palette__shortcut">{command.shortcut}</kbd>
               {/if}
-            </button>
+            </Button>
           {/each}
         {/if}
       </div>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { agents } from "../agents.svelte";
+  import Button from "./ui/button.svelte";
 
   const MAX_ISSUES = 10;
 
@@ -43,8 +44,8 @@
 <svelte:window onkeydown={handleKey} />
 
 <div class="watchdog">
-  <button
-    type="button"
+  <Button
+    bare
     class="status-item status-item--button watchdog-trigger"
     data-testid="status-watchdog"
     aria-expanded={open}
@@ -55,7 +56,7 @@
     <span class="status-dot" data-state={dot} aria-hidden="true"></span>
     <span class="status-metric__label">watchdog</span>
     <span class="mono status-metric__value">{action} · {age}</span>
-  </button>
+  </Button>
   {#if open}
     <div
       class="watchdog-popover shadow-md"
@@ -95,10 +96,6 @@
   .watchdog {
     display: inline-flex;
     flex: 0 0 auto;
-  }
-
-  .watchdog-trigger {
-    max-width: 260px;
   }
 
   .watchdog-popover {
