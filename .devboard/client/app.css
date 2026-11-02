@@ -2221,12 +2221,6 @@ kbd {
   margin: 0;
 }
 
-.discover-facts--grouped {
-  border-top: 1px solid var(--border-subtle);
-  margin-top: 12px;
-  padding-top: 10px;
-}
-
 .discover-fact {
   align-items: baseline;
   display: grid;
@@ -2497,13 +2491,6 @@ a.code-chip--link:focus-visible {
 
 .discover-context__entries .discover-chips {
   margin: 0;
-}
-
-.discover-boundary-note {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  line-height: 1.45;
-  margin: 10px 0 0;
 }
 
 .discover-search {

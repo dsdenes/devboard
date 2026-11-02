@@ -3944,7 +3944,7 @@ try {
     commandHeaders: number;
     contextHeader: string;
     contextRows: number;
-    contextRoles: string[];
+    boundaryFacts: number;
     sharedKernelTitle: string;
     sharedKernelChips: number;
     sharedKernelTexts: string[];
@@ -4029,8 +4029,7 @@ try {
       commandHeaders: document.querySelectorAll('[data-testid="discover-command-list"] thead').length,
       contextHeader: document.querySelector('#workspace-discover [data-field="architecture"] th')?.textContent?.trim() ?? "",
       contextRows: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context').length,
-      contextRoles: [...document.querySelectorAll('#workspace-discover [data-field="architecture"] .discover-fact dt')]
-        .map((term) => term.textContent.trim()),
+      boundaryFacts: document.querySelectorAll('#workspace-discover [data-field="architecture"] .discover-fact').length,
       sharedKernelTitle: document.querySelector('#workspace-discover [data-field="shared-kernels"] .panel__title')?.textContent?.trim() ?? "",
       sharedKernelChips: document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] code.code-chip').length,
       sharedKernelTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] code.code-chip')]
@@ -4121,9 +4120,8 @@ try {
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
   check(discoverTables.contextRows > 0, "the bounded-context list is empty", discoverTables);
-  check(discoverTables.contextRoles.includes("Dependency direction"), "the boundary map does not label the dependency direction", discoverTables.contextRoles);
+  check(discoverTables.boundaryFacts === 0, "the removed boundary facts line is still rendered", discoverTables);
   check(discoverTables.externalBoundaryTitle === "External boundaries", "external boundaries is not a separate Discover widget", discoverTables.externalBoundaryTitle);
-  check(!discoverTables.contextRoles.includes("External boundaries"), "the boundary map still lists external boundaries", discoverTables.contextRoles);
   check(discoverTables.externalBoundaryChips === 2, "the External boundaries widget does not render one chip per system", discoverTables.externalBoundaryChips);
   check(
     JSON.stringify(discoverTables.externalBoundaryTexts) ===
@@ -4133,7 +4131,6 @@ try {
   );
   check(!(discoverTables.externalBoundaryTexts.join("")).includes("node:"), "the External boundaries block names a runtime built-in", discoverTables.externalBoundaryTexts);
   check(discoverTables.sharedKernelTitle === "Shared kernels", "shared kernels is not a separate Discover widget", discoverTables.sharedKernelTitle);
-  check(!discoverTables.contextRoles.includes("Shared kernels"), "the boundary map still lists shared kernels", discoverTables.contextRoles);
   check(discoverTables.sharedKernelChips === 1, "the Shared kernels widget does not render one chip per kernel", discoverTables.sharedKernelChips);
   check(
     JSON.stringify(discoverTables.sharedKernelTexts) === JSON.stringify(["src/shared"]),

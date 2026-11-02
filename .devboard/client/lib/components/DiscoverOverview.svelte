@@ -38,24 +38,11 @@
     { id: "gate", header: "Quality gate", accessorKey: "gate" },
   ];
   const QUALITY_GATE_WIDTHS = { gate: "220px" };
-  /** The architecture sentences the Bounded contexts widget lists as facts. */
-  const BOUNDARY_GROUPS = [
-    { key: "dependencyDirection", label: "Dependency direction" },
-  ] as const;
-
-  type BoundaryGroup = (typeof BOUNDARY_GROUPS)[number];
-
   interface ContextRow {
     name: string;
     path: string;
     responsibility: string;
     entryPoints: string[];
-  }
-
-  interface BoundaryRow {
-    key: BoundaryGroup["key"];
-    label: string;
-    values: string[];
   }
 
   const MONO_FIELDS = new Set(["artifact", "defaultBranch", "manifests"]);
@@ -181,17 +168,6 @@
       })
       .filter((row) => row.name.length > 0 || row.path.length > 0),
   );
-  const boundaryRows: BoundaryRow[] = $derived.by(() => {
-    const rows: BoundaryRow[] = [];
-    for (const group of BOUNDARY_GROUPS) {
-      const leaf = sectionLeaf(architectureSection, group.key);
-      if (leaf === undefined || leaf.confidence === "unknown") continue;
-      const values = boundaryValues(leaf);
-      if (values.length === 0) continue;
-      rows.push({ key: group.key, label: group.label, values });
-    }
-    return rows;
-  });
   const externalBoundariesLeaf = $derived(
     sectionLeaf(architectureSection, "externalBoundaries"),
   );
@@ -204,18 +180,6 @@
     const values = leaf.value.map((value) => scalarText(value).trim()).filter(Boolean);
     return [...new Set(values)].filter((value) => value.toLowerCase() !== "none detected");
   });
-  const unknownBoundaryGroups = $derived.by(() => {
-    const labels: string[] = [];
-    const reasons = new Set<string>();
-    for (const group of BOUNDARY_GROUPS) {
-      const leaf = sectionLeaf(architectureSection, group.key);
-      if (leaf === undefined || leaf.confidence !== "unknown") continue;
-      labels.push(group.label.toLowerCase());
-      if (typeof leaf.reason === "string" && leaf.reason.length > 0) reasons.add(leaf.reason);
-    }
-    return { labels, reasons: [...reasons] };
-  });
-
   function baseName(value: string): string {
     const trimmed = value.replace(/[\\/]+$/, "");
     const parts = trimmed.split(/[\\/]+/);
@@ -230,12 +194,6 @@
   function factText(key: string, leaf: Leaf): string {
     if (!TECHNOLOGY_FIELDS.has(key)) return leafText(leaf);
     return leafLines(leaf.value).map(technologyName).join(", ");
-  }
-
-  /** The dependency direction is one sentence; no direction is not a fact. */
-  function boundaryValues(leaf: Leaf): string[] {
-    const text = scalarText(leaf.value).trim();
-    return text.length > 0 && text.toLowerCase() !== "none detected" ? [text] : [];
   }
 
   function visibleSection(section: unknown, hidden: string[]): Record<string, unknown> {
@@ -844,24 +802,6 @@
                 <p class="empty">{unknownText(contextsLeaf)}</p>
               {:else}
                 <p class="empty">No bounded context was detected.</p>
-              {/if}
-
-              {#if boundaryRows.length > 0}
-                <dl class="discover-facts discover-facts--grouped">
-                  {#each boundaryRows as row (row.key)}
-                    <div class="discover-fact" data-role={row.key}>
-                      <dt>{row.label}</dt>
-                      <dd>{row.values[0]}</dd>
-                    </div>
-                  {/each}
-                </dl>
-              {/if}
-
-              {#if unknownBoundaryGroups.labels.length > 0}
-                <p class="discover-boundary-note">
-                  Not observed: {unknownBoundaryGroups.labels.join(", ")}.
-                  {unknownBoundaryGroups.reasons.join(" ")}
-                </p>
               {/if}
             </div>
           </section>
