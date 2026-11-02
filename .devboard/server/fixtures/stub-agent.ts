@@ -858,7 +858,7 @@ async function runFlowGoal(directory: string) {
   await askQuestions(1);
   if (flowGoalFail) {
     log("flow-goal-failed");
-    return;
+    process.exit(1);
   }
   mkdirSync(directory, { recursive: true });
   let text = flowGoalText;

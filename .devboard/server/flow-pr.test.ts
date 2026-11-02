@@ -523,7 +523,6 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
       exec: recorder.exec,
       watchMs: options.watchMs ?? 40,
       analystTimeoutMs: 10_000,
-      goalTimeoutMs: 10_000,
       ...(options.commandTimeoutMs === undefined
         ? {}
         : { commandTimeoutMs: options.commandTimeoutMs }),

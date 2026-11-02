@@ -146,6 +146,10 @@ export class FlowStore {
     connection.send({ type: "createFlowGoal" });
   }
 
+  cancelGoal(): void {
+    connection.send({ type: "cancelFlowGoal" });
+  }
+
   startImplementation(): void {
     connection.send({ type: "startFlowImplementation" });
   }

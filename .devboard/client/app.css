@@ -1598,6 +1598,27 @@ kbd {
   min-height: 0;
 }
 
+/* No goal yet: the panel is bounded by its onboarding content, never by the
+   page or the saved goal's editor height. */
+.flow-goal-panel--empty {
+  height: auto;
+  min-height: 0;
+}
+
+.flow-goal-onboarding {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 760px;
+  overflow-wrap: anywhere;
+}
+
+.flow-goal-onboarding strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
 .flow-goal-editor {
   display: flex;
   min-height: 0;

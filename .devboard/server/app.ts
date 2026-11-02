@@ -223,7 +223,7 @@ export interface AppOptions {
    * Flow Mode's deterministic seams: an injected forge and executor for tests
    * and browser verification, and the watcher timings for focused runs.
    */
-  flow?: Pick<FlowOptions, "forge" | "forgeTarget" | "exec" | "watchMs" | "analystTimeoutMs" | "goalTimeoutMs">;
+  flow?: Pick<FlowOptions, "forge" | "forgeTarget" | "exec" | "watchMs" | "analystTimeoutMs">;
   /**
    * Discover's remote-clone seam: tests replace the `git clone` child, the
    * default runner spawns it with the bounded environment and timeout.
@@ -653,6 +653,7 @@ type ClientMessage =
   | { type: "deleteSkill"; name?: unknown }
   | { type: "resetImplementation" }
   | { type: "createFlowGoal" }
+  | { type: "cancelFlowGoal" }
   | { type: "startFlowImplementation" }
   | { type: "stopFlowImplementation" }
   | { type: "retryFlowPr" }
@@ -817,6 +818,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "resetImplementation" };
     case "createFlowGoal":
       return { type: "createFlowGoal" };
+    case "cancelFlowGoal":
+      return { type: "cancelFlowGoal" };
     case "startFlowImplementation":
       return { type: "startFlowImplementation" };
     case "stopFlowImplementation":
@@ -7448,6 +7451,8 @@ export function createApp(options: AppOptions) {
             startImplementationReset(ws);
           } else if (command.type === "createFlowGoal") {
             await flow.createGoal();
+          } else if (command.type === "cancelFlowGoal") {
+            flow.cancelGoal();
           } else if (command.type === "startFlowImplementation") {
             await flow.startImplementation();
           } else if (command.type === "stopFlowImplementation") {

@@ -436,6 +436,7 @@
   <section
     class="panel flow-goal-panel"
     class:flow-goal-panel--collapsed={flow.goalCreation !== null}
+    class:flow-goal-panel--empty={flow.goalCreation === null && !hasGoal}
     data-testid="flow-goal"
     data-collapsed={flow.goalCreation === null ? "false" : "true"}
   >
@@ -452,22 +453,34 @@
         </span>
       </div>
       <div class="row-sm flow-goal__actions">
-        <CommandButton
+        <Button
           variant={hasGoal ? "outline" : "default"}
-          label={hasGoal ? "Recreate flow goal" : "Create flow goal"}
-          evidence={() => flow.goalCreation}
-          command={() => flow.createGoal()}
           data-command="flow.goal.create"
           data-testid="create-flow-goal"
+          onclick={() => flow.createGoal()}
         >
           {hasGoal ? "Recreate flow goal" : "Create flow goal"}
-        </CommandButton>
+        </Button>
       </div>
     </div>
     {#if flow.goalCreation === null}
-      <div class="panel__body flow-goal-editor">
-        <pre class="flow-document__text mono" data-testid="flow-goal-text" aria-label="Flow goal">{flow.goal}</pre>
-      </div>
+      {#if hasGoal}
+        <div class="panel__body flow-goal-editor">
+          <pre class="flow-document__text mono" data-testid="flow-goal-text" aria-label="Flow goal">{flow.goal}</pre>
+        </div>
+      {:else}
+        <div class="panel__body flow-goal-onboarding" data-testid="flow-goal-onboarding">
+          <p style="margin: 0;">
+            The Flow goal starts as an <strong>interview</strong>: the agent asks one question at a
+            time until the end result and its boundaries are settled. It writes one
+            <strong>goal</strong>. The <strong>implementation</strong> agent then works from that
+            goal in an isolated worktree.
+          </p>
+          <p class="muted" style="margin: 0;">
+            Create flow goal starts the interview.
+          </p>
+        </div>
+      {/if}
     {/if}
   </section>
 {/snippet}
@@ -479,7 +492,17 @@
     {#if flow.goalCreation !== null}
       {@const creation = flow.goalCreation}
       <section class="panel" data-testid="flow-goal-active">
-        <div class="panel__header"><h2 class="panel__title">Goal interview</h2></div>
+        <div class="panel__header">
+          <h2 class="panel__title">Goal interview</h2>
+          <Button
+            variant="outline"
+            data-command="flow.goal.cancel"
+            data-testid="cancel-flow-goal"
+            onclick={() => flow.cancelGoal()}
+          >
+            Cancel goal interview
+          </Button>
+        </div>
         <div class="panel__body stack-sm">
           {#if creation.question !== null}
             {@render questionPanel(creation.question, "goal", "flow-goal-question")}
