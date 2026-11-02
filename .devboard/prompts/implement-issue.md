@@ -68,9 +68,11 @@ context, but you never edit, comment on, close, or reopen another issue.
   `git fetch origin` (see *Fetch budget*) followed by one `git rebase origin/main` inside the
   worktree, run before the first edit. The worktree was cut from that fetched `origin/main`, so
   that rebase normally prints `Current branch issue-<number> is up to date.`, which is the
-  successful sync; the sync never fetches a second time. A bare `git rebase main` is never used,
-  because `main` is a local ref that can lag the pushed upstream, so the target is always
-  `origin/main`. Chain nothing after the rebase: no `git log`, no `git diff`, no count, and no
+  successful sync; the sync never fetches a second time. In this pre-edit sync a bare
+  `git rebase main` is never used, because `main` is a local ref that can lag the pushed
+  upstream, so the sync's target is always `origin/main`; the landing rebase in *Landing*, whose
+  target is the canonical checkout's local `main`, is that ban's one exception. Chain nothing
+  after the rebase: no `git log`, no `git diff`, no count, and no
   second `git rebase origin/main`. Confirm the result with the one `git status --short --branch`
   sync-state read in *Landing*, and never rebase again after a successful sync — a later rebase
   belongs only to the landing integration or a rejected push below, never to re-verification or
@@ -613,9 +615,16 @@ The status line decides whether the first merge may run: with no `[ahead N]` mar
 fast-forwards `main` to the fetched tip, and the second merge adds the rebased task branch. An
 `[ahead N]` marker means the canonical checkout itself carries unpublished commits, so that
 fast-forward is forbidden: rebase `main` onto `origin/main`, rerun the checks the rebase
-invalidates, and read the line again before merging the task branch. Run the sequence once per
-landing attempt: no `&&` chain between its lines, no `tail` pipe, and no `PIPESTATUS` probe. Never
-create a pull request or merge request.
+invalidates, and read the line again before merging the task branch. After the first landing
+merge and before `git merge --ff-only <task-branch>`, rebase the task branch onto the canonical
+checkout's `main` — not `origin/main` — whenever the task branch lacks the current `main` tip,
+rerun the checks the rebase invalidates, then run the second merge. A canonical
+`## main...origin/main [ahead N]` line is a concurrent landing's unpublished commits, so the task
+branch must contain that tip for the second merge to fast-forward; `origin/main` cannot supply it
+and the fetch budget allows no second fetch. This landing rebase is the one exception to the
+pre-edit ban on `git rebase main`. Run the sequence once per landing attempt: no `&&` chain
+between its lines, no `tail` pipe, and no `PIPESTATUS` probe. Never create a pull request or
+merge request.
 
 Before pushing, read the behind state against the tip the task-start fetch named with this one
 pre-push probe, run in the canonical checkout and read as-is:
@@ -684,9 +693,12 @@ not an instruction to repeat the merge. Never rerun the same `--ff-only` command
 back to `--no-ff` silently. Name which side is ahead with the `git status --short --branch` line
 the landing sequence already printed — `[ahead N]` counts the commits only `HEAD` has and
 `[behind N]` the commits only the upstream ref has — and never chain that read with `&&`.
-Integrate `origin/main` into the task branch — rebase it inside the worktree onto `origin/main`
-and rerun the checks the rebase invalidates — then repeat the sequence and the push block from the
-start.
+When the refused merge is `git merge --ff-only <task-branch>`, the task branch lacks the
+canonical checkout's `main` tip, not only a tip `origin/main` carries: rebase the task branch
+onto that local `main` inside the worktree and rerun the checks the rebase invalidates. When the
+refused merge is the first one, integrate `origin/main` into the task branch — rebase it inside
+the worktree onto `origin/main` and rerun the checks the rebase invalidates. Then repeat the
+sequence and the push block from the start.
 
 A `CONFLICT (content)` is resolved in the merge that raised it: edit the conflicted files, stage
 them, commit the result, and rerun the checks the conflict invalidates. `git merge --abort`
