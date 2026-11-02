@@ -1,6 +1,6 @@
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { GOAL_PROPOSALS_DIRECTORY } from "../../server/goal-proposal";
+import { pickEntryPoint, type EntryPoint, type EntryPointSurface } from "../../lib/entry-point";
 import { runIdentifier } from "../worker";
 import {
   CATEGORIES,
@@ -13,6 +13,8 @@ import {
 } from "./paths";
 import { writeAtomic, type ScoutLimits } from "./state";
 
+export { readDraftGoalHeadings } from "../../lib/draft-goals";
+
 /**
  * One scan's request: written before the prompt and read by the agent, so the
  * contract between the worker and `/scout-recommendations` is a file, not a
@@ -23,12 +25,16 @@ import { writeAtomic, type ScoutLimits } from "./state";
 export const SCAN_PROMPT = "/scout-recommendations";
 
 export interface ScanRequest {
-  version: 3;
+  version: 4;
   scanId: string;
   repository: string;
   repositoryPath: string;
   /** How many significant findings this scan may turn into issues. */
   requested: number;
+  /** The surface and seeded entry point every crawl starts from. */
+  surface: EntryPointSurface;
+  seed: string;
+  entryPoint: { path: string; line: number };
   categories: string[];
   excludedRoots: string[];
   /** Every draft-goal heading the scan must not restate. */
@@ -74,13 +80,24 @@ export function buildRequest(options: {
   draftGoalHeadings: string[];
   maxPerHour: number | null;
   maxPending: number | null;
+  environment?: Record<string, string | undefined>;
+  seed?: string;
 }): ScanRequest {
+  const pick: EntryPoint = pickEntryPoint({
+    repoDir: options.repoDir,
+    surface: "scout",
+    ...(options.seed === undefined ? {} : { seed: options.seed }),
+    ...(options.environment === undefined ? {} : { environment: options.environment }),
+  });
   return {
-    version: 3,
+    version: 4,
     scanId: options.scan.scanId,
     repository: options.repository,
     repositoryPath: resolve(options.repoDir),
     requested: options.requested,
+    surface: pick.surface,
+    seed: pick.seed,
+    entryPoint: { path: pick.path, line: pick.line },
     categories: [...CATEGORIES],
     excludedRoots: [...EXCLUDED_ROOTS],
     draftGoalHeadings: [...options.draftGoalHeadings],
@@ -168,29 +185,3 @@ export function promptFor(directory: string): string {
   return `${SCAN_PROMPT} ${directory}`;
 }
 
-/** The `# heading` of every draft under `<REPO_DIR>/.devboard/goal-proposals/`. */
-export function readDraftGoalHeadings(repoDir: string): string[] {
-  const directory = join(resolve(repoDir), GOAL_PROPOSALS_DIRECTORY);
-  let names: string[];
-  try {
-    names = readdirSync(directory).filter((name) => name.endsWith(".md")).sort();
-  } catch {
-    return [];
-  }
-  const headings: string[] = [];
-  for (const name of names) {
-    let text: string;
-    try {
-      text = readFileSync(join(directory, name), "utf8");
-    } catch {
-      continue;
-    }
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
-      if (trimmed.startsWith("# ")) headings.push(trimmed.slice(2).trim());
-      break;
-    }
-  }
-  return headings;
-}

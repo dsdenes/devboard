@@ -554,7 +554,7 @@ describe("tool-driven filing", () => {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
       const scanPath = scanDirectoryOf(peer.prompts[0]!);
       const request = readRequest(scanPath);
-      expect(request.version).toBe(3);
+      expect(request.version).toBe(4);
       expect(request.requested).toBe(Math.min(10, 5));
       const result = await fileItem(f, scanPath, {
         title: "Improve module 1 behavior",
@@ -677,7 +677,7 @@ describe("caps", () => {
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
       const request = readRequest(scanDirectoryOf(peer.prompts[0]!));
-      expect(request.version).toBe(3);
+      expect(request.version).toBe(4);
       // window 3, open 1: min(10 - 3, 5 - 1) = 4
       expect(request.requested).toBe(4);
       expect(request.maxPerHour).toBe(10);

@@ -1,4 +1,5 @@
 import { CATEGORIES, type ScoutCategory } from "./paths";
+import { normalizeIssueTitle } from "../../lib/issue-title";
 
 /**
  * Scout identity helpers that survive the tool-driven flow: the normalized
@@ -13,7 +14,7 @@ export function isCategory(value: unknown): value is ScoutCategory {
 
 /** Lowercase, whitespace-collapsed, trimmed: the one title identity everywhere. */
 export function normalizeTitle(title: string): string {
-  return title.toLowerCase().replace(/\s+/g, " ").trim();
+  return normalizeIssueTitle(title);
 }
 
 /**

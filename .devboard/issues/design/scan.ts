@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pickEntryPoint, type EntryPointSurface } from "../../lib/entry-point";
 import {
   CYCLE_VERSION,
   DESIGN_CATEGORIES,
@@ -18,13 +19,17 @@ import type { AuditInput } from "./audit";
  */
 
 export interface CycleRequest {
-  version: 1;
+  version: 2;
   cycleId: string;
   repository: string;
   repoDir: string;
   sourceDir: string;
   documents: string[];
   sources: Array<{ path: string; lines: number }>;
+  /** The surface and seeded entry point every crawl starts from. */
+  surface: EntryPointSurface;
+  seed: string;
+  entryPoint: { path: string; line: number };
   categories: readonly string[];
   knownTitles: string[];
   issueRoom: number;
@@ -65,9 +70,15 @@ export function writeCycle(
     knownTitles: string[];
     issueRoom: number;
     now: Date;
+    environment?: Record<string, string | undefined>;
   },
 ): CycleRequest {
   const sourceRoot = resolve(options.repoDir);
+  const pick = pickEntryPoint({
+    repoDir: sourceRoot,
+    surface: "design",
+    ...(options.environment === undefined ? {} : { environment: options.environment }),
+  });
   const request: CycleRequest = {
     version: CYCLE_VERSION,
     cycleId: options.cycleId,
@@ -76,6 +87,9 @@ export function writeCycle(
     sourceDir: options.config.sourceDir,
     documents: [options.config.designDocument, options.config.tokenDocument],
     sources: options.input.sources.map((file) => ({ path: file.path, lines: file.lines })),
+    surface: pick.surface,
+    seed: pick.seed,
+    entryPoint: { path: pick.path, line: pick.line },
     categories: DESIGN_CATEGORIES,
     knownTitles: [...options.knownTitles].sort(),
     issueRoom: options.issueRoom,

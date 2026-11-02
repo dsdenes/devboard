@@ -33,6 +33,7 @@ import {
   versionedStatePath as designStatePath,
 } from "../issues/design/paths";
 import { readState as readDesignState } from "../issues/design/state";
+import { pickEntryPoint } from "../lib/entry-point";
 
 const stubAcp = join(harnessRoot, "tests", "fixtures", "design-stub-acp.ts");
 const stubPublisher = join(harnessRoot, "tests", "fixtures", "design-stub-publisher.ts");
@@ -216,6 +217,31 @@ async function documentationLayout(devtools: Devtools): Promise<{
     empty: boolean;
     entries: number;
   };
+}
+
+/** Waits for a command control's busy label to clear, by evidence or ceiling. */
+async function settleControl(devtools: Devtools, testid: string): Promise<void> {
+  await waitFor(
+    async () =>
+      (await devtools
+        .evaluate(
+          `document.querySelector('[data-testid="${testid}"]')?.getAttribute('aria-busy') !== 'true'`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    `the ${testid} control to settle`,
+    15_000,
+  );
+}
+
+/** The publisher invocations recorded before a documentation push. */
+function publishLinesAt(path: string): number {
+  try {
+    return readFileSync(path, "utf8").split("\n").filter(Boolean).length;
+  } catch {
+    return 0;
+  }
 }
 
 async function click(devtools: Devtools, testid: string): Promise<void> {
@@ -685,7 +711,9 @@ try {
         "open-devboard-scout",
         "open-devboard-watchdog",
         "open-devboard-design",
+        "open-devboard-dead-code",
         "open-devboard-coach",
+        "open-devboard-release-train",
       ]),
     "the Background agents order is wrong",
     sidebar,
@@ -826,6 +854,46 @@ try {
   );
   const firstIssueUrl = firstRows[0]?.url ?? "";
   check(/\/issues\/\d+$/.test(firstIssueUrl), "the filed issue has no URL", firstRows);
+  const designCycles = readdirSync(join(repo, ".devboard", ".tmp", "design", "cycles")).sort();
+  const designCycle = designCycles.at(-1);
+  check(designCycle !== undefined, "the cycle wrote no directory");
+  const designCycleDir = join(repo, ".devboard", ".tmp", "design", "cycles", designCycle!);
+  const designRequest = JSON.parse(
+    readFileSync(join(designCycleDir, "request.json"), "utf8"),
+  ) as {
+    surface?: unknown;
+    seed?: unknown;
+    entryPoint?: { path?: unknown; line?: unknown };
+  };
+  check(
+    designRequest.surface === "design" &&
+      typeof designRequest.seed === "string" &&
+      typeof designRequest.entryPoint?.path === "string" &&
+      typeof designRequest.entryPoint?.line === "number",
+    "the design cycle request records no seeded entry point",
+    designRequest,
+  );
+  const designEntry = designRequest.entryPoint!.path as string;
+  const designLine = designRequest.entryPoint!.line as number;
+  check(existsSync(join(repo, designEntry)), "the design entry point is not a file", designEntry);
+  const designReplay = pickEntryPoint({
+    repoDir: repo,
+    surface: "design",
+    seed: designRequest.seed as string,
+  });
+  check(
+    designReplay.path === designEntry && designReplay.line === designLine,
+    "the recorded design seed does not replay its entry point",
+    { recorded: designRequest.entryPoint, replayed: designReplay },
+  );
+  const designActivity = readFileSync(join(designCycleDir, "activity.json"), "utf8");
+  check(
+    designActivity.includes(designEntry) && designActivity.includes(designRequest.seed as string),
+    "the design activity does not name the entry point and seed",
+  );
+  console.log(
+    `verify:design: entry point ${designEntry}:${designLine} seed ${String(designRequest.seed)}`,
+  );
   const columns = await devtools.evaluate(`(() => [
     ...document.querySelectorAll('[data-testid="agent-issues"] th')
   ].map((cell) => (cell.textContent ?? '').trim()))()`);
@@ -846,7 +914,9 @@ try {
 
   /* 2. A full pending cap files nothing; clearing it resumes filing. */
   await setInput(devtools, "agent-limit-pending", "1");
+  await Bun.sleep(100);
   await click(devtools, "agent-save-limits");
+  await settleControl(devtools, "agent-save-limits");
   const beforeCap = (await rows(devtools)).length;
   await click(devtools, "agent-start");
   await waitFor(
@@ -871,7 +941,9 @@ try {
     await rows(devtools),
   );
   await setInput(devtools, "agent-limit-pending", "");
+  await Bun.sleep(100);
   await click(devtools, "agent-save-limits");
+  await settleControl(devtools, "agent-save-limits");
   await waitFor(
     async () => ((await rows(devtools!)).length > beforeCap ? true : undefined),
     "filing to resume after the cap is cleared",
@@ -916,6 +988,7 @@ try {
   /* 4. An admissible standard releases only the two documents. */
   await writeFile(join(stubDir, "mode"), "admit\n");
   const headBeforeRelease = git(["rev-parse", "HEAD"]);
+  const publishBeforeRelease = publishLinesAt(publishLog);
   await click(devtools, "agent-start");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
@@ -924,17 +997,18 @@ try {
   );
   await waitFor(
     async () =>
-      /released \d+\.\d+\.\d+:/.test(await barLog(devtools!))
+      /pushed documentation [0-9a-f]+; the Release Train will release it/.test(
+        await barLog(devtools!),
+      )
         ? true
         : undefined,
-    "the documented standard to release",
+    "the documented standard to push",
     90_000,
   );
   const activity = await barLog(devtools);
-  const released = /released (\d+\.\d+\.\d+): (\S+)/.exec(activity);
-  check(released !== null, "the activity does not name the release", activity);
-  const version = released![1]!;
-  const releaseUrl = released![2]!;
+  const pushed = /pushed documentation ([0-9a-f]+);/.exec(activity);
+  check(pushed !== null, "the activity does not name the pushed commit", activity);
+  const pushedSha = pushed![1]!;
   check(
     git(["--git-dir", bare, "rev-parse", "main"]) !== headBeforeRelease,
     "the release did not push a commit",
@@ -963,12 +1037,10 @@ try {
   check(git(["branch", "--list", "design/*"]) === "", "the cycle branch was not removed");
   const publishLines = readFileSync(publishLog, "utf8").split("\n").filter(Boolean);
   check(
-    publishLines.some((line) => line.includes(version) && line.startsWith("ok ")),
-    "the stub publisher was not invoked for the released version",
+    publishLines.length === publishBeforeRelease,
+    "the design cycle invoked the publisher; the Release Train owns releases",
     publishLines,
   );
-  check(/^\d+\.\d+\.\d+$/.test(version), "the recorded version is not a release version", version);
-  check(releaseUrl.includes(`v${version}`), "the release URL does not name the version", releaseUrl);
   const releasedDocumentation = await documentationLayout(devtools);
   check(
     releasedDocumentation.present &&
@@ -1004,11 +1076,16 @@ try {
     "the released entry does not show the cycle summary",
     releasedEntry,
   );
-  check(releasedEntry.version === version, "the entry version link text is wrong", releasedEntry);
+  check(
+    typeof releasedEntry.version === "string" &&
+      /^\d+\.\d+\.\d+$/.test(String(releasedEntry.version)),
+    "the entry version link text is not a derived version",
+    releasedEntry,
+  );
   check(
     typeof releasedEntry.href === "string" &&
-      releasedEntry.href.includes(`/releases/tag/v${version}`),
-    "the entry version link does not name the release",
+      releasedEntry.href.includes(`/commit/${pushedSha}`),
+    "the entry version link does not name the pushed commit",
     releasedEntry,
   );
   check(
@@ -1170,10 +1247,12 @@ try {
   );
   await waitFor(
     async () =>
-      /released \d+\.\d+\.\d+:/.test(await barLog(devtools!))
+      /pushed documentation [0-9a-f]+; the Release Train will release it/.test(
+        await barLog(devtools!),
+      )
         ? true
         : undefined,
-    "the retried push to release",
+    "the retried push to land",
     90_000,
   );
   await click(devtools, "agent-stop");
@@ -1188,41 +1267,52 @@ try {
   await writeFile(join(stubDir, "push-mode"), "ok\n");
   console.log("PASS rejected-push");
 
-  /* 8. A failed publish leaves the pushed commit and surfaces agent-error. */
+  /* 8. A documentation push never invokes the publisher. */
   await writeFile(join(stubDir, "mode"), "admit\n");
-  await writeFile(join(stubDir, "publish-mode"), "fail\n");
-  const entriesBeforePublishFailure = (await documentationLayout(devtools)).entries;
-  const headBeforePublishFailure = git(["rev-parse", "HEAD"]);
+  const publishBeforePushOnly = readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length;
+  const entriesBeforePushOnly = (await documentationLayout(devtools)).entries;
+  const headBeforePushOnly = git(["rev-parse", "HEAD"]);
   await click(devtools, "agent-start");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "running" ? true : undefined),
-    "the failing-publish Design System",
+    "the pushing Design System",
     15_000,
   );
   await waitFor(
-    async () => {
-      const value = await text(devtools!, "agent-error");
-      return value.includes("publish") ? value : undefined;
-    },
-    "the publish failure in agent-error",
+    async () =>
+      (await documentationLayout(devtools!)).entries > entriesBeforePushOnly
+        ? true
+        : undefined,
+    "the push to add its documentation entry",
     90_000,
   );
   check(
-    git(["rev-parse", "HEAD"]) !== headBeforePublishFailure,
-    "the failed publish did not leave the pushed commit",
+    /pushed documentation [0-9a-f]+; the Release Train will release it/.test(
+      await barLog(devtools),
+    ),
+    "the activity does not name the push",
+    await barLog(devtools),
+  );
+  check(
+    git(["rev-parse", "HEAD"]) !== headBeforePushOnly,
+    "the push did not advance the integration checkout",
+  );
+  check(
+    readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length ===
+      publishBeforePushOnly,
+    "the design cycle invoked the publisher",
   );
   await click(devtools, "agent-stop");
   await waitFor(
     async () => ((await pageLifecycle(devtools!)) === "stopped" ? true : undefined),
-    "the stopped failing-publish Design System",
+    "the stopped pushing Design System",
     15_000,
   );
-  await writeFile(join(stubDir, "publish-mode"), "ok\n");
   check(
-    (await documentationLayout(devtools)).entries === entriesBeforePublishFailure,
-    "a failed release added a documentation history entry",
+    (await documentationLayout(devtools)).entries > entriesBeforePushOnly,
+    "a successful push added no documentation history entry",
   );
-  console.log("PASS publish-failure");
+  console.log("PASS publisher-not-invoked");
 
   /* 9. A dirty integration checkout names its blocking paths. */
   await writeFile(join(stubDir, "mode"), "admit\n");
@@ -1280,6 +1370,7 @@ try {
     } finally {
       run("mv", [moved, path]);
     }
+    await settleControl(devtools, "agent-start");
   };
   await refuse(join(repo, ".devboard", "client"), ".devboard/client");
   await refuse(join(repo, "DESIGN.md"), "DESIGN.md");
@@ -1411,8 +1502,8 @@ try {
 
   console.log(
     "verify:design: the sidebar entry, shared page ids, the activity bar, the filed-issue table, " +
-      "lifecycle, caps, the normative documents, the autonomous release, single flight, no-op, " +
-      "rejected push, failed publish, dirty integration, preflight refusals, and freshness hold",
+      "lifecycle, caps, the normative documents, the autonomous push, single flight, no-op, " +
+      "rejected push, no publisher call, dirty integration, preflight refusals, and freshness hold",
   );
 } finally {
   if (forgeProcess !== undefined && forgeProcess.pid !== undefined) {

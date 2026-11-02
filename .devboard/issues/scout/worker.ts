@@ -862,10 +862,15 @@ export class ScoutWorker {
         draftGoalHeadings,
         maxPerHour: this.state.limits.maxPerHour,
         maxPending: this.state.limits.maxPending,
+        environment: this.environment,
       });
       writeRequest(scan.directory, request);
       const prompt = promptFor(scan.directory);
-      writeActivity(scan.directory, []);
+      const activity: string[] = [
+        `entry point ${request.entryPoint.path}:${request.entryPoint.line} ` +
+          `(seed ${request.seed})`,
+      ];
+      writeActivity(scan.directory, activity);
 
       let peer: AcpPeer;
       try {
@@ -909,7 +914,7 @@ export class ScoutWorker {
         directory: scan.directory,
         requested,
         prompt,
-        activity: [],
+        activity,
         peer,
         draftGoalHeadings,
         startedAt: scan.startedAt,

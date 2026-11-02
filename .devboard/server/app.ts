@@ -72,6 +72,7 @@ import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { TRACKER_SYNC_INTERVAL_MS } from "./issue-sync";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
+import { DeadCodeBridge, type DeadCodeBridgeOptions } from "./dead-code";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./release-train";
 import { coachDirectory } from "../coach/paths";
@@ -244,6 +245,8 @@ export interface AppOptions {
   >;
   /** Design System's test seams; production uses the detached worker itself. */
   design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "reader">;
+  /** Dead Code's test seams; production uses the detached worker itself. */
+  deadCode?: Pick<DeadCodeBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "reader">;
   /** Coach's test seams; production reads its worker's state and ledger. */
   coach?: Pick<
     CoachActivityOptions,
@@ -2574,6 +2577,7 @@ export function createApp(options: AppOptions) {
   const scoutDescriptor = agentRegistry.require("scout");
   const watchdogDescriptor = agentRegistry.require("watchdog");
   const designDescriptor = agentRegistry.require("design");
+  const deadCodeDescriptor = agentRegistry.require("dead-code");
   const coachDescriptor = agentRegistry.require("coach");
   const releaseTrainDescriptor = agentRegistry.require("release-train");
   const scout = new ScoutBridge({
@@ -2652,6 +2656,31 @@ export function createApp(options: AppOptions) {
   });
 
   /**
+   * Dead Code proves removals from a seeded entry point and files `dead-code`
+   * issues. It runs as a detached worker so it outlives this server.
+   */
+  const deadCode = new DeadCodeBridge({
+    descriptor: deadCodeDescriptor,
+    repoDir,
+    stateDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    runningVersion,
+    harnessDir: runnableHarnessDir(repoDir),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.deadCode?.pollMs === undefined ? {} : { pollMs: options.deadCode.pollMs }),
+    ...(options.deadCode?.preflight === undefined
+      ? {}
+      : { preflight: options.deadCode.preflight }),
+    ...(options.deadCode?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.deadCode.spawnWorker }),
+    ...(options.deadCode?.reader === undefined ? {} : { reader: options.deadCode.reader }),
+    hasClients: () => clients.size > 0,
+  });
+
+  /**
    * Coach reads the ACP transcripts and journal records already on disk,
    * overlays the forge projection its caps count, and commands its detached
    * worker. Opening the page never starts a cycle.
@@ -2702,7 +2731,7 @@ export function createApp(options: AppOptions) {
   /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog, design, coach, releaseTrain],
+    adapters: [scout, watchdog, design, deadCode, coach, releaseTrain],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });

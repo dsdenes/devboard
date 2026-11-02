@@ -19,6 +19,9 @@ issue tool in this same turn.
   worktrees are not the repository under review. Every `path` you cite is relative to that exact
   root: a file under a subdirectory keeps that leading directory in the path, never a shorter
   form. Before filing, confirm every cited path with `test -f <path>` from `<repositoryPath>`.
+- `request.json` also carries `surface` (`scout`), `seed`, and `entryPoint` with a
+  repository-relative `path` and a 1-based `line`. That seeded entry point is this scan's starting
+  point; the scan may not choose another.
 - Read the repository's context files (`AGENTS.md`, `GOAL.md`, `README.md`, `adrs/`, `docs/`), its
   package manifests, its source, and its tests before proposing anything. A finding you cannot
   point at in the code is not a finding.
@@ -70,6 +73,16 @@ Score honestly; file only items scored 4 or 5. An inflated score wastes a filing
 The significance reason states the impact in one or two sentences. "It would be cleaner" is not an
 impact. "`parseA` and `parseB` disagree on a trailing slash, so a path with one is rejected by the
 first and accepted by the second" is.
+
+## Entry point and crawl direction
+
+Start at `entryPoint.path` line `entryPoint.line`. Read that line and the file around it, then
+follow the code outward: every import, export, reference, caller, and callee of the entry point,
+then the same for each file you reach, until no new reachable file appears. Record the reachable
+region in your activity as a repository-relative file list before you file anything. Only a
+finding whose evidence lies inside that reachable region is admissible: a symbol, file, or
+behavior you only noticed elsewhere is not reported this scan. `seed` and `entryPoint` stay
+unchanged for the whole scan; never pick a different starting point.
 
 ## What to survey
 

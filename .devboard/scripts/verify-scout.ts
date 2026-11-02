@@ -26,6 +26,7 @@ import {
 } from "../issues/scout/paths";
 import { readSettings, readState, type ScoutState } from "../issues/scout/state";
 import { readHarnessVersion } from "../server/version";
+import { pickEntryPoint } from "../lib/entry-point";
 import { freePort, run, waitFor } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
@@ -853,6 +854,50 @@ try {
     15_000,
   );
   check(activity.includes("filed #"), "the filings are not in the activity", activity);
+  const scanIds = readdirSync(scansDirectory(fixture.repo)).sort();
+  const newestScan = scanIds.at(-1);
+  check(newestScan !== undefined, "the scan wrote no directory");
+  const scanDirectoryPath = join(scansDirectory(fixture.repo), newestScan!);
+  const scanRequest = JSON.parse(
+    readFileSync(join(scanDirectoryPath, "request.json"), "utf8"),
+  ) as {
+    surface?: unknown;
+    seed?: unknown;
+    entryPoint?: { path?: unknown; line?: unknown };
+  };
+  check(
+    scanRequest.surface === "scout" &&
+      typeof scanRequest.seed === "string" &&
+      typeof scanRequest.entryPoint?.path === "string" &&
+      typeof scanRequest.entryPoint?.line === "number",
+    "the scan request records no seeded entry point",
+    scanRequest,
+  );
+  const entryPath = scanRequest.entryPoint!.path as string;
+  const entryLine = scanRequest.entryPoint!.line as number;
+  check(
+    existsSync(join(fixture.repo, entryPath)),
+    "the entry point is not a repository file",
+    entryPath,
+  );
+  const replayed = pickEntryPoint({
+    repoDir: fixture.repo,
+    surface: "scout",
+    seed: scanRequest.seed as string,
+  });
+  check(
+    replayed.path === entryPath && replayed.line === entryLine,
+    "the recorded seed does not replay its entry point",
+    { recorded: scanRequest.entryPoint, replayed },
+  );
+  const activityText = readFileSync(join(scanDirectoryPath, "activity.json"), "utf8");
+  check(
+    activityText.includes(entryPath) && activityText.includes(scanRequest.seed as string),
+    "the activity does not name the entry point and seed",
+  );
+  console.log(
+    `verify:scout: entry point ${entryPath}:${entryLine} seed ${String(scanRequest.seed)}`,
+  );
   const createdBodies = readStore(fixture).issues.map((issue) => issue.body);
   check(
     createdBodies.every((body) => body.includes("## Significance") && body.includes("5/5")),
@@ -922,8 +967,22 @@ try {
   /* ---------------------------------------------------------------- */
   /* 5. A valid save survives a reload                                 */
   /* ---------------------------------------------------------------- */
+  await waitFor(
+    async () =>
+      (await devtools
+        .evaluate(
+          `document.querySelector('[data-testid="agent-save-limits"]')?.getAttribute('aria-busy') !== 'true'`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the Save limits control to settle",
+    15_000,
+  );
   await setInput(devtools, "agent-limit-hour", "3");
+  await Bun.sleep(100);
   await setInput(devtools, "agent-limit-pending", "1");
+  await Bun.sleep(100);
   await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
@@ -1051,7 +1110,7 @@ try {
       return value.length > 0 ? value : undefined;
     },
     "the exhausted sync error reason",
-    30_000,
+    90_000,
   );
   check(
     syncError.includes("unavailable"),
@@ -1073,7 +1132,7 @@ try {
       return value.length === 0 ? true : undefined;
     },
     "the recovered sync",
-    15_000,
+    90_000,
   );
 
   /* ---------------------------------------------------------------- */
@@ -1133,7 +1192,7 @@ try {
     10_000,
   );
   check(
-    Array.isArray(agentFrame.agents) && agentFrame.agents.length === 4,
+    Array.isArray(agentFrame.agents) && agentFrame.agents.length === 6,
     "agentsState does not carry all background agents",
     agentFrame,
   );

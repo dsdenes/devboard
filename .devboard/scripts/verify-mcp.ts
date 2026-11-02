@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { journalFile } from "../server/journal";
 import { agentRegistry } from "../server/agents/registry";
 import { MCP_TOOL_NAMES } from "../mcp/catalog";
+import { pickEntryPoint } from "../lib/entry-point";
 import { stageHarness } from "./harness-package";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 import {
@@ -472,7 +473,7 @@ try {
   const agents = await client.call("background_agents_list");
   assertTrue(
     JSON.stringify((agents.agents as Array<{ id: string }>).map((agent) => agent.id)) ===
-      JSON.stringify(["scout", "watchdog", "design", "coach", "release-train"]),
+      JSON.stringify(["scout", "watchdog", "design", "dead-code", "coach", "release-train"]),
     "verify:mcp: the live agents snapshot is wrong",
   );
   const releaseTrain = (agents.agents as Array<Record<string, unknown>>).find(
@@ -496,6 +497,71 @@ try {
   assertTrue(
     (issues.issues as Array<{ number: number }>).some((issue) => issue.number === 1),
     "verify:mcp: seeded issue missing from issues_list",
+  );
+  /* 2b. The one seeded entry-point tool. */
+  const entryPointTool = tools.find((tool) => tool.name === "entry_point");
+  assertTrue(entryPointTool !== undefined, "verify:mcp: entry_point is not in the catalog");
+  const entrySchema = (entryPointTool as { inputSchema?: Record<string, unknown> }).inputSchema ?? {};
+  const entryProperties = entrySchema.properties as Record<string, Record<string, unknown>>;
+  assertTrue(
+    JSON.stringify(entryProperties.surface?.enum) ===
+      JSON.stringify(["scout", "design", "dead-code"]) &&
+      entryProperties.seed?.type === "string",
+    `verify:mcp: entry_point schema is ${JSON.stringify(entrySchema)}`,
+  );
+  const seedA = "verify-mcp-entry-seed-a";
+  const firstPick = await client.call("entry_point", { surface: "dead-code", seed: seedA });
+  const secondPick = await client.call("entry_point", { surface: "dead-code", seed: seedA });
+  assertTrue(
+    firstPick.path === secondPick.path &&
+      firstPick.line === secondPick.line &&
+      firstPick.surface === "dead-code" &&
+      firstPick.seed === seedA,
+    `verify:mcp: a repeated seed moved the entry point: ${JSON.stringify([firstPick, secondPick])}`,
+  );
+  let otherSeed: string | null = null;
+  for (let index = 0; index < 10 && otherSeed === null; index += 1) {
+    const seed = `verify-mcp-entry-seed-${index}`;
+    const candidate = await client.call("entry_point", { surface: "dead-code", seed });
+    if (candidate.path !== firstPick.path) otherSeed = seed;
+  }
+  assertTrue(
+    otherSeed !== null,
+    "verify:mcp: ten fresh seeds never produced a second entry point",
+  );
+  const fresh = await client.call("entry_point", { surface: "scout" });
+  const replay = await client.call("entry_point", { surface: "scout", seed: fresh.seed });
+  assertTrue(
+    typeof fresh.seed === "string" &&
+      (fresh.seed as string).length > 0 &&
+      fresh.path === replay.path &&
+      fresh.line === replay.line,
+    `verify:mcp: an omitted seed did not replay: ${JSON.stringify([fresh, replay])}`,
+  );
+  const twoFilePool = join(root, "two-file-pool");
+  await mkdir(twoFilePool, { recursive: true });
+  await writeFile(join(twoFilePool, "first.ts"), "export const first = 1;\n");
+  await writeFile(join(twoFilePool, "second.ts"), "export const second = 2;\n");
+  const twoFilePicks = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((index) =>
+    pickEntryPoint({
+      repoDir: twoFilePool,
+      surface: "dead-code",
+      seed: `two-file-${index}`,
+    }),
+  );
+  const twoFilePaths = new Set(twoFilePicks.map((pick) => pick.path));
+  assertTrue(
+    twoFilePaths.size >= 2,
+    `verify:mcp: ten seeds did not reach two paths on a two-file pool: ${JSON.stringify(twoFilePicks)}`,
+  );
+  const refusedEntry = await client.callRaw("entry_point", { surface: "unknown" });
+  assertTrue(refusedEntry.error, "verify:mcp: an unknown surface was not refused");
+  console.log(
+    `PASS mcp-entry-point entry_point schema surfaces=${JSON.stringify(
+      entryProperties.surface?.enum,
+    )} seed=${seedA} path=${String(firstPick.path)}:${String(firstPick.line)} ` +
+      `differentSeed=${String(otherSeed)} twoFilePoolPaths=${twoFilePaths.size} ` +
+      "refusedSurface=unknown",
   );
   const issue = await client.call("issue_get", { number: 1 });
   assertTrue(issue.title === "Seeded issue", "verify:mcp: issue_get returned another issue");

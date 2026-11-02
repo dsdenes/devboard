@@ -12,7 +12,7 @@ import { workerVersionKey } from "../lock";
 
 export const DESIGN_DIRECTORY = "design";
 export const STATE_VERSION = 1;
-export const CYCLE_VERSION = 1;
+export const CYCLE_VERSION = 2;
 
 /** The periodic forge read while the worker is started. */
 export const SYNC_INTERVAL_MS = 60_000;

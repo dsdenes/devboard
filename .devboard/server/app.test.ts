@@ -1009,6 +1009,7 @@ describe("issues protocol", () => {
         "scout",
         "watchdog",
         "design",
+        "dead-code",
         "coach",
         "release-train",
       ]);
