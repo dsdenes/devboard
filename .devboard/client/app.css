@@ -2784,7 +2784,7 @@ a.code-chip--link:focus-visible {
 .filter-chip {
   background: transparent;
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: 6px;
   color: var(--muted-foreground);
   cursor: pointer;
   font-size: 11px;
