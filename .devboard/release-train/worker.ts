@@ -7,7 +7,7 @@ import {
   createWorkerProviderEnvironment,
   type WorkerProviderEnvironment,
 } from "../server/providers/worker-environment";
-import { acquireLock, liveLockOwners, type LockOwner } from "../issues/lock";
+import { acquireLock, liveLockOwners, type LockOwner, type LockResult } from "../issues/lock";
 import type { AcpPeer } from "../issues/worker";
 import { originForge } from "../issues/repository";
 import { releaseTags, releaseVersionAt } from "../lib/commit-gate";
@@ -558,19 +558,20 @@ export class ReleaseTrainWorker {
   }
 
   private async runTick(now: Date): Promise<void> {
-    const lease = acquireLock(runLockPath(this.directory), {
-      repo: this.repoDir,
-      stateDir: this.ownerStateDir,
-      harnessVersion: this.harnessVersion,
-      argv: [...process.argv],
-    });
-    if (!lease.acquired) {
-      this.setNotice(RUN_BUSY_NOTICE);
-      this.nextRunAtMs = now.getTime() + Math.min(5_000, Math.max(this.tickMs, 1_000));
-      this.publishWorker();
-      return;
-    }
+    let lease: LockResult | undefined;
     try {
+      lease = acquireLock(runLockPath(this.directory), {
+        repo: this.repoDir,
+        stateDir: this.ownerStateDir,
+        harnessVersion: this.harnessVersion,
+        argv: [...process.argv],
+      });
+      if (!lease.acquired) {
+        this.setNotice(RUN_BUSY_NOTICE);
+        this.nextRunAtMs = now.getTime() + Math.min(5_000, Math.max(this.tickMs, 1_000));
+        this.publishWorker();
+        return;
+      }
       const verdict = await this.gate(this.repoDir);
       this.recordGate(verdict, now);
       if (verdict.state === "error") {
@@ -592,9 +593,46 @@ export class ReleaseTrainWorker {
         return;
       }
       await this.execute(verdict, now);
+    } catch (error) {
+      this.failTick(error, now);
     } finally {
-      lease.release();
+      if (lease !== undefined && lease.acquired) lease.release();
     }
+  }
+
+  /**
+   * A tick that throws settles like a failed run: the thrown detail reaches the
+   * shared failure and the worker record, the run it opened is closed, and the
+   * cadence moves a full interval ahead. Without that, the one-second loop
+   * re-reads the gate forever and the page keeps the previous verdict.
+   */
+  private failTick(error: unknown, now: Date): void {
+    const detail = detailOf(error);
+    const at = this.clock().toISOString();
+    const run = this.activeRun;
+    this.activeRun = undefined;
+    this.activeActivity = [];
+    this.shared.failure = {
+      at,
+      detail,
+      sha: run?.target ?? "",
+      range: run?.range ?? "",
+      version: run?.version ?? null,
+    };
+    if (run !== undefined) {
+      run.endedAt = at;
+      run.state = "failed";
+      run.detail = detail;
+      this.shared.runs = recordRun(this.shared.runs, run);
+    }
+    if (this.worker !== undefined) {
+      this.worker.lifecycle = "failed";
+      this.worker.lastError = detail;
+      this.worker.activeRun = null;
+    }
+    this.activity(`release train tick failed: ${detail}`);
+    this.setNotice(`release train tick failed: ${detail}`);
+    this.finishTick(now);
   }
 
   /**

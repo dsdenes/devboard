@@ -1823,6 +1823,11 @@ component that dispatches it.
   derived version records the failure with its detail, ships nothing, and leaves the range
   unreleased. The next due tick starts a new run without operator action; a failed run is never
   recorded as released.
+- A tick that throws — an unreadable gate, a run-directory or request write that the state
+  directory refuses, a lease that cannot be taken — settles like a failed run: the thrown detail
+  reaches the shared failure and the worker's last error, the run it opened is closed, and the
+  cadence moves a full interval ahead. A failed tick is never re-gated every second, and the page
+  reports the error instead of the previous verdict.
 - The worker verifies a run in three phases and names the one that failed with the version it
   applies to: `tag binding:` when no release tag names or contains the released commit,
   `npm visibility:` when the version never appears on npmjs, and `Gitea release assets:` when the

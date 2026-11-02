@@ -11,6 +11,7 @@ import {
 import {
   releaseTrainDirectory,
   runDirectory,
+  runsDirectory,
   versionedControlDirectory,
   versionedLockPath,
 } from "../release-train/paths";
@@ -511,6 +512,93 @@ describe("Release Train family", () => {
       expect(gateReads).toBe(2);
       expect(runs).toBe(2);
       expect(worker.currentState.release?.version).toBe("1.0.1");
+      expect(worker.currentState.failure).toBeNull();
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  test("a thrown gate records the failure and holds the cadence", async () => {
+    const workspaceValue = workspace("thrown-gate");
+    const now = { value: Date.parse("2026-11-02T10:00:00.000Z") };
+    let gates = 0;
+    const worker = workerAt(workspaceValue, {
+      gate: () => {
+        gates += 1;
+        throw new Error("could not read the release state");
+      },
+      now: () => new Date(now.value),
+    });
+    expect(worker.begin(false)).toBe(true);
+    try {
+      await worker.tickNow();
+      expect(gates).toBe(1);
+      expect(worker.currentState.failure?.detail).toBe("could not read the release state");
+      expect(worker.currentWorker?.lastError).toBe("could not read the release state");
+      expect(worker.currentWorker?.lifecycle).toBe("failed");
+      expect(worker.currentState.activity.join("\n")).toContain(
+        "release train tick failed: could not read the release state",
+      );
+      const nextRunAt = Date.parse(worker.currentWorker?.nextRunAt ?? "");
+      expect(nextRunAt - now.value).toBeGreaterThanOrEqual(10 * 60_000);
+      // Inside the interval the gate is not read again; on the next due tick it is.
+      now.value += 1_000;
+      await worker.tickNow(false);
+      expect(gates).toBe(1);
+      now.value = nextRunAt;
+      await worker.tickNow(false);
+      expect(gates).toBe(2);
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  test("a run-directory write that throws closes the run and records its failure", async () => {
+    const workspaceValue = workspace("thrown-run-dir");
+    const now = { value: Date.parse("2026-11-02T10:00:00.000Z") };
+    const target = "a".repeat(40);
+    let gates = 0;
+    let runs = 0;
+    const worker = workerAt(workspaceValue, {
+      gate: () => {
+        gates += 1;
+        return unreleased(target);
+      },
+      now: () => new Date(now.value),
+      runRelease: async () => {
+        runs += 1;
+        return { ok: true, version: "1.0.1", url: "https://forge.test/v1.0.1" };
+      },
+    });
+    expect(worker.begin(false)).toBe(true);
+    try {
+      // A regular file where the runs directory belongs: the run directory
+      // cannot be created, so the tick throws before it starts any agent.
+      writeFileSync(runsDirectory(workspaceValue.directory), "");
+      await worker.tickNow();
+      expect(runs).toBe(0);
+      const failure = worker.currentState.failure;
+      expect(failure?.detail).toContain("not a directory");
+      expect(failure?.sha).toBe(target);
+      expect(failure?.range).toBe(`v1.0.0..${target}`);
+      expect(failure?.version).toBe("1.0.1");
+      expect(worker.currentWorker?.lastError).toBe(failure?.detail);
+      expect(worker.currentWorker?.activeRun).toBeNull();
+      expect(worker.currentState.runs[0]?.state).toBe("failed");
+      expect(worker.currentState.runs[0]?.detail).toBe(failure?.detail);
+      const nextRunAt = Date.parse(worker.currentWorker?.nextRunAt ?? "");
+      expect(nextRunAt - now.value).toBeGreaterThanOrEqual(10 * 60_000);
+      // The worker is not wedged: a tick inside the interval neither gates nor runs.
+      now.value += 1_000;
+      await worker.tickNow(false);
+      expect(gates).toBe(1);
+      expect(runs).toBe(0);
+      // The range is retried on the next due tick once the write succeeds.
+      rmSync(runsDirectory(workspaceValue.directory));
+      now.value = nextRunAt;
+      await worker.tickNow(false);
+      expect(gates).toBe(2);
+      expect(runs).toBe(1);
       expect(worker.currentState.failure).toBeNull();
     } finally {
       await worker.stop();
