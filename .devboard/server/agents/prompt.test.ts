@@ -385,6 +385,7 @@ describe("prompt proposal parsing", () => {
 
 const DISCOVER_PROMPT_FILES = [
   "discover-sheet.md",
+  "discover-contribution.md",
   "discover-testing-strategy.md",
   "discover-naming-conventions.md",
   "discover-coding-conventions.md",
@@ -392,7 +393,7 @@ const DISCOVER_PROMPT_FILES = [
   "discover-glossary.md",
 ];
 
-/** A fixture that `isHarnessSourceCheckout` accepts, with the six prompts. */
+/** A fixture that `isHarnessSourceCheckout` accepts, with the seven prompts. */
 async function discoverSourceRoot(name = "discover-source"): Promise<string> {
   const root = await temporaryRoot(name);
   mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
@@ -423,7 +424,7 @@ function discoverController(
 }
 
 describe("discover prompt snapshots", () => {
-  test("each of the six agents publishes exactly its own prompt file bytes", async () => {
+  test("each of the seven agents publishes exactly its own prompt file bytes", async () => {
     const root = await discoverSourceRoot();
     const prompts = discoverController(root);
     const seen = new Set<string>();
@@ -437,7 +438,7 @@ describe("discover prompt snapshots", () => {
       expect(seen.has(bytes)).toBe(false);
       seen.add(bytes);
     }
-    expect(seen.size).toBe(6);
+    expect(seen.size).toBe(7);
     prompts.dispose();
   });
 
@@ -488,6 +489,26 @@ describe("discover prompt save", () => {
     });
     expect(prompts.snapshot("discover-naming-conventions")?.text).toBe("exact bytes\n");
     expect(prompts.snapshot("sheet")?.text).not.toBe("exact bytes\n");
+
+    // The contribution prompt is the seventh file and follows the same rule.
+    const contributionFrames: Array<Record<string, unknown>> = [];
+    prompts.save(
+      { send: (data) => contributionFrames.push(JSON.parse(data) as Record<string, unknown>) },
+      "discover-contribution",
+      "contribution bytes\n",
+    );
+    expect(
+      readFileSync(join(root, ".devboard", "prompts", "discover-contribution.md"), "utf8"),
+    ).toBe("contribution bytes\n");
+    expect(
+      readFileSync(join(root, ".devboard", "prompts", "discover-naming-conventions.md"), "utf8"),
+    ).toBe("exact bytes\n");
+    expect(contributionFrames[0]).toEqual({
+      type: "discoverPromptSaved",
+      agent: "discover-contribution",
+      text: "contribution bytes\n",
+      notice: "Prompt saved. The next /discover-contribution run reads this file.",
+    });
     prompts.dispose();
   });
 
@@ -506,6 +527,14 @@ describe("discover prompt save", () => {
     expect(readFileSync(file, "utf8")).toBe("# glossary\n");
     expect(frames[0]?.type).toBe("discoverPromptError");
     expect(String(frames[0]?.message)).toContain("harness source checkout");
+    const contributionFrames: Array<Record<string, unknown>> = [];
+    prompts.save(
+      { send: (data) => contributionFrames.push(JSON.parse(data) as Record<string, unknown>) },
+      "discover-contribution",
+      "installed bytes\n",
+    );
+    expect(contributionFrames[0]?.type).toBe("discoverPromptError");
+    expect(String(contributionFrames[0]?.message)).toContain("harness source checkout");
     prompts.dispose();
   });
 });

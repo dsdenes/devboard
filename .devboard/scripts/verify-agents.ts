@@ -9,13 +9,23 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
-import { settingsPath, statePath, controlDirectory } from "../issues/scout/paths";
+import {
+  controlDirectory,
+  lockPath,
+  settingsPath,
+  statePath,
+  versionedControlDirectory,
+  versionedStatePath,
+  workerStateDirectories,
+} from "../issues/scout/paths";
 import { writeCommand } from "../issues/scout/control";
-import { emptyState, writeSettings, writeState } from "../issues/scout/state";
+import { acquireLock, versionLockPath } from "../issues/lock";
+import { emptyState, readState, writeSettings, writeState } from "../issues/scout/state";
+import { readHarnessVersion } from "../server/version";
 import { writeProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
 import { coachDirectory } from "../coach/paths";
@@ -435,14 +445,14 @@ interface ScoutSyncState {
 
 /** The Auto Scout worker state the source page renders. */
 function scoutSync(stateDir: string, root: string): ScoutSyncState | undefined {
-  try {
-    const parsed = JSON.parse(readFileSync(statePath(stateDir, root), "utf8")) as {
-      sync?: ScoutSyncState;
-    };
-    return parsed.sync;
-  } catch {
-    return undefined;
+  const candidates: Array<{ updatedAt: string; sync: ScoutSyncState }> = [];
+  const legacy = readState(statePath(stateDir, root));
+  if (legacy !== undefined) candidates.push({ updatedAt: legacy.updatedAt, sync: legacy.sync });
+  for (const directory of workerStateDirectories(stateDir, root)) {
+    const state = readState(join(directory, "state.json"));
+    if (state !== undefined) candidates.push({ updatedAt: state.updatedAt, sync: state.sync });
   }
+  return candidates.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]?.sync;
 }
 
 /** Edits the mutable gh store the source dashboard's stub reads. */
@@ -2090,6 +2100,112 @@ try {
     "the stopped verified Auto Scout",
     15_000,
   );
+
+  /* ---------------------------------------------------------------- */
+  /* The shared page lists every live version and its controls address  */
+  /* both, with no version-divergence notice                            */
+  /* ---------------------------------------------------------------- */
+  const newestVersion = readHarnessVersion(harnessRoot) ?? "unknown";
+  const seededVersions = ["0.1.900", newestVersion];
+  const held = seededVersions.map((version) => {
+    const lock = acquireLock(versionLockPath(lockPath(host.directory), version), {
+      repo: host.directory,
+      stateDir,
+      harnessVersion: version,
+      argv: [],
+    });
+    assertTrue(lock.acquired, `verify:agents: could not seed the ${version} worker lock`);
+    const state = emptyState({ repo: "acme/fixture", root: host.directory });
+    state.lifecycle = "idle";
+    state.enabled = true;
+    state.worker = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      stateDir,
+      harnessVersion: version,
+      argv: [],
+    };
+    writeState(versionedStatePath(stateDir, host.directory, version), state);
+    return lock;
+  });
+  try {
+    const snapshotReady = Promise.withResolvers<Record<string, unknown>>();
+    const snapshotSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const snapshotTimer = setTimeout(() => {
+      snapshotSocket.close();
+      snapshotReady.reject(new Error("verify:agents: timed out reading agentsState"));
+    }, 15_000);
+    snapshotSocket.onopen = () => snapshotSocket.send(JSON.stringify({ type: "getAgents" }));
+    snapshotSocket.onmessage = (event) => {
+      const message = JSON.parse(String(event.data)) as Record<string, unknown>;
+      if (message.type !== "agentsState") return;
+      clearTimeout(snapshotTimer);
+      snapshotSocket.close();
+      snapshotReady.resolve(message);
+    };
+    snapshotSocket.onerror = () => {
+      clearTimeout(snapshotTimer);
+      snapshotReady.reject(new Error("verify:agents: websocket failed"));
+    };
+    const snapshot = await snapshotReady.promise;
+    const scoutAgent = (snapshot.agents as Array<Record<string, unknown>>).find(
+      (agent) => agent.id === "scout",
+    );
+    const shown = ((scoutAgent?.workers ?? []) as Array<{ version: string | null }>)
+      .map((worker) => worker.version ?? "unknown")
+      .sort();
+    for (const version of seededVersions) {
+      assertTrue(
+        shown.includes(version),
+        `verify:agents: the shared page lost the ${version} worker: ${JSON.stringify(shown)}`,
+      );
+    }
+    assertTrue(
+      !JSON.stringify(snapshot).includes("this dashboard loaded") &&
+        !JSON.stringify(snapshot).includes("It is left running"),
+      "verify:agents: the shared page shows a version divergence notice",
+    );
+    const stopped = Promise.withResolvers<void>();
+    const stopSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const stopTimer = setTimeout(() => {
+      stopSocket.close();
+      stopped.reject(new Error("verify:agents: timed out sending stopAgent"));
+    }, 15_000);
+    stopSocket.onopen = () => {
+      stopSocket.send(JSON.stringify({ type: "stopAgent", id: "scout" }));
+      clearTimeout(stopTimer);
+      stopSocket.close();
+      stopped.resolve();
+    };
+    stopSocket.onerror = () => {
+      clearTimeout(stopTimer);
+      stopped.reject(new Error("verify:agents: websocket failed"));
+    };
+    await stopped.promise;
+    await waitFor(
+      () =>
+        seededVersions.every((version) => {
+          try {
+            return readdirSync(
+              versionedControlDirectory(stateDir, host.directory, version),
+            ).some((name) => name.endsWith(".json"));
+          } catch {
+            return false;
+          }
+        })
+          ? true
+          : undefined,
+      "Stop to reach every live worker's control directory",
+      15_000,
+    );
+    console.log(
+      `verify:agents: takeover: the shared page lists ${shown.join(" and ")} and Stop addressed both, with no divergence notice`,
+    );
+  } finally {
+    for (const lock of held) {
+      if (lock.acquired) lock.release();
+    }
+  }
 
   console.log(
     "verify:agents: the Background agents section, all four shared pages, lifecycle, cadence, " +

@@ -6,7 +6,7 @@ import type { DiscoverSkill, DiscoverTarget } from "./types";
 
 /**
  * Discover drafts are scoped to the target they were edited against. Every
- * project shares the five fixed skill names, so a target switch must never
+ * project shares the six fixed skill names, so a target switch must never
  * carry one project's unsaved text into another project's save.
  */
 

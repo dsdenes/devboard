@@ -15,8 +15,17 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { lockPath, scansDirectory, settingsPath, statePath } from "../issues/scout/paths";
+import { liveLockOwners } from "../issues/lock";
+import {
+  lockPath,
+  scansDirectory,
+  settingsPath,
+  statePath,
+  versionedStatePath,
+  workerStateDirectories,
+} from "../issues/scout/paths";
 import { readSettings, readState, type ScoutState } from "../issues/scout/state";
+import { readHarnessVersion } from "../server/version";
 import { freePort, run, waitFor } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
@@ -286,8 +295,16 @@ async function stopDashboard(dashboard: Dashboard): Promise<void> {
   ).catch(() => undefined);
 }
 
+/** The newest state any live-or-recent worker version published. */
 function stateOf(fixture: Fixture): ScoutState | undefined {
-  return readState(statePath(fixture.stateDir, fixture.repo));
+  const states: ScoutState[] = [];
+  const legacy = readState(statePath(fixture.stateDir, fixture.repo));
+  if (legacy !== undefined) states.push(legacy);
+  for (const directory of workerStateDirectories(fixture.stateDir, fixture.repo)) {
+    const state = readState(join(directory, "state.json"));
+    if (state !== undefined) states.push(state);
+  }
+  return states.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
 }
 
 async function waitState(
@@ -327,6 +344,45 @@ function workerPids(repo: string): number[] {
     if (argv.includes(join("issues", "scout", "worker.ts")) && argv.includes(repo)) pids.push(pid);
   }
   return pids.sort((left, right) => left - right);
+}
+
+/** One Auto Scout worker of an arbitrary harness version, as a fixture. */
+function spawnScoutWorker(
+  fixture: Fixture,
+  version: string,
+  extra: Record<string, string> = {},
+): ChildProcess {
+  return spawn(
+    process.execPath,
+    [
+      join(harnessRoot, "issues", "scout", "worker.ts"),
+      "--repo",
+      fixture.repo,
+      "--state-dir",
+      fixture.stateDir,
+    ],
+    {
+      cwd: harnessRoot,
+      env: {
+        ...process.env,
+        DEVBOARD_HARNESS_VERSION: version,
+        HOME: fixture.home,
+        PATH: `${fixture.bin}:${process.env.PATH ?? ""}`,
+        AGENT_COMMAND: `${process.execPath} ${stubAcp}`,
+        ...verificationProviderUsageEnv(),
+        SCOUT_STUB_POOL: fixture.pool,
+        SCOUT_STUB_WAVES: JSON.stringify(WAVES),
+        SCOUT_STUB_GH_LOG: fixture.ghLog,
+        SCOUT_STUB_STATE: fixture.store,
+        SCOUT_STUB_ACP_LOG: fixture.acpLog,
+        SCOUT_STUB_ACP_COUNTER: fixture.acpCounter,
+        SCOUT_STUB_QUESTION: "0",
+        SCOUT_SYNC_MS: "500",
+        ...extra,
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
 }
 
 interface SocketMessage {
@@ -686,7 +742,7 @@ try {
     10_000,
   );
   check(workerPids(fixture.repo).length === 0, "opening the page started a worker");
-  check(!existsSync(lockPath(fixture.repo)), "opening the page took the repository lock");
+  check(liveLockOwners(lockPath(fixture.repo)).length === 0, "opening the page took the repository lock");
   check(
     (await devtools.evaluate(
       `document.querySelector('[data-testid="agent-issues-empty"]') !== null`,
@@ -1030,7 +1086,7 @@ try {
     (state) => state.lifecycle === "stopped",
   );
   check(stopped.enabled === false, "Stop left the scout enabled", stopped);
-  check(!existsSync(lockPath(fixture.repo)), "Stop did not release the repository lock");
+  check(liveLockOwners(lockPath(fixture.repo)).length === 0, "Stop did not release the repository lock");
   await waitFor(
     () => (workerPids(fixture.repo).length === 0 ? true : undefined),
     "the worker to exit",
@@ -1089,6 +1145,131 @@ try {
   );
   socket.close();
   socket = undefined;
+
+  /* ---------------------------------------------------------------- */
+  /* 10. An older worker hands over to this version, one scan at a time */
+  /* ---------------------------------------------------------------- */
+  const fleet = await makeFixture(join(root, "fleet"));
+  await mkdir(fleet.stateDir, { recursive: true });
+  const oldVersion = "0.1.900";
+  const newVersion = readHarnessVersion(harnessRoot) ?? "unknown";
+  const oldWorker = spawnScoutWorker(fleet, oldVersion, { SCOUT_STUB_ACP_DELAY_MS: "4000" });
+  let fleetSocket: Socket | undefined;
+  try {
+    const started = await waitFor(
+      () => {
+        const state = stateOf(fleet);
+        return state?.scan?.scanId !== undefined ? state : undefined;
+      },
+      "the old worker's in-flight scan",
+      20_000,
+      50,
+    );
+    const oldScanId = started.scan!.scanId;
+    const fleetDashboard = await startDashboard(fleet);
+    dashboards.push(fleetDashboard);
+    console.log(`verify:scout: takeover: the live ${oldVersion} worker holds scan ${oldScanId}`);
+
+    fleetSocket = new Socket(fleetDashboard.port);
+    await fleetSocket.open();
+    fleetSocket.send({ type: "getAgents" });
+    const scout = await waitFor(
+      () => {
+        // The first agentsState can precede the automatic takeover; every
+        // later change arrives as one agentState broadcast.
+        let found: Record<string, unknown> | undefined;
+        for (const message of fleetSocket!.messages) {
+          if (message.type === "agentsState") {
+            const agents = Array.isArray(message.agents)
+              ? (message.agents as Array<Record<string, unknown>>)
+              : [];
+            const entry = agents.find((agent) => agent.id === "scout");
+            if (Array.isArray(entry?.workers) && (entry.workers as unknown[]).length >= 2) {
+              found = entry;
+            }
+            continue;
+          }
+          if (message.type === "agentState") {
+            const entry =
+              typeof message.agent === "object" && message.agent !== null
+                ? (message.agent as Record<string, unknown>)
+                : undefined;
+            if (
+              entry?.id === "scout" &&
+              Array.isArray(entry.workers) &&
+              (entry.workers as unknown[]).length >= 2
+            ) {
+              found = entry;
+            }
+          }
+        }
+        return found;
+      },
+      "the merged Auto Scout worker view",
+      30_000,
+      50,
+    );
+    const versions = (scout.workers as Array<{ version: string | null }>)
+      .map((worker) => worker.version)
+      .sort();
+    check(versions.includes(oldVersion), "the merged view lost the old worker", versions);
+    check(versions.includes(newVersion), "the newer worker did not become live", versions);
+    check(
+      !JSON.stringify(scout).includes("this dashboard loaded") &&
+        !JSON.stringify(scout).includes("It is left running"),
+      "the merged view carries a version divergence notice",
+      scout,
+    );
+    console.log(
+      `verify:scout: takeover: old ${oldVersion} and new ${newVersion} are both live with no divergence notice`,
+    );
+
+    const newState = readState(versionedStatePath(fleet.stateDir, fleet.repo, newVersion));
+    check(
+      newState === undefined || newState.scan === null,
+      "the newer worker claimed a scan while the old unit was in flight",
+      newState,
+    );
+
+    await waitFor(
+      () => (workerPids(fleet.repo).length === 1 ? true : undefined),
+      "the retired worker to exit",
+      30_000,
+      100,
+    );
+    const retired = readState(versionedStatePath(fleet.stateDir, fleet.repo, oldVersion));
+    check(retired !== undefined, "the retired worker's state was removed", retired);
+    check(retired?.scan === null, "the old worker's in-flight scan did not finish", retired);
+    console.log("verify:scout: takeover: the old in-flight scan finished and the old worker exited");
+
+    const claimed = await waitFor(
+      () => {
+        const state = readState(versionedStatePath(fleet.stateDir, fleet.repo, newVersion));
+        const scanId = state?.newestScanId ?? state?.scan?.scanId ?? undefined;
+        return scanId !== undefined && scanId !== oldScanId ? state : undefined;
+      },
+      "the newer worker's own scan",
+      30_000,
+      100,
+    );
+    check(
+      claimed.scan === null || claimed.scan?.scanId !== oldScanId,
+      "the new worker reused the old scan",
+      claimed,
+    );
+    console.log(
+      `verify:scout: takeover: the issue opened after the newer worker was live is claimed once (${claimed.newestScanId ?? claimed.scan?.scanId})`,
+    );
+  } finally {
+    if (oldWorker.pid !== undefined) {
+      try {
+        process.kill(oldWorker.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+    fleetSocket?.close();
+  }
 
   console.log(
     "verify:scout: Start filed significant items with no click, the shared page and table ids " +

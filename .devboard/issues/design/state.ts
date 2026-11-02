@@ -111,6 +111,8 @@ export interface DesignState {
   nextAttemptAt: string | null;
   lastError: string | null;
   notice: string | null;
+  /** True while the worker waits for its in-flight cycle before exiting. */
+  draining: boolean;
   updatedAt: string;
 }
 
@@ -277,6 +279,7 @@ export function emptyState(options: {
     nextAttemptAt: null,
     lastError: null,
     notice: null,
+    draining: false,
     updatedAt: (options.now ?? new Date()).toISOString(),
   };
 }
@@ -312,6 +315,7 @@ export function parseState(text: string): DesignState | undefined {
   }
   if (!nullableString(parsed.nextAttemptAt) || !nullableString(parsed.lastError)) return undefined;
   if (!nullableString(parsed.notice)) return undefined;
+  if (parsed.draining !== undefined && typeof parsed.draining !== "boolean") return undefined;
   if (typeof parsed.updatedAt !== "string") return undefined;
   return {
     version: STATE_VERSION,
@@ -331,6 +335,7 @@ export function parseState(text: string): DesignState | undefined {
     nextAttemptAt: parsed.nextAttemptAt,
     lastError: parsed.lastError,
     notice: parsed.notice,
+    draining: parsed.draining === true,
     updatedAt: parsed.updatedAt,
   };
 }

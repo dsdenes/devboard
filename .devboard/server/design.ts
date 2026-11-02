@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { liveLockOwner, pidAlive, type LockOwner } from "../issues/lock";
+import { liveLockOwners, pidAlive, type LockOwner } from "../issues/lock";
 import {
   controlDirectory,
   lockPath,
@@ -9,17 +9,22 @@ import {
   designConfig,
   settingsPath,
   statePath,
+  versionedControlDirectory,
+  versionedStatePath,
+  workerStateDirectories,
 } from "../issues/design/paths";
 import { writeCommand } from "../issues/design/control";
 import { preflightDesign, type DesignPreflightResult } from "../issues/design/preflight";
 import { cachedRepository } from "../issues/repository";
 import {
   DEFAULT_SETTINGS,
+  DOCUMENTATION_HISTORY_LIMIT,
   isValidCadence,
   isValidLimit,
   readSettings,
   readState,
   writeSettings,
+  type DesignDocumentationEntry,
   type DesignIssueRow,
   type DesignSettings,
   type DesignState,
@@ -27,6 +32,7 @@ import {
 } from "../issues/design/state";
 import { readActivity } from "../issues/state";
 import { activityDelta } from "./activity";
+import { hostHarnessDir, readHarnessVersion } from "./version";
 import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 import type { AgentDescriptor } from "./agents/registry";
@@ -85,13 +91,15 @@ export class DesignBridge implements AgentAdapter {
   private timer: Timer | undefined;
   private lastActivityCycleId: string | null = null;
   private lastActivity: string[] = [];
-  private stopping: { pid: number; timer: Timer; killTimer?: Timer } | undefined;
+  private readonly stopping = new Map<number, { timer: Timer; killTimer?: Timer }>();
   private starting = false;
   private startingSince: number | null = null;
   private stopRequested = false;
   private startError: string | null = null;
   private notice: string | null = null;
   private startTask: Promise<AgentCommandResult> | undefined;
+  /** One automatic new-version start per dashboard lifetime. */
+  private takeover: "idle" | "started" = "idle";
 
   constructor(options: DesignBridgeOptions) {
     this.descriptor = options.descriptor;
@@ -123,6 +131,7 @@ export class DesignBridge implements AgentAdapter {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => this.refresh(), this.pollMsValue);
     void this.refresh();
+    void this.takeoverOldWorkers();
   }
 
   dispose(): void {
@@ -130,7 +139,39 @@ export class DesignBridge implements AgentAdapter {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
+    for (const pid of [...this.stopping.keys()]) this.clearStopProof(pid);
+  }
+
+  /**
+   * Starts this version's worker when an older version's worker is live and
+   * this process runs the newest harness. The older worker is told to drain:
+   * it finishes its in-flight cycle, starts no new unit, and exits on its own.
+   */
+  async takeoverOldWorkers(): Promise<void> {
+    if (this.takeover === "started") return;
+    this.takeover = "started";
+    const owners = this.owners();
+    if (owners.length === 0) return;
+    const newest = readHarnessVersion(hostHarnessDir(this.repoDir));
+    if (newest === null || newest !== this.runningVersion) return;
+    if (owners.some((owner) => owner.harnessVersion === this.runningVersion)) return;
+    const started = await this.spawn();
+    if (!started.ok) {
+      this.log(`could not start the ${this.runningVersion} design worker: ${started.message}`);
+      return;
+    }
+    for (const owner of owners) {
+      if (owner.harnessVersion === this.runningVersion) continue;
+      try {
+        writeCommand(this.controlFor(owner), { type: "drain" });
+      } catch (error) {
+        this.log(
+          `could not drain the ${owner.harnessVersion ?? "legacy"} design worker: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   private detach(argv: string[], environment: Record<string, string | undefined>): number | undefined {
@@ -151,16 +192,47 @@ export class DesignBridge implements AgentAdapter {
     }
   }
 
-  private currentState(): DesignState | undefined {
-    return readState(statePath(this.stateDir, this.repoDir));
+  /** Owners of every live lock beside this checkout's legacy lock. */
+  private owners(): LockOwner[] {
+    return liveLockOwners(lockPath(this.repoDir));
   }
 
-  private lockOwner(): LockOwner | undefined {
-    return liveLockOwner(lockPath(this.repoDir));
+  /** Every readable worker state: the legacy file and each version's file. */
+  private allStates(): DesignState[] {
+    const states: DesignState[] = [];
+    const push = (path: string): void => {
+      const state = readState(path);
+      if (state !== undefined) states.push(state);
+    };
+    push(statePath(this.stateDir, this.repoDir));
+    for (const directory of workerStateDirectories(this.stateDir, this.repoDir)) {
+      push(join(directory, "state.json"));
+    }
+    return states;
   }
 
-  private owned(owner: LockOwner | undefined): boolean {
-    return owner !== undefined && resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid);
+  /** The published state one live owner wrote, when it is readable. */
+  private stateForOwner(owner: LockOwner): DesignState | undefined {
+    return readState(
+      owner.harnessVersion === null
+        ? statePath(this.stateDir, this.repoDir)
+        : versionedStatePath(this.stateDir, this.repoDir, owner.harnessVersion),
+    );
+  }
+
+  /** The control directory one live owner consumes, versioned or legacy. */
+  private controlFor(owner: LockOwner): string {
+    return owner.harnessVersion === null
+      ? controlDirectory(this.stateDir, this.repoDir)
+      : versionedControlDirectory(this.stateDir, this.repoDir, owner.harnessVersion);
+  }
+
+  private stateForPid(pid: number): DesignState | undefined {
+    const states = this.allStates();
+    return (
+      states.find((state) => state.worker?.pid === pid) ??
+      states.find((state) => state.worker === null)
+    );
   }
 
   private settings(state: DesignState | undefined): DesignSettings {
@@ -174,11 +246,29 @@ export class DesignBridge implements AgentAdapter {
   }
 
   snapshot(): AgentSnapshotInput {
-    const state = this.currentState();
-    const owner = this.lockOwner();
-    const attached = this.owned(owner);
-    const active = attached ? state : undefined;
-    if (this.starting && owner !== undefined) {
+    const owners = this.owners();
+    const attachedOwners = owners.filter(
+      (owner) => resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid),
+    );
+    const foreign = owners.find((owner) => resolve(owner.stateDir) !== this.stateDir);
+    const states = this.allStates();
+    const byPid = new Map(
+      states
+        .filter((state) => state.worker !== null)
+        .map((state) => [state.worker!.pid, state]),
+    );
+    const attachedStates = attachedOwners
+      .map((owner) => byPid.get(owner.pid) ?? this.stateForOwner(owner))
+      .filter((state): state is DesignState => state !== undefined);
+    const attached = attachedOwners.length > 0;
+    const sorted = [...states].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const active =
+      attachedStates.find(
+        (state) => state.lifecycle === "auditing" || state.lifecycle === "releasing",
+      ) ??
+      [...attachedStates].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ??
+      (attached ? undefined : sorted[0]);
+    if (this.starting && owners.length > 0) {
       this.starting = false;
       this.startingSince = null;
     }
@@ -191,17 +281,17 @@ export class DesignBridge implements AgentAdapter {
       this.startingSince = null;
       this.startError = "the Design System worker did not publish its state within 5 seconds";
     }
-    if (this.stopRequested && owner === undefined) this.stopRequested = false;
-    if (owner !== undefined && !this.owned(owner)) {
+    if (this.stopRequested && attachedOwners.length === 0) this.stopRequested = false;
+    if (foreign !== undefined) {
       this.notice =
-        `this checkout already has a Design System worker (pid ${owner.pid}) using ` +
-        `${owner.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
+        `this checkout already has a Design System worker (pid ${foreign.pid}) using ` +
+        `${foreign.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
     } else if (this.notice !== null && this.notice.startsWith("this checkout already has")) {
       this.notice = null;
     }
     const lifecycle = this.starting
       ? "starting"
-      : this.stopRequested
+      : this.stopRequested && attached
         ? "stopping"
         : attached
           ? active?.lifecycle === "failed"
@@ -209,22 +299,30 @@ export class DesignBridge implements AgentAdapter {
             : active?.lifecycle === "stopped"
               ? "stopped"
               : "running"
-          : owner !== undefined
+          : owners.length > 0
             ? "running"
-            : state?.lifecycle === "failed" && state.enabled
+            : active?.lifecycle === "failed" && active.enabled
               ? "failed"
               : "stopped";
-    const settings = this.settings(state);
-    const worker = state?.worker ?? null;
-    const mismatch =
-      attached && worker !== null && worker.harnessVersion !== this.runningVersion
-        ? `Design System worker ${worker.harnessVersion ?? "unknown"} is running; this dashboard ` +
-          `loaded ${this.runningVersion ?? "unknown"}. It is left running; Stop it to launch the ` +
-          "current harness on the next Start."
-        : null;
-    const issues = state?.issues ?? [];
-    const sync: DesignSync = state?.sync ?? { state: "stale", at: null, error: null };
-    const cycleId = state?.newestCycleId ?? null;
+    const settings = this.settings(active);
+    const issues = mergeIssues(states);
+    const sync: DesignSync = active?.sync ?? { state: "stale", at: null, error: null };
+    const cycleId = newestCycle(states);
+    const lastRunAt =
+      states
+        .map((state) => state.lastCycleStartedAt)
+        .filter((value): value is string => value !== null)
+        .sort()
+        .at(-1) ?? null;
+    const workers = attachedOwners.map((owner) => {
+      const state = byPid.get(owner.pid) ?? this.stateForOwner(owner);
+      return {
+        pid: owner.pid,
+        version: owner.harnessVersion,
+        stateDir: owner.stateDir,
+        lifecycle: workerLifecycle(state),
+      };
+    });
     return {
       lifecycle,
       enabled: attached && active?.enabled === true && lifecycle !== "stopped",
@@ -232,18 +330,19 @@ export class DesignBridge implements AgentAdapter {
       attached,
       cadence: {
         minutes: settings.intervalMinutes,
-        lastRunAt: state?.lastCycleStartedAt ?? null,
-        nextRunAt: attached ? (state?.nextAttemptAt ?? null) : null,
+        lastRunAt,
+        nextRunAt: attached ? (active?.nextAttemptAt ?? null) : null,
       },
       limits: { maxPerHour: settings.maxPerHour, maxPending: settings.maxPending },
       issues: issues.map(projectIssue),
-      documentation: state?.documentation ?? [],
+      documentation: mergeDocumentation(states),
       pending: issues.filter((issue) => issue.state === "pending").length,
       sync,
       detail: { panel: "activity", scanId: cycleId, entries: [...this.lastActivity] },
-      notice: mismatch ?? this.notice ?? state?.notice ?? null,
-      error: this.startError ?? state?.lastError ?? null,
+      notice: this.notice ?? active?.notice ?? null,
+      error: this.startError ?? active?.lastError ?? null,
       timer: null,
+      workers,
     };
   }
 
@@ -259,8 +358,7 @@ export class DesignBridge implements AgentAdapter {
       type: "agentState",
       agent: projectAgentSnapshot(this.descriptor, this.snapshot()),
     });
-    const state = this.currentState();
-    const cycleId = this.lastActivityCycleId ?? state?.newestCycleId ?? null;
+    const cycleId = this.lastActivityCycleId ?? newestCycle(this.allStates()) ?? null;
     if (cycleId === null) return;
     const activity = this.readActivity(cycleId);
     this.lastActivityCycleId = cycleId;
@@ -327,23 +425,27 @@ export class DesignBridge implements AgentAdapter {
 
   private async startOnce(): Promise<AgentCommandResult> {
     for (;;) {
-      const owner = this.lockOwner();
-      if (owner === undefined) break;
-      if (!this.owned(owner)) {
+      const owners = this.owners();
+      if (owners.length === 0) break;
+      const foreign = owners.find((owner) => resolve(owner.stateDir) !== this.stateDir);
+      if (foreign !== undefined) {
         this.notice =
-          `this checkout already has a Design System worker (pid ${owner.pid}) using ` +
-          `${owner.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
+          `this checkout already has a Design System worker (pid ${foreign.pid}) using ` +
+          `${foreign.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
         return { ok: true, notice: this.notice };
       }
-      if (this.stopping === undefined || this.stopping.pid !== owner.pid) {
+      const stopping = [...this.stopping.keys()];
+      const live = owners.filter((owner) => !stopping.includes(owner.pid));
+      if (live.length > 0) {
         this.refresh();
         return { ok: true };
       }
-      if (!(await this.waitForStop(owner.pid))) {
+      const waits = await Promise.all(stopping.map((pid) => this.waitForStop(pid)));
+      if (waits.some((stopped) => !stopped)) {
         return {
           ok: false,
           message:
-            `the previous Design System worker (pid ${owner.pid}) is still stopping; ` +
+            `the previous Design System worker (pid ${stopping.join(", ")}) is still stopping; ` +
             "press Start once it has exited.",
         };
       }
@@ -446,10 +548,10 @@ export class DesignBridge implements AgentAdapter {
         }`,
       };
     }
-    const owner = this.lockOwner();
-    if (this.owned(owner)) {
+    for (const owner of this.owners()) {
+      if (resolve(owner.stateDir) !== this.stateDir) continue;
       try {
-        writeCommand(controlDirectory(this.stateDir, this.repoDir), {
+        writeCommand(this.controlFor(owner), {
           type: "settings",
           intervalMinutes: minutes,
           maxPerHour,
@@ -470,42 +572,45 @@ export class DesignBridge implements AgentAdapter {
   }
 
   stop(): AgentCommandResult {
-    const owner = this.lockOwner();
-    if (owner === undefined) {
+    const owners = this.owners();
+    if (owners.length === 0) {
       return { ok: false, message: "No Design System worker is running for this checkout." };
     }
-    if (!this.owned(owner)) {
+    const foreign = owners.find((owner) => resolve(owner.stateDir) !== this.stateDir);
+    if (foreign !== undefined) {
       return {
         ok: false,
         message:
-          `the Design System worker (pid ${owner.pid}) uses ${owner.stateDir}; this dashboard's ` +
+          `the Design System worker (pid ${foreign.pid}) uses ${foreign.stateDir}; this dashboard's ` +
           `STATE_DIR is ${this.stateDir}`,
       };
     }
-    try {
-      writeCommand(controlDirectory(this.stateDir, this.repoDir), { type: "stop" });
-    } catch (error) {
-      return {
-        ok: false,
-        message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
-      };
+    for (const owner of owners) {
+      try {
+        writeCommand(this.controlFor(owner), { type: "stop" });
+      } catch (error) {
+        return {
+          ok: false,
+          message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
     }
     this.stopRequested = true;
     this.startError = null;
-    this.scheduleStopProof(owner.pid);
+    for (const owner of owners) this.scheduleStopProof(owner.pid);
     return { ok: true };
   }
 
   private scheduleStopProof(pid: number): void {
-    if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
+    this.clearStopProof(pid);
     const prove = (): void => {
       if (!pidAlive(pid) || !this.provesWorker(pid)) {
         this.clearStopProof(pid);
         return;
       }
-      const proof = this.stopping;
-      if (proof === undefined || proof.pid !== pid) return;
-      if (this.currentState()?.lifecycle === "releasing") {
+      const proof = this.stopping.get(pid);
+      if (proof === undefined) return;
+      if (this.stateForPid(pid)?.lifecycle === "releasing") {
         // A release that already pushed must finish its workflow wait, its
         // publish, and its worktree cleanup. The worker is stopping and exits
         // by itself once the release settles; never signal it in between.
@@ -524,8 +629,8 @@ export class DesignBridge implements AgentAdapter {
           this.clearStopProof(pid);
           return;
         }
-        if (this.stopping !== proof) return;
-        if (this.currentState()?.lifecycle === "releasing") {
+        if (this.stopping.get(pid) !== proof) return;
+        if (this.stateForPid(pid)?.lifecycle === "releasing") {
           // The release began after the signal; wait for it instead of
           // killing the worker between its push and its publish.
           proof.killTimer = undefined;
@@ -545,14 +650,15 @@ export class DesignBridge implements AgentAdapter {
     };
     const timer = setTimeout(prove, STOP_PROOF_MS);
     timer.unref?.();
-    this.stopping = { pid, timer };
+    this.stopping.set(pid, { timer });
   }
 
   private clearStopProof(pid: number): void {
-    if (this.stopping === undefined || this.stopping.pid !== pid) return;
-    clearTimeout(this.stopping.timer);
-    clearTimeout(this.stopping.killTimer);
-    this.stopping = undefined;
+    const proof = this.stopping.get(pid);
+    if (proof === undefined) return;
+    clearTimeout(proof.timer);
+    clearTimeout(proof.killTimer);
+    this.stopping.delete(pid);
   }
 
   private provesWorker(pid: number): boolean {
@@ -570,6 +676,53 @@ export class DesignBridge implements AgentAdapter {
       return false;
     }
   }
+}
+
+/** Every worker's filed issues, newest state first, deduplicated by URL. */
+function mergeIssues(states: readonly DesignState[]): DesignIssueRow[] {
+  const rows = new Map<string, DesignIssueRow>();
+  const ordered = [...states].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  for (const state of ordered) {
+    for (const issue of state.issues) {
+      const key = issue.url.length > 0 ? issue.url : issue.title;
+      if (!rows.has(key)) rows.set(key, issue);
+    }
+  }
+  return [...rows.values()];
+}
+
+/** Every release a worker recorded, newest first, bounded like the history. */
+function mergeDocumentation(states: readonly DesignState[]): DesignDocumentationEntry[] {
+  const entries = new Map<string, DesignDocumentationEntry>();
+  for (const state of states) {
+    for (const entry of state.documentation) {
+      const key = `${entry.version}\u0000${entry.at}`;
+      if (!entries.has(key)) entries.set(key, entry);
+    }
+  }
+  return [...entries.values()]
+    .sort((left, right) => right.at.localeCompare(left.at))
+    .slice(0, DOCUMENTATION_HISTORY_LIMIT);
+}
+
+/** The newest cycle id any worker published; ids begin with their timestamp. */
+function newestCycle(states: readonly DesignState[]): string | null {
+  let newest: string | null = null;
+  for (const state of states) {
+    const id = state.newestCycleId;
+    if (id !== null && (newest === null || id.localeCompare(newest) > 0)) newest = id;
+  }
+  return newest;
+}
+
+function workerLifecycle(
+  state: DesignState | undefined,
+): "running" | "stopping" | "stopped" | "failed" {
+  if (state === undefined) return "running";
+  if (state.lifecycle === "stopped") return "stopped";
+  if (state.lifecycle === "failed") return "failed";
+  if (state.draining) return "stopping";
+  return "running";
 }
 
 function projectIssue(issue: DesignIssueRow): {

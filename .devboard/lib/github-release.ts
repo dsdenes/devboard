@@ -1,6 +1,6 @@
 import { git } from "../issues/repository";
 import { commitCandidatesFromComments, isFullSha, isSha } from "./commit";
-import { localReleaseContainment } from "./release-containment";
+import { landedCommits, localReleaseContainment } from "./release-containment";
 
 export {
   closingCommitFromComments,
@@ -56,6 +56,8 @@ export interface RepositoryGitHub {
   closingCommit(issueNumber: number): Promise<string | null>;
   /** Every candidate for that commit, newest first, for verification. */
   closingCommits(issueNumber: number): Promise<string[]>;
+  /** The checkout's own commits whose landed subject ends with `(#<number>)`. */
+  landedCommits(issueNumber: number): string[];
   /** One unambiguous full commit, through the checkout or GitHub, or null. */
   resolveCommit(short: string): Promise<string | null>;
   /** The published release tags whose history contains `commit`. */
@@ -140,6 +142,12 @@ export interface ClosingCommitClient {
    * real commit; a client without it is asked for the single closing commit.
    */
   closingCommits?(issueNumber: number): Promise<string[]>;
+  /**
+   * The checkout's own commits whose landed subject ends with `(#<number>)`,
+   * newest first. A client that can read the checkout supplies this so the
+   * exact landed commit outranks a forge that recorded no closing reference.
+   */
+  landedCommits?(issueNumber: number): string[];
   resolveCommit(short: string): Promise<string | null>;
   containingReleaseTags(commit: string, releases: GitHubRelease[]): Promise<string[]>;
 }
@@ -203,16 +211,50 @@ export function releaseAtClose(
 }
 
 /**
+ * The version that shipped an issue named by a landed commit. The checkout is
+ * authoritative when it carries a commit whose subject ends with `(#<number>)`:
+ * the harness writes that reference on the commit that lands a fix, so the
+ * earliest published release containing any such commit is the exact answer
+ * even when the forge recorded no closing commit and no comment carries a SHA.
+ * Null means the checkout names none, so the forge's own candidates answer
+ * instead; a landed commit no release contains yet stays unresolved rather
+ * than falling back to an approximation.
+ */
+async function landedShippedVersion(
+  issueNumber: number,
+  client: ClosingCommitClient,
+  releases: GitHubRelease[],
+): Promise<VersionResolution | null> {
+  if (client.landedCommits === undefined) return null;
+  const candidates = client.landedCommits(issueNumber);
+  if (candidates.length === 0) return null;
+  const tags = new Set<string>();
+  let resolved: string | null = null;
+  for (const candidate of candidates) {
+    const commit = await client.resolveCommit(candidate);
+    if (commit === null) continue;
+    resolved ??= commit;
+    for (const tag of await client.containingReleaseTags(commit, releases)) tags.add(tag);
+  }
+  if (resolved === null) return null;
+  const version = earliestRelease(releases, [...tags]);
+  return version === null
+    ? { version: null, error: `no published release contains ${resolved}`, inferred: false }
+    : { version, error: null, inferred: false };
+}
+
+/**
  * The release that shipped the issue's closing commit: the timeline's commit
  * when present, otherwise the commit candidates of the newest comments, each
  * resolved to one full commit before it is matched against the earliest
  * published release containing it. A candidate that does not resolve is
  * skipped rather than ending the search, because comment prose carries
- * fingerprints, process ids, and epoch stamps that look like a SHA. A forge
- * that records no closing commit at all — the harness closes its own issues
- * through the API — falls back to the release published closest to the close.
- * Every failure is reported rather than thrown, so a caller can record why a
- * closed issue stays unresolved.
+ * fingerprints, process ids, and epoch stamps that look like a SHA. A commit
+ * the checkout landed with the issue's `(#<number>)` reference answers before
+ * the forge is asked, so a forge that records no closing commit still reports
+ * the exact release; an issue no commit names at all falls back to the release
+ * published closest to the close. Every failure is reported rather than thrown,
+ * so a caller can record why a closed issue stays unresolved.
  */
 export async function resolveShippedVersion<Issue extends ClosingCommitIssue>(
   issue: Issue,
@@ -226,6 +268,8 @@ export async function resolveShippedVersion<Issue extends ClosingCommitIssue>(
       ? { version: null, error, inferred: false }
       : { version: nearest, error: null, inferred: true };
   try {
+    const landed = await landedShippedVersion(issue.number, client, releases);
+    if (landed !== null) return landed;
     const candidates = await closingCandidates(client, issue.number);
     if (candidates.length === 0) return withoutCommit("no closing commit was found");
     let error = `closing commit ${candidates[0]} could not be resolved`;
@@ -384,6 +428,8 @@ export function createRepositoryGitHub(options: RepositoryGitHubOptions): Reposi
     },
 
     closingCommits,
+
+    landedCommits: (issueNumber) => landedCommits(options.repoDir, issueNumber),
 
     async resolveCommit(short: string): Promise<string | null> {
       if (!isSha(short)) return null;

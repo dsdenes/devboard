@@ -10,7 +10,8 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { isInteger, isRecord } from "./guards";
 
 /**
@@ -229,11 +230,60 @@ function reclaimStaleLock(path: string, inspected: LockSnapshot): void {
   }
 }
 
+/** A version-safe segment for a lock file or worker directory. */
+export function workerVersionKey(version: string | null): string {
+  const text = version === null || version.length === 0 ? "unknown" : version;
+  return text.replace(/[^0-9A-Za-z._-]/g, "_");
+}
+
+/** A version's own lock beside a legacy lock path. */
+export function versionLockPath(basePath: string, version: string | null): string {
+  return `${basePath}.${workerVersionKey(version)}`;
+}
+
+/** Every live owner beside one lock path: the legacy lock and each version. */
+export function liveLockOwners(path: string): LockOwner[] {
+  const owners: LockOwner[] = [];
+  const legacy = liveLockOwner(path);
+  if (legacy !== undefined) owners.push(legacy);
+  let names: string[];
+  try {
+    names = readdirSync(dirname(path));
+  } catch {
+    return owners;
+  }
+  const prefix = `${basename(path)}.`;
+  for (const name of names.sort()) {
+    if (!name.startsWith(prefix) || name.includes(".reclaim-") || name.includes(".new-")) continue;
+    const owner = liveLockOwner(join(dirname(path), name));
+    if (owner !== undefined) owners.push(owner);
+  }
+  return owners;
+}
+
 /** The live owner of a lock, or undefined when it is missing or stale. */
 export function liveLockOwner(path: string): LockOwner | undefined {
   const owner = readLock(path);
   if (owner === undefined || !ownerAlive(owner)) return undefined;
   return owner;
+}
+
+/**
+ * Takes a version's lock, treating a live legacy lock from the same version
+ * (or from a worker that recorded no version) as the same worker. A legacy
+ * lock of another version belongs to a parallel worker and is ignored.
+ */
+export function acquireWorkerLock(
+  basePath: string,
+  version: string | null,
+  details: Omit<LockOwner, "pid" | "startedAt">,
+  options: AcquireLockOptions = {},
+): LockResult {
+  const legacy = liveLockOwner(basePath);
+  if (legacy !== undefined && (legacy.harnessVersion === null || legacy.harnessVersion === version)) {
+    return { acquired: false, owner: legacy };
+  }
+  return acquireLock(versionLockPath(basePath, version), details, options);
 }
 
 export interface AcquireLockOptions {

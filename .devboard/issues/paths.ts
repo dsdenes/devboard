@@ -1,5 +1,7 @@
+import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { journalKey } from "../server/journal";
+import { workerVersionKey } from "./lock";
 
 /**
  * Every path one repository's issues worker owns. State lives under the
@@ -32,6 +34,36 @@ export function statePath(stateDir: string, repoDir: string): string {
   return join(repoStateDirectory(stateDir, repoDir), "state.json");
 }
 
+/** One worker version's state, beside the legacy state older harnesses write. */
+export function versionedStatePath(
+  stateDir: string,
+  repoDir: string,
+  version: string | null,
+): string {
+  return join(repoStateDirectory(stateDir, repoDir), "workers", workerVersionKey(version), "state.json");
+}
+
+export function versionedControlDirectory(
+  stateDir: string,
+  repoDir: string,
+  version: string | null,
+): string {
+  return join(repoStateDirectory(stateDir, repoDir), "workers", workerVersionKey(version), "control");
+}
+
+/** Every versioned worker directory under one repository state. */
+export function workerStateDirectories(stateDir: string, repoDir: string): string[] {
+  const root = join(repoStateDirectory(stateDir, repoDir), "workers");
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(root, entry.name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 export function ledgerPath(stateDir: string, repoDir: string): string {
   return join(repoStateDirectory(stateDir, repoDir), "ledger.json");
 }
@@ -56,6 +88,11 @@ export function controlDirectory(stateDir: string, repoDir: string): string {
  */
 export function lockPath(repoDir: string): string {
   return join(resolve(repoDir), ".devboard", ".tmp", ISSUES_DIRECTORY, "lock");
+}
+
+/** A version's own lock beside the legacy lock a pre-mechanism worker holds. */
+export function versionedLockPath(repoDir: string, version: string | null): string {
+  return `${lockPath(repoDir)}.${workerVersionKey(version)}`;
 }
 
 /** The removed systemd orchestrator's records, read only for migration. */

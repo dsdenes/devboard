@@ -24,6 +24,15 @@ import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { assertTrue, freePort, harnessRoot, makeRoot, run, waitFor } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
+import { DesignBridge } from "../server/design";
+import { agentRegistry } from "../server/agents/registry";
+import { readHarnessVersion } from "../server/version";
+import { liveLockOwners } from "../issues/lock";
+import {
+  lockPath as designLockPath,
+  versionedStatePath as designStatePath,
+} from "../issues/design/paths";
+import { readState as readDesignState } from "../issues/design/state";
 
 const stubAcp = join(harnessRoot, "tests", "fixtures", "design-stub-acp.ts");
 const stubPublisher = join(harnessRoot, "tests", "fixtures", "design-stub-publisher.ts");
@@ -1238,6 +1247,125 @@ try {
     `the page reported console errors: ${JSON.stringify(devtools.errors)}`,
   );
 
+  /* ---------------------------------------------------------------- */
+  /* 9. An older worker hands over without an operator step            */
+  /* ---------------------------------------------------------------- */
+  const oldVersion = "0.1.900";
+  const newestVersion = readHarnessVersion(harnessRoot) ?? "unknown";
+  const workerEnv: Record<string, string | undefined> = {
+    ...process.env,
+    ...verificationProviderUsageEnv(),
+    PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    REPO_DIR: repo,
+    ADRS_DIR: join(repo, "adrs"),
+    GOAL_FILE: join(repo, "GOAL.md"),
+    STATE_DIR: stateDir,
+    AGENT_COMMAND: `${process.execPath} ${stubAcp}`,
+    DEVBOARD_GITEA_URL: `http://127.0.0.1:${apiPort}`,
+    GITEA_TOKEN: "verification-token",
+    DESIGN_STUB_DIR: stubDir,
+    DESIGN_STUB_LOG: acpLog,
+    DESIGN_STUB_DELAY_MS: "0",
+    DESIGN_CADENCE_MS: "600000",
+    DESIGN_PUBLISH_COMMAND: stubPublisher,
+    DESIGN_PUBLISH_LOG: publishLog,
+    DESIGN_GIT_LOG: gitLog,
+    DESIGN_STUB_REPO: repo,
+  };
+  const oldWorker = spawn(
+    process.execPath,
+    [
+      join(harnessRoot, "issues", "design", "worker.ts"),
+      "--repo",
+      repo,
+      "--state-dir",
+      stateDir,
+    ],
+    {
+      cwd: repo,
+      env: { ...workerEnv, DEVBOARD_HARNESS_VERSION: oldVersion },
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
+  const bridge = new DesignBridge({
+    descriptor: agentRegistry.require("design"),
+    repoDir: repo,
+    stateDir,
+    agentCommand: `${process.execPath} ${stubAcp}`,
+    agentEnvironment: async () => workerEnv,
+    runningVersion: newestVersion,
+    harnessDir: harnessRoot,
+    send: () => undefined,
+    log: (line) => console.error(line),
+    environment: workerEnv,
+    preflight: async () => ({ ok: true }),
+    pollMs: 100,
+  });
+  try {
+    await waitFor(
+      () =>
+        liveLockOwners(designLockPath(repo)).some(
+          (owner) => owner.harnessVersion === oldVersion,
+        )
+          ? true
+          : undefined,
+      "the old design worker's lock",
+      20_000,
+      50,
+    );
+    console.log(`verify:design: takeover: the live ${oldVersion} worker holds the family`);
+    bridge.begin();
+    const merged = await waitFor(
+      () => {
+        const snapshot = bridge.snapshot();
+        const workers = snapshot.workers ?? [];
+        return workers.length >= 2 ? workers : undefined;
+      },
+      "the merged Design System worker view",
+      30_000,
+      50,
+    );
+    const versions = merged.map((worker) => worker.version).sort();
+    check(versions.includes(oldVersion), "the merged view lost the old worker", versions);
+    check(versions.includes(newestVersion), "the newer worker did not become live", versions);
+    check(
+      !JSON.stringify({ workers: merged, notice: bridge.snapshot().notice }).includes(
+        "this dashboard loaded",
+      ),
+      "the merged view carries a version divergence notice",
+    );
+    console.log(
+      `verify:design: takeover: old ${oldVersion} and new ${newestVersion} are both live with no divergence notice`,
+    );
+    bridge.stop();
+    await waitFor(
+      () =>
+        liveLockOwners(designLockPath(repo)).length === 0 ? true : undefined,
+      "every design worker to exit after the family Stop",
+      30_000,
+      100,
+    );
+    const retired = readDesignState(designStatePath(stateDir, repo, oldVersion));
+    check(retired !== undefined, "the retired worker's state was removed", retired);
+    check(
+      retired?.lifecycle === "stopped" || retired?.lifecycle === "failed",
+      "the retired worker did not publish its stop",
+      retired,
+    );
+    console.log(
+      "verify:design: takeover: the whole-family Stop ended both workers and the retired state remains readable",
+    );
+  } finally {
+    bridge.dispose();
+    if (oldWorker.pid !== undefined) {
+      try {
+        process.kill(oldWorker.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+
   console.log(
     "verify:design: the sidebar entry, shared page ids, the activity bar, the filed-issue table, " +
       "lifecycle, caps, the normative documents, the autonomous release, single flight, no-op, " +
@@ -1253,16 +1381,25 @@ try {
   }
   // The design worker is detached, so it is not a child of this script.
   const fixtureState = join(root, "repo", ".devboard", ".tmp", "state", "design");
+  const killPublished = (path: string): void => {
+    try {
+      const state = JSON.parse(readFileSync(path, "utf8")) as { worker?: { pid?: number } };
+      const pid = state.worker?.pid;
+      if (typeof pid === "number" && pid > 0) process.kill(pid, "SIGKILL");
+    } catch {
+      // No state at this path.
+    }
+  };
   try {
     for (const entry of readdirSync(fixtureState)) {
+      killPublished(join(fixtureState, entry, "state.json"));
+      const versionRoot = join(fixtureState, entry, "workers");
       try {
-        const state = JSON.parse(
-          readFileSync(join(fixtureState, entry, "state.json"), "utf8"),
-        ) as { worker?: { pid?: number } };
-        const pid = state.worker?.pid;
-        if (typeof pid === "number" && pid > 0) process.kill(pid, "SIGKILL");
+        for (const version of readdirSync(versionRoot)) {
+          killPublished(join(versionRoot, version, "state.json"));
+        }
       } catch {
-        // No state for this repository.
+        // No versioned state was written.
       }
     }
   } catch {

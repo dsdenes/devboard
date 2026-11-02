@@ -2207,6 +2207,29 @@ kbd {
   font-size: 11.5px;
 }
 
+.discover-contribution-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.discover-contribution-list li {
+  overflow-wrap: anywhere;
+}
+
+.discover-contribution-record {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.discover-contribution-record__row {
+  overflow-wrap: anywhere;
+}
+
 .discover-chips {
   display: flex;
   flex-wrap: wrap;

@@ -1,5 +1,7 @@
+import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { journalKey } from "../../server/journal";
+import { workerVersionKey } from "../lock";
 
 /**
  * Every path one repository's Design System worker owns. State lives beside
@@ -102,6 +104,36 @@ export function statePath(stateDir: string, repoDir: string): string {
   return join(repoStateDirectory(stateDir, repoDir), "state.json");
 }
 
+/** One worker version's state, beside the legacy state older harnesses write. */
+export function versionedStatePath(
+  stateDir: string,
+  repoDir: string,
+  version: string | null,
+): string {
+  return join(repoStateDirectory(stateDir, repoDir), "workers", workerVersionKey(version), "state.json");
+}
+
+export function versionedControlDirectory(
+  stateDir: string,
+  repoDir: string,
+  version: string | null,
+): string {
+  return join(repoStateDirectory(stateDir, repoDir), "workers", workerVersionKey(version), "control");
+}
+
+/** Every versioned worker directory under one repository state. */
+export function workerStateDirectories(stateDir: string, repoDir: string): string[] {
+  const root = join(repoStateDirectory(stateDir, repoDir), "workers");
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(root, entry.name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 export function settingsPath(stateDir: string, repoDir: string): string {
   return join(repoStateDirectory(stateDir, repoDir), "settings.json");
 }
@@ -122,6 +154,11 @@ export function lockPath(repoDir: string): string {
 
 export function cyclesDirectory(repoDir: string): string {
   return join(workDirectory(repoDir), "cycles");
+}
+
+/** The one checkout-wide lease for the cycle currently being audited. */
+export function cycleClaimPath(repoDir: string): string {
+  return join(workDirectory(repoDir), "cycle-claim");
 }
 
 export function cycleDirectory(repoDir: string, cycleId: string): string {

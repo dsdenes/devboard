@@ -14,6 +14,12 @@ export interface VersionState {
   installed: string | null;
   latest: string | null;
   stale: boolean;
+  /** A replacement that could not start; the fallback control retries it. */
+  replacement?: {
+    running: string | null;
+    installed: string | null;
+    error: string;
+  } | null;
 }
 
 export type IssuesLifecycle = "stopped" | "idle" | "running" | "pausing" | "paused" | "failed";
@@ -94,6 +100,13 @@ export interface IssuesSnapshot {
   finishedAt: string | null;
   notice: string | null;
   updatedAt: string | null;
+  /** Every live issues worker, whatever version started it. */
+  workers?: Array<{
+    pid: number;
+    version: string | null;
+    stateDir: string;
+    lifecycle: IssuesLifecycle;
+  }>;
   /**
    * The dashboard's own tracker reads. Optional so a client paired with an
    * older server still validates its snapshot.
@@ -416,6 +429,36 @@ export interface Freshness {
   discoveredAt: string;
 }
 
+/** One fact the Contribution page renders as a value or an explicit empty state. */
+export interface ContributionFact {
+  key: string;
+  label: string;
+  value?: unknown;
+  evidence: string[];
+  confidence: "observed" | "declared" | "inferred" | "unknown";
+  reason?: string;
+}
+
+export interface ContributionSection {
+  id: string;
+  label: string;
+  facts: ContributionFact[];
+}
+
+export interface ContributionSample {
+  number: number;
+  title: string;
+  body: string;
+}
+
+/** The published contribution sheet: nine ordered sections and its sample. */
+export interface Contribution {
+  schemaVersion: number;
+  freshness: Freshness;
+  sections: ContributionSection[];
+  sample: ContributionSample[];
+}
+
 /** One remote project whose published bytes the dashboard retains. */
 export interface RetainedRemoteProject {
   url: string;
@@ -463,9 +506,9 @@ export interface DiscoverStatePayload {
   startedAt: string | null;
   /** The agent the active run belongs to, or null when nothing runs. */
   activeAgent: string | null;
-  /** True while the six agents run as one Run all sequence. */
+  /** True while the seven agents run as one Run all sequence. */
   runningAll: boolean;
-  /** The six discovery cards in sidebar order. */
+  /** The seven discovery cards in sidebar order. */
   agents: DiscoverAgentState[];
   interrupted: boolean;
   stale: boolean;
@@ -486,6 +529,8 @@ export interface DiscoverStatePayload {
   /** The manifest's invocations for the commands the sheet recorded. */
   commandAliases?: Array<{ command: string; alias: string }>;
   dependencyRepositories: Record<string, string>;
+  /** Null until the contribution agent publishes, or when its file is unreadable. */
+  contribution: Contribution | null;
   glossaries: Glossary[];
   glossaryUsage: GlossaryUsage;
   glossarySignificance: GlossarySignificance;
@@ -496,11 +541,13 @@ export interface DiscoverStatePayload {
 export type DiscoverTabId =
   | "overview"
   | "glossary"
+  | "contribution"
   | "testing-strategy"
   | "naming-conventions"
   | "coding-conventions"
   | "architecture-boundaries"
-  | "glossary-skill";
+  | "glossary-skill"
+  | "contribution-skill";
 
 export interface DiscoverTab {
   id: DiscoverTabId;

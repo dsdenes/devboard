@@ -126,6 +126,9 @@ async function handlePrompt(id: number | string, params: unknown): Promise<void>
   }
   notify("scout activity end");
 
+  const delayMs = Number(process.env.SCOUT_STUB_ACP_DELAY_MS ?? 0);
+  if (delayMs > 0) await Bun.sleep(delayMs);
+
   writeFileSync(
     join(scanDirectory, "recommendations.json"),
     `${JSON.stringify(recommendationsFor(scanDirectory, index), null, 2)}\n`,

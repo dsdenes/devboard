@@ -1,6 +1,6 @@
 import { git } from "../issues/repository";
 import { isFullSha, isSha, type GitHubRelease } from "./github-release";
-import { localReleaseContainment } from "./release-containment";
+import { landedCommits, localReleaseContainment } from "./release-containment";
 import {
   GiteaError,
   giteaClosingCommit,
@@ -23,6 +23,8 @@ export interface GiteaVersionClient {
   closingCommit(issueNumber: number): Promise<string | null>;
   /** Every candidate for that commit, newest first, for verification. */
   closingCommits(issueNumber: number): Promise<string[]>;
+  /** The checkout's own commits whose landed subject ends with `(#<number>)`. */
+  landedCommits(issueNumber: number): string[];
   /** One unambiguous full commit, through the checkout or the forge, or null. */
   resolveCommit(short: string): Promise<string | null>;
   /** The published release tags whose history contains `commit`. */
@@ -118,6 +120,7 @@ export function createGiteaVersionClient(
   return {
     closingCommit: (issueNumber) => giteaClosingCommit(target, issueNumber, fetchImpl),
     closingCommits: (issueNumber) => giteaClosingCommits(target, issueNumber, fetchImpl),
+    landedCommits: (issueNumber) => landedCommits(repoDir, issueNumber),
     resolveCommit,
     containingReleaseTags,
   };

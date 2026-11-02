@@ -14,9 +14,10 @@ import type {
 export const SECTION_TABS: DiscoverTab[] = [
   { id: "overview", label: "Overview", skill: null },
   { id: "glossary", label: "Glossary", skill: null },
+  { id: "contribution", label: "Contribution", skill: null },
 ];
 
-/** The five generated skills; the sidebar groups them under Skills. */
+/** The six generated skills; the sidebar groups them under Skills. */
 export const SKILL_TABS: DiscoverTab[] = [
   {
     id: "testing-strategy",
@@ -39,6 +40,11 @@ export const SKILL_TABS: DiscoverTab[] = [
     skill: "discover-architecture-boundaries",
   },
   { id: "glossary-skill", label: "Glossary", skill: "discover-glossary" },
+  {
+    id: "contribution-skill",
+    label: "Contribution",
+    skill: "discover-contribution",
+  },
 ];
 
 export const TABS: DiscoverTab[] = [...SECTION_TABS, ...SKILL_TABS];

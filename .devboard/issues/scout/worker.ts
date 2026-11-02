@@ -7,10 +7,11 @@ import {
 } from "../../server/providers/worker-environment";
 import { recordedChildAlive } from "../../server/state";
 import { readHarnessVersion } from "../../server/version";
-import { acquireLock, liveLockOwner } from "../lock";
+import { acquireLock, liveLockOwner, pidAlive, versionLockPath } from "../lock";
 import { originRepository } from "../repository";
 import { appendActivityLine, writeActivity } from "../state";
 import { fileScoutIssue } from "./actions";
+import { claimScan, releaseScanClaim, updateScanClaim } from "./claims";
 import { takeCommands, type ScoutCommand } from "./control";
 import {
   createScoutGitHub,
@@ -37,6 +38,8 @@ import {
   scanDirectory,
   settingsPath,
   statePath,
+  versionedControlDirectory,
+  versionedStatePath,
 } from "./paths";
 import {
   categoryFromBody,
@@ -253,6 +256,10 @@ export class ScoutWorker {
   private active: ActiveScan | undefined;
   private starting = false;
   private stopping = false;
+  /** A newer harness owns new scans; finish the in-flight one, then exit. */
+  private draining = false;
+  /** True while this worker holds the repository's one scan claim. */
+  private leaseHeld = false;
   /** One consumer at a time, so two ticks never apply the same command. */
   private consuming = false;
   /** One GitHub read at a time. */
@@ -292,7 +299,9 @@ export class ScoutWorker {
     this.injectedGithub = options.github;
     this.fileIssue = options.fileIssue ?? fileScoutIssue;
     this.harnessVersion =
-      options.harnessVersion ?? readHarnessVersion(resolve(import.meta.dir, "..", ".."));
+      options.harnessVersion ??
+      process.env.DEVBOARD_HARNESS_VERSION ??
+      readHarnessVersion(resolve(import.meta.dir, "..", ".."));
     this.log = options.log ?? (() => undefined);
     this.onStopped = options.onStopped;
     this.state = emptyState({ repo: "", root: this.repoDir, now: this.clock() });
@@ -313,7 +322,7 @@ export class ScoutWorker {
 
   /** Takes the repository lock and publishes a fresh `idle` cycle. */
   start(repository: string): boolean {
-    const lockResult = acquireLock(lockPath(this.repoDir), {
+    const lockResult = acquireLock(versionLockPath(lockPath(this.repoDir), this.harnessVersion), {
       repo: this.repoDir,
       stateDir: this.stateDir,
       harnessVersion: this.harnessVersion,
@@ -325,9 +334,18 @@ export class ScoutWorker {
     }
     this.lock = lockResult;
 
-    const previous = loadState(statePath(this.stateDir, this.repoDir));
+    const previous =
+      loadState(versionedStatePath(this.stateDir, this.repoDir, this.harnessVersion)) ??
+      loadState(statePath(this.stateDir, this.repoDir));
     let lastError: string | null = null;
-    if (previous?.scan != null) {
+    // A scan left running by another live version is that worker's in-flight
+    // unit, not this worker's interrupted one. Only this version's own
+    // predecessor, or a version whose process is gone, leaves a closed scan.
+    const ownedByThisVersion =
+      previous?.worker == null ||
+      previous.worker.harnessVersion === this.harnessVersion ||
+      !pidAlive(previous.worker.pid);
+    if (previous?.scan != null && ownedByThisVersion) {
       this.closeInterruptedScan(previous.scan.scanId);
       lastError = "the previous scan was interrupted; it is recorded as failed";
     }
@@ -415,7 +433,7 @@ export class ScoutWorker {
     const text = JSON.stringify(this.state);
     if (text === this.lastSaved) return;
     try {
-      writeState(statePath(this.stateDir, this.repoDir), this.state);
+      writeState(versionedStatePath(this.stateDir, this.repoDir, this.harnessVersion), this.state);
       this.lastSaved = text;
     } catch (error) {
       this.log(`could not write state: ${detailOf(error)}`);
@@ -432,7 +450,12 @@ export class ScoutWorker {
   private async tick(): Promise<void> {
     if (this.stopping) return;
     await this.consumeCommands();
-    if (this.stopping || !this.state.enabled) return;
+    if (this.stopping) return;
+    if (this.draining) {
+      if (this.active === undefined) await this.stop();
+      return;
+    }
+    if (!this.state.enabled) return;
     this.markStale();
     if (this.syncing || this.filing) return;
     if (this.clock().getTime() >= this.nextSyncAt) {
@@ -511,7 +534,12 @@ export class ScoutWorker {
     if (this.consuming) return;
     this.consuming = true;
     try {
-      const commands = takeCommands(controlDirectory(this.stateDir, this.repoDir));
+      const commands = [
+        ...takeCommands(versionedControlDirectory(this.stateDir, this.repoDir, this.harnessVersion)),
+        // A dashboard that predates the versioned channel, or this worker's
+        // operator, may still write here.
+        ...takeCommands(controlDirectory(this.stateDir, this.repoDir)),
+      ];
       for (const command of commands) {
         if (this.stopping) return;
         await this.apply(command);
@@ -525,6 +553,20 @@ export class ScoutWorker {
     switch (command.type) {
       case "stop": {
         await this.stop();
+        return;
+      }
+      case "drain": {
+        if (this.draining) return;
+        this.draining = true;
+        this.state.enabled = false;
+        this.state.nextAttemptAt = null;
+        this.state.notice =
+          "Draining: the in-flight scan finishes on this harness, then the worker exits.";
+        if (this.active === undefined) {
+          await this.stop();
+          return;
+        }
+        this.publish();
         return;
       }
       case "refresh": {
@@ -727,7 +769,14 @@ export class ScoutWorker {
       };
       rows.push(row);
       if (row.state !== "implemented" || row.version !== null || github === undefined) continue;
-      if (!releasesChanged && now - attemptTime(row) < RESOLUTION_RETRY_MS) continue;
+      // A landed commit is local and cheap to read, so a row it names is
+      // re-resolved on every read rather than waiting out the negative
+      // backoff: a release published since the last attempt fills the version
+      // without the row staying blank until the interval expires.
+      const landed = github.landedCommits?.(issue.number) ?? [];
+      if (landed.length === 0 && !releasesChanged && now - attemptTime(row) < RESOLUTION_RETRY_MS) {
+        continue;
+      }
       withheld.push({ issue, row });
     }
     // The longest-waiting row goes first, so a read that runs out of time
@@ -798,7 +847,7 @@ export class ScoutWorker {
 
   /** One scan: one request file, one prompt, one validated answer. */
   async beginScan(): Promise<void> {
-    if (this.stopping || this.active !== undefined || this.starting) return;
+    if (this.stopping || this.draining || this.active !== undefined || this.starting) return;
     if (!this.state.enabled || this.state.sync.state !== "ok") return;
     if (this.cooldownRemaining() || this.cadenceRemaining()) return;
     const capacity = this.capacity();
@@ -806,11 +855,16 @@ export class ScoutWorker {
       this.block(capacity.blockedUntil);
       return;
     }
+    // The repository has one scan slot. A newer version alive during a
+    // takeover leaves the old worker's in-flight scan alone and claims the
+    // next slot only after that worker finishes and releases it.
+    if (!this.claimScanSlot()) return;
     this.starting = true;
     try {
       const now = this.clock();
       const draftGoalHeadings = readDraftGoalHeadings(this.repoDir);
       const scan = createScanDirectory(this.repoDir, now);
+      updateScanClaim(this.repoDir, scan.scanId);
       const requested = Math.min(
         Number.isFinite(capacity.batch) ? capacity.batch : UNLIMITED_SCAN_BATCH,
         UNLIMITED_SCAN_BATCH,
@@ -854,6 +908,8 @@ export class ScoutWorker {
         this.state.lifecycle = "failed";
         this.state.nextAttemptAt = new Date(this.clock().getTime() + this.syncMs).toISOString();
         this.publish();
+        this.releaseScanSlot();
+        if (this.draining) await this.stop();
         return;
       }
 
@@ -897,7 +953,30 @@ export class ScoutWorker {
         });
     } finally {
       this.starting = false;
+      // A failure before the scan became active owns no scan to finish.
+      if (this.active === undefined) this.releaseScanSlot();
     }
+  }
+
+  /** Claims this repository's one scan slot, or reports another worker owns it. */
+  private claimScanSlot(): boolean {
+    if (this.leaseHeld) return true;
+    if (
+      !claimScan(this.repoDir, {
+        harnessVersion: this.harnessVersion,
+        scanId: null,
+      })
+    ) {
+      return false;
+    }
+    this.leaseHeld = true;
+    return true;
+  }
+
+  private releaseScanSlot(): void {
+    if (!this.leaseHeld) return;
+    this.leaseHeld = false;
+    releaseScanClaim(this.repoDir);
   }
 
   private recordActivity(entry: AcpActivity): void {
@@ -1185,6 +1264,10 @@ export class ScoutWorker {
         ? latest(cadenceAt, cooldownAt)
         : latest(cadenceAt, capacity.blockedUntil ?? cooldownAt);
     this.publish();
+    // The next worker version may claim the slot now that this scan ended.
+    this.releaseScanSlot();
+    // A drain waits for exactly this moment: the in-flight scan is recorded.
+    if (this.draining) void this.stop();
   }
 
   /**
@@ -1433,13 +1516,16 @@ export class ScoutWorker {
     this.state.enabled = false;
     this.state.scan = null;
     this.state.nextAttemptAt = null;
-    this.state.notice = null;
+    this.state.notice = this.draining
+      ? "Drained: the worker finished its work and exited; its records stay readable."
+      : null;
     this.state.lifecycle = "stopped";
     this.publish();
     if (this.ticker !== undefined) {
       clearInterval(this.ticker);
       this.ticker = undefined;
     }
+    this.releaseScanSlot();
     this.lock?.release();
     this.lock = undefined;
     this.onStopped?.();
@@ -1487,8 +1573,11 @@ async function main(): Promise<void> {
     console.error("scout worker: the checkout's origin does not name a repository");
     process.exit(2);
   }
-  if (liveLockOwner(lockPath(repoDir)) !== undefined) {
-    console.error("scout worker: this checkout already has a live scout");
+  const workerVersion =
+    process.env.DEVBOARD_HARNESS_VERSION ??
+    readHarnessVersion(resolve(import.meta.dir, "..", ".."));
+  if (liveLockOwner(versionLockPath(lockPath(repoDir), workerVersion)) !== undefined) {
+    console.error("scout worker: this checkout already has a live scout for this version");
     process.exit(0);
   }
 

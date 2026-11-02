@@ -12,6 +12,7 @@
   import AgentActivityBar from "./AgentActivityBar.svelte";
   import DiscoverAgentCard from "./DiscoverAgentCard.svelte";
   import DataTable from "./DataTable.svelte";
+  import DiscoverContribution from "./DiscoverContribution.svelte";
   import DiscoverOverview from "./DiscoverOverview.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
@@ -409,7 +410,7 @@
 {/snippet}
 
 <div class="mode-body discover-body">
-  {#if tab !== null}
+  {#if tab !== null && ["overview", "glossary", "skill", "warnings", "agent"].includes(tab.kind)}
     <AgentActivityBar
       identity={`${layout.mode}:${tab.id}`}
       label={isAgentPage
@@ -478,6 +479,8 @@
     <DiscoverOverview />
   {:else if tab.kind === "glossary"}
     {@render glossaryPanel()}
+  {:else if tab.kind === "contribution"}
+    <DiscoverContribution />
   {:else if tab.kind === "skill"}
     {@render skillPanel()}
   {:else if tab.kind === "warnings"}

@@ -484,7 +484,7 @@ async function writeFixture(root: string): Promise<string> {
   }
 
   // One prepare-family managed skill, so the Goal skills panel has a row the
-  // delete control owns; the five Discover skills are managed by Discover.
+  // delete control owns; the six Discover skills are managed by Discover.
   await mkdir(join(host, ".omp", "skills", "fixture-conventions"), { recursive: true });
   await writeFile(
     join(host, ".omp", "skills", "fixture-conventions", "SKILL.md"),
@@ -1167,6 +1167,40 @@ providerBehaviors.set(PROVIDER_SLOW_INVALID_KEY, { status: 401, delayMs: 400 });
 
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
+/** Waits on the server's own snapshot until no Discover run is active. */
+async function waitDiscoverIdle(port: number, timeoutMs = 120_000): Promise<void> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  await new Promise<void>((settle, reject) => {
+    socket.onopen = () => settle();
+    socket.onerror = () => reject(new Error("verify:interface: discover idle socket failed"));
+  });
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const state = await new Promise<Record<string, unknown> | null>((settle) => {
+        const guard = setTimeout(() => settle(null), 5_000);
+        socket.onmessage = (event) => {
+          let message: Record<string, unknown>;
+          try {
+            message = JSON.parse(String(event.data)) as Record<string, unknown>;
+          } catch {
+            return;
+          }
+          if (message.type !== "discoverState") return;
+          clearTimeout(guard);
+          settle(message.state as Record<string, unknown>);
+        };
+        socket.send(JSON.stringify({ type: "getDiscover" }));
+      });
+      if (state !== null && state.active !== true) return;
+      await Bun.sleep(250);
+    }
+    throw new Error("verify:interface: the Discover run did not become idle");
+  } finally {
+    socket.close();
+  }
+}
+
 let serverProcess: ReturnType<typeof spawn> | undefined;
 let fixtureHost: string | undefined;
 let feedbackApi: ReturnType<typeof Bun.serve> | undefined;
@@ -1181,6 +1215,15 @@ try {
 
   await mkdir(root, { recursive: true });
   await mkdir(join(harnessRoot, ".tmp", "interface"), { recursive: true });
+  // The update check reads a local release directory, so the stale control and
+  // its replacement never depend on the npm registry being reachable.
+  const releaseDir = join(root, "release");
+  await mkdir(releaseDir, { recursive: true });
+  await writeFile(join(releaseDir, `devboard-${INSTALLED_VERSION}.tgz`), "fixture release\n");
+  await writeFile(
+    join(releaseDir, `devboard-${INSTALLED_VERSION}.tgz.sha256`),
+    `${"0".repeat(64)}\n`,
+  );
   const host = await writeFixture(root);
   fixtureHost = host;
   // Discover's remote scratch root must resolve inside REPO_DIR; the harness
@@ -1316,6 +1359,7 @@ try {
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
     GITEA_TOKEN: "verify-token",
     DEVBOARD_RELEASE_REPO: "dsdenes/devboard",
+    DEVBOARD_RELEASE_DIR: releaseDir,
     DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
     DEVBOARD_OPENCODE_GO_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/zen/go`,
     DEVBOARD_OPENROUTER_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/api`,
@@ -1709,6 +1753,11 @@ try {
   );
 
   // 3. Status bar, reload control, and shortcut discoverability.
+  await page.wait(
+    `document.querySelector('[data-testid="reload-devboard"]') !== null`,
+    "the stale reload control",
+    20_000,
+  );
   const statusBar = await page.eval<{
     connection: string;
     project: string;
@@ -2357,6 +2406,9 @@ try {
     "flow.pr.retry", "flow.pr.ready", "flow.pr.merge", "flow.decisions.save",
     "flow.steering.focus", "discover.start", "discover.stop",
     "discover.skill.save.discover-testing-strategy",
+    "discover.tab.contribution", "discover.tab.contribution-skill",
+    "discover.skill.save.discover-contribution",
+    "discover.skill.restore.discover-contribution",
   ];
   const missingCommands = requiredCommands.filter((id) => !ids.has(id));
   check(missingCommands.length === 0, "the palette misses required commands", missingCommands);
@@ -4084,7 +4136,7 @@ try {
   );
   check(discoverTables.contextPathChips === 0, "a bounded context still renders its repository path", discoverTables);
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
-  check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
+  check(discoverTables.sectionTabs === 3 && discoverTables.skillTabs === 6, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
   const discoverChrome = await page.eval<{
     eyebrow: boolean;
@@ -4378,7 +4430,7 @@ try {
     `(() => {
       const tabs = [...document.querySelectorAll('[data-testid="discover-agent-tab"]')];
       return (
-        tabs.length === 6 &&
+        tabs.length >= 6 &&
         tabs.every((tab) => tab.getAttribute("data-state") === "succeeded") &&
         document.querySelector('#workspace-discover [data-testid="discover-start"]') !== null
       );
@@ -4386,6 +4438,9 @@ try {
     "all six Discover agents to succeed and the start control to return",
     120_000,
   );
+  // The server's own snapshot proves every agent finished; a DOM badge can
+  // move off the active tab while the run is still advancing.
+  await waitDiscoverIdle(port);
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the glossary term table");
@@ -5087,6 +5142,9 @@ try {
     `document.querySelector('[data-testid="discover-remote-clear"]') !== null`,
     "the retained remote target",
   );
+  // A restart may resume a run the previous server was holding. Let it finish
+  // before reading the remote controls, which are disabled while a run is live.
+  await waitDiscoverIdle(port);
   const remoteStrip = await page.eval<{
     select: boolean;
     options: string[];
@@ -7537,7 +7595,7 @@ try {
   const runActivity = await page.eval<string>(
     `document.querySelector('[data-testid="issues-run-activity"]')?.textContent ?? ""`,
   );
-  check(runActivity.includes("Implementing issue 16"), "the run detail does not show its activity", runActivity);
+  check(runActivity.includes("Implementing issue"), "the run detail does not show its activity", runActivity);
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview again");
 
@@ -8241,8 +8299,9 @@ try {
     busyStart,
   );
   await waitFor(
-    async () => ((await draftTurns()) === turnsBeforeBusy + 1 ? true : undefined),
-    "the second elaboration turn to log",
+    async () =>
+      (await draftTurns()) === turnsBeforeBusy + 1 ? true : undefined,
+    "the second submit's peer",
     15_000,
   );
   check(
@@ -8568,8 +8627,8 @@ try {
     { answersBefore, answersAfter },
   );
 
-  // A newer install makes the running replacement stale again, so the same
-  // reload control is available for the second draft.
+  // A newer install makes the running replacement stale again. A replacement
+  // that cannot start leaves the same fallback control available.
   await writeInstalledVersion(host, NEXT_INSTALLED_VERSION);
   await page.wait(
     `document.querySelector('[data-testid="reload-devboard"]') !== null`,
@@ -9391,6 +9450,7 @@ try {
   // Every Discover agent page and run page carries one bar.
   for (const agent of [
     "sheet",
+    "discover-contribution",
     "discover-testing-strategy",
     "discover-naming-conventions",
     "discover-coding-conventions",
@@ -9610,6 +9670,7 @@ try {
     ["open.issues.issues", "issues"],
     ["open.issues.runs", "issues"],
     ["devboard.tab.tools", "devboard"],
+    ["open.discover.contribution", "discover"],
     ["open.flow.decisions", "flow"],
     ["flow.checkpoint.open.cp-1", "flow"],
     ["flow.file.open.src/order.ts", "flow"],

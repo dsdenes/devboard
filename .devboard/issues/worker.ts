@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "../server/acp";
 import {
@@ -17,10 +18,19 @@ import {
   type Ledger,
 } from "./ledger";
 import { migrateLegacyLedger } from "./legacy";
-import { acquireLock, liveLockOwner } from "./lock";
+import { claimIssue, releaseIssueClaim } from "./claims";
+import { acquireWorkerLock, liveLockOwner } from "./lock";
 import { originForge, originRepository } from "./repository";
 import { giteaBaseUrl } from "../lib/forge";
-import { controlDirectory, lockPath, runsDirectory, statePath } from "./paths";
+import {
+  controlDirectory,
+  lockPath,
+  runsDirectory,
+  statePath,
+  versionedControlDirectory,
+  versionedLockPath,
+  versionedStatePath,
+} from "./paths";
 import { clearClosedByRun, closedByRun } from "./self-close";
 import {
   fetchIssueState,
@@ -343,6 +353,12 @@ export class IssuesWorker {
    * a stale queue cannot restart a run the operator has already closed.
    */
   private readonly dismissed = new Map<number, number>();
+  /** Issue numbers this worker claimed before starting their peers. */
+  private readonly claiming = new Set<number>();
+  private readonly claimToken = `pending-${process.pid}-${randomUUID()}`;
+  /** Numbers pruned on this pass; a shared ledger write must not resurrect them. */
+  private readonly pruned = new Set<number>();
+  private draining = false;
   private runs: Array<{ run: RunFile; directory: string }> = [];
   private stopping = false;
   private polling = false;
@@ -400,7 +416,10 @@ export class IssuesWorker {
           number,
         );
       });
-    this.harnessVersion = options.harnessVersion ?? readHarnessVersion(resolve(import.meta.dir, ".."));
+    this.harnessVersion =
+      options.harnessVersion ??
+      process.env.DEVBOARD_HARNESS_VERSION ??
+      readHarnessVersion(resolve(import.meta.dir, ".."));
     this.log = options.log ?? (() => undefined);
     this.onStopped = options.onStopped;
     this.state = emptyState({
@@ -422,7 +441,7 @@ export class IssuesWorker {
 
   /** Takes the repository lock and publishes the fresh `idle` cycle. */
   start(repository: string): boolean {
-    const lockResult = acquireLock(lockPath(this.repoDir), {
+    const lockResult = acquireWorkerLock(lockPath(this.repoDir), this.harnessVersion, {
       repo: this.repoDir,
       stateDir: this.stateDir,
       harnessVersion: this.harnessVersion,
@@ -434,8 +453,10 @@ export class IssuesWorker {
     }
     this.lock = lockResult;
 
-    const path = statePath(this.stateDir, this.repoDir);
-    const loaded = loadStateWithText(path);
+    const path = versionedStatePath(this.stateDir, this.repoDir, this.harnessVersion);
+    const legacyPath = statePath(this.stateDir, this.repoDir);
+    const source = existsSync(path) ? path : existsSync(legacyPath) ? legacyPath : path;
+    const loaded = loadStateWithText(source);
     const records = previousRecords(loaded.text);
     this.ledger = loadLedger(this.stateDir, this.repoDir);
     let migrationError: string | null = null;
@@ -469,9 +490,18 @@ export class IssuesWorker {
         // It exited between the proof and the signal.
       }
     }
+    // Another live version's run is not this worker's to interrupt: only
+    // records this worker wrote, or a run this same version owns, are closed.
     const interrupted = new Set([
       ...records.runIds,
-      ...this.runs.filter((entry) => entry.run.status === "running").map((entry) => entry.run.runId),
+      ...this.runs
+        .filter(
+          (entry) =>
+            entry.run.status === "running" &&
+            (entry.run.workerPid === process.pid ||
+              entry.run.harnessVersion === this.harnessVersion),
+        )
+        .map((entry) => entry.run.runId),
     ]);
     for (const runId of interrupted) this.closeInterruptedRun(runId);
     this.active.clear();
@@ -529,7 +559,7 @@ export class IssuesWorker {
     const text = JSON.stringify(this.state);
     if (text === this.lastSaved) return;
     try {
-      writeState(statePath(this.stateDir, this.repoDir), this.state);
+      writeState(versionedStatePath(this.stateDir, this.repoDir, this.harnessVersion), this.state);
       this.lastSaved = text;
     } catch (error) {
       this.log(`could not write state: ${error instanceof Error ? error.message : String(error)}`);
@@ -549,6 +579,10 @@ export class IssuesWorker {
     if (this.stopping) return;
     if (!this.state.enabled) return;
     if (this.polling) return;
+    if (this.draining && !this.running && !this.polling) {
+      await this.stop();
+      return;
+    }
     if (this.clock().getTime() < this.nextPollDue) return;
     await this.guarded("poll the tracker", () => this.poll());
   }
@@ -575,6 +609,18 @@ export class IssuesWorker {
   /** Persists the ledger; an I/O failure is recorded, never thrown. */
   private persistLedger(): string | null {
     try {
+      // Another version's worker shares this ledger. Merge its entries so a
+      // write never erases a unit that finished on the other worker.
+      const disk = loadLedger(this.stateDir, this.repoDir);
+      const open = new Set(this.state.queue.map((issue) => issue.number));
+      const otherHandled = Object.fromEntries(
+        Object.entries(disk.handled).filter(
+          ([number]) => open.has(Number(number)) && !this.pruned.has(Number(number)),
+        ),
+      );
+      this.pruned.clear();
+      const handled = { ...otherHandled, ...this.ledger.handled };
+      this.ledger = { version: 1, handled };
       writeLedger(this.stateDir, this.repoDir, this.ledger);
       return null;
     } catch (error) {
@@ -585,7 +631,12 @@ export class IssuesWorker {
   }
 
   private async consumeCommands(): Promise<void> {
-    const commands = takeCommands(controlDirectory(this.stateDir, this.repoDir));
+    const commands = [
+      ...takeCommands(controlDirectory(this.stateDir, this.repoDir)),
+      ...takeCommands(
+        versionedControlDirectory(this.stateDir, this.repoDir, this.harnessVersion),
+      ),
+    ];
     for (const command of commands) {
       if (this.stopping) return;
       await this.apply(command);
@@ -674,6 +725,15 @@ export class IssuesWorker {
       }
       case "stop": {
         await this.stop();
+        return;
+      }
+      case "drain": {
+        // A newer version owns new work. Finish every live unit, then exit.
+        this.draining = true;
+        this.state.paused = true;
+        this.state.notice = null;
+        this.state.lifecycle = this.running ? "pausing" : "paused";
+        this.publish();
         return;
       }
     }
@@ -805,6 +865,9 @@ export class IssuesWorker {
     }
     const pruned = pruneLedger(this.ledger, open);
     if (pruned !== this.ledger) {
+      for (const key of Object.keys(this.ledger.handled)) {
+        if (!(key in pruned.handled)) this.pruned.add(Number(key));
+      }
       this.ledger = pruned;
       const ledgerError = this.persistLedger();
       if (ledgerError !== null) this.state.lastError = ledgerError;
@@ -866,6 +929,15 @@ export class IssuesWorker {
       if (until !== undefined && until > this.clock().getTime()) continue;
       if (this.active.has(issue.number)) continue;
       if (this.cooldownRemaining(issue.number)) continue;
+      if (
+        !claimIssue(this.repoDir, issue.number, {
+          runId: this.claimToken,
+          harnessVersion: this.harnessVersion,
+        })
+      ) {
+        continue;
+      }
+      this.claiming.add(issue.number);
       await this.begin(issue);
       // A pause or stop consumed while `begin` was awaiting must end the pass
       // without closing the run it just started; the next issue stays queued.
@@ -1044,6 +1116,9 @@ export class IssuesWorker {
   }
 
   private forget(active: ActiveRun): void {
+    if (this.claiming.delete(active.issue.number)) {
+      releaseIssueClaim(this.repoDir, active.issue.number);
+    }
     this.active.delete(active.issue.number);
     this.state.agents = this.state.agents.filter((agent) => agent.runId !== active.runId);
     clearClosedByRun(this.stateDir, this.repoDir, active.issue.number, active.runId);
@@ -1073,6 +1148,7 @@ export class IssuesWorker {
     directory: string,
     detail: string,
   ): void {
+    if (this.claiming.delete(issue.number)) releaseIssueClaim(this.repoDir, issue.number);
     const finishedAt = this.clock().toISOString();
     this.updateRun(runId, directory, "failed", finishedAt, 1, detail);
     this.state.cooldowns[String(issue.number)] = new Date(
@@ -1273,6 +1349,8 @@ export class IssuesWorker {
       this.updateRun(active.runId, active.directory, "stopped", this.clock().toISOString(), null, null);
     }
     this.active.clear();
+    for (const number of this.claiming) releaseIssueClaim(this.repoDir, number);
+    this.claiming.clear();
     this.state.agents = [];
     for (const issue of this.state.queue) issue.agentRunId = null;
     this.state.runs = this.summaries();
@@ -1332,9 +1410,13 @@ async function main(): Promise<void> {
     console.error("issues worker: the checkout's origin does not name a repository");
     process.exit(2);
   }
-  if (liveLockOwner(lockPath(repoDir)) !== undefined) {
-    console.error("issues worker: this checkout already has a live worker");
-    process.exit(0);
+  const workerVersion = readHarnessVersion(resolve(import.meta.dir, ".."));
+  if (liveLockOwner(lockPath(repoDir)) !== undefined || liveLockOwner(versionedLockPath(repoDir, workerVersion)) !== undefined) {
+    const legacy = liveLockOwner(lockPath(repoDir));
+    if (legacy === undefined || legacy.harnessVersion === workerVersion) {
+      console.error("issues worker: this checkout already has a live worker for this version");
+      process.exit(0);
+    }
   }
 
   const worker = new IssuesWorker({

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { acquireLock } from "../issues/lock";
 import { describeCycle, runCycle, type CoachReport } from "./coordinator";
-import { coachDirectory, lockPath } from "./paths";
+import { coachDirectory, cycleLockPath } from "./paths";
 import { readCoachSettings } from "./settings";
 
 /**
@@ -126,7 +126,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const lock = acquireLock(lockPath(coachDir), {
+  // The same lease every worker takes for a cycle: a manual run never
+  // overlaps another version's in-flight cycle.
+  const lock = acquireLock(cycleLockPath(coachDir), {
     repo: options.root,
     stateDir: options.stateDir,
     harnessVersion: packageVersion(options.root),
