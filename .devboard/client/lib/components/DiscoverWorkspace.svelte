@@ -12,6 +12,7 @@
   import type { WorkspaceTab } from "../layout.svelte";
   import DiscoverAgentCard from "./DiscoverAgentCard.svelte";
   import DataTable from "./DataTable.svelte";
+  import DiscoverContribution from "./DiscoverContribution.svelte";
   import DiscoverOverview from "./DiscoverOverview.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
@@ -374,6 +375,8 @@
     <DiscoverOverview />
   {:else if tab.kind === "glossary"}
     {@render glossaryPanel()}
+  {:else if tab.kind === "contribution"}
+    <DiscoverContribution />
   {:else if tab.kind === "skill"}
     {@render skillPanel()}
   {:else if tab.kind === "warnings"}

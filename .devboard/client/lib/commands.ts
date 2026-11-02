@@ -110,7 +110,11 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     id: "app.reload",
     title: "Reload dashboard",
     group: "Application",
-    disabled: () => disabledWhen(connection.version?.stale !== true, "No update is installed."),
+    disabled: () =>
+      disabledWhen(
+        connection.version?.replacement == null,
+        "No automatic replacement needs a retry.",
+      ),
     run: () => connection.requestRestart(),
   });
   add({
@@ -221,6 +225,10 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     ["flow", { id: "history", kind: "history", resourceId: "history", title: "History" }],
     ["discover", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
     ["discover", { id: "glossary", kind: "glossary", resourceId: "glossary", title: "Glossary" }],
+    [
+      "discover",
+      { id: "contribution", kind: "contribution", resourceId: "contribution", title: "Contribution" },
+    ],
     ["discover", { id: "warnings", kind: "warnings", resourceId: "warnings", title: "Warnings" }],
   ];
   tabCommands.forEach(([mode, tab]) => {

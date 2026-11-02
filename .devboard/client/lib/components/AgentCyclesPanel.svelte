@@ -25,7 +25,7 @@
     if (action === "filed") return "success";
     if (action === "commented") return "accent";
     if (action === "failed") return "error";
-    if (action === "capped") return "warning";
+    if (action === "capped" || action === "skipped") return "warning";
     return undefined;
   }
 

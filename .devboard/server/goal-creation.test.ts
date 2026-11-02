@@ -111,7 +111,11 @@ interface TestClient {
   socket: WebSocket;
   events: Record<string, unknown>[];
   send(command: unknown): void;
-  waitFor(predicate: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>>;
+  waitFor(
+    predicate: (message: Record<string, unknown>) => boolean,
+    from?: number,
+  ): Promise<Record<string, unknown>>;
+  mark(): number;
   close(): void;
 }
 
@@ -132,7 +136,14 @@ function connect(url: string): Promise<TestClient> {
       send(command) {
         socket.send(JSON.stringify(command));
       },
-      waitFor(predicate) {
+      mark: () => events.length,
+      waitFor(predicate, from = 0) {
+        // An explicit mark continues from events already seen; a plain wait
+        // consumes the next matching message that no earlier wait took.
+        if (from > 0) {
+          const seen = events.slice(from).find(predicate);
+          if (seen !== undefined) return Promise.resolve(seen);
+        }
         const index = buffered.findIndex(predicate);
         if (index >= 0) {
           const message = buffered.splice(index, 1)[0];
@@ -638,6 +649,7 @@ describe("guided goal creation", () => {
           client.events.filter((message) => message.type === "lifecycleState"),
         ).toEqual([]);
 
+        const restartMark = client.mark();
         client.send({ type: "createGoal" });
         expect(
           await client.waitFor((message) => message.type === "goalCreationStopped"),
@@ -645,9 +657,18 @@ describe("guided goal creation", () => {
         await client.waitFor((message) => message.type === "goalCreationStarted");
         await eventually(() => spawnCount(logPath) === 2);
 
-        const restarted = await client.waitFor((message) => message.type === "question");
+        const restarted = await client.waitFor(
+          (message) => message.type === "question",
+          restartMark,
+        );
+        const answerMark = client.mark();
         client.send({ type: "answer", id: restarted.id, value: "Alpha" });
-        expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
+        expect(
+          await client.waitFor(
+            (message) => message.type === "goalCreationStopped",
+            answerMark,
+          ),
+        ).toEqual({
           type: "goalCreationStopped",
           completed: true,
           text: CREATED_GOAL,

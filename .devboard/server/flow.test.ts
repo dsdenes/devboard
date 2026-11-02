@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import { FlowController } from "./flow";
+import { detachedRunDirectory, readDetachedRunState } from "./detached-run";
 import { recordedChildAlive, stateFile, type RecordedChild } from "./state";
 import { StubForge } from "./fixtures/stub-forge";
 import { UNTRACKED_BODY_MAX_BYTES } from "./flow";
@@ -515,14 +516,21 @@ describe("Flow Mode contract", () => {
 
   test("a timed-out Flow goal interview keeps the previous goal unfinished", async () => {
     const fixture = createFixture("goal-timeout");
+    // The detached owner needs a real start budget, so the accepted goal is
+    // created under the normal timeout and only the hanging interview uses
+    // the short one.
+    const seeded = startServer(fixture, { stub: ["--flow-goal"] });
+    const seedClient = await connect(seeded);
+    await connected(seedClient);
+    await createGoal(seedClient, fixture);
+    seedClient.close();
     const gate = join(fixture.root, "goal-hang");
     const testServer = startServer(fixture, {
       stub: ["--flow-goal", `--flow-goal-hang=${gate}`],
-      goalTimeoutMs: 100,
+      goalTimeoutMs: 2_000,
     });
     const client = await connect(testServer);
     await connected(client);
-    await createGoal(client, fixture);
     const id = sessionIds(fixture)[0] as string;
     expect(readSession(fixture, id).goal).toBe(FLOW_GOAL);
 
@@ -2585,6 +2593,11 @@ function alive(pid: number): boolean {
   }
 }
 
+/** The detached owner and peer a Flow run key published. */
+function detachedFlowRun(fixture: Fixture, kind: string, key: string) {
+  return readDetachedRunState(detachedRunDirectory(fixture.stateDir, fixture.root, kind, key));
+}
+
 interface FlowProcess {
   child: Bun.Subprocess<"ignore", "pipe", "pipe">;
   url: string;
@@ -2656,7 +2669,7 @@ async function startFlowProcess(fixture: Fixture, command: string): Promise<Flow
 }
 
 describe("Flow children ledger", () => {
-  test("the persisted state records the live implementation peer with its pid, argv, and worktree", async () => {
+  test("the detached run records the live implementation peer with its pid, argv, and worktree", async () => {
     const fixture = createFixture("children-implement");
     const testServer = startServer(fixture, {
       stub: ["--flow-goal", "--flow-implement", "--flow-pre-commit-delay=5000"],
@@ -2667,27 +2680,27 @@ describe("Flow children ledger", () => {
 
     client.send({ type: "startFlowImplementation" });
     const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
+    const sessionId = started.sessionId as string;
     const worktree = started.worktree as string;
     // The stub's worktree line proves the peer runs where its cwd says it does.
     await waitForStub(fixture, (line) => line.startsWith("flow-implement "));
     await waitUntil(
-      () => storedChildren(fixture).some((child) => child.cwd === worktree),
-      "the implementation peer in the persisted children",
+      () => detachedFlowRun(fixture, "flow-implement", sessionId)?.peer?.cwd === worktree,
+      "the detached implementation peer",
     );
 
-    const children = storedChildren(fixture);
-    expect(children).toHaveLength(1);
-    const child = children[0] as RecordedChild;
-    expect(child.pid).toBeGreaterThan(0);
-    expect(child.argv[0]).toBe("bun");
-    expect(child.argv[1]).toBe(STUB_AGENT);
-    expect(child.cwd).toBe(worktree);
-    // pid, argv, and cwd together prove this is the peer the stub logged.
-    expect(recordedChildAlive(child)).toBe(true);
+    const run = detachedFlowRun(fixture, "flow-implement", sessionId);
+    expect(run?.owner?.pid).toBeGreaterThan(0);
+    expect(run?.peer?.pid).toBeGreaterThan(0);
+    expect(run?.peer?.argv).toContain(STUB_AGENT);
+    expect(run?.peer?.cwd).toBe(worktree);
+    expect(alive(run?.peer?.pid ?? 0)).toBe(true);
+    // A detached peer belongs to its owner, never to the dashboard's child list.
+    expect(storedChildren(fixture)).toEqual([]);
     client.close();
   }, 60_000);
 
-  test("dispose reports no peers", async () => {
+  test("dispose ends the detached goal interview", async () => {
     const fixture = createFixture("children-dispose");
     const controller = new FlowController({
       repoDir: fixture.root,
@@ -2697,17 +2710,22 @@ describe("Flow children ledger", () => {
       broadcast: () => {},
     });
     void controller.createGoal();
-    await waitUntil(() => controller.children().length === 1, "the goal interview peer");
-    const child = controller.children()[0] as RecordedChild;
-    expect(child.cwd).toBe(resolve(fixture.root));
-    expect(recordedChildAlive(child)).toBe(true);
+    await waitUntil(
+      () => (detachedFlowRun(fixture, "flow-goal", "goal")?.owner?.pid ?? 0) > 0,
+      "the detached goal interview owner",
+    );
+    const run = detachedFlowRun(fixture, "flow-goal", "goal");
+    const owner = run?.owner?.pid ?? 0;
+    expect(owner).toBeGreaterThan(0);
+    expect(alive(owner)).toBe(true);
+    expect(controller.children()).toEqual([]);
 
     controller.dispose();
     expect(controller.children()).toEqual([]);
-    await waitUntil(() => !recordedChildAlive(child), "the disposed peer to exit");
+    await waitUntil(() => !alive(owner), "the disposed owner to exit");
   }, 30_000);
 
-  test("a replacement ends the Flow peer a killed process left before a new implementation starts", async () => {
+  test("a replacement ends the Flow run a killed process left before a new implementation starts", async () => {
     const fixture = createFixture("children-restart");
     const command = [
       `bun ${STUB_AGENT}`,
@@ -2726,21 +2744,28 @@ describe("Flow children ledger", () => {
     const worktree = started.worktree as string;
     await waitForStub(fixture, (line) => line.startsWith("flow-implement "));
     await waitUntil(
-      () => storedChildren(fixture).some((child) => child.cwd === worktree),
-      "the implementation peer in the persisted children",
+      () => detachedFlowRun(fixture, "flow-implement", sessionId)?.peer?.cwd === worktree,
+      "the detached implementation peer",
     );
-    const recorded = storedChildren(fixture).find((child) => child.cwd === worktree);
-    if (recorded === undefined) throw new Error("the implementation peer was not recorded.");
+    const recorded = detachedFlowRun(fixture, "flow-implement", sessionId);
+    const recordedPid = recorded?.peer?.pid ?? 0;
+    expect(recordedPid).toBeGreaterThan(0);
     client.close();
 
     first.child.kill("SIGKILL");
     await first.child.exited;
-    await waitUntil(() => alive(recorded.pid), "the orphaned implementation peer to survive");
+    // The owner outlives its dashboard, then ends the run because no
+    // replacement handoff exists for a killed process.
+    await waitUntil(
+      () => !alive(recordedPid),
+      "the orphaned implementation peer to end",
+      15_000,
+    );
 
     const second = await startFlowProcess(fixture, command);
     await waitUntil(
-      () => !alive(recorded.pid),
-      "the replacement to end the recorded Flow peer",
+      () => !alive(recordedPid),
+      "the replacement to leave the ended Flow peer alone",
       15_000,
     );
 
@@ -2756,14 +2781,12 @@ describe("Flow children ledger", () => {
       (event) => event.type === "flowImplementationStarted" && event.sessionId === sessionId,
     );
     await waitUntil(() => {
-      const next = storedChildren(fixture).find(
-        (child) => child.cwd === worktree && child.pid !== recorded.pid,
-      );
-      return next !== undefined && recordedChildAlive(next);
-    }, "the replacement implementation peer in the persisted children");
+      const next = detachedFlowRun(fixture, "flow-implement", sessionId);
+      return next?.peer?.cwd === worktree && (next.peer?.pid ?? 0) !== recordedPid && alive(next.peer?.pid ?? 0);
+    }, "the replacement implementation peer");
 
     // The old peer was proven gone before the new implementation started.
-    expect(alive(recorded.pid)).toBe(false);
+    expect(alive(recordedPid)).toBe(false);
     replacementClient.send({ type: "stopFlowImplementation" });
     await replacementClient.waitFor((event) => event.type === "flowStopped");
     replacementClient.close();

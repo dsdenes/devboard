@@ -47,6 +47,7 @@ const DISCOVER_SKILLS = [
   "discover-coding-conventions",
   "discover-architecture-boundaries",
   "discover-glossary",
+  "discover-contribution",
 ];
 const URL_MAX = 2048;
 
@@ -757,7 +758,7 @@ describe("discover remote target", () => {
   );
 
   test(
-    "runs exactly one bounded git clone, crawls all six agents, and retains the published bytes",
+    "runs exactly one bounded git clone, crawls all seven agents, and retains the published bytes",
     async () => {
       const fixture = createFixture("clone");
       const source = createSourceRepository("clone-source");
@@ -821,7 +822,7 @@ describe("discover remote target", () => {
         expect(state.glossaries.length).toBe(1);
         expect(state.skills.map((skill) => skill.name)).toEqual([...DISCOVER_SKILLS]);
 
-        expect(spawnCount(fixture.logPath)).toBe(6);
+        expect(spawnCount(fixture.logPath)).toBe(7);
         const sent = prompts(fixture.logPath);
         expect(sent.map((prompt) => prompt.split(" ")[0])).toEqual([
           "/discover-sheet",
@@ -830,6 +831,7 @@ describe("discover remote target", () => {
           "/discover-naming-conventions",
           "/discover-coding-conventions",
           "/discover-architecture-boundaries",
+          "/discover-contribution",
         ]);
         for (const prompt of sent) {
           expect(prompt).toMatch(
@@ -1022,7 +1024,7 @@ describe("discover remote target", () => {
         });
         await Promise.all(refusals);
         expect(clones.calls.length).toBe(2);
-        expect(spawnCount(fixture.logPath)).toBe(6);
+        expect(spawnCount(fixture.logPath)).toBe(7);
         expect(treeBytes(retainedDirectory(fixture, "octocat", "hello-world"))).toEqual(
           retainedBefore,
         );
@@ -1033,7 +1035,7 @@ describe("discover remote target", () => {
 
         gate.resolve();
         expect((await stopped).completed).toBe(true);
-        expect(spawnCount(fixture.logPath)).toBe(12);
+        expect(spawnCount(fixture.logPath)).toBe(14);
         expect((await discoverState(client)).retained).toHaveLength(2);
         expectNoCheckout(fixture);
       } finally {
@@ -1107,7 +1109,7 @@ describe("discover remote target", () => {
         expect(replay.sheet).not.toBeNull();
         expect(restored.events.some((message) => message.type === "discoverError")).toBe(false);
         expect(guest.calls.length).toBe(0);
-        expect(spawnCount(fixture.logPath)).toBe(12);
+        expect(spawnCount(fixture.logPath)).toBe(14);
         expectNoCheckout(fixture);
       } finally {
         restored.close();
@@ -1133,7 +1135,7 @@ describe("discover remote target", () => {
         const sheet = await runRemoteAgent(client, "sheet");
         expect(sheet.target).toMatchObject({ kind: "remote", checkout: false });
         expect(sheet.sheet).not.toBeNull();
-        expect(sheet.skills.map((skill) => skill.name)).toHaveLength(5);
+        expect(sheet.skills.map((skill) => skill.name)).toHaveLength(6);
         expect(spawnCount(fixture.logPath)).toBe(spawns + 1);
         const afterSheet = treeBytes(retained);
         for (const [path, bytes] of before) {
@@ -1150,7 +1152,7 @@ describe("discover remote target", () => {
         expectNoCheckout(fixture);
 
         const testing = await runRemoteAgent(client, "discover-testing-strategy");
-        expect(testing.skills.map((skill) => skill.name)).toHaveLength(5);
+        expect(testing.skills.map((skill) => skill.name)).toHaveLength(6);
         const afterTesting = treeBytes(retained);
         for (const [path, bytes] of afterSheet) {
           if (path === "project.json") continue;
@@ -1233,7 +1235,7 @@ describe("discover remote target", () => {
         first.server.stop(true);
       }
       const recordBefore = retainedRecord(fixture, "octocat", "hello-world");
-      expect(spawnCount(fixture.logPath)).toBe(6);
+      expect(spawnCount(fixture.logPath)).toBe(7);
 
       const next = cloneHarness({ source: createSourceRepository("rediscover-source-two") });
       const second = startServer({ fixture, clone: next });
@@ -1243,7 +1245,7 @@ describe("discover remote target", () => {
         expect(replay.target).toMatchObject({ kind: "remote", checkout: false });
         const state = await runProject(restored);
         expect(next.calls.length).toBe(1);
-        expect(spawnCount(fixture.logPath)).toBe(12);
+        expect(spawnCount(fixture.logPath)).toBe(14);
         expect(state.target).toMatchObject({ kind: "remote", checkout: false });
         expect(state.sheet).not.toBeNull();
         const recordAfter = retainedRecord(fixture, "octocat", "hello-world");

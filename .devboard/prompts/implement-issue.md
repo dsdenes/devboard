@@ -15,16 +15,24 @@ context, but you never edit, comment on, close, or reopen another issue.
 
 ## Inputs and paths
 
-- Resolve the session's host exactly once, before any forge read or write: make one argument-free
-  `devboard_status` MCP call and take `<REPO_DIR>` from its `repositoryRoot`, along with
-  `harnessDirectory` and `stateDirectory`. That one call is the whole checkout-orientation step,
-  and the canonical checkout is `<REPO_DIR>` itself. Issue it before the auth decision below.
-  Never issue more than one `devboard_status` call in a turn, except for the one read immediately
-  after `bun run publish` or a dashboard reload that confirms the newly running version; never
-  poll it before each step or between successive forge reads and writes.
+- Resolve the session's host and checkout state exactly once, before any forge read or write: make
+  one argument-free `devboard_status` MCP call. Take `<REPO_DIR>` from its `repositoryRoot` — the
+  checkout's worktree path — along with `harnessDirectory`, `stateDirectory`, and its `git`
+  object: `git.branch` is the checked-out branch, `git.upstream` its canonical upstream, and
+  `git.ahead`/`git.behind` its divergence from that upstream. That one result is the whole
+  checkout-orientation step, and the canonical checkout is `<REPO_DIR>` itself. Do not rebuild
+  that answer from shell output: after the fetch, the one canonical `git status --short --branch`
+  line *Fetch budget* defines supersedes it, and no `git rev-list --left-right --count` may confirm
+  a branch, worktree, or divergence either reports. A ref the result does not name — a task branch
+  that is not that upstream — is never counted either: the one `git status --short --branch` of
+  the checkout that has that branch checked out reports it, and the same count is never re-run
+  between steps. Issue the call before the auth decision below. Never issue more than one
+  `devboard_status` call in a turn, except for the one read immediately after `bun run publish` or
+  a dashboard reload that confirms the newly running version; never poll it before each step or
+  between successive forge reads and writes.
 - Read every Devboard fact through the registered MCP tools — `devboard_status`, `issue_get`,
   `issues_list`, `issue_close`, `verification_run`, `goal_get`, `journal_search`, and
-  `agent_sessions_list` — never by spawning `bun .devboard/call-tool.ts <tool>` or any other
+  `agent_sessions_list` — never by spawning the harness's `call-tool` bridge or any other
   subprocess that wraps them: the bridge starts a second Bun process and duplicates a capability
   the session already has. Never reach for that bridge for a Devboard state read.
 - Never orient the session with a shell probe, and never chain orientation probes: no
@@ -40,30 +48,51 @@ context, but you never edit, comment on, close, or reopen another issue.
   `git remote get-url origin`, and never a probe that merely confirms a value one of them already
   reported.
 - Worktree root: `<REPO_DIR>/.worktree/`. Cut the worktree from the integration line the one
-  task-start fetch names (see *Fetch budget*) with
+  task-start sync names (see *Fetch budget*) with
   `git worktree add --track -b issue-<number> .worktree/issue-<number> origin/main`, and never
   refetch it; `--track` makes the task branch's upstream the integration ref, so one
   `git status --short --branch` line reports its divergence. Create and work in exactly one
   worktree there, named for the issue, for example `<REPO_DIR>/.worktree/issue-<number>`. Never
   push from the worktree, because the only push is `main` from the canonical checkout. Never
   work in the canonical checkout, never use another agent's worktree, and write nothing outside
-  `<REPO_DIR>` — no temporary file, log, cache, or build output elsewhere. Scratch output that is
-  genuinely required — issue or comment JSON, command capture, a verifier log — belongs inside
-  `<REPO_DIR>/.devboard`'s `.tmp/`, never directly under the harness root, and is removed after
-  use; never write `/tmp/x` or any other path outside the repository root.
-- Sync the worktree exactly once per pass, before the first edit: the task-start fetch
-  (`git fetch origin`, see *Fetch budget*) already named `origin/main`, and the worktree was cut
-  from it, so run one `git rebase origin/main` inside it and never fetch again; a bare
-  `git rebase main` is never used, because `main` is a local ref that can lag the pushed upstream,
-  so the target is always `origin/main`. Confirm the result with the one
-  `git status --short --branch` sync-state read in *Landing*, and chain nothing after the rebase:
-  no `git log`, no `git diff`, no count, and no second `git rebase origin/main`. A conflict is
-  part of that step — edit the conflicted files, `git add` them, and continue with
-  `git rebase --continue`; never `git rebase --abort` and never `git rebase --skip`. After a
-  resolved conflict, continue until the rebase completes and read the same status line. Re-run
-  the rebase only after a new upstream commit lands or a conflict was resolved — never to
-  re-check state. A later rebase belongs only to the landing integration or a rejected push
-  below, never to re-verification.
+  `<REPO_DIR>` — no temporary file, log, cache, or build output elsewhere, and never `/tmp/x`.
+- Scratch files and command logs live under `<REPO_DIR>/.devboard/.tmp/` and nowhere else. Create
+  that directory once per session with a standalone `mkdir -p .devboard/.tmp` from the repository
+  root; every log redirect names it, for example `> .devboard/.tmp/verify-interface.log 2>&1`.
+  Never create or use a repo-root `.tmp`: no `mkdir -p .tmp` prefix, no
+  `ls -d .tmp || mkdir -p .tmp` guard, and no `> .tmp/<name>.log 2>&1` redirect.
+- Sync the worktree exactly once per pass: the worktree sync is the task-start sync's one
+  `git fetch origin` (see *Fetch budget*) followed by one `git rebase origin/main` inside the
+  worktree, run before the first edit. The worktree was cut from that fetched `origin/main`, so
+  that rebase normally prints `Current branch issue-<number> is up to date.`, which is the
+  successful sync; the sync never fetches a second time. A bare `git rebase main` is never used,
+  because `main` is a local ref that can lag the pushed upstream, so the target is always
+  `origin/main`. Chain nothing after the rebase: no `git log`, no `git diff`, no count, and no
+  second `git rebase origin/main`. Confirm the result with the one `git status --short --branch`
+  sync-state read in *Landing*, and never rebase again after a successful sync — a later rebase
+  belongs only to the landing integration or a rejected push below, never to re-verification or
+  to re-checking state.
+- A worktree holds no unstaged change when that rebase starts.
+  `error: cannot rebase: You have unstaged changes.` is answered by committing the worktree's own
+  work first — `git add -A`, then one commit whose subject is a Conventional Commit describing
+  the change — and then running the same `git rebase origin/main` once. Never `git stash`, never
+  leave the worktree stashed or mid-rebase, and never answer the refusal with a `wip` subject the
+  pre-push commit gate rejects.
+- A `CONFLICT (content)` is part of the sync step, never a reason to abandon it: for each file the
+  conflict line names, edit the conflicted hunks, `git add <file>`, and continue with
+  `git rebase --continue`, repeating until the rebase completes. Never `git rebase --abort` and
+  never `git rebase --skip` in a worktree: the task branch is unpublished, so every conflict is
+  resolved in place. The recurring case is a harness file both sides re-authored —
+  `.devboard/prompts/implement-issue.md` first, and a `.devboard/scripts/*` file whose change main
+  already carries. When main's copy already holds the branch's intended text, resolve that
+  duplicate in favor of main — `git checkout origin/main -- <file>` — `git add` the file, and
+  continue with `git rebase --continue`; never take `--theirs`, which in a rebase is the branch
+  commit being replayed, while `--ours` is main's side. A branch change main does not carry is a
+  real change: resolve it hunk by hunk instead of discarding it. Never commit a fresh copy of a
+  prompt-doc change that already landed on main under a new hash — a `docs(prompt)` commit whose
+  text main already carries is that duplicate, not a fix. After a resolved conflict, continue
+  until the rebase completes and read the same status line, never re-running the rebase to
+  re-check state.
 - Forge write access is a precondition of the run, not a discovery step to repeat: the harness
   resolves it once, before the first forge read or write, and the turn's context carries `forge`,
   `host`, `project`, `login`, `source`, `permission`, and `canWrite` — injected before the turn,
@@ -82,11 +111,11 @@ context, but you never edit, comment on, close, or reopen another issue.
   context already carries `canWrite: true` issues none. The canonical form infers the forge,
   host, project, and identity from the `origin` remote and `DEVBOARD_GITEA_URL`, so this check
   has exactly one spelling: that literal command line, with no `--forge`, `--host`,
-  `--project`, or `--url` override and no derived replacement for any of them. An override is
-  justified only when this result itself names a wrong forge or host, never
-  to preempt the check. Never derive those values with `sed`, `git remote get-url`, or any other
-  shell substitution; when the `origin` remote cannot name the forge, stop and report that as the
-  blocker instead of guessing a `--forge` override.
+  `--project`, or `--url` flag and no derived replacement for any of them. The wrapper resolves
+  all of them from the checkout, so this prompt never overrides one: never preempt the check with
+  a guessed `--forge`, never re-run it with a target flag because the answer looks wrong, and
+  never derive the values with `sed`, `git remote get-url`, or any other shell substitution. When
+  the `origin` remote cannot name the forge, stop and report that as the blocker.
 
   A session following this prompt issues at most one call matching `forge-auth.ts check` in
   total, and none once its context carries `canWrite: true`; that call has no `cd`, no `--forge`,
@@ -152,38 +181,49 @@ context, but you never edit, comment on, close, or reopen another issue.
 ## Fetch budget
 
 Fetch the canonical integration line exactly once per task, at the start, and answer every later
-question about it from that one fetch. The one fetch is this line, run from the canonical checkout
-before the first edit:
+question about it from that one sync. A fetch on its own reports nothing about divergence, so the
+sync is one command that fetches and reads the divergence line together, run from the canonical
+checkout before the first edit:
 
 ```sh
-git fetch origin
+git fetch origin && git status --short --branch
 ```
 
 - One call and one spelling: that line, or `git fetch origin <canonical-branch>` with the
-  repository's own branch when it names another. Never add `--prune`, `--quiet`, `--tags`, or
+  repository's own branch when it names another, each followed by the same
+  `&& git status --short --branch`. Never add `--prune`, `--quiet`, `--tags`, or
   `--all`, and never fetch another remote, unless a deleted ref, a tag, or that other remote is
   itself the question.
+- A bare fetch is never a step: `git fetch origin` or `git fetch origin main` alone, a fetch
+  chained to a `git rev-list` count, and a second fetch after a rebase, a merge, or a status read
+  are one defect — a retry loop that re-asks a question the sync already answered. A fetch that
+  printed only `Already up to date` never earns a retry to look for divergence; when the status
+  line shows `[behind N]` or `[ahead N, behind M]`, integrate with `git rebase origin/main`
+  instead of fetching again.
 - The fetched `origin/main` is the integration ref for the rest of the task: the worktree base,
   `git log <sha>..origin/main`, `git merge-base`, the landing merges, the pre-push probe, and the
   post-push proof all read it. Never fetch again to re-check state this task already fetched, and
   never pair a fetch with a `git merge --ff-only` in one command.
-- The divergence read is the `## <branch>...<upstream>` line from one `git status --short --branch`
-  in the canonical checkout after that fetch; that line is the sole divergence check, and
-  *Landing* defines how to read its `[ahead N]` and `[behind N]` markers. Reuse the line in every
-  later turn instead of fetching again.
+- The divergence read is the `## <branch>...<upstream>` line from the one
+  `git status --short --branch` half of that sync command, in the canonical checkout; that line is
+  the sole divergence check, and *Landing* defines how to read its `[ahead N]` and `[behind N]`
+  markers. The fetch moved the remote refs, so this line, not the pre-fetch `git` object from
+  `devboard_status`, is the verdict. Reuse the line in every later turn instead of fetching again,
+  and never pair it with a second copy of itself.
 - Never measure divergence with `git rev-list --left-right --count`: not against `HEAD...main`,
   not against `HEAD...origin/main`, and not against `HEAD...issue-<N>`. Those refs are stale or
-  absent, and the count re-derives a question the status line already answers. A variant glued
-  without a separator — `git fetch origin && git rev-list --left-right --count HEAD...issue-1010
-  git log --oneline -3 issue-1010` — returns no count at all, and
-  `git rev-parse --short=12 HEAD origin/main` exits 128 with `fatal: Needed a single revision`
-  because `--short` accepts exactly one revision. Never substitute `git rev-parse origin/main` or
-  `git rev-parse --short=12 origin/main` for the markers either, because a hash cannot tell ahead
-  from behind.
+  absent, and the count re-derives a question the status line already answers; the status line,
+  not a count, answers every divergence question here, so a recorded count is never repeated
+  between steps. A variant glued without a separator —
+  `git fetch origin && git rev-list --left-right --count HEAD...issue-1010 git log --oneline -3
+  issue-1010` — returns no count at all, and `git rev-parse --short=12 HEAD origin/main` exits 128
+  with `fatal: Needed a single revision` because `--short` accepts exactly one revision. Never
+  substitute `git rev-parse origin/main` or `git rev-parse --short=12 origin/main` for the markers
+  either, because a hash cannot tell ahead from behind.
 - The only later fetch answers a new question about a new tip: a push was rejected because the
-  remote moved, or `git rev-parse --verify --quiet <ref>` printed nothing for the ref itself. That
-  fetch belongs to the rejection handling below, never to a re-check of the tip fetched at the
-  start.
+  remote moved, or `git rev-parse --verify --quiet <ref>` printed nothing for the ref itself. It is
+  that same one-step sync — fetch and the divergence line in one command — and it belongs to the
+  rejection handling below, never to a re-check of the tip fetched at the start.
 - Never fetch to learn CI, release, or dashboard state: the publish run and the forge report it.
 
 ## Dependencies
@@ -192,8 +232,8 @@ The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` 
 and `<REPO_DIR>/.devboard` in the canonical checkout. Run every harness `bun`/`bunx` command with
 that package root as the working directory: `bun install --frozen-lockfile`, `bun run build`,
 and `bun test`, each as its own invocation. The typecheck is not a bare `bunx tsc --noEmit`
-shell call: run it through `verification_run` with `{"check": "typecheck"}`, as *Typecheck* below
-requires. The repository root has no `package.json`, so a root-level
+shell call: run it through `verification_run` with `{"check": "typecheck"}` once per verification
+pass, as *Typecheck* below requires. The repository root has no `package.json`, so a root-level
 `bun install --frozen-lockfile` exits nonzero with "Bun could not find a package.json file to
 install from", and a root-level `bun run build` fails with `error: Script not found "build"`.
 
@@ -240,9 +280,13 @@ The typecheck has exactly one entry point: the `verification_run` MCP tool with
 captured output, writes the complete output to the returned `log`, and returns `check`, `exitCode`,
 `output`, `truncated`, and `log` in one result.
 
-- Run it once per coherent change set: after the batch of edits that can break types, never after
-  every single edit. The typecheck reads the working tree, so an unchanged tree yields unchanged
-  output and a second run carries no new information.
+- Run it once per verification pass: after the batch of edits that can break types, never after
+  every single edit. One `verification_run` call with `{"check": "typecheck"}` covers the pass;
+  `{"check": "check"}` runs the client's `bun run check` as the pass-level gate, not a second
+  typecheck.
+- Repeat it only after a further type-affecting edit: two identical typecheck runs separated only
+  by non-type edits never happen. The typecheck reads the working tree, so an unchanged tree yields
+  unchanged output and a second run carries no new information.
 - A bare `bunx tsc --noEmit` shell invocation is not the typecheck path, and repeating it after
   unchanged code is never required. One `verification_run` call is the whole typecheck; never rerun
   it to re-read the same empty output.
@@ -266,9 +310,8 @@ check's whole process group at its 900-second bound, and returns `check`, `exitC
 
 Every direct invocation of `bun run verify:interface` — the worktree fallback below, and any run
 the tool cannot replace — happens in the foreground, exactly as written. It MUST NOT be redirected
-into `.tmp/*.log` or any other file: the redirect replaces the failing assertion with
-`(no output)` and fails outright in a worktree that has no `.tmp` directory, so read the diagnostic
-from the command output instead.
+into `.devboard/.tmp/*.log` or any other file: the redirect replaces the failing assertion with
+`(no output)`, so read the diagnostic from the command output instead.
 
 - Use `repositoryRoot` and `harnessDirectory` from the `devboard_status` call above, not a second
   call. When `harnessDirectory` is the `.devboard/` you changed,
@@ -289,15 +332,15 @@ from the command output instead.
   `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
 - Interface verification needs no scratch directory: the verifier creates every `.tmp` directory
   it writes to. When some other command's output genuinely has to be captured for later diffing,
-  the log belongs under `.devboard/.tmp/`; create that directory with a standalone
-  `mkdir -p .devboard/.tmp` from the repository root — never a relative `mkdir -p .tmp`, never
-  joined to the command with `&&`, and never re-probed with `ls` — and echo the tail of the log in
-  the same tool result so a failure never arrives as `(no output)`.
-- The `verification_run` tool writes the complete output of its own run to `.devboard`'s
-  `.tmp/verify-interface.log` and returns that path in `log`. Read it whole on failure — never
-  `tail`, `head`, `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON
-  survive instead of a fixed number of trailing lines. Never take a verdict from a log an earlier
-  run wrote: the tool truncates the file before the check starts.
+  write the log under `.devboard/.tmp/` as *Inputs and paths* states — never joined to the
+  command with `&&` and never re-probed with `ls` — and echo the tail of the log in the same tool
+  result so a failure never arrives as `(no output)`.
+- The `verification_run` tool writes the complete output of its own run to a log unique to that
+  invocation and returns that path in `log`; when the run settles it also publishes the same
+  complete output to `.devboard`'s `.tmp/verify-interface.log`. Read the returned path whole on
+  failure — never `tail`, `head`, `grep`, or `2>&1 | tee` it — so the failing check message and its
+  evidence JSON survive instead of a fixed number of trailing lines. Never take a verdict from a
+  log an earlier run wrote: each invocation starts its own empty log.
 - Never kill or restart `verify:interface`: a killed job loses the assertion. The
   `verification_run` call itself is never backgrounded; it returns the verdict in one result. For
   the shell fallback, a job status line such as `Backgrounded as job bg_N` is never a failure
@@ -339,8 +382,11 @@ from the command output instead.
 
 ## Discovery verification
 
-`bun run verify:discover` runs at most once per change, from the package root `.devboard/`, and its
-output is always captured to the one log `.devboard/.tmp/verify-discover.log` (repository-relative):
+`bun run verify:discover` runs at most once per change, with the package root `.devboard/` as its
+working directory, and its output is always captured to the one log
+`.devboard/.tmp/verify-discover.log` (repository-relative). The redirect below is relative to that
+working directory, so it lands in `.devboard/.tmp/`; never run this command from the repository
+root and never create a repo-root `.tmp`:
 
 ```sh
 bun run verify:discover > .tmp/verify-discover.log 2>&1; echo "EXIT:$?"
@@ -438,8 +484,8 @@ the prerequisite in another agent's place.
   no login prompt, and no waiting for an operator. Decide from the repository evidence.
 - Complete the work: no stubs, placeholders, disabled checks, or unfinished branches of behavior.
 - Verify the changed surface by running it, then run the checks the change could break. The
-  typecheck is one `verification_run` call with `{"check": "typecheck"}` per coherent change set,
-  as *Typecheck* above states.
+  typecheck is one `verification_run` call with `{"check": "typecheck"}` per verification pass,
+  repeated only after a further type-affecting edit, as *Typecheck* above states.
 - Before landing, read the worktree's `git status --short --branch` line against the integration
   line the task-start fetch named, never a refetch. When it shows `[behind N]`, rebase the run's
   task branch onto `origin/main`. When it shows `[ahead N, behind M]`, `git merge --ff-only
@@ -508,21 +554,31 @@ revision — a missing ref, or several revisions passed to one `--short` call �
 branches diverged. Invoke the command once for each revision whose hash is needed and never pass
 several revisions to one `--short` call.
 
+Before any `git rev-parse` that names more than one ref — `git rev-parse HEAD origin/main`, for
+example — confirm each ref with `git rev-parse --verify --quiet <ref>`. One missing ref makes the
+whole command exit 128 with `fatal: Needed a single revision` and discards the output of every
+command chained to it, so name one revision per call unless every ref is already proven.
+
 Never issue `git rev-list --left-right --count HEAD...<ref>` for this question — not against
 `main`, not against `origin/main`, and not against `issue-<N>` — and never re-derive the line by
-another route. The refs are stale or absent, the spellings multiply per session, and a glued
+another route. The worktree's one status line already answers it, so no count qualifies. The refs
+are stale or absent, the spellings multiply per session, and a glued
 command such as `git rev-list --left-right --count HEAD...issue-1010 git log --oneline -3
-issue-1010` returns no count at all. Never report a divergence state without naming the upstream
-ref the status line compared, and never refetch before the line: the task-start fetch already
-named `origin/main`. The canonical sync verdict is the unmarked `## main...origin/main` line —
-neither side then holds a commit the other lacks — and an `[ahead N]` or `[behind N]` marker means
-the work is unfinished. The turn is never reported done without that unmarked line.
+issue-1010` returns no count at all. Never repeat a count between steps and never pair this status
+line with a second copy of `git status --short --branch`. Never report a divergence state without
+naming the upstream ref the status line compared, and never refetch before the line: the
+task-start fetch already named `origin/main`. The canonical sync verdict is the unmarked
+`## main...origin/main` line — neither side then holds a commit the other lacks — and an
+`[ahead N]` or `[behind N]` marker means the work is unfinished. The turn is never reported done
+without that unmarked line.
 
 `git merge --ff-only <integration-ref>` is permitted only when the status line carries no
 `[ahead N]` marker, where it is a pure catch-up. An `[ahead N]` marker forbids it — beside a
 `[behind M]` marker the merge fails with `Diverging branches can't be fast-forwarded` — so
 integrate with `git rebase origin/main` instead, resolve every conflict, and rerun the checks the
-rebase invalidates. Never repeat a refused `--ff-only` merge. When the line carries `[ahead N]`,
+rebase invalidates. The `Diverging branches can't be fast-forwarded` hint means the branch is
+diverged: rebase it, and never answer it with a fetch, a second `--ff-only` merge, or a `--no-ff`
+merge. Never repeat a refused `--ff-only` merge. When the line carries `[ahead N]`,
 one `git merge-base --is-ancestor <integration-ref> HEAD` confirms containment: exit 0 means the
 integration tip is already contained in `HEAD`, exit 1 means it is not. Never substitute an issue
 branch (`issue-N`) for the integration ref, and in the canonical checkout never substitute `main`
@@ -600,9 +656,9 @@ reconfirm output it already printed. Never append `tail`, `head`, `diff`, `git s
 `PIPESTATUS` echo, or any other probe to the `git push` line: those suffixes discard the rejection
 text or its exit status, and the sync check's separate lines are the one verification. Never use
 `git log` or a trimmed merge output as the push proof. The fetch budget above governs the push
-block too: the task-start fetch and the pre-push probe answer every question about the integration
+block too: the task-start sync and the pre-push probe answer every question about the integration
 tip, the sync check reads the remote tip directly without fetching, and only a rejected push earns
-the one fetch of the new tip.
+the one new-tip sync.
 
 An equal tip proves the landing commit is the canonical tip; `PUSH_EXIT:0`, an unmarked status
 line, and matching `git rev-parse` and `git ls-remote` SHAs are the complete done check. Read the
@@ -659,8 +715,9 @@ branch.
 Waiting for CI has exactly two sanctioned forms, and nothing else. The first is `bun run publish`
 for the `devboard-release.yml` run of `HEAD`: `bun run publish` blocks on that run for up to 1800
 seconds by default, then verifies the npm package and the Gitea release assets, so its exit status
-is the whole wait. Run it once as the Publish section specifies — in the foreground from
-`.devboard` with `timeout: 0` — and read the output and exit status it returns.
+is the whole wait. Run it once per pushed commit as the Publish section specifies — in the
+foreground from `.devboard` with `--wait-timeout 1800` and `timeout: 0` — and read the output and
+exit status it returns.
 
 The second is one long-lived background watcher whose whole lifetime is that wait — a non-release
 run or a local `verify` process that publish does not cover — started with `async: true` and
@@ -685,47 +742,49 @@ the watcher's completion follow-up is the answer, so end the turn.
 ## Publish
 
 Publishing is part of the task, and its final step. Invoke `bun run publish` exactly once per
-issue, from the integration checkout's `.devboard/`, and only after the change is merged to `main`
-and pushed — never from a worktree and never before the push. Run it in the foreground and read
-what it prints:
+pushed commit, from the integration checkout's `.devboard/`, and only after the change is merged to
+`main` and pushed — never from a worktree and never before the push. Run it in the foreground and
+read what it prints:
 
 ```bash
-bun run publish
+bun run publish --wait-timeout 1800
 ```
 
 - Set `cwd` to `.devboard` and `timeout: 0` on that call: publish waits up to 1800 seconds for the
   release workflow, so the default 300-second deadline would abort it with `Command aborted`.
-  Never redirect it into `.devboard/.tmp/publish.log` or any other file, never append an
-  `echo "EXIT:$?"` to a log, and never pass `async: true`. The tool result and its completion
-  follow-up carry publish's output and exit status; a log file would hide both behind a path the
-  turn then has to be woken to read.
+  Never redirect it — not into `.devboard/.tmp/publish.log` and not into a numbered
+  `.devboard/.tmp/publish-<digits>.log` — never append an `echo "EXIT:$?"` to a log, and never
+  pass `async: true`. The tool result and its completion follow-up carry publish's output and exit
+  status; a log file would hide both behind a path the turn then has to be woken to read.
 - Publish is long-running. When the call outlives the harness's foreground window it prints
   `Backgrounded as job <id>` and keeps running; that acknowledgement is not the result. Its
   completion follow-up carries the whole output and the exit status, so end the turn and read that
   follow-up. Never poll for it — no `sleep`, `ps`, `pgrep`, `top`, or log tailing — never abort,
   kill, or re-invoke it while it runs, and never start a second `bun run publish` for the same
-  issue.
-- Use this invocation and this working directory: no absolute `cd` path such as `/home/...`, no
-  `tail`/`head`/`tee` pipe or any other output consumer, and no option other than
-  `--wait-timeout N`, passed only when the default 1800-second wait is too short. Publish already
+  pushed commit.
+- Use this invocation and this working directory: that `bun run publish` line with
+  `--wait-timeout 1800`, no absolute `cd` path such as `/home/...`, no `| tail`, `| head`,
+  `2>&1 | tee`, or any other output consumer, and no second option. Publish already
   verifies `main`, the release workflow, the npm package, the release assets, and the mirror; the
   push block already owns the push proof, so add no `git ls-remote` or `git status` probe around
-  the publish run. Read no release or workflow state through `curl`, `gh`, or `glab`; publish
-  prints the verification result.
+  the publish run, and never relaunch it to re-check propagation the result already reported. Read
+  no release or workflow state through `curl`, `gh`, or `glab`; publish prints the verification
+  result.
 - A nonzero exit is never followed by an immediate identical re-run, and no second `bun run publish`
-  starts for the same issue after the release workflow concluded failure until the failing step is
-  diagnosed, fixed, committed, and pushed. Read publish's output, name the failing step, and fix
-  the cause in a new commit. When that output reports
+  starts for the same pushed commit after the release workflow concluded failure until the failing
+  step is diagnosed, fixed, committed, and pushed. Read publish's output, name the failing step, and
+  fix the cause in a new commit. When that output reports
   `the release workflow concluded failure`, open that workflow run for the named commit and read
   its failing step; when the run's log is not reachable through the exposed tools, reproduce the
   workflow's own steps locally from the package root (`bun install --frozen-lockfile`,
   `verification_run` with `{"check": "build"}`, `{"check": "test"}`, and `{"check": "typecheck"}`,
   each executing with `.devboard` as the working directory) and fix the step that fails. Land the
-  fix and report the failing step, the fix commit, and the exit status. Publishing the fixed
-  revision belongs to the next task, never to this one.
+  fix — commit it, push it, and prove the push with the sync check above — and then run publish
+  exactly once for that new commit, never again for the commit whose run failed. Report the failing
+  step, the fix commit, and the exit status.
 - When the result reports truncation, read the spilled `artifact://<id>` it names for the complete
-  output instead of re-running publish. Never re-run publish in the same session to see its
-  output, to confirm success, or to retry the same commit.
+  output instead of re-running publish. Never re-run publish for the same commit to see its output,
+  to confirm success, or to re-check propagation, and never retry it before a fix commit is pushed.
 - Report the observed exit status and the `publish:` lines it printed — workflow, npm package,
   release assets, mirror, and dashboards — as the publish result. A completed run whose text ends
   without `Command exited with code <n>` is exit 0. Close the issue with `issue_close` only after

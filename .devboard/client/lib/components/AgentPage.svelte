@@ -131,6 +131,20 @@
         <span class="badge" data-tone={lifecycleTone} data-testid="agent-lifecycle" data-state={lifecycle}>
           {lifecycle}
         </span>
+        {#if snapshot !== null && snapshot.workers.length > 0}
+          <span class="agent-workers" data-testid="agent-workers" aria-label="Live workers">
+            {#each snapshot.workers as worker (worker.pid)}
+              <span
+                class="mono agent-worker"
+                data-testid="agent-worker"
+                data-version={worker.version ?? "unknown"}
+                data-pid={worker.pid}
+              >
+                {worker.version ?? "unknown"}
+              </span>
+            {/each}
+          </span>
+        {/if}
         <span class="agent-sync-at">
           Last read
           <span class="mono" data-testid="agent-sync-at" title={sync.at ?? "never"}>
@@ -344,7 +358,6 @@
   .agent-blocked {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-left: 3px solid var(--warning, var(--accent));
     border-radius: 4px;
     display: flex;
     flex-direction: column;

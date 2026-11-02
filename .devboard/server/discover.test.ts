@@ -41,6 +41,7 @@ const DISCOVER_SKILLS = [
   "discover-coding-conventions",
   "discover-architecture-boundaries",
   "discover-glossary",
+  "discover-contribution",
 ];
 
 mkdirSync(TEST_ROOT, { recursive: true });
@@ -456,7 +457,7 @@ describe("discover mode", () => {
   );
 
   test(
-    "runs the six agents in Run all order and publishes each one's slice",
+    "runs the seven agents in Run all order and publishes each one's slice",
     async () => {
       const { server, fixture, url } = startServer();
       const client = await connect(url);
@@ -467,14 +468,15 @@ describe("discover mode", () => {
 
         // One peer per agent, in the fixed Run all order, each with its own
         // command and its own staging directory.
-        expect(spawnCount(fixture.logPath)).toBe(6);
+        expect(spawnCount(fixture.logPath)).toBe(7);
         const sent = prompts(fixture.logPath);
         const commands = ["/discover-sheet", "/discover-glossary",
           "/discover-testing-strategy", "/discover-naming-conventions",
-          "/discover-coding-conventions", "/discover-architecture-boundaries"];
+          "/discover-coding-conventions", "/discover-architecture-boundaries",
+          "/discover-contribution"];
         expect(sent.map((prompt) => prompt.split(" ")[0])).toEqual(commands);
         const stagingPaths = sent.map((prompt) => prompt.slice(prompt.indexOf(" ") + 1));
-        expect(new Set(stagingPaths).size).toBe(6);
+        expect(new Set(stagingPaths).size).toBe(7);
         for (const path of stagingPaths) {
           expect(path).toMatch(/\.omp\/discover\/staging\/run-/);
         }
@@ -1525,6 +1527,10 @@ describe("discover mode", () => {
           () => existsSync(join(fixture.root, ".omp", "discover", "staging", runId)),
           "staging exists before restart",
         );
+        await waitUntil(
+          () => spawnCount(fixture.logPath) === 8,
+          "the live run's peer before restart",
+        );
       } finally {
         before.close();
         live.server.stop(true);
@@ -1923,10 +1929,11 @@ async function runAgent(client: TestClient, agent: string): Promise<DiscoverStat
 
 describe("discovery agents", () => {
   test(
-    "each of the six triggers sends exactly its own prompt and staging directory",
+    "each of the seven triggers sends exactly its own prompt and staging directory",
     async () => {
       const agents: Array<{ id: string; command: string }> = [
         { id: "sheet", command: "/discover-sheet" },
+        { id: "discover-contribution", command: "/discover-contribution" },
         { id: "discover-testing-strategy", command: "/discover-testing-strategy" },
         { id: "discover-naming-conventions", command: "/discover-naming-conventions" },
         { id: "discover-coding-conventions", command: "/discover-coding-conventions" },
@@ -2240,6 +2247,7 @@ describe("discovery agents", () => {
       const expected = new Map<string, string>();
       for (const file of [
         "discover-sheet.md",
+        "discover-contribution.md",
         "discover-testing-strategy.md",
         "discover-naming-conventions.md",
         "discover-coding-conventions.md",
@@ -2257,6 +2265,7 @@ describe("discovery agents", () => {
         const agents = agentsOf(state);
         expect(agents.map((agent) => agent.id)).toEqual([
           "sheet",
+          "discover-contribution",
           "discover-testing-strategy",
           "discover-naming-conventions",
           "discover-coding-conventions",
@@ -2271,7 +2280,7 @@ describe("discovery agents", () => {
           expect(agent.prompt?.text).toBe(expected.get(command));
           texts.add(agent.prompt?.text ?? "");
         }
-        expect(texts.size).toBe(6);
+        expect(texts.size).toBe(7);
       } finally {
         client.close();
         server.stop(true);

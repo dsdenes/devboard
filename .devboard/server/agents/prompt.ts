@@ -115,9 +115,9 @@ export class AgentPromptController {
 // ------------------------------------------------------- discover prompts
 
 /**
- * The prompt half of the six Discover agent cards. Each card reads exactly its
- * own prompt file; the bytes are the same in a harness source checkout and an
- * installed host, and no prompt command writes a file.
+ * The prompt half of the seven Discover agent cards. Each card reads exactly
+ * its own prompt file; the bytes are the same in a harness source checkout and
+ * an installed host, and no prompt command writes a file.
  */
 
 export interface DiscoverPromptState {

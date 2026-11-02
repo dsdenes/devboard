@@ -14,6 +14,8 @@ import {
 import { join, relative, resolve } from "node:path";
 import type { AcpActivity, AcpQuestion, AcpQuestionOption } from "./acp";
 import { AcpConnection } from "./acp";
+import { DetachedPeer, detachedRunLive } from "./detached-run";
+import type { PeerConnection } from "./peer";
 import {
   CommandFlowForge,
   type FlowPrAdapter,
@@ -186,6 +188,10 @@ export interface FlowOptions {
   commandTimeoutMs?: number;
   /** Describes active Goal Mode work, if any. */
   goalWorkActive?: () => string | undefined;
+  /** The harness version that started this controller's runs. */
+  harnessVersion?: string | null;
+  /** The dashboard instance that owns this controller's detached runs. */
+  instance?: string;
 }
 
 interface FlowSession {
@@ -226,7 +232,7 @@ interface RawWidget {
 
 interface Conversation {
   widgetId: string;
-  agent: AcpConnection | undefined;
+  agent: PeerConnection | undefined;
   messages: FlowConversationMessage[];
   activity: string[];
   question: FlowQuestion | null;
@@ -252,6 +258,9 @@ const GIT_ENV: Record<string, string> = {
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: "true",
   NO_COLOR: "1",
+  // The watcher only reads. Refreshing the index would take a lock an agent's
+  // concurrent commit needs, making the agent's checkpoint fail.
+  GIT_OPTIONAL_LOCKS: "0",
 };
 
 function nowIso(now: () => number): string {
@@ -604,18 +613,20 @@ export class FlowController {
   readonly #goalTimeoutMs: number;
   readonly #commandTimeoutMs: number;
   readonly #goalWorkActive: () => string | undefined;
+  readonly #harnessVersion: string | null;
+  readonly #instance: string;
 
   #session: FlowSession | undefined;
   #history: FlowHistoryEntry[] = [];
   /** The goal text already on disk, or null when goal.md may not match it. */
   #persistedGoal: string | null = null;
   #implementation:
-    | { agent: AcpConnection | undefined; activity: string[]; finished: boolean }
+    | { agent: PeerConnection | undefined; activity: string[]; finished: boolean }
     | undefined;
   #goalCreation:
-    | { agent: AcpConnection | undefined; activity: string[]; question: FlowQuestion | null }
+    | { agent: PeerConnection | undefined; activity: string[]; question: FlowQuestion | null }
     | undefined;
-  #analyst: AcpConnection | undefined;
+  #analyst: PeerConnection | undefined;
   #analystPending = false;
   #conversation: Conversation | undefined;
   #timer: Timer | undefined;
@@ -653,6 +664,8 @@ export class FlowController {
     this.#analystTimeoutMs = Math.max(10, options.analystTimeoutMs ?? DEFAULT_ANALYST_TIMEOUT_MS);
     this.#goalTimeoutMs = Math.max(10, options.goalTimeoutMs ?? DEFAULT_GOAL_TIMEOUT_MS);
     this.#goalWorkActive = options.goalWorkActive ?? (() => undefined);
+    this.#harnessVersion = options.harnessVersion ?? null;
+    this.#instance = options.instance ?? "flow-test";
     this.#startedAt = nowIso(this.#now);
   }
 
@@ -1027,16 +1040,41 @@ export class FlowController {
       }
 
       const wasRunning = session.status === "running";
-      session.status = wasRunning ? "stopped" : session.status === "idle" ? "idle" : session.status;
+      // A detached implementation owner outlives the dashboard. Attaching to
+      // it keeps the same run, worktree, and peer; only a run with no live
+      // owner stopped.
+      const adopted =
+        wasRunning &&
+        detachedRunLive(this.stateDir, this.repoDir, "flow-implement", session.id, this.#instance);
+      session.status =
+        wasRunning && !adopted ? "stopped" : session.status === "idle" ? "idle" : session.status;
       session.question = null;
       this.#session = session;
       for (const checkpoint of session.checkpoints) this.#seenCommits.add(checkpoint.commit);
       this.#persist();
 
-      if (wasRunning) {
+      if (wasRunning && !adopted) {
         this.#restartNotice =
           "The server restarted, so the Flow implementation stopped. Start it again to resume.";
         this.#broadcast({ type: "flowNotice", message: this.#restartNotice });
+      }
+      if (adopted) {
+        const activity: string[] = [];
+        const implementation = {
+          agent: undefined as PeerConnection | undefined,
+          activity,
+          finished: false,
+        };
+        this.#implementation = implementation;
+        this.#broadcast({
+          type: "flowImplementationStarted",
+          sessionId: session.id,
+          worktree: session.worktree,
+          branch: session.branch,
+          baseRevision: session.baseRevision,
+        });
+        this.#publish();
+        void this.#runImplementationPeers(session, implementation, current.directory, activity, true);
       }
 
       // Widgets are recomputed from the worktree without spawning a peer.
@@ -1138,9 +1176,11 @@ export class FlowController {
    */
   children(): RecordedChild[] {
     const children: RecordedChild[] = [];
-    const remember = (agent: AcpConnection | undefined, cwd: string) => {
-      const pid = agent?.pid;
-      if (agent === undefined || pid === undefined) return;
+    const remember = (agent: PeerConnection | undefined, cwd: string) => {
+      // A detached run belongs to its owner, which the replacement adopts.
+      if (agent === undefined || agent instanceof DetachedPeer) return;
+      const pid = agent.pid;
+      if (pid === undefined) return;
       children.push({ pid, argv: agent.argv, cwd });
     };
     const worktree = this.#session?.worktree;
@@ -1236,7 +1276,7 @@ export class FlowController {
   }
 
   async #spawnGoalCreation(creation: {
-    agent: AcpConnection | undefined;
+    agent: PeerConnection | undefined;
     activity: string[];
     question: FlowQuestion | null;
   }): Promise<void> {
@@ -1257,7 +1297,14 @@ export class FlowController {
       // A disposal during provider selection clears the interview; no peer may
       // be constructed for an owner that is gone.
       if (this.#goalCreation !== creation) return;
-      const agent = new AcpConnection({
+      const agent = new DetachedPeer({
+        repoDir: this.repoDir,
+        stateDir: this.stateDir,
+        kind: "flow-goal",
+        key: "goal",
+        harnessVersion: this.#harnessVersion,
+        instance: this.#instance,
+        skipActivity: creation.activity.length,
         command: this.#agentCommand,
         cwd: this.repoDir,
         env,
@@ -1378,7 +1425,7 @@ export class FlowController {
     }
 
     const activity: string[] = [];
-    const implementation = { agent: undefined as AcpConnection | undefined, activity, finished: false };
+    const implementation = { agent: undefined as PeerConnection | undefined, activity, finished: false };
     // Claim the slot before the first await. The base fetch and the worktree
     // check are asynchronous, and a second Start that lands inside them would
     // otherwise pass the guard and spawn a second peer in the same worktree.
@@ -1418,13 +1465,32 @@ export class FlowController {
 
     const directory = this.sessionDir;
     if (directory === undefined) return;
+    void this.#runImplementationPeers(session, implementation, directory, activity);
+  }
+
+  /** Runs the implementation turn for a new or adopted peer. */
+  async #runImplementationPeers(
+    session: FlowSession,
+    implementation: { agent: PeerConnection | undefined; activity: string[]; finished: boolean },
+    directory: string,
+    activity: string[],
+    attach = false,
+  ): Promise<void> {
     try {
       const env = await this.#agentEnvironment();
       // Stop or dispose during provider selection already released the claim;
       // no peer may be constructed for an implementation that no longer owns
       // the worktree.
       if (this.#implementation !== implementation) return;
-      const agent = new AcpConnection({
+      const agent = new DetachedPeer({
+        repoDir: this.repoDir,
+        stateDir: this.stateDir,
+        kind: "flow-implement",
+        key: session.id,
+        harnessVersion: this.#harnessVersion,
+        instance: this.#instance,
+        skipActivity: activity.length,
+        ...(attach ? { attachOnly: true } : {}),
         command: this.#agentCommand,
         cwd: session.worktree,
         env,
@@ -1470,7 +1536,7 @@ export class FlowController {
         return;
       }
       implementation.agent = agent;
-      await agent.run(`/flow-implement ${directory}`);
+      await agent.run(attach ? "" : `/flow-implement ${directory}`);
       if (this.#implementation !== implementation) {
         agent.close();
         return;
@@ -1764,7 +1830,7 @@ export class FlowController {
     ].join("\n");
 
     const started = Date.now();
-    let agent: AcpConnection | undefined;
+    let agent: PeerConnection | undefined;
     let bindingFailure: string | undefined;
     try {
       // Provider selection refuses before any peer exists when no subscription
@@ -2496,7 +2562,15 @@ export class FlowController {
       // A close, a replacement, or a disposal during provider selection clears
       // the owner; constructing now would leave a peer nothing can close.
       if (this.#conversation !== conversation) return;
-      const agent = new AcpConnection({
+      const agent = new DetachedPeer({
+        repoDir: this.repoDir,
+        stateDir: this.stateDir,
+        kind: "flow-conversation",
+        key: conversation.widgetId,
+        harnessVersion: this.#harnessVersion,
+        instance: this.#instance,
+        skipActivity: conversation.activity.length,
+        multi: true,
         command: this.#agentCommand,
         cwd: this.repoDir,
         env,

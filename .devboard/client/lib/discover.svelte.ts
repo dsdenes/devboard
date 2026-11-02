@@ -14,6 +14,7 @@ import {
 import type {
   ConceptSignificance,
   ConceptUsage,
+  Contribution,
   DiscoverAgentPrompt,
   DiscoverAgentState,
   DiscoverSkill,
@@ -148,7 +149,7 @@ export class DiscoverStore {
     return undefined;
   }
 
-  /** The six discovery cards, in sidebar order. */
+  /** The seven discovery cards, in sidebar order. */
   get agents(): DiscoverAgentState[] {
     return Array.isArray(this.state?.agents) ? this.state.agents : [];
   }
@@ -208,8 +209,17 @@ export class DiscoverStore {
     return this.repositories[name] ?? this.repositories[name.toLowerCase()] ?? null;
   }
 
+  get contribution(): Contribution | null {
+    return this.state?.contribution ?? null;
+  }
+
   get hasArtifacts(): boolean {
-    return this.sheet !== null || this.contexts.length > 0 || this.skills.length > 0;
+    return (
+      this.sheet !== null ||
+      this.contexts.length > 0 ||
+      this.skills.length > 0 ||
+      this.contribution !== null
+    );
   }
 
   get displayError(): string | null {

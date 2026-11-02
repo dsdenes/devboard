@@ -18,7 +18,14 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fixtureRecord } from "../server/fixtures/adr-source";
 import { writeCommand } from "../issues/control";
-import { lockPath, controlDirectory, runsDirectory, statePath } from "../issues/paths";
+import {
+  lockPath,
+  controlDirectory,
+  runsDirectory,
+  statePath,
+  versionedStatePath,
+  workerStateDirectories,
+} from "../issues/paths";
 import { readState, type IssuesState } from "../issues/state";
 import { freePort, run, waitFor } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
@@ -207,8 +214,30 @@ async function stopDashboard(dashboard: Dashboard): Promise<void> {
   ).catch(() => undefined);
 }
 
+/** The legacy state, or the newest versioned worker state beside it. */
 function stateOf(paths: FixturePaths): IssuesState | undefined {
-  return readState(statePath(paths.stateDir, paths.repo));
+  const legacy = readState(statePath(paths.stateDir, paths.repo));
+  if (legacy !== undefined) return legacy;
+  const states = workerStateDirectories(paths.stateDir, paths.repo)
+    .map((directory) => readState(join(directory, "state.json")))
+    .filter((state): state is IssuesState => state !== undefined)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return states[0];
+}
+
+/** The legacy lock or the newest versioned worker lock. */
+function workerLock(repo: string): string | undefined {
+  const legacy = lockPath(repo);
+  if (existsSync(legacy)) return legacy;
+  try {
+    const directory = join(repo, ".devboard", ".tmp", "issues");
+    const names = readdirSync(directory)
+      .filter((name) => name.startsWith("lock.") && !name.includes(".reclaim-"))
+      .sort();
+    return names.length === 0 ? undefined : join(directory, names[names.length - 1]!);
+  } catch {
+    return undefined;
+  }
 }
 
 async function waitState(
@@ -487,7 +516,10 @@ async function stopWorker(paths: FixturePaths): Promise<void> {
   }
   const owner = (() => {
     try {
-      return JSON.parse(readFileSync(lockPath(paths.repo), "utf8")) as { pid?: unknown };
+      const lock = workerLock(paths.repo);
+      return lock === undefined
+        ? undefined
+        : (JSON.parse(readFileSync(lock, "utf8")) as { pid?: unknown });
     } catch {
       return undefined;
     }
@@ -538,6 +570,9 @@ try {
   await devtools.connect();
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
+  await devtools.send("Page.navigate", {
+    url: `http://127.0.0.1:${dashboardA.port}/`,
+  });
 
   await click(devtools, "mode-issues");
   await waitFor(
@@ -551,7 +586,7 @@ try {
     15_000,
   );
   check(workerPids(a.repo).length === 0, "starting the dashboard started a worker");
-  check(!existsSync(lockPath(a.repo)), "starting the dashboard took the repo lock");
+  check(workerLock(a.repo) === undefined, "starting the dashboard took the repo lock");
   await click(devtools, "issues-start");
 
   const idle = await waitState(
@@ -561,7 +596,7 @@ try {
     15_000,
   );
   check(idle.worker!.pid !== dashboardA.child.pid, "the worker is the dashboard process", idle.worker);
-  check(existsSync(lockPath(a.repo)), "the repo-anchored lock is missing");
+  check(workerLock(a.repo) !== undefined, "the repo-anchored lock is missing");
   check(idle.poll.intervalMs === 10_000, "the poll interval is not ten seconds", idle.poll);
   check(workerPids(a.repo).length === 1, "Start did not spawn exactly one worker");
   // Every wait that depends on a scheduled poll allows one interval plus slack.
@@ -594,13 +629,21 @@ try {
     fleet.queue,
   );
 
-  const prompts = promptLines(a);
-  for (const expected of [
+  const expectedPrompts = [
     "/implement-issue 1",
     "/implement-issue 2",
     "/implement-goal-issue 3",
     "/implement-goal-issue 4",
-  ]) {
+  ];
+  const prompts = await waitFor(
+    () => {
+      const lines = promptLines(a);
+      return expectedPrompts.every((prompt) => lines.includes(prompt)) ? lines : undefined;
+    },
+    "the four peer prompts",
+    10_000,
+  );
+  for (const expected of expectedPrompts) {
     check(prompts.includes(expected), `the ${expected} prompt is missing`, prompts);
   }
   check(
@@ -609,7 +652,14 @@ try {
     prompts,
   );
 
-  const starts = acpLogLines(a).filter((line) => line.startsWith("start "));
+  const starts = await waitFor(
+    () => {
+      const lines = acpLogLines(a).filter((line) => line.startsWith("start "));
+      return lines.length >= 4 ? lines : undefined;
+    },
+    "the four peer starts",
+    10_000,
+  );
   check(starts.length === 4, `the four peers did not all start in one poll: ${starts.length}`, starts);
   check(
     starts.every((line) => line.includes(` ${resolve(a.repo)}`)),
@@ -1022,7 +1072,7 @@ try {
     "Stop marked the captured issue handled",
     stopped.queue,
   );
-  check(!existsSync(lockPath(a.repo)), "Stop did not release the repo lock");
+  check(workerLock(a.repo) === undefined, "Stop did not release the repo lock");
   await waitFor(
     () => (stopPids.every((pid) => !processAlive(pid)) ? true : undefined),
     "every ACP peer to exit on Stop",
@@ -1107,7 +1157,7 @@ try {
     a: survivingPid,
     b: stateB.worker?.pid,
   });
-  check(existsSync(lockPath(b.repo)), "repository B has no repo lock");
+  check(workerLock(b.repo) !== undefined, "repository B has no repo lock");
   socketB.send({ type: "stopIssues" });
   await waitState(b, "repository B to stop", (state) => state.lifecycle === "stopped", 10_000);
   socketB.close();
@@ -1195,11 +1245,152 @@ try {
     "the legacy refusal omits the cleanup command",
     legacy,
   );
-  check(!existsSync(lockPath(e.repo)), "the legacy refusal spawned a worker");
+  check(workerLock(e.repo) === undefined, "the legacy refusal spawned a worker");
   socketE.close();
 
   /* ------------------------------------------------------- */
-  /* 13. No systemd unit, timer, or call was ever written      */
+  /* 13. A newer version takes over: both workers, one claim   */
+  /* ------------------------------------------------------- */
+  const fleetRepo = await fixture("repo-fleet", "acme/fixture-fleet");
+  await writeStore(fleetRepo.store, [issue(1)]);
+  const oldVersion = "0.1.900";
+  const oldWorker = spawn(process.execPath, [
+    join(harnessRoot, "issues", "worker.ts"),
+    "--repo",
+    fleetRepo.repo,
+    "--state-dir",
+    fleetRepo.stateDir,
+  ], {
+    cwd: harnessRoot,
+    env: {
+      ...process.env,
+      DEVBOARD_HARNESS_VERSION: oldVersion,
+      HOME: tools.home,
+      PATH: `${tools.bin}:${process.env.PATH ?? ""}`,
+      AGENT_COMMAND: `${process.execPath} ${stubAcp}`,
+      ...verificationProviderUsageEnv(),
+      ISSUES_STUB_STORE: fleetRepo.store,
+      ISSUES_STUB_GH_LOG: fleetRepo.ghLog,
+      ISSUES_STUB_ACP_LOG: fleetRepo.acpLog,
+      ISSUES_STUB_ACP_FINISH: fleetRepo.finish,
+      ISSUES_STUB_ACP_QUESTION: "0",
+    },
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  let fleetDashboard: Dashboard | undefined;
+  try {
+    const oldState = () =>
+      readState(versionedStatePath(fleetRepo.stateDir, fleetRepo.repo, oldVersion));
+    await waitFor(
+      () => (oldState()?.agents.some((agent) => agent.issueNumber === 1) ? true : undefined),
+      "the old worker's in-flight issue",
+      15_000,
+    );
+    console.log(`verify:issues: takeover: the live ${oldVersion} worker holds issue #1`);
+    const fleetDashboard = await startDashboard(fleetRepo, tools, tools.marker);
+    startedDashboards.push(fleetDashboard);
+    const fleetSocket = new WebSocket(`ws://127.0.0.1:${fleetDashboard.port}/ws`);
+    const fleetReplies: Array<Record<string, unknown>> = [];
+    fleetSocket.onmessage = (event) => {
+      try {
+        fleetReplies.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+      } catch {
+        // Ignore a malformed frame.
+      }
+    };
+    await new Promise<void>((settle) => {
+      fleetSocket.onopen = () => settle();
+    });
+    fleetSocket.send(JSON.stringify({ type: "getIssues" }));
+    const takeover = await waitFor(
+      () => {
+        const states = fleetReplies.filter((reply) => reply.type === "issuesState");
+        const state = states[states.length - 1];
+        const workers = (state?.workers ?? []) as Array<{ version?: string | null }>;
+        return workers.length >= 2 ? state : undefined;
+      },
+      "both worker versions in the merged view",
+      30_000,
+    );
+    const versions = (takeover.workers as Array<{ version: string | null }>)
+      .map((worker) => worker.version)
+      .sort();
+    check(versions.includes(oldVersion), "the merged view lost the old worker", versions);
+    check(
+      versions.some((version) => version !== oldVersion && version !== null),
+      "the newer worker did not become live",
+      versions,
+    );
+    console.log(
+      `verify:issues: takeover: old ${oldVersion} and new ${versions.find((version) => version !== oldVersion)} are both live`,
+    );
+
+    // An issue opened after the newer worker is live is claimed by it alone.
+    await writeStore(fleetRepo.store, [issue(1), issue(2)]);
+    await waitFor(
+      () =>
+        workerStateDirectories(fleetRepo.stateDir, fleetRepo.repo).some((directory) =>
+          readState(join(directory, "state.json"))?.agents.some(
+            (agent) => agent.issueNumber === 2,
+          ),
+        )
+          ? true
+          : undefined,
+      "the newer worker's issue",
+      30_000,
+    );
+    check(
+      oldState()?.agents.some((agent) => agent.issueNumber === 2) !== true,
+      "the old worker claimed an issue after the newer worker was live",
+    );
+    console.log("verify:issues: takeover: the issue opened after the new worker is handled only by it");
+
+    await writeFile(fleetRepo.finish, "finish\n");
+    const oldRun = await waitFor(
+      () => {
+        const state = oldState();
+        const run = state?.runs.find((entry) => entry.issueNumbers.includes(1));
+        return run?.status === "succeeded" ? run : undefined;
+      },
+      "the old worker's in-flight issue to finish on the old version",
+      30_000,
+    );
+    const oldRunFile = JSON.parse(
+      readFileSync(join(runsDirectory(fleetRepo.stateDir, fleetRepo.repo), oldRun.runId, "run.json"), "utf8"),
+    ) as { harnessVersion?: string | null };
+    check(
+      oldRunFile.harnessVersion === oldVersion,
+      "the old worker's run did not record its own version",
+      oldRunFile,
+    );
+    await waitFor(
+      () => (!processAlive(oldWorker.pid ?? 0) ? true : undefined),
+      "the old worker to retire",
+      30_000,
+    );
+    check(workerLock(fleetRepo.repo) !== undefined, "the newer worker's lock disappeared");
+    check(
+      readState(versionedStatePath(fleetRepo.stateDir, fleetRepo.repo, oldVersion)) !== undefined,
+      "the retired worker's state was removed",
+    );
+    console.log(
+      `verify:issues: takeover: the old run ${oldRun.runId} finished on ${oldVersion}, the old worker exited, and its state remains readable`,
+    );
+    fleetSocket.close();
+  } finally {
+    await writeFile(fleetRepo.finish, "finish\n").catch(() => undefined);
+    if (oldWorker.pid !== undefined) {
+      try {
+        process.kill(oldWorker.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+    if (fleetDashboard !== undefined) await stopDashboard(fleetDashboard);
+  }
+
+  /* ------------------------------------------------------- */
+  /* 14. No systemd unit, timer, or call was ever written      */
   /* ------------------------------------------------------- */
   const systemdCalls = existsSync(tools.marker)
     ? readFileSync(tools.marker, "utf8").split("\n").filter((line) => line.length > 0)

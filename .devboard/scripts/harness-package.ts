@@ -92,7 +92,7 @@ export async function packHarness(
         ...process.env,
         NODE_AUTH_TOKEN: "",
         NPM_TOKEN: "",
-        npm_config_cache: join(harnessRoot, ".tmp", "npm-cache"),
+        npm_config_cache: join(destination, ".npm-cache"),
       },
     });
     if (packed.exitCode !== 0) {

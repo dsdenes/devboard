@@ -1,4 +1,14 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { resolveContained } from "./context";
 import type { McpContext } from "./context";
@@ -75,9 +85,42 @@ export interface VerificationResult {
   log: string;
 }
 
-/** The log file one check writes; the check name decides the file name. */
-export function verificationLogPath(context: McpContext, check: string): string {
+/** One sequence for every invocation this process opens; the log name never repeats. */
+let runLogSequence = 0;
+
+/**
+ * The stable name a check's newest settled run publishes to. No live run writes
+ * here: a concurrent run holds its own file, so publishing never unlinks
+ * another run's evidence.
+ */
+function verificationLogPath(context: McpContext, check: string): string {
   return join(context.stateDir, `${check.replace(/[^A-Za-z0-9_.-]+/g, "-")}.log`);
+}
+
+/** The log one invocation owns; two overlapping runs never share a path. */
+function verificationRunLogPath(context: McpContext, check: string): string {
+  runLogSequence += 1;
+  const name = check.replace(/[^A-Za-z0-9_.-]+/g, "-");
+  return join(context.stateDir, `${name}.${process.pid}.${runLogSequence}.log`);
+}
+
+/**
+ * Copies a settled run's complete log over the stable name through a staging
+ * file unique to that run, so a reader sees either the previous complete output
+ * or this one and never a truncated blend.
+ */
+function publishLog(logPath: string, stablePath: string): void {
+  const staged = `${logPath}.stable.tmp`;
+  try {
+    copyFileSync(logPath, staged);
+    renameSync(staged, stablePath);
+  } catch {
+    try {
+      unlinkSync(staged);
+    } catch {
+      // The staging file was never created or is already gone.
+    }
+  }
 }
 
 function capture(
@@ -156,7 +199,6 @@ interface LogSink {
 
 function openLog(path: string): LogSink {
   mkdirSync(dirname(path), { recursive: true });
-  rmSync(path, { force: true });
   const descriptor = openSync(path, "w");
   let open = true;
   return {
@@ -238,7 +280,8 @@ export async function runVerification(
   const cwd = resolve(context.harnessDir);
   if (!existsSync(cwd)) throw new Error(`${cwd} does not exist.`);
 
-  const logPath = verificationLogPath(context, check);
+  const stablePath = verificationLogPath(context, check);
+  const logPath = verificationRunLogPath(context, check);
   const log = openLog(logPath);
   const logRelative = relative(context.repoDir, logPath).split(sep).join("/");
 
@@ -330,5 +373,6 @@ export async function runVerification(
   } finally {
     clearTimeout(timer);
     log.close();
+    publishLog(logPath, stablePath);
   }
 }

@@ -132,11 +132,30 @@ export class ConnectionStore {
 
   private handle(message: Envelope): void {
     if (isVersionState(message)) {
+      const replacement = isObject(message.replacement)
+        ? {
+            running:
+              message.replacement.running === null ||
+              typeof message.replacement.running === "string"
+                ? (message.replacement.running as string | null)
+                : null,
+            installed:
+              message.replacement.installed === null ||
+              typeof message.replacement.installed === "string"
+                ? (message.replacement.installed as string | null)
+                : null,
+            error:
+              typeof message.replacement.error === "string"
+                ? message.replacement.error
+                : "The replacement could not start.",
+          }
+        : null;
       this.version = {
         running: message.running as string | null,
         installed: message.installed as string | null,
         latest: message.latest as string | null,
         stale: message.stale as boolean,
+        replacement,
       };
       this.feedbackEnabled = message.feedbackEnabled === true;
       return;

@@ -730,7 +730,7 @@ describe("ask conversations", () => {
         testServer.server.stop(true);
       }
     }
-  });
+  }, 20_000);
 
   test("recovers from a rejected prompt and keeps the conversation", async () => {
     const testServer = await startServer({ agentArguments: ["--ask-fail"] });

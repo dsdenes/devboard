@@ -25,6 +25,8 @@ export interface DesignForgeIssue {
   url: string;
   state: "open" | "closed";
   createdAt: string;
+  /** When the issue was closed, or null while it is open. */
+  closedAt: string | null;
   body: string;
 }
 
@@ -37,6 +39,8 @@ export interface DesignForgeClient {
   closingCommit(issueNumber: number): Promise<string | null>;
   /** Every candidate for that commit, newest first, for verification. */
   closingCommits?(issueNumber: number): Promise<string[]>;
+  /** The checkout's own commits whose landed subject ends with `(#<number>)`. */
+  landedCommits?(issueNumber: number): string[];
   resolveCommit(short: string): Promise<string | null>;
   containingReleaseTags(commit: string, releases: DesignRelease[]): Promise<string[]>;
 }
@@ -114,6 +118,7 @@ function createDesignGitea(options: DesignForgeOptions): DesignForgeClient {
           url: issue.url,
           state: issue.state,
           createdAt: issue.createdAt,
+          closedAt: issue.closedAt,
           body: issue.body,
         }));
     },
@@ -126,6 +131,7 @@ function createDesignGitea(options: DesignForgeOptions): DesignForgeClient {
     },
     closingCommit: (issueNumber) => version.closingCommit(issueNumber),
     closingCommits: (issueNumber) => version.closingCommits(issueNumber),
+    landedCommits: (issueNumber) => version.landedCommits(issueNumber),
     resolveCommit: (short) => version.resolveCommit(short),
     containingReleaseTags: (commit, releases) =>
       version.containingReleaseTags(commit, releases),
@@ -173,7 +179,7 @@ export function createDesignForge(options: DesignForgeOptions): DesignForgeClien
         "--limit",
         "1000",
         "--json",
-        "number,title,url,state,createdAt,body",
+        "number,title,url,state,createdAt,closedAt,body",
       ]);
       const entries = parseIssues(text);
       if (entries === undefined) throw new Error("gh issue list did not print a JSON array");
@@ -201,6 +207,10 @@ export function createDesignForge(options: DesignForgeOptions): DesignForgeClien
           url: record.url,
           state: record.state.toLowerCase() === "closed" ? "closed" : "open",
           createdAt: record.createdAt,
+          closedAt:
+            typeof record.closedAt === "string" && record.closedAt.length > 0
+              ? record.closedAt
+              : null,
           body: record.body,
         });
       }
@@ -232,6 +242,7 @@ export function createDesignForge(options: DesignForgeOptions): DesignForgeClien
     listReleases: () => repositoryGitHub.listReleases(),
     closingCommit: (issueNumber) => repositoryGitHub.closingCommit(issueNumber),
     closingCommits: (issueNumber) => repositoryGitHub.closingCommits(issueNumber),
+    landedCommits: (issueNumber) => repositoryGitHub.landedCommits(issueNumber),
     resolveCommit: (short) => repositoryGitHub.resolveCommit(short),
     containingReleaseTags: (commit, releases) =>
       repositoryGitHub.containingReleaseTags(commit, releases),

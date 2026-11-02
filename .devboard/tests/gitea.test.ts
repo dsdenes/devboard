@@ -15,7 +15,8 @@ import {
   giteaListReleases,
   type FetchLike,
 } from "../lib/gitea.ts";
-import { shippedVersion } from "../lib/github-release.ts";
+import { shippedVersion, resolveShippedVersion } from "../lib/github-release.ts";
+import { createGiteaVersionClient } from "../lib/gitea-release.ts";
 import { createScoutGitHub } from "../issues/scout/github.ts";
 import { createDesignForge } from "../issues/design/forge.ts";
 import { pollOpenIssues } from "../issues/tracker";
@@ -59,7 +60,7 @@ function repository(): string {
   return directory;
 }
 
-function committedRepository(): { directory: string; commit: string } {
+function committedRepository(subject = "shipped"): { directory: string; commit: string } {
   const directory = repository();
   const git = (args: string[]): string => {
     const result = Bun.spawnSync({
@@ -79,13 +80,13 @@ function committedRepository(): { directory: string; commit: string } {
     "--allow-empty",
     "-q",
     "-m",
-    "shipped",
+    subject,
   ]);
   return { directory, commit: git(["rev-parse", "HEAD"]) };
 }
 
-function taggedRepository(tag: string): { directory: string; commit: string } {
-  const { directory, commit } = committedRepository();
+function taggedRepository(tag: string, subject?: string): { directory: string; commit: string } {
+  const { directory, commit } = committedRepository(subject);
   const result = Bun.spawnSync({
     cmd: ["git", "-C", directory, "tag", tag],
     stdout: "pipe",
@@ -759,6 +760,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     expect(delivery.repository).toBe("acme/fixture");
+    expect(delivery.owns("http://gitea.test/acme/fixture/issues/12")).toBe(true);
     const filed = await delivery.create({
       category: "server-error",
       fingerprint: "fingerprint",
@@ -803,6 +805,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     const url = "https://github.com/acme/fixture/issues/12";
+    expect(delivery.owns(url)).toBe(false);
     const commented = await delivery.comment(url, {
       category: "server-error",
       fingerprint: "fingerprint",
@@ -819,6 +822,23 @@ describe("Gitea watchdog delivery", () => {
     expect(calls).toEqual([]);
   });
 
+  test("recognises its own issue through a loopback alias", async () => {
+    const calls: Recorded[] = [];
+    const delivery = createWatchdogDelivery({
+      root: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://localhost:3001", GITEA_TOKEN: "gitea-token" },
+      gh: () => {
+        throw new Error("gh must not run for a Gitea origin");
+      },
+      fetchImpl: fakeGitea(calls),
+    });
+    expect(delivery.owns("http://127.0.0.1:3001/acme/fixture/issues/12")).toBe(true);
+    expect(delivery.owns("http://localhost:3001/acme/fixture/issues/12")).toBe(true);
+    expect(delivery.owns("http://127.0.0.1:3001/other/fixture/issues/12")).toBe(false);
+    expect(delivery.owns("http://localhost:3002/acme/fixture/issues/12")).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   test("refuses a ledger URL from another repository on the same origin", async () => {
     const calls: Recorded[] = [];
     const delivery = createWatchdogDelivery({
@@ -830,6 +850,7 @@ describe("Gitea watchdog delivery", () => {
       fetchImpl: fakeGitea(calls),
     });
     const url = "http://gitea.test/other/fixture/issues/12";
+    expect(delivery.owns(url)).toBe(false);
     const commented = await delivery.comment(url, {
       category: "server-error",
       fingerprint: "fingerprint",
@@ -946,6 +967,37 @@ describe("Gitea watchdog activity", () => {
     ]);
   });
 
+  test("skips a SHA-shaped token the forge reports as no such commit", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const short = tagged.commit.slice(0, 7);
+    const target = { baseUrl: "http://gitea.test", project: "acme/fixture" };
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/issues/7/timeline")) {
+        return Response.json([{ type: "close", ref_commit_sha: "" }]);
+      }
+      if (url.pathname.endsWith("/issues/7/comments")) {
+        return Response.json([{ body: `shipped in ${short}; epoch 1793310097358` }]);
+      }
+      if (url.pathname.endsWith(`/git/commits/${short}`)) {
+        return Response.json({ sha: tagged.commit });
+      }
+      if (url.pathname.includes("/git/commits/")) {
+        return new Response(JSON.stringify({ message: "commit does not exist" }), {
+          status: 404,
+        });
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const client = createGiteaVersionClient(target, tagged.directory, fetchImpl);
+    const resolution = await resolveShippedVersion(
+      { number: 7, state: "closed" },
+      client,
+      [{ tag: "v1.0.0", publishedAt: "2026-09-01T00:00:00Z" }],
+    );
+    expect(resolution).toEqual({ version: "v1.0.0", error: null, inferred: false });
+  });
+
   test("reads the commit the forge linked when an API close names none", async () => {
     const tagged = taggedRepository("v1.0.0");
     const fetchImpl: FetchLike = async (input) => {
@@ -979,6 +1031,91 @@ describe("Gitea watchdog activity", () => {
         state: "implemented",
         version: "v1.0.0",
       },
+    ]);
+  });
+
+  test("reads the landed commit the checkout carries when the forge names none", async () => {
+    const tagged = taggedRepository("v1.0.0", "fix(agents): settle the row (#5)");
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (/\/issues\/5$/.test(url.pathname)) return Response.json({ state: "closed" });
+      if (url.pathname.endsWith("/issues/5/timeline")) {
+        return Response.json([{ type: "close", ref_commit_sha: "" }]);
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/5"])).toEqual([
+      {
+        url: "http://gitea.test/acme/fixture/issues/5",
+        state: "implemented",
+        version: "v1.0.0",
+      },
+    ]);
+    expect(calls.some((call) => call.includes("/timeline"))).toBe(false);
+  });
+
+  test("a landed commit outside every release stays unresolved instead of inferring", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const committed = Bun.spawnSync({
+      cmd: [
+        "git",
+        "-C",
+        tagged.directory,
+        "-c",
+        "user.name=Devboard Tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "fix(agents): land after the release (#5)",
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(committed.exitCode).toBe(0);
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      if (/\/issues\/5$/.test(url.pathname)) {
+        return Response.json({
+          state: "closed",
+          created_at: "2026-08-01T00:00:00Z",
+          closed_at: "2026-10-01T00:00:00Z",
+        });
+      }
+      if (url.pathname.endsWith("/releases")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json(
+          page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+        );
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl,
+    });
+
+    expect(await reader.project(["http://gitea.test/acme/fixture/issues/5"])).toEqual([
+      { url: "http://gitea.test/acme/fixture/issues/5", state: "implemented", version: null },
     ]);
   });
 

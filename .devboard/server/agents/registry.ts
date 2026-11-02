@@ -119,6 +119,14 @@ export interface AgentCyclesDetail {
 
 export type AgentDetail = AgentActivityDetail | AgentCyclesDetail;
 
+/** One live worker process of a background agent family. */
+export interface AgentWorker {
+  pid: number;
+  version: string | null;
+  stateDir: string;
+  lifecycle: AgentLifecycle;
+}
+
 export interface AgentSnapshot {
   id: string;
   label: string;
@@ -146,6 +154,8 @@ export interface AgentSnapshot {
   notice: string | null;
   error: string | null;
   timer: AgentTimerGate | null;
+  /** Every live worker of this family, whatever version started it. */
+  workers: AgentWorker[];
 }
 
 /** What an adapter publishes; the registry validates and normalizes it. */
@@ -169,6 +179,7 @@ export interface AgentSnapshotInput {
   notice?: string | null;
   error?: string | null;
   timer?: AgentTimerGate | null;
+  workers?: AgentWorker[];
 }
 
 /** The prompt section's source: one harness prompt file, or a stated absence. */
@@ -546,7 +557,32 @@ export function projectAgentSnapshot(
             blocked: input.timer.blocked === true,
             error: nullableTimestamp(input.timer.error),
           },
+    workers: normalizeWorkers(descriptor, input.workers),
   };
+}
+
+/** Normalizes the live-worker list every adapter may publish. */
+export function normalizeWorkers(
+  descriptor: AgentDescriptor,
+  value: unknown,
+): AgentWorker[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new AgentRegistryError(`${descriptor.id}: workers must be an array`);
+  }
+  return value.map((entry) => {
+    if (!isRecord(entry) || !isIntegerIn(entry.pid, 1, Number.MAX_SAFE_INTEGER)) {
+      throw new AgentRegistryError(`${descriptor.id}: a worker needs a pid`);
+    }
+    if (!(entry.version === null || typeof entry.version === "string")) {
+      throw new AgentRegistryError(`${descriptor.id}: a worker version must be a string or null`);
+    }
+    if (typeof entry.stateDir !== "string") {
+      throw new AgentRegistryError(`${descriptor.id}: a worker needs its state directory`);
+    }
+    const lifecycle = normalizeLifecycle(descriptor, entry.lifecycle);
+    return { pid: entry.pid, version: entry.version, stateDir: entry.stateDir, lifecycle };
+  });
 }
 
 const SHARED_COMMANDS = {
@@ -679,7 +715,7 @@ export const agentRegistry: AgentRegistry = defineAgentRegistry(DEFAULT_AGENT_DE
 // ------------------------------------------------------------ discover agents
 
 /**
- * The six independently triggerable Discover agents. Unlike a background
+ * The seven independently triggerable Discover agents. Unlike a background
  * agent, each one is a one-shot ACP turn: it owns exactly one prompt file, one
  * slash command, and one slice of the published Discover artifacts. The client
  * imports this table for labels and order; the server imports it for validation
@@ -688,6 +724,7 @@ export const agentRegistry: AgentRegistry = defineAgentRegistry(DEFAULT_AGENT_DE
 
 export const DISCOVER_AGENT_IDS = [
   "sheet",
+  "discover-contribution",
   "discover-testing-strategy",
   "discover-naming-conventions",
   "discover-coding-conventions",
@@ -718,6 +755,14 @@ export const DISCOVER_AGENTS: readonly DiscoverAgentDescriptor[] = Object.freeze
     command: "/discover-sheet",
     promptFile: "discover-sheet.md",
     skill: null,
+    glossary: false,
+  },
+  {
+    id: "discover-contribution",
+    label: "Contribution Agent",
+    command: "/discover-contribution",
+    promptFile: "discover-contribution.md",
+    skill: "discover-contribution",
     glossary: false,
   },
   {
@@ -762,7 +807,7 @@ export const DISCOVER_AGENTS: readonly DiscoverAgentDescriptor[] = Object.freeze
   },
 ]);
 
-/** The fixed Run all order: the sheet and glossary ground the four skills. */
+/** The fixed Run all order: the sheet and glossary ground the skills that follow. */
 export const DISCOVER_RUN_ORDER: readonly DiscoverAgentId[] = Object.freeze([
   "sheet",
   "discover-glossary",
@@ -770,13 +815,14 @@ export const DISCOVER_RUN_ORDER: readonly DiscoverAgentId[] = Object.freeze([
   "discover-naming-conventions",
   "discover-coding-conventions",
   "discover-architecture-boundaries",
+  "discover-contribution",
 ]);
 
 const DISCOVER_AGENTS_BY_ID = new Map<string, DiscoverAgentDescriptor>(
   DISCOVER_AGENTS.map((descriptor) => [descriptor.id, descriptor] as const),
 );
 
-/** True for one of the six ids; never for another string. */
+/** True for one of the seven ids; never for another string. */
 export function isDiscoverAgentId(value: unknown): value is DiscoverAgentId {
   return typeof value === "string" && DISCOVER_AGENTS_BY_ID.has(value);
 }

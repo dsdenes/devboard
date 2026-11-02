@@ -136,7 +136,7 @@
     >
       <div class="panel__header">
         <h2 class="panel__title">Prompt</h2>
-        <span class="panel__subtitle">Read-only</span>
+        <span class="panel__subtitle">Read-only here</span>
       </div>
       <div class="panel__body stack-sm">
         {#if promptError !== null}

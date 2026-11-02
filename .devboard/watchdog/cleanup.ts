@@ -195,14 +195,17 @@ export function sweepStateDir(
     // a finished draft's status is the only record of its outcome; nothing
     // recreates either.
     join(directory, "goal-drafts"),
-    // The watchdog's command channel is operator input, not scratch.
+    // The watchdog's command channel and every version's state/control are
+    // operator input and readable history, not scratch.
     join(directory, "watchdog", "control"),
+    join(directory, "watchdog", "workers"),
     ...(options.watchdogRunDir === undefined ? [] : [resolve(options.watchdogRunDir)]),
   ];
   const protectedExact = new Set([
     join(directory, "watchdog", "state.json"),
     join(directory, "watchdog", "latest.json"),
     join(directory, "watchdog", "lock"),
+    join(directory, "watchdog", "cycle-claim.json"),
     join(directory, "watchdog", "worker.json"),
     join(directory, "watchdog", "settings.json"),
     join(directory, "watchdog", "projection.json"),
@@ -227,7 +230,13 @@ export function sweepStateDir(
     // the worker runs, however long that is. Its content names the owner, so
     // protect any `lock` file whose recorded owner is still alive; a lock with
     // a dead owner stays sweepable, and so does everything else under `scout`.
-    if (basename(path) === "lock" && liveLockOwner(path) !== undefined) return true;
+    const watchdogLock = `${join(directory, "watchdog")}${sep}lock.`;
+    if (
+      (basename(path) === "lock" || path.startsWith(watchdogLock)) &&
+      liveLockOwner(path) !== undefined
+    ) {
+      return true;
+    }
     // Auto Scout persists one repository's settings and worker state in
     // `<stateDir>/scout/<24-hex>`. A stopped worker's files are operator input,
     // not scratch: its caps and cadence must survive inactivity. Scan archives

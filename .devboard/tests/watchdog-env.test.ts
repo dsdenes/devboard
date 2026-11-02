@@ -90,4 +90,17 @@ describe("root environment", () => {
     const delivery = createWatchdogDelivery({ root, environment, gh: noGh });
     expect(delivery.repository).toBe("acme/fixture");
   });
+
+  test("a GitHub delivery owns only its own host's issue URLs", async () => {
+    const root = await temporaryDirectory("test-watchdog-env-github");
+    git(root, "init", "--quiet", "--initial-branch=main");
+    git(root, "remote", "add", "origin", "https://github.com/acme/fixture.git");
+
+    const delivery = createWatchdogDelivery({ root, environment: {}, gh: noGh });
+    expect(delivery.owns("https://github.com/acme/fixture/issues/12")).toBe(true);
+    expect(delivery.owns("https://github.com/acme/fixture/issues/12/")).toBe(true);
+    expect(delivery.owns("http://127.0.0.1:3001/acme/fixture/issues/12")).toBe(false);
+    expect(delivery.owns("https://gitlab.com/acme/fixture/issues/12")).toBe(false);
+    expect(delivery.owns("https://github.com/acme/fixture/pull/12")).toBe(false);
+  });
 });

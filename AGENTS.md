@@ -89,14 +89,31 @@ local Devboard installation or source checkout. `<host>/.omp/commands`, `<host>/
 `<host>/AGENTS.md` are real copies from the installed package; no harness path is a symlink.
 The canonical `.devboard/` in this checkout is the source tree and is never an npm install.
 
-Every running dashboard checks the newest npm version at startup and every 60 seconds, installs a
-newer artifact, and keeps serving the version it loaded. It reports `versionState` (`running`,
-`installed`, `latest`, `stale`) and shows the reload control while `stale` is true. Only clicking
-that control restarts the server from the installed package and reloads the page. When npm cannot
-resolve or serve the artifact and `DEVBOARD_GITEA_URL` is configured, install and update fall back
-to the Gitea release tarball and its `.sha256` for the same version. A failed download, checksum,
-authentication, or install leaves the installed package and the running server intact; the
-journal records the failure and doctor reports it.
+Every installed dashboard checks the newest npm version at startup and every 60 seconds and
+installs a newer artifact. When the install completes, the server replaces itself with the
+installed version without an operator click: every connected page receives the replacement event,
+waits for the new process, and reloads once. The replacement never kills a live agentic run or a
+background worker. Every run owns a detached process that survives the dashboard, so its state and
+activity replay after reconnect, an answer reaches the same run, Stop ends it, and work in flight
+finishes on the version that started it. Each background worker family (Issues, Auto Scout, Design
+System, Coach, Watchdog) accepts a live worker of more than one harness version: the running
+version starts its own worker when an older one is live, sends the older worker a drain, and every
+unit that arises afterwards is claimed by the newest worker. The older worker starts no new unit,
+finishes its in-flight unit, exits when its last unit ends, releases its lock, and leaves its
+state and activity readable. Start launches the newest installed version when no worker is live;
+Pause, Resume, Check now, Stop, and settings apply to every live worker of the family. A worker
+started by a version that predates this mechanism has no drain command and is never killed
+mid-unit; it is left to finish its unit.
+
+`versionState` reports `running`, `installed`, `latest`, and `stale`. The reload control is
+rendered only when a replacement could not start: the running version keeps serving, its
+accessible name and title name both versions, and clicking it retries the same launcher. Once the
+retry succeeds the page reloads on the installed version. A canonical source checkout, which has
+no package under `.devboard/node_modules/@dsdenes/devboard`, never installs and never replaces
+itself. When npm cannot resolve or serve the artifact and `DEVBOARD_GITEA_URL` is configured,
+install and update fall back to the Gitea release tarball and its `.sha256` for the same version. A
+failed download, checksum, authentication, or install leaves the installed package and the running
+server intact; the journal records the failure and doctor reports it.
 
 Harness-owned issue reporting uses only the configured Gitea API. Without `DEVBOARD_GITEA_URL`
 the report controls are not rendered and `POST /api/feedback` answers HTTP 503 naming that

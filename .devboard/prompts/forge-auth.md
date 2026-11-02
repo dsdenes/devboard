@@ -8,21 +8,24 @@ description: Resolve the forge host, project, and token scope through forge-auth
 project path, the base URL, and the token scope a run may use. It reads `DEVBOARD_GITEA_URL`,
 `GITEA_TOKEN`, and the `origin` remote itself, so no other file or command has to locate them.
 
-Run it once from the checkout root before the first tracker read or write:
+Run it once from the checkout root before the first tracker read or write, in this form when the
+target is this checkout's own repository:
 
 ```sh
-bun .devboard/scripts/forge-auth.ts check --forge <forge> --required <read|write> --json
+bun .devboard/scripts/forge-auth.ts check --required <read|write> --json
 ```
 
-- `<forge>` is `github`, `gitlab`, or `gitea`.
+That is the canonical invocation: the wrapper takes `forge`, `host`, and `project` from the
+`origin` remote — and on Gitea the HTTP origin from `DEVBOARD_GITEA_URL` — so a prompt passes
+nothing it resolves itself. A prompt that gates a specific access level pins only its `--required`
+value, for example `--required write --json`.
 
-- With no `--host` and no `--project`, the wrapper targets the `origin` remote; on Gitea it takes
-  the HTTP origin from `DEVBOARD_GITEA_URL`. Use that form whenever the target is this checkout's
-  own repository, and pass nothing the wrapper can resolve.
+- `<forge>` is `github`, `gitlab`, or `gitea`; the wrapper infers it from the remote's host name.
 - Pass an explicit target only when the target repository is not this checkout's `origin`:
   `bun .devboard/scripts/forge-auth.ts check --host <host> --project <owner>/<repo> --required <read|write> --json`.
-- `--forge` is optional when the host name decides it. Pass it when the wrapper would otherwise
-  probe a forge the run never uses.
+- `--forge` is the last resort for a host name that cannot decide the forge. Never pass it to
+  confirm a guess, never combine it with `--host`/`--project` when the origin already names the
+  target, and never retry a failed check with a different flag set.
 - The exit status is the verdict: zero selects a credential that satisfies `--required`, nonzero
   reports that none does. Never treat stderr as optional and never retry another flag set to make
   a failure pass.

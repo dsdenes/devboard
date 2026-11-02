@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { syncHarnessTrees } from "../bin/devboard.mjs";
 import { packHarness, packedPaths, stageHarness } from "../scripts/harness-package";
@@ -39,14 +39,19 @@ function promptReferences(): Map<string, string[]> {
 	const references = new Map<string, string[]>();
 	for (const prompt of prompts) {
 		const text = readFileSync(join(harnessRoot, "prompts", prompt), "utf8");
-		for (const match of text.matchAll(/\.devboard\/([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\/?)/g)) {
+		for (const match of text.matchAll(/\.devboard\/([A-Za-z0-9_.*-]+(?:\/[A-Za-z0-9_.*-]+)*\/?)/g)) {
 			const relative = match[1]!.replace(/\/+$/, "");
 			if (relative === "") continue;
+			// A glob names no single file; the prompt uses it illustratively.
+			if (relative.includes("*")) continue;
 			if (HOST_OWNED.some((owned) => relative === owned || relative.startsWith(`${owned}/`))) continue;
 			// Runtime scratch the host creates on demand; the package never ships it.
 			if (relative === ".tmp" || relative.startsWith(".tmp/")) continue;
 			// Illustrative paths such as `.devboard/client/Foo.svelte` name no harness file.
 			if (!existsSync(join(harnessRoot, relative))) continue;
+			// A prompt may name a directory namespace (`.devboard/scripts/*`); only a
+			// concrete file has to exist as that same entry in the package.
+			if (!statSync(join(harnessRoot, relative)).isFile()) continue;
 			const files = references.get(relative) ?? [];
 			if (!files.includes(prompt)) files.push(prompt);
 			references.set(relative, files);
@@ -75,7 +80,12 @@ describe("shipped prompt assets", () => {
 		const { tarball } = await packHarness("0.0.0-prompt-assets", temporaryDirectory("prompt-pack"));
 		const packed = new Set(await packedPaths(tarball));
 		for (const [relative, prompts] of references) {
-			expect({ path: relative, prompts, present: packed.has(relative) }).toEqual({
+			// A tarball lists files, so a directory reference is present when
+			// at least one file below it is.
+			const present =
+				packed.has(relative) ||
+				[...packed].some((path) => path.startsWith(`${relative}/`));
+			expect({ path: relative, prompts, present }).toEqual({
 				path: relative,
 				prompts,
 				present: true,

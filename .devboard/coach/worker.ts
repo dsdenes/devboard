@@ -2,20 +2,32 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { acquireLock } from "../issues/lock";
 import { readHarnessVersion } from "../server/version";
-import { runCycle } from "./coordinator";
+import { runCycle, describeCycle } from "./coordinator";
 import { takeCoachCommands, type CoachCommand } from "./control";
-import { describeCycle } from "./coordinator";
-import { coachDirectory, controlDirectory, lockPath } from "./paths";
+import {
+  coachDirectory,
+  controlDirectory,
+  cycleLockPath,
+  versionedControlDirectory,
+  versionedLockPath,
+  versionedWorkerDirectory,
+} from "./paths";
 import { readCoachSettings, writeCoachSettings, type CoachSettings } from "./settings";
-import { writeWorkerState, type CoachWorkerState } from "./worker-state";
+import { readWorkerState, writeWorkerState, type CoachWorkerState } from "./worker-state";
 
 /**
  * The dashboard-started detached Coach worker. One instance exists per
- * repository state directory; it owns the lock and the cadence, reads settings
- * and control files between cycles, and survives every dashboard restart.
+ * repository state directory and harness version; it owns that version's lock
+ * and cadence, reads settings and control files between cycles, and survives
+ * every dashboard restart. The versioned worker and cycle leases are what let a
+ * newer harness take over: the drained worker finishes its in-flight cycle and
+ * exits, and only then can the next version's worker claim a cycle.
  */
 
 const CONTROL_POLL_MS = 250;
+/** Published when another version's worker holds the one cycle lease. */
+export const CYCLE_BUSY_NOTICE =
+  "Another Coach worker is running a cycle; this worker retries shortly.";
 
 interface Parsed {
   root: string;
@@ -59,45 +71,68 @@ function gitTopLevel(): string | undefined {
   return result.exitCode === 0 && top.length > 0 ? top : undefined;
 }
 
-async function main(): Promise<void> {
-  const parsed = parseArguments(process.argv.slice(2));
-  const top = parsed?.root ?? gitTopLevel();
-  if (top === undefined) {
-    console.error("coach worker: the harness is not inside a git checkout");
-    process.exit(2);
-  }
-  const root = resolve(top);
-  if (!existsSync(join(root, ".devboard"))) {
-    console.error(`coach worker: missing prerequisite: ${join(root, ".devboard")} does not exist`);
-    process.exit(2);
-  }
-  const stateDir = resolve(parsed?.stateDir ?? join(root, ".devboard", ".tmp"));
-  const ownerStateDir = resolve(parsed?.ownerStateDir ?? stateDir);
+export interface CoachWorkerOptions {
+  /** The checkout the cycle reads. */
+  root: string;
+  /** The dashboard's STATE_DIR; Coach files live under its `coach/`. */
+  stateDir: string;
+  /** The STATE_DIR that decides ownership; defaults to `stateDir`. */
+  ownerStateDir?: string;
+  /** The harness version this worker runs; defaults to the source tree's. */
+  harnessVersion?: string | null;
+  /** Test seam: the cycle function, defaulting to the real cycle. */
+  cycle?: typeof runCycle;
+  /** Test seam: how often control files are consumed. */
+  controlPollMs?: number;
+  /** Test seam: replaces stderr reporting. */
+  log?: (line: string) => void;
+}
+
+/**
+ * Runs one detached worker until Stop, Drain, or a signal ends it. Returns the
+ * process exit code; the caller owns the process.
+ */
+export async function runWorker(options: CoachWorkerOptions): Promise<number> {
+  const root = resolve(options.root);
+  const stateDir = resolve(options.stateDir);
+  const ownerStateDir = resolve(options.ownerStateDir ?? stateDir);
   const coachDir = coachDirectory(stateDir);
-  const harnessVersion = readHarnessVersion(resolve(import.meta.dir, ".."));
-  const lock = acquireLock(lockPath(coachDir), {
+  const harnessVersion =
+    options.harnessVersion === undefined
+      ? (process.env.DEVBOARD_HARNESS_VERSION ??
+        readHarnessVersion(resolve(import.meta.dir, "..")))
+      : options.harnessVersion;
+  const cycle = options.cycle ?? runCycle;
+  const log = options.log ?? ((line: string) => console.error(line));
+  const controlPollMs = Math.max(10, options.controlPollMs ?? CONTROL_POLL_MS);
+  const versionDirectory = versionedWorkerDirectory(coachDir, harnessVersion);
+  const versionControlDirectory = versionedControlDirectory(coachDir, harnessVersion);
+
+  // A worker of another version never holds this path, so a takeover can
+  // start beside it; only the same version's live worker refuses this start.
+  const lock = acquireLock(versionedLockPath(coachDir, harnessVersion), {
     repo: root,
     stateDir: ownerStateDir,
     harnessVersion,
     argv: [...process.argv],
   });
   if (!lock.acquired) {
-    console.error(
-      `coach worker: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner.pid})`}`,
-    );
-    process.exit(0);
+    log(`coach worker: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner.pid})`}`);
+    return 0;
   }
 
+  const prior = readWorkerState(versionDirectory) ?? readWorkerState(coachDir);
   const startedAt = new Date().toISOString();
   let settings: CoachSettings = readCoachSettings(coachDir);
   let stopping = false;
-  let lastRunAt: string | null = null;
-  let nextRunAt: string | null = null;
+  let draining = false;
+  let lastRunAt: string | null = prior?.lastRunAt ?? null;
+  let nextRunAt: string | null = prior?.nextRunAt ?? null;
   let lastError: string | null = null;
   let notice: string | null = null;
 
   const publish = (lifecycle: CoachWorkerState["lifecycle"], enabled: boolean): void => {
-    writeWorkerState(coachDir, {
+    writeWorkerState(versionDirectory, {
       version: 1,
       pid: process.pid,
       startedAt,
@@ -105,6 +140,7 @@ async function main(): Promise<void> {
       stateDir: ownerStateDir,
       lifecycle,
       enabled,
+      ...(draining ? { draining: true } : {}),
       harnessVersion,
       argv: [...process.argv],
       lastRunAt,
@@ -140,6 +176,13 @@ async function main(): Promise<void> {
       case "stop":
         requestStop();
         return;
+      case "drain":
+        // A newer version owns new work. The in-flight cycle, if any, keeps
+        // running; the loop starts nothing new and exits once it is done.
+        draining = true;
+        notice = "Draining: this worker finishes its in-flight cycle, then exits.";
+        publish("stopping", false);
+        return;
       case "settings": {
         // Read-modify-write against the file. The in-memory copy can predate a
         // dashboard save made since the last read, so writing it back would
@@ -161,25 +204,48 @@ async function main(): Promise<void> {
   };
 
   const consume = (): void => {
-    for (const command of takeCoachCommands(controlDirectory(coachDir))) apply(command);
+    // Settings and the legacy control directory are shared, so an operator
+    // command written by an older dashboard is honoured alongside this
+    // version's own control files.
+    if (existsSync(controlDirectory(coachDir))) {
+      for (const command of takeCoachCommands(controlDirectory(coachDir))) apply(command);
+    }
+    for (const command of takeCoachCommands(versionControlDirectory)) apply(command);
   };
 
   publish("running", true);
-  const controlTimer = setInterval(consume, CONTROL_POLL_MS);
+  if (nextRunAt === null) recomputeNext();
+  const controlTimer = setInterval(consume, controlPollMs);
 
   try {
-    while (!stopping) {
+    while (!stopping && !draining) {
       consume();
-      if (stopping) break;
+      if (stopping || draining) break;
       const now = Date.now();
       const next = nextRunAt === null ? now : Date.parse(nextRunAt);
       if (!Number.isFinite(next) || now >= next) {
-        lastRunAt = new Date().toISOString();
         settings = readCoachSettings(coachDir);
+        // One cycle at a time across every version: the lease is held only for
+        // the cycle, so a drained worker's in-flight unit is never re-run by
+        // its replacement.
+        const lease = acquireLock(cycleLockPath(coachDir), {
+          repo: root,
+          stateDir: ownerStateDir,
+          harnessVersion,
+          argv: [...process.argv],
+        });
+        if (!lease.acquired) {
+          notice = CYCLE_BUSY_NOTICE;
+          nextRunAt = new Date(Date.now() + controlPollMs).toISOString();
+          publish("running", true);
+          continue;
+        }
+        lastRunAt = new Date().toISOString();
         nextRunAt = new Date(Date.parse(lastRunAt) + cadenceMs()).toISOString();
+        notice = null;
         publish("running", true);
         try {
-          const result = await runCycle({
+          const result = await cycle({
             root,
             stateDir,
             now: new Date(),
@@ -188,18 +254,20 @@ async function main(): Promise<void> {
           });
           lastError = result.report.action === "failed" ? (result.report.reason ?? null) : null;
           notice = result.report.reason ?? null;
-          console.error(describeCycle(result));
+          log(describeCycle(result));
         } catch (error) {
           lastError = error instanceof Error ? error.message : String(error);
+        } finally {
+          lease.release();
         }
         consume();
-        if (stopping) break;
+        if (stopping || draining) break;
         settings = readCoachSettings(coachDir);
         recomputeNext();
         publish("running", true);
         continue;
       }
-      await Bun.sleep(Math.min(CONTROL_POLL_MS, Math.max(1, next - now)));
+      await Bun.sleep(Math.min(controlPollMs, Math.max(1, next - now)));
     }
   } finally {
     clearInterval(controlTimer);
@@ -209,7 +277,25 @@ async function main(): Promise<void> {
     publish("stopped", false);
     lock.release();
   }
-  process.exit(0);
+  return 0;
+}
+
+async function main(): Promise<void> {
+  const parsed = parseArguments(process.argv.slice(2));
+  const top = parsed?.root ?? gitTopLevel();
+  if (top === undefined) {
+    console.error("coach worker: the harness is not inside a git checkout");
+    process.exit(2);
+  }
+  const root = resolve(top);
+  if (!existsSync(join(root, ".devboard"))) {
+    console.error(`coach worker: missing prerequisite: ${join(root, ".devboard")} does not exist`);
+    process.exit(2);
+  }
+  const stateDir = resolve(parsed?.stateDir ?? join(root, ".devboard", ".tmp"));
+  const ownerStateDir = resolve(parsed?.ownerStateDir ?? stateDir);
+  const code = await runWorker({ root, stateDir, ownerStateDir });
+  process.exit(code);
 }
 
 if (import.meta.main) {
