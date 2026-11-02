@@ -1002,7 +1002,7 @@ kbd {
 
 .status-versions .mono {
   color: var(--foreground);
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
 .notification-region {
