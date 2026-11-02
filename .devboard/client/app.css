@@ -1653,20 +1653,6 @@ kbd {
   padding: 0;
 }
 
-.flow-goal-activity {
-  height: 180px;
-}
-
-.flow-activity-panel {
-  flex: 0 0 auto;
-  min-height: 100%;
-}
-
-.flow-activity-body {
-  display: flex;
-  padding: 4px;
-}
-
 /* The decision board is the page's lead editor: one title line, a status badge,
    and the save action on a 44px row, matching the Flow goal header. */
 .flow-decisions__header {
