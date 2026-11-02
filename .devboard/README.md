@@ -290,7 +290,8 @@ Every error and warning card also carries `File issue`: it files that notificati
 context as a UI issue through `/api/feedback` at once, then replaces itself with the issue URL.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
-in the Discover notice stack above the page and is not repeated as a notification card.
+on the Discover surface and is not repeated as a notification card: a run failure on its agent's
+card, every other failure in the notice stack above the page.
 
 The status bar's OS notifications control (`os-notifications`) is a separate channel, off by
 default. Its first click asks the browser for notification permission; after a grant it reads
@@ -927,7 +928,9 @@ One card per agent carries its run state (`data-testid="discover-agent-status"` 
 (`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
 while it runs, a Start control (`data-testid="discover-agent-start"`), and its own pending
 question. A card carries no activity log: the run tag shows the latest line for the agent that is
-running. An error the agent reported stays on its card (`data-testid="discover-agent-error"`).
+running. An error the agent reported stays on its card (`data-testid="discover-agent-error"`), so
+it raises no notification-region entry and no other Discover page shows it; the agent's sidebar
+entry carries the `failed` badge.
 `discoverQuestion`, `discoverStarted`, and `discoverStopped` carry `agent`, so no card shows
 another agent's question.
 
@@ -970,8 +973,9 @@ The sheet follows: Platform, Delivery, Stack, External boundaries, and Shared ke
 column on the left, and Commands, Testing, Quality gates, and Bounded contexts in the main column
 on the right.
 The manual-testing strip is the last region of the page, so a source checkout never pushes it above
-the project identity. An error, an interrupted-run notice, and a stop notice render above the page
-in one notice stack.
+the project identity. One notice stack renders above the page: an error that names no agent (a
+clone refusal, a read failure) and an interrupted-run notice. A run failure names its agent, so it
+stays on that agent's card and no other Discover page carries it.
 
 The Glossary row is a plain section link: it has no disclosure control and no nested submenu, so
 individual terms are never repeated as sidebar menu items. A term opens from its row on the

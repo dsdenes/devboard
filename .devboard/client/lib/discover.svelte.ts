@@ -80,6 +80,8 @@ export class DiscoverStore {
   /** Every card's prompt, from the connect replay and each later read. */
   promptStates = $state<Record<string, DiscoverAgentPrompt>>({});
   error = $state<string | null>(null);
+  /** The agent whose run failed; its own card carries that failure. */
+  errorAgent = $state<string | null>(null);
   warnings = $state<string[]>([]);
   interrupted = $state(false);
   answerDraft = $state("");
@@ -233,6 +235,17 @@ export class DiscoverStore {
 
   get displayError(): string | null {
     return this.error ?? this.state?.error ?? null;
+  }
+
+  /**
+   * The failure the shared notice stack may show. A run failure names its
+   * agent and belongs on that agent's own card, so the stack carries only a
+   * failure that names no agent.
+   */
+  get noticeError(): string | null {
+    return this.error !== null && this.errorAgent === null
+      ? this.error
+      : (this.state?.error ?? null);
   }
 
   get displayedWarnings(): string[] {
@@ -443,6 +456,7 @@ export class DiscoverStore {
       this.question = null;
       this.answerDraft = "";
       this.error = null;
+      this.errorAgent = null;
       return;
     }
     if (type === "discoverActivity" && typeof message.text === "string") {
@@ -488,6 +502,7 @@ export class DiscoverStore {
     }
     if (type === "discoverError" && typeof message.message === "string") {
       this.error = message.message;
+      this.errorAgent = typeof message.agent === "string" ? message.agent : null;
     }
   }
 }
