@@ -397,6 +397,15 @@ if (!packageOk) fail(`${PACKAGE_NAME}@${version} is not visible on npmjs`);
 console.log(`publish: ${tag} carries the fallback tarball and checksum`);
 console.log(`publish: ${PACKAGE_NAME}@${version} is published`);
 
+/** Reads the mirror's main and whether it already names or contains `head`. */
+function mirrorCarries(head: string): { sha: string; carries: boolean } {
+  const tip = git(["ls-remote", "github", "refs/heads/main"]);
+  const sha = tip.stdout.split(/\s+/)[0] ?? "";
+  if (tip.code !== 0 || sha.length === 0) return { sha, carries: false };
+  if (sha === head) return { sha, carries: true };
+  return { sha, carries: git(["merge-base", "--is-ancestor", head, sha]).code === 0 };
+}
+
 if (remotes.includes("github")) {
   // Another agent may merge and push while this run waits for its workflow.
   // The mirror carries the branch as it is now; the verified commit only has
@@ -430,17 +439,22 @@ if (remotes.includes("github")) {
     ],
   );
   if (mirrored.code !== 0) {
-    fail(`could not push the GitHub mirror: ${mirrored.stderr || mirrored.stdout}`);
+    // Another publisher can advance the mirror between this push's
+    // compare-and-swap and its update; the push is settled when the mirror
+    // already names or contains this checkout's branch.
+    const settled = mirrorCarries(mirrorHead);
+    if (!settled.carries) {
+      fail(`could not push the GitHub mirror: ${mirrored.stderr || mirrored.stdout}`);
+    }
+    console.log(
+      `publish: the GitHub mirror moved to ${settled.sha.slice(0, 7)} during the push ` +
+        "and already carries main",
+    );
   }
-  const mirrorTip = git(["ls-remote", "github", "refs/heads/main"]);
-  const mirrorSha = mirrorTip.stdout.split(/\s+/)[0] ?? "";
-  const mirrorNames =
-    mirrorSha === mirrorHead ||
-    (mirrorSha.length > 0 &&
-      git(["merge-base", "--is-ancestor", mirrorHead, mirrorSha]).code === 0);
-  if (mirrorTip.code !== 0 || !mirrorNames) {
+  const mirror = mirrorCarries(mirrorHead);
+  if (!mirror.carries) {
     fail(
-      `the GitHub mirror main (${mirrorSha.slice(0, 7) || "missing"}) ` +
+      `the GitHub mirror main (${mirror.sha.slice(0, 7) || "missing"}) ` +
         `does not name ${mirrorHead.slice(0, 7)}`,
     );
   }
