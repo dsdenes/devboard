@@ -1104,19 +1104,6 @@ export async function giteaMergePull(
   );
 }
 
-export async function giteaDeleteBranch(
-  target: GiteaTarget,
-  branch: string,
-  fetchImpl: FetchLike = fetch,
-): Promise<void> {
-  await giteaRequest(
-    target,
-    `${repoPath(target)}/branches/${encodeURIComponent(branch)}`,
-    { method: "DELETE" },
-    fetchImpl,
-  );
-}
-
 /**
  * `dispatchWorkflow` posts a Gitea `workflow_dispatch` event for one workflow.
  * The release workflow is dispatch-only; `bun run publish` calls this for the
