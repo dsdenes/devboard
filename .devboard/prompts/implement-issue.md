@@ -64,40 +64,37 @@ context, but you never edit, comment on, close, or reopen another issue.
   root; every log redirect names it, for example `> .devboard/.tmp/verify-interface.log 2>&1`.
   Never create or use a repo-root `.tmp`: no `mkdir -p .tmp` prefix, no
   `ls -d .tmp || mkdir -p .tmp` guard, and no `> .tmp/<name>.log 2>&1` redirect.
-- Sync the worktree exactly once per pass: the worktree sync is the task-start sync's one
-  `git fetch origin` (see *Fetch budget*) followed by one `git rebase origin/main` inside the
-  worktree, run before the first edit. The worktree was cut from that fetched `origin/main`, so
-  that rebase normally prints `Current branch issue-<number> is up to date.`, which is the
-  successful sync; the sync never fetches a second time. In this pre-edit sync a bare
-  `git rebase main` is never used, because `main` is a local ref that can lag the pushed
-  upstream, so the sync's target is always `origin/main`; the landing rebase in *Landing*, whose
-  target is the canonical checkout's local `main`, is that ban's one exception. Chain nothing
-  after the rebase: no `git log`, no `git diff`, no count, and no
-  second `git rebase origin/main`. Confirm the result with the one `git status --short --branch`
-  sync-state read in *Landing*, and never rebase again after a successful sync — a later rebase
-  belongs only to the landing integration or a rejected push below, never to re-verification or
-  to re-checking state.
-- A worktree holds no unstaged change when that rebase starts.
-  `error: cannot rebase: You have unstaged changes.` is answered by committing the worktree's own
-  work first — `git add -A`, then one commit whose subject is a Conventional Commit describing
-  the change — and then running the same `git rebase origin/main` once. Never `git stash`, never
-  leave the worktree stashed or mid-rebase, and never answer the refusal with a `wip` subject the
-  pre-push commit gate rejects.
-- A `CONFLICT (content)` is part of the sync step, never a reason to abandon it: for each file the
-  conflict line names, edit the conflicted hunks, `git add <file>`, and continue with
-  `git rebase --continue`, repeating until the rebase completes. Never `git rebase --abort` and
-  never `git rebase --skip` in a worktree: the task branch is unpublished, so every conflict is
-  resolved in place. The recurring case is a harness file both sides re-authored —
+- The worktree cut is the whole worktree sync: `git worktree add --track -b issue-<number>
+  .worktree/issue-<number> origin/main` places the task branch on the integration line the one
+  task-start `git fetch origin` (see *Fetch budget*) named, so no rebase runs before the first
+  edit and the worktree never fetches a second time. A rebase in this task belongs only to the
+  landing integration or a rejected push below, and each of those is entered from a
+  `git status --short --branch` marker (`[behind N]`, `[ahead N, behind M]`) or a rejected push,
+  never from the task start, never from re-verification, and never from re-checking state. Chain
+  nothing after one: no `git log`, no `git diff`, and no count. Confirm the result with the one
+  `git status --short --branch` sync-state read in *Landing*.
+- A branch being rebased holds no unstaged change when that rebase starts, and those rebases are
+  the landing integration and the rejected push below. `error: cannot rebase: You have unstaged
+  changes.` is answered by committing the worktree's own work first — `git add -A`, then one
+  commit whose subject is a Conventional Commit describing the change — and then running the same
+  `git rebase origin/main` once. Never `git stash`, never leave the worktree stashed or
+  mid-rebase, and never answer the refusal with a `wip` subject the pre-push commit gate rejects.
+- A `CONFLICT (content)` is part of the rebase that raised it, never a reason to abandon it: for
+  each file the conflict line names, edit the conflicted hunks, `git add <file>`, and continue
+  with `git rebase --continue`, repeating until the rebase completes. Never `git rebase --abort`
+  and never `git rebase --skip` in a worktree: the task branch is unpublished, so every conflict
+  is resolved in place. The recurring case is a harness file both sides re-authored —
   `.devboard/prompts/implement-issue.md` first, and a `.devboard/scripts/*` file whose change main
-  already carries. When main's copy already holds the branch's intended text, resolve that
-  duplicate in favor of main — `git checkout origin/main -- <file>` — `git add` the file, and
-  continue with `git rebase --continue`; never take `--theirs`, which in a rebase is the branch
-  commit being replayed, while `--ours` is main's side. A branch change main does not carry is a
-  real change: resolve it hunk by hunk instead of discarding it. Never commit a fresh copy of a
-  prompt-doc change that already landed on main under a new hash — a `docs(prompt)` commit whose
-  text main already carries is that duplicate, not a fix. After a resolved conflict, continue
-  until the rebase completes and read the same status line, never re-running the rebase to
-  re-check state.
+  already carries. When the target ref's copy already holds the branch's intended text, resolve
+  that duplicate in favor of it — `git checkout origin/main -- <file>` for a rebase onto
+  `origin/main`, `git checkout main -- <file>` for the landing rebase onto the canonical
+  checkout's `main` — `git add` the file, and continue with `git rebase --continue`; never take
+  `--theirs`, which in a rebase is the branch commit being replayed, while `--ours` is that
+  target ref's side. A branch change that ref does not carry is a real change: resolve it hunk
+  by hunk instead of discarding it. Never commit a fresh copy of a prompt-doc change that
+  already landed on main under a new hash — a `docs(prompt)` commit whose text main already
+  carries is that duplicate, not a fix. After a resolved conflict, continue until the rebase
+  completes and never re-run the rebase to re-check state.
 - Forge write access is a precondition of the run, not a discovery step to repeat: the harness
   resolves it once, before the first forge read or write, and the turn's context carries `forge`,
   `host`, `project`, `login`, `source`, `permission`, and `canWrite` — injected before the turn,
@@ -535,11 +532,11 @@ the reference still lands, but its issue shows no shipped version.
 
 Commit in the worktree on the run's own task branch. When its `git status --short --branch` line
 shows `[behind N]`, rebase the task branch onto `origin/main` inside the worktree and rerun the
-checks the rebase invalidates before landing; a rebase that reports the branch is up to date is
-the normal case.
+checks the rebase invalidates before landing; the unmarked line is the normal case, and no rebase
+runs there.
 
 Read the worktree's sync state with one `git status --short --branch` call, run in the worktree
-once the pre-edit rebase has finished. That line is the sole divergence check: it names the branch
+once the work is committed. That line is the sole divergence check: it names the branch
 and its upstream and appends `[ahead N]`, `[behind N]`, or `[ahead N, behind M]` only when one
 side holds commits the other lacks, so the unmarked `## issue-<number>...origin/main` line is the
 synced state. The branch was created with `--track origin/main`, so that line measures the
@@ -621,9 +618,8 @@ checkout's `main` — not `origin/main` — whenever the task branch lacks the c
 rerun the checks the rebase invalidates, then run the second merge. A canonical
 `## main...origin/main [ahead N]` line is a concurrent landing's unpublished commits, so the task
 branch must contain that tip for the second merge to fast-forward; `origin/main` cannot supply it
-and the fetch budget allows no second fetch. This landing rebase is the one exception to the
-pre-edit ban on `git rebase main`. Run the sequence once per landing attempt: no `&&` chain
-between its lines, no `tail` pipe, and no `PIPESTATUS` probe. Never create a pull request or
+and the fetch budget allows no second fetch. Run the sequence once per landing attempt: no `&&`
+chain between its lines, no `tail` pipe, and no `PIPESTATUS` probe. Never create a pull request or
 merge request.
 
 Before pushing, read the behind state against the tip the task-start fetch named with this one
