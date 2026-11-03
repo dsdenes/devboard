@@ -3261,11 +3261,19 @@ try {
       letterSpacing: number;
       lineHeight: number;
     } | null;
+    managedType: {
+      fontSize: number;
+      fontWeight: string;
+      letterSpacing: number;
+      lineHeight: number;
+    } | null;
   }>(`(() => {
     const table = document.querySelector('[data-testid="skills-table"]');
     const rows = [...document.querySelectorAll('[data-testid="skill-row"]')];
     const head = table?.querySelector("th") ?? null;
     const headStyle = head === null ? null : getComputedStyle(head);
+    const managed = document.querySelector('[data-testid="skill-managed"]');
+    const managedStyle = managed === null ? null : getComputedStyle(managed);
     return {
       tables: document.querySelectorAll('[data-testid="skills-table"] table, [data-testid="skills-table"]').length,
       columns: table?.rows[0]?.cells.length ?? -1,
@@ -3293,6 +3301,12 @@ try {
         letterSpacing: parseFloat(headStyle.letterSpacing),
         lineHeight: parseFloat(headStyle.lineHeight),
       },
+      managedType: managedStyle === null ? null : {
+        fontSize: parseFloat(managedStyle.fontSize),
+        fontWeight: managedStyle.fontWeight,
+        letterSpacing: parseFloat(managedStyle.letterSpacing),
+        lineHeight: parseFloat(managedStyle.lineHeight),
+      },
     };
   })()`);
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
@@ -3312,6 +3326,17 @@ try {
       Math.abs(devboardSkillsTable.headType.lineHeight - 14.3) < 0.05,
     "the Skills table head does not render the label type",
     devboardSkillsTable.headType,
+  );
+  check(
+    devboardSkillsTable.managedType !== null &&
+      Math.abs(devboardSkillsTable.managedType.fontSize - 10) < 0.05 &&
+      devboardSkillsTable.managedType.fontWeight === "700" &&
+      Math.abs(
+        devboardSkillsTable.managedType.letterSpacing / devboardSkillsTable.managedType.fontSize - 0.08,
+      ) < 0.005 &&
+      Math.abs(devboardSkillsTable.managedType.lineHeight - 12) < 0.05,
+    "the Managed marker does not render the overline type",
+    devboardSkillsTable.managedType,
   );
   check(
     JSON.stringify(devboardSkillsTable.names) === JSON.stringify(devboardInstalledSkills),

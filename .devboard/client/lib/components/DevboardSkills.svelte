@@ -265,7 +265,9 @@
     color: var(--muted-foreground);
     font-family: var(--font-sans);
     font-size: 10px;
-    letter-spacing: 0.04em;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
     margin-left: 8px;
     padding: 1px 6px;
     text-transform: uppercase;
