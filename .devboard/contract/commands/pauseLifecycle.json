@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"pauseLifecycle\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-pauseLifecycle.log"
+        "--log={{WORK}}/.work/agent-pauseLifecycle.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -2,6 +2,6 @@
   "type": "project",
   "frame": {
     "type": "project",
-    "path": "devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/run-getProject-request/repo"
+    "path": "contract/.work/run-getProject-request/repo"
   }
 }

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"confirmGlossaryTerm\",\"context\":\"missing\",\"id\":\"term\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-confirmGlossaryTerm.log"
+        "--log={{WORK}}/.work/agent-confirmGlossaryTerm.log"
       ],
       "delayMs": 100,
       "frames": [

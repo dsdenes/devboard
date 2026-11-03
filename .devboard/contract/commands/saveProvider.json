@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"saveProvider\",\"requestId\":1,\"id\":\"missing\",\"provider\":\"openrouter\",\"label\":\"contract\",\"key\":\"sk-contract\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-saveProvider.log"
+        "--log={{WORK}}/.work/agent-saveProvider.log"
       ],
       "delayMs": 100,
       "frames": [

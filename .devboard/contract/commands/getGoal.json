@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"getGoal\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getGoal.log"
+        "--log={{WORK}}/.work/agent-getGoal.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"discoverRemote\",\"url\":\"https://example.test/acme/fixture\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-discoverRemote.log"
+        "--log={{WORK}}/.work/agent-discoverRemote.log"
       ],
       "delayMs": 100,
       "frames": [

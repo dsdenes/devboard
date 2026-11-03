@@ -304,8 +304,15 @@ pub fn lexical_normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// The checkout that built this replay. A recorded error names the checkout it
+/// ran in, so that absolute root is normalized like the work root instead of
+/// pinning the corpus to one worktree.
+pub fn checkout_root() -> PathBuf {
+    lexical_normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+}
+
 /// Formats a path the way the corpus names it: everything up to the work root
-/// becomes `{{WORK}}`.
+/// becomes `{{WORK}}`, and the checkout above it becomes `{{CHECKOUT}}`.
 pub fn sanitize_text(text: &str, root: &Path) -> String {
     let root_text = root.to_string_lossy();
     let replaced = text.replace(&*root_text, "{{WORK}}");
@@ -314,6 +321,17 @@ pub fn sanitize_text(text: &str, root: &Path) -> String {
     let normalized = lexical_normalize(root);
     let replaced = if normalized != *root {
         replaced.replace(&*normalized.to_string_lossy(), "{{WORK}}")
+    } else {
+        replaced
+    };
+    // The checkout root is a prefix of the work root, so it is replaced only
+    // after the work root: a path under the corpus keeps its `{{WORK}}` name,
+    // and a path that names the checkout itself becomes `{{CHECKOUT}}`.
+    let checkout = checkout_root();
+    let replaced = replaced.replace(&*checkout.to_string_lossy(), "{{CHECKOUT}}");
+    let checkout_canonical = checkout.canonicalize().unwrap_or_else(|_| checkout.clone());
+    let replaced = if checkout_canonical != checkout {
+        replaced.replace(&*checkout_canonical.to_string_lossy(), "{{CHECKOUT}}")
     } else {
         replaced
     };

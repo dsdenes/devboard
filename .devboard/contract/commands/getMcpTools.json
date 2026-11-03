@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"getMcpTools\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getMcpTools.log"
+        "--log={{WORK}}/.work/agent-getMcpTools.log"
       ],
       "delayMs": 100,
       "frames": [

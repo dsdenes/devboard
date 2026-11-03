@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"stopFlowImplementation\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-stopFlowImplementation.log"
+        "--log={{WORK}}/.work/agent-stopFlowImplementation.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"dismissFlowBlocker\",\"id\":\"missing\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-dismissFlowBlocker.log"
+        "--log={{WORK}}/.work/agent-dismissFlowBlocker.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"resumeIssues\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-resumeIssues.log"
+        "--log={{WORK}}/.work/agent-resumeIssues.log"
       ],
       "delayMs": 100,
       "frames": [

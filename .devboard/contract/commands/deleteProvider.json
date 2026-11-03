@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"deleteProvider\",\"requestId\":1,\"id\":\"missing\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-deleteProvider.log"
+        "--log={{WORK}}/.work/agent-deleteProvider.log"
       ],
       "delayMs": 100,
       "frames": [

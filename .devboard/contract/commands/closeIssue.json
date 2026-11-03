@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"closeIssue\",\"number\":1}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-closeIssue.log"
+        "--log={{WORK}}/.work/agent-closeIssue.log"
       ],
       "delayMs": 100,
       "frames": [],

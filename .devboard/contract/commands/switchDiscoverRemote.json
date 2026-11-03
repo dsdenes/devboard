@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"switchDiscoverRemote\",\"url\":\"https://example.test/acme/fixture\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-switchDiscoverRemote.log"
+        "--log={{WORK}}/.work/agent-switchDiscoverRemote.log"
       ],
       "delayMs": 100,
       "frames": [

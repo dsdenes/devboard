@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"refreshProviders\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-refreshProviders.log"
+        "--log={{WORK}}/.work/agent-refreshProviders.log"
       ],
       "delayMs": 100,
       "frames": [

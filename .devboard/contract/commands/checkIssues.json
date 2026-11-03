@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"checkIssues\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-checkIssues.log"
+        "--log={{WORK}}/.work/agent-checkIssues.log"
       ],
       "delayMs": 100,
       "frames": [

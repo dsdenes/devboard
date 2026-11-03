@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"stopAgent\",\"id\":\"scout\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-stopAgent.log"
+        "--log={{WORK}}/.work/agent-stopAgent.log"
       ],
       "delayMs": 100,
       "frames": [

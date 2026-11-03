@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"pauseIssues\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-pauseIssues.log"
+        "--log={{WORK}}/.work/agent-pauseIssues.log"
       ],
       "delayMs": 100,
       "frames": [

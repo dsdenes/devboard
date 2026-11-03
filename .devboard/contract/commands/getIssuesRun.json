@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"getIssuesRun\",\"runId\":\"missing-run\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getIssuesRun.log"
+        "--log={{WORK}}/.work/agent-getIssuesRun.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"startLifecycle\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-startLifecycle.log"
+        "--log={{WORK}}/.work/agent-startLifecycle.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"disableAgentTimer\",\"id\":\"scout\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-disableAgentTimer.log"
+        "--log={{WORK}}/.work/agent-disableAgentTimer.log"
       ],
       "delayMs": 100,
       "frames": [

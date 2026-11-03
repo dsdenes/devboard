@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"setInstalledSkillEnabled\",\"name\":\"missing\",\"enabled\":true}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-setInstalledSkillEnabled.log"
+        "--log={{WORK}}/.work/agent-setInstalledSkillEnabled.log"
       ],
       "delayMs": 100,
       "frames": [

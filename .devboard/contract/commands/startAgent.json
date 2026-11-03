@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"startAgent\",\"id\":\"scout\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-startAgent.log"
+        "--log={{WORK}}/.work/agent-startAgent.log"
       ],
       "delayMs": 100,
       "frames": [
@@ -89,14 +89,14 @@
             },
             "releases": [],
             "notice": null,
-            "error": "{{WORK}}/repo is not the checkout root (/home/ds/devboard/.worktree/goal-rust-harness-rewrite is)",
+            "error": "{{WORK}}/repo is not the checkout root ({{CHECKOUT}} is)",
             "timer": null,
             "workers": []
           }
         },
         {
           "type": "error",
-          "message": "{{WORK}}/repo is not the checkout root (/home/ds/devboard/.worktree/goal-rust-harness-rewrite is)"
+          "message": "{{WORK}}/repo is not the checkout root ({{CHECKOUT}} is)"
         }
       ],
       "unauthorized": {

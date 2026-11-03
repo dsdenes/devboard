@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"answerGoalDraft\",\"path\":\".devboard/goal-proposals/missing.md\",\"id\":1,\"value\":\"yes\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-answerGoalDraft.log"
+        "--log={{WORK}}/.work/agent-answerGoalDraft.log"
       ],
       "delayMs": 100,
       "frames": [

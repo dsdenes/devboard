@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"cancelFlowGoal\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-cancelFlowGoal.log"
+        "--log={{WORK}}/.work/agent-cancelFlowGoal.log"
       ],
       "delayMs": 100,
       "frames": [

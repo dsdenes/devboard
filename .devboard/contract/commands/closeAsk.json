@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"closeAsk\",\"conversationId\":\"missing\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-closeAsk.log"
+        "--log={{WORK}}/.work/agent-closeAsk.log"
       ],
       "delayMs": 100,
       "frames": [],

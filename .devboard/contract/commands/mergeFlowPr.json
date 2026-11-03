@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"mergeFlowPr\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-mergeFlowPr.log"
+        "--log={{WORK}}/.work/agent-mergeFlowPr.log"
       ],
       "delayMs": 100,
       "frames": [

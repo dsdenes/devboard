@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"markFlowPrReady\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-markFlowPrReady.log"
+        "--log={{WORK}}/.work/agent-markFlowPrReady.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"openFlowWidget\",\"id\":\"missing\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-openFlowWidget.log"
+        "--log={{WORK}}/.work/agent-openFlowWidget.log"
       ],
       "delayMs": 100,
       "frames": [

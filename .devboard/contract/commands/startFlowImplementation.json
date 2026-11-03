@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"startFlowImplementation\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-startFlowImplementation.log"
+        "--log={{WORK}}/.work/agent-startFlowImplementation.log"
       ],
       "delayMs": 100,
       "frames": [

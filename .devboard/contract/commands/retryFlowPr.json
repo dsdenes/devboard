@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"retryFlowPr\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-retryFlowPr.log"
+        "--log={{WORK}}/.work/agent-retryFlowPr.log"
       ],
       "delayMs": 100,
       "frames": [

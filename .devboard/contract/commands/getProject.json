@@ -6,13 +6,13 @@
       "name": "request",
       "send": "{\"type\":\"getProject\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getProject.log"
+        "--log={{WORK}}/.work/agent-getProject.log"
       ],
       "delayMs": 100,
       "frames": [
         {
           "type": "project",
-          "path": "devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/run-getProject-request/repo"
+          "path": "contract/.work/run-getProject-request/repo"
         }
       ],
       "unauthorized": {

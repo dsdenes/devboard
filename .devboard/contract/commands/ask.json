@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"ask\",\"conversationId\":\"missing\",\"question\":\"contract?\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-ask.log"
+        "--log={{WORK}}/.work/agent-ask.log"
       ],
       "delayMs": 100,
       "frames": [

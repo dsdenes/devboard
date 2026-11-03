@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"getAgentPrompt\",\"id\":\"scout\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getAgentPrompt.log"
+        "--log={{WORK}}/.work/agent-getAgentPrompt.log"
       ],
       "delayMs": 100,
       "frames": [

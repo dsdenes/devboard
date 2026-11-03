@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"listRecords\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-listRecords.log"
+        "--log={{WORK}}/.work/agent-listRecords.log"
       ],
       "delayMs": 100,
       "frames": [

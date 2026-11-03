@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"restartServer\",\"whenIdle\":true}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-restartServer.log"
+        "--log={{WORK}}/.work/agent-restartServer.log"
       ],
       "delayMs": 100,
       "frames": [

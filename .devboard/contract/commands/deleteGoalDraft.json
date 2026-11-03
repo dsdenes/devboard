@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"deleteGoalDraft\",\"path\":\".devboard/goal-proposals/missing.md\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-deleteGoalDraft.log"
+        "--log={{WORK}}/.work/agent-deleteGoalDraft.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"clearDiscoverRemote\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-clearDiscoverRemote.log"
+        "--log={{WORK}}/.work/agent-clearDiscoverRemote.log"
       ],
       "delayMs": 100,
       "frames": [

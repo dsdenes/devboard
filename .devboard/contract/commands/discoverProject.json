@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"discoverProject\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-discoverProject.log"
+        "--log={{WORK}}/.work/agent-discoverProject.log"
       ],
       "delayMs": 100,
       "frames": [

@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"sendFlowSteering\",\"text\":\"contract\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-sendFlowSteering.log"
+        "--log={{WORK}}/.work/agent-sendFlowSteering.log"
       ],
       "delayMs": 100,
       "frames": [

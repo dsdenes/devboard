@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"answerDiscover\",\"id\":1,\"value\":\"yes\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-answerDiscover.log"
+        "--log={{WORK}}/.work/agent-answerDiscover.log"
       ],
       "delayMs": 100,
       "frames": [

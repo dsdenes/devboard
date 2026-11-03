@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"startRun\",\"file\":\"missing-run.json\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-startRun.log"
+        "--log={{WORK}}/.work/agent-startRun.log"
       ],
       "delayMs": 100,
       "frames": [

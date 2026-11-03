@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"prepareSkills\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-prepareSkills.log"
+        "--log={{WORK}}/.work/agent-prepareSkills.log"
       ],
       "delayMs": 100,
       "frames": [

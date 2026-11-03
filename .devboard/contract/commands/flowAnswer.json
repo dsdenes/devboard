@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"flowAnswer\",\"id\":1,\"value\":\"yes\",\"target\":\"missing\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-flowAnswer.log"
+        "--log={{WORK}}/.work/agent-flowAnswer.log"
       ],
       "delayMs": 100,
       "frames": [

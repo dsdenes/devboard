@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"refuseFlowWidget\",\"id\":\"missing\",\"reason\":\"contract\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-refuseFlowWidget.log"
+        "--log={{WORK}}/.work/agent-refuseFlowWidget.log"
       ],
       "delayMs": 100,
       "frames": [

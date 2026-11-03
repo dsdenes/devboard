@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"getVersion\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getVersion.log"
+        "--log={{WORK}}/.work/agent-getVersion.log"
       ],
       "delayMs": 100,
       "frames": [

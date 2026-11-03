@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"stopDiscover\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-stopDiscover.log"
+        "--log={{WORK}}/.work/agent-stopDiscover.log"
       ],
       "delayMs": 100,
       "frames": [

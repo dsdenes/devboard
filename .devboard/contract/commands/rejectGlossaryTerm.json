@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"rejectGlossaryTerm\",\"context\":\"missing\",\"id\":\"term\",\"reason\":\"contract\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-rejectGlossaryTerm.log"
+        "--log={{WORK}}/.work/agent-rejectGlossaryTerm.log"
       ],
       "delayMs": 100,
       "frames": [

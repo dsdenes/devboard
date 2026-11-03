@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"sendFlowConclusion\",\"text\":\"contract\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-sendFlowConclusion.log"
+        "--log={{WORK}}/.work/agent-sendFlowConclusion.log"
       ],
       "delayMs": 100,
       "frames": [

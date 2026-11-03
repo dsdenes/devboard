@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"resetImplementation\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-resetImplementation.log"
+        "--log={{WORK}}/.work/agent-resetImplementation.log"
       ],
       "delayMs": 100,
       "frames": [
@@ -150,7 +150,7 @@
         },
         {
           "type": "error",
-          "message": "Reset refused: REPO_DIR is not the repository top level. /home/ds/devboard/.worktree/goal-rust-harness-rewrite"
+          "message": "Reset refused: REPO_DIR is not the repository top level. {{CHECKOUT}}"
         },
         {
           "type": "discoverState",

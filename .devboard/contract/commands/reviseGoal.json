@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"reviseGoal\",\"request\":\"contract\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-reviseGoal.log"
+        "--log={{WORK}}/.work/agent-reviseGoal.log"
       ],
       "delayMs": 100,
       "frames": [

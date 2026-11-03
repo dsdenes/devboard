@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"setProviderEnabled\",\"requestId\":1,\"id\":\"missing\",\"enabled\":false}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-setProviderEnabled.log"
+        "--log={{WORK}}/.work/agent-setProviderEnabled.log"
       ],
       "delayMs": 100,
       "frames": [

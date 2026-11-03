@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"getProviders\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getProviders.log"
+        "--log={{WORK}}/.work/agent-getProviders.log"
       ],
       "delayMs": 100,
       "frames": [

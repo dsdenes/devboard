@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"refreshAgent\",\"id\":\"scout\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-refreshAgent.log"
+        "--log={{WORK}}/.work/agent-refreshAgent.log"
       ],
       "delayMs": 100,
       "frames": [

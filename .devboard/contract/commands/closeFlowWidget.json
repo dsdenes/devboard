@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"closeFlowWidget\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-closeFlowWidget.log"
+        "--log={{WORK}}/.work/agent-closeFlowWidget.log"
       ],
       "delayMs": 100,
       "frames": [

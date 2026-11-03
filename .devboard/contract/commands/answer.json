@@ -6,7 +6,7 @@
       "name": "request",
       "send": "{\"type\":\"answer\",\"id\":1,\"value\":\"yes\",\"lane\":\"missing\"}",
       "agentArgs": [
-        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-answer.log"
+        "--log={{WORK}}/.work/agent-answer.log"
       ],
       "delayMs": 100,
       "frames": [
