@@ -41,6 +41,10 @@ permissions:
 on:
   workflow_dispatch:
 
+defaults:
+  run:
+    working-directory: .devboard
+
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
@@ -81,7 +85,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-plan-dist-manifest
-          path: plan-dist-manifest.json
+          path: .devboard/plan-dist-manifest.json
 
   # Build and packages all the platform-specific things
   build-local-artifacts:
@@ -129,7 +133,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: artifacts-*
-          path: target/distrib/
+          path: .devboard/target/distrib/
           merge-multiple: true
       - name: Install dependencies
         run: |
@@ -156,9 +160,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-build-local-${{ join(matrix.targets, '_') }}
-          path: |
-            ${{ steps.cargo-dist.outputs.paths }}
-            ${{ env.BUILD_MANIFEST_NAME }}
+          path: .devboard/target/distrib/**
 
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
@@ -184,7 +186,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: artifacts-*
-          path: target/distrib/
+          path: .devboard/target/distrib/
           merge-multiple: true
       - id: cargo-dist
         shell: bash
@@ -202,9 +204,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-build-global
-          path: |
-            ${{ steps.cargo-dist.outputs.paths }}
-            ${{ env.BUILD_MANIFEST_NAME }}
+          path: .devboard/target/distrib/**
   # Determines if we should publish/announce
   host:
     needs:
@@ -233,7 +233,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: artifacts-*
-          path: target/distrib/
+          path: .devboard/target/distrib/
           merge-multiple: true
       - id: host
         shell: bash
@@ -247,13 +247,13 @@ jobs:
         with:
           # Overwrite the previous copy
           name: artifacts-dist-manifest
-          path: dist-manifest.json
+          path: .devboard/dist-manifest.json
       # Create a GitHub Release while uploading all files to it
       - name: "Download GitHub Artifacts"
         uses: actions/download-artifact@v4
         with:
           pattern: artifacts-*
-          path: artifacts
+          path: .devboard/artifacts
           merge-multiple: true
       - name: Cleanup
         run: |
