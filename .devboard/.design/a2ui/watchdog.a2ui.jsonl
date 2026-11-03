@@ -10,10 +10,10 @@
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"action","component":"Text","text":"filed","variant":"caption"},{"id":"reason","component":"Text","text":"filed 2 issue(s)","variant":"body"}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"facts","component":"Row","children":["fact_started","fact_findings","fact_pending"]},{"id":"fact_started","component":"Text","text":"STARTED Oct 26, 15:00:00","variant":"caption"}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"fact_findings","component":"Text","text":"FINDINGS 2","variant":"caption"},{"id":"fact_pending","component":"Text","text":"PENDING FILINGS 1","variant":"caption"}]}}
-{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"body","component":"Row","children":["issues","history"]},{"id":"issues","component":"Card","children":["issues_header","issues_table"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"body","component":"Row","children":["issues","history"]},{"id":"issues","component":"Card","children":["issues_header","issues_rows"]}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_header","component":"Row","children":["issues_title","issues_count"]},{"id":"issues_title","component":"Text","text":"Filed issues","variant":"h2"}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_count","component":"Text","text":"12 filed · 0 pending filing","variant":"caption"}]}}
-{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_table","component":"Table","children":["issues_head","issue_1","issues_empty"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_rows","component":"List","children":["issues_head","issue_1"]}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_head","component":"Row","children":["h_issue","h_category","h_filed","h_state","h_version"]}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"h_issue","component":"Text","text":"ISSUE","variant":"caption"},{"id":"h_category","component":"Text","text":"CATEGORY","variant":"caption"}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"h_filed","component":"Text","text":"FILED","variant":"caption"},{"id":"h_state","component":"Text","text":"STATE","variant":"caption"},{"id":"h_version","component":"Text","text":"VERSION","variant":"caption"}]}}
@@ -21,11 +21,9 @@
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issue_1_title","component":"Button","text":"[watchdog] server-error: Synthetic error A"}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issue_1_category","component":"Text","text":"server-error","variant":"caption"},{"id":"issue_1_filed","component":"Text","text":"Oct 26, 12:00:00","variant":"caption"}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issue_1_state","component":"Text","text":"pending","variant":"caption"},{"id":"issue_1_version","component":"Text","text":"—","variant":"caption"}]}}
-{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_empty","component":"Column","children":["issues_empty_title","issues_empty_copy"]},{"id":"issues_empty_title","component":"Text","text":"No issues filed","variant":"h2"}]}}
-{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_empty_copy","component":"Text","text":"Findings worth an issue appear here after a cycle.","variant":"caption"}]}}
-{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history","component":"Card","children":["history_header","history_table"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history","component":"Card","children":["history_header","history_rows"]}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_header","component":"Row","children":["history_title"]},{"id":"history_title","component":"Text","text":"Cycle history","variant":"h2"}]}}
-{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_table","component":"Table","children":["history_head","cycle_1","cycle_2","history_empty"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_rows","component":"List","children":["history_head","cycle_1","cycle_2"]}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_head","component":"Row","children":["h_started","h_action","h_issues"]}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"h_started","component":"Text","text":"STARTED","variant":"caption"},{"id":"h_action","component":"Text","text":"ACTION","variant":"caption"}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"h_issues","component":"Text","text":"ISSUES","variant":"caption"}]}}
@@ -34,8 +32,6 @@
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"c1_issues","component":"Text","text":"#901 #902","variant":"caption"}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"cycle_2","component":"Row","children":["c2_at","c2_action"]}]}}
 {"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"c2_at","component":"Text","text":"Oct 26, 14:50:00","variant":"caption"},{"id":"c2_action","component":"Text","text":"duplicate","variant":"caption"}]}}
-{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_empty","component":"Column","children":["history_empty_title","history_empty_copy"]},{"id":"history_empty_title","component":"Text","text":"No cycles yet","variant":"h2"}]}}
-{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_empty_copy","component":"Text","text":"The watchdog records one cycle every ten minutes.","variant":"caption"}]}}
 {"version":"v0.9.1","updateDataModel":{"surfaceId":"watchdog","path":"/cycle","value":{"at":"2026-10-26T15:00:00.000Z","action":"filed","reason":"filed 2 issue(s)","findings":2,"pending":1}}}
 {"version":"v0.9.1","updateDataModel":{"surfaceId":"watchdog","path":"/issues","value":[{"url":"https://github.com/example/host/issues/901","category":"server-error","line":"Synthetic error A","state":"pending","version":null}]}}
 {"version":"v0.9.1","updateDataModel":{"surfaceId":"watchdog","path":"/cycles","value":[{"at":"2026-10-26T15:00:00.000Z","action":"filed","issues":["https://github.com/example/host/issues/901","https://github.com/example/host/issues/902"]},{"at":"2026-10-26T14:50:00.000Z","action":"duplicate","issues":[]}]}}
