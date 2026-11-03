@@ -34,6 +34,8 @@ import {
 } from "../issues/scout/paths";
 import { ghCommand } from "../issues/scout/preflight";
 import { readScanFile, readSettings, type ScoutState } from "../issues/scout/state";
+import { buildRequest, createScanDirectory } from "../issues/scout/scan";
+import { excludedRoots, pickEntryPoint, scoutPool } from "../lib/entry-point";
 import { RESOLUTION_RETRY_MS, ScoutWorker } from "../issues/scout/worker";
 import type { AcpPeer, IssuesPeerOptions } from "../issues/worker";
 import {
@@ -2076,5 +2078,43 @@ describe("scan prompt", () => {
     expect(prompt).toContain("`labels`: exactly `[\"scout\"]`");
     expect(prompt).toContain("`issue_create`");
     expect(prompt).toContain("never rewrite an answer");
+  });
+});
+
+describe("entry-point pool exclusions", () => {
+  test("a git work tree admits no ignored path and publishes its exclusions", async () => {
+    const root = await makeRepository({
+      files: {
+        ".gitignore": ".env\nout/\n",
+        ".env": "TOKEN=secret\n",
+        "out/generated.ts": "export const generated = 1;\n",
+        "src/kept.ts": "export const kept = 1;\n",
+      },
+      origin: "acme/fixture",
+    });
+    const pool = scoutPool(root);
+    expect(pool).toContain("src/kept.ts");
+    expect(pool).not.toContain(".env");
+    expect(pool.some((path) => path.startsWith("out/"))).toBe(false);
+    for (let index = 0; index < 40; index += 1) {
+      const pick = pickEntryPoint({ repoDir: root, surface: "scout", seed: `ignored-${index}` });
+      expect(pick.path).not.toBe(".env");
+    }
+    expect(excludedRoots(root)).toContain("out");
+
+    const scan = createScanDirectory(root, new Date("2026-10-27T10:00:00.000Z"));
+    const request = buildRequest({
+      scan,
+      repository: "acme/fixture",
+      repoDir: root,
+      requested: 1,
+      draftGoalHeadings: [],
+      maxPerHour: null,
+      maxPending: null,
+    });
+    expect(request.excludedRoots).toContain("out");
+    expect(request.excludedRoots).toContain("node_modules");
+    expect(request.excludedRoots).not.toContain(".env");
+    expect(existsSync(join(root, request.entryPoint.path))).toBe(true);
   });
 });

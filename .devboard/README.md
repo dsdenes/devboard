@@ -2413,19 +2413,25 @@ and returns the chosen repository-relative `path`, a 1-based `line` inside that 
 file, and refuses an unknown surface, an empty eligible set, or a path that resolves outside the
 repository.
 
-The `scout` pool is every regular text file under the repository root outside `.git`,
-`node_modules`, `dist`, `.worktree`, `.tmp`, and `.devboard/.tmp`. The `design` pool is the
-configured Design System source set that `DESIGN_SOURCE_DIR` names, read through the same audit
-input the Design System cycle uses. The `dead-code` pool is the repository's source-code files:
-the picker discovers the extensions the host actually uses from files whose content is shaped
-like code or a style rule, so a Ruby or Go host is not limited to this project's TypeScript
-layout. The `single-responsibility` pool is that same source set narrowed to components: a
-`*.test.*` or `*.spec.*` file is excluded, and so is any file under a `fixtures/`, `tests/`, or
-`stubs/` directory, because a test, a fixture, and a stub describe another unit's contract. No
-pool follows a symbolic link, and every entry is proven inside the real repository root. A
-directory the walk cannot read is refused, never skipped: the picker throws one
-`EntryPointError` naming every such directory by its repository-relative path and the reason, so
-a pool that omits a subtree is never reported as a repository that lacks those files.
+The `scout` pool is every regular text file the repository actually keeps: in a git work tree
+the tracked, untracked, and non-ignored files git reports, and in a root git does not own the
+walk through that root's own `.gitignore` files. A path the repository's ignore rules exclude —
+a secrets file such as `.env`, a generated tree, a scratch directory — never enters a pool, so
+a seeded crawl cannot quote it into a filed issue. Either way the fixed trees `.git`,
+`node_modules`, `dist`, `.worktree`, `.tmp`, and `.devboard/.tmp` are skipped. The `design` pool
+is the configured Design System source set that `DESIGN_SOURCE_DIR` names, read through the same
+audit input the Design System cycle uses. The `dead-code` pool is the repository's source-code
+files: the picker discovers the extensions the host actually uses from files whose content is
+shaped like code or a style rule, so a Ruby or Go host is not limited to this project's
+TypeScript layout. The `single-responsibility` pool is that same source set narrowed to
+components: a `*.test.*` or `*.spec.*` file is excluded, and so is any file under a
+`fixtures/`, `tests/`, or `stubs/` directory, because a test, a fixture, and a stub describe
+another unit's contract. No pool follows a symbolic link, and every entry is proven inside the
+real repository root. A directory the walk cannot read is refused, never skipped: the picker
+throws one `EntryPointError` naming every such directory by its repository-relative path and the
+reason, so a pool that omits a subtree is never reported as a repository that lacks those files.
+The scout pool's exclusions are also what its scan request publishes as `excludedRoots`, so the
+prompt and the pool cannot disagree.
 
 One surface and one seed over an unchanged eligible set always return the same path and line. An
 omitted seed produces a fresh pseudo-random seed and returns it; replaying that seed with

@@ -15,10 +15,11 @@ issue tool in this same turn.
   `excludedRoots`, `draftGoalHeadings`, `significanceThreshold`, `repositoryPath`, `maxPerHour`,
   and `maxPending`.
 - `<repositoryPath>` is the repository to survey. Never survey or write outside it, and never
-  read inside an `excludedRoots` tree: generated output, vendored packages, temporary state, and
-  worktrees are not the repository under review. Every `path` you cite is relative to that exact
-  root: a file under a subdirectory keeps that leading directory in the path, never a shorter
-  form. Before filing, confirm every cited path with `test -f <path>` from `<repositoryPath>`.
+  read inside an `excludedRoots` tree: generated output, vendored packages, temporary state,
+  worktrees, and every tree the repository's own ignore rules exclude are not the repository
+  under review. Every `path` you cite is relative to that exact root: a file under a
+  subdirectory keeps that leading directory in the path, never a shorter form. Before filing,
+  confirm every cited path with `test -f <path>` from `<repositoryPath>`.
 - `request.json` also carries `surface` (`scout`), `seed`, and `entryPoint` with a
   repository-relative `path` and a 1-based `line`. That seeded entry point is this scan's starting
   point; the scan may not choose another.

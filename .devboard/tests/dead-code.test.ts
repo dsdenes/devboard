@@ -7,6 +7,7 @@ import {
   EntryPointError,
   deadCodePool,
   eligibleFiles,
+  excludedRoots,
   pickEntryPoint,
   scoutPool,
   walkRegularFiles,
@@ -143,6 +144,29 @@ describe("entry point picker", () => {
     write(join(root, ".git", "config"), "[core]\n");
     write(join(root, "binary.bin"), "a\u0000b");
     expect(scoutPool(root)).toEqual(["kept.ts"]);
+  });
+
+  test("a root whose own ignore rules exclude a secret and a tree admits neither", async () => {
+    const root = await temporaryRoot("ignored");
+    write(join(root, ".gitignore"), ".env\nout/\n");
+    write(join(root, ".env"), "TOKEN=secret\n");
+    write(join(root, "out", "generated.ts"), "export const generated = 1;\n");
+    write(join(root, "out", "nested", "deep.ts"), "export const deep = 1;\n");
+    write(join(root, "kept.ts"), "export const kept = 1;\n");
+    expect(scoutPool(root)).toEqual([".gitignore", "kept.ts"]);
+    for (let index = 0; index < 40; index += 1) {
+      const pick = pickEntryPoint({ repoDir: root, surface: "scout", seed: `ignored-${index}` });
+      expect(pick.path).not.toBe(".env");
+      expect(pick.path.startsWith("out/")).toBe(false);
+    }
+    expect(excludedRoots(root)).toContain("out");
+  });
+
+  test("a root without ignore rules still admits every regular text file", async () => {
+    const root = await temporaryRoot("plain");
+    write(join(root, "one.ts"), "export const one = 1;\n");
+    write(join(root, "notes.md"), "# Notes\n");
+    expect(scoutPool(root)).toEqual(["notes.md", "one.ts"]);
   });
 
   test("the walk names every directory it cannot read instead of shrinking the pool", async () => {
