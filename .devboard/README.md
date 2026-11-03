@@ -3743,9 +3743,13 @@ spelling — is refused with HTTP 400 before the Gitea request. Both endpoints a
 body: `POST /feedback` accepts `action`, `report`, `turns`, `route`, `url`, `selector`,
 `dom_excerpt`, `visible_text`, `viewport`, and `captured_at`, `POST /goal-proposals` accepts the
 same set without `action`, and any other top-level key is refused with HTTP 400 naming the first
-unknown key before any Gitea request or draft write. Harness-owned reporting uses only the Gitea
-API: `DEVBOARD_GITEA_URL` names the instance, `GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`)
-authenticates it, and `DEVBOARD_RELEASE_REPO` selects the repository (default `dsdenes/devboard`),
+unknown key before any Gitea request or draft write. A present `captured_at` must be an RFC 3339
+date-time with upper-case `T` and `Z` separators, such as `2026-11-03T10:32:14.584Z`, and is
+refused with HTTP 400 naming `captured_at` otherwise; an absent value stays optional, and an
+accepted value is stored unchanged, so the filed issue or draft carries its upper-case `T` and `Z`.
+Harness-owned reporting uses only the Gitea API: `DEVBOARD_GITEA_URL` names the instance,
+`GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`) authenticates it, and `DEVBOARD_RELEASE_REPO` selects
+the repository (default `dsdenes/devboard`),
 whatever host project the interface is serving. Nothing is created in the host's own tracker, and
 no `github.com` repository is used for filing. Starting the dashboard from the canonical
 `.devboard` checkout resolves the HTTP origin itself when the `origin` remote is a Gitea SSH address

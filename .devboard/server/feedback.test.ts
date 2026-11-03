@@ -411,6 +411,56 @@ describe("feedback endpoint", () => {
     }
   });
 
+  test("files an RFC 3339 captured_at unchanged and accepts its absence", async () => {
+    const { server, url, calls } = await startServer();
+    const withoutCapture = report();
+    delete withoutCapture.captured_at;
+
+    try {
+      const response = await submit(
+        url,
+        report({ captured_at: "2026-11-03T10:32:14.584Z" }),
+      );
+
+      expect(response.status).toBe(201);
+      expect(calls[0]?.body).toContain("- Captured at: `2026-11-03T10:32:14.584Z`");
+
+      const absent = await submit(url, withoutCapture);
+      expect(absent.status).toBe(201);
+      expect(calls[1]?.body).not.toContain("- Captured at:");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a captured_at that is not an RFC 3339 date-time", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      for (const capturedAt of [
+        "yesterday",
+        "2026-11-03 10:32:14",
+        "2026-11-03t10:32:14z",
+        "",
+      ]) {
+        const response = await submit(url, report({ captured_at: capturedAt }));
+
+        expect(response.status).toBe(400);
+        expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+        expect(await response.json()).toEqual(
+          problemBody(
+            "Bad Request",
+            400,
+            "captured_at must be an RFC 3339 date-time.",
+          ),
+        );
+      }
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("refuses a cross-origin browser request", async () => {
     const { server, url, calls } = await startServer();
 
