@@ -5,7 +5,6 @@ import {
   fetchGoalIssue,
   runImplementGoalIssue,
 } from "../extensions/implement-goal-issue.ts";
-import { forgeAuthCommand } from "../extensions/implement-next-epic.ts";
 import type { Exec } from "../lib/forge-auth.ts";
 
 interface Reply {
@@ -315,9 +314,12 @@ describe("runImplementGoalIssue", () => {
     expect(objective).toBe(result.objective);
     expect(prompt).toContain("/repo/.worktree/goal-42-add-export-command");
     expect(prompt).toContain("devboard/goal-42-add-export-command");
-    expect(prompt).toContain(".devboard/scripts/forge-auth.ts exec");
-    expect(prompt).toContain("--required write");
-    expect(prompt).toContain("gh issue close 42");
+    expect(prompt).toContain("Devboard MCP `issue_close` tool");
+    expect(prompt).toContain('{"number": 42, "reason": "completed"}');
+    expect(prompt).not.toContain("gh issue close");
+    expect(prompt).not.toContain("glab issue close");
+    expect(prompt).not.toContain("curl");
+    expect(prompt).not.toContain("PATCH");
     expect(prompt).toContain("Never force-push");
     expect(prompt).toContain("push main to origin");
     expect(prompt).toContain("fetch the latest main");
@@ -326,7 +328,7 @@ describe("runImplementGoalIssue", () => {
     expect(harness.notifications.at(-1)?.type).toBe("info");
   });
 
-  test("fetches a Gitea goal and gives the API close command", async () => {
+  test("fetches a Gitea goal and names the issue_close tool", async () => {
     process.env.GITEA_TOKEN = "test-token";
     process.env.DEVBOARD_GITEA_URL = "http://localhost:3001";
     const harness = makeHarness(giteaTable());
@@ -343,12 +345,13 @@ describe("runImplementGoalIssue", () => {
     expect(result.ok).toBe(true);
     expect(harness.sent).toHaveLength(1);
     const prompt = harness.sent[0] ?? "";
-    expect(prompt).toContain("curl -sS -X PATCH");
-    expect(prompt).toContain('"$DEVBOARD_GITEA_URL/api/v1/repos/owner/repo/issues/42"');
-    expect(prompt).toContain("Authorization: token $GITEA_TOKEN");
-    expect(prompt).toContain(".devboard/scripts/forge-auth.ts check");
-    expect(prompt).not.toContain("forge-auth.ts exec");
-    expect(prompt).not.toContain("gh issue close 42");
+    expect(prompt).toContain("Devboard MCP `issue_close` tool");
+    expect(prompt).toContain('{"number": 42, "reason": "completed"}');
+    expect(prompt).toContain("records the closing run");
+    expect(prompt).not.toContain("curl");
+    expect(prompt).not.toContain("PATCH");
+    expect(prompt).not.toContain("gh issue close");
+    expect(prompt).not.toContain("glab issue close");
     expect(harness.calls.some((call) => call.startsWith("gh issue view"))).toBe(false);
     expect(gitea.calls).toContain("/api/v1/repos/owner/repo/issues/42");
     expect(gitea.calls).toContain("/api/v1/repos/owner/repo");
@@ -392,21 +395,13 @@ describe("prompt and title", () => {
       body: BODY,
       labels: ["goal"],
     };
-    const prompt = buildGoalIssuePrompt(
-      issue,
-      "/repo",
-      "/repo/.worktree/g",
-      "devboard/g",
-      "github",
-      "owner/repo",
-      "auth",
-    );
+    const prompt = buildGoalIssuePrompt(issue, "/repo", "/repo/.worktree/g", "devboard/g");
     const start = prompt.indexOf("<<<OBJECTIVE\n") + "<<<OBJECTIVE\n".length;
     const end = prompt.indexOf("\nOBJECTIVE>>>");
     expect(prompt.slice(start, end)).toBe(BODY);
   });
 
-  test("a Gitea close checks the identity, then calls the API", () => {
+  test("the close names issue_close with the issue number and reason completed", () => {
     const prompt = buildGoalIssuePrompt(
       {
         number: 7,
@@ -418,21 +413,15 @@ describe("prompt and title", () => {
       "/repo",
       "/repo/.worktree/g",
       "devboard/g",
-      "gitea",
-      "owner/repo",
-      forgeAuthCommand("/repo", {
-        host: "localhost:3001",
-        project: "owner/repo",
-        forge: "gitea",
-      }),
     );
-    const close = prompt.match(/^ {2}`(.+)`$/m)?.[1] ?? "";
 
-    expect(close).toContain(".devboard/scripts/forge-auth.ts check");
-    expect(close).not.toContain("forge-auth.ts exec");
-    expect(close).toContain("--forge gitea --required write");
-    expect(close).toContain("&& curl -sS -X PATCH");
-    expect(close).toContain('"$DEVBOARD_GITEA_URL/api/v1/repos/owner/repo/issues/7"');
+    expect(prompt).toContain('{"number": 7, "reason": "completed"}');
+    expect(prompt).toContain("records the closing run");
+    expect(prompt).not.toContain("forge-auth.ts");
+    expect(prompt).not.toContain("gh issue close");
+    expect(prompt).not.toContain("glab issue close");
+    expect(prompt).not.toContain("curl");
+    expect(prompt).not.toContain("PATCH");
   });
 
   test("bounds the title to 200 characters", () => {

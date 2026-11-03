@@ -3076,12 +3076,13 @@ A proven duplicate, invalid, or already-fixed issue is closed with evidence and 
 unrelated work. A successful agent removes only the worktree and branch it created; a failed or
 blocked agent leaves its worktree in place and reports its path.
 
-The `goal` label keeps its goal-mode implementation contract: every goal-labeled issue runs
-`/implement-goal-issue <number>` concurrently with the rest. The command follows the origin's
-forge: GitHub reads and closes the issue through `gh` under the forge-auth wrapper, and Gitea
-reads it through the API (`GET /api/v1/repos/<owner/repo>/issues/<number>`) and closes it with an
-API `PATCH` after the wrapper's `check` confirms the write identity. A GitLab goal issue is
-refused with that reason.
+A goal label keeps its goal-mode implementation contract: every goal-labeled issue runs
+`/implement-goal-issue <number>` concurrently with the rest. For every origin the command reads the
+issue through the repository's forge, and the emitted goal prompt closes it through the Devboard
+MCP `issue_close` tool with that issue number and `reason` `completed`. That tool records the
+closing run, so a finished goal run settles `succeeded` instead of being read as an operator's
+cancellation, and the prompt names no other tracker write. A GitLab goal issue is refused with
+that reason.
 
 ### Per-agent state, lifecycle, and history
 
@@ -3385,9 +3386,10 @@ branch under `.worktree/`, activates the `goal` tool, and calls the `goal` creat
 the fetched issue body verbatim as the objective: no distillation, no section filtering, and no
 appended requirements. It then implements the body, verifies every criterion through the product
 surface, merges into `main` with conflict integration and retry, pushes `main` to origin, removes
-the worktree and branch, and closes the issue only after the push. On Gitea it fetches the issue
-through the API, resolves the close identity with the wrapper's `check`, and closes it with an API
-`PATCH`; GitHub keeps `gh issue view` and `gh issue close` under the wrapper's `exec`.
+the worktree and branch, and closes the issue only after the push through the Devboard MCP
+`issue_close` tool with `reason` `completed`. That close records the closing run, so the finished
+goal run settles `succeeded` instead of reading as an operator's cancellation. The command's
+prompt carries no forge CLI or forge API write of its own.
 
 Pause lets every active peer finish, then reports `paused` and starts no new peer or poll.
 Resume polls immediately. Stop closes every peer, records every active run as `stopped`, leaves

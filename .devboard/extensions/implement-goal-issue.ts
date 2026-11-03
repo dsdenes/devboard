@@ -16,14 +16,13 @@ import {
   createWorktree,
   detectForge,
   execWithEnvironment,
-  forgeAuthCommand,
   goalModeFromBranch,
   planWorktree,
   slugify,
   type RemoteInfo,
 } from "./implement-next-epic.ts";
 import type { Exec } from "../lib/forge-auth.ts";
-import { parseForgeRemote, type Forge } from "../lib/forge.ts";
+import { parseForgeRemote } from "../lib/forge.ts";
 import { giteaIssue, giteaTarget, type FetchLike } from "../lib/gitea.ts";
 
 interface ExecResult {
@@ -226,25 +225,17 @@ export function goalIssueTitle(title: string): string {
 /**
  * The goal prompt. The issue body between the markers is the objective the
  * model must pass to `goal create` byte for byte: not distilled, not filtered
- * to sections, and not appended to.
+ * to sections, and not appended to. The close goes through the Devboard MCP
+ * `issue_close` tool for every forge: that tool records the closing run, so the
+ * Issues worker settles the finished run instead of reading the close as an
+ * operator's cancellation.
  */
 export function buildGoalIssuePrompt(
   issue: GoalIssue,
   repo: string,
   worktree: string,
   branch: string,
-  forge: Forge,
-  project: string,
-  authCommand: string,
 ): string {
-  const closeCommand =
-    forge === "github"
-      ? `${authCommand} gh issue close ${issue.number}`
-      : forge === "gitlab"
-        ? `${authCommand} glab issue close ${issue.number}`
-        : `${authCommand} && curl -sS -X PATCH -H "Authorization: token $GITEA_TOKEN" ` +
-          `-H "Content-Type: application/json" -d '{"state":"closed"}' ` +
-          `"$DEVBOARD_GITEA_URL/api/v1/repos/${project}/issues/${issue.number}"`;
   return `Implement the goal filed as issue ${issue.number}. This run is fully autonomous.
 
 Autonomy contract:
@@ -278,9 +269,8 @@ After the goal tool succeeds, implement the issue end to end:
 - Never end a turn while a background job you started is still running: when a \`wait\` returns a still-running snapshot, call \`wait\` again. Leave the turn only once the work is finished or the exact blocker is known.
 - Keep the goal active until every criterion is verified. Call the \`goal\` tool with {"op":"complete"} only then.
 - When complete, merge ${branch} into main from ${repo}. First fetch the latest main and integrate it into ${branch}; then merge. If the merge fails, fetch the latest main again, integrate it, and retry. Never force-push. After the merge succeeds, push main to origin and remove the worktree and branch, per AGENTS.md. If the push is rejected, fetch and integrate the new main and push again.
-- Never call a tracker CLI or the Gitea API directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token; on Gitea, resolve the identity with \`check\` and call the API with \`GITEA_TOKEN\`:
-  \`${closeCommand}\`
-- When complete, close issue ${issue.number} in ${repo} with \`${closeCommand}\`. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
+- Never call a tracker CLI or the Gitea API directly. Close issue ${issue.number} only through the Devboard MCP \`issue_close\` tool with \`{"number": ${issue.number}, "reason": "completed"}\`.
+- When complete, close issue ${issue.number} through that \`issue_close\` tool. Close it only after the merge succeeded, main was pushed, and the worktree was removed. The tool records the closing run, so the Issues worker settles this run \`succeeded\`; a close written any other way carries no such record and reads as an operator cancellation that stops the run. If closing fails, report that failure once as the run's blocker.
 - If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once on a line beginning \`DEVBOARD-BLOCKED:\`. Do not ask for permission or guidance.`;
 }
 
@@ -375,15 +365,7 @@ export async function runImplementGoalIssue(
 
   await ctx.waitForIdle?.();
 
-  const prompt = buildGoalIssuePrompt(
-    issue,
-    repo,
-    worktree.path,
-    worktree.branch,
-    info.forge,
-    info.project,
-    forgeAuthCommand(repo, info),
-  );
+  const prompt = buildGoalIssuePrompt(issue, repo, worktree.path, worktree.branch);
   try {
     pi.sendUserMessage(prompt);
   } catch (error) {

@@ -1114,8 +1114,50 @@ describe("goal issue settlement", () => {
             : undefined,
         "the stopped goal run",
       );
-      expect(stopped.notice).toContain("Issue #9 was closed on the tracker");
+      expect(stopped.notice).toBe("Issue #9 was closed on the tracker; its run was stopped.");
       expect(stopped.queue).toEqual([]);
+      expect(stopped.cooldowns).toEqual({});
+      expect(closedByRun(f.stateDir, f.root, 9)).toBeNull();
+      // No run recorded the close, so nothing may claim it was handled.
+      expect(existsSync(ledgerPath(f.stateDir, f.root))).toBe(false);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a goal-issue run that closes its own issue settles succeeded with no notice", async () => {
+    let open = [goalIssue(9)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+      issueState: async () => ({ kind: "state", state: "closed" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      const runId = f.state().agents[0]!.runId;
+      expect(f.peers[0]!.environment?.DEVBOARD_ISSUES_RUN_ID).toBe(runId);
+      recordClosedByRun(f.stateDir, f.root, 9, runId);
+
+      // The run's own close drops #9 from the open list while its turn runs.
+      open = [];
+      await f.worker.poll();
+      expect(f.peers[0]!.closed).toBe(false);
+      expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([9]);
+      expect(f.state().notice).toBeNull();
+
+      f.peers[0]!.succeed();
+      const settled = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(9))?.status === "succeeded"
+            ? f.state()
+            : undefined,
+        "the succeeded goal run",
+      );
+      expect(settled.agents).toEqual([]);
+      expect(settled.notice).toBeNull();
+      expect(settled.cooldowns).toEqual({});
+      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+      expect(ledger.handled["9"]?.runId).toBe(runId);
       expect(closedByRun(f.stateDir, f.root, 9)).toBeNull();
     } finally {
       await stop(f);
