@@ -17,7 +17,8 @@ import type { Server } from "bun";
 import { createApp } from "./app";
 import { FlowController } from "./flow";
 import { detachedRunDirectory, readDetachedRunState } from "./detached-run";
-import { recordedChildAlive, stateFile, type RecordedChild } from "./state";
+import { recordedChildAlive, type RecordedChild } from "./process";
+import { stateFile } from "./state";
 import { StubForge } from "./fixtures/stub-forge";
 import { UNTRACKED_BODY_MAX_BYTES } from "./flow";
 import { journalKey } from "./journal";
@@ -3163,7 +3164,10 @@ async function startFlowProcess(fixture: Fixture, command: string): Promise<Flow
   const deadline = Date.now() + 20_000;
   for (;;) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/`, { method: "HEAD" });
+      const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+        method: "HEAD",
+        headers: { authorization: `Bearer ${DASHBOARD_TOKEN}` },
+      });
       if (response.ok || response.status === 404) break;
     } catch {
       // Still binding or still starting.

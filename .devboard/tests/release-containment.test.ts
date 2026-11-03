@@ -3,10 +3,9 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   createRepositoryGitHub,
-  resolveShippedVersion,
   type GitHubCommandRunner,
-  type GitHubRelease,
 } from "../lib/github-release";
+import { resolveShippedVersion, type PublishedRelease } from "../lib/release-resolution";
 import { createGiteaVersionClient } from "../lib/gitea-release";
 import type { FetchLike, GiteaTarget } from "../lib/gitea";
 
@@ -26,7 +25,7 @@ afterAll(() => {
 
 const target: GiteaTarget = { baseUrl: "http://gitea.test", project: "acme/fixture" };
 
-const releases: GitHubRelease[] = [
+const releases: PublishedRelease[] = [
   { tag: "v1.4.0", publishedAt: "2026-09-01T00:00:00Z" },
   { tag: "v1.5.0", publishedAt: "2026-10-01T00:00:00Z" },
 ];

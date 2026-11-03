@@ -11,12 +11,11 @@ import { createGiteaVersionClient } from "../../lib/gitea-release";
 import { originForge } from "../../issues/repository";
 import {
   createRepositoryGitHub,
-  shippedVersion,
   type GitHubCommandRunner,
-  type GitHubRelease,
   type RepositoryGitHub,
 } from "../../lib/github-release";
-import { ghCommand } from "../../issues/scout/preflight";
+import { ghCommand } from "../command";
+import { shippedVersion, type PublishedRelease } from "../../lib/release-resolution";
 
 /**
  * The one forge read behind every background agent's filed-issues table. It
@@ -99,7 +98,7 @@ function createGiteaIssueReader(
       const facts: ForgeIssueFact[] = [];
       // Releases are a per-repository read: one scan serves every closed issue
       // of that repository, and a second repository gets its own scan.
-      const releases = new Map<string, GitHubRelease[]>();
+      const releases = new Map<string, PublishedRelease[]>();
       for (const url of urls) {
         // An issue filed through another forge cannot be read here; the read
         // still answers it, so the row stays listed without a state instead of
@@ -179,7 +178,7 @@ export function createForgeIssueReader(options: ForgeIssueReaderOptions): ForgeI
 
   return {
     async project(urls: string[]): Promise<ForgeIssueFact[]> {
-      const releases = new Map<string, GitHubRelease[]>();
+      const releases = new Map<string, PublishedRelease[]>();
       const facts: ForgeIssueFact[] = [];
       for (const url of urls) {
         const locator = issueLocator(url);

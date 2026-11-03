@@ -31,7 +31,8 @@ import {
 } from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge";
 import { journalKey, type Journal } from "./journal";
-import { writeStateFile, type RecordedChild } from "./state";
+import type { RecordedChild } from "./process";
+import { writeStateFile } from "./state";
 
 /**
  * Flow Mode: one implementation agent in an isolated worktree, reviewable as

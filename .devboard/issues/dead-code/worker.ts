@@ -9,7 +9,7 @@ import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner, liveLockOwners, versionLockPath } from "../lock";
 import { originForge, originRepository } from "../repository";
 import { appendActivityLine, writeActivity } from "../state";
-import { resolveShippedVersion } from "../../lib/github-release";
+import { resolveShippedVersion } from "../../lib/release-resolution";
 import { readDraftGoalHeadings } from "../../lib/draft-goals";
 import { giteaBaseUrl } from "../../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";

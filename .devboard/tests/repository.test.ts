@@ -1,7 +1,12 @@
 import { afterAll, expect, setSystemTime, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { cachedRepository, repositoryFromUrl } from "../issues/repository";
+import {
+  cachedRepository,
+  originForge,
+  originRepository,
+  repositoryFromUrl,
+} from "../issues/repository";
 
 const temporaryDirectories: string[] = [];
 
@@ -73,6 +78,19 @@ test("re-reads the origin once the ttl has elapsed", async () => {
   } finally {
     setSystemTime();
   }
+});
+
+test("names no origin identity for a directory below a checkout", async () => {
+  const root = await repositoryFixture("https://github.com/acme/fixture.git");
+  const below = join(root, "docs");
+  await mkdir(below);
+
+  // The checkout root names the origin; a directory below it must not inherit
+  // the parent checkout's remote, so both identity reads refuse it alike.
+  expect(originRepository(root)).toBe("acme/fixture");
+  expect(originForge(root)?.project).toBe("acme/fixture");
+  expect(originRepository(below)).toBeUndefined();
+  expect(originForge(below)).toBeUndefined();
 });
 
 test("keeps a GitLab subgroup in the repository identity", () => {

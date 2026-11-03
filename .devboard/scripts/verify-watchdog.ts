@@ -36,7 +36,17 @@ import { WatchdogActivity } from "../server/watchdog";
 import { agentRegistry } from "../server/agents/registry";
 import { readHarnessVersion } from "../server/version";
 import { liveLockOwners } from "../issues/lock";
-import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
+import {
+  assertTrue,
+  VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
+  freePort,
+  harnessRoot,
+  makeHost,
+  makeRoot,
+  run,
+  waitFor,
+} from "./verification";
 
 const MAX_ISSUES = 10;
 const ISSUE_COUNT = 12;
@@ -665,7 +675,8 @@ exit 0
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(2000),
         });
         return response.ok ? true : undefined;
@@ -692,7 +703,7 @@ exit 0
       "--window-size=1440,900",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
-      `http://127.0.0.1:${port}/`,
+      dashboardPageUrl(port),
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );

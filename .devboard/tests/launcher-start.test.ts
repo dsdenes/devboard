@@ -176,6 +176,26 @@ const foreignServer = [
   "",
 ].join("\n");
 
+/**
+ * Answers readiness only for the credential it was started with, so an
+ * install passes only when the launcher both passed the token to this process
+ * and presented it on the probe.
+ */
+const tokenServer = [
+  'const token = process.env.DEVBOARD_DASHBOARD_TOKEN ?? "";',
+  "Bun.serve({",
+  '  hostname: process.env.HOST ?? "127.0.0.1",',
+  "  port: Number(process.env.PORT),",
+  "  fetch: (request) =>",
+  '    new URL(request.url).pathname !== "/ready"',
+  '      ? new Response("ok")',
+  '      : request.headers.get("authorization") === `Bearer ${token}`',
+  "        ? Response.json({ pid: process.pid })",
+  "        : new Response(null, { status: 401 }),",
+  "});",
+  "",
+].join("\n");
+
 afterAll(async () => {
   for (const host of startedHosts) await stopDashboard(host).catch(() => undefined);
   await Promise.all(
@@ -248,6 +268,25 @@ describe("dashboard start", () => {
       expect(state.port).toBeGreaterThan(0);
       expect(httpStatus(Number(state.port))).toBe(200);
       expect(dashboardsFor(host)).toEqual([{ pid, port: Number(state.port) }]);
+    },
+    60_000,
+  );
+
+  test(
+    "presents the token it passed to the dashboard it spawned",
+    async () => {
+      const host = await makeHost("token");
+      startedHosts.push(host);
+      const release = await releaseWithServer("0.1.996", tokenServer);
+      const result = await install(host, {
+        PATH: `${await recordingBun()}:${process.env.PATH ?? ""}`,
+        DEVBOARD_RELEASE_DIR: release,
+        DEVBOARD_NPM: await failingNpm(),
+      });
+
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+      expect(installState(join(host, ".devboard")).pid).toBeGreaterThan(0);
     },
     60_000,
   );

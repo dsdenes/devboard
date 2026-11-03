@@ -46,7 +46,7 @@ import {
   type GoalDraftLease,
   type GoalDraftOwnerState,
 } from "./goal-draft-owner";
-import { canonicalProcessPath, recordedChildAlive, type RecordedChild } from "./state";
+import { canonicalProcessPath, recordedChildAlive, type RecordedChild } from "./process";
 
 export type GoalDraftStatus = "idle" | "running" | "succeeded" | "failed" | "stopped";
 

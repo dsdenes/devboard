@@ -163,10 +163,6 @@ export class IssuesStore {
     return this.snapshot?.paused === true;
   }
 
-  get running(): boolean {
-    return this.lifecycle === "running" || this.lifecycle === "pausing";
-  }
-
   get queue(): QueuedIssue[] {
     return [...(this.snapshot?.queue ?? [])].sort((left, right) => left.number - right.number);
   }
@@ -212,11 +208,6 @@ export class IssuesStore {
   /** Open issues waiting for an agent; a running issue is not pending. */
   get pending(): number {
     return queueCounts(this.queue).pending;
-  }
-
-  /** Open issues an agent is working right now. */
-  get working(): number {
-    return queueCounts(this.queue).working;
   }
 
   get cooldowns(): Record<string, string> {
@@ -480,12 +471,6 @@ export class IssuesStore {
       return;
     }
     this.openRun(runId);
-  }
-
-  closeRun(): void {
-    this.selectedRun = null;
-    this.requestedRun = null;
-    this.run = null;
   }
 
   handleEvent(message: Record<string, unknown>): void {
