@@ -1947,9 +1947,16 @@ for await (const chunk of Bun.stdin.stream()) {
       synthesize: fileWhileRoom(secondCalls),
       settings,
     });
-    expect(second.report.action).toBe("none");
+    expect(second.report.action).toBe("capped");
+    expect(second.report.reason).toContain("maxPerHour 1 reached");
     expect(second.report.issues).toEqual([]);
     expect(secondCalls.every((call) => filingRoomOf(call.prompt) === 0)).toBe(true);
+    expect(describeCycle(second)).toContain("capped");
+    const cappedLedger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
+    expect(secondCalls.length).toBeGreaterThan(0);
+    for (const call of secondCalls) {
+      expect(cappedLedger.families[call.key]?.lastAction).toBe("capped");
+    }
 
     const thirdCalls: SynthesisCall[] = [];
     const third = await runCycle({

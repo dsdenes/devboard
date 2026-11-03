@@ -341,6 +341,9 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     } else if (selection.families.length === 0) {
       report.action = "none";
       report.reason = "no family in the window";
+    } else if (cappedReason !== undefined) {
+      report.action = "capped";
+      report.reason = cappedReason;
     } else {
       report.action = "none";
       report.reason = "no family filed a proposal";
@@ -405,6 +408,10 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
   let cycleFiled = 0;
   let room = hourlyRoom(settings, ledger, now);
   const handled = new Set<string>();
+  // The cap that left no family any filing room this cycle, if one did; it
+  // makes a suppressed cycle read as `capped` instead of a quiet repository.
+  let cappedReason: string | undefined;
+  const cappedFamilies = new Set<string>();
 
   const recordFiling = (entry: {
     family: string;
@@ -465,6 +472,14 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
         room === Number.POSITIVE_INFINITY ? toSynthesize.length : room,
       ),
     );
+    if (available === 0) {
+      cappedReason =
+        room === 0
+          ? `maxPerHour ${settings.maxPerHour} reached; ` +
+            `${toSynthesize.length} family/families suppressed`
+          : `maxIssuesPerCycle ${settings.maxIssuesPerCycle} reached; ` +
+            `${toSynthesize.length} family/families suppressed`;
+    }
     const work = toSynthesize.map((family, index) => {
       const directory = join(runDir, "families", family.key.replace(/[^a-zA-Z0-9._-]+/g, "-"));
       mkdirSync(directory, { recursive: true });
@@ -472,6 +487,8 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
         toolLogPath: join(directory, "tool-log.jsonl"),
         skipLogPath: join(directory, "skips.jsonl"),
       };
+      const filingRoom = index < available ? 1 : 0;
+      if (filingRoom === 0) cappedFamilies.add(family.key);
       return {
         family,
         paths,
@@ -479,7 +496,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
           family,
           settings,
           openIssues: openMcpOptimizerIssues,
-          filingRoom: index < available ? 1 : 0,
+          filingRoom,
         }),
       };
     });
@@ -565,7 +582,12 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
         rule: reason === undefined ? "no-filing" : "tool",
         reason: reason ?? "the synthesis turn filed nothing",
       });
-      markFamily(ledger, call.family.key, "none", { at: now });
+      markFamily(
+        ledger,
+        call.family.key,
+        cappedFamilies.has(call.family.key) ? "capped" : "none",
+        { at: now },
+      );
     }
   }
 
