@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import type { DiscoverAgentState, DiscoverStatePayload } from "../types";
+import type { DiscoverAgentState, DiscoverStatePayload, Glossary } from "../types";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -35,7 +35,11 @@ function agentStates(states: Record<string, string> = {}): DiscoverAgentState[] 
 }
 
 function payload(
-  options: { states?: Record<string, string>; activeAgent?: string | null } = {},
+  options: {
+    states?: Record<string, string>;
+    activeAgent?: string | null;
+    glossaries?: Glossary[];
+  } = {},
 ): DiscoverStatePayload {
   const activeAgent = options.activeAgent ?? null;
   return {
@@ -62,7 +66,7 @@ function payload(
     dependencyRepositories: {},
     overviewLinks: {},
     contribution: null,
-    glossaries: [],
+    glossaries: options.glossaries ?? [],
     glossaryUsage: {},
     glossarySignificance: {},
     decisions: [],
@@ -81,6 +85,7 @@ function resetDiscover(): void {
   discover.activity = [];
   discover.error = null;
   discover.errorAgent = null;
+  discover.resetGlossaryFilters();
 }
 
 beforeEach(() => {
@@ -234,4 +239,47 @@ test("an agent card keeps its own start control", async () => {
   expect(bar().getAttribute("aria-label")).toBe("Data Sheet activity");
   expect(controlTestId()).toBe("discover-agent-start");
   expect(controlCommand()).toBe("discover.agent.start.sheet");
+});
+
+const PUBLISHED_GLOSSARY: Glossary = {
+  boundedContext: "billing",
+  titles: [{ language: "en", text: "Billing" }],
+  concepts: [
+    {
+      id: "invoice",
+      prefLabels: [{ language: "en", text: "Invoice" }],
+      definitions: [{ language: "en", text: "A demand for payment." }],
+      status: "active",
+      origin: "observed",
+      kind: "term",
+    },
+  ],
+};
+
+test("the Glossary page reports no published glossary before the agent has run", async () => {
+  await show(
+    { id: "glossary", kind: "glossary", resourceId: "glossary", title: "Glossary" },
+    payload({ glossaries: [] }),
+  );
+  const unpublished = document.querySelector('[data-testid="discover-glossary-unpublished"]');
+  expect(unpublished?.textContent?.trim()).toBe(
+    "No glossary is published. Start the Glossary Agent to collect one.",
+  );
+  expect(document.querySelector('[data-testid="discover-glossary-empty"]')).toBeNull();
+  expect(unpublished?.querySelector("button")).toBeNull();
+});
+
+test("a published glossary keeps the no-match state and its Clear filters control", async () => {
+  await show(
+    { id: "glossary", kind: "glossary", resourceId: "glossary", title: "Glossary" },
+    payload({ glossaries: [PUBLISHED_GLOSSARY] }),
+  );
+  discover.setGlossarySearch("absent term");
+  await tick();
+  expect(document.querySelector('[data-testid="discover-glossary-unpublished"]')).toBeNull();
+  const filteredEmpty = document.querySelector('[data-testid="discover-glossary-empty"]');
+  expect(filteredEmpty?.textContent).toContain(
+    "No term matches the current search and significance filter. The glossary is published;",
+  );
+  expect(filteredEmpty?.querySelector("button")?.textContent?.trim()).toBe("Clear filters");
 });

@@ -224,7 +224,15 @@
       </div>
     </header>
 
-    {#if discover.filteredContexts.length === 0}
+    {#if discover.contexts.length === 0}
+      <section class="panel">
+        <div class="panel__body">
+          <p class="empty" data-testid="discover-glossary-unpublished">
+            No glossary is published. Start the Glossary Agent to collect one.
+          </p>
+        </div>
+      </section>
+    {:else if discover.filteredContexts.length === 0}
       <section class="panel discover-filter-empty" data-testid="discover-glossary-empty">
         <div class="panel__body discover-filter-empty__body">
           <p class="empty">
