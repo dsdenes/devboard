@@ -592,11 +592,6 @@ kbd {
 .agent-activity-bar__toggle:focus-visible {
   background: var(--secondary);
   color: var(--foreground);
-  outline: none;
-}
-
-.agent-activity-bar__toggle:focus-visible {
-  box-shadow: 0 0 0 2px var(--ring);
 }
 
 .agent-activity-bar__control {
