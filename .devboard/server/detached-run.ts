@@ -267,22 +267,44 @@ export function writeDetachedRunState(directory: string, state: DetachedRunState
   writeJson(detachedRunStatePath(directory), state);
 }
 
-/** The activity journal, one JSON object per line. */
-export function readDetachedRunActivity(directory: string): DetachedRunActivity[] {
+/**
+ * One read of the activity journal. `dropped` counts every entry the size bound
+ * has discarded since the journal was created; a reader that counts entries
+ * adds it back so its cursor stays a count of everything the run ever appended
+ * instead of a position in the rewritten file.
+ */
+interface DetachedRunActivityJournal {
+  entries: DetachedRunActivity[];
+  dropped: number;
+}
+
+/** The activity journal: an optional `{"dropped":<n>}` header, then one object per line. */
+function readDetachedRunActivityJournal(directory: string): DetachedRunActivityJournal {
   let text: string;
   try {
     text = readFileSync(detachedRunActivityPath(directory), "utf8");
   } catch {
-    return [];
+    return { entries: [], dropped: 0 };
   }
+  const lines = text.split("\n").filter((line) => line.length > 0);
   const entries: DetachedRunActivity[] = [];
-  for (const line of text.split("\n")) {
-    if (line.length === 0) continue;
+  let dropped = 0;
+  for (const [index, line] of lines.entries()) {
     const parsed = readJsonText(line);
-    if (!isRecord(parsed) || typeof parsed.text !== "string") continue;
+    if (!isRecord(parsed)) continue;
+    if (index === 0 && isInteger(parsed.dropped) && parsed.dropped > 0) {
+      dropped = parsed.dropped;
+      continue;
+    }
+    if (typeof parsed.text !== "string") continue;
     entries.push({ text: parsed.text, append: parsed.append === true });
   }
-  return entries;
+  return { entries, dropped };
+}
+
+/** The activity journal's entries, oldest first. */
+export function readDetachedRunActivity(directory: string): DetachedRunActivity[] {
+  return readDetachedRunActivityJournal(directory).entries;
 }
 
 function readJsonText(text: string): unknown {
@@ -306,8 +328,11 @@ export function appendDetachedRunActivity(
   } catch {
     return;
   }
-  const entries = readDetachedRunActivity(directory).slice(-ACTIVITY_MAX_ENTRIES);
-  writeFileSync(path, entries.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+  const { entries, dropped } = readDetachedRunActivityJournal(directory);
+  const kept = entries.slice(-ACTIVITY_MAX_ENTRIES);
+  const discarded = dropped + entries.length - kept.length;
+  const header = discarded === 0 ? "" : `${JSON.stringify({ dropped: discarded })}\n`;
+  writeFileSync(path, `${header}${kept.map((entry) => `${JSON.stringify(entry)}\n`).join("")}`);
 }
 
 export type DetachedRunCommand =
@@ -782,14 +807,19 @@ export class DetachedPeer {
     const state = readDetachedRunState(this.#directory);
     if (state === undefined) return;
     this.#state = state;
-    const activities = readDetachedRunActivity(this.#directory);
+    // The journal discards its oldest entries when it outgrows its size bound,
+    // so the cursor counts every entry the run ever appended and the journal's
+    // drop count re-bases it onto the current file. Discarded entries are never
+    // delivered; every entry still in the file past the cursor is.
+    const { entries: activities, dropped } = readDetachedRunActivityJournal(this.#directory);
+    const seen = Math.max(0, this.#seenActivity - dropped);
     if (this.#paused) {
-      this.#seenActivity = activities.length;
-    } else if (activities.length > this.#seenActivity) {
-      for (const activity of activities.slice(this.#seenActivity)) {
+      this.#seenActivity = dropped + activities.length;
+    } else if (activities.length > seen) {
+      for (const activity of activities.slice(seen)) {
         this.#options.onActivity(activity as AcpActivity);
       }
-      this.#seenActivity = activities.length;
+      this.#seenActivity = dropped + activities.length;
     }
     const chunks = readDetachedRunText(this.#directory);
     if (this.#paused) {

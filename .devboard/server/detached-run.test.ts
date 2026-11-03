@@ -4,7 +4,9 @@ import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { pidAlive } from "../issues/lock";
 import {
+  DETACHED_RUN_VERSION,
   DetachedPeer,
+  appendDetachedRunActivity,
   beginDetachedHandoff,
   detachedRunDirectory,
   detachedRunLeasePath,
@@ -12,6 +14,7 @@ import {
   readDetachedRunActivity,
   readDetachedRunState,
   writeDetachedLease,
+  writeDetachedRunState,
 } from "./detached-run";
 
 const harness = resolve(import.meta.dir, "..");
@@ -205,5 +208,66 @@ describe("detached runs", () => {
         "stopped",
     );
     await waitFor(() => !pidAlive(ownerPid!));
+  }, 30_000);
+
+  test("a poll re-bases its activity cursor when the journal drops its oldest entries", async () => {
+    const { repoDir, stateDir } = await fixture();
+    const directory = detachedRunDirectory(stateDir, repoDir, "lane", "trim");
+    await mkdir(directory, { recursive: true });
+    const now = new Date().toISOString();
+    writeDetachedRunState(directory, {
+      version: DETACHED_RUN_VERSION,
+      kind: "lane",
+      key: "trim",
+      repo: resolve(repoDir),
+      stateDir: resolve(stateDir),
+      harnessVersion: null,
+      instance: "a",
+      launcherPid: process.pid,
+      generation: randomUUID(),
+      status: "running",
+      startedAt: now,
+      finishedAt: null,
+      error: null,
+      question: null,
+      owner: { pid: process.pid, argv: [], cwd: repoDir },
+      peer: null,
+      updatedAt: now,
+    });
+    const delivered: string[] = [];
+    const peer = new DetachedPeer({
+      repoDir,
+      stateDir,
+      kind: "lane",
+      key: "trim",
+      instance: "a",
+      attachOnly: true,
+      pollMs: 10,
+      command: `${process.execPath} ${stub}`,
+      cwd: repoDir,
+      onActivity: (entry) => delivered.push(entry.text),
+      onQuestion: () => undefined,
+    });
+    const run = peer.run("work");
+    appendDetachedRunActivity(directory, { text: "before the bound", append: false });
+    await waitFor(() => delivered.includes("before the bound"));
+
+    // Cross the journal's byte bound with more entries than its window holds,
+    // so the rewrite discards entries the peer has already counted.
+    const filler = "x".repeat(1_024);
+    for (let index = 0; index < 1_200; index += 1) {
+      appendDetachedRunActivity(directory, { text: `${filler} ${index}`, append: false });
+    }
+    await waitFor(() => readDetachedRunActivity(directory).length < 1_200);
+    await waitFor(() => delivered.length > 1);
+
+    const after = ["after the bound one", "after the bound two", "after the bound three"];
+    for (const text of after) appendDetachedRunActivity(directory, { text, append: false });
+    await waitFor(() => after.every((text) => delivered.includes(text)));
+    // The cursor counts what was appended, not a renumbered position, so no
+    // entry reaches the dashboard twice.
+    expect(new Set(delivered).size).toBe(delivered.length);
+    peer.close();
+    await run;
   }, 30_000);
 });
