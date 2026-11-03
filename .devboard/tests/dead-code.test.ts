@@ -9,6 +9,7 @@ import {
   eligibleFiles,
   pickEntryPoint,
   scoutPool,
+  walkRegularFiles,
 } from "../lib/entry-point";
 import type {
   DeadCodeForgeClient,
@@ -142,6 +143,54 @@ describe("entry point picker", () => {
     write(join(root, ".git", "config"), "[core]\n");
     write(join(root, "binary.bin"), "a\u0000b");
     expect(scoutPool(root)).toEqual(["kept.ts"]);
+  });
+
+  test("the walk names every directory it cannot read instead of shrinking the pool", async () => {
+    const root = await temporaryRoot("unreadable");
+    write(join(root, "kept.ts"), "export const kept = 1;\n");
+    write(join(root, "zeta", "deep", "three.ts"), "export const three = 3;\n");
+    write(join(root, "blocked", "hidden.ts"), "export const hidden = 1;\n");
+    expect(walkRegularFiles(root)).toEqual([
+      "blocked/hidden.ts",
+      "kept.ts",
+      "zeta/deep/three.ts",
+    ]);
+
+    const failures = new Map([
+      [join(root, "blocked"), "EACCES: permission denied"],
+      [join(root, "zeta", "deep"), "EIO: i/o error"],
+    ]);
+    const reader = (directory: string) => {
+      const failure = failures.get(directory);
+      if (failure !== undefined) throw new Error(failure);
+      return readdirSync(directory, { withFileTypes: true });
+    };
+    let caught: unknown;
+    try {
+      walkRegularFiles(root, reader);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(EntryPointError);
+    expect((caught as Error).message).toBe(
+      "the repository directories blocked, zeta/deep are not readable: " +
+        "blocked: EACCES: permission denied; zeta/deep: EIO: i/o error",
+    );
+
+    const oneFailure = (directory: string) => {
+      if (directory === join(root, "blocked")) throw new Error("EACCES: permission denied");
+      return readdirSync(directory, { withFileTypes: true });
+    };
+    let single: unknown;
+    try {
+      walkRegularFiles(root, oneFailure);
+    } catch (error) {
+      single = error;
+    }
+    expect(single).toBeInstanceOf(EntryPointError);
+    expect((single as Error).message).toBe(
+      "the repository directory blocked is not readable: blocked: EACCES: permission denied",
+    );
   });
 
   test("the catalog holds one read-only entry-point tool", async () => {

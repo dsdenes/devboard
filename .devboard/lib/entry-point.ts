@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
+import type { Dirent } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { designSourcePaths, DesignInputError } from "../issues/design/audit";
 import { designConfig } from "../issues/design/paths";
@@ -82,29 +83,37 @@ function byteOrder(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+/** Lists one directory; the walk's seam for an injected unreadable subtree. */
+export type DirectoryReader = (directory: string) => Dirent[];
+
+const listDirectory: DirectoryReader = (directory) =>
+  readdirSync(directory, { withFileTypes: true });
+
 /**
  * Every regular file under the root, as repository-relative paths in one
  * stable order. A symbolic link is never followed, so no file outside the
- * repository can enter a pool.
+ * repository can enter a pool. A directory the walk cannot read is never
+ * dropped: the walk throws one `EntryPointError` naming every such directory
+ * by its repository-relative path and the reason, so a pool that omits a
+ * subtree can never pass for a repository that lacks those files.
  */
-function walkRegularFiles(repoDir: string): string[] {
+export function walkRegularFiles(
+  repoDir: string,
+  readDirectory: DirectoryReader = listDirectory,
+): string[] {
   const root = resolve(repoDir);
-  let entries;
-  try {
-    entries = readdirSync(root, { withFileTypes: true });
-  } catch (error) {
-    throw new EntryPointError(
-      `the repository root ${root} is not readable: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
+  const unreadable: { path: string; reason: string }[] = [];
   const found: string[] = [];
   const visit = (directory: string, prefix: string): void => {
     let children;
     try {
-      children = readdirSync(directory, { withFileTypes: true });
-    } catch {
+      children = readDirectory(directory);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (prefix.length === 0) {
+        throw new EntryPointError(`the repository root ${directory} is not readable: ${reason}`);
+      }
+      unreadable.push({ path: prefix, reason });
       return;
     }
     children.sort((left, right) => byteOrder(left.name, right.name));
@@ -122,6 +131,15 @@ function walkRegularFiles(repoDir: string): string[] {
     }
   };
   visit(root, "");
+  if (unreadable.length > 0) {
+    unreadable.sort((left, right) => byteOrder(left.path, right.path));
+    const paths = unreadable.map((entry) => entry.path);
+    const detail = unreadable.map((entry) => `${entry.path}: ${entry.reason}`).join("; ");
+    throw new EntryPointError(
+      `the repository ${paths.length === 1 ? "directory" : "directories"} ${paths.join(", ")} ` +
+        `${paths.length === 1 ? "is" : "are"} not readable: ${detail}`,
+    );
+  }
   found.sort(byteOrder);
   return found;
 }

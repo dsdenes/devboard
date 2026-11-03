@@ -2422,7 +2422,10 @@ like code or a style rule, so a Ruby or Go host is not limited to this project's
 layout. The `single-responsibility` pool is that same source set narrowed to components: a
 `*.test.*` or `*.spec.*` file is excluded, and so is any file under a `fixtures/`, `tests/`, or
 `stubs/` directory, because a test, a fixture, and a stub describe another unit's contract. No
-pool follows a symbolic link, and every entry is proven inside the real repository root.
+pool follows a symbolic link, and every entry is proven inside the real repository root. A
+directory the walk cannot read is refused, never skipped: the picker throws one
+`EntryPointError` naming every such directory by its repository-relative path and the reason, so
+a pool that omits a subtree is never reported as a repository that lacks those files.
 
 One surface and one seed over an unchanged eligible set always return the same path and line. An
 omitted seed produces a fresh pseudo-random seed and returns it; replaying that seed with
