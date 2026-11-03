@@ -7771,7 +7771,10 @@ export function createApp(options: AppOptions) {
         writeGoalProposal(submission, { repoDir, slugger: goalSlug }),
       );
       goalDrafts.publishDrafts();
-      return Response.json(proposal, { status: 201 });
+      return Response.json(proposal, {
+        status: 201,
+        headers: { Location: proposal.links.draft.href },
+      });
     } catch (error) {
       if (error instanceof FeedbackRequestError) {
         return problemResponse(error.status, error.message);

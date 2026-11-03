@@ -3563,7 +3563,8 @@ text it posts `report`, the Ask turns as `turns` when the panel has one, and the
 element context to `POST /goal-proposals`; the server writes one Markdown draft under
 `<REPO_DIR>/.devboard/goal-proposals/` and answers `201` with the common hypertext control
 object `{ "links": { "draft": { "href": "file:///…/.devboard/goal-proposals/<file>.md" } } }`,
-carrying the draft's absolute URI. The directory is deliberately separate
+carrying the draft's absolute URI, plus a `Location` header naming that same URI. An idempotent
+replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
 The file name is chosen by one bounded naming turn: an ACP peer starts with
