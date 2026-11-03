@@ -2417,7 +2417,9 @@ input the Design System cycle uses. The `dead-code` pool is the repository's sou
 the picker discovers the extensions the host actually uses from files whose content is shaped
 like code or a style rule, so a Ruby or Go host is not limited to this project's TypeScript
 layout. No pool follows a symbolic link, and every entry is proven inside the real repository
-root.
+root. A directory the walk cannot read is refused, never skipped: the picker throws one
+`EntryPointError` naming every such directory by its repository-relative path and the reason, so
+a pool that omits a subtree is never reported as a repository that lacks those files.
 
 One surface and one seed over an unchanged eligible set always return the same path and line. An
 omitted seed produces a fresh pseudo-random seed and returns it; replaying that seed with
