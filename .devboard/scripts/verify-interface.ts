@@ -3289,6 +3289,8 @@ try {
       fontWeight: string;
       letterSpacing: number;
       lineHeight: number;
+      paddingBlock: number;
+      paddingInline: number;
     } | null;
   }>(`(() => {
     const table = document.querySelector('[data-testid="skills-table"]');
@@ -3329,6 +3331,8 @@ try {
         fontWeight: managedStyle.fontWeight,
         letterSpacing: parseFloat(managedStyle.letterSpacing),
         lineHeight: parseFloat(managedStyle.lineHeight),
+        paddingBlock: parseFloat(managedStyle.paddingBlock),
+        paddingInline: parseFloat(managedStyle.paddingInline),
       },
     };
   })()`);
@@ -3368,6 +3372,13 @@ try {
       ) < 0.005 &&
       Math.abs(devboardSkillsTable.managedType.lineHeight - 12) < 0.05,
     "the Managed marker does not render the overline type",
+    devboardSkillsTable.managedType,
+  );
+  check(
+    devboardSkillsTable.managedType !== null &&
+      Math.abs(devboardSkillsTable.managedType.paddingBlock - 2) < 0.05 &&
+      Math.abs(devboardSkillsTable.managedType.paddingInline - 6) < 0.05,
+    "the Managed marker does not render the badge padding",
     devboardSkillsTable.managedType,
   );
   check(
