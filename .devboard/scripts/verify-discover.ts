@@ -29,6 +29,8 @@ import { join, relative } from "node:path";
 import {
   VERIFY_DASHBOARD_TOKEN,
   assertTrue,
+  VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
   dashboardSocket,
   freePort,
   harnessRoot,
@@ -464,7 +466,8 @@ async function startDashboard(options: {
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(2000),
         });
         return response.ok ? true : undefined;
@@ -766,7 +769,7 @@ try {
       "--window-size=1440,900",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
-      `http://127.0.0.1:${dashboard.port}/`,
+      dashboardPageUrl(dashboard.port),
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
@@ -1298,7 +1301,7 @@ try {
       extraStub: ["--discover-delay-ms=4000"],
     });
     pids.push(refusal.process.pid ?? 0);
-    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${refusal.port}/` });
+    await devtools.send("Page.navigate", { url: dashboardPageUrl(refusal.port) });
     await openDiscoverMode(devtools, "the refusal dashboard");
     await openCard(devtools, "sheet");
     await click(devtools, "discover-agent-start");
@@ -1348,7 +1351,7 @@ try {
       extraStub: ["--discover-fail-agent=discover-naming-conventions"],
     });
     pids.push(halt.process.pid ?? 0);
-    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${halt.port}/` });
+    await devtools.send("Page.navigate", { url: dashboardPageUrl(halt.port) });
     await openDiscoverMode(devtools, "the halt dashboard");
     await openOverview(devtools);
     await click(devtools, "discover-start");
@@ -1438,7 +1441,7 @@ try {
       extraStub: ["--discover-delay-ms=2500"],
     });
     pids.push(sidebar.process.pid ?? 0);
-    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${sidebar.port}/` });
+    await devtools.send("Page.navigate", { url: dashboardPageUrl(sidebar.port) });
     await openDiscoverMode(devtools, "the sidebar run-state dashboard");
 
     const idle = await sidebarRunStates(devtools);
@@ -1546,14 +1549,14 @@ try {
       )) === 0,
       "a succeeded Run all left a Discover run badge",
     );
-    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
+    await devtools.send("Page.navigate", { url: dashboardPageUrl(dashboard.port) });
     await openDiscoverMode(devtools, "the source dashboard after the run-state pass");
     console.log("PASS sidebar-run-state");
   }
 
   if (selected("skill-read-only")) {
     /* 7. The skill page shows the published file as read-only text. */
-    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${dashboard.port}/` });
+    await devtools.send("Page.navigate", { url: dashboardPageUrl(dashboard.port) });
     await openDiscoverMode(devtools, "the source dashboard");
     const skillName = "discover-testing-strategy";
     await waitFor(
@@ -1670,7 +1673,7 @@ try {
       extraStub: ["--discover-contribution-no-forge"],
     });
     pids.push(noForge.process.pid ?? 0);
-    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${noForge.port}/` });
+    await devtools.send("Page.navigate", { url: dashboardPageUrl(noForge.port) });
     await openDiscoverMode(devtools, "the no-forge dashboard");
     await openCard(devtools, "discover-contribution");
     await click(devtools, "discover-agent-start");
@@ -1755,7 +1758,7 @@ try {
       logPath: join(root, "installed-acp.log"),
     });
     pids.push(installedDashboard.process.pid ?? 0);
-    await devtools.send("Page.navigate", { url: `http://127.0.0.1:${installedDashboard.port}/` });
+    await devtools.send("Page.navigate", { url: dashboardPageUrl(installedDashboard.port) });
     await openDiscoverMode(devtools, "the installed dashboard");
     for (const agent of AGENTS) {
       await openCard(devtools, agent.id);

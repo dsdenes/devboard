@@ -5,7 +5,7 @@ import {
   createWorkerProviderEnvironment,
   type WorkerProviderEnvironment,
 } from "../../server/providers/worker-environment";
-import { recordedChildAlive } from "../../server/state";
+import { recordedChildAlive } from "../../server/process";
 import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner, liveLockOwners, versionLockPath } from "../lock";
 import { originForge, originRepository } from "../repository";
@@ -20,7 +20,7 @@ import {
   type DesignForgeIssue,
   type DesignRelease,
 } from "./forge";
-import { ghCommand } from "../scout/preflight";
+import { ghCommand } from "../../server/command";
 import { giteaBaseUrl } from "../../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";
 import {

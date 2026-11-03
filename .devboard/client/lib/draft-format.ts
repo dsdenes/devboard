@@ -55,8 +55,9 @@ function contextSectionStart(text: string): number {
  * Reads the proposal out of a draft. Both writers in `server/feedback.ts` and
  * `server/goal-proposal.ts` put the captured evidence after a marker of their
  * own below the operator's report; the proposal keeps the writer's own text —
- * including a report line that quotes the marker — and loses the heading the
- * panel already shows.
+ * including a report line that quotes the marker — and drops a leading H1,
+ * which the detail header renders as the draft's title. A heading that is not
+ * that leading H1 stays in the text.
  */
 export function draftProposal(text: string): string {
   const index = contextSectionStart(text);

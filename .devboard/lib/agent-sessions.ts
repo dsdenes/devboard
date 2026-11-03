@@ -587,14 +587,6 @@ function readTranscript(
   return parsed;
 }
 
-/** Every `.jsonl` transcript under the providers agent sessions tree. */
-export function listSessionFiles(
-  stateDir: string,
-  reader: SessionReader = defaultSessionReader,
-): string[] {
-  return reader.list(stateDir).map((meta) => meta.path);
-}
-
 function listSessionPaths(stateDir: string): string[] {
   const root = join(resolve(stateDir), "providers", "agents");
   const files: string[] = [];

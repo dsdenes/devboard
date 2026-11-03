@@ -21,6 +21,7 @@ import { createReleaseDirectory } from "./harness-package";
 import {
   assertEquals,
   assertTrue,
+  dashboardPageUrl,
   dashboardSocket,
   freePort,
   harnessRoot,
@@ -192,7 +193,7 @@ try {
       "--window-size=1440,900",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
-      `http://127.0.0.1:${port}/`,
+      dashboardPageUrl(port),
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
@@ -456,7 +457,7 @@ try {
         "--window-size=1440,900",
         `--remote-debugging-port=${fallbackDebugPort}`,
         `--user-data-dir=${fallbackProfile}`,
-        `http://127.0.0.1:${fallbackPort}/`,
+        dashboardPageUrl(fallbackPort),
       ],
       { stdio: ["ignore", "ignore", "pipe"] },
     );
