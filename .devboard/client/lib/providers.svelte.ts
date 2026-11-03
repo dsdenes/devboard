@@ -104,37 +104,12 @@ function selectionFrom(value: unknown): ProviderSelection | null {
   };
 }
 
-/** Formats a remaining fraction as a compact percentage. */
-export function percentText(fraction: number | null): string {
-  if (fraction === null) return "unknown";
-  const percent = Math.max(0, Math.min(100, fraction * 100));
-  if (percent === 100) return "100%";
-  const rounded = Math.round(percent * 10) / 10;
-  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
-}
-
-/** The status text one subscription row shows. */
-export function statusText(status: ProviderKeyStatus): string {
-  switch (status) {
-    case "ok":
-      return "ok";
-    case "near-limit":
-      return "near limit";
-    case "exhausted":
-      return "exhausted";
-    case "invalid":
-      return "invalid";
-    default:
-      return "unknown";
-  }
-}
-
 /** What a tracked provider change asks the server to do. */
 type ProviderChangeKind = "save" | "delete" | "enable";
 
 /**
- * The Providers dialog and status-bar control. The server owns the
- * credentials, selection, and usage; this store only mirrors the masked view.
+ * The Providers dialog's state. The server owns the credentials, selection,
+ * and usage; this store only mirrors the masked view and tracks its requests.
  */
 export class ProviderStore {
   subscriptions = $state<ProviderSubscription[]>([]);
@@ -155,22 +130,6 @@ export class ProviderStore {
    */
   private pending = new Map<number, ProviderChangeKind>();
   private nextRequestId = 1;
-
-  get indicatorLabel(): string {
-    const selection = this.selection;
-    if (selection === null) return "No provider";
-    return `${selection.providerName} · ${percentText(selection.remainingFraction)}`;
-  }
-
-  get indicatorTitle(): string {
-    const selection = this.selection;
-    if (selection === null) {
-      return this.refusal ?? "No provider subscription is configured. Open the Providers dialog.";
-    }
-    return `${selection.providerName} (${selection.label}) serves peers on ${selection.model}; ${percentText(
-      selection.remainingFraction,
-    )} remaining. ${this.rule}.`;
-  }
 
   /**
    * Reconciles operations a reconnect may have lost: a change frame answered

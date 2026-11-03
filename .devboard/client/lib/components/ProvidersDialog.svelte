@@ -1,7 +1,8 @@
 <script lang="ts">
   import { Dialog } from "bits-ui";
   import { createCommandBusy } from "../command-busy.svelte";
-  import { providers, percentText, statusText } from "../providers.svelte";
+  import { percentText, statusText } from "../provider-label";
+  import { providers } from "../providers.svelte";
   import { PROVIDERS } from "../../../server/providers/catalog";
   import type { ProviderId, ProviderSubscription } from "../types";
   import CommandButton from "./CommandButton.svelte";
