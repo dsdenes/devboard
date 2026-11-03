@@ -844,10 +844,14 @@ One reaper ends a child only under one of two proofs:
   signalled: SIGTERM, then SIGKILL after a two-second grace, and then the record is removed.
 - No record exists, the process is a fixture peer, a run owner, a goal-draft owner, or a worker
   entry point of any family or harness version, its cwd or `REPO_DIR` sits in a
-  `.devboard/.tmp` scratch directory, and it was reparented to PID 1 because whatever started
-  it died. It must also have lived five seconds, so a child whose record is still being written
-  is never a candidate. A dashboard is never a candidate for this proof: a replacement and a
-  verification dashboard are reparented by design, so only their own record can end them.
+  `.devboard/.tmp` scratch directory, and its ancestor chain reaches PID 1 again with no live
+  harness supervisor left in it: whatever started it is gone. A live test runner, verification
+  script, dashboard, or watchdog in the chain still owns the process and it is never a
+  candidate; the job runner's own subreaper is not a harness supervisor, so a job's orphaned
+  grandchildren stay candidates. It must also have lived five seconds, so a child whose record
+  is still being written is never a candidate. A dashboard is never a candidate for this proof:
+  a replacement and a verification dashboard are reparented by design, so only their own record
+  can end them.
 
 A doubt never signals. A recorded child whose owner is alive is left alone, and its record is
 touched so the age-based sweep never deletes the proof. A pid that a live detached-run or

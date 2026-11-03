@@ -161,7 +161,6 @@ describe("orphan reaper proofs", () => {
     const marker = join(scratchDir, "orphan.pid");
     const pid = await spawnUnrecorded(scratchDir, { scratch: true, marker });
     try {
-      expect(processStat(pid)?.ppid).toBe(1);
       const report = reapOrphans({
         scopes: [{ stateDir, repoDir: scratchDir }],
         processes: snapshotOf([pid]),

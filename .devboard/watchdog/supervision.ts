@@ -144,6 +144,31 @@ export function processArgv(pid: number): string[] | undefined {
   }
 }
 
+/**
+ * A harness entry point that starts and owns other harness processes. A scratch
+ * child with one of these in its ancestry still has an owner and is never a
+ * candidate; the job runner's own subreaper is not one, so a job's orphaned
+ * grandchildren stay candidates.
+ */
+const HARNESS_SUPERVISOR =
+  /(?:^|\/)(?:server\/index\.ts|scripts\/verify-[a-z0-9-]+\.ts|watchdog\/(?:worker|main)\.ts)(?:\s|$)|(?:^|\s)bun(?:\.exe)?\s+test(?:\s|$)/;
+
+/**
+ * True when a live harness supervisor still owns the candidate through its
+ * ancestor chain: a test runner, a verification script, a dashboard, or the
+ * watchdog. A reparented process whose new parent is the job runner's subreaper
+ * has no such ancestor and stays a candidate.
+ */
+function supervisedByAncestor(
+  candidate: ProcessSnapshot,
+  byPid: Map<number, ProcessSnapshot>,
+): boolean {
+  return candidate.ancestors.some((pid) => {
+    const ancestor = byPid.get(pid);
+    return ancestor !== undefined && HARNESS_SUPERVISOR.test(ancestor.cmdline);
+  });
+}
+
 /** True when a process started less than `ms` ago. */
 export function processAgeMs(pid: number): number | undefined {
   const stat = processStat(pid);
@@ -456,9 +481,10 @@ function terminate(
  * is dead and whose argv and start ticks still match is killed and its record
  * removed; a recorded child whose owner lives is never signalled. The second
  * proof covers records that were never written: a supervised surface whose
- * cwd or `REPO_DIR` is verification scratch and which was reparented to PID 1
- * is killed. Everything a live lease, handoff, or worker lock protects is left
- * alone, and a doubt journals the candidate instead of signalling it.
+ * cwd or `REPO_DIR` is verification scratch, whose ancestor chain reaches PID 1
+ * again, and which no live harness process in that chain still owns is killed.
+ * Everything a live lease, handoff, or worker lock protects is left alone, and
+ * a doubt journals the candidate instead of signalling it.
  */
 export function reapOrphans(options: ReapOptions): ReapReport {
   const report: ReapReport = {
@@ -544,6 +570,7 @@ export function reapOrphans(options: ReapOptions): ReapReport {
   }
 
   const processes = options.processes ?? processTable();
+  const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
   const selfPid = process.pid;
   for (const candidate of processes) {
     const pid = candidate.pid;
@@ -556,8 +583,9 @@ export function reapOrphans(options: ReapOptions): ReapReport {
       (candidate.cwd !== undefined && isVerificationScratch(candidate.cwd)) ||
       (repoDir !== undefined && isVerificationScratch(repoDir));
     if (!scratch) continue;
-    // A child with a live parent is that parent's business, not the reaper's.
-    if (candidate.ancestors.length > 0) continue;
+    // A live harness ancestor still owns the process; only an orphan is a
+    // candidate.
+    if (supervisedByAncestor(candidate, byPid)) continue;
     if (!alive(pid)) continue;
     const age = processAgeMs(pid);
     if (age !== undefined && age < orphanGraceMs) continue;
@@ -570,7 +598,7 @@ export function reapOrphans(options: ReapOptions): ReapReport {
       });
       continue;
     }
-    const detail = "no record, verification scratch, and reparented to PID 1";
+    const detail = "no record, verification scratch, and no live harness ancestor";
     if (dryRun) {
       report.decisions.push({ action: "would-kill", pid, reason: "scratch", detail });
       continue;

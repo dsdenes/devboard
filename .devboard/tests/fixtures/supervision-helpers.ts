@@ -80,7 +80,7 @@ export function snapshotOf(pids: number[]): ProcessSnapshot[] {
 }
 
 /**
- * A harness-shaped process with no record, reparented to PID 1: its launcher
+ * A harness-shaped process with no record, outliving its launcher: the launcher
  * exits immediately, exactly like a killed verification script.
  */
 export async function spawnUnrecorded(
@@ -104,7 +104,11 @@ export async function spawnUnrecorded(
     `  env: { ...process.env, MARKER: ${JSON.stringify(options.marker)}, ` +
     `REPO_DIR: ${JSON.stringify(repoDir)} },\n` +
     `});\nchild.unref();\nprocess.exit(0);\n`;
-  Bun.spawn([process.execPath, "-e", launcher], { stdout: "ignore", stderr: "ignore" });
+  const launcherProcess = Bun.spawn([process.execPath, "-e", launcher], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const launcherPid = launcherProcess.pid;
   const pid = await waitFor(
     () => {
       try {
@@ -117,8 +121,13 @@ export async function spawnUnrecorded(
     "the unrecorded process",
   );
   await waitFor(
-    () => (processStat(pid)?.ppid === 1 ? true : undefined),
-    "the process to be reparented to PID 1",
+    () => {
+      const stat = processStat(pid);
+      // The launcher may hand the child to PID 1 or to the runner's own
+      // subreaper; either way its recorded parent is gone.
+      return stat !== undefined && stat.ppid !== launcherPid ? true : undefined;
+    },
+    "the process to outlive its launcher",
   );
   return pid;
 }
