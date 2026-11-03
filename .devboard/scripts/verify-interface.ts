@@ -6007,6 +6007,7 @@ try {
       color: string;
       fontSize: string;
       radius: string;
+      columnGap: string;
       dot: { width: string; height: string; background: string } | null;
       success: string;
       warning: string;
@@ -6035,6 +6036,7 @@ try {
         color: pillStyle?.color ?? "",
         fontSize: pillStyle?.fontSize ?? "",
         radius: pillStyle?.borderRadius ?? "",
+        columnGap: pillStyle?.columnGap ?? "",
         dot: dotStyle === null ? null : {
           width: dotStyle.width,
           height: dotStyle.height,
@@ -6151,6 +6153,11 @@ try {
       missingPill.dot?.background === missingPill.error,
     "the missing skill state is not on the error tint",
     missingPill,
+  );
+  check(
+    generatedPill.columnGap === "2px" && editedPill.columnGap === "2px" && missingPill.columnGap === "2px",
+    "the skill state pill does not gap its dot from the word by the 2px hairline step",
+    { generated: generatedPill.columnGap, edited: editedPill.columnGap, missing: missingPill.columnGap },
   );
   for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
     check(
