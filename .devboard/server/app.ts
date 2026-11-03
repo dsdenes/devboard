@@ -2,7 +2,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readlinkSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -36,7 +35,6 @@ import {
   type DiscoverAgentId,
 } from "./agents/registry";
 import {
-  AcpConnection,
   agentPrompt,
   type AcpActivity,
   type AcpQuestion,
@@ -82,11 +80,10 @@ import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./releas
 import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
 import { readMcpOptimizerSettings } from "../mcp-optimizer/settings";
 import { mcpOptimizerPromptTemplate } from "../mcp-optimizer/synthesize";
-import { openJournal, type Journal, type JournalKind } from "./journal";
+import { openJournal, type Journal } from "./journal";
 import { toolListPayload } from "../mcp/catalog";
 import { toolInvocationCounts } from "../mcp/invocations";
 import {
-  DISCOVER_SKILLS,
   artifactsStale,
   confirmGlossaryTerm,
   declaredCommandAliases,
@@ -151,7 +148,6 @@ import {
 import {
   isHarnessSourceCheckout,
   readHarnessVersion,
-  hostHarnessDir,
   runningHarnessDir,
   runnableHarnessDir,
   serverVersion,
