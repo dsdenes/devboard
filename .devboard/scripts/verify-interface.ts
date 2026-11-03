@@ -1343,7 +1343,7 @@ async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
     async () => {
       try {
         const response = await fetch(ready, {
-          ...VERIFY_DASHBOARD_AUTHORIZATION,
+          headers: VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(1500),
         });
         return response.ok ? true : undefined;
@@ -1799,7 +1799,9 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
+    // The turn stays active long enough for the bar to render its running
+    // state, and still ends well inside the Discover observation window.
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=4000 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
     // Harness-owned reporting goes through the local Gitea API stub, never
     // through `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
@@ -11931,9 +11933,10 @@ try {
       ADRS_DIR: join(runStateHost, "adrs"),
       GOAL_FILE: join(runStateHost, "GOAL.md"),
       STATE_DIR: runStateDir,
+      // One agent turn that finishes inside the sheet's observation window.
       AGENT_COMMAND:
         `bun ${stubAgent} --log=${runStateLog} --delay-ms=2500 --questions=1 ` +
-        `--prepare-skills --discover --discover-delay-ms=15000 --goal-draft ` +
+        `--prepare-skills --discover --discover-delay-ms=3000 --goal-draft ` +
         `--flow-implement --flow-question`,
     },
     stdio: ["ignore", "pipe", "pipe"],

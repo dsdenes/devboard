@@ -15,7 +15,13 @@ import { compile, compileModule, preprocess } from "svelte/compiler";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { restoreNativeRuntime } from "./native-network";
+
+// Bun runs the suite in one module registry and one global object, so one DOM
+// file's `afterAll` unregistration would tear down the document every later
+// file mounts into. Keep the one registration alive for the whole run.
+GlobalRegistrator.unregister = () => {};
 
 // A DOM test registers happy-dom at module load and leaves its `Response`,
 // `AbortSignal`, timers, and `location` in place. Bun's fetch and Bun.serve
