@@ -91,29 +91,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * The issue number a URL names in `repository`, or undefined when the URL is
- * not that repository's issue. Host aliases (localhost, 127.0.0.1) do not
- * matter; the owner/name path and the number do.
- */
-export function issueNumberInRepository(
-  url: string,
-  repository: string,
-): number | undefined {
-  let parsed: URL;
-  try {
-    parsed = new URL(url.trim());
-  } catch {
-    return undefined;
-  }
-  const match = /\/issues\/(\d+)\/?$/.exec(parsed.pathname);
-  if (match === null) return undefined;
-  const number = Number(match[1]);
-  const suffix = `/${repository}/issues/${number}`;
-  const path = parsed.pathname.replace(/\/+$/, "");
-  return path.endsWith(suffix) ? number : undefined;
-}
-
-/**
  * Reads the records the dedup peer's MCP write tools appended. A candidate
  * with neither a filing nor a duplicate record stays pending; there is no
  * coverage object to validate.

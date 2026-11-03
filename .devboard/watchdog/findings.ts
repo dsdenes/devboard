@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
 import {
   normalizeEvidenceLine,
   parseTimestamp,
@@ -62,13 +61,6 @@ export interface Finding {
   instances: Instance[];
   /** Stable identity across cycles and hosts: category and normalized line. */
   fingerprint: string;
-}
-
-/** Source paths are reported relative to the repository when they live inside it. */
-export function normalizeSource(root: string, path: string): string {
-  const resolved = resolve(path);
-  const prefix = `${resolve(root)}/`;
-  return resolved.startsWith(prefix) ? resolved.slice(prefix.length) : resolved;
 }
 
 /**
