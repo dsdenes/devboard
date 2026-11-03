@@ -566,7 +566,7 @@ try {
     async () => {
       try {
         const response = await fetch(`http://127.0.0.1:${port}/ready`, {
-          ...VERIFY_DASHBOARD_AUTHORIZATION,
+          headers: { ...VERIFY_DASHBOARD_AUTHORIZATION },
           signal: AbortSignal.timeout(2000),
         });
         return response.ok ? true : undefined;

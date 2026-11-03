@@ -3243,8 +3243,8 @@ try {
     };
   })()`);
   check(
-    devboardSidebar.entries === 2 &&
-      devboardSidebar.items === 11 &&
+    devboardSidebar.entries === 3 &&
+      devboardSidebar.items === 12 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify([
           "Auto Scout",
@@ -3269,14 +3269,15 @@ try {
           "open.devboard.consistent-naming",
           "open.devboard.release-train",
         ]),
-    "the Devboard sidebar does not carry the background agents beside the two page entries",
+    "the Devboard sidebar does not carry the background agents beside the three page entries",
     devboardSidebar,
   );
   check(
-    JSON.stringify(devboardSidebar.labels) === JSON.stringify(["MCP tools", "Skills"]) &&
+    JSON.stringify(devboardSidebar.labels) ===
+      JSON.stringify(["MCP tools", "Skills", "Complexity"]) &&
       JSON.stringify(devboardSidebar.commands) ===
-        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills"]),
-    "the Devboard sidebar entries are not the MCP tools and Skills pages",
+        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills", "devboard.tab.complexity"]),
+    "the Devboard sidebar entries are not the MCP tools, Skills, and Complexity pages",
     devboardSidebar,
   );
   check(devboardSidebar.toolNames.length === 0, "a tool name leaked into the sidebar", devboardSidebar);
@@ -3606,7 +3607,7 @@ try {
   const devboardSidebarAfterAdd = await page.eval<number>(
     `document.querySelectorAll('[data-testid="sidebar"] [data-testid="devboard-tab"]').length`,
   );
-  check(devboardSidebarAfterAdd === 2, "a skill directory changed the sidebar entry count", devboardSidebarAfterAdd);
+  check(devboardSidebarAfterAdd === 3, "a skill directory changed the sidebar entry count", devboardSidebarAfterAdd);
   await rm(devboardExtraSkill, { recursive: true, force: true });
   await page.reload();
   await showDevboardSkills();
@@ -7095,7 +7096,7 @@ try {
   );
   const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/feedback`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...VERIFY_DASHBOARD_AUTHORIZATION.headers },
+    headers: { "content-type": "application/json", ...VERIFY_DASHBOARD_AUTHORIZATION },
     body: JSON.stringify({ action: "REPORT", report: "disabled check" }),
   });
   const refusal = await refused.text();
