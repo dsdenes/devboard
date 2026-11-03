@@ -8105,15 +8105,20 @@ export function createApp(options: AppOptions) {
         // The document carries the page's credential; every other asset is inert.
         attachDashboardCookie(headers, relative, cookieName);
         const head = request.method === "HEAD";
+        // A file answer is not correlated with the call that asked for it: the
+        // body and every header are decided by the path and Accept-Encoding, so
+        // a `public, max-age=31536000, immutable` asset is one shared cache
+        // entry for every client. An echoed `X-Flow-ID` would let a shared
+        // cache replay one client's flow id to another, and listing it in
+        // `Vary` instead would make every hashed asset uncacheable for any
+        // client that sends one. So these answers bypass `reply`.
         if (!acceptsGzip(request.headers.get("accept-encoding"))) {
-          return reply(new Response(head ? null : file, { headers }));
+          return new Response(head ? null : file, { headers });
         }
         headers["Content-Encoding"] = "gzip";
         // A HEAD response keeps the negotiated headers without paying for a body
         // it never carries.
-        return reply(
-          new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers }),
-        );
+        return new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers });
       } catch (error) {
         return reply(internalErrorResponse(request, "GET static", error, flowId));
       }
