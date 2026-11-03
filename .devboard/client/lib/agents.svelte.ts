@@ -1,4 +1,4 @@
-import { agentRegistry } from "../../server/agents/registry";
+import { agentRegistry } from "../../lib/agent-registry.ts";
 import type {
   AgentActivityDetail,
   AgentDescriptor,

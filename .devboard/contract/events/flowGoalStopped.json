@@ -1,0 +1,7 @@
+{
+  "type": "flowGoalStopped",
+  "frame": {
+    "type": "flowGoalStopped",
+    "completed": false
+  }
+}

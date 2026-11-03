@@ -1,37 +1,31 @@
-FROM oven/bun:1-slim AS build
+# The Devboard harness runs as one native binary. The client is embedded at
+# compile time, so the build stage needs only the Rust toolchain and the image
+# carries no Node, Bun, or npm.
+FROM rust:1.88-bookworm AS build
 
-WORKDIR /app
+WORKDIR /src
 
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY shadow ./shadow
+COPY omp ./omp
+COPY templates ./templates
+RUN cargo build --release -p devboard
 
-COPY index.html tsconfig.json vite.config.ts svelte.config.js ./
-COPY lib ./lib
-COPY client ./client
-COPY public ./public
-COPY server ./server
-COPY issues ./issues
-COPY watchdog ./watchdog
-RUN bun run build
+FROM debian:bookworm-slim
 
-FROM oven/bun:1-slim
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
-COPY package.json bun.lock ./
-RUN bun install --production --frozen-lockfile
-
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/server ./server
-COPY --from=build /app/issues ./issues
-COPY --from=build /app/watchdog ./watchdog
-COPY --from=build /app/lib ./lib
+COPY --from=build /src/target/release/devboard /usr/local/bin/devboard
+RUN mkdir -p /data /repo/adrs
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
 ENV ADRS_DIR=/repo/adrs
-ENV NODE_ENV=production
+ENV STATE_DIR=/data
 
 EXPOSE 8080
 
-CMD ["bun", "run", "server/index.ts"]
+ENTRYPOINT ["devboard", "serve"]

@@ -1,0 +1,8 @@
+{
+  "type": "askError",
+  "frame": {
+    "type": "askError",
+    "conversationId": "missing",
+    "message": "The ask has no element context."
+  }
+}

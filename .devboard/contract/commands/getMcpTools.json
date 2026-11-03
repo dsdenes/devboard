@@ -1,0 +1,1031 @@
+{
+  "command": "getMcpTools",
+  "token": "contract-token",
+  "scenarios": [
+    {
+      "name": "request",
+      "send": "{\"type\":\"getMcpTools\"}",
+      "agentArgs": [
+        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getMcpTools.log"
+      ],
+      "delayMs": 100,
+      "frames": [
+        {
+          "type": "mcpTools",
+          "tools": [
+            {
+              "name": "agent_session_read",
+              "title": "Read one agent session",
+              "description": "Reads one ACP peer transcript in message order, bounded by rows and bytes. Each message carries index, timestamp, role, bounded text, tool name, the error flag, usage, and a failure fingerprint.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            },
+            {
+              "name": "agent_session_search",
+              "title": "Search agent sessions",
+              "description": "Case-insensitive substring search across this repository's ACP peer transcripts, newest session first. At most 100 matches with a 200-character snippet.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200
+                  }
+                },
+                "required": [
+                  "query"
+                ]
+              }
+            },
+            {
+              "name": "agent_sessions_list",
+              "title": "List agent sessions",
+              "description": "Lists this repository's ACP peer transcripts newest first with id, relative path, start time, title, relative cwd, message count, tool-error count, tokens, and cost.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "since": {
+                    "type": "string"
+                  },
+                  "until": {
+                    "type": "string"
+                  },
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "covers": [
+                "rg --files",
+                "find .devboard/.tmp/providers"
+              ]
+            },
+            {
+              "name": "background_agent_control",
+              "title": "Control a background agent",
+              "description": "Delegates start, stop, set_settings, or disable_timer to the single live dashboard for this repository and returns its resulting agent snapshot.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "start",
+                      "stop",
+                      "set_settings",
+                      "disable_timer"
+                    ]
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "minutes": {
+                    "type": "integer"
+                  },
+                  "maxPerHour": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "maxPending": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "action",
+                  "id"
+                ]
+              }
+            },
+            {
+              "name": "background_agent_get",
+              "title": "Read one background agent",
+              "description": "Returns one background agent's snapshot from the live dashboard, or its persisted state when no dashboard is live.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            },
+            {
+              "name": "background_agents_list",
+              "title": "List background agents",
+              "description": "Returns every background agent's snapshot from the live dashboard, or the persisted state when no dashboard is live.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            },
+            {
+              "name": "design_release_request",
+              "title": "Request a Design System release",
+              "description": "Records the documentation release summary and rationale beside the cycle's edited draft documents. The worker commits, pushes, waits for the release workflow, and publishes; the request path is returned.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "cycleDir": {
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "rationale": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "cycleDir",
+                  "summary",
+                  "rationale"
+                ]
+              }
+            },
+            {
+              "name": "devboard_status",
+              "title": "Read Devboard status",
+              "description": "Returns the resolved repository root, harness directory, state directory, the checkout's branch, upstream, and ahead/behind counts, live dashboard port and pid when one exists, and the harness version state.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              },
+              "covers": [
+                "git rev-parse --show-toplevel"
+              ]
+            },
+            {
+              "name": "discover_contribution_stage",
+              "title": "Stage a Discover contribution sheet",
+              "description": "Writes the contribution agent's complete staged contribution.json and returns its path and schema version. Publication validates and publishes it.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "stagingDir": {
+                    "type": "string"
+                  },
+                  "contribution": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "stagingDir",
+                  "contribution"
+                ]
+              }
+            },
+            {
+              "name": "discover_glossary_stage",
+              "title": "Stage a Discover glossary",
+              "description": "Writes one bounded context's UbiLang glossary YAML as the run's staged glossary document and returns its path and context id.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "stagingDir": {
+                    "type": "string"
+                  },
+                  "context": {
+                    "type": "string"
+                  },
+                  "yaml": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "stagingDir",
+                  "context",
+                  "yaml"
+                ]
+              }
+            },
+            {
+              "name": "discover_sheet_stage",
+              "title": "Stage a Discover project sheet",
+              "description": "Writes the complete project sheet as the run's staged sheet.json and returns its path and schema version. Publication validates and publishes it.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "stagingDir": {
+                    "type": "string"
+                  },
+                  "sheet": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "stagingDir",
+                  "sheet"
+                ]
+              }
+            },
+            {
+              "name": "discover_significance_stage",
+              "title": "Stage Discover significance scores",
+              "description": "Writes the glossary significance sidecar beside the staged glossaries and returns its path and schema version.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "stagingDir": {
+                    "type": "string"
+                  },
+                  "significance": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "stagingDir",
+                  "significance"
+                ]
+              }
+            },
+            {
+              "name": "discover_skill_stage",
+              "title": "Stage a Discover skill",
+              "description": "Writes one managed Discover skill with its name, one-line description, and heading-plus-bullets body, and returns its path and name.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "stagingDir": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "stagingDir",
+                  "name",
+                  "description",
+                  "body"
+                ]
+              }
+            },
+            {
+              "name": "entry_point",
+              "title": "Pick a crawl entry point",
+              "description": "Returns the repository-relative path, a line inside it, the surface, and the seed for one background-agent crawl. The same surface and seed over an unchanged eligible set return the identical path and line; an omitted seed produces a fresh one that replays the same pick. Read-only.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "surface": {
+                    "type": "string",
+                    "enum": [
+                      "scout",
+                      "design",
+                      "dead-code",
+                      "single-responsibility"
+                    ]
+                  },
+                  "seed": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "surface"
+                ]
+              }
+            },
+            {
+              "name": "flow_checkpoint_record",
+              "title": "Record a Flow checkpoint",
+              "description": "Appends one checkpoint for a committed coherent unit to the session's checkpoint log and returns its id, commit, and summary.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sessionDir": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "timestamp": {
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "type": "integer"
+                  },
+                  "commit": {
+                    "type": "string"
+                  },
+                  "verification": {
+                    "type": "string",
+                    "enum": [
+                      "passed",
+                      "failed",
+                      "not-run"
+                    ]
+                  }
+                },
+                "required": [
+                  "sessionDir",
+                  "commit",
+                  "summary"
+                ]
+              }
+            },
+            {
+              "name": "flow_control",
+              "title": "Control Flow mode",
+              "description": "Delegates create_goal, start_implementation, or stop_implementation to the live dashboard and returns the resulting Flow snapshot.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "create_goal",
+                      "start_implementation",
+                      "stop_implementation"
+                    ]
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            },
+            {
+              "name": "flow_steering_ack",
+              "title": "Acknowledge Flow steering",
+              "description": "Records the steering-note ids this implementation turn consumed, once each, in the session's acknowledgement log and returns the ids it wrote and the ids already recorded.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sessionDir": {
+                    "type": "string"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 200
+                  }
+                },
+                "required": [
+                  "sessionDir",
+                  "ids"
+                ]
+              }
+            },
+            {
+              "name": "flow_verification_record",
+              "title": "Record Flow verification",
+              "description": "Replaces the session's latest verification result with the command run, its status, the timestamp, and a bounded output tail, and returns the recorded status.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sessionDir": {
+                    "type": "string"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "passed",
+                      "failed",
+                      "not-run"
+                    ]
+                  },
+                  "timestamp": {
+                    "type": "string"
+                  },
+                  "output": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sessionDir",
+                  "status"
+                ]
+              }
+            },
+            {
+              "name": "flow_widgets_register",
+              "title": "Register Flow change widgets",
+              "description": "Replaces one Flow session's widget list with the supplied widgets. Each widget carries a category, concept, summary, rationale, and its changed files. The flow server reconciles identity, acceptance, and missing files.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sessionDir": {
+                    "type": "string"
+                  },
+                  "widgets": {
+                    "type": "array",
+                    "maxItems": 200,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "category": {
+                          "type": "string",
+                          "enum": [
+                            "contract",
+                            "entity",
+                            "naming",
+                            "data",
+                            "dependency",
+                            "irreversible",
+                            "structure"
+                          ]
+                        },
+                        "concept": {
+                          "type": "string"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "rationale": {
+                          "type": "string"
+                        },
+                        "files": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1,
+                          "maxItems": 200
+                        }
+                      },
+                      "required": [
+                        "category",
+                        "concept",
+                        "summary",
+                        "rationale",
+                        "files"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "sessionDir",
+                  "widgets"
+                ]
+              }
+            },
+            {
+              "name": "goal_control",
+              "title": "Control Goal mode",
+              "description": "Delegates create, revise, prepare_skills, or reset_implementation to the live dashboard and returns the resulting Goal-mode state.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "create",
+                      "revise",
+                      "prepare_skills",
+                      "reset_implementation"
+                    ]
+                  },
+                  "request": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            },
+            {
+              "name": "goal_draft_file",
+              "title": "File a goal draft as an issue",
+              "description": "Ensures the exact `goal` label, creates one issue from a goal spec's bytes, reads it back, verifies the label and byte equality, and only then removes an optional named draft.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "specPath": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "draftPath": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "specPath",
+                  "title"
+                ]
+              }
+            },
+            {
+              "name": "goal_draft_read",
+              "title": "Read a goal draft",
+              "description": "Returns one proposed-goal draft under `.devboard/goal-proposals/` verbatim.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            },
+            {
+              "name": "goal_drafts_list",
+              "title": "List goal drafts",
+              "description": "Lists the proposed-goal drafts directly under `.devboard/goal-proposals/`.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              },
+              "covers": [
+                "ls .devboard/goal-proposals",
+                "find .devboard/goal-proposals"
+              ]
+            },
+            {
+              "name": "goal_get",
+              "title": "Read the goal document",
+              "description": "Returns the goal document's text.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              },
+              "covers": [
+                "cat GOAL.md"
+              ]
+            },
+            {
+              "name": "goal_spec_write",
+              "title": "Write a goal spec",
+              "description": "Writes `.devboard/goals/<slug>.md` with the five required sections once each, a derived kebab-case slug, and the first free numeric suffix.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "objective": {
+                    "type": "string"
+                  },
+                  "successCriteria": {
+                    "type": "string"
+                  },
+                  "verification": {
+                    "type": "string"
+                  },
+                  "boundaries": {
+                    "type": "string"
+                  },
+                  "stopConditions": {
+                    "type": "string"
+                  },
+                  "slug": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "objective",
+                  "successCriteria",
+                  "verification",
+                  "boundaries",
+                  "stopConditions"
+                ]
+              }
+            },
+            {
+              "name": "issue_close",
+              "title": "Close an issue",
+              "description": "Closes one issue through the repository's own forge as completed or not planned and returns the resulting state.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "number": {
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "completed",
+                      "not planned"
+                    ]
+                  }
+                },
+                "required": [
+                  "number"
+                ]
+              }
+            },
+            {
+              "name": "issue_comment",
+              "title": "Comment on an issue",
+              "description": "Appends one Markdown comment to an existing issue and confirms the issue number that received it.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "number": {
+                    "type": "integer"
+                  },
+                  "body": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "number",
+                  "body"
+                ]
+              },
+              "covers": [
+                "gh issue comment"
+              ]
+            },
+            {
+              "name": "issue_create",
+              "title": "Create an issue",
+              "description": "Creates one issue with a one-line title, a full Markdown body, and an optional list of label names. Each label is ensured before the issue is created; the created issue's number, URL, title, and labels are returned.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "labels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 20
+                  }
+                },
+                "required": [
+                  "title",
+                  "body"
+                ]
+              },
+              "covers": [
+                "gh issue create"
+              ]
+            },
+            {
+              "name": "issue_get",
+              "title": "Read one issue",
+              "description": "Returns one issue's title, body, labels, state, and URL.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "number": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "number"
+                ]
+              },
+              "covers": [
+                "gh issue view",
+                "gh issue list"
+              ]
+            },
+            {
+              "name": "issues_control",
+              "title": "Control the Issues worker",
+              "description": "Delegates start, pause, resume, stop, or check_now to the live dashboard and returns the Issues snapshot.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "start",
+                      "pause",
+                      "resume",
+                      "stop",
+                      "check_now"
+                    ]
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            },
+            {
+              "name": "issues_list",
+              "title": "List issues",
+              "description": "Lists the repository's open and closed issues with number, title, state, labels, URL, and creation time.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "open",
+                      "closed",
+                      "all"
+                    ]
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200
+                  }
+                }
+              },
+              "covers": [
+                "gh issue list"
+              ]
+            },
+            {
+              "name": "journal_search",
+              "title": "Search the dashboard journal",
+              "description": "Filters this repository's dashboard journal records by kind, scope, window, and substring, newest first. At most 200 records and 64 KiB.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "type": "string"
+                  },
+                  "since": {
+                    "type": "string"
+                  },
+                  "until": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200
+                  }
+                }
+              }
+            },
+            {
+              "name": "lifecycle_control",
+              "title": "Control Goal-mode lifecycle",
+              "description": "Delegates start, pause, resume, stop, or start_run to the live dashboard and returns the Goal-mode state.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "start",
+                      "pause",
+                      "resume",
+                      "stop",
+                      "start_run"
+                    ]
+                  },
+                  "file": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            },
+            {
+              "name": "mcp_optimizer_proposal_skip",
+              "title": "Record an MCP optimizer family with no proposal",
+              "description": "Records why an MCP optimizer family's synthesis turn filed no issue. The coordinator records the family as skipped with this reason; nothing is queued and no answer document is read.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "family": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "family",
+                  "reason"
+                ]
+              }
+            },
+            {
+              "name": "verification_run",
+              "title": "Run a verification check",
+              "description": "Runs one allowlisted check from `.devboard/package.json` with a 900-second timeout and at most 16 KiB of captured output. The check's complete output is written to a log unique to that invocation and that path is returned as `log`; when the run settles the same output is published to `<stateDir>/<check>.log`.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "check": {
+                    "type": "string"
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 50
+                  }
+                },
+                "required": [
+                  "check"
+                ]
+              },
+              "covers": [
+                "bun test",
+                "bun run check",
+                "bun run build",
+                "bunx tsc --noEmit",
+                "bun run verify:agents",
+                "bun run verify:mcp-optimizer",
+                "bun run verify:install",
+                "bun run verify:interface",
+                "bun run verify:issues",
+                "bun run verify:mcp",
+                "bun run verify:providers",
+                "bun run verify:scout",
+                "bun run verify:single-responsibility",
+                "bun run verify:dead-code",
+                "bun run verify:ui",
+                "bun run verify:update",
+                "bun run verify:watchdog"
+              ]
+            },
+            {
+              "name": "watchdog_duplicate_record",
+              "title": "Record a watchdog duplicate",
+              "description": "Records that one watchdog candidate duplicates an open issue or another candidate in the same cycle. A duplicate creates and comments on nothing; the recorded disposition is returned.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "fingerprint": {
+                    "type": "string"
+                  },
+                  "issue": {
+                    "type": "string"
+                  },
+                  "representative": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "fingerprint"
+                ]
+              }
+            }
+          ],
+          "invocations": {}
+        }
+      ],
+      "unauthorized": {
+        "method": "GET",
+        "path": "/ws",
+        "headers": {
+          "cache-control": "no-store",
+          "content-encoding": "gzip",
+          "content-length": "116",
+          "content-type": "application/problem+json",
+          "date": "Tue, 03 Nov 2026 17:01:47 GMT",
+          "vary": "Accept-Encoding",
+          "www-authenticate": "Bearer"
+        },
+        "status": 401,
+        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+      },
+      "state": {
+        "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725309164}\n",
+        "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:01:48.202Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
+      },
+      "repository": {
+        "DESIGN.md": "# Design\n\nContract fixture.\n",
+        "GOAL.md": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n",
+        "adrs/0001-contract-accepted.md": "---\nschemaVersion: 0.2.0\nid: \"0001\"\ntitle: Contract accepted record\nstatus: accepted\ndate: 2026-01-01\ndeciders: [\"@contract\"]\n---\n# Contract accepted record\n\n## Decision\n\nUse the recorded behavior.\n",
+        "adrs/0002-contract-proposed.md": "---\nschemaVersion: 0.2.0\nid: \"0002\"\ntitle: Contract proposed record\nstatus: proposed\ndate: 2026-01-02\ndeciders: [\"@contract\"]\n---\n# Contract proposed record\n\n## Decision\n\nWait for a decision.\n"
+      }
+    },
+    {
+      "name": "malformed",
+      "send": "{\"type\":\"notAContractCommand\"}",
+      "frames": [
+        {
+          "type": "error",
+          "message": "Invalid WebSocket message."
+        }
+      ],
+      "unauthorized": {
+        "method": "GET",
+        "path": "/ws",
+        "headers": {
+          "cache-control": "no-store",
+          "content-encoding": "gzip",
+          "content-length": "116",
+          "content-type": "application/problem+json",
+          "date": "Tue, 03 Nov 2026 17:01:48 GMT",
+          "vary": "Accept-Encoding",
+          "www-authenticate": "Bearer"
+        },
+        "status": 401,
+        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+      },
+      "state": {
+        "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725310465}\n",
+        "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:01:49.506Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
+      },
+      "repository": {
+        "DESIGN.md": "# Design\n\nContract fixture.\n",
+        "GOAL.md": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n",
+        "adrs/0001-contract-accepted.md": "---\nschemaVersion: 0.2.0\nid: \"0001\"\ntitle: Contract accepted record\nstatus: accepted\ndate: 2026-01-01\ndeciders: [\"@contract\"]\n---\n# Contract accepted record\n\n## Decision\n\nUse the recorded behavior.\n",
+        "adrs/0002-contract-proposed.md": "---\nschemaVersion: 0.2.0\nid: \"0002\"\ntitle: Contract proposed record\nstatus: proposed\ndate: 2026-01-02\ndeciders: [\"@contract\"]\n---\n# Contract proposed record\n\n## Decision\n\nWait for a decision.\n"
+      }
+    }
+  ]
+}

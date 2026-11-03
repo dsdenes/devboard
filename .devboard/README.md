@@ -181,47 +181,6 @@ of that state lives in `localStorage`; none of it is sent to the server. A layou
 before Devboard existed still restores every stored mode and page; Devboard starts on its default
 `MCP tools` page.
 
-### Complexity page
-
-The `Complexity` sidebar entry follows `Skills` and opens the Devboard mode's complexity page,
-`data-testid="complexity-page"`. Every figure on it comes from a recorded daily snapshot of this
-harness's own application source under `.devboard/server`, `.devboard/client`, `.devboard/lib`,
-`.devboard/scripts`, `.devboard/extensions`, `.devboard/mcp`, `.devboard/issues`,
-`.devboard/watchdog`, `.devboard/release-train`, and `.devboard/mcp-optimizer`. TypeScript,
-Svelte, JavaScript, and ESM files are measured; `*.test.ts` files and `node_modules`, `dist`,
-`.tmp`, and `public` are never read. The analyzer is a deterministic token scanner inside the
-dashboard process: it needs no parser, external binary, network call, or runtime dependency, and
-two analyses of the same unchanged tree produce the same values.
-
-One snapshot records three levels. Per function it records cyclomatic complexity (1 plus `if`,
-`for`, `while`, `do`, `catch`, `case`, `&&`, `||`, `??`, and a ternary `?` in its own body), source
-length in lines, maximum brace-block nesting, and parameter count. Per file it records
-non-blank, non-comment lines of code, function count, duplicated-line ratio, and a maintainability
-index clamped to 0-100 and derived from Halstead volume, mean cyclomatic complexity, and lines of
-code. Per project it records file count, function count, total lines of code, mean and maximum
-cyclomatic complexity, the number of functions above cyclomatic complexity 10, the duplicated-line
-ratio, and the mean maintainability index. A line counts as duplicated when its normalized tokens
-(comments removed, at least four tokens) appear more than once across the analyzed set.
-
-The page renders `data-testid="complexity-summary"` with the latest snapshot's date, its recording
-timestamp, and the recorded-date count; one `data-testid="complexity-card"` per project metric with
-`data-metric` and the latest `data-value`; one `data-testid="complexity-series"` per project metric
-with `data-points`, one `data-testid="complexity-series-point"` per recorded date carrying
-`data-date` and `data-value`, and a `data-testid="complexity-series-latest"` marker on the newest
-point; and one `data-testid="complexity-file-table"` whose `data-testid="complexity-file-row"` rows
-carry `data-path` and one `data-testid="complexity-cell"` per per-file metric. Each series is
-scaled to its own range, so a changed value between two dates moves its point and its line
-direction. Clicking any `data-testid="complexity-sort"` header orders the table by that column, and
-a second click reverses it; the default order is the file path.
-
-Snapshots live in `<stateDir>/complexity/<24-hex project key>/<YYYY-MM-DD>.json`, the same project
-key the journal and dashboard state use, and nowhere else. The server records exactly one snapshot
-per UTC calendar day: at server start and whenever the UTC date changes while it runs, it records
-that day when and only when no file for it exists. A restart, a page open, a reload, a reconnect,
-or a later check on the same day writes no second file, which needs no background worker,
-detached process, or service. `DEVBOARD_COMPLEXITY_NOW` pins the analyzed instant for a fixture
-host or a verification run; the real clock is used when it is unset or unparseable.
-
 ### Single-agent activity bar
 
 Every page whose work is exactly one agent leads its workspace with the same pinned bar. It is
@@ -380,15 +339,8 @@ scrollback, and expose their full buffer to assistive technology.
 Server errors and notices appear in the notification region (`data-testid="notifications"`) with
 severity, the subsystem or the exact agent label that raised them, text, and dismissal. Each card
 closes itself after five seconds; every entry stays in the history opened from the status bar.
-An error card files one UI issue by itself through `/feedback`, with no operator click: the issue
-carries the notification's text, severity, source, raise time, the card context, and the fixed
-instruction `Investigate this error and fix it if it is needed.`, and the card links to it as
-`Open issue`. A later error with the same severity, source, and text in the same page session
-files nothing and links to the issue filed for the first. Warning notifications keep the
-`File issue` button and file the same way when it is clicked. When automatic filing fails, or
-reporting is disabled because `DEVBOARD_GITEA_URL` is absent, the card reads
-`Issue not filed:` with the reason and reveals the `File issue` button again, so a retry files
-the issue and replaces the message with the issue link.
+Every error and warning card also carries `File issue`: it files that notification's text and card
+context as a UI issue through `/feedback` at once, then replaces itself with the issue URL.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's
@@ -417,8 +369,8 @@ The right group states the running lane count, the issues worker state with a st
 watchdog's last action and age, the OS notifications control, and the running and second
 version; each metric carries a 10px uppercase label so its meaning never rests on color. On a
 source checkout the second value is labeled `source` and names the source version a restart
-would load; on an installed host it is labeled `installed` and names the package under the npm
-prefix. `running` is always the version the process actually loaded, so the two differ, and
+would load; on an installed host it is labeled `installed` and names the binary and manifest
+beside the running one. `running` is always the version the process actually loaded, so the two differ, and
 `stale` is true, only while a restart would load different code. The reload control
 (`reload-devboard`) appears only when a replacement could not start; its accessible name and
 title name both versions, and clicking it retries the same launcher. A successful replacement
@@ -430,28 +382,21 @@ action group, not the status bar.
 
 ### Verifying the interface
 
-```bash
-cd .devboard
-bun run verify:interface
-```
-
-The script builds the client, seeds a fixture host under `.devboard/.tmp` with eight ADRs and
-real Discover artifacts produced by the stub ACP peer, starts a source dashboard, launches
-headless Chrome with a profile under the same tree, and asserts the shell, modes, sidebar,
-pages, splits, palette, shortcuts, theme and first paint, layout persistence and reset, the
-1024×720 boundary, dense tables, read-only documents, xterm terminals, contrast, reduced motion,
-notifications, status bar, preserved test hooks, and the absence of exceptions, console errors,
-failed requests, and overflow. It writes screenshots under `.devboard/.tmp/interface/`.
+The client is built with `bun run build`, embedded into the binary by
+`bun scripts/embed-client.mjs`, and served from memory. Start a private dashboard with
+`cargo run -p devboard -- serve --port <free> --state-dir <dir> --repo-dir <dir>` and open it in
+a browser; the corpus tests cover the protocol and HTTP behavior the page depends on.
 
 ### Developing the client
 
-The Bun server serves the built client and owns the WebSocket, so no dev server runs during
-normal use. For client work with Vite HMR, start the server first, then Vite in another shell:
+The dashboard binary serves the embedded client and owns the WebSocket, so no dev server runs
+during normal use. For client work with Vite HMR, start the server first, then Vite in another
+shell:
 
 ```bash
 cd .devboard
-bun run start   # backend, http://127.0.0.1:8080 by default
-bun run dev     # client with HMR, http://127.0.0.1:5173 by default
+cargo run -p devboard -- serve   # backend, http://127.0.0.1:8080 by default
+bun run dev                      # client with HMR, http://127.0.0.1:5173 by default
 ```
 
 Vite proxies `/ws`, `/api`, `/feedback`, and `/goal-proposals` to `DEVBOARD_BACKEND` (default
@@ -464,12 +409,9 @@ goal drafting fails the same way. Both entries come from `lib/endpoints.ts`, whi
 the server read too, so the three cannot disagree about a path.
 
 The backend requires its dashboard token on the `/ws` upgrade, and the page carries that token in
-an `HttpOnly` cookie the backend sets when it serves `index.html` to a credentialed request. The
-server prints that document's address with a `?bootstrap=<value>` handshake, and only that address
-or a request that already presents the cookie is served the document: an anonymous `GET /` answers
-`401`. Open the printed address once in the same browser profile before loading the dev page, so
-the profile holds the cookie the proxy forwards; otherwise the dev page's socket stays on
-`Connecting`.
+an `HttpOnly` cookie the backend sets on its own `index.html`. Open `http://127.0.0.1:8080/` once
+in the same browser profile before loading the dev page, so the profile holds the cookie the proxy
+forwards; otherwise the dev page's socket stays on `Connecting`.
 
 The dev server ignores the generated trees (`.tmp`, `.test-tmp`, `dist`, `coverage`). A busy
 checkout writes hundreds of thousands of files under `.tmp`; watching them reloads the page for
@@ -477,8 +419,9 @@ every agent write and eventually exhausts the dev server's heap.
 
 ## Stack
 
-- Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run
-  spawns one `omp acp` subprocess over stdio.
+- Backend: one Rust binary (Tokio and Axum) serving the embedded client and one WebSocket at
+  `/ws`. Each run spawns one `omp acp` subprocess over stdio; no Node, Bun, or npm is needed at
+  runtime.
 - Client: Svelte 5 built with Vite, with shadcn-svelte components and its Tailwind CSS 4 setup,
   Bits UI dialogs, tooltips, and popovers, PaneForge split panes, TanStack Table data grids,
   xterm.js, and Lucide icons. All workers and assets are bundled locally; the
@@ -494,97 +437,82 @@ every agent write and eventually exhausts the dev server's heap.
   survives a backend restart without leaking between repositories that share one harness install.
   See [Durable state](#durable-state).
 
+> The TypeScript runtime and its `verify:*` scripts no longer exist. Where this document
+> describes one of those scripts, it describes the behavior that the Rust test suite and the
+> contract corpus under `contract/` now prove; run `cargo test --workspace` and
+> `cargo test -p devboard-contract`.
+
 ## Install
 
-The harness is the public npm package `@dsdenes/devboard`. One tarball carries the launcher, the
-server, the client sources and built bundle, the prompts, the omp wrappers and extensions, the
-templates, and the installer. `install`, `update`, and the running dashboard resolve versions and
-artifacts from npm; no local checkout, running dashboard, or release tarball is required. When npm
-cannot resolve or serve the artifact and `DEVBOARD_GITEA_URL` is configured, the canonical Gitea
-release tarball and its `.sha256` are used for the same version. GitHub carries only a push mirror
-of this repository.
+The harness ships as native binaries built by cargo-dist. GitHub Releases carries the platform
+archives publicly: Linux x64 and arm64 for both gnu and musl, macOS x64 and arm64, plus the shell
+and PowerShell installers. Gitea is the forge where version control happens and the authority for
+release metadata: every published tag carries one Gitea release whose `devboard-manifest.json`
+asset names the version and every platform artifact with its SHA-256. Nothing publishes or reads
+an npm package.
+
+A clean machine installs the harness with the released one-command installer:
 
 ```bash
-npx @dsdenes/devboard install    # install or refresh this host
-npx @dsdenes/devboard update     # install the newest npm version; do not restart
-npx @dsdenes/devboard doctor     # one PASS or FAIL line per check
+curl -LsSf https://github.com/dsdenes/devboard/releases/latest/download/devboard-installer.sh | sh
+devboard --version
+devboard install <host>    # write the managed wrappers, skills, AGENTS.md, and .gitignore lines
+devboard doctor <host>     # exit 0 when every managed file matches the released artifact
 ```
 
-The launcher never discovers, reads, copies, or waits on another local Devboard installation or
-source checkout; it resolves the npm version and artifact for the target host alone.
+`devboard install` writes real files — `<host>/.omp/commands`, `<host>/.omp/extensions`,
+`<host>/.omp/skills/devboard-*`, `<host>/AGENTS.md`, and one `/.omp/skills/devboard-<name>` line
+per shipped skill — never symlinks, and a rerun adds nothing. A differing unmarked file stops the
+run unless `--force` is given; an unmarked host skill is never read, rewritten, or deleted.
+`devboard doctor` compares every managed skill byte-for-byte and exits nonzero on one differing
+byte; an `AGENTS.md` differing from the template is reported without failing the check.
 
-`install` refuses a target whose `.devboard/package.json` names `@dsdenes/devboard` — the
-canonical source checkout — and it stops before changing anything when `git` cannot list the
-files it tracks. The probe is never read as "nothing is tracked": a missing `git`, a timeout, or
-a dubious-ownership refusal aborts `install` and `update` instead of letting either sync over a
-tree it cannot protect.
+### Updates
 
-`install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
-`.omp/commands`, `.omp/extensions`, and `.omp/skills/devboard-*` symlinks with real directories
-that hold the installed package's files. It keeps `.devboard/.tmp`: when the old `.devboard` was a symlink, every
-non-disposable child of its `.tmp` — `state`, `journal`, `providers`, `issues`, `flow`, `coach`,
-`scout`, `design`, `watchdog`, `orchestrator`, `mcp`, and `install.json` — is copied across
-byte-identically before the symlink is replaced; only `serving/`, `updates/`, and
-`dashboard.log` are scratch the new prefix recreates. It copies the package's `prompts/`,
-`extensions/`, and `lib/` trees to `<host>/.devboard/`, copies `templates/host-AGENTS.md` to
-`<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
-and reported as drift), adds the fixed ignored paths plus one `/.omp/skills/devboard-<name>`
-line per shipped skill to `.gitignore`, and leaves exactly one dashboard running from the
-installed package. The copied trees are what the command wrappers
-open by repo-root-relative path: each command reads `.devboard/prompts/<name>.md`, each omp
-extension re-exports `.devboard/extensions/<name>.ts`, and those extensions import
-`../lib/*.ts`. The package itself stays under `.devboard/node_modules`. A reinstall keeps the
-version and `.tmp`; `update` re-copies the wrappers and the three trees from the installed
-package and never starts, stops, or restarts the dashboard. It does so even when the prefix
-already holds the newest version, so a host left on an earlier release's copies repairs itself
-without a reinstall. When the freshly started dashboard does not answer
-within 30 seconds, `install` stops that child before it exits nonzero, so a failed install leaves
-no dashboard behind.
+Every installed dashboard reads the Gitea release manifest at startup and every 60 seconds,
+downloads the artifact for its platform, verifies the manifest's SHA-256, installs it beside the
+running binary, and replaces the process without an operator click. Every connected page receives
+the replacement event, waits for the new process, and reloads once. An unreachable, invalid, or
+mismatched manifest leaves the running process serving and is journaled once per attempt. The
+`DEVBOARD_UPDATE_INTERVAL_MS` and `DEVBOARD_UPDATE_BACKOFF_MAX_MS` variables tune the cadence and
+the backoff ceiling; `DEVBOARD_GITEA_URL` names the Gitea instance and `GITEA_TOKEN` its token.
 
-`doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
-configured Gitea fallback and its digest), the installed package, the installed version against
-the newest version, `omp` and its authenticated probe, wrapper byte-equality, byte-equality of
-the copied `prompts/`, `extensions/`, and `lib/` trees, byte-equality of every shipped
-`.omp/skills/devboard-*` directory, `AGENTS.md`, the dashboard's package and HTTP response, a
-non-symlinked `.devboard`, and a recorded update failure. Drift in a regular
-`AGENTS.md` is reported without failing the check; every other mismatch exits nonzero. Gitea is
-never required: with no address configured the checks consult npm only.
+`versionState` reports `running`, `installed`, `latest`, `stale`, and `source`. `installed` is the
+version a restart would load — the manifest beside the running binary on an installed host, the
+checkout's released source version on a source checkout. The status bar labels that value
+`installed` or `source` accordingly; the reload control appears only when a replacement could not
+start.
 
 ### Publish-only source refresh
 
-A canonical source checkout — `.devboard/package.json` names `@dsdenes/devboard` and no package
-sits under `.devboard/node_modules/@dsdenes/devboard` — never installs a harness package and never
-replaces itself on an update check. One successful `cd .devboard && bun run publish` is the only
+A canonical source checkout never installs a released binary and never replaces itself on an
+update check. One successful `cargo run -p devboard -- publish` from `.devboard` is the only
 authorization for that dashboard to replace itself with the published revision. `publish` writes
-the request only after its fast-forward, dependency install, client build, release-workflow wait,
-npm-package check, and Gitea-asset check have all passed; a failed or partial publish writes no
-request.
+the request only after its fast-forward, client build, cargo-dist workflow wait, GitHub-asset
+check, and Gitea-manifest check have all passed; a failed or partial publish writes no request.
 
 A request is one JSON file, `<STATE_DIR>/source-refresh/request.json`, written atomically for each
 live dashboard whose `REPO_DIR` is the checkout and whose serving harness is that checkout's
 `.devboard`. It carries the published commit, the released version, and a deterministic SHA-256 of
 the built `.devboard/dist` tree. The dashboard re-reads it on a fixed interval and verifies that
-the current `dist` digests identically; it never runs a second build. A matching request replaces
-the process through the ordinary replacement handoff: the replacement writes a readiness marker,
-the old process stops only once that marker exists, every connected page receives
+the running binary's embedded client digests identically; it never runs a second build. A matching
+request replaces the process through the ordinary replacement handoff: the replacement writes a
+readiness marker, the old process stops only once that marker exists, every connected page receives
 `serverRestarting` and reloads once, and the applied commit is recorded in
 `<STATE_DIR>/source-refresh/applied.json` so re-delivering the same publish never restarts again.
 
 The interval is 60,000 ms and is configurable with `DEVBOARD_SOURCE_REFRESH_INTERVAL_MS`; values
 below 1,000 ms are raised to 1,000 ms. An invalid or unreadable request, a digest mismatch, a
-failed replacement spawn, or a replacement that never becomes ready leaves the old process
-serving the old bundle on the original port and journals the failure once per attempt. A valid
-pending request is retried on the interval until it succeeds or a newer publish request
-supersedes it. A new commit, a new release tag, a rebuilt `dist`, an edited source file, a page
-reload, and an npm update check never restart a source dashboard; only a valid publish request or
-the retry of one does. Installed hosts never receive or act on a source refresh request and keep
-their existing automatic-update behavior.
+failed replacement spawn, or a replacement that never becomes ready leaves the old process serving
+on the original port and journals the failure once per attempt. A new commit, a new release tag, a
+rebuilt `dist`, an edited source file, a page reload, and an update check never restart a source
+dashboard; only a valid publish request or the retry of one does. Installed hosts never receive or
+act on a source-refresh request.
 
-`--host <path>` targets another repository. `DEVBOARD_RELEASE_DIR` points the launcher and the
-server at a local directory of tarballs for offline verification and CI fixtures. `DEVBOARD_NPM`
-selects a different npm executable for those fixtures.
+`devboard install --host <path>` targets another repository. `DEVBOARD_RELEASE_URL` points the
+updater at a local manifest and artifact directory for offline verification and CI fixtures.
 
-`install.sh` still copies the agent wrappers under `omp/` into an existing host:
+`install.sh` copies the agent wrappers under `omp/` into an existing host:
 
 ```bash
 ./install.sh /path/to/host
@@ -599,7 +527,7 @@ their `/.omp/skills/devboard-<name>` lines to the host `.gitignore`, adding noth
 
 ## Skills
 
-The package ships six project-scoped skills, canonical under `.devboard/omp/skills/` and
+The package ships four project-scoped skills, canonical under `.devboard/omp/skills/` and
 installed on every install and update into `<host>/.omp/skills/<name>/` as real files:
 
 |Skill|Carries|
@@ -607,9 +535,7 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 |`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.mjs`.|
 |`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
 |`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs, with the five violation categories; the Single Responsibility worker's normative source.|
-|`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym; the Consistent Naming worker's normative source.|
-|`devboard-architectural-layering`|The architectural-layering policy: every concern belongs to one clearly defined architectural boundary, dependencies follow the architecture's defined direction, and infrastructure details never leak into business abstractions, across layered, Clean, Onion, and Hexagonal styles.|
-|`devboard-gh-stack`|A passive reference for GitHub's stacked-pull-request CLI (`gh stack`): the linear stack model, what each `gh stack` command does, merging through the stack, and the non-interactive constraints for unattended runs. No agent, prompt, or gate requires it.|
+|`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym.|
 
 Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
 Devboard mode's Skills page renders that marker as a visible `Managed` label and never renders a
@@ -632,14 +558,12 @@ The name prefix is the ownership marker, and the marked namespace is reserved fo
   or prune; a host that wants a skill of its own uses an unmarked name.
 
 `install` adds exactly one `/.omp/skills/devboard-<name>` line per shipped skill to the host
-`.gitignore` and adds nothing on a rerun. The six entries are `/.omp/skills/devboard-ui-ux`,
+`.gitignore` and adds nothing on a rerun. The four entries are `/.omp/skills/devboard-ui-ux`,
 `/.omp/skills/devboard-restful-api-implementation`,
-`/.omp/skills/devboard-single-responsibility-principle`,
-`/.omp/skills/devboard-consistent-naming`,
-`/.omp/skills/devboard-architectural-layering`, and `/.omp/skills/devboard-gh-stack`. `doctor`
-and the update verification compare each shipped skill directory with the installed package and
-exit nonzero when one byte differs; an unmarked host skill is never inspected and never fails the
-check.
+`/.omp/skills/devboard-single-responsibility-principle`, and
+`/.omp/skills/devboard-consistent-naming`. `doctor` and the update verification
+compare each shipped skill directory with the installed package and exit nonzero when one byte
+differs; an unmarked host skill is never inspected and never fails the check.
 
 The global `/setup-devboard` command runs the launcher against the invoking session's working
 directory. It lives here as `omp/commands/setup-devboard.md` and is linked into the user-level
@@ -736,15 +660,13 @@ bun install
 bun run build
 bun run check
 bunx tsc --noEmit
-ADRS_DIR="<host>/adrs" bun run start
+ADRS_DIR="<host>/adrs" cargo run -p devboard -- serve
 ```
 
 `bun run check` type-checks every `.svelte` and `.ts` file under `client/` and `server/`;
 `bunx tsc --noEmit` type-checks the TypeScript sources.
 
-Open the address the server prints, `http://127.0.0.1:8080/?bootstrap=<value>`. The document answers
-an anonymous `GET /` with `401`, so only that address, or a request that already presents the
-`HttpOnly` cookie it sets, is served the page. The server binds to `127.0.0.1` by default.
+Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
 
 ## Decision records
 
@@ -1900,7 +1822,7 @@ Operator smoke procedure, which needs network and a model endpoint and is theref
 
 ```bash
 cd .devboard
-ADRS_DIR=../adrs REPO_DIR=.. bun run start
+ADRS_DIR=../adrs REPO_DIR=.. cargo run -p devboard -- serve
 ```
 
 Open Discover, enter `https://github.com/octocat/Hello-World`, and confirm the cloning state, a
@@ -1935,32 +1857,13 @@ component that dispatches it.
   wrote, and the release, failure, and gate records come from whichever side is newer by their own
   timestamp. A release the draining worker just verified therefore survives the new worker's first
   tick.
-- One run batches every non-merge commit since the newest tag into one release. The runner on the
-  repository's registered Gitea `act_runner` — never a hosted runner and never a fallback — builds
-  the client, runs the harness suite and typecheck, packs the complete public package, publishes
-  `@dsdenes/devboard@<version>` to npmjs, and creates the Gitea release `v<version>` with notes and
-  the same tarball plus its `.sha256` as a fallback. A rerun on the same commit leaves the existing
-  npm version and release assets untouched. Nothing is published under
-  `@dsdenes/devboard-harness`.
-- The suite step is `bun run test:release`. It runs the whole harness suite under the workflow's
-  load settings (`--parallel=8 --timeout=60000`), retries the whole suite when individual tests
-  fail, and stops at the first attempt that reports no failing test, so at most nine attempts run.
-  A test that fails three consecutive whole-suite attempts is marked `test.skip(` in the step's
-  own working copy before the next attempt, and every marked registration is restored byte for
-  byte before the step ends: no commit, push, tag, or tracked-file change carries the quarantine,
-  and the checkout, `main`, and the packed package are untouched. One issue per skipped test is
-  filed in the checkout's origin forge, deduplicated by the test name in its title — a repeat of
-  the same flake appends one comment instead of a second issue. The step exits 0 so the later
-  typecheck, client-check, and publish steps still run and the version still ships. Filing is best
-  effort: an unreachable forge or a refused token prints one line naming the failure and never
-  blocks the release.
-- A structural suite failure is never retried or skipped. A file that does not compile or import,
-  a crashed runner, or output with no per-test result exits the step nonzero, files nothing, and
-  fails the workflow, so a flaky test unblocks the release while a suite that cannot run does not.
-  The step adds no `continue-on-error`, path exclusion, name filter, `--retry`, shard, or second
-  suite definition. This supersedes the earlier rule that forbade any retry, skip, filter, or
-  second attempt for the release suite step.
-- A failing workflow conclusion, a missing npm version, missing release assets, or a rejected
+- One run batches every non-merge commit since the newest tag into one release. `devboard
+  publish` bumps the workspace version, commits and tags the released commit, and dispatches
+  `.github/workflows/release.yml` for that tag. cargo-dist builds the six platform archives and the
+  shell and PowerShell installers and publishes them to GitHub Releases; the same tag then carries
+  a Gitea release holding `devboard-manifest.json` and the checksums. A rerun on the same commit
+  leaves the existing GitHub assets and Gitea release untouched.
+- A failing workflow conclusion, a missing GitHub asset, a missing Gitea manifest, or a rejected
   derived version records the failure with its detail, ships nothing, and leaves the range
   unreleased. The next due tick starts a new run without operator action; a failed run is never
   recorded as released.
@@ -1970,12 +1873,9 @@ component that dispatches it.
   cadence moves a full interval ahead. A failed tick is never re-gated every second, and the page
   reports the error instead of the previous verdict.
 - The worker verifies a run in three phases and names the one that failed with the version it
-  applies to: `tag binding:` when no release tag names or contains the released commit,
-  `npm visibility:` when the version never appears on npmjs, and `Gitea release assets:` when the
-  release or one of its two assets is missing. A phase never reports another phase's wording.
-- npm's propagation lag is not a failure: the npm read is retried for up to ten minutes before the
-  run is recorded failed, so a version the publish accepted minutes ago is seen once it reaches
-  the registry edge the read hits.
+  applies to: `tag binding:` when no release tag names or contains the released commit, `GitHub
+  assets:` when a platform archive or installer is missing, and `Gitea manifest:` when the release,
+  its manifest, or a checksum is missing. A phase never reports another phase's wording.
 
 The release version is semver derived from Conventional Commits. The first release of this line
 is `1.0.0` while the highest published release is still below it. Every later release takes the
@@ -1989,9 +1889,10 @@ before it derives anything, and when the derived version is not newer than the f
 published release — the checkout predates that tag — it re-derives the range from the release's
 own commit, read from the local tag or from the forge's tag ref, so one run publishes the next
 version instead of re-deriving the version already out. And a tag the step would report must name
-`HEAD` or contain it: a tag at a commit that is neither is a refusal before the tarball is packed,
-before npm is written, and before a release record is reused, so a stale checkout cannot report
-`release: v<version> is published` for a release that does not carry its commit.
+`HEAD` or contain it: a tag at a commit that is neither is a refusal before the archive is built,
+before the GitHub release is dispatched, and before a release record is reused, so a stale
+checkout cannot report `release: v<version> is published` for a release that does not carry its
+commit.
 
 The release step refuses a range that contains a commit
 whose subject is not `<type>[(<scope>)][!]: <description>`, with `<type>` one of
@@ -2005,80 +1906,64 @@ refuses anything that is not the source harness at `<checkout>/.devboard`. A rej
 each offending `<sha> <subject>` and the rule it broke. Reword the commits with
 `git commit --amend` or an interactive rebase and push again; never pass `--no-verify`.
 
-A release takes the `latest` dist-tag only when its version is newer than every version already
-published; otherwise it publishes under the `next` tag. npm refuses to move `latest` backwards,
-so this keeps an out-of-order release publishable without rewriting the tag. A runner that
-executes release jobs concurrently must also point `DEVBOARD_RELEASE_LOCK` at a path its jobs
-share: the release step then serialises the npm publish and release creation through that lock,
-so the next job sees the previous version before it chooses its tag. Without the variable the
-step is unchanged and assumes one release at a time.
+A release is always the newest version: the Release Train derives it from the newest reachable
+tag, so an out-of-order release publishes nothing. A runner that executes release jobs concurrently
+must point `DEVBOARD_RELEASE_LOCK` at a path its jobs share; the release step serialises the
+version bump, the tag push, and the Gitea manifest write through that lock, so the next job sees
+the previous version before it chooses its tag. Without the variable the step assumes one release
+at a time.
 
-The Release Train's release agent fetches canonical `main` and runs `bun run publish` from the
-integration checkout. That path refuses a worktree, a branch other than `main`, or a checkout
-ahead of or diverged from its canonical remote; fetches and fast-forwards `main` without
-discarding uncommitted work; installs dependencies and rebuilds `dist/`; dispatches
-`.gitea/workflows/devboard-release.yml` for the checked-out `main` tip when that tip has no usable
-run and waits for that run; reads the release tag the workflow created for the commit and fails
-when none exists, so the reported version is the one that workflow published and never a locally
-counted value; verifies the Gitea release assets and `npm view @dsdenes/devboard@<version>
-version`; pushes the `github` mirror remote's `main` and the release tags, then proves `main` is
-the published commit or a descendant that still contains it (another agent may merge while the
-release workflow runs); and reports every running dashboard's running and installed version. It
+The Release Train's release agent fetches canonical `main` and runs `cargo run -p devboard --
+publish` from the integration checkout. That path refuses a worktree, a branch other than `main`,
+or a checkout ahead of or diverged from its canonical remote; fetches and fast-forwards `main`
+without discarding uncommitted work; rebuilds the client and refreshes the embedded asset copy;
+derives the version from the commits after the newest reachable `v<version>` tag; bumps the
+workspace version, commits it, and pushes the commit and tag to Gitea; dispatches
+`.github/workflows/release.yml` for that tag when it has no usable run and waits for the run;
+verifies every platform archive and installer on the GitHub release and the checksums on the Gitea
+release; publishes `devboard-manifest.json` to that Gitea release; pushes the `github` mirror
+remote's `main` and the release tags, then proves `main` is the published commit or a descendant
+that still contains it; and reports every running dashboard's running and installed version. It
 never restarts a dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and
 propagation wait (default 1800 seconds). No other prompt, worker, or operator invokes it; the
 implementing agent closes its issue after the push proof, and the Design System pushes its
 documentation commit and reports.
 
-Installed dashboards update themselves: each checks the newest npm version at startup and every
-60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
-staging prefix, and replaces itself with the installed version without an operator click. Every
-connected page receives `serverRestarting`, waits for the replacement, and reloads once. The
-running process never restarts itself on a canonical source checkout, where no package exists
-under `.devboard/node_modules/@dsdenes/devboard`. After the package is in place it runs the
-same wrapper and harness-tree sync `install` runs, with the same git-tracked paths left
-untouched, so `.omp/commands`, `.omp/extensions`, `.omp/mcp.json`, and
-`.devboard/{prompts,extensions,lib,scripts/forge-auth.ts}` match the installed package before
-the check reports the install — except a path the host tracks, which `update` neither deletes nor
-overwrites. The server copies its client bundle from the
-installed package into `<stateDir>/serving/<pid>-<version>` at startup and serves that copy, so
-replacing the package changes only what a restart loads; an open page keeps requesting the bytes
-it started with. If npm cannot serve the artifact and
-`DEVBOARD_GITEA_URL` is configured, the same version's Gitea tarball is verified against its
-`.sha256` and installed instead. The npm child always runs in
-that staging directory, and the dashboard starts from the host root rather than the replaceable
-package directory, so replacing the package never leaves a child with a deleted working
-directory. `versionState` reports `running`, `installed`, `latest`, and `stale`. A newer installed
-version replaces the running server without a click and reloads every connected page. When a
-replacement cannot start, the running version keeps serving, `versionState.replacement` carries
-both versions and the failure, the journal records it, and the reload control retries the
-launcher; the control is absent on the normal path. A dashboard serving the canonical source
-checkout reads neither side from the checked-in manifest: it reports the newest release tag
-reachable from its `HEAD` on both sides, so an unreleased commit on top never changes the number
-and an unpacked checkout never claims `0.1.0`. After `bun run publish` the source checkout's
-`running` is the version that tag just published.
+Installed dashboards update themselves: each reads the Gitea release manifest at startup and every
+60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), selects the artifact for its platform,
+verifies the manifest's SHA-256, installs it beside the running binary, and replaces itself
+without an operator click. Every connected page receives `serverRestarting`, waits for the
+replacement, and reloads once. The running process never restarts itself on a canonical source
+checkout, where the harness is a source tree rather than an installed artifact. After the binary
+is in place it syncs `.omp/commands`, `.omp/extensions`, `.omp/skills/devboard-*`, and
+`AGENTS.md` from the released artifact before the check reports the install, leaving every
+unmarked host file untouched. The client is embedded in the binary, so a replacement changes both
+the served client and the server at once; an open page keeps the bytes it started with until it
+reloads. A failed download, checksum, authentication, or install leaves the previous binary and
+the running server intact. A Gitea instance that is unreachable or serves an unreadable release
+description is journaled once per attempt and retried with exponential backoff
+(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it never records the range as released.
 
-A check that cannot use the feed — an offline host, an unreachable Gitea API, a DNS or proxy
-failure, a refused or reset connection, a timeout, an API rate limit, or an answer that is not a
-readable release description (a proxy page, a truncated body, an unexpected payload) — leaves the
-previous package and server intact, writes an `activity` record naming the skipped check, and
-retries with exponential backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for
-the operator, never an `update-error` finding. A registry that advertises a version but does not
-serve that version's own tarball yet (npm answers 404 or 410) is the same kind of external,
-temporary refusal: the install is skipped with an `activity` record and retried with the backoff.
-A check that reaches the feed and fails, a release without a tag, a missing dependency tarball, a
-checksum mismatch, an authentication failure, or any other failed npm install writes `update-error`
-and is retried the same way.
+`versionState` reports `running`, `installed`, `latest`, and `stale`. A newer installed version
+replaces the running server without a click and reloads every connected page. When a replacement
+cannot start, the running version keeps serving, `versionState.replacement` carries both versions
+and the failure, the journal records it, and the reload control retries the launcher; the control
+is absent on the normal path. A dashboard serving the canonical source checkout reads neither side
+from the installed manifest: it reports the newest release tag reachable from its `HEAD` on both
+sides, so an unreleased commit on top never changes the number and an unpacked checkout never
+claims `0.1.0`. After `cargo run -p devboard -- publish` the source checkout's `running` is the
+version that tag just published.
 
 |Variable|Default|Purpose|
 |---|---|---|
 |`HOST`|`127.0.0.1`|Listen address.|
 |`PORT`|`8080`|Listen port.|
 |`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
-|`DEVBOARD_DASHBOARD_TOKEN`|generated at startup|Bearer credential for `POST /feedback`, `POST /goal-proposals`, `GET` and `HEAD /goal-proposals/<name>`, and the `/ws` upgrade; the page receives it as an `HttpOnly`, `SameSite=Strict` cookie and a programmatic client sends `Authorization: Bearer <token>`. The same value stays in the process environment so a replacement keeps authenticating an open page.|
+|`DEVBOARD_DASHBOARD_TOKEN`|generated at startup|Bearer credential for `POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade; the page receives it as an `HttpOnly`, `SameSite=Strict` cookie and a programmatic client sends `Authorization: Bearer <token>`. The same value stays in the process environment so a replacement keeps authenticating an open page.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
-|`STATIC_DIR`|`dist`|Built client directory.|
+|`STATIC_DIR`|unset|Client directory to serve; unset serves the client embedded in the binary.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
 |`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
@@ -2088,7 +1973,7 @@ and is retried the same way.
 |`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`|`30000`|How often a connected dashboard re-reads the origin's open issues for the Open issues list; at least 1000. Independent of the Issues worker.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads the newest Gitea release over the public HTTP API.|
-|`DEVBOARD_RELEASE_LOCK`|unset|Lock path shared by a runner's jobs; the release step serialises its npm publish and release creation through it. Set it when one runner executes releases concurrently.|
+|`DEVBOARD_RELEASE_LOCK`|unset|Lock path shared by a runner's jobs; the release step serialises its version bump, tag push, and Gitea manifest write through it. Set it when one runner executes releases concurrently.|
 |`DEVBOARD_GITEA_URL` / `GITEA_URL`|unset|Gitea HTTP origin; an HTTP(S) `origin` remote supplies it when unset, and a source-checkout dashboard discovers a local SSH Gitea listener. Installed hosts never probe.|
 |`GITEA_TOKEN`|unset|Gitea credential for issue, PR, scout, and watchdog writes; public reads need none.|
 
@@ -2206,8 +2091,7 @@ sends one settings command. The Devboard sidebar has two groups in order: `Backg
 `open-devboard-dead-code`, `open-devboard-mcp-optimizer`, `open-devboard-api-standards`,
 `open-devboard-single-responsibility`, then
 `open-devboard-release-train`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
-`Devboard sections` (the `devboard-tab` MCP tools, Skills, and Complexity entries). The Issues
-sidebar carries no
+`Devboard sections` (the `devboard-tab` MCP tools and Skills entries). The Issues sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
 queue.
@@ -2344,15 +2228,9 @@ All five pages render one `agent-issues` table with columns Title, Category, Fil
 Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
-(`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). The zero-row
-region `agent-issues-empty` carries `data-sync` with the page's read state and renders two bodies:
-after a successful read (`sync.at` set, `sync.error` null) it is the inbox composition with
-`No issues filed yet` and the agent's one-line explanation, naming the agent; before the first
-successful read, or while `sync.error` is set, it is `agent-issues-unread`, whose title is
-`The tracker has not been read yet` or `The tracker could not be read` and whose copy
-`agent-issues-unread-copy` names the last read and, on failure, the reason. An unread or failed
-zero-row table therefore never claims the tracker is empty. `agent-issues-count` counts the rows.
-Auto Scout maps its GitHub title and creation time;
+(`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). With no rows,
+`agent-issues-empty` renders the same inbox composition on every page, naming the agent.
+`agent-issues-count` counts the rows. Auto Scout maps its GitHub title and creation time;
 Watchdog keeps `[watchdog] <category>: <line>`; Design System and Dead Code keep their finding
 title with its category.
 
@@ -2387,10 +2265,9 @@ chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
 currently `POST /feedback`, `/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
-HEAD` for every other method, `POST /goal-proposals`, `GET` and `HEAD /goal-proposals/<name>`
-with its `401` and `404` answers, the `/ws` upgrade with its refusal and method handling, and the
-static-file fallback, together with any route added later. The audit input carries every
-TypeScript file under `<REPO_DIR>/.devboard/server` that
+HEAD` for every other method, `POST /goal-proposals`, the `/ws` upgrade
+with its refusal and method handling, and the static-file fallback, together with any route added
+later. The audit input carries every TypeScript file under `<REPO_DIR>/.devboard/server` that
 defines routing, request parsing, or responses (tests and fixtures excluded), so a route added to
 that directory appears in the next cycle with no engine change. The WebSocket messages carried
 after an upgrade, the MCP tool contract, and the static asset contents are not audited.
@@ -2430,7 +2307,7 @@ comments on, closes, relabels, or edits an issue. The worker writes only under
 repository root, and deletes nothing there.
 
 Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
-the canonical source checkout lacks `.devboard/server` (an installed npm prefix is refused), the
+the canonical source checkout carries no Rust source tree (an installed binary is refused), the
 REST skill's `SKILL.md` or reference is unreadable, the reference carries no rule table, the
 origin is not a supported forge, or its account cannot write. When the repository lacks the exact
 `api-standards` label, preflight creates it with its documented color and description before
@@ -2519,7 +2396,7 @@ state remain below the panel on every page.
 
 Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
 the canonical source checkout lacks `.devboard/client`, either document is absent, the origin is
-not a supported forge, the account cannot write, or `git`, `bun`, `npm`, or the release credential
+not a supported forge, the account cannot write, or `git`, `gh`, or the release credential
 is missing. When the repository lacks the exact `design` label, preflight creates it with its
 documented color and description before Start proceeds; a failed creation refuses Start naming the
 forge error. Start publishes `starting` before the spawn and `running` once the state is readable.
@@ -2530,10 +2407,9 @@ inside the checkout, and the worker's audit input never leaves the repository ro
 
 ### Entry points for background-agent crawls
 
-Auto Scout, Design System, Dead Code, Single Responsibility, and Consistent Naming each begin a
-cycle from one seeded entry point instead of a fixed survey. The Devboard MCP tool `entry_point`
-accepts a `surface` of `scout`, `design`, `dead-code`, `single-responsibility`, or
-`consistent-naming` and an optional `seed`,
+Auto Scout, Design System, Dead Code, and Single Responsibility each begin a cycle from one
+seeded entry point instead of a fixed survey. The Devboard MCP tool `entry_point` accepts a
+`surface` of `scout`, `design`, `dead-code`, or `single-responsibility` and an optional `seed`,
 and returns the chosen repository-relative `path`, a 1-based `line` inside that file, the
 `surface`, and the `seed` used. It is read-only, absent from the mutating-tool set, creates no
 file, and refuses an unknown surface, an empty eligible set, or a path that resolves outside the
@@ -2552,9 +2428,7 @@ shaped like code or a style rule, so a Ruby or Go host is not limited to this pr
 TypeScript layout. The `single-responsibility` pool is that same source set narrowed to
 components: a `*.test.*` or `*.spec.*` file is excluded, and so is any file under a
 `fixtures/`, `tests/`, or `stubs/` directory, because a test, a fixture, and a stub describe
-another unit's contract. The `consistent-naming` pool is that same component source set, because
-a concept's name is audited in code and not in a test, a fixture, or a stub; it spans every
-source tree the host writes, the server and the client alike. No pool follows a symbolic link, and every entry is proven inside the
+another unit's contract. No pool follows a symbolic link, and every entry is proven inside the
 real repository root. A directory the walk cannot read is refused, never skipped: the picker
 throws one `EntryPointError` naming every such directory by its repository-relative path and the
 reason, so a pool that omits a subtree is never reported as a repository that lacks those files.
@@ -2671,24 +2545,20 @@ trimmed — equals that of any `single-responsibility` issue in any state, any o
 draft-goal heading. The prompt reads the tracker and skips duplicates, and `issue_create`
 enforces the same guard for the `single-responsibility` label and files nothing for a duplicate.
 The page's limits are each empty (unlimited) or an integer 1 through 100, defaulting to 10 per
-rolling hour and 5 open. The caps count every `single-responsibility` issue the forge read
-returns, whether or not its body still passes the proof: the hourly cap counts every such issue
-created in the last rolling 60 minutes in any state, and the pending cap every open one; one
-cycle files at most the smaller room and 100. A filing whose evidence quote drifted therefore
-keeps its slot, even though it publishes no row. A zero room files nothing and records every skip
-in activity, and a failed forge read files nothing while keeping the last known rows.
-`agent-cadence` defaults to 60 minutes, accepts 1 through 1440, persists across reload and
-restart, applies to a running worker without a restart, and starts no cycle sooner than that
-interval after the previous cycle start.
+rolling hour and 5 open. The hourly cap counts every `single-responsibility` issue created in the
+last rolling 60 minutes in any state; the pending cap counts every open one; one cycle files at
+most the smaller room and 100. A zero room files nothing and records every skip in activity, and
+a failed forge read files nothing while keeping the last known rows. `agent-cadence` defaults to
+60 minutes, accepts 1 through 1440, persists across reload and restart, applies to a running
+worker without a restart, and starts no cycle sooner than that interval after the previous cycle
+start.
 
 The worker files nothing itself. It reads the MCP tool log's `issue_create` records, re-reads
 each created issue from the origin, and publishes a row only for an issue it read back carrying
 the `single-responsibility` label and a body whose category, skill path, directive, component,
 evidence quote, refactor, and acceptance criteria all verify. A filing that fails that proof is
-recorded in activity as a verification failure and is not published as a row; the periodic read
-records the same failure when a published row stops proving, so the drop is visible in the newest
-cycle's activity; a tool error files nothing and is recorded, never claimed as a filing. The
-issue lands in the origin: on GitHub
+recorded in activity as a verification failure and is not published as a row; a tool error files
+nothing and is recorded, never claimed as a filing. The issue lands in the origin: on GitHub
 through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
 `forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue
 is open and `implemented` once it is closed, and records a failed sync in `agent-sync-error`
@@ -2709,112 +2579,6 @@ proves the entry, the shared page, the seeded entry point, the excluded test and
 one issue per component and violation with provenance, the five-category restriction, dedupe, the
 caps, the label, the preflight refusals, the read-only checkout, single flight, and activity
 freshness against a stub ACP peer and a stub `gh`.
-
-### Consistent Naming
-
-Consistent Naming is the `consistent-naming` descriptor. Its sidebar entry
-`open-devboard-consistent-naming` opens the shared `agent-page` with
-`data-agent="consistent-naming"`: the same core id sequence every background-agent page renders,
-exactly one of `agent-start`/`agent-stop`, `agent-cadence`, `agent-last-run`, `agent-next-run`,
-`agent-limit-hour`, `agent-limit-pending`, `agent-issues`, `agent-issues-count`, `agent-sync-at`,
-and the pinned `agent-activity-bar`. It renders no `agent-detail` and no `agent-documentation`
-panel, and `agent-count-consistent-naming` equals the rendered row count. Its prompt section shows
-`.devboard/prompts/consistent-naming.md`, the file the `/consistent-naming` command reads, as
-read-only bytes exactly like the Auto Scout prompt.
-
-The normative source is the project OMP skill
-`<REPO_DIR>/.omp/skills/devboard-consistent-naming/SKILL.md`. It is the only normative text of a
-cycle: the agent reads it once and quotes it verbatim. Its `## Architectural Violations` section
-publishes exactly seven categories:
-
-- `synonymous naming` — the same concept appears under two or more names;
-- `semantic ambiguity` — one name denotes more than one concept, or its meaning depends on where
-  it is read;
-- `inconsistent vocabulary` — the same concept is named differently across layers, modules, tests,
-  or documentation;
-- `misleading naming` — a name suggests a meaning the concept does not have;
-- `unnecessary terminology` — a new term is introduced for a concept that already has a name;
-- `conceptual collision` — two distinct concepts share one name within a context;
-- `implementation-driven naming` — a concept is named after its current implementation detail.
-
-A candidate outside those seven is recorded in activity and never filed. Every issue carries
-exactly one concept and exactly one category: two violations proved on one concept are two issues,
-and one violation proved on two concepts is two issues. Never two of either in one issue.
-
-Each cycle writes `<REPO_DIR>/.devboard/.tmp/consistent-naming/cycles/<id>/request.json` naming
-the `surface`, `seed`, `entryPoint`, the seven `categories`, the `skillPath`, every published
-glossary path in `glossaries`, the normalized `knownTitles`, `issueRoom`, `maxPerHour`,
-`maxPending`, and `createdAt`, runs one ACP turn with that directory as its working directory, and
-writes nothing in the checkout. The crawl starts at the seeded entry point, follows imports,
-exports, references, callers, and callees outward, records the reachable region in activity, and
-admits only evidence inside that region.
-
-The name is not local to the file that showed it. Once a cycle has a concept and the name in use,
-it searches the whole repository for that name — server source, client source, tests, and
-documentation alike — and `## Occurrences` lists every line the rename must touch as a
-repository-relative `path` with a `lines` span. The list must be complete: every line that uses
-the name appears inside one listed span, and no listed span lacks a use. The worker proves that
-completeness itself by repeating the search over `.git`, `node_modules`, `dist`, `.worktree`, and
-`.devboard/.tmp` excluded, so a filing that omits one layer is recorded as a verification failure
-and never published. A concept used by a client component and its server handler is one concept
-and one issue.
-
-Where the repository publishes UbiLang glossaries at
-`.omp/discover/glossary/<bounded-context>.glossary.yaml`, that glossary is the authoritative
-vocabulary of its bounded context. An issue about a concept a glossary defines names the glossary
-path, its preferred label, and the concept id, and its proposed name is that preferred label. A
-name the glossary assigns to a different concept is reported in `## Glossary conflict` with the
-same three facts and never silently renamed into a new synonym. The published glossaries are the
-authority, never a rename target: the occurrence search does not list them.
-
-A filed issue carries the category, the one concept, the name in use, the proposed name, the
-skill path, the category's directive bullet quoted verbatim, the reason the name is inconsistent,
-at least one repository-relative `path:lines` evidence entry with a quote copied from exactly
-those lines, the complete occurrence list, the concrete rename, and binary acceptance criteria.
-A naming issue proposes only a vocabulary change: it never changes behavior, and a step-by-step
-structural refactor belongs in no section. The title is one plain line of at most 200 characters
-with no prefix, and the labels are exactly `["consistent-naming"]`.
-
-A candidate is a duplicate when its normalized title — lowercased, whitespace runs collapsed,
-trimmed — equals that of any `consistent-naming` issue in any state, any open issue, or any
-draft-goal heading. The prompt reads the tracker and skips duplicates, and `issue_create`
-enforces the same guard for the `consistent-naming` label and files nothing for a duplicate. The
-page's limits are each empty (unlimited) or an integer 1 through 100, defaulting to 10 per rolling
-hour and 5 open. The hourly cap counts every `consistent-naming` issue created in the last
-rolling 60 minutes in any state; the pending cap counts every open one; one cycle files at most
-the smaller room and 100. A zero room files nothing and records every skip in activity, and a
-failed forge read files nothing while keeping the last known rows. `agent-cadence` defaults to
-60 minutes, accepts 1 through 1440, persists across reload and restart, applies to a running
-worker without a restart, and starts no cycle sooner than that interval after the previous cycle
-start.
-
-The worker files nothing itself. It reads the MCP tool log's `issue_create` records, re-reads each
-created issue from the origin, and publishes a row only for an issue it read back carrying the
-`consistent-naming` label and a body whose category, skill path, directive, concept, names,
-evidence quote, occurrence list, rename, and acceptance criteria all verify. A filing that fails
-that proof is recorded in activity as a verification failure and is not published as a row; a tool
-error files nothing and is recorded, never claimed as a filing. The issue lands in the origin: on
-GitHub through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
-`forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue is
-open and `implemented` once it is closed, and records a failed sync in `agent-sync-error` without
-dropping rows.
-
-Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
-the skill is missing, unreadable, or resolves outside the repository, the state directory is
-outside the checkout, the origin is not a supported forge, the account cannot write, `omp` or `gh`
-is missing, the `/consistent-naming` command is not installed, or the `consistent-naming` label
-cannot be created with its documented color and description. At most one cycle runs at a time per
-checkout: Start during a cycle, a cadence change, a page open, a tab restore, or a reload starts no
-second cycle, and a replacement dashboard drains an older live worker of the family. Stop ends the
-worker and leaves the settings and filed rows. State lives at
-`<STATE_DIR>/consistent-naming/<journalKey(REPO_DIR)>/`, the lock and cycles stay inside
-`<REPO_DIR>/.devboard/.tmp/consistent-naming/`, and a cycle leaves `git status --porcelain` and
-`git rev-parse HEAD` unchanged. `bun run verify:consistent-naming` proves the entry, the shared
-page, the seeded entry point, the excluded test and fixture files, both-layer coverage, one issue
-per concept and violation with provenance, the seven-category restriction, the repository-wide
-occurrence list, the glossary authority and conflict rule, the vocabulary-only proposed change,
-dedupe, the caps, the label, the preflight refusals, the read-only checkout, single flight, and
-activity freshness against a stub ACP peer and a stub `gh`.
 
 ## Harness watchdog
 
@@ -3626,14 +3390,6 @@ runs `gh`, files an issue, creates a worktree or branch, or writes a goal spec; 
 is created. The report panel's `Goal` action and the path that opens a draft and starts it from
 its row are unchanged.
 
-The `POST /goal-proposals` answer carries `links.draft.href` and sends the same value as
-`Location`: an absolute `http:` URL on the dashboard's own host, `/goal-proposals/<name>`. That
-route requires the dashboard credential, serves the written Markdown as
-`text/markdown; charset=utf-8` for `GET` and `HEAD`, and negotiates gzip through `Accept-Encoding`:
-a request that accepts gzip receives `Content-Encoding: gzip`, a request that does not receives the
-identity bytes, and both declare `Vary: Accept-Encoding`. An unknown or traversal name answers a
-404 Problem JSON, and the route never exposes a `file:` URI.
-
 Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
 the state badge for this draft's run only (absent while the run is `idle`) and, while this draft
 runs, `issues-draft-stop` (`issues.draft.stop`). Starting an elaboration is the row's job: each
@@ -3923,12 +3679,8 @@ a conversation is never resumed from storage.
 text it posts `report`, the Ask turns as `turns` when the panel has one, and the same captured
 element context to `POST /goal-proposals`; the server writes one Markdown draft under
 `<REPO_DIR>/.devboard/goal-proposals/` and answers `201` with the common hypertext control
-object `{ "links": { "draft": { "href": "http://<dashboard>/goal-proposals/<file>.md" } } }`,
-carrying the draft's absolute URI on the dashboard's own host, plus a `Location` header naming
-that same URI. `GET` and `HEAD` on that URI require the dashboard credential and serve the
-written Markdown as `text/markdown; charset=utf-8`, gzip-encoded when the request accepts that
-coding and with `Vary: Accept-Encoding` either way; an unknown or traversal name answers a 404
-Problem JSON and a request without the credential a 401. An idempotent
+object `{ "links": { "draft": { "href": "file:///…/.devboard/goal-proposals/<file>.md" } } }`,
+carrying the draft's absolute URI, plus a `Location` header naming that same URI. An idempotent
 replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
@@ -3959,10 +3711,7 @@ or oversized key is refused with `400`.
 Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
 dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
 on that request's response — including the `101` a `/ws` upgrade answers with, which carries it on
-the upgrade's own headers because the upgrade assembles that response itself, and excepting the
-`GET`/`HEAD` answer that serves a static file: that answer belongs to the file, not to the call,
-and a content-hashed asset under it is publicly cacheable, so it carries no request-specific
-header — forwards it on the
+the upgrade's own headers because the upgrade assembles that response itself — forwards it on the
 outbound Gitea issue request `POST /feedback` makes, and records it as the scope of the
 `server-error` journal record a failed mutating request writes. A value is 1–200 printable ASCII
 characters with no spaces or control characters;
@@ -4027,18 +3776,17 @@ Every 4xx and 5xx response these routes answer is `application/problem+json` car
 the filed issue's absolute URL, plus a `Location` header naming that same URL; no top-level `url`
 property remains. An idempotent replay answers the same `201` body and the same `Location`.
 
-`POST /feedback`, `POST /goal-proposals`, the `/ws` upgrade, and `/ready` require the dashboard
-token before their handler runs. The request carries `Authorization: Bearer <token>`, which the
-server compares with its own token in constant time; a missing or wrong credential answers `401`
-with `WWW-Authenticate: Bearer`, and the request then files no issue, writes no draft, never
-upgrades the socket, and never learns the process id. The launcher owns the credential: it
-generates `DEVBOARD_DASHBOARD_TOKEN` when the environment does not supply one, passes it in the
-spawned dashboard's environment, and sends it as `Authorization: Bearer` on the readiness probe
-that matches the reported pid. Without one, the server generates a token at startup and keeps it
-in the process environment so a replacement inherits it. The page never reads the token in
-JavaScript: the `index.html` response sets the same value as an `HttpOnly`, `SameSite=Strict`
-cookie, which the browser attaches to its own socket upgrade and mutating fetches. A reverse
-proxy, a script, or a health probe that is not a page sends the bearer header.
+`POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade require the dashboard token
+before their handler runs. The request carries `Authorization: Bearer <token>`, which the server
+compares with its own token in constant time; a missing or wrong credential answers `401` with
+`WWW-Authenticate: Bearer`, and the request then files no issue, writes no draft, and never
+upgrades the socket. `/ready` stays unauthenticated because the launcher probes it before it
+holds a credential. The token comes from `DEVBOARD_DASHBOARD_TOKEN`, or is generated at startup
+when that variable is unset and kept in the process environment so a replacement inherits it. The
+page never reads the token in JavaScript: the `index.html` response sets the same value as an
+`HttpOnly`, `SameSite=Strict` cookie, which the browser attaches to its own socket upgrade and
+mutating fetches. A reverse proxy, a script, or a health probe that is not a page sends the
+bearer header.
 
 An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
 detail "An internal error occurred.": `POST /feedback` and
@@ -4519,17 +4267,12 @@ The server answers with events:
 
 ```bash
 cd .devboard
-bun test
-bun run verify:interface
-bun run verify:providers
-bun run verify:install
-bun run verify:update
-bun run verify:source-refresh
-bun run verify:ui
-bun run verify:issues
-bun run verify:scout
+cargo fmt --check --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test -p devboard-contract          # the whole contract corpus
+cargo run -p devboard-shadow -- --report ../shadow-report.json --window 1800 --iterations 100
 bun run verify:dead-code
-bun run verify:complexity
 ```
 
 `verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and

@@ -1,0 +1,8 @@
+{
+  "type": "discoverError",
+  "frame": {
+    "type": "discoverError",
+    "message": "Could not start the Data Sheet agent: No provider is configured. Open the Providers dialog (settings.providers) and add an OpenCode Go or OpenRouter API key.",
+    "agent": "sheet"
+  }
+}

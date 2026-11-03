@@ -1,0 +1,37 @@
+name: devboard-ci
+
+# The Release Train publishes: it dispatches the cargo-dist workflow on GitHub
+# and writes the Gitea release manifest. This workflow only proves the harness
+# on the canonical forge and never publishes anything.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: host
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Format
+        working-directory: .devboard
+        run: cargo fmt --check --all
+      - name: Lint
+        working-directory: .devboard
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        working-directory: .devboard
+        run: cargo test --workspace
+      - name: Install client dependencies
+        working-directory: .devboard
+        run: bun install --frozen-lockfile
+      - name: Build the embedded client
+        working-directory: .devboard
+        run: |
+          bun run build
+          bun scripts/embed-client.mjs
+      - name: Lint the decision corpus
+        run: npx @adrkit/cli@0.20.0 lint --dir adrs

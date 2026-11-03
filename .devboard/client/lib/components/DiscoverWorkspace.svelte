@@ -5,7 +5,7 @@
     labelText,
     TABS,
   } from "../discover-format";
-  import { DISCOVER_AGENTS } from "../../../server/agents/registry";
+  import { DISCOVER_AGENTS } from "../../../lib/agent-registry.ts";
   import { discover } from "../discover.svelte";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";

@@ -1,0 +1,1253 @@
+//! The Release Train worker: the gate, the singleton, the cadence, failed
+//! runs, drain, and the durable files under the state directory.
+//!
+//! Every fixture is a real Git repository with a local bare `origin`; every
+//! release run and verification is injected, so no test contacts a network.
+
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use devboard::workers::release_train::{
+    activity_path, check_release_train, empty_state, parse_iso_millis, read_result, read_settings,
+    read_state, read_worker_state, release_history, release_train_directory, release_train_owners,
+    release_train_worker_states, request_path, run_directory, runs_directory, state_path,
+    verify_shipped, versioned_control_directory, versioned_lock_path, versioned_worker_state_path,
+    write_command, write_state, AgentLifecycle, Clock, ForgeRelease, GateGit, GitOutcome,
+    ReleaseRunInput, ReleaseRunResult, ReleaseTrainCommand, ReleaseTrainCommit,
+    ReleaseTrainFailure, ReleaseTrainGate, ReleaseTrainGateOptions, ReleaseTrainRequest,
+    ReleaseTrainRun, ReleaseTrainRunState, ReleaseTrainTag, ReleaseTrainWorker,
+    ReleaseTrainWorkerOptions, ReleaseVerification, ReleaseVerificationOptions,
+    ReleaseVerificationPhase, RunFuture, RunReleaseFn, VerifyFn,
+};
+
+const START_ISO: &str = "2026-11-02T10:00:00.000Z";
+
+fn start_ms() -> i64 {
+    parse_iso_millis(START_ISO).expect("the fixture instant parses")
+}
+
+#[derive(Clone)]
+struct FakeClock {
+    millis: Arc<Mutex<i64>>,
+}
+
+impl FakeClock {
+    fn new(millis: i64) -> Self {
+        Self {
+            millis: Arc::new(Mutex::new(millis)),
+        }
+    }
+
+    fn now(&self) -> i64 {
+        *self.millis.lock().expect("the clock")
+    }
+
+    fn set(&self, millis: i64) {
+        *self.millis.lock().expect("the clock") = millis;
+    }
+
+    fn advance(&self, millis: i64) {
+        *self.millis.lock().expect("the clock") += millis;
+    }
+
+    fn function(&self) -> Clock {
+        let millis = self.millis.clone();
+        Arc::new(move || *millis.lock().expect("the clock"))
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Git fixtures                                                              */
+/* ------------------------------------------------------------------------ */
+
+fn scratch_root(label: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("release-train-{label}-{}", std::process::id()))
+}
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-c")
+        .arg("user.name=Release Train Fixture")
+        .arg("-c")
+        .arg("user.email=fixture@example.test")
+        .arg("-c")
+        .arg("commit.gpgsign=false")
+        .arg("-c")
+        .arg("init.defaultBranch=main")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git runs");
+    if !output.status.success() {
+        panic!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+struct Fixture {
+    root: PathBuf,
+    repo: PathBuf,
+}
+
+fn fixture(label: &str, tagged: bool) -> Fixture {
+    let root = scratch_root(label);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a fixture root");
+    let origin = root.join("origin.git");
+    let repo = root.join("repo");
+    git(
+        &root,
+        &["init", "--bare", "-q", origin.to_str().expect("a path")],
+    );
+    std::fs::create_dir_all(&repo).expect("a checkout");
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    std::fs::write(repo.join("app.txt"), "one\n").expect("a file");
+    git(&repo, &["add", "app.txt"]);
+    git(&repo, &["commit", "-q", "-m", "chore: initial commit"]);
+    if tagged {
+        git(&repo, &["tag", "v1.0.0"]);
+    }
+    git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().expect("a path")],
+    );
+    git(&repo, &["push", "-q", "-u", "origin", "main"]);
+    if tagged {
+        git(&repo, &["push", "-q", "origin", "--tags"]);
+    }
+    Fixture { root, repo }
+}
+
+fn commit(repo: &Path, subject: &str) -> String {
+    std::fs::write(repo.join("app.txt"), format!("{subject}\n")).expect("a file");
+    git(repo, &["add", "app.txt"]);
+    git(repo, &["commit", "-q", "-m", subject]);
+    git(repo, &["push", "-q", "origin", "main"]);
+    git(repo, &["rev-parse", "HEAD"])
+}
+
+struct Workspace {
+    root: PathBuf,
+    repo_dir: PathBuf,
+    state_dir: PathBuf,
+}
+
+fn workspace(label: &str) -> Workspace {
+    let root = scratch_root(label);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("repo/.devboard")).expect("a checkout");
+    std::fs::create_dir_all(root.join("state")).expect("a state directory");
+    Workspace {
+        repo_dir: root.join("repo"),
+        state_dir: root.join("state"),
+        root,
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The gate                                                                  */
+/* ------------------------------------------------------------------------ */
+
+#[tokio::test]
+async fn a_tag_at_the_branch_tip_leaves_nothing_to_release() {
+    let fixture = fixture("gate-released", true);
+    let gate = check_release_train(&fixture.repo, ReleaseTrainGateOptions::default());
+    match gate {
+        ReleaseTrainGate::Nothing {
+            target,
+            previous,
+            range,
+        } => {
+            assert_eq!(
+                previous.as_ref().map(|tag| tag.tag.as_str()),
+                Some("v1.0.0")
+            );
+            assert_eq!(target, git(&fixture.repo, &["rev-parse", "origin/main"]));
+            assert_eq!(range, format!("v1.0.0..{target}"));
+        }
+        other => panic!("expected nothing, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn one_fix_after_the_newest_tag_is_unreleased() {
+    let fixture = fixture("gate-one-fix", true);
+    let sha = commit(&fixture.repo, "fix: correct the release gate");
+    match check_release_train(&fixture.repo, ReleaseTrainGateOptions::default()) {
+        ReleaseTrainGate::Unreleased {
+            target,
+            version,
+            release_commits,
+            ..
+        } => {
+            assert_eq!(target, sha);
+            assert_eq!(version, "1.0.1");
+            assert_eq!(release_commits.len(), 1);
+            assert_eq!(release_commits[0].sha, sha);
+            assert_eq!(release_commits[0].subject, "fix: correct the release gate");
+            assert!(!release_commits[0].merge);
+        }
+        other => panic!("expected unreleased, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn only_merge_commits_after_the_tag_release_nothing() {
+    let fixture = fixture("gate-merge-only", true);
+    let tree = git(&fixture.repo, &["rev-parse", "HEAD^{tree}"]);
+    let merge = git(
+        &fixture.repo,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            "HEAD",
+            "-p",
+            "HEAD",
+            "-m",
+            "Merge branch 'already-released'",
+        ],
+    );
+    git(&fixture.repo, &["reset", "--hard", &merge]);
+    git(&fixture.repo, &["push", "-q", "origin", "main"]);
+    let gate = check_release_train(&fixture.repo, ReleaseTrainGateOptions::default());
+    assert!(matches!(gate, ReleaseTrainGate::Nothing { .. }), "{gate:?}");
+}
+
+#[tokio::test]
+async fn several_commits_after_an_older_tag_hand_over_the_range() {
+    let fixture = fixture("gate-range", true);
+    let first = commit(&fixture.repo, "fix: first correction");
+    let second = commit(&fixture.repo, "feat: add the second behavior");
+    match check_release_train(&fixture.repo, ReleaseTrainGateOptions::default()) {
+        ReleaseTrainGate::Unreleased {
+            version,
+            range,
+            release_commits,
+            ..
+        } => {
+            assert_eq!(version, "1.1.0");
+            assert_eq!(range, format!("v1.0.0..{second}"));
+            let shas: Vec<&str> = release_commits
+                .iter()
+                .map(|entry| entry.sha.as_str())
+                .collect();
+            assert_eq!(shas, vec![second.as_str(), first.as_str()]);
+        }
+        other => panic!("expected unreleased, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn no_release_tag_makes_the_whole_history_unreleased() {
+    let fixture = fixture("gate-no-tag", false);
+    match check_release_train(&fixture.repo, ReleaseTrainGateOptions::default()) {
+        ReleaseTrainGate::Unreleased {
+            target,
+            previous,
+            range,
+            version,
+            ..
+        } => {
+            assert!(previous.is_none());
+            assert_eq!(range, target);
+            assert_eq!(version, "1.0.0");
+        }
+        other => panic!("expected unreleased, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_unreadable_remote_is_a_reported_failure() {
+    let fixture = fixture("gate-bad-remote", true);
+    let missing = fixture.root.join("missing.git");
+    git(
+        &fixture.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            missing.to_str().expect("a path"),
+        ],
+    );
+    match check_release_train(&fixture.repo, ReleaseTrainGateOptions::default()) {
+        ReleaseTrainGate::Error { detail } => {
+            assert!(detail.contains("could not fetch origin/main"), "{detail}");
+        }
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_unreadable_tag_list_is_a_reported_failure() {
+    let fixture = fixture("gate-bad-tag", true);
+    let real: GateGit = Arc::new({
+        let repo = fixture.repo.clone();
+        move |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("git runs");
+            GitOutcome {
+                code: output.status.code().unwrap_or(1),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            }
+        }
+    });
+    let options = ReleaseTrainGateOptions {
+        run: Some(Arc::new(move |args: &[&str]| {
+            if args.first() == Some(&"tag") {
+                GitOutcome {
+                    code: 1,
+                    stdout: String::new(),
+                    stderr: "fatal: cannot read the tag list".to_string(),
+                }
+            } else {
+                real(args)
+            }
+        })),
+        ..ReleaseTrainGateOptions::default()
+    };
+    match check_release_train(&fixture.repo, options) {
+        ReleaseTrainGate::Error { detail } => {
+            assert!(
+                detail.contains("could not read the release tags"),
+                "{detail}"
+            );
+            assert!(detail.contains("cannot read the tag list"), "{detail}");
+        }
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The worker                                                                */
+/* ------------------------------------------------------------------------ */
+
+fn nothing_gate(target: &str) -> ReleaseTrainGate {
+    ReleaseTrainGate::Nothing {
+        target: target.to_string(),
+        previous: Some(ReleaseTrainTag {
+            tag: "v1.0.0".to_string(),
+            version: "1.0.0".to_string(),
+        }),
+        range: format!("v1.0.0..{target}"),
+    }
+}
+
+fn unreleased(target: &str, version: &str) -> ReleaseTrainGate {
+    let commit = ReleaseTrainCommit {
+        sha: target.to_string(),
+        subject: "fix: release it".to_string(),
+        merge: false,
+    };
+    ReleaseTrainGate::Unreleased {
+        target: target.to_string(),
+        previous: Some(ReleaseTrainTag {
+            tag: "v1.0.0".to_string(),
+            version: "1.0.0".to_string(),
+        }),
+        range: format!("v1.0.0..{target}"),
+        version: version.to_string(),
+        commits: vec![commit.clone()],
+        release_commits: vec![commit],
+    }
+}
+
+type GateFn = Arc<dyn Fn(&Path) -> Result<ReleaseTrainGate, String> + Send + Sync>;
+
+fn gate_ok(gate: ReleaseTrainGate) -> GateFn {
+    Arc::new(move |_repo| Ok(gate.clone()))
+}
+
+fn run_ok(runs: Arc<AtomicUsize>, version: &'static str) -> RunReleaseFn {
+    Arc::new(move |input: ReleaseRunInput| -> RunFuture {
+        runs.fetch_add(1, Ordering::SeqCst);
+        (input.activity)("the agent released it");
+        Box::pin(async move { ok_result(version) })
+    })
+}
+
+fn ok_result(version: &str) -> ReleaseRunResult {
+    ReleaseRunResult::Ok {
+        version: version.to_string(),
+        url: format!("https://forge.test/releases/tag/v{version}"),
+    }
+}
+
+fn verify_ok() -> VerifyFn {
+    Arc::new(|options: ReleaseVerificationOptions| {
+        Box::pin(async move {
+            ReleaseVerification::Ok {
+                version: options.version.clone(),
+                url: format!("https://forge.test/releases/tag/v{}", options.version),
+            }
+        })
+    })
+}
+
+fn worker(
+    workspace: &Workspace,
+    version: &str,
+    clock: &FakeClock,
+    gate: GateFn,
+    run: RunReleaseFn,
+) -> ReleaseTrainWorker {
+    let mut options = ReleaseTrainWorkerOptions::new(&workspace.repo_dir, &workspace.state_dir);
+    options.harness_version = Some(version.to_string());
+    options.manual = true;
+    options.now = Some(clock.function());
+    options.gate = Some(gate);
+    options.run_release = Some(run);
+    options.verify = Some(verify_ok());
+    options.log = Some(Arc::new(|_line: &str| {}));
+    ReleaseTrainWorker::new(options)
+}
+
+#[tokio::test]
+async fn one_worker_per_version_refuses_a_second_start() {
+    let workspace = workspace("singleton");
+    let clock = FakeClock::new(start_ms());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let target = "a".repeat(40);
+    let first = worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(nothing_gate(&target)),
+        run_ok(runs.clone(), "1.0.1"),
+    );
+    let second = worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(nothing_gate(&target)),
+        run_ok(runs.clone(), "1.0.1"),
+    );
+    assert!(first.begin());
+    assert!(
+        !second.begin(),
+        "a second worker of this version must refuse"
+    );
+    assert!(versioned_lock_path(
+        &release_train_directory(&workspace.state_dir),
+        Some("test-version")
+    )
+    .exists());
+    first.stop().await;
+    assert!(!versioned_lock_path(
+        &release_train_directory(&workspace.state_dir),
+        Some("test-version")
+    )
+    .exists());
+    assert!(second.begin());
+    second.stop().await;
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_nothing_verdict_spawns_no_agent() {
+    let workspace = workspace("nothing");
+    let clock = FakeClock::new(start_ms());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let target = "b".repeat(40);
+    let worker = worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(nothing_gate(&target)),
+        run_ok(runs.clone(), "1.0.0"),
+    );
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+    worker.stop().await;
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+    let state = worker.current_state();
+    assert!(state
+        .activity
+        .iter()
+        .any(|line| line.contains("nothing to release")));
+    assert!(state.runs.is_empty());
+    assert_eq!(
+        state.gate.as_ref().map(|gate| gate.state),
+        Some(devboard::workers::release_train::ReleaseTrainGateState::Nothing)
+    );
+    assert!(state_path(&release_train_directory(&workspace.state_dir)).exists());
+}
+
+#[tokio::test]
+async fn an_unreleased_verdict_starts_one_run_and_records_it() {
+    let workspace = workspace("unreleased");
+    let clock = FakeClock::new(start_ms());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let target = "a".repeat(40);
+    let worker = worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(unreleased(&target, "1.0.1")),
+        run_ok(runs.clone(), "1.0.1"),
+    );
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    let state = worker.current_state();
+    let release = state.release.expect("a recorded release");
+    assert_eq!(release.version, "1.0.1");
+    assert_eq!(release.url, "https://forge.test/releases/tag/v1.0.1");
+    assert_eq!(release.at, START_ISO);
+    assert_eq!(release.sha, target);
+    assert_eq!(release.range, format!("v1.0.0..{target}"));
+    assert!(state.failure.is_none());
+    assert_eq!(state.runs.len(), 1);
+    assert_eq!(state.runs[0].state, ReleaseTrainRunState::Released);
+    assert_eq!(state.runs[0].commits, Some(1));
+    let run_id = state.runs[0].id.clone();
+    assert!(state
+        .activity
+        .iter()
+        .any(|line| line == "released v1.0.1: https://forge.test/releases/tag/v1.0.1"));
+    assert!(state
+        .activity
+        .iter()
+        .any(|line| line == "the agent released it"));
+
+    let directory = release_train_directory(&workspace.state_dir);
+    assert!(state_path(&directory).exists());
+    assert_eq!(read_settings(&directory).interval_minutes, 10);
+    let worker_path = versioned_worker_state_path(&directory, Some("test-version"));
+    assert!(worker_path.exists());
+    let request: Value = serde_json::from_str(
+        &std::fs::read_to_string(request_path(&directory, &run_id)).expect("a request"),
+    )
+    .expect("request JSON");
+    assert_eq!(request["format"], 1);
+    assert_eq!(request["runId"], run_id);
+    assert_eq!(request["range"], format!("v1.0.0..{target}"));
+    assert_eq!(request["target"], target);
+    assert_eq!(request["version"], "1.0.1");
+    assert_eq!(request["previous"], "v1.0.0");
+    assert_eq!(request["releaseCommits"].as_array().map(Vec::len), Some(1));
+    let activity: Value = serde_json::from_str(
+        &std::fs::read_to_string(activity_path(&directory, &run_id)).expect("run activity"),
+    )
+    .expect("activity JSON");
+    assert!(activity
+        .as_array()
+        .expect("a list")
+        .iter()
+        .any(|line| line == "the agent released it"));
+
+    let record = read_worker_state(&worker_path).expect("the worker record");
+    assert_eq!(record.harness_version.as_deref(), Some("test-version"));
+    assert_eq!(record.lifecycle, AgentLifecycle::Running);
+    worker.stop().await;
+    let stopped = read_worker_state(&worker_path).expect("the worker record");
+    assert_eq!(stopped.lifecycle, AgentLifecycle::Stopped);
+    assert!(!stopped.enabled);
+}
+
+#[tokio::test]
+async fn a_failed_run_records_the_failure_and_retries_on_the_next_due_tick() {
+    let workspace = workspace("retry");
+    let clock = FakeClock::new(start_ms());
+    let target = "a".repeat(40);
+    let gates = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let gate = {
+        let gates = gates.clone();
+        let gate = unreleased(&target, "1.0.1");
+        Arc::new(move |_repo: &Path| {
+            gates.fetch_add(1, Ordering::SeqCst);
+            Ok(gate.clone())
+        }) as GateFn
+    };
+    let run: RunReleaseFn = {
+        let attempts = attempts.clone();
+        Arc::new(move |input: ReleaseRunInput| -> RunFuture {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                (input.activity)("the agent failed");
+                Box::pin(async move {
+                    ReleaseRunResult::failed("the release workflow concluded failure")
+                })
+            } else {
+                Box::pin(async move { ok_result("1.0.1") })
+            }
+        })
+    };
+    let worker = worker(&workspace, "test-version", &clock, gate, run);
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let state = worker.current_state();
+    assert!(
+        state.release.is_none(),
+        "a failed run marks nothing released"
+    );
+    let failure = state.failure.clone().expect("a recorded failure");
+    assert!(failure.detail.contains("concluded failure"));
+    assert_eq!(failure.sha, target);
+    assert_eq!(failure.range, format!("v1.0.0..{target}"));
+    assert_eq!(failure.version.as_deref(), Some("1.0.1"));
+    assert_eq!(state.runs[0].state, ReleaseTrainRunState::Failed);
+    assert_eq!(
+        state.runs[0].detail.as_deref(),
+        Some(failure.detail.as_str())
+    );
+    let next_run_at = parse_iso_millis(
+        worker
+            .current_worker()
+            .expect("a worker record")
+            .next_run_at
+            .as_deref()
+            .expect("a due time"),
+    )
+    .expect("a due time parses");
+    assert_eq!(next_run_at, start_ms() + 10 * 60_000);
+
+    clock.advance(9 * 60_000);
+    worker.tick_now(false).await;
+    assert_eq!(gates.load(Ordering::SeqCst), 1, "not due yet");
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+    clock.set(start_ms() + 10 * 60_000);
+    worker.tick_now(false).await;
+    assert_eq!(gates.load(Ordering::SeqCst), 2, "due after a full interval");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    let state = worker.current_state();
+    assert_eq!(
+        state
+            .release
+            .as_ref()
+            .map(|release| release.version.as_str()),
+        Some("1.0.1")
+    );
+    assert!(
+        state.failure.is_none(),
+        "a later success clears the failure"
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_thrown_gate_records_the_failure_and_holds_the_cadence() {
+    let workspace = workspace("thrown-gate");
+    let clock = FakeClock::new(start_ms());
+    let gates = Arc::new(AtomicUsize::new(0));
+    let gate = {
+        let gates = gates.clone();
+        Arc::new(move |_repo: &Path| {
+            gates.fetch_add(1, Ordering::SeqCst);
+            Err("could not read the release state".to_string())
+        }) as GateFn
+    };
+    let runs = Arc::new(AtomicUsize::new(0));
+    let worker = worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate,
+        run_ok(runs.clone(), "1.0.1"),
+    );
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+    assert_eq!(gates.load(Ordering::SeqCst), 1);
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+    let state = worker.current_state();
+    assert_eq!(
+        state
+            .failure
+            .as_ref()
+            .map(|failure| failure.detail.as_str()),
+        Some("could not read the release state")
+    );
+    let record = worker.current_worker().expect("a worker record");
+    assert_eq!(
+        record.last_error.as_deref(),
+        Some("could not read the release state")
+    );
+    assert_eq!(record.lifecycle, AgentLifecycle::Failed);
+    assert!(state
+        .activity
+        .iter()
+        .any(|line| line == "release train tick failed: could not read the release state"));
+    let next_run_at = parse_iso_millis(record.next_run_at.as_deref().expect("a due time"))
+        .expect("a due time parses");
+    assert!(next_run_at - clock.now() >= 10 * 60_000);
+
+    clock.advance(1_000);
+    worker.tick_now(false).await;
+    assert_eq!(gates.load(Ordering::SeqCst), 1, "inside the interval");
+    clock.set(next_run_at);
+    worker.tick_now(false).await;
+    assert_eq!(
+        gates.load(Ordering::SeqCst),
+        2,
+        "the next due tick gates again"
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_run_directory_that_cannot_be_created_fails_the_tick_without_wedging() {
+    let workspace = workspace("thrown-run-dir");
+    let clock = FakeClock::new(start_ms());
+    let target = "a".repeat(40);
+    let gates = Arc::new(AtomicUsize::new(0));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let gate = {
+        let gates = gates.clone();
+        let gate = unreleased(&target, "1.0.1");
+        Arc::new(move |_repo: &Path| {
+            gates.fetch_add(1, Ordering::SeqCst);
+            Ok(gate.clone())
+        }) as GateFn
+    };
+    let worker = worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate,
+        run_ok(runs.clone(), "1.0.1"),
+    );
+    assert!(worker.begin());
+    let directory = release_train_directory(&workspace.state_dir);
+    std::fs::write(runs_directory(&directory), "").expect("a regular file where runs belong");
+    worker.tick_now(true).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+    let state = worker.current_state();
+    let failure = state.failure.clone().expect("a recorded failure");
+    assert!(
+        failure.detail.to_lowercase().contains("not a directory"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(failure.sha, target);
+    assert_eq!(failure.version.as_deref(), Some("1.0.1"));
+    assert_eq!(state.runs[0].state, ReleaseTrainRunState::Failed);
+    assert_eq!(worker.current_worker().expect("a record").active_run, None);
+    let next_run_at = parse_iso_millis(
+        worker
+            .current_worker()
+            .expect("a record")
+            .next_run_at
+            .as_deref()
+            .expect("a due time"),
+    )
+    .expect("a due time parses");
+    clock.advance(1_000);
+    worker.tick_now(false).await;
+    assert_eq!(gates.load(Ordering::SeqCst), 1);
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+    std::fs::remove_file(runs_directory(&directory)).expect("remove the blocker");
+    clock.set(next_run_at);
+    worker.tick_now(false).await;
+    assert_eq!(gates.load(Ordering::SeqCst), 2);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    assert!(worker.current_state().failure.is_none());
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_tick_during_an_active_run_starts_no_second_run() {
+    let workspace = workspace("active-run");
+    let clock = FakeClock::new(start_ms());
+    let target = "a".repeat(40);
+    let runs = Arc::new(AtomicUsize::new(0));
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let run: RunReleaseFn = {
+        let runs = runs.clone();
+        let release = release.clone();
+        Arc::new(move |_input: ReleaseRunInput| -> RunFuture {
+            runs.fetch_add(1, Ordering::SeqCst);
+            if let Some(sender) = started_tx.lock().expect("the sender").take() {
+                let _ = sender.send(());
+            }
+            let release = release.clone();
+            Box::pin(async move {
+                release.notified().await;
+                ok_result("1.0.1")
+            })
+        })
+    };
+    let worker = Arc::new(worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(unreleased(&target, "1.0.1")),
+        run,
+    ));
+    assert!(worker.begin());
+    let first = {
+        let worker = worker.clone();
+        tokio::spawn(async move { worker.tick_now(true).await })
+    };
+    started_rx.await.expect("the run started");
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    worker.tick_now(true).await;
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "a second tick starts nothing"
+    );
+    release.notify_one();
+    first.await.expect("the first tick");
+    assert_eq!(
+        worker
+            .current_state()
+            .release
+            .map(|release| release.version),
+        Some("1.0.1".to_string())
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn drain_stops_after_the_active_run_and_publishes_stopped_state() {
+    let workspace = workspace("drain");
+    let clock = FakeClock::new(start_ms());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let worker = worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(unreleased(&"c".repeat(40), "1.0.1")),
+        run_ok(runs.clone(), "1.0.1"),
+    );
+    assert!(worker.begin());
+    let directory = release_train_directory(&workspace.state_dir);
+    let control = versioned_control_directory(&directory, Some("test-version"));
+    write_command(&control, &ReleaseTrainCommand::Drain).expect("a drain command");
+    worker.consume();
+    assert!(worker.is_stopping(), "drain ends the worker after its run");
+    assert_eq!(
+        worker.current_worker().expect("a record").notice.as_deref(),
+        Some("draining after the active run")
+    );
+    worker.tick_now(true).await;
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "a draining worker starts nothing"
+    );
+    worker.stop().await;
+    let record = read_worker_state(&versioned_worker_state_path(
+        &directory,
+        Some("test-version"),
+    ))
+    .expect("the worker record");
+    assert_eq!(record.lifecycle, AgentLifecycle::Stopped);
+    assert!(!record.enabled);
+    assert!(!versioned_lock_path(&directory, Some("test-version")).exists());
+    assert!(!release_train_owners(&directory)
+        .iter()
+        .any(|owner| owner.pid == std::process::id()
+            && owner.harness_version.as_deref() == Some("test-version")));
+}
+
+#[tokio::test]
+async fn two_versions_coexist_and_a_takeover_keeps_the_older_release() {
+    let workspace = workspace("takeover");
+    let clock = FakeClock::new(start_ms());
+    let target = "a".repeat(40);
+    let older = worker(
+        &workspace,
+        "0.0.9",
+        &clock,
+        gate_ok(unreleased(&target, "1.0.1")),
+        {
+            Arc::new(|input: ReleaseRunInput| -> RunFuture {
+                (input.activity)("the older worker published the release");
+                Box::pin(async move { ok_result("1.0.1") })
+            })
+        },
+    );
+    let newer_clock = FakeClock::new(start_ms() + 5_000);
+    let newer = worker(
+        &workspace,
+        "1.0.0",
+        &newer_clock,
+        gate_ok(nothing_gate(&"d".repeat(40))),
+        Arc::new(|_input: ReleaseRunInput| -> RunFuture {
+            Box::pin(async move { ReleaseRunResult::failed("must not run") })
+        }),
+    );
+    assert!(older.begin());
+    assert!(newer.begin());
+    let directory = release_train_directory(&workspace.state_dir);
+    assert!(versioned_worker_state_path(&directory, Some("0.0.9")).exists());
+    assert!(versioned_worker_state_path(&directory, Some("1.0.0")).exists());
+    assert_eq!(release_train_worker_states(&directory).len(), 2);
+    assert!(release_train_owners(&directory).len() >= 2);
+    assert!(older.current_state().runs.is_empty());
+
+    older.tick_now(true).await;
+    let released_id = older.current_state().runs[0].id.clone();
+    assert_eq!(
+        older.current_state().runs[0].state,
+        ReleaseTrainRunState::Released
+    );
+    assert!(newer.current_state().runs.is_empty());
+    newer.tick_now(true).await;
+
+    let reloaded = read_state(&directory).expect("the merged state");
+    assert_eq!(
+        reloaded
+            .release
+            .as_ref()
+            .map(|release| release.version.as_str()),
+        Some("1.0.1")
+    );
+    let row = reloaded
+        .runs
+        .iter()
+        .find(|run| run.id == released_id)
+        .expect("the older run survives the takeover");
+    assert_eq!(row.state, ReleaseTrainRunState::Released);
+    let activity = reloaded.activity.join("\n");
+    assert!(activity.contains("released v1.0.1: https://forge.test/releases/tag/v1.0.1"));
+    assert!(activity.contains("the older worker published the release"));
+    assert!(activity.contains("nothing to release"));
+    older.stop().await;
+    newer.stop().await;
+    let stopped = read_state(&directory).expect("the final state");
+    assert_eq!(
+        stopped
+            .release
+            .as_ref()
+            .map(|release| release.version.as_str()),
+        Some("1.0.1")
+    );
+}
+
+#[tokio::test]
+async fn a_recorded_failure_whose_tag_now_exists_is_verified_not_re_released() {
+    let workspace = workspace("repair-tag");
+    let repo = &workspace.repo_dir;
+    git(repo, &["init", "-q"]);
+    git(
+        repo,
+        &["commit", "--allow-empty", "-q", "-m", "fix: the release"],
+    );
+    let first = git(repo, &["rev-parse", "HEAD"]);
+    git(
+        repo,
+        &[
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "fix: the next change",
+        ],
+    );
+    let tip = git(repo, &["rev-parse", "HEAD"]);
+    git(repo, &["tag", "v1.0.1", &first]);
+    let directory = release_train_directory(&workspace.state_dir);
+    let mut state = empty_state("", repo.to_str().expect("a path"), start_ms());
+    state.failure = Some(ReleaseTrainFailure {
+        at: "2026-11-02T09:00:00.000Z".to_string(),
+        detail: "the release workflow concluded failure".to_string(),
+        sha: first.clone(),
+        range: format!("v1.0.0..{first}"),
+        version: Some("1.0.1".to_string()),
+    });
+    write_state(&directory, &state).expect("the seeded state");
+
+    let clock = FakeClock::new(start_ms());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let verifications = Arc::new(AtomicUsize::new(0));
+    let mut options = ReleaseTrainWorkerOptions::new(repo, &workspace.state_dir);
+    options.harness_version = Some("test-version".to_string());
+    options.manual = true;
+    options.now = Some(clock.function());
+    options.gate = Some(gate_ok(ReleaseTrainGate::Nothing {
+        target: tip.clone(),
+        previous: Some(ReleaseTrainTag {
+            tag: "v1.0.1".to_string(),
+            version: "1.0.1".to_string(),
+        }),
+        range: format!("v1.0.1..{tip}"),
+    }));
+    options.run_release = Some(run_ok(runs.clone(), "9.9.9"));
+    options.verify = Some({
+        let verifications = verifications.clone();
+        Arc::new(move |options: ReleaseVerificationOptions| -> Pin<
+            Box<dyn Future<Output = ReleaseVerification> + Send>,
+        > {
+            verifications.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                ReleaseVerification::Ok {
+                    version: options.version.clone(),
+                    url: "https://forge.test/releases/tag/v1.0.1".to_string(),
+                }
+            })
+        }) as VerifyFn
+    });
+    options.log = Some(Arc::new(|_line: &str| {}));
+    let worker = ReleaseTrainWorker::new(options);
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "no second release");
+    assert_eq!(verifications.load(Ordering::SeqCst), 1);
+    let state = worker.current_state();
+    assert_eq!(
+        state
+            .release
+            .as_ref()
+            .map(|release| release.version.as_str()),
+        Some("1.0.1")
+    );
+    assert!(state.failure.is_none());
+    assert_eq!(state.runs[0].state, ReleaseTrainRunState::Released);
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn release_history_reads_the_request_of_a_legacy_run() {
+    let workspace = workspace("history");
+    let directory = release_train_directory(&workspace.state_dir);
+    let legacy = run_directory(&directory, "legacy");
+    std::fs::create_dir_all(&legacy).expect("a run directory");
+    std::fs::write(
+        request_path(&directory, "legacy"),
+        serde_json::to_string(&ReleaseTrainRequest {
+            format: 1,
+            run_id: "legacy".to_string(),
+            range: format!("v1.0.0..{}", "a".repeat(40)),
+            target: "a".repeat(40),
+            version: "1.0.0".to_string(),
+            previous: None,
+            commits: Vec::new(),
+            release_commits: vec![
+                ReleaseTrainCommit {
+                    sha: "b".to_string(),
+                    subject: "fix: b".to_string(),
+                    merge: false,
+                },
+                ReleaseTrainCommit {
+                    sha: "c".to_string(),
+                    subject: "fix: c".to_string(),
+                    merge: false,
+                },
+            ],
+        })
+        .expect("request JSON"),
+    )
+    .expect("the legacy request");
+    let mut state = empty_state("", &workspace.root.to_string_lossy(), start_ms());
+    state.runs = vec![
+        ReleaseTrainRun {
+            id: "legacy".to_string(),
+            started_at: "2026-11-02T09:00:00.000Z".to_string(),
+            ended_at: Some("2026-11-02T09:30:00.000Z".to_string()),
+            state: ReleaseTrainRunState::Released,
+            range: format!("v1.0.0..{}", "a".repeat(40)),
+            target: "a".repeat(40),
+            version: Some("1.0.0".to_string()),
+            url: Some("https://forge.test/releases/tag/v1.0.0".to_string()),
+            detail: None,
+            commits: None,
+        },
+        ReleaseTrainRun {
+            id: "failed".to_string(),
+            started_at: "2026-11-02T09:00:00.000Z".to_string(),
+            ended_at: Some("2026-11-02T09:10:00.000Z".to_string()),
+            state: ReleaseTrainRunState::Failed,
+            range: "v1.0.0..abc".to_string(),
+            target: "abc".to_string(),
+            version: Some("2.0.0".to_string()),
+            url: None,
+            detail: Some("no".to_string()),
+            commits: None,
+        },
+    ];
+    let rows = release_history(&directory, Some(&state));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].version, "1.0.0");
+    assert_eq!(rows[0].commits, Some(2));
+    assert_eq!(
+        rows[0].url.as_deref(),
+        Some("https://forge.test/releases/tag/v1.0.0")
+    );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Verification                                                              */
+/* ------------------------------------------------------------------------ */
+
+fn verification_options(
+    repo_dir: &Path,
+    target: &str,
+    version: &str,
+    activity: Arc<dyn Fn(&str) + Send + Sync>,
+) -> ReleaseVerificationOptions {
+    ReleaseVerificationOptions {
+        repo_dir: repo_dir.to_path_buf(),
+        target: target.to_string(),
+        version: version.to_string(),
+        environment: std::collections::HashMap::new(),
+        state_dir: repo_dir.join(".tmp"),
+        activity,
+        refresh: Some(Arc::new(|_repo: &Path| GitOutcome::ok(String::new()))),
+        npm_view: None,
+        read_release: None,
+        sleep: Some(Arc::new(|_ms: u64| Box::pin(async {}))),
+        npm_window_ms: Some(40),
+        npm_poll_ms: Some(5),
+    }
+}
+
+#[tokio::test]
+async fn verification_retries_the_npm_read_then_records_the_assets() {
+    let fixture = fixture("verify-retry", true);
+    let head = git(&fixture.repo, &["rev-parse", "HEAD"]);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mut options =
+        verification_options(&fixture.repo, &head, "1.0.0", Arc::new(|_line: &str| {}));
+    options.npm_view = Some({
+        let reads = reads.clone();
+        Arc::new(
+            move |_version: String| -> Pin<Box<dyn Future<Output = GitOutcome> + Send>> {
+                let read = reads.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if read < 2 {
+                        GitOutcome {
+                            code: 1,
+                            stdout: String::new(),
+                            stderr: "npm error code E404".to_string(),
+                        }
+                    } else {
+                        GitOutcome::ok("1.0.0".to_string())
+                    }
+                })
+            },
+        ) as devboard::workers::release_train::NpmViewFn
+    });
+    options.read_release = Some(Arc::new(|tag: String| {
+        Box::pin(async move {
+            Ok(Some(ForgeRelease {
+                asset_names: vec![
+                    "devboard-1.0.0.tgz".to_string(),
+                    "devboard-1.0.0.tgz.sha256".to_string(),
+                ],
+                url: format!("https://forge.test/releases/tag/{tag}"),
+            }))
+        })
+    }));
+    let verified = verify_shipped(options).await;
+    assert_eq!(
+        verified,
+        ReleaseVerification::Ok {
+            version: "1.0.0".to_string(),
+            url: "https://forge.test/releases/tag/v1.0.0".to_string(),
+        }
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn verification_names_the_tag_phase_when_no_tag_carries_the_commit() {
+    let fixture = fixture("verify-tag", true);
+    let missing = "b".repeat(40);
+    let mut options =
+        verification_options(&fixture.repo, &missing, "1.0.0", Arc::new(|_line: &str| {}));
+    options.npm_view = Some(Arc::new(
+        |_version: String| -> Pin<Box<dyn Future<Output = GitOutcome> + Send>> {
+            Box::pin(async move { GitOutcome::ok("1.0.0".to_string()) })
+        },
+    ));
+    options.read_release = Some(Arc::new(|_tag: String| {
+        Box::pin(async move { Err("the Gitea phase must not run".to_string()) })
+    }));
+    match verify_shipped(options).await {
+        ReleaseVerification::Failed {
+            phase,
+            version,
+            detail,
+        } => {
+            assert_eq!(phase, ReleaseVerificationPhase::Tag);
+            assert_eq!(version, "1.0.0");
+            assert!(detail.starts_with("tag binding:"), "{detail}");
+            assert!(detail.contains(&missing[..7]), "{detail}");
+        }
+        other => panic!("expected a tag failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn verification_names_the_missing_gitea_asset() {
+    let fixture = fixture("verify-assets", true);
+    let head = git(&fixture.repo, &["rev-parse", "HEAD"]);
+    let mut options =
+        verification_options(&fixture.repo, &head, "1.0.0", Arc::new(|_line: &str| {}));
+    options.npm_view = Some(Arc::new(
+        |_version: String| -> Pin<Box<dyn Future<Output = GitOutcome> + Send>> {
+            Box::pin(async move { GitOutcome::ok("1.0.0".to_string()) })
+        },
+    ));
+    options.read_release = Some(Arc::new(|tag: String| {
+        Box::pin(async move {
+            Ok(Some(ForgeRelease {
+                asset_names: vec!["devboard-1.0.0.tgz".to_string()],
+                url: format!("https://forge.test/releases/tag/{tag}"),
+            }))
+        })
+    }));
+    match verify_shipped(options).await {
+        ReleaseVerification::Failed { phase, detail, .. } => {
+            assert_eq!(phase, ReleaseVerificationPhase::Gitea);
+            assert!(
+                detail.contains("is missing devboard-1.0.0.tgz.sha256"),
+                "{detail}"
+            );
+        }
+        other => panic!("expected a Gitea failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_run_result_document_is_read_from_the_run_directory() {
+    let workspace = workspace("result");
+    let directory = release_train_directory(&workspace.state_dir);
+    let run_dir = run_directory(&directory, "run-1");
+    std::fs::create_dir_all(&run_dir).expect("a run directory");
+    std::fs::write(
+        run_dir.join("result.json"),
+        serde_json::json!({"ok": false, "detail": "the release workflow concluded failure"})
+            .to_string(),
+    )
+    .expect("the result document");
+    assert_eq!(
+        read_result(&run_dir),
+        Some(serde_json::json!({
+            "ok": false,
+            "detail": "the release workflow concluded failure",
+        }))
+    );
+    assert_eq!(read_result(&run_directory(&directory, "absent")), None);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Types reused by the assertions                                            */
+/* ------------------------------------------------------------------------ */
+
+use serde_json::Value;

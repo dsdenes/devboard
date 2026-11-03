@@ -1,0 +1,18 @@
+{
+  "name": "static-unknown",
+  "method": "GET",
+  "path": "/missing.txt",
+  "requestHeaders": {
+    "accept-encoding": "identity"
+  },
+  "requestBody": "",
+  "status": 404,
+  "headers": {
+    "cache-control": "no-store",
+    "content-length": "100",
+    "content-type": "application/problem+json",
+    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
+    "vary": "Accept-Encoding"
+  },
+  "body": "{\"type\":\"about:blank\",\"title\":\"Not Found\",\"status\":404,\"detail\":\"The requested file was not found.\"}"
+}

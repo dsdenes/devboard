@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { discoverAgent } from "../../../server/agents/registry";
+  import { discoverAgent } from "../../../lib/agent-registry.ts";
   import { discover } from "../discover.svelte";
   import CommandButton from "./CommandButton.svelte";
 

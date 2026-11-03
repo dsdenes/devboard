@@ -1,7 +1,6 @@
 node_modules
+target
 dist
-.git
-.gitignore
-.worktree
-.devboard
-.omp
+.tmp
+.test-tmp
+contract/.work

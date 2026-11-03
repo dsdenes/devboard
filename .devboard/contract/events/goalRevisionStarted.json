@@ -1,0 +1,6 @@
+{
+  "type": "goalRevisionStarted",
+  "frame": {
+    "type": "goalRevisionStarted"
+  }
+}

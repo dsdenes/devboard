@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { agentRegistry } from "../../../server/agents/registry";
+  import { agentRegistry } from "../../../lib/agent-registry.ts";
   import { connection } from "../connection.svelte";
   import { devboard } from "../devboard.svelte";
   import type { WorkspaceTab } from "../layout.svelte";

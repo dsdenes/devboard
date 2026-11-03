@@ -1,0 +1,7 @@
+{
+  "type": "goal",
+  "frame": {
+    "type": "goal",
+    "text": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n"
+  }
+}

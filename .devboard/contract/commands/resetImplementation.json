@@ -1,0 +1,358 @@
+{
+  "command": "resetImplementation",
+  "token": "contract-token",
+  "scenarios": [
+    {
+      "name": "request",
+      "send": "{\"type\":\"resetImplementation\"}",
+      "agentArgs": [
+        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-resetImplementation.log"
+      ],
+      "delayMs": 100,
+      "frames": [
+        {
+          "type": "implementationResetStarted"
+        },
+        {
+          "type": "discoverState",
+          "state": {
+            "active": false,
+            "runId": null,
+            "startedAt": null,
+            "activeAgent": null,
+            "runningAll": false,
+            "allFailed": null,
+            "agents": [
+              {
+                "id": "sheet",
+                "label": "Data Sheet",
+                "command": "/discover-sheet",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "sheet",
+                  "text": null,
+                  "error": "Could not read the Data Sheet prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-sheet.md'"
+                }
+              },
+              {
+                "id": "discover-contribution",
+                "label": "Contribution Agent",
+                "command": "/discover-contribution",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-contribution",
+                  "text": null,
+                  "error": "Could not read the Contribution Agent prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-contribution.md'"
+                }
+              },
+              {
+                "id": "discover-testing-strategy",
+                "label": "Testing Strategy",
+                "command": "/discover-testing-strategy",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-testing-strategy",
+                  "text": null,
+                  "error": "Could not read the Testing Strategy prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-testing-strategy.md'"
+                }
+              },
+              {
+                "id": "discover-naming-conventions",
+                "label": "Naming Conventions",
+                "command": "/discover-naming-conventions",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-naming-conventions",
+                  "text": null,
+                  "error": "Could not read the Naming Conventions prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-naming-conventions.md'"
+                }
+              },
+              {
+                "id": "discover-coding-conventions",
+                "label": "Coding Conventions",
+                "command": "/discover-coding-conventions",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-coding-conventions",
+                  "text": null,
+                  "error": "Could not read the Coding Conventions prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-coding-conventions.md'"
+                }
+              },
+              {
+                "id": "discover-architecture-boundaries",
+                "label": "Architecture & Boundaries",
+                "command": "/discover-architecture-boundaries",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-architecture-boundaries",
+                  "text": null,
+                  "error": "Could not read the Architecture & Boundaries prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-architecture-boundaries.md'"
+                }
+              },
+              {
+                "id": "discover-glossary",
+                "label": "Glossary Agent",
+                "command": "/discover-glossary",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-glossary",
+                  "text": null,
+                  "error": "Could not read the Glossary Agent prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-glossary.md'"
+                }
+              }
+            ],
+            "interrupted": false,
+            "stale": false,
+            "warnings": [],
+            "busy": "An implementation reset is active.",
+            "error": null,
+            "remoteAvailable": false,
+            "retained": [],
+            "repository": "dsdenes/devboard",
+            "target": {
+              "kind": "host"
+            },
+            "cloning": null,
+            "manifest": null,
+            "freshness": null,
+            "sheet": null,
+            "commandAliases": [],
+            "dependencyRepositories": {},
+            "overviewLinks": {},
+            "glossaries": [],
+            "contribution": null,
+            "glossaryUsage": {},
+            "glossarySignificance": {},
+            "decisions": [],
+            "skills": []
+          }
+        },
+        {
+          "type": "error",
+          "message": "Reset refused: REPO_DIR is not the repository top level. /home/ds/devboard/.worktree/goal-rust-harness-rewrite"
+        },
+        {
+          "type": "discoverState",
+          "state": {
+            "active": false,
+            "runId": null,
+            "startedAt": null,
+            "activeAgent": null,
+            "runningAll": false,
+            "allFailed": null,
+            "agents": [
+              {
+                "id": "sheet",
+                "label": "Data Sheet",
+                "command": "/discover-sheet",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "sheet",
+                  "text": null,
+                  "error": "Could not read the Data Sheet prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-sheet.md'"
+                }
+              },
+              {
+                "id": "discover-contribution",
+                "label": "Contribution Agent",
+                "command": "/discover-contribution",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-contribution",
+                  "text": null,
+                  "error": "Could not read the Contribution Agent prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-contribution.md'"
+                }
+              },
+              {
+                "id": "discover-testing-strategy",
+                "label": "Testing Strategy",
+                "command": "/discover-testing-strategy",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-testing-strategy",
+                  "text": null,
+                  "error": "Could not read the Testing Strategy prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-testing-strategy.md'"
+                }
+              },
+              {
+                "id": "discover-naming-conventions",
+                "label": "Naming Conventions",
+                "command": "/discover-naming-conventions",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-naming-conventions",
+                  "text": null,
+                  "error": "Could not read the Naming Conventions prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-naming-conventions.md'"
+                }
+              },
+              {
+                "id": "discover-coding-conventions",
+                "label": "Coding Conventions",
+                "command": "/discover-coding-conventions",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-coding-conventions",
+                  "text": null,
+                  "error": "Could not read the Coding Conventions prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-coding-conventions.md'"
+                }
+              },
+              {
+                "id": "discover-architecture-boundaries",
+                "label": "Architecture & Boundaries",
+                "command": "/discover-architecture-boundaries",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-architecture-boundaries",
+                  "text": null,
+                  "error": "Could not read the Architecture & Boundaries prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-architecture-boundaries.md'"
+                }
+              },
+              {
+                "id": "discover-glossary",
+                "label": "Glossary Agent",
+                "command": "/discover-glossary",
+                "state": "idle",
+                "startedAt": null,
+                "endedAt": null,
+                "error": null,
+                "prompt": {
+                  "agent": "discover-glossary",
+                  "text": null,
+                  "error": "Could not read the Glossary Agent prompt: ENOENT: no such file or directory, open '{{WORK}}/repo/.devboard/prompts/discover-glossary.md'"
+                }
+              }
+            ],
+            "interrupted": false,
+            "stale": false,
+            "warnings": [],
+            "busy": null,
+            "error": null,
+            "remoteAvailable": false,
+            "retained": [],
+            "repository": "dsdenes/devboard",
+            "target": {
+              "kind": "host"
+            },
+            "cloning": null,
+            "manifest": null,
+            "freshness": null,
+            "sheet": null,
+            "commandAliases": [],
+            "dependencyRepositories": {},
+            "overviewLinks": {},
+            "glossaries": [],
+            "contribution": null,
+            "glossaryUsage": {},
+            "glossarySignificance": {},
+            "decisions": [],
+            "skills": []
+          }
+        },
+        {
+          "type": "implementationResetStopped",
+          "completed": false
+        }
+      ],
+      "unauthorized": {
+        "method": "GET",
+        "path": "/ws",
+        "headers": {
+          "cache-control": "no-store",
+          "content-encoding": "gzip",
+          "content-length": "116",
+          "content-type": "application/problem+json",
+          "date": "Tue, 03 Nov 2026 17:03:23 GMT",
+          "vary": "Accept-Encoding",
+          "www-authenticate": "Bearer"
+        },
+        "status": 401,
+        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+      },
+      "state": {
+        "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725405636}\n",
+        "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:03:24.677Z\",\n  \"error\": null,\n  \"issues\": []\n}\n",
+        "state/{{KEY24}}.json": "{\"version\":1,\"state\":{\"lifecycle\":{\"stage\":\"goal\",\"pass\":1,\"work\":null,\"paused\":false},\"lastLifecycle\":null,\"lifecycleRunning\":false,\"lifecyclePausedForManualRun\":false,\"laneSequence\":0,\"lanes\":[],\"epicStates\":[],\"parkedEpics\":[],\"knownEpics\":[],\"generationQueued\":false,\"generationAttempted\":false,\"manualSequencing\":false,\"manualRun\":null,\"goalCreation\":null,\"goalRevision\":null,\"skillsPreparation\":null,\"skillsPreparationPending\":null,\"resetActive\":false,\"restartWhenIdle\":false,\"discover\":null,\"discoverInterrupted\":false,\"discoverTarget\":null,\"children\":[]}}"
+      },
+      "repository": {
+        "DESIGN.md": "# Design\n\nContract fixture.\n",
+        "GOAL.md": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n",
+        "adrs/0001-contract-accepted.md": "---\nschemaVersion: 0.2.0\nid: \"0001\"\ntitle: Contract accepted record\nstatus: accepted\ndate: 2026-01-01\ndeciders: [\"@contract\"]\n---\n# Contract accepted record\n\n## Decision\n\nUse the recorded behavior.\n",
+        "adrs/0002-contract-proposed.md": "---\nschemaVersion: 0.2.0\nid: \"0002\"\ntitle: Contract proposed record\nstatus: proposed\ndate: 2026-01-02\ndeciders: [\"@contract\"]\n---\n# Contract proposed record\n\n## Decision\n\nWait for a decision.\n"
+      }
+    },
+    {
+      "name": "malformed",
+      "send": "{\"type\":\"notAContractCommand\"}",
+      "frames": [
+        {
+          "type": "error",
+          "message": "Invalid WebSocket message."
+        }
+      ],
+      "unauthorized": {
+        "method": "GET",
+        "path": "/ws",
+        "headers": {
+          "cache-control": "no-store",
+          "content-encoding": "gzip",
+          "content-length": "116",
+          "content-type": "application/problem+json",
+          "date": "Tue, 03 Nov 2026 17:03:25 GMT",
+          "vary": "Accept-Encoding",
+          "www-authenticate": "Bearer"
+        },
+        "status": 401,
+        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+      },
+      "state": {
+        "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725406938}\n",
+        "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:03:25.977Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
+      },
+      "repository": {
+        "DESIGN.md": "# Design\n\nContract fixture.\n",
+        "GOAL.md": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n",
+        "adrs/0001-contract-accepted.md": "---\nschemaVersion: 0.2.0\nid: \"0001\"\ntitle: Contract accepted record\nstatus: accepted\ndate: 2026-01-01\ndeciders: [\"@contract\"]\n---\n# Contract accepted record\n\n## Decision\n\nUse the recorded behavior.\n",
+        "adrs/0002-contract-proposed.md": "---\nschemaVersion: 0.2.0\nid: \"0002\"\ntitle: Contract proposed record\nstatus: proposed\ndate: 2026-01-02\ndeciders: [\"@contract\"]\n---\n# Contract proposed record\n\n## Decision\n\nWait for a decision.\n"
+      }
+    }
+  ]
+}

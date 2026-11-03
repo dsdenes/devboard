@@ -199,9 +199,9 @@ export type {
   AgentSync,
   AgentSyncState,
   AgentTimerGate,
-} from "../../server/agents/registry";
+} from "../../lib/agent-registry.ts";
 
-export type { AgentPromptState } from "../../server/agents/prompt";
+export type { AgentPromptState } from "../../lib/agent-registry.ts";
 
 export interface SkillSummary {
   name: string;

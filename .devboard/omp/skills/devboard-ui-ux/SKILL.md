@@ -26,10 +26,11 @@ fails, the workflow does not apply, but the user's underlying task is not blocke
 Run this before inspecting UI code, proposing a redesign, or touching a design-system artifact:
 
 ```bash
-bun "$(realpath skill://devboard-ui-ux)/scripts/preflight.mjs" .
+sh "$(realpath skill://devboard-ui-ux)/scripts/preflight.sh" .
 ```
 
-The script prints JSON. Read `applicable`, `checks`, `missing`, and `unverified`.
+The wrapper runs `devboard preflight ui-ux` and prints JSON. Read `applicable`, `checks`, `missing`,
+and `unverified`.
 
 ### If `unverified` is not empty
 

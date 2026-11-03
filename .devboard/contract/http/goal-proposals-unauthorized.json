@@ -1,0 +1,19 @@
+{
+  "name": "goal-proposals-unauthorized",
+  "method": "POST",
+  "path": "/goal-proposals",
+  "requestHeaders": {
+    "accept-encoding": "identity"
+  },
+  "requestBody": "{}",
+  "status": 401,
+  "headers": {
+    "cache-control": "no-store",
+    "content-length": "113",
+    "content-type": "application/problem+json",
+    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
+    "vary": "Accept-Encoding",
+    "www-authenticate": "Bearer"
+  },
+  "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+}

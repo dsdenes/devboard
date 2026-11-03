@@ -16,7 +16,7 @@
       "command": "sh",
       "args": [
         "-c",
-        "exec bun \"$(if [ -n \"$DEVBOARD_HARNESS_DIR\" ]; then printf '%s/mcp/index.ts' \"$DEVBOARD_HARNESS_DIR\"; elif [ -n \"$PI_CODING_AGENT_DIR\" ] && [ -f \"$PI_CODING_AGENT_DIR/devboard-mcp.ts\" ]; then printf '%s/devboard-mcp.ts' \"$PI_CODING_AGENT_DIR\"; elif [ -f .devboard/mcp/index.ts ]; then printf '%s' .devboard/mcp/index.ts; else printf '%s' .devboard/node_modules/@dsdenes/devboard/mcp/index.ts; fi)\""
+        "if command -v devboard >/dev/null 2>&1; then exec devboard mcp; fi; for c in \"${DEVBOARD_HARNESS_DIR:-}\" \"$PI_CODING_AGENT_DIR/..\" .devboard; do if [ -n \"$c\" ] && [ -x \"$c/bin/devboard\" ]; then exec \"$c/bin/devboard\" mcp; fi; done; exec devboard mcp"
       ]
     }
   }

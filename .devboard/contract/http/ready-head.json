@@ -1,0 +1,17 @@
+{
+  "name": "ready-head",
+  "method": "HEAD",
+  "path": "/ready",
+  "requestHeaders": {
+    "accept-encoding": "identity"
+  },
+  "requestBody": "",
+  "status": 200,
+  "headers": {
+    "cache-control": "no-store",
+    "content-length": "0",
+    "content-type": "application/json;charset=utf-8",
+    "vary": "Accept-Encoding"
+  },
+  "body": ""
+}

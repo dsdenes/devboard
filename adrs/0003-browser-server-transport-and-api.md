@@ -2,9 +2,10 @@
 schemaVersion: 0.2.0
 id: "0003"
 title: Browser-to-backend transport and API shape
-status: accepted
+status: superseded
 date: 2026-10-19
 deciders: ["@dsdenes"]
+supersededBy: "0014"
 affects:
   - type: path
     pattern: .devboard/server/app.ts

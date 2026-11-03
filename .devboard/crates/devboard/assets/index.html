@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>Devboard</title>
+    <script>
+      (function () {
+        var theme = "dark";
+        try {
+          var stored = localStorage.getItem("devboard.theme");
+          if (stored === "light" || stored === "dark") theme = stored;
+        } catch (error) {
+          /* A blocked localStorage keeps the dark default. */
+        }
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-CEl_gUK_.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/xterm-C8zLTNGk.js">
+    <link rel="stylesheet" crossorigin href="/assets/xterm-BrP-ENHg.css">
+    <link rel="stylesheet" crossorigin href="/assets/index-DxluOdAp.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

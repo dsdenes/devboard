@@ -3,7 +3,7 @@
   import { createCommandBusy } from "../command-busy.svelte";
   import { percentText, statusText } from "../provider-label";
   import { providers } from "../providers.svelte";
-  import { PROVIDERS } from "../../../server/providers/catalog";
+  import { PROVIDERS } from "../../../lib/provider-catalog.ts";
   import type { ProviderId, ProviderSubscription } from "../types";
   import CommandButton from "./CommandButton.svelte";
   import CommandNotice from "./CommandNotice.svelte";

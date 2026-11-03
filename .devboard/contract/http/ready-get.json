@@ -1,0 +1,18 @@
+{
+  "name": "ready-get",
+  "method": "GET",
+  "path": "/ready",
+  "requestHeaders": {
+    "accept-encoding": "identity"
+  },
+  "requestBody": "",
+  "status": 200,
+  "headers": {
+    "cache-control": "no-store",
+    "content-length": "15",
+    "content-type": "application/json;charset=utf-8",
+    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
+    "vary": "Accept-Encoding"
+  },
+  "body": "{\"pid\":3627673}"
+}

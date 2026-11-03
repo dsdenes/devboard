@@ -1,0 +1,19 @@
+{
+  "name": "flow-id-malformed",
+  "method": "GET",
+  "path": "/ready",
+  "requestHeaders": {
+    "x-flow-id": "bad id",
+    "accept-encoding": "identity"
+  },
+  "requestBody": "",
+  "status": 400,
+  "headers": {
+    "cache-control": "no-store",
+    "content-length": "105",
+    "content-type": "application/problem+json",
+    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
+    "vary": "Accept-Encoding"
+  },
+  "body": "{\"type\":\"about:blank\",\"title\":\"Bad Request\",\"status\":400,\"detail\":\"X-Flow-ID must be a printable token.\"}"
+}

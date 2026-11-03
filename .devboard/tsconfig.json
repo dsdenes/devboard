@@ -7,7 +7,9 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "allowJs": true,
-    "types": ["bun"],
+    "types": [
+      "bun"
+    ],
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
@@ -15,8 +17,12 @@
     "client/**/*.ts",
     "client/**/*.d.ts",
     "client/**/*.svelte",
-    "server/**/*.ts",
-    "issues/**/*.ts",
-    "vite.config.ts"
+    "lib/endpoints.ts",
+    "lib/goal-proposals.ts",
+    "lib/dependencies.ts",
+    "lib/issue-labels.ts",
+    "vite.config.ts",
+    "lib/agent-registry.ts",
+    "lib/provider-catalog.ts"
   ]
 }

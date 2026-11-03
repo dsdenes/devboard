@@ -1,0 +1,7 @@
+{
+  "type": "skillsPreparationStopped",
+  "frame": {
+    "type": "skillsPreparationStopped",
+    "completed": false
+  }
+}

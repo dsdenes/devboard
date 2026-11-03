@@ -1,6 +1,6 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
-  import { agentRegistry } from "../../../server/agents/registry";
+  import { agentRegistry } from "../../../lib/agent-registry.ts";
   import { agents } from "../agents.svelte";
 
   interface Props {

@@ -1,0 +1,6 @@
+/target/
+/contract/.work/
+/contract/.test-work/
+/.bench-work/
+/bench/.shadow-work/
+/.test-tmp/

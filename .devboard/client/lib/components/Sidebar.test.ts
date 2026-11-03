@@ -24,7 +24,7 @@ const { issues } = await import("../issues.svelte");
 const { flow } = await import("../flow.svelte");
 const { agents } = await import("../agents.svelte");
 const { SKILL_TABS } = await import("../discover-format");
-const { DISCOVER_AGENTS } = await import("../../../server/agents/registry");
+const { DISCOVER_AGENTS } = await import("../../../lib/agent-registry.ts");
 
 const AGENT_IDS = DISCOVER_AGENTS.map((agent) => agent.id);
 const SKILL_TABS_BY_AGENT: Record<string, string[]> = {

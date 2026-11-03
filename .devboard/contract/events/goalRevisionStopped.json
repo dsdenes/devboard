@@ -1,0 +1,7 @@
+{
+  "type": "goalRevisionStopped",
+  "frame": {
+    "type": "goalRevisionStopped",
+    "completed": false
+  }
+}

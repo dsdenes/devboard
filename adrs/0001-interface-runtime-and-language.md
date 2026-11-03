@@ -2,9 +2,10 @@
 schemaVersion: 0.2.0
 id: "0001"
 title: Interface runtime and language
-status: accepted
+status: superseded
 date: 2026-10-19
 deciders: ["@dsdenes"]
+supersededBy: "0013"
 affects:
   - type: path
     pattern: .devboard/Dockerfile

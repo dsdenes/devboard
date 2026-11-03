@@ -1,0 +1,606 @@
+{
+  "command": "getAgents",
+  "token": "contract-token",
+  "scenarios": [
+    {
+      "name": "request",
+      "send": "{\"type\":\"getAgents\"}",
+      "agentArgs": [
+        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-getAgents.log"
+      ],
+      "delayMs": 100,
+      "frames": [
+        {
+          "type": "agentsState",
+          "agents": [
+            {
+              "id": "scout",
+              "label": "Auto Scout",
+              "description": "Scans the repository and files significant findings as issues.",
+              "scope": "repository",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 1,
+                "defaultMinutes": 1,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": 10,
+                "maxPending": 5
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "ok",
+                "at": "2026-11-03T17:02:35.158Z",
+                "error": null
+              },
+              "detail": {
+                "panel": "activity",
+                "scanId": null,
+                "entries": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": null,
+              "workers": []
+            },
+            {
+              "id": "watchdog",
+              "label": "Watchdog",
+              "description": "Watches dashboard evidence and files significant machine findings as issues.",
+              "scope": "machine",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 10,
+                "defaultMinutes": 10,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": null,
+                "maxPending": null
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "ok",
+                "at": "2026-11-03T17:02:35.158Z",
+                "error": null
+              },
+              "detail": {
+                "panel": "cycles",
+                "cycles": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": {
+                "unit": "devboard-watchdog.timer",
+                "state": "inactive",
+                "blocked": false,
+                "error": null
+              },
+              "workers": []
+            },
+            {
+              "id": "design",
+              "label": "Design System",
+              "description": "Audits the interface against its documented design system and files capped issues for every divergence.",
+              "scope": "repository",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 60,
+                "defaultMinutes": 60,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": 10,
+                "maxPending": 5
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "ok",
+                "at": "2026-11-03T17:02:35.158Z",
+                "error": null
+              },
+              "detail": {
+                "panel": "activity",
+                "scanId": null,
+                "entries": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": null,
+              "workers": []
+            },
+            {
+              "id": "dead-code",
+              "label": "Dead Code",
+              "description": "Proves dead code from a seeded entry point and files capped removal issues for every finding.",
+              "scope": "repository",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 60,
+                "defaultMinutes": 60,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": 10,
+                "maxPending": 5
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "ok",
+                "at": "2026-11-03T17:02:35.158Z",
+                "error": null
+              },
+              "detail": {
+                "panel": "activity",
+                "scanId": null,
+                "entries": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": null,
+              "workers": []
+            },
+            {
+              "id": "mcp-optimizer",
+              "label": "MCP optimizer",
+              "description": "Reviews repeated agent mistakes and manual work and files one improvement issue per pattern.",
+              "scope": "repository",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 60,
+                "defaultMinutes": 60,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": 10,
+                "maxPending": 20
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "ok",
+                "at": "2026-11-03T17:02:35.159Z",
+                "error": null
+              },
+              "detail": {
+                "panel": "cycles",
+                "cycles": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": null,
+              "workers": []
+            },
+            {
+              "id": "api-standards",
+              "label": "API Standards",
+              "description": "Audits the dashboard HTTP API against the project REST skill and files capped conformance issues for every MUST or SHOULD violation.",
+              "scope": "repository",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 60,
+                "defaultMinutes": 60,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": 10,
+                "maxPending": 5
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "stale",
+                "at": null,
+                "error": null
+              },
+              "detail": {
+                "panel": "activity",
+                "scanId": null,
+                "entries": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": null,
+              "workers": []
+            },
+            {
+              "id": "single-responsibility",
+              "label": "Single Responsibility",
+              "description": "Audits the repository source against the project Single Responsibility skill and files one capped issue per component and violation.",
+              "scope": "repository",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 60,
+                "defaultMinutes": 60,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": 10,
+                "maxPending": 5
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "ok",
+                "at": "2026-11-03T17:02:35.159Z",
+                "error": null
+              },
+              "detail": {
+                "panel": "activity",
+                "scanId": null,
+                "entries": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": null,
+              "workers": []
+            },
+            {
+              "id": "release-train",
+              "label": "Release Train",
+              "description": "Releases every unreleased commit on main on its scheduled cadence, one version per collected range.",
+              "scope": "repository",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 10,
+                "defaultMinutes": 10,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": null,
+                "maxPending": null
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "stale",
+                "at": null,
+                "error": null
+              },
+              "detail": {
+                "panel": "activity",
+                "scanId": "idle:0",
+                "entries": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": null,
+              "workers": []
+            }
+          ]
+        },
+        {
+          "type": "agentState",
+          "agent": {
+            "id": "scout",
+            "label": "Auto Scout",
+            "description": "Scans the repository and files significant findings as issues.",
+            "scope": "repository",
+            "lifecycle": "stopped",
+            "paused": false,
+            "enabled": false,
+            "owned": false,
+            "attached": false,
+            "cadence": {
+              "minutes": 1,
+              "defaultMinutes": 1,
+              "lastRunAt": null,
+              "nextRunAt": null
+            },
+            "limits": {
+              "maxPerHour": 10,
+              "maxPending": 5
+            },
+            "issues": [],
+            "documentation": [],
+            "pending": 0,
+            "sync": {
+              "state": "ok",
+              "at": "2026-11-03T17:02:35.158Z",
+              "error": null
+            },
+            "detail": {
+              "panel": "activity",
+              "scanId": null,
+              "entries": []
+            },
+            "releases": [],
+            "notice": null,
+            "error": null,
+            "timer": null,
+            "workers": []
+          }
+        },
+        {
+          "type": "agentState",
+          "agent": {
+            "id": "design",
+            "label": "Design System",
+            "description": "Audits the interface against its documented design system and files capped issues for every divergence.",
+            "scope": "repository",
+            "lifecycle": "stopped",
+            "paused": false,
+            "enabled": false,
+            "owned": false,
+            "attached": false,
+            "cadence": {
+              "minutes": 60,
+              "defaultMinutes": 60,
+              "lastRunAt": null,
+              "nextRunAt": null
+            },
+            "limits": {
+              "maxPerHour": 10,
+              "maxPending": 5
+            },
+            "issues": [],
+            "documentation": [],
+            "pending": 0,
+            "sync": {
+              "state": "ok",
+              "at": "2026-11-03T17:02:35.158Z",
+              "error": null
+            },
+            "detail": {
+              "panel": "activity",
+              "scanId": null,
+              "entries": []
+            },
+            "releases": [],
+            "notice": null,
+            "error": null,
+            "timer": null,
+            "workers": []
+          }
+        },
+        {
+          "type": "agentState",
+          "agent": {
+            "id": "dead-code",
+            "label": "Dead Code",
+            "description": "Proves dead code from a seeded entry point and files capped removal issues for every finding.",
+            "scope": "repository",
+            "lifecycle": "stopped",
+            "paused": false,
+            "enabled": false,
+            "owned": false,
+            "attached": false,
+            "cadence": {
+              "minutes": 60,
+              "defaultMinutes": 60,
+              "lastRunAt": null,
+              "nextRunAt": null
+            },
+            "limits": {
+              "maxPerHour": 10,
+              "maxPending": 5
+            },
+            "issues": [],
+            "documentation": [],
+            "pending": 0,
+            "sync": {
+              "state": "ok",
+              "at": "2026-11-03T17:02:35.158Z",
+              "error": null
+            },
+            "detail": {
+              "panel": "activity",
+              "scanId": null,
+              "entries": []
+            },
+            "releases": [],
+            "notice": null,
+            "error": null,
+            "timer": null,
+            "workers": []
+          }
+        },
+        {
+          "type": "agentState",
+          "agent": {
+            "id": "api-standards",
+            "label": "API Standards",
+            "description": "Audits the dashboard HTTP API against the project REST skill and files capped conformance issues for every MUST or SHOULD violation.",
+            "scope": "repository",
+            "lifecycle": "stopped",
+            "paused": false,
+            "enabled": false,
+            "owned": false,
+            "attached": false,
+            "cadence": {
+              "minutes": 60,
+              "defaultMinutes": 60,
+              "lastRunAt": null,
+              "nextRunAt": null
+            },
+            "limits": {
+              "maxPerHour": 10,
+              "maxPending": 5
+            },
+            "issues": [],
+            "documentation": [],
+            "pending": 0,
+            "sync": {
+              "state": "stale",
+              "at": null,
+              "error": null
+            },
+            "detail": {
+              "panel": "activity",
+              "scanId": null,
+              "entries": []
+            },
+            "releases": [],
+            "notice": null,
+            "error": null,
+            "timer": null,
+            "workers": []
+          }
+        },
+        {
+          "type": "agentState",
+          "agent": {
+            "id": "single-responsibility",
+            "label": "Single Responsibility",
+            "description": "Audits the repository source against the project Single Responsibility skill and files one capped issue per component and violation.",
+            "scope": "repository",
+            "lifecycle": "stopped",
+            "paused": false,
+            "enabled": false,
+            "owned": false,
+            "attached": false,
+            "cadence": {
+              "minutes": 60,
+              "defaultMinutes": 60,
+              "lastRunAt": null,
+              "nextRunAt": null
+            },
+            "limits": {
+              "maxPerHour": 10,
+              "maxPending": 5
+            },
+            "issues": [],
+            "documentation": [],
+            "pending": 0,
+            "sync": {
+              "state": "ok",
+              "at": "2026-11-03T17:02:35.159Z",
+              "error": null
+            },
+            "detail": {
+              "panel": "activity",
+              "scanId": null,
+              "entries": []
+            },
+            "releases": [],
+            "notice": null,
+            "error": null,
+            "timer": null,
+            "workers": []
+          }
+        }
+      ],
+      "unauthorized": {
+        "method": "GET",
+        "path": "/ws",
+        "headers": {
+          "cache-control": "no-store",
+          "content-encoding": "gzip",
+          "content-length": "116",
+          "content-type": "application/problem+json",
+          "date": "Tue, 03 Nov 2026 17:02:34 GMT",
+          "vary": "Accept-Encoding",
+          "www-authenticate": "Bearer"
+        },
+        "status": 401,
+        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+      },
+      "state": {
+        "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725356119}\n",
+        "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:02:35.159Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
+      },
+      "repository": {
+        "DESIGN.md": "# Design\n\nContract fixture.\n",
+        "GOAL.md": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n",
+        "adrs/0001-contract-accepted.md": "---\nschemaVersion: 0.2.0\nid: \"0001\"\ntitle: Contract accepted record\nstatus: accepted\ndate: 2026-01-01\ndeciders: [\"@contract\"]\n---\n# Contract accepted record\n\n## Decision\n\nUse the recorded behavior.\n",
+        "adrs/0002-contract-proposed.md": "---\nschemaVersion: 0.2.0\nid: \"0002\"\ntitle: Contract proposed record\nstatus: proposed\ndate: 2026-01-02\ndeciders: [\"@contract\"]\n---\n# Contract proposed record\n\n## Decision\n\nWait for a decision.\n"
+      }
+    },
+    {
+      "name": "malformed",
+      "send": "{\"type\":\"notAContractCommand\"}",
+      "frames": [
+        {
+          "type": "error",
+          "message": "Invalid WebSocket message."
+        }
+      ],
+      "unauthorized": {
+        "method": "GET",
+        "path": "/ws",
+        "headers": {
+          "cache-control": "no-store",
+          "content-encoding": "gzip",
+          "content-length": "116",
+          "content-type": "application/problem+json",
+          "date": "Tue, 03 Nov 2026 17:02:35 GMT",
+          "vary": "Accept-Encoding",
+          "www-authenticate": "Bearer"
+        },
+        "status": 401,
+        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+      },
+      "state": {
+        "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725357444}\n",
+        "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:02:36.489Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
+      },
+      "repository": {
+        "DESIGN.md": "# Design\n\nContract fixture.\n",
+        "GOAL.md": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n",
+        "adrs/0001-contract-accepted.md": "---\nschemaVersion: 0.2.0\nid: \"0001\"\ntitle: Contract accepted record\nstatus: accepted\ndate: 2026-01-01\ndeciders: [\"@contract\"]\n---\n# Contract accepted record\n\n## Decision\n\nUse the recorded behavior.\n",
+        "adrs/0002-contract-proposed.md": "---\nschemaVersion: 0.2.0\nid: \"0002\"\ntitle: Contract proposed record\nstatus: proposed\ndate: 2026-01-02\ndeciders: [\"@contract\"]\n---\n# Contract proposed record\n\n## Decision\n\nWait for a decision.\n"
+      }
+    }
+  ]
+}

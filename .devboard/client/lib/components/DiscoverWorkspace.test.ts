@@ -19,7 +19,7 @@ const { tick } = await import("svelte");
 const { default: DiscoverWorkspace } = await import("./DiscoverWorkspace.svelte");
 const { layout } = await import("../layout.svelte");
 const { discover } = await import("../discover.svelte");
-const { DISCOVER_AGENTS } = await import("../../../server/agents/registry");
+const { DISCOVER_AGENTS } = await import("../../../lib/agent-registry.ts");
 
 function agentStates(states: Record<string, string> = {}): DiscoverAgentState[] {
   return DISCOVER_AGENTS.map((descriptor) => ({

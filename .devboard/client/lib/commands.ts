@@ -8,7 +8,7 @@ import type { LayoutStore, WorkspaceTab } from "./layout.svelte";
 import type { ConnectionStore } from "./connection.svelte";
 import type { NotificationStore } from "./notifications.svelte";
 import { providers } from "./providers.svelte";
-import { agentRegistry } from "../../server/agents/registry";
+import { agentRegistry } from "../../lib/agent-registry.ts";
 import type { Mode } from "./types";
 
 export interface CommandDef {

@@ -2,9 +2,10 @@
 schemaVersion: 0.2.0
 id: "0008"
 title: Deployment and hosting target
-status: accepted
+status: superseded
 date: 2026-10-19
 deciders: ["@dsdenes"]
+supersededBy: "0015"
 affects:
   - type: path
     pattern: .devboard/Dockerfile

@@ -1,0 +1,20 @@
+{
+  "name": "ws-refused-origin",
+  "method": "GET",
+  "path": "/ws",
+  "requestHeaders": {
+    "authorization": "Bearer contract-token",
+    "origin": "http://evil.test",
+    "accept-encoding": "identity"
+  },
+  "requestBody": "",
+  "status": 403,
+  "headers": {
+    "cache-control": "no-store",
+    "content-length": "111",
+    "content-type": "application/problem+json",
+    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
+    "vary": "Accept-Encoding"
+  },
+  "body": "{\"type\":\"about:blank\",\"title\":\"Forbidden\",\"status\":403,\"detail\":\"Cross-origin WebSocket upgrades are refused.\"}"
+}

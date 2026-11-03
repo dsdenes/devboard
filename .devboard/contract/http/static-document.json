@@ -1,0 +1,19 @@
+{
+  "name": "static-document",
+  "method": "GET",
+  "path": "/",
+  "requestHeaders": {
+    "accept-encoding": "identity"
+  },
+  "requestBody": "",
+  "status": 200,
+  "headers": {
+    "cache-control": "no-cache",
+    "content-length": "39",
+    "content-type": "text/html;charset=utf-8",
+    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
+    "vary": "Accept-Encoding",
+    "set-cookie": "devboard_dashboard_39557=contract-token; Path=/; HttpOnly; SameSite=Strict"
+  },
+  "body": "<!doctype html><title>Contract</title>\n"
+}

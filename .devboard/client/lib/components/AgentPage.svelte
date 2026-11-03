@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agentRegistry } from "../../../server/agents/registry";
+  import { agentRegistry } from "../../../lib/agent-registry.ts";
   import { agents } from "../agents.svelte";
   import { connection } from "../connection.svelte";
   import { layout } from "../layout.svelte";

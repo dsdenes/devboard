@@ -1,0 +1,127 @@
+{
+  "note": "Every field a comparison ignores, and why it cannot be equal across two runs. A field is listed only when its value is generated per run or names the installation, never to hide a behavioral difference. The replay asserts the field is present and typed; state files and frames are otherwise compared exactly.",
+  "fields": [
+    {
+      "name": "pid",
+      "reason": "the process id of whichever dashboard answered"
+    },
+    {
+      "name": "port",
+      "reason": "the private listener port each run picked"
+    },
+    {
+      "name": "at",
+      "reason": "the instant an event was produced"
+    },
+    {
+      "name": "ts",
+      "reason": "the journal record timestamp"
+    },
+    {
+      "name": "startedAt",
+      "reason": "the instant a run started"
+    },
+    {
+      "name": "endedAt",
+      "reason": "the instant a run ended"
+    },
+    {
+      "name": "finishedAt",
+      "reason": "the instant a turn finished"
+    },
+    {
+      "name": "createdAt",
+      "reason": "the instant a record was created"
+    },
+    {
+      "name": "updatedAt",
+      "reason": "the instant a record was updated"
+    },
+    {
+      "name": "nextRunAt",
+      "reason": "the instant the next worker tick is due"
+    },
+    {
+      "name": "lastRunAt",
+      "reason": "the instant the worker last ran"
+    },
+    {
+      "name": "timestamp",
+      "reason": "the instant a journal or usage record was produced"
+    },
+    {
+      "name": "runId",
+      "reason": "a per-run identifier generated at start"
+    },
+    {
+      "name": "sessionId",
+      "reason": "a per-conversation identifier generated at start"
+    },
+    {
+      "name": "scanId",
+      "reason": "a per-scan identifier generated at start"
+    },
+    {
+      "name": "branch",
+      "reason": "a worktree branch name derived from a generated run id"
+    },
+    {
+      "name": "instance",
+      "reason": "the dashboard instance token written to the run lease"
+    },
+    {
+      "name": "root",
+      "reason": "an absolute installation path that differs per checkout"
+    },
+    {
+      "name": "worktree",
+      "reason": "an absolute worktree path that differs per checkout"
+    },
+    {
+      "name": "cwd",
+      "reason": "an absolute child working directory that differs per checkout"
+    },
+    {
+      "name": "path",
+      "reason": "a project path relative to the home directory, which differs per checkout"
+    },
+    {
+      "name": "sessionDir",
+      "reason": "an absolute per-session directory that differs per checkout"
+    },
+    {
+      "name": "running",
+      "reason": "the harness version the recorded process loaded"
+    },
+    {
+      "name": "installed",
+      "reason": "the harness version a restart would load on the recording host"
+    },
+    {
+      "name": "latest",
+      "reason": "the newest release the recording host had seen"
+    },
+    {
+      "name": "stale",
+      "reason": "whether the recording host's installed version differed"
+    },
+    {
+      "name": "source",
+      "reason": "whether the recording host served a source checkout"
+    },
+    {
+      "name": "error",
+      "reason": "an ENOENT diagnostic naming an absolute fixture path"
+    }
+  ],
+  "statePrefixes": [
+    {
+      "prefix": "runs/",
+      "reason": "the detached-run lease is compared once the run supervisor is ported"
+    },
+    {
+      "prefix": "coach/",
+      "reason": "the MCP optimizer projection is compared once its worker family is ported"
+    }
+  ]
+}

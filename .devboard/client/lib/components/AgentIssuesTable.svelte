@@ -2,7 +2,7 @@
   import CircleAlert from "lucide-svelte/icons/circle-alert";
   import Clock from "lucide-svelte/icons/clock";
   import Inbox from "lucide-svelte/icons/inbox";
-  import { sortAgentIssues } from "../../../server/agents/registry";
+  import { sortAgentIssues } from "../../../lib/agent-registry.ts";
   import { statusTone } from "../status-tone";
   import type { AgentIssueRow, AgentSync } from "../types";
 

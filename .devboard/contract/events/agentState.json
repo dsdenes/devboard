@@ -1,0 +1,45 @@
+{
+  "type": "agentState",
+  "frame": {
+    "type": "agentState",
+    "agent": {
+      "id": "scout",
+      "label": "Auto Scout",
+      "description": "Scans the repository and files significant findings as issues.",
+      "scope": "repository",
+      "lifecycle": "stopped",
+      "paused": false,
+      "enabled": false,
+      "owned": false,
+      "attached": false,
+      "cadence": {
+        "minutes": 1,
+        "defaultMinutes": 1,
+        "lastRunAt": null,
+        "nextRunAt": null
+      },
+      "limits": {
+        "maxPerHour": 10,
+        "maxPending": 5
+      },
+      "issues": [],
+      "documentation": [],
+      "pending": 0,
+      "sync": {
+        "state": "ok",
+        "at": "2026-11-03T17:02:35.158Z",
+        "error": null
+      },
+      "detail": {
+        "panel": "activity",
+        "scanId": null,
+        "entries": []
+      },
+      "releases": [],
+      "notice": null,
+      "error": null,
+      "timer": null,
+      "workers": []
+    }
+  }
+}

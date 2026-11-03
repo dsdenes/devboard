@@ -1,5 +1,5 @@
 import type { Mode, Theme } from "./types";
-import { agentRegistry } from "../../server/agents/registry";
+import { agentRegistry } from "../../lib/agent-registry.ts";
 
 export interface WorkspaceTab {
   id: string;

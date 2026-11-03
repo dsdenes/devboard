@@ -1,0 +1,84 @@
+{
+  "command": "setInstalledSkillEnabled",
+  "token": "contract-token",
+  "scenarios": [
+    {
+      "name": "request",
+      "send": "{\"type\":\"setInstalledSkillEnabled\",\"name\":\"missing\",\"enabled\":true}",
+      "agentArgs": [
+        "--log=/home/ds/devboard/.worktree/goal-rust-harness-rewrite/.devboard/contract/.work/agent-setInstalledSkillEnabled.log"
+      ],
+      "delayMs": 100,
+      "frames": [
+        {
+          "type": "error",
+          "message": "No skill named \"missing\" is installed."
+        },
+        {
+          "type": "installedSkills",
+          "skills": []
+        }
+      ],
+      "unauthorized": {
+        "method": "GET",
+        "path": "/ws",
+        "headers": {
+          "cache-control": "no-store",
+          "content-encoding": "gzip",
+          "content-length": "116",
+          "content-type": "application/problem+json",
+          "date": "Tue, 03 Nov 2026 17:01:52 GMT",
+          "vary": "Accept-Encoding",
+          "www-authenticate": "Bearer"
+        },
+        "status": 401,
+        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+      },
+      "state": {
+        "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725314362}\n",
+        "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:01:53.401Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
+      },
+      "repository": {
+        "DESIGN.md": "# Design\n\nContract fixture.\n",
+        "GOAL.md": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n",
+        "adrs/0001-contract-accepted.md": "---\nschemaVersion: 0.2.0\nid: \"0001\"\ntitle: Contract accepted record\nstatus: accepted\ndate: 2026-01-01\ndeciders: [\"@contract\"]\n---\n# Contract accepted record\n\n## Decision\n\nUse the recorded behavior.\n",
+        "adrs/0002-contract-proposed.md": "---\nschemaVersion: 0.2.0\nid: \"0002\"\ntitle: Contract proposed record\nstatus: proposed\ndate: 2026-01-02\ndeciders: [\"@contract\"]\n---\n# Contract proposed record\n\n## Decision\n\nWait for a decision.\n"
+      }
+    },
+    {
+      "name": "malformed",
+      "send": "{\"type\":\"notAContractCommand\"}",
+      "frames": [
+        {
+          "type": "error",
+          "message": "Invalid WebSocket message."
+        }
+      ],
+      "unauthorized": {
+        "method": "GET",
+        "path": "/ws",
+        "headers": {
+          "cache-control": "no-store",
+          "content-encoding": "gzip",
+          "content-length": "116",
+          "content-type": "application/problem+json",
+          "date": "Tue, 03 Nov 2026 17:01:53 GMT",
+          "vary": "Accept-Encoding",
+          "www-authenticate": "Bearer"
+        },
+        "status": 401,
+        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
+      },
+      "state": {
+        "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725315662}\n",
+        "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:01:54.707Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
+      },
+      "repository": {
+        "DESIGN.md": "# Design\n\nContract fixture.\n",
+        "GOAL.md": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n",
+        "adrs/0001-contract-accepted.md": "---\nschemaVersion: 0.2.0\nid: \"0001\"\ntitle: Contract accepted record\nstatus: accepted\ndate: 2026-01-01\ndeciders: [\"@contract\"]\n---\n# Contract accepted record\n\n## Decision\n\nUse the recorded behavior.\n",
+        "adrs/0002-contract-proposed.md": "---\nschemaVersion: 0.2.0\nid: \"0002\"\ntitle: Contract proposed record\nstatus: proposed\ndate: 2026-01-02\ndeciders: [\"@contract\"]\n---\n# Contract proposed record\n\n## Decision\n\nWait for a decision.\n"
+      }
+    }
+  ]
+}

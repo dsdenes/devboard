@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = ["crates/devboard", "crates/devboard-contract", "shadow"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws", "http2"] }
+base64 = "0.22"
+bytes = "1"
+flate2 = "1"
+futures-util = "0.3"
+hex = "0.4"
+include_dir = "0.7"
+http-body-util = "0.1"
+libc = "0.2"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "json",
+  "gzip",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+subtle = "2"
+tar = "0.4"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect"] }
+tower = "0.5"
+time = { version = "0.3", features = ["formatting", "macros"] }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

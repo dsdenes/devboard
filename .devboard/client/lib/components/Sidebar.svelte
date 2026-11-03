@@ -1,6 +1,6 @@
 <script lang="ts">
   import Button from "./ui/button.svelte";
-  import { DISCOVER_AGENTS } from "../../../server/agents/registry";
+  import { DISCOVER_AGENTS } from "../../../lib/agent-registry.ts";
   import { SECTION_TABS, SKILL_TABS } from "../discover-format";
   import {
     agentLifecycleRunState,
