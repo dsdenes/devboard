@@ -633,6 +633,7 @@ async function writeFixture(root: string): Promise<string> {
     "devboard-single-responsibility-principle",
     "devboard-consistent-naming",
     "devboard-architectural-layering",
+    "devboard-gh-stack",
   ]) {
     await cp(join(harnessRoot, "omp", "skills", name), join(host, ".omp", "skills", name), {
       recursive: true,
@@ -3375,6 +3376,7 @@ try {
   const devboardBuiltins = [
     "devboard-architectural-layering",
     "devboard-consistent-naming",
+    "devboard-gh-stack",
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-ui-ux",
@@ -3442,7 +3444,7 @@ try {
   check(
     JSON.stringify(devboardSkillsTable.managed) ===
       JSON.stringify(devboardManagedFirst(devboardBuiltins)),
-    "the Managed marker does not belong to exactly the six built-in rows",
+    "the Managed marker does not belong to exactly the seven built-in rows",
     devboardSkillsTable,
   );
   check(
@@ -3671,6 +3673,8 @@ try {
     });
     const names = [
       "devboard-ui-ux",
+      "devboard-gh-stack",
+      "devboard-architectural-layering",
       "discover-testing-strategy",
       "fixture-handwritten",
       "fixture-linked",
@@ -3699,15 +3703,25 @@ try {
     return results;
   })()`);
   check(
-    refusals.length === 5 &&
+    refusals.length === 7 &&
       refusals[0]?.message === '"devboard-ui-ux" is a built-in skill and cannot be deleted.' &&
-      refusals.slice(1).every(
+      refusals[1]?.message === '"devboard-gh-stack" is a built-in skill and cannot be deleted.' &&
+      refusals[2]?.message ===
+        '"devboard-architectural-layering" is a built-in skill and cannot be deleted.' &&
+      refusals.slice(3).every(
         (entry) => entry.message === `No prepared skill named "${entry.name}" is installed.`,
       ),
-    "the server did not refuse the built-in, Discover, hand-authored, symlinked, and unknown names",
+    "the server did not refuse the three built-ins, Discover, hand-authored, symlinked, " +
+      "and unknown names",
     refusals,
   );
-  for (const name of ["devboard-ui-ux", "fixture-handwritten", "fixture-conventions"]) {
+  for (const name of [
+    "devboard-ui-ux",
+    "devboard-gh-stack",
+    "devboard-architectural-layering",
+    "fixture-handwritten",
+    "fixture-conventions",
+  ]) {
     check(existsSync(join(host, ".omp", "skills", name)), `the refused ${name} directory was removed`);
   }
   check(

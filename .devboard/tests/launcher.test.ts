@@ -109,6 +109,7 @@ describe("public package", () => {
       "devboard-single-responsibility-principle",
       "devboard-consistent-naming",
       "devboard-architectural-layering",
+      "devboard-gh-stack",
     ]) {
       expect(present.has(`omp/skills/${name}/SKILL.md`)).toBe(true);
     }
@@ -139,6 +140,7 @@ describe("public package", () => {
     expect(names.sort()).toEqual([
       "devboard-architectural-layering",
       "devboard-consistent-naming",
+      "devboard-gh-stack",
       "devboard-restful-api-implementation",
       "devboard-single-responsibility-principle",
       "devboard-ui-ux",

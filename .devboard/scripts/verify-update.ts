@@ -122,6 +122,7 @@ const MANAGED_SKILLS = [
   "devboard-single-responsibility-principle",
   "devboard-consistent-naming",
   "devboard-architectural-layering",
+  "devboard-gh-stack",
 ] as const;
 
 let failingNpm = "";

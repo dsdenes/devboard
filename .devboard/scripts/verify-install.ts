@@ -52,6 +52,7 @@ const MANAGED_SKILLS = [
   "devboard-single-responsibility-principle",
   "devboard-consistent-naming",
   "devboard-architectural-layering",
+  "devboard-gh-stack",
 ] as const;
 const root = await makeRoot("verify-install");
 const startedHosts: string[] = [];

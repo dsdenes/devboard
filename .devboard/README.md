@@ -599,7 +599,7 @@ their `/.omp/skills/devboard-<name>` lines to the host `.gitignore`, adding noth
 
 ## Skills
 
-The package ships five project-scoped skills, canonical under `.devboard/omp/skills/` and
+The package ships six project-scoped skills, canonical under `.devboard/omp/skills/` and
 installed on every install and update into `<host>/.omp/skills/<name>/` as real files:
 
 |Skill|Carries|
@@ -609,6 +609,7 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 |`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs, with the five violation categories; the Single Responsibility worker's normative source.|
 |`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym; the Consistent Naming worker's normative source.|
 |`devboard-architectural-layering`|The architectural-layering policy: every concern belongs to one clearly defined architectural boundary, dependencies follow the architecture's defined direction, and infrastructure details never leak into business abstractions, across layered, Clean, Onion, and Hexagonal styles.|
+|`devboard-gh-stack`|A passive reference for GitHub's stacked-pull-request CLI (`gh stack`): the linear stack model, what each `gh stack` command does, merging through the stack, and the non-interactive constraints for unattended runs. No agent, prompt, or gate requires it.|
 
 Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
 Devboard mode's Skills page renders that marker as a visible `Managed` label and never renders a
@@ -631,13 +632,14 @@ The name prefix is the ownership marker, and the marked namespace is reserved fo
   or prune; a host that wants a skill of its own uses an unmarked name.
 
 `install` adds exactly one `/.omp/skills/devboard-<name>` line per shipped skill to the host
-`.gitignore` and adds nothing on a rerun. The five entries are `/.omp/skills/devboard-ui-ux`,
+`.gitignore` and adds nothing on a rerun. The six entries are `/.omp/skills/devboard-ui-ux`,
 `/.omp/skills/devboard-restful-api-implementation`,
 `/.omp/skills/devboard-single-responsibility-principle`,
-`/.omp/skills/devboard-consistent-naming`, and
-`/.omp/skills/devboard-architectural-layering`. `doctor` and the update verification
-compare each shipped skill directory with the installed package and exit nonzero when one byte
-differs; an unmarked host skill is never inspected and never fails the check.
+`/.omp/skills/devboard-consistent-naming`,
+`/.omp/skills/devboard-architectural-layering`, and `/.omp/skills/devboard-gh-stack`. `doctor`
+and the update verification compare each shipped skill directory with the installed package and
+exit nonzero when one byte differs; an unmarked host skill is never inspected and never fails the
+check.
 
 The global `/setup-devboard` command runs the launcher against the invoking session's working
 directory. It lives here as `omp/commands/setup-devboard.md` and is linked into the user-level
