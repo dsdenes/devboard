@@ -9367,22 +9367,62 @@ try {
     pathLabel: string;
     proposal: string;
     contextSection: boolean;
+    titleTag: string;
+    titleText: string;
+    titleTooltip: string;
+    titleAbovePath: boolean;
+    labelledby: string;
+    labelText: string;
+    panelText: string;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const rowStart = document.querySelector(
       '[data-testid="issues-draft-row-start"][data-path="${reportDraftPath}"]',
     );
+    const title = panel?.querySelector(".issues-draft-detail__title") ?? null;
+    const pathLabel = panel?.querySelector(".issues-draft-detail__path") ?? null;
+    const labelledby = panel?.getAttribute("aria-labelledby") ?? "";
+    const label = labelledby === "" ? null : document.getElementById(labelledby);
     return {
       path: panel?.getAttribute("data-path") ?? "",
       detailStart: document.querySelector('[data-testid="issues-draft-start"]') !== null,
       rowStartCommand: rowStart?.getAttribute("data-command") ?? "",
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
-      pathLabel: panel?.querySelector(".issues-draft-detail__path")?.textContent?.trim() ?? "",
+      pathLabel: pathLabel?.textContent?.trim() ?? "",
       proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
       contextSection: panel?.querySelector('section[aria-label="Captured UI context"]') !== null,
+      titleTag: title?.tagName ?? "",
+      titleText: title?.textContent?.trim() ?? "",
+      titleTooltip: title?.getAttribute("title") ?? "",
+      titleAbovePath:
+        title !== null &&
+        pathLabel !== null &&
+        (title.compareDocumentPosition(pathLabel) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      labelledby,
+      labelText: label?.textContent?.trim() ?? "",
+      panelText: panel?.textContent ?? "",
     };
   })()`);
   check(detail.path === reportDraftPath, "the detail does not name the selected draft", detail);
+  const expectedDraftHeading = `Proposed goal: ${goalSentence}`;
+  check(
+    detail.titleTag === "H2" &&
+      detail.titleText === expectedDraftHeading &&
+      detail.titleTooltip === expectedDraftHeading &&
+      detail.titleAbovePath,
+    "the detail does not render the draft heading above its file name",
+    detail,
+  );
+  check(
+    detail.labelledby !== "" && detail.labelText === detail.titleText && detail.labelText !== "",
+    "the draft detail section has no accessible name from its heading",
+    detail,
+  );
+  check(
+    detail.titleText.length > 0 && detail.panelText.split(detail.titleText).length === 2,
+    "the draft detail renders its heading more than once",
+    detail,
+  );
   const storedSelection = await page.eval<{ path: string | null; page: string | null }>(`(() => ({
     path: localStorage.getItem("devboard.issues.draft.v1"),
     page: localStorage.getItem("devboard.issues.draftsPage.v1"),
@@ -9400,7 +9440,8 @@ try {
   check(
     detail.pathLabel.endsWith(".md") &&
       !detail.proposal.includes("## Captured UI context") &&
-      !detail.proposal.includes("Unprocessed draft"),
+      !detail.proposal.includes("Unprocessed draft") &&
+      !detail.proposal.includes(expectedDraftHeading),
     "the detail does not separate identity and proposal from the evidence",
     detail,
   );
