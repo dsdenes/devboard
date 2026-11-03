@@ -14,13 +14,15 @@ import { claimScan, releaseScanClaim, updateScanClaim } from "./claims";
 import { takeCommands, type ScoutCommand } from "./control";
 import {
   createScoutGitHub,
-  resolveShippedVersion,
   type ScoutGitHubClient,
   type ScoutGitHubIssue,
   type ScoutRelease,
-  type VersionResolution,
 } from "./github";
 import { ghCommand } from "../../server/command";
+import {
+  resolveShippedVersion,
+  type VersionResolution,
+} from "../../lib/release-resolution";
 import { originForge } from "../repository";
 import { giteaBaseUrl } from "../../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";

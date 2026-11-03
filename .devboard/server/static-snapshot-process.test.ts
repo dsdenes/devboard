@@ -11,8 +11,8 @@ import { snapshotRoot } from "./static-snapshot";
  */
 
 const SERVER = join(import.meta.dir, "index.ts");
-const BOOTSTRAP = "fixture-dashboard-bootstrap";
-const DOCUMENT = `/?bootstrap=${BOOTSTRAP}`;
+/** The dashboard refuses a document without this credential; the test supplies it. */
+const TOKEN = "fixture-snapshot-token-0001";
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
 const temporaryDirectories: string[] = [];
 
@@ -80,9 +80,9 @@ async function startProcess(fixture: Fixture): Promise<RunningServer> {
       GOAL_FILE: join(fixture.root, "GOAL.md"),
       STATIC_DIR: fixture.staticDir,
       STATE_DIR: fixture.stateDir,
-      DEVBOARD_BOOTSTRAP_TOKEN: BOOTSTRAP,
       DEVBOARD_RELEASE_DIR: fixture.releases,
       DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+      DEVBOARD_DASHBOARD_TOKEN: TOKEN,
     },
     stdin: "ignore",
     stdout: "pipe",
@@ -95,7 +95,7 @@ async function startProcess(fixture: Fixture): Promise<RunningServer> {
   const deadline = Date.now() + 20_000;
   for (;;) {
     try {
-      const response = await fetch(`${url}${DOCUMENT}`);
+      const response = await fetch(`${url}/`, { headers: { authorization: `Bearer ${TOKEN}` } });
       if (response.ok) {
         await response.text();
         return { child, url };
@@ -127,14 +127,16 @@ async function stopProcess(server: RunningServer): Promise<void> {
 }
 
 async function body(server: RunningServer, path: string): Promise<string> {
-  return (await fetch(`${server.url}${path}`)).text();
+  return (
+    await fetch(`${server.url}${path}`, { headers: { authorization: `Bearer ${TOKEN}` } })
+  ).text();
 }
 
 test("a running dashboard serves its started bundle until the process restarts", async () => {
   const fixture = await createFixture();
   const first = await startProcess(fixture);
   try {
-    expect(await body(first, DOCUMENT)).toBe("<!doctype html><title>release-one</title>");
+    expect(await body(first, "/")).toBe("<!doctype html><title>release-one</title>");
     expect(await body(first, "/app.js")).toBe('console.log("release-one");\n');
     const serving = await readdir(snapshotRoot(fixture.stateDir));
     expect(serving.some((entry) => entry.startsWith(`${first.child.pid}-`))).toBe(true);
@@ -143,7 +145,7 @@ test("a running dashboard serves its started bundle until the process restarts",
     await rm(fixture.staticDir, { recursive: true, force: true });
     await writeBundle(fixture.staticDir, "release-two");
 
-    expect(await body(first, DOCUMENT)).toBe("<!doctype html><title>release-one</title>");
+    expect(await body(first, "/")).toBe("<!doctype html><title>release-one</title>");
     expect(await body(first, "/app.js")).toBe('console.log("release-one");\n');
   } finally {
     await stopProcess(first);
@@ -154,7 +156,7 @@ test("a running dashboard serves its started bundle until the process restarts",
 
   const second = await startProcess(fixture);
   try {
-    expect(await body(second, DOCUMENT)).toBe("<!doctype html><title>release-two</title>");
+    expect(await body(second, "/")).toBe("<!doctype html><title>release-two</title>");
     expect(await body(second, "/app.js")).toBe('console.log("release-two");\n');
   } finally {
     await stopProcess(second);

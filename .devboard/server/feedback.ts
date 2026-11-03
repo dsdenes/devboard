@@ -226,6 +226,9 @@ const CAPTURED_KEYS: readonly string[] = [
   "captured_at",
 ];
 
+/** The keys one Ask turn accepts; every other key is refused with 400. */
+const TURN_KEYS: readonly string[] = ["role", "text"];
+
 /** The body keys `POST /feedback` accepts; every other key is refused with 400. */
 export const FEEDBACK_BODY_KEYS: readonly string[] = [
   "action",
@@ -278,6 +281,7 @@ export function parseTurns(value: unknown): FeedbackTurn[] {
       throw new FeedbackRequestError(400, `turns[${index}] must be an object.`);
     }
     const source = entry as Record<string, unknown>;
+    rejectUnknownFields(source, TURN_KEYS);
     const role = source.role;
     if (role !== "DEVELOPER" && role !== "AGENT") {
       throw new FeedbackRequestError(

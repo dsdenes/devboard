@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { acquireLock, type LockOwner } from "../issues/lock";
-import { earliestRelease, resolveShippedVersion, shippedVersion } from "../lib/github-release";
+import { earliestRelease, resolveShippedVersion, shippedVersion } from "../lib/release-resolution";
 import { createApp } from "../server/app";
 import {
   WatchdogActivity,

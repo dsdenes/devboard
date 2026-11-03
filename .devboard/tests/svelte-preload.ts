@@ -13,15 +13,10 @@ import { plugin } from "bun";
 import { beforeEach, mock } from "bun:test";
 import { compile, compileModule, preprocess } from "svelte/compiler";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { restoreNativeRuntime } from "./native-network";
-
-// Bun runs the suite in one module registry and one global object, so one DOM
-// file's `afterAll` unregistration would tear down the document every later
-// file mounts into. Keep the one registration alive for the whole run.
-GlobalRegistrator.unregister = () => {};
 
 // A DOM test registers happy-dom at module load and leaves its `Response`,
 // `AbortSignal`, timers, and `location` in place. Bun's fetch and Bun.serve
@@ -31,6 +26,27 @@ GlobalRegistrator.unregister = () => {};
 beforeEach(() => {
   restoreNativeRuntime();
 });
+
+// One DOM document for the whole worker run.
+//
+// Svelte's client runtime binds its DOM operations once, on the first mount:
+// `init_operations` captures `window`, `document`, and the `firstChild` and
+// `nextSibling` getters from the then-current window and never re-reads them.
+// A component's compiled template caches the nodes it parsed on that first
+// render too. A test file that unregisters happy-dom on the way out closes that
+// window, and the next file mounts into a second document: the runtime keeps
+// mutating and walking nodes through the closed one. A branch swap then inserts
+// the incoming branch but never removes the outgoing one (a filed notification
+// keeps its stale disabled File issue button, and the Discover Overview keeps
+// its Start control after the run becomes active).
+//
+// Holding the first document for the run keeps every cached template and every
+// captured getter pointed at the live document. `unregister` still empties the
+// body, so one file's rendered markup never reaches the next, but it leaves the
+// window open for the rest of the worker.
+GlobalRegistrator.unregister = async () => {
+  globalThis.document?.body?.replaceChildren();
+};
 
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

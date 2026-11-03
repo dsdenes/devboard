@@ -361,7 +361,7 @@ export class IssuesWorker {
   private draining = false;
   private runs: Array<{ run: RunFile; directory: string }> = [];
   private stopping = false;
-  private polling = false;
+  private polling: Promise<void> | undefined;
   private nextPollDue = 0;
   private ticker: Timer | undefined;
   private lock: { release: () => void } | undefined;
@@ -797,73 +797,89 @@ export class IssuesWorker {
     return "failed";
   }
 
-  /** One conditional poll, then the trigger decision. */
+  /**
+   * One conditional poll, then the trigger decision.
+   *
+   * A caller that awaits `poll` sees a poll that *starts* after the call: an
+   * in-flight poll is joined first and the caller's own read follows it. A
+   * caller that returned early on the in-flight flag would resolve without
+   * touching `lastPollAt`, so an await could mean no poll happened at all.
+   */
   async poll(): Promise<void> {
-    if (this.polling || this.stopping) return;
-    this.polling = true;
+    if (this.stopping) return;
+    while (this.polling !== undefined) {
+      await this.polling;
+      if (this.stopping) return;
+    }
+    const polling = this.runPoll();
+    this.polling = polling;
+    try {
+      await polling;
+    } finally {
+      if (this.polling === polling) this.polling = undefined;
+    }
+  }
+
+  private async runPoll(): Promise<void> {
     await this.guarded("reclaim silent runs", () => this.reclaimSilentRuns());
     const startedAt = this.clock();
+    let result: PollResult;
     try {
-      let result: PollResult;
-      try {
-        result = await this.readIssues(this.state.poll.etag);
-      } catch (error) {
-        if (this.stopping) return;
-        const detail = error instanceof Error ? error.message : String(error);
-        this.state.poll.lastPollAt = startedAt.toISOString();
-        this.state.poll.error = detail;
+      result = await this.readIssues(this.state.poll.etag);
+    } catch (error) {
+      if (this.stopping) return;
+      const detail = error instanceof Error ? error.message : String(error);
+      this.state.poll.lastPollAt = startedAt.toISOString();
+      this.state.poll.error = detail;
+      this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
+      this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
+      this.state.lastError = detail;
+      this.publish();
+      return;
+    }
+    if (this.stopping) return;
+    this.state.poll.lastPollAt = startedAt.toISOString();
+    switch (result.kind) {
+      case "not-modified": {
+        this.state.poll.etag = result.etag;
+        this.state.poll.notModified = true;
+        this.state.poll.error = null;
+        this.state.poll.rateLimitedUntil = null;
         this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
         this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-        this.state.lastError = detail;
-        this.publish();
-        return;
+        this.refreshQueue();
+        break;
       }
-      if (this.stopping) return;
-      this.state.poll.lastPollAt = startedAt.toISOString();
-      switch (result.kind) {
-        case "not-modified": {
-          this.state.poll.etag = result.etag;
-          this.state.poll.notModified = true;
-          this.state.poll.error = null;
-          this.state.poll.rateLimitedUntil = null;
-          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
-          this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-          this.refreshQueue();
-          break;
-        }
-        case "issues": {
-          this.state.poll.etag = result.etag;
-          this.state.poll.notModified = false;
-          this.state.poll.error = null;
-          this.state.poll.rateLimitedUntil = null;
-          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
-          this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-          await this.reconcileProcessing(result.issues);
-          if (this.stopping) return;
-          await this.applyIssues(result.issues);
-          break;
-        }
-        case "rate-limited": {
-          this.state.poll.error = result.detail;
-          this.state.poll.rateLimitedUntil = result.until;
-          this.state.poll.nextPollAt = result.until;
-          this.nextPollDue = Date.parse(result.until);
-          break;
-        }
-        case "error":
-        case "unsupported": {
-          this.state.poll.error = result.detail;
-          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
-          this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-          this.state.lastError = result.detail;
-          break;
-        }
+      case "issues": {
+        this.state.poll.etag = result.etag;
+        this.state.poll.notModified = false;
+        this.state.poll.error = null;
+        this.state.poll.rateLimitedUntil = null;
+        this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
+        this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
+        await this.reconcileProcessing(result.issues);
+        if (this.stopping) return;
+        await this.applyIssues(result.issues);
+        break;
       }
-      this.publish();
-      await this.maybeTrigger();
-    } finally {
-      this.polling = false;
+      case "rate-limited": {
+        this.state.poll.error = result.detail;
+        this.state.poll.rateLimitedUntil = result.until;
+        this.state.poll.nextPollAt = result.until;
+        this.nextPollDue = Date.parse(result.until);
+        break;
+      }
+      case "error":
+      case "unsupported": {
+        this.state.poll.error = result.detail;
+        this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
+        this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
+        this.state.lastError = result.detail;
+        break;
+      }
     }
+    this.publish();
+    await this.maybeTrigger();
   }
 
   /**

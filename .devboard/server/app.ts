@@ -43,11 +43,14 @@ import {
 import {
   DetachedPeer,
   beginDetachedHandoff,
+  detachedRunDirectory,
   detachedRunLive,
   endDetachedHandoff,
+  readDetachedRunState,
   writeDetachedLease,
 } from "./detached-run";
 import type { PeerConnection } from "./peer";
+import { pidAlive } from "../issues/lock";
 import { ASK_TURN_TIMEOUT_MS, AskController } from "./ask";
 import {
   FeedbackDeliveryError,
@@ -586,6 +589,11 @@ const RESET_PUSH_ENV = {
 };
 /** Wall-clock bound for one git invocation the dashboard spawns. */
 const GIT_TIMEOUT_MS = 60_000;
+/**
+ * Longest the implementation reset waits for a stopped Discover agent to exit
+ * before it removes the staging directory anyway.
+ */
+const PEER_EXIT_WAIT_MS = 10_000;
 /** Largest accepted feedback body, before JSON parsing. */
 const MAX_FEEDBACK_BYTES = 64_000;
 /** Default wall-clock bound for one issue creation. */
@@ -2691,7 +2699,7 @@ export function createApp(options: AppOptions) {
   let remoteTarget: RemoteRepository | undefined;
   /** The run's checkout: a clone that never outlives the run that made it. */
   let remoteCheckout: { runId: string; dir: string; target: RemoteRepository } | null = null;
-  let discoverCloning: { url: string; target: RemoteRepository } | null = null;
+  let discoverCloning: { url: string; target: RemoteRepository; staging: string } | null = null;
   /**
    * True between a finished clone and the run that takes its checkout. The
    * gap crosses an await, so the checkout is owned even though no run exists.
@@ -3950,7 +3958,8 @@ export function createApp(options: AppOptions) {
     }
 
     // The clone state leaves before the child spawns, so every client sees it.
-    discoverCloning = { url: target.url, target };
+    const cloning = { url: target.url, target, staging };
+    discoverCloning = cloning;
     journal.write("lifecycle", "discover-remote-clone");
     broadcastDiscoverState();
 
@@ -3969,7 +3978,7 @@ export function createApp(options: AppOptions) {
     }
 
     const cloneFailed = (message: string): false => {
-      discoverCloning = null;
+      if (discoverCloning === cloning) discoverCloning = null;
       try {
         rmSync(staging, { recursive: true, force: true });
       } catch {
@@ -3980,6 +3989,18 @@ export function createApp(options: AppOptions) {
       broadcastDiscoverState();
       return false;
     };
+
+    // A stopped dashboard released this checkout and its claim while the clone
+    // ran. The clone must never claim or adopt one after that stop.
+    if (discoverCloning !== cloning) {
+      try {
+        rmSync(staging, { recursive: true, force: true });
+      } catch {
+        // The stop already removed it.
+      }
+      releaseScratchEntry(remoteRoot, basename(staging));
+      return false;
+    }
 
     if (result.timedOut) {
       return cloneFailed(`The repository clone timed out after ${requestTimeoutSeconds} seconds.`);
@@ -7460,12 +7481,39 @@ export function createApp(options: AppOptions) {
   }
 
   /**
+   * Resolves once the stopped Discover run's agent process is gone. A detached
+   * peer stops its agent through the owner's control directory, so its pid
+   * outlives `close()`; a last staged write would otherwise recreate the
+   * staging directory after the reset removed it.
+   */
+  async function waitForPeerExit(
+    peer: PeerConnection | undefined,
+    run: DiscoverRun | undefined,
+  ): Promise<void> {
+    if (peer === undefined || run === undefined) return;
+    const directory = detachedRunDirectory(stateDir, repoDir, "discover", run.runId);
+    const deadline = Date.now() + PEER_EXIT_WAIT_MS;
+    const gone = (): boolean => {
+      const pid = peer.pid;
+      if (pid !== undefined && pidAlive(pid)) return false;
+      const state = readDetachedRunState(directory);
+      if (state === undefined) return true;
+      if (state.peer === null) return state.status !== "starting" && state.status !== "running";
+      return !pidAlive(state.peer.pid);
+    };
+    while (Date.now() < deadline) {
+      if (gone()) return;
+      await Bun.sleep(25);
+    }
+  }
+
+  /**
    * Stops every operation that can still touch the checkout, so the reset
    * owns the working tree. In-flight starts are invalidated through their
    * request counters; an in-flight skills preparation settles before the
    * caller deletes anything.
    */
-  function stopActiveWorkForReset() {
+  async function stopActiveWorkForReset() {
     discoverRequest += 1;
     const discovering = discoverRun;
     discoverAllActive = false;
@@ -7542,6 +7590,18 @@ export function createApp(options: AppOptions) {
         });
       }
       broadcast({ type: "skillsPreparationStopped", completed: false });
+    }
+
+    if (discovering !== undefined) {
+      // The owner stops the real agent asynchronously; its last staged write
+      // would recreate the staging directory removed above. The directory is
+      // gone only once the agent itself is.
+      await waitForPeerExit(discovering.peer, discovering);
+      try {
+        removeStaging(discovering.cwd, discovering.runId);
+      } catch {
+        // Reset preserves `.omp`, so a leftover staging directory is harmless.
+      }
     }
   }
 
@@ -7635,7 +7695,7 @@ export function createApp(options: AppOptions) {
 
       // The checkout is confirmed resettable: take it over before deleting so
       // an active peer cannot race the deletion, staging, or commit.
-      stopActiveWorkForReset();
+      await stopActiveWorkForReset();
       const settling = skillsPreparationSettled;
       if (settling !== undefined) await settling;
 
@@ -7954,7 +8014,11 @@ export function createApp(options: AppOptions) {
 
     try {
       const file = Bun.file(filePath);
-      if (!(await file.exists()) || !(await stat(filePath)).isFile()) {
+      if (!(await file.exists())) {
+        return problemResponse(request, 404, "The requested draft was not found.");
+      }
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) {
         return problemResponse(request, 404, "The requested draft was not found.");
       }
 
@@ -7966,13 +8030,23 @@ export function createApp(options: AppOptions) {
         });
       }
 
-      const headers = {
+      // The body differs by Accept-Encoding, so a shared cache must key on it:
+      // a draft has no content hash in its name, so both representations of the
+      // same URL stay revalidated. The identity Markdown stays available for a
+      // request that does not accept gzip.
+      const headers: Record<string, string> = {
         "Content-Type": "text/markdown; charset=utf-8",
         "Cache-Control": "no-store",
+        Vary: "Accept-Encoding",
       };
-      return request.method === "HEAD"
-        ? new Response(null, { headers })
-        : new Response(file, { headers });
+      // A HEAD response keeps the negotiated headers without paying for a body
+      // it never carries.
+      const head = request.method === "HEAD";
+      if (!acceptsGzip(request.headers.get("accept-encoding"))) {
+        return new Response(head ? null : file, { headers });
+      }
+      headers["Content-Encoding"] = "gzip";
+      return new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers });
     } catch (error) {
       return internalErrorResponse(request, "GET goal draft", error, flowId);
     }
@@ -8732,6 +8806,19 @@ export function createApp(options: AppOptions) {
       } catch {
         // A staging directory left behind is removed by the replacement.
       }
+    }
+    // A clone still running when the dashboard stops owns a checkout and a
+    // claim nothing will take over; release both now and make its continuation
+    // see that it lost the clone.
+    const cloning = discoverCloning;
+    discoverCloning = null;
+    if (cloning !== null) {
+      try {
+        rmSync(cloning.staging, { recursive: true, force: true });
+      } catch {
+        // The next start removes a staging directory that cannot be removed.
+      }
+      releaseScratchEntry(remoteRoot, basename(cloning.staging));
     }
     // A stopped dashboard never leaves its checkout for the next start.
     clearRemoteCheckout();

@@ -1,7 +1,5 @@
-import {
-  createRepositoryGitHub,
-  type GitHubRelease,
-} from "../../lib/github-release";
+import { createRepositoryGitHub } from "../../lib/github-release";
+import type { PublishedRelease } from "../../lib/release-resolution";
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
   giteaListIssues,
@@ -30,7 +28,7 @@ export interface DeadCodeForgeIssue {
   body: string;
 }
 
-export type DeadCodeRelease = GitHubRelease;
+export type DeadCodeRelease = PublishedRelease;
 
 export interface DeadCodeForgeClient {
   listIssues(): Promise<DeadCodeForgeIssue[]>;
