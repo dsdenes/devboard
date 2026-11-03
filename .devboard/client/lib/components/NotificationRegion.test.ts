@@ -13,7 +13,7 @@ afterAll(() => {
 
 // Static imports evaluate before the DOM globals exist, so the component, the
 // store, and the testing library load after registration.
-const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
+const { cleanup, fireEvent, render, waitFor } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
 const { notifications } = await import("../notifications.svelte");
 const { default: NotificationRegion } = await import("./NotificationRegion.svelte");
@@ -93,6 +93,11 @@ test("a second activation while filing sends no second request", async () => {
 
   const link = view.getByText("Open issue") as HTMLAnchorElement;
   expect(link.getAttribute("href")).toBe("http://localhost:3001/dsdenes/devboard/issues/7");
-  const remaining = view.container.querySelector<HTMLButtonElement>(".notification__file");
-  expect(remaining?.disabled).toBe(false);
+  await waitFor(
+    () => {
+      const remaining = view.container.querySelector<HTMLButtonElement>(".notification__file");
+      expect(remaining?.disabled).toBe(false);
+    },
+    { timeout: 5000 },
+  );
 });

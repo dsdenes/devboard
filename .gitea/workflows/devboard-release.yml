@@ -19,7 +19,10 @@ jobs:
         run: bun run build
       - name: Run the harness suite
         working-directory: .devboard
-        run: bun test
+        # One worker per file: the DOM tests in client/ install a global document
+        # and unmount it in afterAll, so a shared module registry lets one file
+        # tear down another's live component.
+        run: bun test --parallel
       - name: Typecheck
         working-directory: .devboard
         run: bunx tsc --noEmit

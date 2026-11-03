@@ -187,6 +187,15 @@ export function readDedupStub(path: string): Dedup {
       records.push(decision);
     }
     mkdirSync(runDir, { recursive: true });
+    // The stub saw the whole candidate request, so it read the open issues the
+    // request was built from; `reads` lets a test simulate a turn that did not.
+    const reads =
+      typeof document.reads === "number" &&
+      Number.isInteger(document.reads) &&
+      document.reads >= 0
+        ? document.reads
+        : request.candidates.length;
+    appendFileSync(join(runDir, "dedup-reads.jsonl"), `${JSON.stringify({ count: reads })}\n`);
     if (records.length > 0) {
       appendFileSync(
         join(runDir, "dedup-records.jsonl"),

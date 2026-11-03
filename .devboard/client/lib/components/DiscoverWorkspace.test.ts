@@ -14,7 +14,7 @@ afterAll(() => {
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the stores load after registration.
-const { cleanup, render } = await import("@testing-library/svelte");
+const { cleanup, render, waitFor } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
 const { default: DiscoverWorkspace } = await import("./DiscoverWorkspace.svelte");
 const { layout } = await import("../layout.svelte");
@@ -144,7 +144,7 @@ test("the running Overview run stops through the quiet destructive control", asy
   );
   discover.active = true;
   await tick();
-  expect(controlTestId()).toBe("discover-stop");
+  await waitFor(() => expect(controlTestId()).toBe("discover-stop"), { timeout: 5000 });
   const stop = bar().querySelector('[data-testid="discover-stop"]');
   expect(stop?.classList.contains("discover-run__stop")).toBe(true);
   expect(stop?.getAttribute("data-variant")).toBe("bare");
