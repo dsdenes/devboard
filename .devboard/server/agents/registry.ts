@@ -659,6 +659,9 @@ const SHARED_ISSUES = {
   columns: AGENT_ISSUE_COLUMNS,
 } as const;
 
+/** The Consistent Naming family id, shared by its descriptor and its tab. */
+const CONSISTENT_NAMING_ID = "consistent-naming";
+
 export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.freeze([
   validateAgentDescriptor({
     id: "scout",
@@ -886,8 +889,8 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     issues: SHARED_ISSUES,
     detail: { panel: "activity", testId: "agent-detail" },
     tab: {
-      id: "consistent-naming",
-      kind: "consistent-naming",
+      id: CONSISTENT_NAMING_ID,
+      kind: CONSISTENT_NAMING_ID,
       title: "Consistent Naming",
     },
   }),
