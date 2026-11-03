@@ -66,6 +66,13 @@ const PACKAGE_NAME = "@dsdenes/devboard";
 const releaseLockVariable = "DEVBOARD_RELEASE_LOCK";
 const releaseLockWaitMs = 10 * 60_000;
 
+/**
+ * How long the step waits for npm to serve the version it just published. A
+ * publish npm reports as accepted can still leave the registry without the
+ * version, so the release is verified before the forge release is created.
+ */
+const publishVisibilityMs = 60_000;
+
 export interface ReleaseCommandResult {
   code: number;
   stdout: string;
@@ -463,7 +470,27 @@ export async function releaseStep(options: ReleaseStepOptions = {}): Promise<Rel
             throw new ReleaseFailure(`npm publish failed: ${detail}`);
           }
           log(`release: ${PACKAGE_NAME}@${version} is already in npm's registry`);
+        } else {
+          // npm keeps its notices on stderr and its exit code is the only other
+          // signal, so the last line records what the publish actually did.
+          const note = published.stderr
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0)
+            .at(-1);
+          log(`release: npm answered ${note === undefined ? "with no output" : note}`);
         }
+      }
+
+      // The release is only real when npm serves the version. Verifying before
+      // the forge record keeps a publish that never reached the registry from
+      // producing a release no install can resolve.
+      const visibleBy = Date.now() + publishVisibilityMs;
+      while (!packageExists(version)) {
+        if (Date.now() >= visibleBy) {
+          throw new ReleaseFailure(`npm does not serve ${PACKAGE_NAME}@${version} after the publish`);
+        }
+        await Bun.sleep(2_000);
       }
 
       let existing: GiteaReleaseDocument | undefined;
