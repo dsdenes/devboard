@@ -632,6 +632,7 @@ async function writeFixture(root: string): Promise<string> {
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-consistent-naming",
+    "devboard-gh-stack",
   ]) {
     await cp(join(harnessRoot, "omp", "skills", name), join(host, ".omp", "skills", name), {
       recursive: true,
@@ -1881,6 +1882,9 @@ try {
   // The reload control's page retries the root while the replacement binds;
   // those refusals are the handoff working, not a broken asset.
   let expectedReloadFailures = false;
+  // A deliberate outage also fails the commands the test issues while the
+  // dashboard is down, including the automatic /feedback report.
+  let expectedOfflineFailures = false;
   const requestUrls = new Map<string, string>();
   const feedbackRequests: Array<Record<string, unknown>> = [];
   const feedbackPosts: string[] = [];
@@ -1953,7 +1957,10 @@ try {
     const requestId = String(params.requestId ?? "");
     const url = requestUrls.get(requestId) ?? "";
     if (url.includes("favicon")) return;
-    if (expectedReloadFailures && String(params.errorText ?? "").includes("ERR_CONNECTION_REFUSED")) {
+    if (
+      (expectedReloadFailures || expectedOfflineFailures) &&
+      String(params.errorText ?? "").includes("ERR_CONNECTION_REFUSED")
+    ) {
       return;
     }
     networkProblems.push({
@@ -3243,8 +3250,8 @@ try {
     };
   })()`);
   check(
-    devboardSidebar.entries === 2 &&
-      devboardSidebar.items === 10 &&
+    devboardSidebar.entries === 3 &&
+      devboardSidebar.items === 11 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify([
           "Auto Scout",
@@ -3267,14 +3274,14 @@ try {
           "open.devboard.single-responsibility",
           "open.devboard.release-train",
         ]),
-    "the Devboard sidebar does not carry the background agents beside the two page entries",
+    "the Devboard sidebar does not carry the background agents beside the three page entries",
     devboardSidebar,
   );
   check(
-    JSON.stringify(devboardSidebar.labels) === JSON.stringify(["MCP tools", "Skills"]) &&
+    JSON.stringify(devboardSidebar.labels) === JSON.stringify(["MCP tools", "Skills", "Complexity"]) &&
       JSON.stringify(devboardSidebar.commands) ===
-        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills"]),
-    "the Devboard sidebar entries are not the MCP tools and Skills pages",
+        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills", "devboard.tab.complexity"]),
+    "the Devboard sidebar entries are not the MCP tools, Skills, and Complexity pages",
     devboardSidebar,
   );
   check(devboardSidebar.toolNames.length === 0, "a tool name leaked into the sidebar", devboardSidebar);
@@ -3365,6 +3372,7 @@ try {
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
   const devboardBuiltins = [
     "devboard-consistent-naming",
+    "devboard-gh-stack",
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-ui-ux",
@@ -3432,7 +3440,7 @@ try {
   check(
     JSON.stringify(devboardSkillsTable.managed) ===
       JSON.stringify(devboardManagedFirst(devboardBuiltins)),
-    "the Managed marker does not belong to exactly the five built-in rows",
+    "the Managed marker does not belong to exactly the six built-in rows",
     devboardSkillsTable,
   );
   check(
@@ -3604,7 +3612,7 @@ try {
   const devboardSidebarAfterAdd = await page.eval<number>(
     `document.querySelectorAll('[data-testid="sidebar"] [data-testid="devboard-tab"]').length`,
   );
-  check(devboardSidebarAfterAdd === 2, "a skill directory changed the sidebar entry count", devboardSidebarAfterAdd);
+  check(devboardSidebarAfterAdd === 3, "a skill directory changed the sidebar entry count", devboardSidebarAfterAdd);
   await rm(devboardExtraSkill, { recursive: true, force: true });
   await page.reload();
   await showDevboardSkills();
@@ -3661,6 +3669,7 @@ try {
     });
     const names = [
       "devboard-ui-ux",
+      "devboard-gh-stack",
       "discover-testing-strategy",
       "fixture-handwritten",
       "fixture-linked",
@@ -3689,15 +3698,22 @@ try {
     return results;
   })()`);
   check(
-    refusals.length === 5 &&
+    refusals.length === 6 &&
       refusals[0]?.message === '"devboard-ui-ux" is a built-in skill and cannot be deleted.' &&
-      refusals.slice(1).every(
+      refusals[1]?.message === '"devboard-gh-stack" is a built-in skill and cannot be deleted.' &&
+      refusals.slice(2).every(
         (entry) => entry.message === `No prepared skill named "${entry.name}" is installed.`,
       ),
-    "the server did not refuse the built-in, Discover, hand-authored, symlinked, and unknown names",
+    "the server did not refuse the two built-ins, Discover, hand-authored, symlinked, " +
+      "and unknown names",
     refusals,
   );
-  for (const name of ["devboard-ui-ux", "fixture-handwritten", "fixture-conventions"]) {
+  for (const name of [
+    "devboard-ui-ux",
+    "devboard-gh-stack",
+    "fixture-handwritten",
+    "fixture-conventions",
+  ]) {
     check(existsSync(join(host, ".omp", "skills", name)), `the refused ${name} directory was removed`);
   }
   check(
@@ -10927,6 +10943,7 @@ try {
   );
 
   // 16. Notifications and history: stop the server, attempt a command, restart.
+  expectedOfflineFailures = true;
   serverProcess?.kill("SIGTERM");
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() !== "Connected"`,
@@ -11095,6 +11112,7 @@ try {
   );
   startServer();
   await waitForHttp(baseUrl);
+  expectedOfflineFailures = false;
   await page.wait(`document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`, "reconnection", 30_000);
   await page.key("Escape");
   await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
