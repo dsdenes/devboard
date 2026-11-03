@@ -2751,7 +2751,9 @@ OpenRouter token shapes.
 
 Before filing, the agent reads the repository's open issues. A family is skipped when an open issue
 has the exact computed title or its body contains `family:<tag>`; the skip is recorded as
-`duplicate` with the existing URL. There is no suppression, no cooldown, and no recurrence comment.
+`duplicate` with the existing URL and the URL and number of the issue the turn just filed, and
+nothing closes or comments on that issue. There is no suppression, no cooldown, and no recurrence
+comment.
 
 `maxIssuesPerCycle` (1 to 20, default 2) caps filings per cycle, and `maxPerHour` caps filings per
 rolling hour. Each family's prompt receives a `filingRoom` of 0 or 1 after the caps and the already
@@ -2766,7 +2768,8 @@ as `dropped`, never filed. It is written atomically after every filing. A versio
 discarded on load, the report states `ledgerReset: true`, and deduplication relies on the forge.
 `report.json` and `report.md` carry the window, session and journal counts, total family count,
 selected keys with scores, omitted count, each synthesis call's model and duration, each recorded
-outcome with its rule or skip reason, filed URLs, duplicate skips, dropped count, and `pending: 0`.
+outcome with its rule or skip reason, filed URLs, duplicate skips with both the matched and the
+created URL, dropped count, and `pending: 0`.
 The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`, `failed`),
 `reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`, and `cycles`.
 

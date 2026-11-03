@@ -1645,7 +1645,11 @@ describe("MCP optimizer cycle", () => {
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: stubSynthesis(() => ({ action: "file" }), calls),
+      synthesize: stubSynthesis(() => ({
+        action: "file",
+        number: 7,
+        url: "https://forge.test/acme/fixture/issues/7",
+      }), calls),
       settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
@@ -1658,11 +1662,23 @@ describe("MCP optimizer cycle", () => {
     expect(result.report.duplicates.map((entry) => entry.family).sort()).toEqual(
       [first.key, second.key].sort(),
     );
+    const created = "https://forge.test/acme/fixture/issues/7";
+    for (const entry of result.report.duplicates) {
+      expect(entry.createdUrl).toBe(created);
+      expect(entry.number).toBe(7);
+      expect(entry.url).not.toBe(created);
+    }
+    const markdown = readFileSync(join(dirname(result.report.reportPath), "report.md"), "utf8");
+    expect(markdown).toContain(created);
+    expect(markdown).toContain("https://forge.test/acme/fixture/issues/1");
+    expect(markdown).toContain("https://forge.test/acme/fixture/issues/2");
     expect(result.report.issues.map((entry) => entry.family)).not.toContain(first.key);
     expect(result.report.issues.map((entry) => entry.family)).not.toContain(second.key);
-    expect(
-      result.report.validations.filter((entry) => entry.outcome === "duplicate"),
-    ).toHaveLength(2);
+    const duplicates = result.report.validations.filter((entry) => entry.outcome === "duplicate");
+    expect(duplicates).toHaveLength(2);
+    for (const entry of duplicates) {
+      expect(entry.reason).toContain(created);
+    }
   });
 
   test("two families recording one title file it once and record the duplicate", async () => {

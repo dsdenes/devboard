@@ -103,7 +103,7 @@ export interface McpOptimizerReport {
   action: "filed" | "none" | "capped" | "failed";
   reason?: string;
   issues: Array<{ url: string; family: string; kind: FamilyKind; title: string }>;
-  duplicates: Array<{ family: string; url: string }>;
+  duplicates: Array<{ family: string; url: string; createdUrl: string; number: number }>;
   dropped: number;
   pending: number;
   reportPath: string;
@@ -213,7 +213,9 @@ function renderMarkdown(report: McpOptimizerReport): string {
     "",
     ...(report.duplicates.length === 0
       ? ["None."]
-      : report.duplicates.map((entry) => `- \`${entry.family}\`: ${entry.url}`)),
+      : report.duplicates.map(
+          (entry) => `- \`${entry.family}\`: created ${entry.createdUrl}, duplicates ${entry.url}`,
+        )),
     "",
   ].join("\n");
 }
@@ -552,12 +554,17 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
       if (number !== undefined && title !== undefined && url !== undefined) {
         const duplicate = duplicateOf(openIssues, title, call.family.key);
         if (duplicate !== undefined) {
-          report.duplicates.push({ family: call.family.key, url: duplicate.url });
+          report.duplicates.push({
+            family: call.family.key,
+            url: duplicate.url,
+            createdUrl: url,
+            number,
+          });
           report.validations.push({
             family: call.family.key,
             outcome: "duplicate",
             rule: "open-issue",
-            reason: duplicate.url,
+            reason: `${url} duplicates ${duplicate.url}`,
           });
           markFamily(ledger, call.family.key, "duplicate", { at: now });
           continue;
