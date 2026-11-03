@@ -623,6 +623,7 @@ async function writeFixture(root: string): Promise<string> {
     "devboard-ui-ux",
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
+    "devboard-consistent-naming",
   ]) {
     await cp(join(harnessRoot, "omp", "skills", name), join(host, ".omp", "skills", name), {
       recursive: true,
@@ -3324,6 +3325,7 @@ try {
   })()`);
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
   const devboardBuiltins = [
+    "devboard-consistent-naming",
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-ui-ux",
@@ -3374,7 +3376,7 @@ try {
   );
   check(
     JSON.stringify(devboardSkillsTable.managed) === JSON.stringify(devboardBuiltins),
-    "the Managed marker does not belong to exactly the three built-in rows",
+    "the Managed marker does not belong to exactly the four built-in rows",
     devboardSkillsTable,
   );
   check(

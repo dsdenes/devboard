@@ -120,6 +120,7 @@ const MANAGED_SKILLS = [
   "devboard-ui-ux",
   "devboard-restful-api-implementation",
   "devboard-single-responsibility-principle",
+  "devboard-consistent-naming",
 ] as const;
 
 let failingNpm = "";
