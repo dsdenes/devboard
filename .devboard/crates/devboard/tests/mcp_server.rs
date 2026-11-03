@@ -23,6 +23,15 @@ fn fixture(context_label: &str) -> McpContext {
     let harness = repo.join(".devboard");
     let state = root.join("state");
     std::fs::create_dir_all(&repo).expect("the repo");
+    // The fixture is its own repository: the status tool runs `git -C` here,
+    // and without a `.git` it would walk up into the checkout the test runs
+    // from and report that checkout's branch and ahead count instead.
+    let initialized = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(&repo)
+        .status()
+        .expect("git runs");
+    assert!(initialized.success(), "the fixture repo is initialized");
     std::fs::create_dir_all(&harness).expect("the harness");
     std::fs::create_dir_all(&state).expect("the state");
     std::fs::write(repo.join("GOAL.md"), "the goal").expect("the goal document");
