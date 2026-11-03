@@ -431,7 +431,9 @@ fn github_route(
     request: &RecordedRequest,
 ) -> StubResponse {
     let path = request.path.as_str();
-    if request.method == "GET" && path == "/repos/dsdenes/devboard/actions/workflows/release.yml/runs" {
+    if request.method == "GET"
+        && path == "/repos/dsdenes/devboard/actions/workflows/release.yml/runs"
+    {
         let data = state.lock().expect("github");
         let runs = if data.dispatched > 0 && data.complete {
             let sha = git_output(repo_dir, &["rev-parse", "HEAD"]);
