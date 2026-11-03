@@ -11,6 +11,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use devboard::publish::{MANIFEST_CHECKSUM_ASSET, RELEASE_INSTALLERS, RELEASE_TARGETS};
+use devboard::release::MANIFEST_ASSET;
 use devboard::workers::release_train::{
     activity_path, check_release_train, empty_state, parse_iso_millis, read_result, read_settings,
     read_state, read_worker_state, release_history, release_train_directory, release_train_owners,
@@ -1105,53 +1107,54 @@ fn verification_options(
         target: target.to_string(),
         version: version.to_string(),
         environment: std::collections::HashMap::new(),
-        state_dir: repo_dir.join(".tmp"),
         activity,
         refresh: Some(Arc::new(|_repo: &Path| GitOutcome::ok(String::new()))),
-        npm_view: None,
+        read_github_assets: None,
         read_release: None,
-        sleep: Some(Arc::new(|_ms: u64| Box::pin(async {}))),
-        npm_window_ms: Some(40),
-        npm_poll_ms: Some(5),
+    }
+}
+
+fn github_asset_names() -> Vec<String> {
+    let mut names: Vec<String> = RELEASE_TARGETS
+        .iter()
+        .map(|target| format!("devboard-{target}.tar.xz"))
+        .collect();
+    names.extend(RELEASE_INSTALLERS.iter().map(|name| name.to_string()));
+    names
+}
+
+fn gitea_manifest_release(tag: String) -> ForgeRelease {
+    ForgeRelease {
+        asset_names: vec![
+            MANIFEST_ASSET.to_string(),
+            MANIFEST_CHECKSUM_ASSET.to_string(),
+        ],
+        url: format!("https://forge.test/releases/tag/{tag}"),
     }
 }
 
 #[tokio::test]
-async fn verification_retries_the_npm_read_then_records_the_assets() {
-    let fixture = fixture("verify-retry", true);
+async fn verification_reads_the_github_assets_and_the_gitea_manifest() {
+    let fixture = fixture("verify-assets-ok", true);
     let head = git(&fixture.repo, &["rev-parse", "HEAD"]);
-    let reads = Arc::new(AtomicUsize::new(0));
-    let mut options =
-        verification_options(&fixture.repo, &head, "1.0.0", Arc::new(|_line: &str| {}));
-    options.npm_view = Some({
-        let reads = reads.clone();
-        Arc::new(
-            move |_version: String| -> Pin<Box<dyn Future<Output = GitOutcome> + Send>> {
-                let read = reads.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async move {
-                    if read < 2 {
-                        GitOutcome {
-                            code: 1,
-                            stdout: String::new(),
-                            stderr: "npm error code E404".to_string(),
-                        }
-                    } else {
-                        GitOutcome::ok("1.0.0".to_string())
-                    }
-                })
-            },
-        ) as devboard::workers::release_train::NpmViewFn
-    });
+    let activity: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = activity.clone();
+    let mut options = verification_options(
+        &fixture.repo,
+        &head,
+        "1.0.0",
+        Arc::new(move |line: &str| {
+            recorded
+                .lock()
+                .expect("the activity")
+                .push(line.to_string());
+        }),
+    );
+    options.read_github_assets = Some(Arc::new(|_tag: String| {
+        Box::pin(async move { Ok(Some(github_asset_names())) })
+    }));
     options.read_release = Some(Arc::new(|tag: String| {
-        Box::pin(async move {
-            Ok(Some(ForgeRelease {
-                asset_names: vec![
-                    "devboard-1.0.0.tgz".to_string(),
-                    "devboard-1.0.0.tgz.sha256".to_string(),
-                ],
-                url: format!("https://forge.test/releases/tag/{tag}"),
-            }))
-        })
+        Box::pin(async move { Ok(Some(gitea_manifest_release(tag))) })
     }));
     let verified = verify_shipped(options).await;
     assert_eq!(
@@ -1161,7 +1164,20 @@ async fn verification_retries_the_npm_read_then_records_the_assets() {
             url: "https://forge.test/releases/tag/v1.0.0".to_string(),
         }
     );
-    assert_eq!(reads.load(Ordering::SeqCst), 3);
+    let lines = activity.lock().expect("the activity").clone();
+    assert!(
+        lines.contains(&format!(
+            "verified {} GitHub asset(s) for v1.0.0",
+            github_asset_names().len()
+        )),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&format!(
+            "verified {MANIFEST_ASSET} and its checksum on Gitea for v1.0.0"
+        )),
+        "{lines:?}"
+    );
 }
 
 #[tokio::test]
@@ -1170,11 +1186,9 @@ async fn verification_names_the_tag_phase_when_no_tag_carries_the_commit() {
     let missing = "b".repeat(40);
     let mut options =
         verification_options(&fixture.repo, &missing, "1.0.0", Arc::new(|_line: &str| {}));
-    options.npm_view = Some(Arc::new(
-        |_version: String| -> Pin<Box<dyn Future<Output = GitOutcome> + Send>> {
-            Box::pin(async move { GitOutcome::ok("1.0.0".to_string()) })
-        },
-    ));
+    options.read_github_assets = Some(Arc::new(|_tag: String| {
+        Box::pin(async move { Err("the GitHub phase must not run".to_string()) })
+    }));
     options.read_release = Some(Arc::new(|_tag: String| {
         Box::pin(async move { Err("the Gitea phase must not run".to_string()) })
     }));
@@ -1194,20 +1208,46 @@ async fn verification_names_the_tag_phase_when_no_tag_carries_the_commit() {
 }
 
 #[tokio::test]
-async fn verification_names_the_missing_gitea_asset() {
-    let fixture = fixture("verify-assets", true);
+async fn verification_names_the_missing_github_asset() {
+    let fixture = fixture("verify-github-assets", true);
     let head = git(&fixture.repo, &["rev-parse", "HEAD"]);
     let mut options =
         verification_options(&fixture.repo, &head, "1.0.0", Arc::new(|_line: &str| {}));
-    options.npm_view = Some(Arc::new(
-        |_version: String| -> Pin<Box<dyn Future<Output = GitOutcome> + Send>> {
-            Box::pin(async move { GitOutcome::ok("1.0.0".to_string()) })
-        },
-    ));
+    let mut assets = github_asset_names();
+    assets.retain(|name| name != "devboard-x86_64-unknown-linux-gnu.tar.xz");
+    options.read_github_assets = Some(Arc::new(move |_tag: String| {
+        let assets = assets.clone();
+        Box::pin(async move { Ok(Some(assets)) })
+    }));
+    options.read_release = Some(Arc::new(|_tag: String| {
+        Box::pin(async move { Err("the Gitea phase must not run".to_string()) })
+    }));
+    match verify_shipped(options).await {
+        ReleaseVerification::Failed { phase, detail, .. } => {
+            assert_eq!(phase, ReleaseVerificationPhase::Github);
+            assert!(detail.starts_with("GitHub assets:"), "{detail}");
+            assert!(
+                detail.contains("is missing devboard-x86_64-unknown-linux-gnu.tar.xz"),
+                "{detail}"
+            );
+        }
+        other => panic!("expected a GitHub failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn verification_names_the_missing_gitea_manifest_asset() {
+    let fixture = fixture("verify-manifest", true);
+    let head = git(&fixture.repo, &["rev-parse", "HEAD"]);
+    let mut options =
+        verification_options(&fixture.repo, &head, "1.0.0", Arc::new(|_line: &str| {}));
+    options.read_github_assets = Some(Arc::new(|_tag: String| {
+        Box::pin(async move { Ok(Some(github_asset_names())) })
+    }));
     options.read_release = Some(Arc::new(|tag: String| {
         Box::pin(async move {
             Ok(Some(ForgeRelease {
-                asset_names: vec!["devboard-1.0.0.tgz".to_string()],
+                asset_names: vec![MANIFEST_ASSET.to_string()],
                 url: format!("https://forge.test/releases/tag/{tag}"),
             }))
         })
@@ -1215,8 +1255,9 @@ async fn verification_names_the_missing_gitea_asset() {
     match verify_shipped(options).await {
         ReleaseVerification::Failed { phase, detail, .. } => {
             assert_eq!(phase, ReleaseVerificationPhase::Gitea);
+            assert!(detail.starts_with("Gitea manifest:"), "{detail}");
             assert!(
-                detail.contains("is missing devboard-1.0.0.tgz.sha256"),
+                detail.contains(&format!("is missing {MANIFEST_CHECKSUM_ASSET}")),
                 "{detail}"
             );
         }

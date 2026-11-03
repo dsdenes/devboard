@@ -1925,7 +1925,9 @@ release; publishes `devboard-manifest.json` to that Gitea release; pushes the `g
 remote's `main` and the release tags, then proves `main` is the published commit or a descendant
 that still contains it; and reports every running dashboard's running and installed version. It
 never restarts a dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and
-propagation wait (default 1800 seconds). No other prompt, worker, or operator invokes it; the
+propagation wait (default 1800 seconds). Its GitHub reads and its dispatch use `GH_TOKEN` or
+`GITHUB_TOKEN` when either is set and otherwise the token `gh auth token` reports, the same
+credential the mirror push uses. No other prompt, worker, or operator invokes it; the
 implementing agent closes its issue after the push proof, and the Design System pushes its
 documentation commit and reports.
 

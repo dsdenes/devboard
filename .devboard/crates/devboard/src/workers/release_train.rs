@@ -22,6 +22,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::publish::{MANIFEST_CHECKSUM_ASSET, RELEASE_INSTALLERS, RELEASE_TARGETS};
+use crate::release::MANIFEST_ASSET;
+
 use super::WorkerInvocation;
 
 /* ------------------------------------------------------------------------ */
@@ -45,10 +48,6 @@ pub const TICK_MS: u64 = 1_000;
 const CONTROL_POLL_MS: u64 = 250;
 const RUN_TIMEOUT_MS: u64 = 60 * 60_000;
 const RUN_BUSY_NOTICE: &str = "Another Release Train run is active; this tick starts nothing.";
-pub const NPM_PACKAGE: &str = "@dsdenes/devboard";
-/// npm's normal propagation lag.
-pub const NPM_VISIBILITY_WINDOW_MS: u64 = 10 * 60_000;
-pub const NPM_VISIBILITY_POLL_MS: u64 = 15_000;
 pub const RUN_HISTORY_LIMIT: usize = 20;
 pub const ACTIVITY_MAX_ENTRIES: usize = 200;
 pub const ACTIVITY_MAX_BYTES: usize = 96 * 1024;
@@ -1911,7 +1910,7 @@ pub fn release_version_at(repo_dir: &Path, sha: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseVerificationPhase {
     Tag,
-    Npm,
+    Github,
     Gitea,
 }
 
@@ -1919,7 +1918,7 @@ impl ReleaseVerificationPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             ReleaseVerificationPhase::Tag => "tag",
-            ReleaseVerificationPhase::Npm => "npm",
+            ReleaseVerificationPhase::Github => "github",
             ReleaseVerificationPhase::Gitea => "gitea",
         }
     }
@@ -1946,14 +1945,16 @@ pub struct ForgeRelease {
 }
 
 pub type RefreshFn = Arc<dyn Fn(&Path) -> GitOutcome + Send + Sync>;
-pub type NpmViewFn =
-    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = GitOutcome> + Send>> + Send + Sync>;
+pub type ReadGithubAssetsFn = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Option<Vec<String>>, String>> + Send>>
+        + Send
+        + Sync,
+>;
 pub type ReadReleaseFn = Arc<
     dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Option<ForgeRelease>, String>> + Send>>
         + Send
         + Sync,
 >;
-pub type SleepFn = Arc<dyn Fn(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ReleaseVerificationOptions {
@@ -1963,18 +1964,13 @@ pub struct ReleaseVerificationOptions {
     /// The version the gate asked this run to release.
     pub version: String,
     pub environment: HashMap<String, String>,
-    pub state_dir: PathBuf,
     pub activity: ActivityFn,
     /// Refreshes the checkout's tags; the default fetches the origin's.
     pub refresh: Option<RefreshFn>,
-    /// Reads one npm version; the default asks the registry.
-    pub npm_view: Option<NpmViewFn>,
+    /// Reads one GitHub release's asset names; the default asks GitHub.
+    pub read_github_assets: Option<ReadGithubAssetsFn>,
     /// Reads one Gitea release and its page URL.
     pub read_release: Option<ReadReleaseFn>,
-    pub sleep: Option<SleepFn>,
-    /// Bounds the npm retry; tests shrink it.
-    pub npm_window_ms: Option<u64>,
-    pub npm_poll_ms: Option<u64>,
 }
 
 fn short_sha(sha: &str) -> String {
@@ -2098,52 +2094,46 @@ pub async fn verify_shipped(options: ReleaseVerificationOptions) -> ReleaseVerif
         short_sha(&options.target)
     ));
 
-    let npm_view: NpmViewFn = options.npm_view.clone().unwrap_or_else(|| {
-        let environment = options.environment.clone();
-        let state_dir = options.state_dir.clone();
-        Arc::new(
-            move |candidate: String| -> Pin<Box<dyn Future<Output = GitOutcome> + Send>> {
-                let environment = environment.clone();
-                let decided = state_dir.clone();
-                Box::pin(async move { read_npm_version(&candidate, &environment, &decided).await })
-            },
-        )
-    });
-    let window_ms = options.npm_window_ms.unwrap_or(NPM_VISIBILITY_WINDOW_MS);
-    let poll_ms = options.npm_poll_ms.unwrap_or(NPM_VISIBILITY_POLL_MS);
-    let deadline = now_millis() + window_ms as i64;
-    let mut reads = 0u32;
-    loop {
-        reads += 1;
-        let read = npm_view(version.clone()).await;
-        if read.code == 0 && read.stdout.trim() == version {
-            break;
-        }
-        let last_detail = first_line(if read.stderr.is_empty() {
-            read.stdout.as_str()
-        } else {
-            read.stderr.as_str()
+    let read_github_assets: ReadGithubAssetsFn =
+        options.read_github_assets.clone().unwrap_or_else(|| {
+            let environment = options.environment.clone();
+            default_github_assets_reader(environment)
         });
-        if now_millis() >= deadline {
+    let github_assets = match read_github_assets(tag.clone()).await {
+        Ok(Some(assets)) => assets,
+        Ok(None) => {
             return version_failed(
-                ReleaseVerificationPhase::Npm,
+                ReleaseVerificationPhase::Github,
                 &version,
-                format!(
-                    "npm visibility: {NPM_PACKAGE}@{version} is not visible on npmjs after {}s and {reads} read(s): {last_detail}",
-                    (window_ms as f64 / 1000.0).round() as u64
-                ),
+                format!("GitHub assets: the release {tag} does not exist"),
+            )
+        }
+        Err(error) => {
+            return version_failed(
+                ReleaseVerificationPhase::Github,
+                &version,
+                format!("GitHub assets: the release {tag} could not be read: {error}"),
+            )
+        }
+    };
+    let mut expected: Vec<String> = RELEASE_TARGETS
+        .iter()
+        .map(|target| format!("devboard-{target}.tar.xz"))
+        .collect();
+    expected.extend(RELEASE_INSTALLERS.iter().map(|name| name.to_string()));
+    for asset in &expected {
+        if !github_assets.contains(asset) {
+            return version_failed(
+                ReleaseVerificationPhase::Github,
+                &version,
+                format!("GitHub assets: the release {tag} is missing {asset}"),
             );
         }
-        (options.activity)(&format!(
-            "waiting for {NPM_PACKAGE}@{version} on npmjs: {last_detail}"
-        ));
-        let remaining = (deadline - now_millis()).max(0) as u64;
-        let delay = poll_ms.min(remaining);
-        match &options.sleep {
-            Some(sleep) => sleep(delay).await,
-            None => tokio::time::sleep(Duration::from_millis(delay)).await,
-        }
     }
+    (options.activity)(&format!(
+        "verified {} GitHub asset(s) for {tag}",
+        expected.len()
+    ));
 
     let read_release: ReadReleaseFn = match options.read_release.clone() {
         Some(reader) => reader,
@@ -2160,31 +2150,28 @@ pub async fn verify_shipped(options: ReleaseVerificationOptions) -> ReleaseVerif
             return version_failed(
                 ReleaseVerificationPhase::Gitea,
                 &version,
-                format!("Gitea release assets: the release {tag} does not exist"),
+                format!("Gitea manifest: the release {tag} does not exist"),
             )
         }
         Err(error) => {
             return version_failed(
                 ReleaseVerificationPhase::Gitea,
                 &version,
-                format!("Gitea release assets: the release {tag} could not be read: {error}"),
+                format!("Gitea manifest: the release {tag} could not be read: {error}"),
             )
         }
     };
-    for asset in [
-        format!("devboard-{version}.tgz"),
-        format!("devboard-{version}.tgz.sha256"),
-    ] {
-        if !release.asset_names.contains(&asset) {
+    for asset in [MANIFEST_ASSET, MANIFEST_CHECKSUM_ASSET] {
+        if !release.asset_names.iter().any(|name| name == asset) {
             return version_failed(
                 ReleaseVerificationPhase::Gitea,
                 &version,
-                format!("Gitea release assets: the release {tag} is missing {asset}"),
+                format!("Gitea manifest: the release {tag} is missing {asset}"),
             );
         }
     }
     (options.activity)(&format!(
-        "verified {NPM_PACKAGE}@{version} and the Gitea assets"
+        "verified {MANIFEST_ASSET} and its checksum on Gitea for {tag}"
     ));
     ReleaseVerification::Ok {
         version,
@@ -2204,68 +2191,57 @@ fn env_value(environment: &HashMap<String, String>, keys: &[&str]) -> Option<Str
     None
 }
 
-/// Reads one published version from the npm registry.
-async fn read_npm_version(
-    version: &str,
-    environment: &HashMap<String, String>,
-    state_dir: &Path,
-) -> GitOutcome {
-    let _ = state_dir;
-    let url = format!(
-        "https://registry.npmjs.org/{}/{version}",
-        NPM_PACKAGE.replace('/', "%2f")
-    );
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return GitOutcome {
-                code: 1,
-                stdout: String::new(),
-                stderr: error.to_string(),
+/// Reads one GitHub release's asset names.
+///
+/// GitHub answers `404` for a private release repository read without a
+/// token, so the reader resolves the same credential `publish` dispatches
+/// with. A missing release is `None`; any other refusal is an error naming
+/// the phase.
+fn default_github_assets_reader(environment: HashMap<String, String>) -> ReadGithubAssetsFn {
+    Arc::new(move |tag: String| {
+        let environment = environment.clone();
+        Box::pin(async move {
+            let token = crate::release::github_api_token(&environment).await;
+            let encoded: String = url::form_urlencoded::byte_serialize(tag.as_bytes()).collect();
+            let url = format!(
+                "https://api.github.com/repos/{}/releases/tags/{encoded}",
+                crate::release::RELEASE_REPOSITORY
+            );
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .map_err(|error| error.to_string())?;
+            let mut request = client
+                .get(&url)
+                .header("accept", "application/vnd.github+json")
+                .header("x-github-api-version", "2022-11-28")
+                .header("user-agent", "devboard-release-train");
+            if let Some(token) = token.as_deref() {
+                request = request.header("authorization", format!("Bearer {token}"));
             }
-        }
-    };
-    let mut request = client.get(&url).header("accept", "application/json");
-    if let Some(token) = env_value(environment, &["NPM_TOKEN", "DEVBOARD_NPM_TOKEN"]) {
-        request = request.header("authorization", format!("Bearer {token}"));
-    }
-    match request.send().await {
-        Ok(response) if response.status().is_success() => {
-            let body = response.text().await.unwrap_or_default();
-            let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-            let published = parsed
-                .get("version")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if published.is_empty() {
-                GitOutcome {
-                    code: 1,
-                    stdout: String::new(),
-                    stderr: "the registry answered no version".to_string(),
-                }
-            } else {
-                GitOutcome {
-                    code: 0,
-                    stdout: published,
-                    stderr: String::new(),
-                }
+            let response = request.send().await.map_err(|error| error.to_string())?;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
             }
-        }
-        Ok(response) => GitOutcome {
-            code: 1,
-            stdout: String::new(),
-            stderr: format!("the registry answered {}", response.status()),
-        },
-        Err(error) => GitOutcome {
-            code: 1,
-            stdout: String::new(),
-            stderr: error.to_string(),
-        },
-    }
+            if !response.status().is_success() {
+                return Err(format!("GitHub answered {}", response.status()));
+            }
+            let body = response.text().await.map_err(|error| error.to_string())?;
+            let parsed: Value = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+            let names = parsed
+                .get("assets")
+                .and_then(Value::as_array)
+                .map(|assets| {
+                    assets
+                        .iter()
+                        .filter_map(|asset| asset.get("name").and_then(Value::as_str))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(Some(names))
+        })
+    })
 }
 
 fn origin_slug(repo_dir: &Path) -> Option<(String, String)> {
@@ -2481,14 +2457,10 @@ async fn run_release_and_verify(
         target: input.request.target.clone(),
         version: input.request.version.clone(),
         environment,
-        state_dir: input.state_dir.clone(),
         activity: input.activity.clone(),
         refresh: None,
-        npm_view: None,
+        read_github_assets: None,
         read_release: None,
-        sleep: None,
-        npm_window_ms: None,
-        npm_poll_ms: None,
     })
     .await;
     match verified {
@@ -3016,14 +2988,10 @@ impl ReleaseTrainWorker {
             target: target.clone(),
             version: version.clone(),
             environment: self.environment.clone(),
-            state_dir: self.state_dir.clone(),
             activity: self.activity_callback(),
             refresh: None,
-            npm_view: None,
+            read_github_assets: None,
             read_release: None,
-            sleep: None,
-            npm_window_ms: None,
-            npm_poll_ms: None,
         })
         .await;
         let result = match result {

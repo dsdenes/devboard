@@ -1433,11 +1433,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| RELEASE_REPOSITORY.to_string());
-    let github_token = ["GH_TOKEN", "GITHUB_TOKEN"]
-        .iter()
-        .find_map(|key| args.environment.get(*key))
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let github_token = crate::release::github_api_token(&args.environment).await;
     let api = Api {
         transport,
         gitea,

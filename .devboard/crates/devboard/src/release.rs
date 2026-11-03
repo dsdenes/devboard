@@ -7,7 +7,9 @@
 //! dashboard reads that manifest, downloads the artifact for its platform,
 //! verifies the digest, and installs the binary beside its manifest.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -210,6 +212,55 @@ pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, Str
     Ok(release)
 }
 
+/// The GitHub API token a release uses.
+///
+/// The environment's `GH_TOKEN` or `GITHUB_TOKEN` wins; otherwise the token
+/// `gh` is logged in with is asked for, because the release mirrors and reads
+/// a private repository whose `git` writes already use that credential. An
+/// absent `gh`, a failed read, or an empty token is no token: the caller then
+/// reports the unauthenticated read.
+pub async fn github_api_token(environment: &HashMap<String, String>) -> Option<String> {
+    for key in ["GH_TOKEN", "GITHUB_TOKEN"] {
+        if let Some(token) = environment
+            .get(key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(token.to_string());
+        }
+    }
+    token_from_command("gh", &["auth", "token"], environment).await
+}
+
+/// Runs one token command and answers its first non-empty line.
+async fn token_from_command(
+    program: &str,
+    args: &[&str],
+    environment: &HashMap<String, String>,
+) -> Option<String> {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
+        .env_clear()
+        .envs(environment)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(10), command.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let token = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    Some(token.to_string())
+}
+
 /// Verifies one downloaded artifact against its manifest digest.
 pub fn verify_sha256(bytes: &[u8], expected: &str) -> bool {
     use sha2::{Digest, Sha256};
@@ -347,5 +398,33 @@ mod tests {
         assert!(!is_newer_version("1.9.0", Some("1.10.0")));
         assert!(is_newer_version("2.0.0", None));
         assert!(!is_newer_version("1.0.0-rc.1", Some("1.0.0")));
+    }
+
+    #[tokio::test]
+    async fn a_token_command_answers_its_first_line() {
+        let environment = HashMap::new();
+        assert_eq!(
+            token_from_command(
+                "/bin/sh",
+                &["-c", "printf '\\nsecret-token\\nsecond\\n'"],
+                &environment
+            )
+            .await,
+            Some("secret-token".to_string())
+        );
+        assert_eq!(
+            token_from_command("/bin/sh", &["-c", "exit 3"], &environment).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_environment_token_wins_over_the_command() {
+        let mut environment = HashMap::new();
+        environment.insert("GH_TOKEN".to_string(), "  from-environment  ".to_string());
+        assert_eq!(
+            github_api_token(&environment).await,
+            Some("from-environment".to_string())
+        );
     }
 }
