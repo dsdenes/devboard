@@ -67,11 +67,12 @@ const releaseLockVariable = "DEVBOARD_RELEASE_LOCK";
 const releaseLockWaitMs = 10 * 60_000;
 
 /**
- * How long the step waits for npm to serve the version it just published. A
- * publish npm reports as accepted can still leave the registry without the
- * version, so the release is verified before the forge release is created.
+ * How long the step waits for npm to serve the version it just published. npm
+ * acknowledges a publish with "Your package is being processed and may take a
+ * few minutes to become available" and serves it minutes later, so the release
+ * is verified, not assumed, before the forge release is created.
  */
-const publishVisibilityMs = 60_000;
+const publishVisibilityMs = 15 * 60_000;
 
 export interface ReleaseCommandResult {
   code: number;
@@ -486,7 +487,12 @@ export async function releaseStep(options: ReleaseStepOptions = {}): Promise<Rel
       // the forge record keeps a publish that never reached the registry from
       // producing a release no install can resolve.
       const visibleBy = Date.now() + publishVisibilityMs;
+      let waiting = false;
       while (!packageExists(version)) {
+        if (!waiting) {
+          log(`release: npm is still processing ${PACKAGE_NAME}@${version}; waiting for it`);
+          waiting = true;
+        }
         if (Date.now() >= visibleBy) {
           throw new ReleaseFailure(`npm does not serve ${PACKAGE_NAME}@${version} after the publish`);
         }
