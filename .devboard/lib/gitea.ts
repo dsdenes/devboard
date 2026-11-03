@@ -87,6 +87,14 @@ export interface GiteaRelease {
 const GITEA_PAGE_SIZE = 50;
 const GITEA_MAX_PAGES = 100;
 
+/**
+ * The most issues one paged Gitea issue read returns: `GITEA_MAX_PAGES` pages
+ * of `GITEA_PAGE_SIZE` rows. `giteaListIssues` stops at that ceiling, so a
+ * caller that must know whether it saw the whole state compares its row count
+ * against it instead of trusting a read that stopped there.
+ */
+export const GITEA_ISSUE_READ_MAX = GITEA_MAX_PAGES * GITEA_PAGE_SIZE;
+
 export interface GiteaIssueDocument {
   number: number;
   title: string;

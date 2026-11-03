@@ -57,6 +57,7 @@ import {
 } from "../watchdog/dedup";
 import type { WatchdogDelivery } from "../watchdog/delivery";
 import type { ForgeIssues } from "../lib/forge-issues";
+import { GITEA_ISSUE_READ_MAX } from "../lib/gitea";
 
 /**
  * Every fixture lives under the repository's `.devboard/.tmp`. Filing is
@@ -2093,6 +2094,138 @@ describe("deduplication gate", () => {
     expect(unrecorded.content[0]?.text).toContain("#601");
     expect(unrecorded.content[0]?.text).toContain(`${ISSUE_URL}/601`);
     expect(created).toHaveLength(2);
+  });
+
+  test("issues_list reads past one page so the oldest open issue is visible", async () => {
+    const root = await temporaryDirectory("test-watchdog-dedup-all");
+    const stateDir = join(root, ".devboard", ".tmp");
+    const runDir = join(stateDir, "runs", "cycle-1");
+    await mkdir(stateDir, { recursive: true });
+    const url = (number: number): string => `https://forge.test/acme/fixture/issues/${number}`;
+    const newestFirst = Array.from({ length: 250 }, (_, index) => ({
+      number: 250 - index,
+      title: `open ${250 - index}`,
+      state: "open" as const,
+      labels: [],
+      url: url(250 - index),
+      createdAt: null,
+    }));
+    const oldest = newestFirst[newestFirst.length - 1];
+    if (oldest === undefined) throw new Error("missing the oldest fixture issue");
+    const fake: ForgeIssues = {
+      forge: "gitea",
+      repository: "acme/fixture",
+      list: async (_state, limit = 100) => newestFirst.slice(0, limit),
+      listAll: async () => newestFirst,
+      get: async (number) => ({
+        number,
+        title: `open ${number}`,
+        body: "body",
+        state: "open",
+        labels: [],
+        url: url(number),
+        createdAt: null,
+      }),
+      ensureLabel: async () => {
+        throw new Error("mutation");
+      },
+      create: async () => {
+        throw new Error("mutation");
+      },
+      comment: async () => {
+        throw new Error("mutation");
+      },
+      close: async () => {
+        throw new Error("mutation");
+      },
+    };
+    const exchanges = async (
+      issues: ForgeIssues,
+      environment: Record<string, string>,
+      requests: Array<Record<string, unknown>>,
+    ): Promise<Array<Record<string, unknown>>> => {
+      let out = "";
+      await startDedupStdio({
+        issues,
+        repoDir: root,
+        environment,
+        input: (async function* () {
+          yield new TextEncoder().encode(requests.map((line) => JSON.stringify(line)).join("\n"));
+        })(),
+        output: {
+          write: (text: string) => {
+            out += text;
+            return true;
+          },
+        },
+        diagnostics: { write: () => true },
+      });
+      return out
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    };
+    const call = (id: number, name: string, args: Record<string, unknown>) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+    const replies = await exchanges(fake, { DEVBOARD_DEDUP_RUN_DIR: runDir }, [
+      call(1, "issues_list", { state: "open" }),
+      call(2, "issues_list", { state: "open", limit: 200 }),
+      call(3, "watchdog_duplicate_record", { fingerprint: "fp-oldest", issue: oldest.url }),
+    ]);
+    const payload = (id: number): Record<string, unknown> => {
+      const result = replies.find((reply) => reply.id === id)?.result as
+        | { content: Array<{ text: string }> }
+        | undefined;
+      return JSON.parse(result?.content[0]?.text ?? "{}") as Record<string, unknown>;
+    };
+    const complete = payload(1) as {
+      issues: Array<{ number: number }>;
+      truncated: boolean;
+    };
+    expect(complete.issues).toHaveLength(250);
+    expect(complete.issues.map((issue) => issue.number)).toContain(oldest.number);
+    expect(complete.truncated).toBe(false);
+
+    const page = payload(2) as { issues: Array<{ number: number }>; truncated: boolean };
+    expect(page.issues).toHaveLength(200);
+    expect(page.issues.map((issue) => issue.number)).not.toContain(oldest.number);
+    expect(page.truncated).toBe(true);
+
+    const recorded = payload(3);
+    expect(recorded.decision).toBe("duplicate");
+    expect(recorded.issue).toBe(oldest.url);
+    const duplicateRecords = readFileSync(join(runDir, "dedup-records.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(duplicateRecords).toEqual([
+      expect.objectContaining({ fingerprint: "fp-oldest", action: "duplicate", issue: oldest.url }),
+    ]);
+    const readCounts = readFileSync(join(runDir, "dedup-reads.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as { count: number }).count);
+    expect(readCounts).toEqual([250, 200]);
+
+    // A read stopped at the forge's page ceiling reports itself, never a full page.
+    const capped = await exchanges(
+      { ...fake, listAll: async () => Array.from({ length: GITEA_ISSUE_READ_MAX }, () => oldest) },
+      {},
+      [call(1, "issues_list", { state: "open" })],
+    );
+    const cappedResult = capped.find((reply) => reply.id === 1)?.result as {
+      content: Array<{ text: string }>;
+    };
+    const cappedPayload = JSON.parse(cappedResult.content[0]?.text ?? "{}") as {
+      issues: unknown[];
+      truncated: boolean;
+    };
+    expect(cappedPayload.issues).toHaveLength(GITEA_ISSUE_READ_MAX);
+    expect(cappedPayload.truncated).toBe(true);
   });
 
   test("the four captured omp warnings file at most one issue", async () => {
