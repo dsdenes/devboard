@@ -137,6 +137,19 @@ test("the Overview page owns the seven-agent Run all control", async () => {
   expect(controlCommand()).toBe("discover.start");
 });
 
+test("the running Overview run stops through the quiet destructive control", async () => {
+  await show(
+    { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
+    payload(),
+  );
+  discover.active = true;
+  await tick();
+  expect(controlTestId()).toBe("discover-stop");
+  const stop = bar().querySelector('[data-testid="discover-stop"]');
+  expect(stop?.classList.contains("discover-run__stop")).toBe(true);
+  expect(stop?.getAttribute("data-variant")).toBe("bare");
+});
+
 test("a Contribution skill page starts the Contribution agent only", async () => {
   await show(
     {
