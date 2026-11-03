@@ -374,6 +374,25 @@ function sessionIds(fixture: Fixture): string[] {
   }
 }
 
+/**
+ * The widgets an analyst turn wrote. A later turn truncates the file while it
+ * waits for its own answer, so the written result is awaited rather than
+ * sampled once.
+ */
+async function readAnalystWidgets(path: string, timeout = 10_000): Promise<{ widgets?: unknown[] }> {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as { widgets?: unknown[] };
+      if (Array.isArray(parsed.widgets) && parsed.widgets.length > 0) return parsed;
+    } catch {
+      // The file holds no result until the analyst peer writes one.
+    }
+    if (Date.now() > deadline) throw new Error(`timed out waiting for analyst widgets in ${path}`);
+    await Bun.sleep(20);
+  }
+}
+
 function readSession(fixture: Fixture, id: string): Record<string, unknown> {
   return JSON.parse(
     readFileSync(join(fixture.stateDir, "flow", journalKey(fixture.root), id, "session.json"), "utf8"),
@@ -1603,9 +1622,7 @@ describe("Flow change widgets", () => {
       files?: { path?: string }[];
     };
     expect((request.files ?? []).map((file) => file.path)).toContain("src/app.txt");
-    const answer = JSON.parse(readFileSync(join(directory, "widgets.json"), "utf8")) as {
-      widgets?: unknown[];
-    };
+    const answer = await readAnalystWidgets(join(directory, "widgets.json"));
     expect((answer.widgets ?? []).length).toBeGreaterThan(0);
     const persisted = readSession(fixture, sessionId).widgets as unknown[] | undefined;
     expect(persisted?.length ?? 0).toBeGreaterThan(0);

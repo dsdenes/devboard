@@ -6,6 +6,7 @@ import {
   parseGoalProposalSubmission,
   writeGoalProposal,
 } from "../server/goal-proposal";
+import { recordedChildAlive } from "../server/process";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -553,6 +554,13 @@ describe("elaboration", () => {
     const argv = [process.execPath, "-e", "await new Promise(() => {})"];
     const owner = Bun.spawn({ cmd: argv, cwd: root, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     try {
+      // The manager proves a recorded owner by its pid, argv, and cwd, so the
+      // child's own process table entry is awaited before it is recorded.
+      await waitFor(
+        () =>
+          recordedChildAlive({ pid: owner.pid, argv, cwd: root }) ? true : undefined,
+        "the owner's process table entry",
+      );
       const now = new Date().toISOString();
       writeGoalDraftOwnerState(stateDir, root, path, {
         version: GOAL_DRAFT_OWNER_VERSION,
