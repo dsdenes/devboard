@@ -140,15 +140,6 @@
     openTab({ id: `adr:${entry.file}`, kind: "adr", resourceId: entry.file, title: entry.title });
   }
 
-  function openLane(entry: Lane): void {
-    openTab({
-      id: `lane:${entry.id}`,
-      kind: "lane",
-      resourceId: entry.id,
-      title: goal.laneLabel(entry),
-    });
-  }
-
   function openOverview(): void {
     openTab({ id: "overview", kind: "overview", resourceId: "overview", title: "Implementation" });
   }
