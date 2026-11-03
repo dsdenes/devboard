@@ -213,6 +213,34 @@ describe("dashboard credential", () => {
     }
   });
 
+  test("serves a created draft only with the dashboard credential", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const created = await submit(url, "/goal-proposals", proposal(), {
+        authorization: `Bearer ${TOKEN}`,
+      });
+      expect(created.status).toBe(201);
+      const location = created.headers.get("location")!;
+
+      const anonymous = await fetch(location);
+      expect(anonymous.status).toBe(401);
+      expect(anonymous.headers.get("content-type")).toBe("application/problem+json");
+      expect(anonymous.headers.get("www-authenticate")).toBe("Bearer");
+
+      const authenticated = await fetch(location, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      expect(authenticated.status).toBe(200);
+      expect(authenticated.headers.get("content-type")).toBe(
+        "text/markdown; charset=utf-8",
+      );
+      expect((await authenticated.text()).startsWith("# Proposed goal: ")).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("refuses the socket upgrade before it runs", async () => {
     const { server, url } = await startServer();
 

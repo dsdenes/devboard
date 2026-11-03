@@ -2004,7 +2004,7 @@ and is retried the same way.
 |`HOST`|`127.0.0.1`|Listen address.|
 |`PORT`|`8080`|Listen port.|
 |`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
-|`DEVBOARD_DASHBOARD_TOKEN`|generated at startup|Bearer credential for `POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade; the page receives it as an `HttpOnly`, `SameSite=Strict` cookie and a programmatic client sends `Authorization: Bearer <token>`. The same value stays in the process environment so a replacement keeps authenticating an open page.|
+|`DEVBOARD_DASHBOARD_TOKEN`|generated at startup|Bearer credential for `POST /feedback`, `POST /goal-proposals`, `GET` and `HEAD /goal-proposals/<name>`, and the `/ws` upgrade; the page receives it as an `HttpOnly`, `SameSite=Strict` cookie and a programmatic client sends `Authorization: Bearer <token>`. The same value stays in the process environment so a replacement keeps authenticating an open page.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
@@ -2310,9 +2310,10 @@ chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
 currently `POST /feedback`, `/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
-HEAD` for every other method, `POST /goal-proposals`, the `/ws` upgrade
-with its refusal and method handling, and the static-file fallback, together with any route added
-later. The audit input carries every TypeScript file under `<REPO_DIR>/.devboard/server` that
+HEAD` for every other method, `POST /goal-proposals`, `GET` and `HEAD /goal-proposals/<name>`
+with its `401` and `404` answers, the `/ws` upgrade with its refusal and method handling, and the
+static-file fallback, together with any route added later. The audit input carries every
+TypeScript file under `<REPO_DIR>/.devboard/server` that
 defines routing, request parsing, or responses (tests and fixtures excluded), so a route added to
 that directory appears in the next cycle with no engine change. The WebSocket messages carried
 after an upgrade, the MCP tool contract, and the static asset contents are not audited.
@@ -3439,6 +3440,12 @@ runs `gh`, files an issue, creates a worktree or branch, or writes a goal spec; 
 is created. The report panel's `Goal` action and the path that opens a draft and starts it from
 its row are unchanged.
 
+The `POST /goal-proposals` answer carries `links.draft.href` and sends the same value as
+`Location`: an absolute `http:` URL on the dashboard's own host, `/goal-proposals/<name>`. That
+route requires the dashboard credential, serves the written Markdown as
+`text/markdown; charset=utf-8` for `GET` and `HEAD`, answers an unknown or traversal name with a
+404 Problem JSON, and never exposes a `file:` URI.
+
 Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
 the state badge for this draft's run only (absent while the run is `idle`) and, while this draft
 runs, `issues-draft-stop` (`issues.draft.stop`). Starting an elaboration is the row's job: each
@@ -3728,8 +3735,11 @@ a conversation is never resumed from storage.
 text it posts `report`, the Ask turns as `turns` when the panel has one, and the same captured
 element context to `POST /goal-proposals`; the server writes one Markdown draft under
 `<REPO_DIR>/.devboard/goal-proposals/` and answers `201` with the common hypertext control
-object `{ "links": { "draft": { "href": "file:///…/.devboard/goal-proposals/<file>.md" } } }`,
-carrying the draft's absolute URI, plus a `Location` header naming that same URI. An idempotent
+object `{ "links": { "draft": { "href": "http://<dashboard>/goal-proposals/<file>.md" } } }`,
+carrying the draft's absolute URI on the dashboard's own host, plus a `Location` header naming
+that same URI. `GET` and `HEAD` on that URI require the dashboard credential and serve the
+written Markdown as `text/markdown; charset=utf-8`; an unknown or traversal name answers a 404
+Problem JSON and a request without the credential a 401. An idempotent
 replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.

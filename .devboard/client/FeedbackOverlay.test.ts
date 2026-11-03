@@ -154,7 +154,7 @@ test("a goal answer names the created draft from its hypertext link", async () =
   expect(pending.map((request) => request.url)).toEqual(["/goal-proposals"]);
 
   pending[0]?.resolve(
-    reply({ links: { draft: { href: "file:///repo/.devboard/goal-proposals/draft.md" } } }),
+    reply({ links: { draft: { href: "http://127.0.0.1:8080/goal-proposals/draft.md" } } }),
   );
   // Each await hop (fetch, json, postGoal, proposeGoal) needs its own turn.
   for (let hop = 0; hop < 4; hop++) await tick();
@@ -176,7 +176,7 @@ test("a goal answer that lands after Close leaves the overlay idle and unarmed",
   expectClosed(snapshot);
 
   pending[0]?.resolve(
-    reply({ links: { draft: { href: "file:///repo/.devboard/goal-proposals/draft.md" } } }),
+    reply({ links: { draft: { href: "http://127.0.0.1:8080/goal-proposals/draft.md" } } }),
   );
   await tick();
   await tick();

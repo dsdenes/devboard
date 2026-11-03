@@ -6,7 +6,6 @@ import {
   parseGoalProposalSubmission,
   writeGoalProposal,
 } from "../server/goal-proposal";
-import { draftPathFromHref } from "../lib/goal-proposals";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -424,11 +423,8 @@ describe("elaboration", () => {
       { repoDir: root },
     );
     const { manager } = managerFor(root, stateDir, log);
-    const firstPath = draftPathFromHref(first.links.draft.href);
-    const secondPath = draftPathFromHref(second.links.draft.href);
-    if (firstPath === null || secondPath === null) {
-      throw new Error("The created drafts returned no repository-relative link.");
-    }
+    const firstPath = draftPath(first);
+    const secondPath = draftPath(second);
 
     expect((await manager.start(firstPath)).ok).toBe(true);
     expect((await manager.start(secondPath)).ok).toBe(true);

@@ -12,7 +12,6 @@
 
 import { link, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { GOAL_PROPOSALS_DIRECTORY } from "../lib/goal-proposals";
 import {
   FeedbackRequestError,
@@ -43,15 +42,6 @@ export interface GoalProposalSubmission extends CapturedFields {
   report: string;
   /** The visible Ask turns the operator had about this element, if any. */
   turns: FeedbackTurn[];
-}
-
-export interface GoalProposal {
-  /** The common hypertext control object: a link to the written draft. */
-  links: {
-    draft: {
-      href: string;
-    };
-  };
 }
 
 /** Validates one proposal body, refusing any key the endpoint does not accept. */
@@ -231,17 +221,21 @@ export async function createExclusive(directory: string, name: string, content: 
   }
 }
 
-/** Writes one draft under `<repoDir>/.devboard/goal-proposals/`. */
+/**
+ * Writes one draft under `<repoDir>/.devboard/goal-proposals/` and returns the
+ * written file name. A URI would have to name the host that answers the
+ * request, which only the endpoint knows: a `file:` link names the server's
+ * own disk, so the caller builds the address from this name and its origin.
+ */
 export async function writeGoalProposal(
   submission: GoalProposalSubmission,
   options: { repoDir: string; slugger?: (report: string) => Promise<string> },
-): Promise<GoalProposal> {
+): Promise<string> {
   const directory = join(options.repoDir, GOAL_PROPOSALS_DIRECTORY);
   await mkdir(directory, { recursive: true });
-  const filename = await createExclusive(
+  return createExclusive(
     directory,
     await chooseGoalName(submission.report, options.slugger),
     goalProposalBody(submission),
   );
-  return { links: { draft: { href: pathToFileURL(join(directory, filename)).href } } };
 }

@@ -57,6 +57,7 @@ import {
 } from "./feedback";
 import { FlowController, type CheckoutBlocker, type FlowOptions } from "./flow";
 import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints.ts";
+import { GOAL_PROPOSALS_DIRECTORY } from "../lib/goal-proposals";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { suggestGoalSlug } from "./goal-slug";
 import { IdempotencyStore, parseIdempotencyKey } from "./idempotency";
@@ -7907,19 +7908,74 @@ export function createApp(options: AppOptions) {
     try {
       const key = parseIdempotencyKey(request.headers.get("idempotency-key"));
       const submission = parseGoalProposalSubmission(guarded.value);
-      const proposal = await idempotency.run("goal-proposal", key, () =>
+      const filename = await idempotency.run("goal-proposal", key, () =>
         writeGoalProposal(submission, { repoDir, slugger: goalSlug }),
       );
       goalDrafts.publishDrafts();
-      return jsonResponse(request, proposal, {
-        status: 201,
-        headers: { Location: proposal.links.draft.href },
-      });
+      // The link names the host that answered this request, so any client can
+      // dereference the draft it just created; a `file:` URI would point at the
+      // server's own disk.
+      const href = new URL(
+        `${GOAL_PROPOSALS_ENDPOINT}/${encodeURIComponent(filename)}`,
+        url.origin,
+      ).href;
+      return jsonResponse(
+        request,
+        { links: { draft: { href } } },
+        { status: 201, headers: { Location: href } },
+      );
     } catch (error) {
       if (error instanceof FeedbackRequestError) {
         return problemResponse(request, error.status, error.message);
       }
       return internalErrorResponse(request, "POST /goal-proposals", error, flowId);
+    }
+  }
+
+  /**
+   * Serves one written draft as Markdown on the dashboard's own host, the
+   * resource `POST /goal-proposals` links to. Only a `.md` file directly under
+   * the proposals directory is a draft: a name that carries a separator, an
+   * empty name, or a path outside the directory is absent.
+   */
+  async function handleGoalProposalDraftRequest(
+    request: Request,
+    pathname: string,
+    flowId: string | null,
+  ): Promise<Response> {
+    const directory = join(repoDir, GOAL_PROPOSALS_DIRECTORY);
+    const name = pathname.slice(GOAL_PROPOSALS_ENDPOINT.length + 1);
+    if (name.length === 0 || name.includes("/") || !name.endsWith(".md")) {
+      return problemResponse(request, 404, "The requested draft was not found.");
+    }
+    const filePath = join(directory, name);
+    if (!filePath.startsWith(directory + sep)) {
+      return problemResponse(request, 404, "The requested draft was not found.");
+    }
+
+    try {
+      const file = Bun.file(filePath);
+      if (!(await file.exists()) || !(await stat(filePath)).isFile()) {
+        return problemResponse(request, 404, "The requested draft was not found.");
+      }
+
+      // A method this route cannot serve is refused only for a draft that
+      // exists: an unknown name is a 404 on every method.
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return problemResponse(request, 405, "This path serves GET and HEAD only.", {
+          Allow: "GET, HEAD",
+        });
+      }
+
+      const headers = {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Cache-Control": "no-store",
+      };
+      return request.method === "HEAD"
+        ? new Response(null, { headers })
+        : new Response(file, { headers });
+    } catch (error) {
+      return internalErrorResponse(request, "GET goal draft", error, flowId);
     }
   }
 
@@ -8046,6 +8102,15 @@ export function createApp(options: AppOptions) {
             `The request path ${JSON.stringify(url.pathname)} carries a control character.`,
           ),
         );
+      }
+
+      // One written draft, served where the POST above links to it. The route
+      // precedes the static fallback so a draft name never resolves against the
+      // built client bundle.
+      if (pathname.startsWith(`${GOAL_PROPOSALS_ENDPOINT}/`)) {
+        const denied = credentialRefusal(request, cookieName);
+        if (denied !== null) return reply(denied);
+        return reply(await handleGoalProposalDraftRequest(request, pathname, flowId));
       }
 
       const relative = staticRelativePath(url.pathname, pathname);
