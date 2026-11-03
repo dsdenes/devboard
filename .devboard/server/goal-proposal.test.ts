@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { createApp } from "./app";
 import { GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints";
 import { GOAL_PROPOSALS_DIRECTORY, draftPathFromHref } from "../lib/goal-proposals";
@@ -235,6 +236,68 @@ describe("goal proposal drafts", () => {
         expect(missing.status).toBe(404);
         expect(missing.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("negotiates gzip for a draft and keeps the identity response", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const created = await propose(url, proposal());
+      expect(created.status).toBe(201);
+      const name = (await responsePath(created)).slice(
+        `${GOAL_PROPOSALS_DIRECTORY}/`.length,
+      );
+      const written = await readFile(join(root, GOAL_PROPOSALS_DIRECTORY, name));
+      const href = draftHref(url, name);
+
+      const compressed = await fetch(href, {
+        headers: { "accept-encoding": "gzip" },
+        // Read the wire bytes so the assertion covers the encoded body itself.
+        decompress: false,
+      });
+      expect(compressed.status).toBe(200);
+      expect(compressed.headers.get("content-encoding")).toBe("gzip");
+      expect(compressed.headers.get("vary")).toBe("Accept-Encoding");
+      expect(gunzipSync(Buffer.from(await compressed.arrayBuffer()))).toEqual(written);
+
+      const identity = await fetch(href, {
+        headers: { "accept-encoding": "identity" },
+        decompress: false,
+      });
+      expect(identity.status).toBe(200);
+      expect(identity.headers.get("content-encoding")).toBeNull();
+      expect(identity.headers.get("vary")).toBe("Accept-Encoding");
+      expect(Buffer.from(await identity.arrayBuffer())).toEqual(written);
+
+      const refused = await fetch(href, {
+        headers: { "accept-encoding": "gzip;q=0, identity" },
+        decompress: false,
+      });
+      expect(refused.headers.get("content-encoding")).toBeNull();
+      expect(Buffer.from(await refused.arrayBuffer())).toEqual(written);
+
+      // HEAD answers with exactly the headers its GET answer carries and no body.
+      const head = await fetch(href, {
+        method: "HEAD",
+        headers: { "accept-encoding": "gzip" },
+      });
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-type")).toBe(compressed.headers.get("content-type"));
+      expect(head.headers.get("content-encoding")).toBe("gzip");
+      expect(head.headers.get("vary")).toBe("Accept-Encoding");
+      expect(head.headers.get("cache-control")).toBe(compressed.headers.get("cache-control"));
+      expect(await head.text()).toBe("");
+
+      const plainHead = await fetch(href, {
+        method: "HEAD",
+        headers: { "accept-encoding": "identity" },
+      });
+      expect(plainHead.headers.get("content-encoding")).toBeNull();
+      expect(plainHead.headers.get("vary")).toBe("Accept-Encoding");
+      expect(await plainHead.text()).toBe("");
     } finally {
       server.stop(true);
     }

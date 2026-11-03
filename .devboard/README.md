@@ -3443,8 +3443,10 @@ its row are unchanged.
 The `POST /goal-proposals` answer carries `links.draft.href` and sends the same value as
 `Location`: an absolute `http:` URL on the dashboard's own host, `/goal-proposals/<name>`. That
 route requires the dashboard credential, serves the written Markdown as
-`text/markdown; charset=utf-8` for `GET` and `HEAD`, answers an unknown or traversal name with a
-404 Problem JSON, and never exposes a `file:` URI.
+`text/markdown; charset=utf-8` for `GET` and `HEAD`, and negotiates gzip through `Accept-Encoding`:
+a request that accepts gzip receives `Content-Encoding: gzip`, a request that does not receives the
+identity bytes, and both declare `Vary: Accept-Encoding`. An unknown or traversal name answers a
+404 Problem JSON, and the route never exposes a `file:` URI.
 
 Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
 the state badge for this draft's run only (absent while the run is `idle`) and, while this draft
@@ -3738,7 +3740,8 @@ element context to `POST /goal-proposals`; the server writes one Markdown draft 
 object `{ "links": { "draft": { "href": "http://<dashboard>/goal-proposals/<file>.md" } } }`,
 carrying the draft's absolute URI on the dashboard's own host, plus a `Location` header naming
 that same URI. `GET` and `HEAD` on that URI require the dashboard credential and serve the
-written Markdown as `text/markdown; charset=utf-8`; an unknown or traversal name answers a 404
+written Markdown as `text/markdown; charset=utf-8`, gzip-encoded when the request accepts that
+coding and with `Vary: Accept-Encoding` either way; an unknown or traversal name answers a 404
 Problem JSON and a request without the credential a 401. An idempotent
 replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action

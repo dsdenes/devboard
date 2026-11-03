@@ -8014,7 +8014,11 @@ export function createApp(options: AppOptions) {
 
     try {
       const file = Bun.file(filePath);
-      if (!(await file.exists()) || !(await stat(filePath)).isFile()) {
+      if (!(await file.exists())) {
+        return problemResponse(request, 404, "The requested draft was not found.");
+      }
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) {
         return problemResponse(request, 404, "The requested draft was not found.");
       }
 
@@ -8026,13 +8030,23 @@ export function createApp(options: AppOptions) {
         });
       }
 
-      const headers = {
+      // The body differs by Accept-Encoding, so a shared cache must key on it:
+      // a draft has no content hash in its name, so both representations of the
+      // same URL stay revalidated. The identity Markdown stays available for a
+      // request that does not accept gzip.
+      const headers: Record<string, string> = {
         "Content-Type": "text/markdown; charset=utf-8",
         "Cache-Control": "no-store",
+        Vary: "Accept-Encoding",
       };
-      return request.method === "HEAD"
-        ? new Response(null, { headers })
-        : new Response(file, { headers });
+      // A HEAD response keeps the negotiated headers without paying for a body
+      // it never carries.
+      const head = request.method === "HEAD";
+      if (!acceptsGzip(request.headers.get("accept-encoding"))) {
+        return new Response(head ? null : file, { headers });
+      }
+      headers["Content-Encoding"] = "gzip";
+      return new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers });
     } catch (error) {
       return internalErrorResponse(request, "GET goal draft", error, flowId);
     }
