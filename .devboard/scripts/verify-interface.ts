@@ -2405,6 +2405,7 @@ try {
     text: string;
     html: string;
     focusInside: boolean;
+    inputTypes: Array<{ fontWeight: string; lineHeight: number }>;
   }>(`(() => {
     const dialog = document.querySelector('[data-testid="providers-dialog"]');
     const select = document.querySelector('[data-testid="provider-select"]');
@@ -2421,6 +2422,10 @@ try {
       text: dialog?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
       html: document.body.innerHTML,
       focusInside: document.activeElement?.closest('[data-testid="providers-dialog"]') !== null,
+      inputTypes: [...document.querySelectorAll('[data-slot="input"]')].map((node) => {
+        const style = getComputedStyle(node);
+        return { fontWeight: style.fontWeight, lineHeight: parseFloat(style.lineHeight) };
+      }),
     };
   })()`);
   check(
@@ -2473,6 +2478,14 @@ try {
     providers.checked,
   );
   check(providers.focusInside, "the dialog does not take focus");
+  check(
+    providers.inputTypes.length > 0 &&
+      providers.inputTypes.every(
+        (type) => type.fontWeight === "500" && Math.abs(type.lineHeight - 15.6) < 0.05,
+      ),
+    "an input does not render the 12px control type at weight 500 and 1.3 leading",
+    providers.inputTypes,
+  );
   await page.key("Tab");
   await page.key("Tab");
   const focusTrapped = await page.eval<boolean>(

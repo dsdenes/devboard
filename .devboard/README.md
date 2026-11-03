@@ -3641,7 +3641,8 @@ disabled-reporting `503`, which therefore answers a `POST` only.
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
 `title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
 `POST /feedback` answers `201` with `title` and the `links.issue.href` hypertext control carrying
-the filed issue's absolute URL; no top-level `url` property remains.
+the filed issue's absolute URL, plus a `Location` header naming that same URL; no top-level `url`
+property remains. An idempotent replay answers the same `201` body and the same `Location`.
 
 `POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade require the dashboard token
 before their handler runs. The request carries `Authorization: Bearer <token>`, which the server

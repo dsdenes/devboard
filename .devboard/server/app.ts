@@ -7735,7 +7735,10 @@ export function createApp(options: AppOptions) {
           ...(feedbackFetch === undefined ? {} : { fetchImpl: feedbackFetch }),
         }),
       );
-      return Response.json(filed, { status: 201 });
+      return Response.json(filed, {
+        status: 201,
+        headers: { Location: filed.links.issue.href },
+      });
     } catch (error) {
       if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
         return problemResponse(error.status, error.message);
