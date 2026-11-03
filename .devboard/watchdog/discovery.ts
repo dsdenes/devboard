@@ -259,9 +259,3 @@ export function discoverInstances(options: DiscoveryOptions = {}): Instance[] {
   const processes = options.processes ?? processTable();
   return instancesFromProcesses(processes, { selfPids });
 }
-
-/** True when the pid, or any ancestor, belongs to the watchdog. */
-export function isOwnProcess(pid: number, selfPids: Set<number>): boolean {
-  if (selfPids.has(pid)) return true;
-  return ancestry(pid).some((ancestor) => selfPids.has(ancestor));
-}

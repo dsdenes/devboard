@@ -162,6 +162,9 @@ describe("goal proposal drafts", () => {
       const href = await responseHref(response);
       expect(new URL(href).protocol).toBe("file:");
       expect(href).toBe(draftHref(root, "the-start-button-is-clipped.md"));
+      const location = response.headers.get("location");
+      expect(location).toBe(href);
+      expect(new URL(location!).href).toBe(href);
 
       const files = await drafts(root);
       expect(files).toEqual(["the-start-button-is-clipped.md"]);
@@ -661,6 +664,10 @@ describe("goal proposal naming and body", () => {
       expect(first.status).toBe(201);
       expect(second.status).toBe(201);
       expect(await responsePath(second)).toBe(firstPath);
+      expect(second.headers.get("location")).toBe(first.headers.get("location"));
+      expect(second.headers.get("location")).toBe(
+        draftHref(root, "the-start-button-is-clipped-on.md"),
+      );
       expect(await drafts(root)).toEqual(["the-start-button-is-clipped-on.md"]);
     } finally {
       server.stop(true);

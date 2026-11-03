@@ -137,13 +137,15 @@ The `Skills` sidebar entry opens the Devboard mode's other page. It renders one
 carries `data-testid="skill-row"` and `data-skill="<name>"`; its first cell holds one
 `data-testid="skill-disclosure"` button naming the skill installed under the repository's
 `.omp/skills` root verbatim, its second cell holds exactly one `data-testid="skill-enabled"`
-checkbox, and its third holds at most one delete control. A built-in `devboard-*` row carries a
+checkbox, and its third holds at most one delete control. A built-in row carries a
 visible `Managed` label, and a prepare-family row carries one
 `data-testid="delete-skill"` control with accessible name `Delete <skill>`. Built-in,
 Discover-generated, hand-authored, and symlinked rows carry no delete control, and no row carries
-a description or family text. The rows come from that directory and nothing else: a skill
-directory holding a `SKILL.md` appears whether hand-authored, prepared, Discover-generated, or
-reached through a symlink, while a name only a Discover manifest carries and no directory backs
+a description or family text. Managed rows lead the table: every built-in row renders above every
+other row, and each of the two groups follows the skill name, so the package's own skills stay at
+the top however the server orders its frame. The rows come from that directory and nothing else: a
+skill directory holding a `SKILL.md` appears whether hand-authored, prepared, Discover-generated,
+or reached through a symlink, while a name only a Discover manifest carries and no directory backs
 produces no row.
 
 One click on a prepare-family row's delete control removes the whole `.omp/skills/<name>/`
@@ -3649,7 +3651,8 @@ text it posts `report`, the Ask turns as `turns` when the panel has one, and the
 element context to `POST /goal-proposals`; the server writes one Markdown draft under
 `<REPO_DIR>/.devboard/goal-proposals/` and answers `201` with the common hypertext control
 object `{ "links": { "draft": { "href": "file:///…/.devboard/goal-proposals/<file>.md" } } }`,
-carrying the draft's absolute URI. The directory is deliberately separate
+carrying the draft's absolute URI, plus a `Location` header naming that same URI. An idempotent
+replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
 The file name is chosen by one bounded naming turn: an ACP peer starts with

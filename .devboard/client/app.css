@@ -522,21 +522,6 @@ kbd {
   padding: 2px 8px;
 }
 
-.agent-activity-bar__dot-wrap {
-  align-items: center;
-  border-radius: 50%;
-  display: inline-flex;
-  flex: 0 0 auto;
-  height: 16px;
-  justify-content: center;
-  outline: none;
-  width: 16px;
-}
-
-.agent-activity-bar__dot-wrap:focus-visible {
-  box-shadow: 0 0 0 2px var(--ring);
-}
-
 .agent-activity-bar__dot {
   background: var(--muted-foreground);
   border-radius: 50%;
@@ -660,12 +645,6 @@ kbd {
   overflow: hidden;
 }
 
-.panel--plain {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-}
-
 .panel__header {
   align-items: center;
   border-bottom: 1px solid var(--border);
@@ -751,11 +730,6 @@ kbd {
   font-weight: 600;
 }
 
-.field__hint {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
 .stack-xs {
   display: flex;
   flex-direction: column;
@@ -838,11 +812,6 @@ kbd {
 .message[data-severity="notice"] {
   border-left-color: var(--accent);
   background: var(--accent-surface);
-}
-
-.message__text {
-  margin: 0;
-  overflow-wrap: anywhere;
 }
 
 .empty {
@@ -1373,14 +1342,6 @@ kbd {
   gap: 6px;
 }
 
-.activity-section {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 0;
-}
-
 .activity-history summary {
   color: var(--muted-foreground);
   cursor: pointer;
@@ -1461,14 +1422,6 @@ kbd {
 
 .term-split > .terminal-host {
   flex: 1;
-}
-
-.skill-editor {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 0;
 }
 
 .verification-output {
@@ -1679,13 +1632,6 @@ kbd {
 
 .flow-decisions__state {
   flex: 0 0 auto;
-}
-
-.flow-decisions__actions {
-  align-items: center;
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
-  justify-content: flex-end;
 }
 
 /* Discover: one page frame, a two-column sheet, and plain rail blocks. */
@@ -2799,11 +2745,6 @@ a.code-chip--link:focus-visible {
   margin: 0;
 }
 
-.goal-revision__actions {
-  display: flex;
-  gap: 6px;
-}
-
 .skill-table {
   border-collapse: collapse;
   font-size: 12px;
@@ -3882,37 +3823,6 @@ a.issues-agent-row__issue:focus-visible {
 .issues-agent-focus .issues-activity {
   flex: 1;
   min-height: 200px;
-}
-
-.issues-run-identity {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.issues-run-identity__label {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.issues-run-identity__id {
-  max-width: 220px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.issues-run-identity__started {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  white-space: nowrap;
 }
 
 .issues-draft-detail {

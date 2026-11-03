@@ -619,6 +619,13 @@ async function writeFixture(root: string): Promise<string> {
     "---\nname: fixture-handwritten\ndescription: The fixture developer's own policy.\n---\n\n# House style\n\n- Keep it.\n",
   );
   await symlink("fixture-conventions", join(host, ".omp", "skills", "fixture-linked"));
+  // A built-in whose name sorts after every other skill proves the page leads
+  // with its Managed rows instead of ordering the whole table by name.
+  await mkdir(join(host, ".omp", "skills", "zz-builtin-fixture"), { recursive: true });
+  await writeFile(
+    join(host, ".omp", "skills", "zz-builtin-fixture", "SKILL.md"),
+    "---\nname: zz-builtin-fixture\nmetadata:\n  devboard-builtin: \"true\"\n---\n\n# Built-in fixture\n\n- Lead the table.\n",
+  );
   for (const name of [
     "devboard-ui-ux",
     "devboard-restful-api-implementation",
@@ -3331,7 +3338,15 @@ try {
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-ui-ux",
+    "zz-builtin-fixture",
   ];
+  /** The page's row order: the managed rows lead, each group ordered by name. */
+  const devboardManagedFirst = (names: readonly string[]): string[] =>
+    [...names].sort(
+      (left, right) =>
+        Number(devboardBuiltins.includes(right)) - Number(devboardBuiltins.includes(left)) ||
+        left.localeCompare(right),
+    );
   check(devboardSkillsTable.tables === 1, "the Skills page does not render one table", devboardSkillsTable);
   check(devboardSkillsTable.columns === 3, "the Skills table does not have three columns", devboardSkillsTable);
   check(
@@ -3356,9 +3371,10 @@ try {
     devboardSkillsTable.managedType,
   );
   check(
-    JSON.stringify(devboardSkillsTable.names) === JSON.stringify(devboardInstalledSkills),
-    "the Skills rows do not equal the installed directories",
-    { rendered: devboardSkillsTable.names, installed: devboardInstalledSkills },
+    JSON.stringify(devboardSkillsTable.names) ===
+      JSON.stringify(devboardManagedFirst(devboardInstalledSkills)),
+    "the Skills rows do not lead with the managed skills and then follow the names",
+    { rendered: devboardSkillsTable.names, installed: devboardManagedFirst(devboardInstalledSkills) },
   );
   check(
     devboardSkillsTable.cells.every((cells) => cells === 3) &&
@@ -3377,8 +3393,9 @@ try {
     devboardSkillsTable,
   );
   check(
-    JSON.stringify(devboardSkillsTable.managed) === JSON.stringify(devboardBuiltins),
-    "the Managed marker does not belong to exactly the four built-in rows",
+    JSON.stringify(devboardSkillsTable.managed) ===
+      JSON.stringify(devboardManagedFirst(devboardBuiltins)),
+    "the Managed marker does not belong to exactly the five built-in rows",
     devboardSkillsTable,
   );
   check(
@@ -3542,7 +3559,8 @@ try {
     `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
   );
   check(
-    JSON.stringify(devboardWithExtra) === JSON.stringify([...devboardInstalledSkills, "extra-skill"].sort()),
+    JSON.stringify(devboardWithExtra) ===
+      JSON.stringify(devboardManagedFirst([...devboardInstalledSkills, "extra-skill"])),
     "an added skill directory does not add exactly its row",
     devboardWithExtra,
   );
@@ -3565,7 +3583,9 @@ try {
     `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
   );
   check(
-    JSON.stringify(devboardGhostRows) === JSON.stringify(devboardInstalledSkills) && !devboardGhostRows.includes("ghost-skill"),
+    JSON.stringify(devboardGhostRows) ===
+      JSON.stringify(devboardManagedFirst(devboardInstalledSkills)) &&
+      !devboardGhostRows.includes("ghost-skill"),
     "an exclusion name without a directory produced a row",
     devboardGhostRows,
   );

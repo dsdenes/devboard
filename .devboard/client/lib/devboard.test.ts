@@ -117,9 +117,20 @@ test("an installed-skill row keeps the server's built-in and deletable classific
     ]),
   ).toEqual([
     { name: "devboard-ui-ux", enabled: true, content: "", builtin: true, deletable: false },
-    { name: "tidy-commits", enabled: true, content: "", builtin: false, deletable: true },
     { name: "house-style", enabled: true, content: "", builtin: false, deletable: false },
+    { name: "tidy-commits", enabled: true, content: "", builtin: false, deletable: true },
   ]);
+});
+
+test("managed skills lead the installed rows and each group follows its name", () => {
+  expect(
+    skillRows([
+      { name: "tidy-commits", enabled: true, builtin: false, deletable: true },
+      { name: "zz-builtin", enabled: true, builtin: true },
+      { name: "house-style", enabled: true },
+      { name: "devboard-ui-ux", enabled: true, builtin: true },
+    ]).map((row) => row.name),
+  ).toEqual(["devboard-ui-ux", "zz-builtin", "house-style", "tidy-commits"]);
 });
 
 test("each frame replaces its own rows and leaves the other page alone", () => {
