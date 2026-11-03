@@ -184,10 +184,17 @@ describe("feedback endpoint", () => {
 
       expect(response.status).toBe(201);
       expect(response.headers.get("x-flow-id")).toBeNull();
-      expect(await response.json()).toEqual({
+      const created = (await response.json()) as {
+        title: string;
+        links: { issue: { href: string } };
+      };
+      expect(created).toEqual({
         title: "[ui] The Start button is clipped on narrow windows.",
         links: { issue: { href: ISSUE_URL } },
       });
+      const location = response.headers.get("location");
+      expect(location).toBe(created.links.issue.href);
+      expect(location).toBe(ISSUE_URL);
 
       expect(calls).toHaveLength(1);
       const call = calls[0]!;
@@ -787,6 +794,8 @@ describe("feedback endpoint", () => {
       };
       expect(await first.json()).toEqual(expected);
       expect(await second.json()).toEqual(expected);
+      expect(first.headers.get("location")).toBe(ISSUE_URL);
+      expect(second.headers.get("location")).toBe(ISSUE_URL);
       expect(calls).toHaveLength(1);
     } finally {
       server.stop(true);
