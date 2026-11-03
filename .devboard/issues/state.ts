@@ -401,28 +401,67 @@ export function readState(path: string): IssuesState | undefined {
   }
 }
 
-/** One read of a state file: the parsed state and the exact bytes it read. */
-export interface StateLoad {
-  state: IssuesState | undefined;
-  text: string | undefined;
+/** The children and run ids a state document names, schema-valid or not. */
+export interface StateRecords {
+  children: IssuesAcpChild[];
+  runIds: string[];
 }
 
 /**
- * Reads and moves an unusable file aside, preserved, returning the bytes
- * alongside the parse so a caller can still recover records the schema no
- * longer understands from a file that was just quarantined.
+ * Recovers the children and run ids a state document recorded. A document the
+ * schema rejects still names what a replacement must prove and close, so this
+ * reads those fields alone; bytes absent from disk name nothing.
+ */
+export function recoverStateRecords(text: string | undefined): StateRecords {
+  const records: StateRecords = { children: [], runIds: [] };
+  if (text === undefined) return records;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return records;
+  }
+  if (!isRecord(parsed)) return records;
+  const collect = (value: unknown): void => {
+    if (!isAcp(value) || value.pid <= 0) return;
+    records.children.push({ pid: value.pid, argv: [...value.argv], cwd: value.cwd });
+  };
+  for (const agent of Array.isArray(parsed.agents) ? parsed.agents : []) {
+    if (!isRecord(agent)) continue;
+    if (typeof agent.runId === "string") records.runIds.push(agent.runId);
+    collect(agent.acp);
+  }
+  collect(parsed.acp);
+  if (isRecord(parsed.activeRun) && typeof parsed.activeRun.runId === "string") {
+    records.runIds.push(parsed.activeRun.runId);
+  }
+  return records;
+}
+
+/** One read of a state file: the parsed state, its bytes, and its records. */
+export interface StateLoad {
+  state: IssuesState | undefined;
+  text: string | undefined;
+  /** What the bytes still name, even when they were quarantined. */
+  records: StateRecords;
+}
+
+/**
+ * Reads and moves an unusable file aside, preserved, and reports the children
+ * and run ids the bytes still name alongside the parse.
  */
 export function loadStateWithText(path: string): StateLoad {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch {
-    return { state: undefined, text: undefined };
+    return { state: undefined, text: undefined, records: recoverStateRecords(undefined) };
   }
   const state = parseState(text);
-  if (state !== undefined) return { state, text };
+  const records = recoverStateRecords(text);
+  if (state !== undefined) return { state, text, records };
   quarantine(path);
-  return { state: undefined, text };
+  return { state: undefined, text, records };
 }
 
 /** Reads and moves an unusable file aside, preserved. */

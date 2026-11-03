@@ -416,9 +416,12 @@ goal drafting fails the same way. Both entries come from `lib/endpoints.ts`, whi
 the server read too, so the three cannot disagree about a path.
 
 The backend requires its dashboard token on the `/ws` upgrade, and the page carries that token in
-an `HttpOnly` cookie the backend sets on its own `index.html`. Open `http://127.0.0.1:8080/` once
-in the same browser profile before loading the dev page, so the profile holds the cookie the proxy
-forwards; otherwise the dev page's socket stays on `Connecting`.
+an `HttpOnly` cookie the backend sets when it serves `index.html` to a credentialed request. The
+server prints that document's address with a `?bootstrap=<value>` handshake, and only that address
+or a request that already presents the cookie is served the document: an anonymous `GET /` answers
+`401`. Open the printed address once in the same browser profile before loading the dev page, so
+the profile holds the cookie the proxy forwards; otherwise the dev page's socket stays on
+`Connecting`.
 
 The dev server ignores the generated trees (`.tmp`, `.test-tmp`, `dist`, `coverage`). A busy
 checkout writes hundreds of thousands of files under `.tmp`; watching them reloads the page for
@@ -689,7 +692,9 @@ ADRS_DIR="<host>/adrs" bun run start
 `bun run check` type-checks every `.svelte` and `.ts` file under `client/` and `server/`;
 `bunx tsc --noEmit` type-checks the TypeScript sources.
 
-Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
+Open the address the server prints, `http://127.0.0.1:8080/?bootstrap=<value>`. The document answers
+an anonymous `GET /` with `401`, so only that address, or a request that already presents the
+`HttpOnly` cookie it sets, is served the page. The server binds to `127.0.0.1` by default.
 
 ## Decision records
 
@@ -2001,7 +2006,7 @@ and is retried the same way.
 |`HOST`|`127.0.0.1`|Listen address.|
 |`PORT`|`8080`|Listen port.|
 |`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
-|`DEVBOARD_DASHBOARD_TOKEN`|generated at startup|Bearer credential for `POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade; the page receives it as an `HttpOnly`, `SameSite=Strict` cookie and a programmatic client sends `Authorization: Bearer <token>`. The same value stays in the process environment so a replacement keeps authenticating an open page.|
+|`DEVBOARD_DASHBOARD_TOKEN`|generated at startup|Bearer credential for `POST /feedback`, `POST /goal-proposals`, `GET` and `HEAD /goal-proposals/<name>`, and the `/ws` upgrade; the page receives it as an `HttpOnly`, `SameSite=Strict` cookie and a programmatic client sends `Authorization: Bearer <token>`. The same value stays in the process environment so a replacement keeps authenticating an open page.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
@@ -2307,9 +2312,10 @@ chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
 currently `POST /feedback`, `/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
-HEAD` for every other method, `POST /goal-proposals`, the `/ws` upgrade
-with its refusal and method handling, and the static-file fallback, together with any route added
-later. The audit input carries every TypeScript file under `<REPO_DIR>/.devboard/server` that
+HEAD` for every other method, `POST /goal-proposals`, `GET` and `HEAD /goal-proposals/<name>`
+with its `401` and `404` answers, the `/ws` upgrade with its refusal and method handling, and the
+static-file fallback, together with any route added later. The audit input carries every
+TypeScript file under `<REPO_DIR>/.devboard/server` that
 defines routing, request parsing, or responses (tests and fixtures excluded), so a route added to
 that directory appears in the next cycle with no engine change. The WebSocket messages carried
 after an upgrade, the MCP tool contract, and the static asset contents are not audited.
@@ -2587,20 +2593,24 @@ trimmed — equals that of any `single-responsibility` issue in any state, any o
 draft-goal heading. The prompt reads the tracker and skips duplicates, and `issue_create`
 enforces the same guard for the `single-responsibility` label and files nothing for a duplicate.
 The page's limits are each empty (unlimited) or an integer 1 through 100, defaulting to 10 per
-rolling hour and 5 open. The hourly cap counts every `single-responsibility` issue created in the
-last rolling 60 minutes in any state; the pending cap counts every open one; one cycle files at
-most the smaller room and 100. A zero room files nothing and records every skip in activity, and
-a failed forge read files nothing while keeping the last known rows. `agent-cadence` defaults to
-60 minutes, accepts 1 through 1440, persists across reload and restart, applies to a running
-worker without a restart, and starts no cycle sooner than that interval after the previous cycle
-start.
+rolling hour and 5 open. The caps count every `single-responsibility` issue the forge read
+returns, whether or not its body still passes the proof: the hourly cap counts every such issue
+created in the last rolling 60 minutes in any state, and the pending cap every open one; one
+cycle files at most the smaller room and 100. A filing whose evidence quote drifted therefore
+keeps its slot, even though it publishes no row. A zero room files nothing and records every skip
+in activity, and a failed forge read files nothing while keeping the last known rows.
+`agent-cadence` defaults to 60 minutes, accepts 1 through 1440, persists across reload and
+restart, applies to a running worker without a restart, and starts no cycle sooner than that
+interval after the previous cycle start.
 
 The worker files nothing itself. It reads the MCP tool log's `issue_create` records, re-reads
 each created issue from the origin, and publishes a row only for an issue it read back carrying
 the `single-responsibility` label and a body whose category, skill path, directive, component,
 evidence quote, refactor, and acceptance criteria all verify. A filing that fails that proof is
-recorded in activity as a verification failure and is not published as a row; a tool error files
-nothing and is recorded, never claimed as a filing. The issue lands in the origin: on GitHub
+recorded in activity as a verification failure and is not published as a row; the periodic read
+records the same failure when a published row stops proving, so the drop is visible in the newest
+cycle's activity; a tool error files nothing and is recorded, never claimed as a filing. The
+issue lands in the origin: on GitHub
 through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
 `forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue
 is open and `implemented` once it is closed, and records a failed sync in `agent-sync-error`
@@ -3432,6 +3442,12 @@ runs `gh`, files an issue, creates a worktree or branch, or writes a goal spec; 
 is created. The report panel's `Goal` action and the path that opens a draft and starts it from
 its row are unchanged.
 
+The `POST /goal-proposals` answer carries `links.draft.href` and sends the same value as
+`Location`: an absolute `http:` URL on the dashboard's own host, `/goal-proposals/<name>`. That
+route requires the dashboard credential, serves the written Markdown as
+`text/markdown; charset=utf-8` for `GET` and `HEAD`, answers an unknown or traversal name with a
+404 Problem JSON, and never exposes a `file:` URI.
+
 Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
 the state badge for this draft's run only (absent while the run is `idle`) and, while this draft
 runs, `issues-draft-stop` (`issues.draft.stop`). Starting an elaboration is the row's job: each
@@ -3721,8 +3737,11 @@ a conversation is never resumed from storage.
 text it posts `report`, the Ask turns as `turns` when the panel has one, and the same captured
 element context to `POST /goal-proposals`; the server writes one Markdown draft under
 `<REPO_DIR>/.devboard/goal-proposals/` and answers `201` with the common hypertext control
-object `{ "links": { "draft": { "href": "file:///…/.devboard/goal-proposals/<file>.md" } } }`,
-carrying the draft's absolute URI, plus a `Location` header naming that same URI. An idempotent
+object `{ "links": { "draft": { "href": "http://<dashboard>/goal-proposals/<file>.md" } } }`,
+carrying the draft's absolute URI on the dashboard's own host, plus a `Location` header naming
+that same URI. `GET` and `HEAD` on that URI require the dashboard credential and serve the
+written Markdown as `text/markdown; charset=utf-8`; an unknown or traversal name answers a 404
+Problem JSON and a request without the credential a 401. An idempotent
 replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
@@ -3753,7 +3772,10 @@ or oversized key is refused with `400`.
 Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
 dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
 on that request's response — including the `101` a `/ws` upgrade answers with, which carries it on
-the upgrade's own headers because the upgrade assembles that response itself — forwards it on the
+the upgrade's own headers because the upgrade assembles that response itself, and excepting the
+`GET`/`HEAD` answer that serves a static file: that answer belongs to the file, not to the call,
+and a content-hashed asset under it is publicly cacheable, so it carries no request-specific
+header — forwards it on the
 outbound Gitea issue request `POST /feedback` makes, and records it as the scope of the
 `server-error` journal record a failed mutating request writes. A value is 1–200 printable ASCII
 characters with no spaces or control characters;
@@ -3818,17 +3840,18 @@ Every 4xx and 5xx response these routes answer is `application/problem+json` car
 the filed issue's absolute URL, plus a `Location` header naming that same URL; no top-level `url`
 property remains. An idempotent replay answers the same `201` body and the same `Location`.
 
-`POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade require the dashboard token
-before their handler runs. The request carries `Authorization: Bearer <token>`, which the server
-compares with its own token in constant time; a missing or wrong credential answers `401` with
-`WWW-Authenticate: Bearer`, and the request then files no issue, writes no draft, and never
-upgrades the socket. `/ready` stays unauthenticated because the launcher probes it before it
-holds a credential. The token comes from `DEVBOARD_DASHBOARD_TOKEN`, or is generated at startup
-when that variable is unset and kept in the process environment so a replacement inherits it. The
-page never reads the token in JavaScript: the `index.html` response sets the same value as an
-`HttpOnly`, `SameSite=Strict` cookie, which the browser attaches to its own socket upgrade and
-mutating fetches. A reverse proxy, a script, or a health probe that is not a page sends the
-bearer header.
+`POST /feedback`, `POST /goal-proposals`, the `/ws` upgrade, and `/ready` require the dashboard
+token before their handler runs. The request carries `Authorization: Bearer <token>`, which the
+server compares with its own token in constant time; a missing or wrong credential answers `401`
+with `WWW-Authenticate: Bearer`, and the request then files no issue, writes no draft, never
+upgrades the socket, and never learns the process id. The launcher owns the credential: it
+generates `DEVBOARD_DASHBOARD_TOKEN` when the environment does not supply one, passes it in the
+spawned dashboard's environment, and sends it as `Authorization: Bearer` on the readiness probe
+that matches the reported pid. Without one, the server generates a token at startup and keeps it
+in the process environment so a replacement inherits it. The page never reads the token in
+JavaScript: the `index.html` response sets the same value as an `HttpOnly`, `SameSite=Strict`
+cookie, which the browser attaches to its own socket upgrade and mutating fetches. A reverse
+proxy, a script, or a health probe that is not a page sends the bearer header.
 
 An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
 detail "An internal error occurred.": `POST /feedback` and

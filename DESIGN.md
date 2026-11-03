@@ -741,14 +741,13 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
   sections are 24px apart; cards inside a column are 12px apart. The facts rail holds its grid
   track between 320px and 420px, with 24px to the content column.
-- **Discover run header** (`.discover-run__header`) — the active-run panel header: one 30px
-  `surface-raised` row with a 6px `accent` state dot and `Run in progress` in `panel-title`; a
-  right meta group holding the relative start time in 11px `muted-foreground` and the run
-  identifier as a `.code-chip` truncated at 180px with the full value in its tooltip; and a quiet
-  destructive `Stop` at the far right (24px, 11px word, transparent fill, `border-subtle`
-  outline, `muted-foreground` until hover or focus takes `error-surface`, `error` text, and an
-  `error` outline). The panel keeps the standard `border`; the accent dot never carries the
-  state alone, and no eyebrow restates the mode the rail and page header already name.
+- **Discover run control** (`.discover-run__stop`) — the active Discover run's one control,
+  rendered in the trailing slot of the shared agent activity bar instead of a separate run
+  header: a 24px quiet destructive word `Stop` at 11px, transparent fill, `border-subtle`
+  outline, 4px radius, and `muted-foreground` until hover or focus takes `error-surface`, `error`
+  text, and an `error` outline; disabled is 45% opacity. The bar's 8px dot states the run state
+  and its start time in its tooltip, and its label names the run, so the control adds no eyebrow,
+  run tag, or run-identifier chip; the page header above keeps the identity and actions.
 - **Discover dependency graph** (`.discover-diagram__canvas` in `MermaidDiagram.svelte`) — the
   bounded-context map sits in a 1px `border-subtle` canvas on `background` with a 4px radius and
   8px padding; the canvas owns both scroll axes and caps at `clamp(220px, 40vh, 400px)`. One 11px

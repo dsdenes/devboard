@@ -58,26 +58,29 @@ export function repositoryFromUrl(
   return parseForgeRemote(url, environment)?.project;
 }
 
-/** The remote URL of `origin`, if the checkout has one. */
+/**
+ * The remote URL of `origin`, if the checkout has one. This is the raw read
+ * with no checkout-root guard, so a subdirectory of a checkout inherits that
+ * checkout's origin here; an identity read uses `originForge` or
+ * `originRepository`, which both go through `originRemoteUrlAtRoot`.
+ */
 export function originRemoteUrl(root: string): string | undefined {
   const remote = git(root, "remote", "get-url", "origin");
   return remote.code === 0 && remote.stdout.length > 0 ? remote.stdout : undefined;
 }
 
 /**
- * True only for a GitHub remote. GitLab, a local path, and an unreadable URL
- * are all refused: this harness supports one tracker and adds no webhook.
+ * The remote URL of `origin` when `root` is the checkout root itself, or
+ * undefined. A directory below a checkout inherits that checkout's remote from
+ * git, which would name a project that is not the caller's host, so only the
+ * root's own top level names the origin. Every origin identity read goes
+ * through here so no two of them can disagree about that rule.
  */
-export function isGitHubRemote(url: string): boolean {
-  const trimmed = url.trim();
-  const scp = /^[A-Za-z0-9_.-]+@([^:/]+):/.exec(trimmed);
-  if (scp !== null) return scp[1]!.toLowerCase() === "github.com";
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.hostname.toLowerCase() === "github.com";
-  } catch {
-    return false;
-  }
+function originRemoteUrlAtRoot(root: string): string | undefined {
+  const top = topLevel(root);
+  if (top === undefined) return undefined;
+  if (resolve(top) !== resolve(root)) return undefined;
+  return originRemoteUrl(root);
 }
 
 /** The forge the checkout's origin names, or undefined outside a supported remote. */
@@ -85,19 +88,13 @@ export function originForge(
   root: string,
   environment: Record<string, string | undefined> = process.env,
 ): ForgeRemote | undefined {
-  // A directory below a checkout must not inherit that checkout's remote: the
-  // caller's root is the host, and only its own top level names the origin.
-  const top = git(root, "rev-parse", "--show-toplevel");
-  if (top.code !== 0) return undefined;
-  const found = resolve(top.stdout);
-  if (found !== resolve(root)) return undefined;
-  const remote = originRemoteUrl(root);
+  const remote = originRemoteUrlAtRoot(root);
   return remote === undefined ? undefined : parseForgeRemote(remote, environment);
 }
 
 /** The repository path the checkout's origin names, or undefined. */
 export function originRepository(root: string): string | undefined {
-  const url = originRemoteUrl(root);
+  const url = originRemoteUrlAtRoot(root);
   return url === undefined ? undefined : repositoryFromUrl(url);
 }
 
@@ -122,13 +119,6 @@ export function cachedRepository(
     }
     return value;
   };
-}
-
-/** A repository path: `owner/name`, or a GitLab namespace with subgroups. */
-const REPOSITORY = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/;
-
-export function isRepositoryName(value: string): boolean {
-  return REPOSITORY.test(value);
 }
 
 /** The harness directory a canonical checkout carries. */

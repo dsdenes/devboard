@@ -10,7 +10,7 @@ import {
   type GiteaTarget,
 } from "../../lib/gitea";
 import { createGiteaVersionClient } from "../../lib/gitea-release";
-import { ghCommand } from "../scout/preflight";
+import { ghCommand } from "../../server/command";
 import { DEAD_CODE_LABEL } from "./paths";
 
 /**

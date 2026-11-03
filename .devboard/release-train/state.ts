@@ -252,14 +252,29 @@ function newerRecord<T extends { at: string }>(mine: T | null, disk: T | null): 
 }
 
 /**
+ * One run seen by both sides of a merge. A settled copy always beats a copy
+ * still marked running, whatever side it came from: a newer worker's `begin()`
+ * snapshot can hold the draining worker's in-flight run, and the drained worker
+ * then settles that same id, so letting `mine` win by side alone would regress
+ * the durable record to `running` and drop its `url`. Between two settled
+ * copies the later `endedAt` wins, and two live copies keep `mine`.
+ */
+function settledRun(mine: ReleaseTrainRun, disk: ReleaseTrainRun): ReleaseTrainRun {
+  if (mine.endedAt === null) return disk.endedAt === null ? mine : disk;
+  if (disk.endedAt === null) return mine;
+  return Date.parse(disk.endedAt) > Date.parse(mine.endedAt) ? disk : mine;
+}
+
+/**
  * The union of this worker's shared state with what another live worker wrote
  * after this worker read its snapshot. Every worker version runs its tick under
  * the family's one run lease, but a takeover starts the new version's worker
  * while the drained one is still settling its release, so a whole-object write
  * from the stale snapshot would erase that release. Runs therefore union by id
- * and stay newest first and bounded, `appended` carries only the activity lines
- * written since the last persist, and the release, failure, and gate records
- * come from whichever side is newer by their own timestamp.
+ * with a settled copy winning over a stale running one, stay newest first and
+ * bounded, `appended` carries only the activity lines written since the last
+ * persist, and the release, failure, and gate records come from whichever side
+ * is newer by their own timestamp.
  */
 export function mergeState(
   mine: ReleaseTrainState,
@@ -268,7 +283,10 @@ export function mergeState(
 ): ReleaseTrainState {
   const runs = new Map<string, ReleaseTrainRun>();
   for (const run of disk.runs) runs.set(run.id, run);
-  for (const run of mine.runs) runs.set(run.id, run);
+  for (const run of mine.runs) {
+    const settled = runs.get(run.id);
+    runs.set(run.id, settled === undefined ? run : settledRun(run, settled));
+  }
   const ordered = [...runs.values()]
     .sort(
       (left, right) =>

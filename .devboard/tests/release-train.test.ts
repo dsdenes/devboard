@@ -17,6 +17,7 @@ import {
 } from "../release-train/paths";
 import {
   emptyState,
+  mergeState,
   readState,
   writeState,
   type ReleaseTrainRun,
@@ -812,6 +813,59 @@ describe("Release Train family", () => {
   });
 });
 
+describe("Release Train state merge", () => {
+  function run(patch: Partial<ReleaseTrainRun> & Pick<ReleaseTrainRun, "id">): ReleaseTrainRun {
+    return {
+      startedAt: "2026-11-02T10:00:00.000Z",
+      endedAt: null,
+      state: "running",
+      range: "v1.0.0.." + "a".repeat(40),
+      target: "a".repeat(40),
+      version: "1.0.1",
+      url: null,
+      detail: null,
+      commits: 1,
+      ...patch,
+    };
+  }
+
+  test("a settled run keeps its outcome over a stale running copy of the same id", () => {
+    const base = emptyState({ repo: "repo", root: "/repo" });
+    const running = run({ id: "run-1" });
+    const released = run({
+      id: "run-1",
+      endedAt: "2026-11-02T10:05:00.000Z",
+      state: "released",
+      url: "https://forge.test/releases/tag/v1.0.1",
+    });
+    // The newer worker's snapshot holds the same run as running; the draining
+    // worker settled it. The settled copy wins whatever side it came from.
+    expect(mergeState({ ...base, runs: [running] }, { ...base, runs: [released] }).runs).toEqual([
+      released,
+    ]);
+    expect(mergeState({ ...base, runs: [released] }, { ...base, runs: [running] }).runs).toEqual([
+      released,
+    ]);
+    // Two settled copies keep the later end, and two live copies keep mine.
+    const failed = run({
+      id: "run-1",
+      endedAt: "2026-11-02T10:09:00.000Z",
+      state: "failed",
+      detail: "the release workflow concluded failure",
+    });
+    expect(mergeState({ ...base, runs: [failed] }, { ...base, runs: [released] }).runs).toEqual([
+      failed,
+    ]);
+    expect(mergeState({ ...base, runs: [released] }, { ...base, runs: [failed] }).runs).toEqual([
+      failed,
+    ]);
+    const newerRunning = run({ id: "run-1", startedAt: "2026-11-02T10:01:00.000Z" });
+    expect(
+      mergeState({ ...base, runs: [newerRunning] }, { ...base, runs: [running] }).runs,
+    ).toEqual([newerRunning]);
+  });
+});
+
 describe("Release Train page", () => {
   function run(patch: Partial<ReleaseTrainRun> & Pick<ReleaseTrainRun, "id">): ReleaseTrainRun {
     return {
@@ -893,6 +947,74 @@ describe("Release Train page", () => {
   test("a repository with no release yet lists an empty history", () => {
     const workspaceValue = workspace("page-empty");
     expect(activityAt(workspaceValue).snapshot().releases).toEqual([]);
+  });
+
+  test("a takeover tick keeps a run the draining worker settled", async () => {
+    const workspaceValue = workspace("page-takeover-settled-run");
+    const pending = Promise.withResolvers<ReleaseRunResult>();
+    const started = Promise.withResolvers<void>();
+    const older = workerAt(workspaceValue, {
+      harnessVersion: "0.0.9",
+      now: () => new Date("2026-11-02T10:00:00.000Z"),
+      gate: () => unreleased(),
+      runRelease: async () => {
+        started.resolve();
+        return await pending.promise;
+      },
+    });
+    const newer = workerAt(workspaceValue, {
+      harnessVersion: "0.1.0",
+      now: () => new Date("2026-11-02T10:00:05.000Z"),
+      gate: () => ({
+        state: "nothing",
+        target: "b".repeat(40),
+        previous: { tag: "v1.0.1", version: "1.0.1" },
+        range: `v1.0.1..${"b".repeat(40)}`,
+      }),
+    });
+    expect(older.begin(false)).toBe(true);
+    try {
+      const olderTick = older.tickNow();
+      await started.promise;
+      // The draining worker's in-flight run is already durable as running when
+      // the newer worker starts, so its snapshot carries that row.
+      const running = readState(workspaceValue.directory)?.runs[0];
+      expect(running?.state).toBe("running");
+      expect(running?.endedAt).toBeNull();
+      const runId = running?.id ?? "";
+      expect(newer.begin(false)).toBe(true);
+      expect(newer.currentState.runs.map((entry) => entry.id)).toEqual([runId]);
+      // The run lease is still held, so this tick starts nothing.
+      await newer.tickNow();
+      expect(readState(workspaceValue.directory)?.runs[0]?.state).toBe("running");
+
+      pending.resolve({
+        ok: true,
+        version: "1.0.1",
+        url: "https://forge.test/releases/tag/v1.0.1",
+      });
+      await olderTick;
+      const settled = readState(workspaceValue.directory)?.runs.find((entry) => entry.id === runId);
+      expect(settled?.state).toBe("released");
+
+      // The stale running copy must not overwrite the settled row.
+      await newer.tickNow();
+      const reloaded = readState(workspaceValue.directory)?.runs.find((entry) => entry.id === runId);
+      expect(reloaded?.state).toBe("released");
+      expect(reloaded?.url).toBe("https://forge.test/releases/tag/v1.0.1");
+      expect(reloaded?.endedAt).toBe("2026-11-02T10:00:00.000Z");
+      expect(activityAt(workspaceValue).snapshot().releases).toEqual([
+        {
+          at: "2026-11-02T10:00:00.000Z",
+          version: "1.0.1",
+          commits: 1,
+          url: "https://forge.test/releases/tag/v1.0.1",
+        },
+      ]);
+    } finally {
+      await older.stop();
+      await newer.stop();
+    }
   });
 });
 

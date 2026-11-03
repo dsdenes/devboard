@@ -103,12 +103,22 @@ export interface SingleResponsibilityCapacity {
 }
 
 /**
+ * The cap facts a forge read supplies. A read returns every labelled issue,
+ * so the caps count them all, including one whose body no longer passes the
+ * provenance proof; no body is read to count it.
+ */
+export type SingleResponsibilityCapacityRow = Pick<
+  SingleResponsibilityIssueRow,
+  "number" | "state" | "createdAt"
+>;
+
+/**
  * The effective room under both caps. The hourly window counts every
  * single-responsibility issue created inside it, in any state; the pending cap
  * counts open ones. One cycle files no more than the smaller room and 100.
  */
 export function capacityFor(
-  issues: readonly SingleResponsibilityIssueRow[],
+  issues: readonly SingleResponsibilityCapacityRow[],
   limits: SingleResponsibilityLimits,
   now: Date,
 ): SingleResponsibilityCapacity {

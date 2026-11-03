@@ -29,6 +29,7 @@ import { devboardStatus } from "../mcp/status";
 import {
   assertEquals,
   assertTrue,
+  dashboardPageUrl,
   dashboardSocket,
   dashboardsFor,
   freePort,
@@ -412,7 +413,7 @@ async function main(): Promise<void> {
   git(["commit", "-q", "-m", "feat: published change"]);
   git(["tag", `v${VERSION_TWO}`]);
   const commitTwo = git(["rev-parse", "HEAD"]);
-  const oldHtml = await (await fetch(`http://127.0.0.1:${portA}/`)).text();
+  const oldHtml = await (await fetch(dashboardPageUrl(portA))).text();
   assertTrue(oldHtml.includes(next.oldAsset), "the old dashboard does not serve the old asset");
   // A new commit, a new release tag, and a rebuilt dist are not a trigger.
   await Bun.sleep(INTERVAL_MS * 2 + 300);
@@ -460,7 +461,7 @@ async function main(): Promise<void> {
     [VERSION_TWO, VERSION_TWO, false],
     "the second source dashboard runs the published version",
   );
-  const finalHtml = await (await fetch(`http://127.0.0.1:${portA}/`)).text();
+  const finalHtml = await (await fetch(dashboardPageUrl(portA))).text();
   assertTrue(finalHtml.includes(next.asset), "the final document is not from the published bundle");
   assertTrue(!finalHtml.includes(next.oldAsset), "the final document still names the old asset");
   const servedDigest = scratchDigest();

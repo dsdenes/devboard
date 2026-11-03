@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { giteaBaseUrl } from "../../lib/forge";
 import { deriveReleaseVersion } from "../../lib/commit-gate";
 import { originForge } from "../repository";
-import { runCommand } from "../scout/preflight";
+import { runCommand } from "../../server/command";
 import { type DesignConfig, cycleBranch, worktreesRoot } from "./paths";
 import { missingPrincipleSections, validTokenDocument } from "./scan";
 

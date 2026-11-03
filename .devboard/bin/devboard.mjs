@@ -12,7 +12,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   closeSync,
   createWriteStream,
@@ -83,6 +83,14 @@ const START_TIMEOUT_MS = (() => {
 })();
 /** How long a dashboard gets to exit after SIGTERM before it is killed. */
 const STOP_GRACE_MS = 10_000;
+/**
+ * The credential the launcher passes to the dashboard it spawns and presents
+ * on the readiness probe. An operator-supplied token wins; otherwise the
+ * launcher generates one per run, so a process that never received it cannot
+ * answer the probe in this dashboard's place.
+ */
+const DASHBOARD_TOKEN =
+  process.env.DEVBOARD_DASHBOARD_TOKEN?.trim() || randomBytes(32).toString("base64url");
 
 const usage = `Usage: devboard <command> [options]
 
@@ -252,6 +260,17 @@ function readEnviron(pid) {
   return values;
 }
 
+/**
+ * The credential a running dashboard received from the launcher that spawned
+ * it, or undefined for a process started without one — a dashboard from before
+ * this credential existed, or a source run started by hand. Such a process
+ * answers its readiness probe without a header, so the probe stays tokenless.
+ */
+function runningToken(env) {
+  const token = env.DEVBOARD_DASHBOARD_TOKEN;
+  return typeof token === "string" && token.length > 0 ? token : undefined;
+}
+
 function processRunning(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -334,12 +353,15 @@ async function choosePort(preferred) {
  * The pid the dashboard on `port` reports for itself, or undefined when
  * nothing answers there. Another server on the port — a concurrent install
  * or a leftover process — reports a different pid, so install never mistakes
- * it for the dashboard it spawned.
+ * it for the dashboard it spawned. The probe carries the credential the
+ * dashboard was started with: a server that did not receive it answers 401
+ * and is never mistaken for this launcher's dashboard.
  */
-async function readyPid(port) {
+async function readyPid(port, token) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/ready`, {
       method: "GET",
+      ...(token === undefined ? {} : { headers: { authorization: `Bearer ${token}` } }),
       signal: AbortSignal.timeout(2000),
     });
     if (!response.ok) return undefined;
@@ -352,15 +374,15 @@ async function readyPid(port) {
   }
 }
 
-async function httpOk(port, expectedPid) {
-  const pid = await readyPid(port);
+async function httpOk(port, expectedPid, token) {
+  const pid = await readyPid(port, token);
   return pid !== undefined && (expectedPid === undefined || pid === expectedPid);
 }
 
-async function waitForHttp(port, expectedPid, timeoutMs = START_TIMEOUT_MS) {
+async function waitForHttp(port, expectedPid, token, timeoutMs = START_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await httpOk(port, expectedPid)) return true;
+    if (await httpOk(port, expectedPid, token)) return true;
     await sleep(200);
   }
   return false;
@@ -972,6 +994,11 @@ async function startDashboard(host, harness, port, stateDir) {
   const log = join(stateDir, "dashboard.log");
   await mkdir(stateDir, { recursive: true });
   const fd = openSync(log, "a");
+  // The document hands out the page's cookie only to this credential, so the
+  // launcher issues it and prints the address that carries it; the dashboard
+  // token itself never rides in a URL.
+  const bootstrap =
+    process.env.DEVBOARD_BOOTSTRAP_TOKEN?.trim() || randomBytes(32).toString("base64url");
   const child = spawn(bun, [join(harness, "server", "index.ts")], {
     // Keep the dashboard out of the replaceable package directory: an update
     // renames and removes it, leaving a deleted cwd that child processes
@@ -989,11 +1016,13 @@ async function startDashboard(host, harness, port, stateDir) {
       STATIC_DIR: join(harness, "dist"),
       STATE_DIR: stateDir,
       AGENT_COMMAND: process.env.AGENT_COMMAND ?? "omp acp",
+      DEVBOARD_DASHBOARD_TOKEN: DASHBOARD_TOKEN,
+      DEVBOARD_BOOTSTRAP_TOKEN: bootstrap,
     },
   });
   closeSync(fd);
   child.unref();
-  if (!(await waitForHttp(port, child.pid))) {
+  if (!(await waitForHttp(port, child.pid, DASHBOARD_TOKEN))) {
     const exited = child.exitCode !== null || !processRunning(child.pid);
     await stopSpawnedDashboard(child.pid, harness);
     let tail = "";
@@ -1007,7 +1036,7 @@ async function startDashboard(host, harness, port, stateDir) {
         `${tail.length > 0 ? `: ${firstLine(tail)}` : ""}`,
     );
   }
-  return child.pid;
+  return { pid: child.pid, bootstrap };
 }
 
 function installStatePath(prefix) {
@@ -1089,7 +1118,7 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
       kept.length === 1 &&
       state.version === version &&
       kept[0].port !== undefined &&
-      (await httpOk(kept[0].port, kept[0].pid))
+      (await httpOk(kept[0].port, kept[0].pid, runningToken(kept[0].env)))
     ) {
       await writeInstallState(prefix, {
         ...state,
@@ -1099,9 +1128,15 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
         port: kept[0].port,
         pid: kept[0].pid,
         url: `http://127.0.0.1:${kept[0].port}/`,
+        bootstrap: state.bootstrap,
         stateDir,
       });
-      return { port: kept[0].port, pid: kept[0].pid, reused: true };
+      return {
+        port: kept[0].port,
+        pid: kept[0].pid,
+        reused: true,
+        bootstrap: state.bootstrap,
+      };
     }
     await stopDashboardProcesses(host);
   }
@@ -1112,9 +1147,12 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
       : undefined;
   let port = await choosePort(preferred);
   let pid = 0;
+  let bootstrap;
   for (let attempt = 1; ; attempt += 1) {
     try {
-      pid = await startDashboard(host, harness, port, stateDir);
+      const started = await startDashboard(host, harness, port, stateDir);
+      pid = started.pid;
+      bootstrap = started.bootstrap;
       break;
     } catch (error) {
       // A concurrent install may claim the port between the free check and
@@ -1130,6 +1168,7 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
     port,
     pid,
     url: `http://127.0.0.1:${port}/`,
+    bootstrap,
     stateDir,
     installedAt: new Date().toISOString(),
   });
@@ -1138,7 +1177,7 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
     await stopDashboardProcesses(host);
     throw new LauncherError(`expected one dashboard process, found ${remaining.length}`);
   }
-  return { port, pid, reused: false };
+  return { port, pid, reused: false, bootstrap };
 }
 
 /**
@@ -1263,9 +1302,16 @@ async function installCommand(options) {
     console.log("devboard: AGENTS.md is tracked and deleted; left absent (drift)");
   }
   if (ignored.length > 0) console.log(`devboard: added ${ignored.join(", ")} to .gitignore`);
+  // The document hands out the page's credential only to the address that
+  // carries the bootstrap value, so this is the address the operator opens
+  // once; a later visit to the bare address relies on the cookie it set.
+  const bootstrap =
+    typeof dashboard.bootstrap === "string" && dashboard.bootstrap.length > 0
+      ? `?bootstrap=${dashboard.bootstrap}`
+      : "";
   console.log(
     `devboard: dashboard ${dashboard.reused ? "already running" : "running"} at ` +
-      `http://127.0.0.1:${dashboard.port}/ (pid ${dashboard.pid})`,
+      `http://127.0.0.1:${dashboard.port}/${bootstrap} (pid ${dashboard.pid})`,
   );
 }
 
@@ -1669,7 +1715,10 @@ const CHECKS = [
       if (!isDashboardFrom(dashboard.pid, harness)) {
         throw new LauncherError(`pid ${dashboard.pid} does not run the installed package`);
       }
-      if (dashboard.port === undefined || !(await httpOk(dashboard.port, dashboard.pid))) {
+      if (
+        dashboard.port === undefined ||
+        !(await httpOk(dashboard.port, dashboard.pid, runningToken(dashboard.env)))
+      ) {
         throw new LauncherError(
           `the dashboard does not answer on port ${dashboard.port ?? "?"} for pid ${dashboard.pid}`,
         );
