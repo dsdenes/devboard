@@ -3464,6 +3464,20 @@ a.code-chip--link:focus-visible {
   align-items: center;
   display: flex;
   flex: 0 0 auto;
+  gap: 6px;
+}
+
+.issues-draft-row__delete {
+  color: var(--muted-foreground);
+}
+
+.issues-draft-row__delete:hover:not(:disabled) {
+  color: var(--destructive);
+}
+
+.issues-draft-row__delete:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .issues-drafts__placeholder {

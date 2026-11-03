@@ -661,6 +661,7 @@ type ClientMessage =
   | { type: "getGoalDraft"; path?: unknown }
   | { type: "startGoalDraft"; path?: unknown }
   | { type: "stopGoalDraft"; path?: unknown }
+  | { type: "deleteGoalDraft"; path?: unknown }
   | { type: "answerGoalDraft"; path?: unknown; id?: unknown; value?: unknown }
   | { type: "getAgents" }
   | { type: "getAgent"; id?: unknown }
@@ -804,6 +805,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "startGoalDraft", path: "path" in value ? value.path : undefined };
     case "stopGoalDraft":
       return { type: "stopGoalDraft", path: "path" in value ? value.path : undefined };
+    case "deleteGoalDraft":
+      return { type: "deleteGoalDraft", path: "path" in value ? value.path : undefined };
     case "answerGoalDraft":
       return {
         type: "answerGoalDraft",
@@ -8267,6 +8270,21 @@ export function createApp(options: AppOptions) {
                 path: command.path,
                 message: "That draft is not being elaborated.",
               });
+            }
+          } else if (command.type === "deleteGoalDraft") {
+            if (typeof command.path !== "string") {
+              send(ws, { type: "error", message: "Deleting a draft needs its path." });
+            } else {
+              try {
+                // The manager republishes the list for every client, so a
+                // successful deletion is its own frame and needs no reply here.
+                goalDrafts.delete(command.path);
+              } catch (error) {
+                send(ws, {
+                  type: "error",
+                  message: error instanceof GoalDraftError ? error.message : String(error),
+                });
+              }
             }
           } else if (command.type === "answerGoalDraft") {
             if (

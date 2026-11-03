@@ -2,11 +2,13 @@
   import { onMount } from "svelte";
   import MousePointerClick from "lucide-svelte/icons/mouse-pointer-click";
   import NotebookPen from "lucide-svelte/icons/notebook-pen";
+  import Trash2 from "lucide-svelte/icons/trash-2";
   import { draftProposal } from "../draft-format";
   import { issues, markDraftsPage } from "../issues.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import CommandButton from "./CommandButton.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesQuestion from "./IssuesQuestion.svelte";
 
@@ -27,6 +29,8 @@
 
   let instructions = $state("");
   let input = $state<HTMLTextAreaElement | undefined>(undefined);
+  /** The draft whose deletion waits for the dialog's confirmation. */
+  let deleteTarget = $state<{ path: string; name: string } | null>(null);
 
   $effect(() => {
     if (issues.draftCreateOpen) input?.focus();
@@ -217,6 +221,19 @@
                   >
                     Start
                   </CommandButton>
+                  <Button
+                    bare
+                    class="issues-draft-row__delete"
+                    data-testid="issues-draft-row-delete"
+                    data-command="issues.draft.delete"
+                    data-path={draft.path}
+                    aria-label={`Delete ${draft.name}`}
+                    disabled={issues.draftRunning(draft.path)}
+                    title={blocker ?? `Delete ${draft.name} from ${draft.path}`}
+                    onclick={() => (deleteTarget = { path: draft.path, name: draft.name })}
+                  >
+                    <Trash2 size={14} aria-hidden="true" />
+                  </Button>
                 </div>
               </li>
             {/each}
@@ -317,3 +334,23 @@
     {/if}
   </div>
 </section>
+
+<ConfirmDialog
+  open={deleteTarget !== null}
+  title="Delete draft"
+  message={deleteTarget === null
+    ? ""
+    : `Delete "${deleteTarget.name}" from .devboard/goal-proposals/? The draft is removed ` +
+      "permanently; nothing is elaborated from it."}
+  confirmLabel="Delete draft"
+  destructive
+  testid="issues-draft-delete-confirmation"
+  confirmCommand="issues.draft.delete.confirm"
+  cancelCommand="issues.draft.delete.cancel"
+  evidence={() => issues.drafts}
+  onconfirm={() => {
+    if (deleteTarget !== null) issues.deleteDraft(deleteTarget.path);
+    deleteTarget = null;
+  }}
+  oncancel={() => (deleteTarget = null)}
+/>

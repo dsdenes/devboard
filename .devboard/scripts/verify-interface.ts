@@ -10018,6 +10018,55 @@ try {
     20_000,
   );
 
+  // A draft nobody wants to elaborate is deleted from its row after one confirmation.
+  const draftDelete = (name: string): string =>
+    `[data-testid="issues-draft-row-delete"][data-path=".devboard/goal-proposals/${name}"]`;
+  await page.click(draftDelete("001-question.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null`,
+    "the delete confirmation",
+  );
+  await page.click('[data-command="issues.draft.delete.cancel"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') === null`,
+    "the cancelled delete confirmation",
+  );
+  const cancelledListed = await page.eval<boolean>(
+    `document.querySelector('${draftRow("001-question.md")}') !== null`,
+  );
+  check(
+    cancelledListed && existsSync(join(draftDirectory, "001-question.md")),
+    "cancelling a delete removed the draft",
+    { cancelledListed, file: existsSync(join(draftDirectory, "001-question.md")) },
+  );
+
+  await page.click(draftDelete("002-hang.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null`,
+    "the delete confirmation for the selected draft",
+  );
+  await page.click('[data-command="issues.draft.delete.confirm"]');
+  await page.wait(
+    `document.querySelector('${draftRow("002-hang.md")}') === null &&
+      document.querySelector('[data-testid="issues-draft-detail"]') === null &&
+      document.querySelector('[data-testid="issues-drafts-selection"]') !== null`,
+    "the deleted draft to leave the list and the selection",
+    8_000,
+  );
+  const deletedDraft = await page.eval<{ count: string; dialog: boolean }>(`(() => ({
+    count: document.querySelector('[data-testid="open-issues-drafts"] .sidebar-item__meta')?.textContent?.trim() ?? "",
+    dialog: document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null,
+  }))()`);
+  check(
+    deletedDraft.count === "6" && !deletedDraft.dialog,
+    "deleting a draft left the count or the confirmation behind",
+    deletedDraft,
+  );
+  check(
+    !existsSync(join(draftDirectory, "002-hang.md")),
+    "the deleted draft is still on disk",
+  );
+
   // A vanished draft leaves the list and selection; a reload opens the list.
   await rm(draftDirectory, { recursive: true, force: true });
   await page.wait(

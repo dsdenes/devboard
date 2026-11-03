@@ -3404,6 +3404,18 @@ path, a directory, a missing file, or a symlink whose real path leaves the draft
 refused with a visible error, and nothing outside the directory is read. The list never follows
 symlinks.
 
+Every row also carries a delete control (`issues-draft-row-delete`, `issues.draft.delete`) beside
+its Start control. Activating it opens `issues-draft-delete-confirmation` naming the draft and the
+directory it leaves; Cancel closes the dialog without writing anything, and the confirm control
+(`issues.draft.delete.confirm`) sends `deleteGoalDraft` for that path. The row leaves only when
+the server's republished list arrives, so a refusal leaves the draft listed and its reason arrives
+as a server error notification. The server unlinks the draft and its recorded run, then
+republishes the list to every client; deleting the open draft clears the selection to the
+`No draft selected` state, and every other draft keeps its own run state. A draft whose
+elaboration is live or still closing stays listed: its delete control is disabled with
+`This draft is being elaborated.` as its title, and a command that reaches that state anyway is
+refused with the same reason. Deletion files nothing, runs no `gh`, and starts no peer.
+
 Every draft may elaborate at the same time; there is no concurrency cap beyond the repository's
 own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND --no-skills` in
 `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. The
@@ -3804,6 +3816,7 @@ The client sends:
 { "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "stopGoalDraft", "path": ".devboard/goal-proposals/example.md" }
+{ "type": "deleteGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "answerGoalDraft", "path": ".devboard/goal-proposals/example.md", "id": 4, "value": "The whole goal" }
 
 { "type": "getAgents" }
@@ -3893,7 +3906,11 @@ The client sends:
   already running is refused with `This draft is being elaborated.` and starts no peer.
   `stopGoalDraft` and `answerGoalDraft` carry the draft `path`; stop closes only that peer and
   records `stopped`, and an answer reaches only that path's pending question. Each run's activity
-  is sent as its own `issuesDraftState` snapshot while its peer runs.
+  is sent as its own `issuesDraftState` snapshot while its peer runs. `deleteGoalDraft` carries the
+  draft `path`, removes the draft file and its recorded run, and broadcasts the shorter list to
+  every client; a path whose elaboration is live or still closing is refused with `error` and
+  `This draft is being elaborated. Stop the elaboration and delete it again.`, and a missing or
+  refused path answers `error` with the refusal.
 
   lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
   next attempt, errors, and the harness version the worker loaded. A missing state and no live
