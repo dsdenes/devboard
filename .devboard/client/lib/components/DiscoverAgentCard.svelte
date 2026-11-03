@@ -1,7 +1,6 @@
 <script lang="ts">
   import { discoverAgent } from "../../../server/agents/registry";
   import { discover } from "../discover.svelte";
-  import { relativeTime } from "../discover-format";
   import CommandButton from "./CommandButton.svelte";
 
   interface Props {
@@ -18,14 +17,6 @@
   const question = $derived(discover.agentQuestionOf(agent));
   const promptError = $derived(prompt?.error ?? null);
   const status = $derived(card?.state ?? "idle");
-  const startedAt = $derived(card?.startedAt ?? null);
-  const endedAt = $derived(card?.endedAt ?? null);
-  let now = $state(Date.now());
-
-  $effect(() => {
-    const timer = setInterval(() => (now = Date.now()), 15_000);
-    return () => clearInterval(timer);
-  });
 </script>
 
 {#if descriptor !== null}
