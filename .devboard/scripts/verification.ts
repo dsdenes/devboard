@@ -34,8 +34,14 @@ export const templateAgents = join(harnessRoot, "templates", "host-AGENTS.md");
 export const VERIFY_DASHBOARD_TOKEN =
   process.env.DEVBOARD_DASHBOARD_TOKEN?.trim() || "verify-dashboard-token";
 process.env.DEVBOARD_DASHBOARD_TOKEN = VERIFY_DASHBOARD_TOKEN;
+/**
+ * The fetch options that present the dashboard credential. Bun's fetch reads a
+ * credential only from `headers`, never from a top-level `authorization`
+ * option, so every verification probe spreads this object into its request
+ * init instead of a bare header map.
+ */
 export const VERIFY_DASHBOARD_AUTHORIZATION = {
-  authorization: `Bearer ${VERIFY_DASHBOARD_TOKEN}`,
+  headers: { authorization: `Bearer ${VERIFY_DASHBOARD_TOKEN}` },
 };
 
 /**
@@ -64,7 +70,7 @@ export function dashboardPageUrl(port: number): string {
  */
 export function dashboardSocket(url: string): WebSocket {
   return new WebSocket(url, {
-    headers: VERIFY_DASHBOARD_AUTHORIZATION,
+    headers: VERIFY_DASHBOARD_AUTHORIZATION.headers,
   } as unknown as string[]);
 }
 
@@ -231,7 +237,7 @@ export function httpStatus(port: number): number {
     "-w",
     "%{http_code}",
     "-H",
-    `Authorization: ${VERIFY_DASHBOARD_AUTHORIZATION.authorization}`,
+    `Authorization: ${VERIFY_DASHBOARD_AUTHORIZATION.headers.authorization}`,
     `http://127.0.0.1:${port}/ready`,
   ]);
   return Number(result.stdout);

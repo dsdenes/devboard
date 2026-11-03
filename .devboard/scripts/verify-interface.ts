@@ -7077,7 +7077,7 @@ try {
   );
   const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/feedback`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...VERIFY_DASHBOARD_AUTHORIZATION },
+    headers: { "content-type": "application/json", ...VERIFY_DASHBOARD_AUTHORIZATION.headers },
     body: JSON.stringify({ action: "REPORT", report: "disabled check" }),
   });
   const refusal = await refused.text();
@@ -12219,7 +12219,7 @@ try {
     }))`,
   );
   check(
-    devboardEntries.length === 8 &&
+    devboardEntries.length === 9 &&
       devboardEntries.every(
         (entry) => entry.run === devboardMapping[entry.lifecycle],
       ) &&

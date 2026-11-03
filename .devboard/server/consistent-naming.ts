@@ -30,7 +30,7 @@ import {
 } from "../issues/consistent-naming/state";
 import { readActivity } from "../issues/state";
 import { activityDelta } from "./activity";
-import { canonicalProcessPath } from "./state";
+import { canonicalProcessPath } from "./process";
 import { hostHarnessDir, readHarnessVersion } from "./version";
 import { AgentForgeState } from "./agents/forge-state";
 import { createForgeIssueReader, type ForgeIssueReader } from "./agents/forge-reader";
