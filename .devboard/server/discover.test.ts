@@ -1469,42 +1469,38 @@ describe("discover mode", () => {
     90000,
   );
 
-  test(
-    "cancels an active run on reset",
-    async () => {
-      const fixture = createFixture("reset-run");
-      const first = startServer({ fixture });
-      const client = await connect(first.url);
-      try {
-        const state = await runDiscover(client);
-        const published = ompBytes(fixture.root);
-        expect(state.sheet).not.toBeNull();
+  test("cancels an active run on reset", async () => {
+    const fixture = createFixture("reset-run");
+    const first = startServer({ fixture });
+    const client = await connect(first.url);
+    try {
+      const state = await runDiscover(client);
+      const published = ompBytes(fixture.root);
+      expect(state.sheet).not.toBeNull();
 
-        const running = startServer({
-          fixture,
-          stub: ["--discover", "--discover-no-exit", "--delay-ms=60000"],
-        });
-        const active = await connect(running.url);
-        try {
-          active.send({ type: "discoverProject" });
-          const started = await active.waitFor((message) => message.type === "discoverStarted");
-          active.send({ type: "resetImplementation" });
-          const stopped = await active.waitFor((message) => message.type === "discoverStopped");
-          expect(stopped.completed).toBe(false);
-          await active.waitFor((message) => message.type === "implementationResetStopped");
-          expect(existsSync(join(fixture.root, ".omp", "discover", "staging", String(started.runId)))).toBe(false);
-          expect(ompBytes(fixture.root)).toEqual(published);
-        } finally {
-          active.close();
-          running.server.stop(true);
-        }
+      const running = startServer({
+        fixture,
+        stub: ["--discover", "--discover-no-exit", "--delay-ms=60000"],
+      });
+      const active = await connect(running.url);
+      try {
+        active.send({ type: "discoverProject" });
+        const started = await active.waitFor((message) => message.type === "discoverStarted");
+        active.send({ type: "resetImplementation" });
+        const stopped = await active.waitFor((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(false);
+        await active.waitFor((message) => message.type === "implementationResetStopped");
+        expect(existsSync(join(fixture.root, ".omp", "discover", "staging", String(started.runId)))).toBe(false);
+        expect(ompBytes(fixture.root)).toEqual(published);
       } finally {
-        client.close();
-        first.server.stop(true);
+        active.close();
+        running.server.stop(true);
       }
-    },
-    90000,
-  );
+    } finally {
+      client.close();
+      first.server.stop(true);
+    }
+  }, 90_000);
 
   test(
     "resumes a live run on restart against the same host",

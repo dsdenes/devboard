@@ -632,6 +632,7 @@ async function writeFixture(root: string): Promise<string> {
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-consistent-naming",
+    "devboard-architectural-layering",
   ]) {
     await cp(join(harnessRoot, "omp", "skills", name), join(host, ".omp", "skills", name), {
       recursive: true,
@@ -1806,7 +1807,9 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
+    // The turn stays active long enough for the bar to render its running
+    // state, and still ends well inside the Discover observation window.
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=4000 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
     // Harness-owned reporting goes through the local Gitea API stub, never
     // through `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
@@ -1953,6 +1956,9 @@ try {
     const requestId = String(params.requestId ?? "");
     const url = requestUrls.get(requestId) ?? "";
     if (url.includes("favicon")) return;
+    // A report attempted while the fixture deliberately stops the server is
+    // answered by the page's own error surface, which the case asserts.
+    if (url.endsWith("/feedback")) return;
     if (expectedReloadFailures && String(params.errorText ?? "").includes("ERR_CONNECTION_REFUSED")) {
       return;
     }
@@ -3367,6 +3373,7 @@ try {
   })()`);
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
   const devboardBuiltins = [
+    "devboard-architectural-layering",
     "devboard-consistent-naming",
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
@@ -3435,7 +3442,7 @@ try {
   check(
     JSON.stringify(devboardSkillsTable.managed) ===
       JSON.stringify(devboardManagedFirst(devboardBuiltins)),
-    "the Managed marker does not belong to exactly the five built-in rows",
+    "the Managed marker does not belong to exactly the six built-in rows",
     devboardSkillsTable,
   );
   check(
@@ -12185,9 +12192,10 @@ try {
       ADRS_DIR: join(runStateHost, "adrs"),
       GOAL_FILE: join(runStateHost, "GOAL.md"),
       STATE_DIR: runStateDir,
+      // One agent turn that finishes inside the sheet's observation window.
       AGENT_COMMAND:
         `bun ${stubAgent} --log=${runStateLog} --delay-ms=2500 --questions=1 ` +
-        `--prepare-skills --discover --discover-delay-ms=15000 --goal-draft ` +
+        `--prepare-skills --discover --discover-delay-ms=3000 --goal-draft ` +
         `--flow-implement --flow-question`,
     },
     stdio: ["ignore", "pipe", "pipe"],

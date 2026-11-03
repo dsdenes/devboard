@@ -48,6 +48,18 @@ export const VERIFY_DASHBOARD_BOOTSTRAP =
 process.env.DEVBOARD_BOOTSTRAP_TOKEN = VERIFY_DASHBOARD_BOOTSTRAP;
 
 /**
+ * A verification dashboard is a fixture and never files a harness issue into
+ * the operator's real forge. The client files an error notification
+ * automatically, and every spawned dashboard inherits this process's
+ * environment, so the operator's reporting address and token are removed here
+ * once. A script that verifies reporting passes its own fixture address in the
+ * environment it hands that dashboard.
+ */
+for (const name of ["DEVBOARD_GITEA_URL", "GITEA_URL", "GITEA_TOKEN", "DEVBOARD_GITEA_TOKEN"]) {
+  delete process.env[name];
+}
+
+/**
  * The address a browser opens for the dashboard on `port`. The document hands
  * out the page's HttpOnly cookie only to a request that presents a credential,
  * so every navigation carries the bootstrap value; the bare address stays for
