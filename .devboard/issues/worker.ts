@@ -6,7 +6,7 @@ import {
   createWorkerProviderEnvironment,
   type WorkerProviderEnvironment,
 } from "../server/providers/worker-environment";
-import { recordedChildAlive } from "../server/state";
+import { recordedChildAlive } from "../server/process";
 import { readHarnessVersion } from "../server/version";
 import { takeCommands, type IssuesCommand } from "./control";
 import {
@@ -327,59 +327,6 @@ export function continuationPrompt(
   ].join(" ");
 }
 
-/**
- * Collects the previous state document's recorded ACP children and run ids
- * verbatim. It reads the bytes a load already read, so an unparseable file
- * that load quarantined still yields its records.
- */
-function previousRecords(text: string | undefined): {
-  children: IssuesAcpChild[];
-  runIds: string[];
-} {
-  if (text === undefined) return { children: [], runIds: [] };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { children: [], runIds: [] };
-  }
-  if (typeof parsed !== "object" || parsed === null) return { children: [], runIds: [] };
-  const record = parsed as Record<string, unknown>;
-  const children: IssuesAcpChild[] = [];
-  const runIds: string[] = [];
-  const collect = (value: unknown): void => {
-    if (typeof value !== "object" || value === null) return;
-    const candidate = value as Record<string, unknown>;
-    if (
-      typeof candidate.pid === "number" &&
-      Number.isInteger(candidate.pid) &&
-      candidate.pid > 0 &&
-      Array.isArray(candidate.argv) &&
-      candidate.argv.every((entry) => typeof entry === "string") &&
-      typeof candidate.cwd === "string"
-    ) {
-      children.push({
-        pid: candidate.pid,
-        argv: candidate.argv as string[],
-        cwd: candidate.cwd,
-      });
-    }
-  };
-  const agents = Array.isArray(record.agents) ? record.agents : [];
-  for (const agent of agents) {
-    if (typeof agent !== "object" || agent === null) continue;
-    const entry = agent as Record<string, unknown>;
-    if (typeof entry.runId === "string") runIds.push(entry.runId);
-    collect(entry.acp);
-  }
-  collect(record.acp);
-  if (typeof record.activeRun === "object" && record.activeRun !== null) {
-    const active = record.activeRun as Record<string, unknown>;
-    if (typeof active.runId === "string") runIds.push(active.runId);
-  }
-  return { children, runIds };
-}
-
 export class IssuesWorker {
   readonly repoDir: string;
   readonly stateDir: string;
@@ -414,7 +361,7 @@ export class IssuesWorker {
   private draining = false;
   private runs: Array<{ run: RunFile; directory: string }> = [];
   private stopping = false;
-  private polling = false;
+  private polling: Promise<void> | undefined;
   private nextPollDue = 0;
   private ticker: Timer | undefined;
   private lock: { release: () => void } | undefined;
@@ -529,7 +476,7 @@ export class IssuesWorker {
     const legacyPath = statePath(this.stateDir, this.repoDir);
     const source = existsSync(path) ? path : existsSync(legacyPath) ? legacyPath : path;
     const loaded = loadStateWithText(source);
-    const records = previousRecords(loaded.text);
+    const records = loaded.records;
     this.ledger = loadLedger(this.stateDir, this.repoDir);
     let migrationError: string | null = null;
     const migrated = migrateLegacyLedger({
@@ -850,73 +797,89 @@ export class IssuesWorker {
     return "failed";
   }
 
-  /** One conditional poll, then the trigger decision. */
+  /**
+   * One conditional poll, then the trigger decision.
+   *
+   * A caller that awaits `poll` sees a poll that *starts* after the call: an
+   * in-flight poll is joined first and the caller's own read follows it. A
+   * caller that returned early on the in-flight flag would resolve without
+   * touching `lastPollAt`, so an await could mean no poll happened at all.
+   */
   async poll(): Promise<void> {
-    if (this.polling || this.stopping) return;
-    this.polling = true;
+    if (this.stopping) return;
+    while (this.polling !== undefined) {
+      await this.polling;
+      if (this.stopping) return;
+    }
+    const polling = this.runPoll();
+    this.polling = polling;
+    try {
+      await polling;
+    } finally {
+      if (this.polling === polling) this.polling = undefined;
+    }
+  }
+
+  private async runPoll(): Promise<void> {
     await this.guarded("reclaim silent runs", () => this.reclaimSilentRuns());
     const startedAt = this.clock();
+    let result: PollResult;
     try {
-      let result: PollResult;
-      try {
-        result = await this.readIssues(this.state.poll.etag);
-      } catch (error) {
-        if (this.stopping) return;
-        const detail = error instanceof Error ? error.message : String(error);
-        this.state.poll.lastPollAt = startedAt.toISOString();
-        this.state.poll.error = detail;
+      result = await this.readIssues(this.state.poll.etag);
+    } catch (error) {
+      if (this.stopping) return;
+      const detail = error instanceof Error ? error.message : String(error);
+      this.state.poll.lastPollAt = startedAt.toISOString();
+      this.state.poll.error = detail;
+      this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
+      this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
+      this.state.lastError = detail;
+      this.publish();
+      return;
+    }
+    if (this.stopping) return;
+    this.state.poll.lastPollAt = startedAt.toISOString();
+    switch (result.kind) {
+      case "not-modified": {
+        this.state.poll.etag = result.etag;
+        this.state.poll.notModified = true;
+        this.state.poll.error = null;
+        this.state.poll.rateLimitedUntil = null;
         this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
         this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-        this.state.lastError = detail;
-        this.publish();
-        return;
+        this.refreshQueue();
+        break;
       }
-      if (this.stopping) return;
-      this.state.poll.lastPollAt = startedAt.toISOString();
-      switch (result.kind) {
-        case "not-modified": {
-          this.state.poll.etag = result.etag;
-          this.state.poll.notModified = true;
-          this.state.poll.error = null;
-          this.state.poll.rateLimitedUntil = null;
-          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
-          this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-          this.refreshQueue();
-          break;
-        }
-        case "issues": {
-          this.state.poll.etag = result.etag;
-          this.state.poll.notModified = false;
-          this.state.poll.error = null;
-          this.state.poll.rateLimitedUntil = null;
-          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
-          this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-          await this.reconcileProcessing(result.issues);
-          if (this.stopping) return;
-          await this.applyIssues(result.issues);
-          break;
-        }
-        case "rate-limited": {
-          this.state.poll.error = result.detail;
-          this.state.poll.rateLimitedUntil = result.until;
-          this.state.poll.nextPollAt = result.until;
-          this.nextPollDue = Date.parse(result.until);
-          break;
-        }
-        case "error":
-        case "unsupported": {
-          this.state.poll.error = result.detail;
-          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
-          this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
-          this.state.lastError = result.detail;
-          break;
-        }
+      case "issues": {
+        this.state.poll.etag = result.etag;
+        this.state.poll.notModified = false;
+        this.state.poll.error = null;
+        this.state.poll.rateLimitedUntil = null;
+        this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
+        this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
+        await this.reconcileProcessing(result.issues);
+        if (this.stopping) return;
+        await this.applyIssues(result.issues);
+        break;
       }
-      this.publish();
-      await this.maybeTrigger();
-    } finally {
-      this.polling = false;
+      case "rate-limited": {
+        this.state.poll.error = result.detail;
+        this.state.poll.rateLimitedUntil = result.until;
+        this.state.poll.nextPollAt = result.until;
+        this.nextPollDue = Date.parse(result.until);
+        break;
+      }
+      case "error":
+      case "unsupported": {
+        this.state.poll.error = result.detail;
+        this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
+        this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
+        this.state.lastError = result.detail;
+        break;
+      }
     }
+    this.publish();
+    await this.maybeTrigger();
   }
 
   /**

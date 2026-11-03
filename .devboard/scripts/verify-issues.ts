@@ -28,9 +28,12 @@ import {
 } from "../issues/paths";
 import { readState, type IssuesState } from "../issues/state";
 import { issuesIndicatorTitle, issuesLabel, versionLabel } from "../client/lib/issues-label";
+import { queueCounts } from "../client/lib/issues-queue";
 import { pollStatus } from "../client/lib/poll-status";
 import type { IssuesSnapshot as ClientIssuesSnapshot } from "../client/lib/types";
 import {
+  VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
   dashboardSocket,
   freePort,
   run,
@@ -198,7 +201,8 @@ async function startDashboard(
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(1000),
         });
         return response.ok ? true : undefined;
@@ -569,7 +573,7 @@ try {
       "--window-size=1440,900",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
-      `http://127.0.0.1:${dashboardA.port}/`,
+      dashboardPageUrl(dashboardA.port),
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
@@ -579,7 +583,7 @@ try {
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
   await devtools.send("Page.navigate", {
-    url: `http://127.0.0.1:${dashboardA.port}/`,
+    url: dashboardPageUrl(dashboardA.port),
   });
 
   await click(devtools, "mode-issues");
@@ -1363,7 +1367,7 @@ try {
     const takeoverLabel = issuesLabel(
       takeover.lifecycle,
       takeover.agents.length,
-      takeover.queue.filter((entry) => !entry.handled && entry.agentRunId === null).length,
+      queueCounts(takeover.queue).pending,
     );
     check(
       takeoverLabel === `issues working (${takeover.agents.length})`,
@@ -1374,6 +1378,14 @@ try {
       !/pausing|draining|drain/i.test(takeoverLabel),
       "the running headline carries drain vocabulary",
       takeoverLabel,
+    );
+    // The pending branch: the third argument exists only to put the waiting
+    // count in an idle label, so a nonzero count must render.
+    const idlePendingLabel = issuesLabel("idle", 0, 2);
+    check(
+      idlePendingLabel === "issues idle (2)",
+      "the idle status bar dropped its pending count",
+      { idlePendingLabel },
     );
 
     // An issue opened after the newer worker is live is claimed by it alone.
@@ -1408,7 +1420,7 @@ try {
     const attributedLabel = issuesLabel(
       attributed.lifecycle,
       attributed.agents.length,
-      attributed.queue.filter((entry) => !entry.handled && entry.agentRunId === null).length,
+      queueCounts(attributed.queue).pending,
     );
     const attributedTitle = issuesIndicatorTitle({
       repo: attributed.repo,

@@ -4,7 +4,7 @@ import {
   type FetchLike,
   type GiteaTarget,
 } from "../../lib/gitea";
-import { ghCommand } from "../scout/preflight";
+import { ghCommand } from "../../server/command";
 import { SINGLE_RESPONSIBILITY_LABEL } from "./paths";
 
 /**

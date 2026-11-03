@@ -659,7 +659,7 @@
           {/if}
           {#if discover.cloning !== null}
             <p class="discover-remote__cloning" data-testid="discover-remote-cloning">
-              Cloning <code>{discover.cloning.url}</code>…
+              Cloning <code class="code-chip">{discover.cloning.url}</code>…
             </p>
           {/if}
         </div>
@@ -685,32 +685,34 @@
 
   {@render remotePanel()}
 
-  <header class="discover-head" data-testid="discover-card">
-    <div class="discover-head__top">
-      <div class="discover-head__identity">
-        <h1 class="discover-head__title" title={projectPath}>{projectName}</h1>
-        {#if definitionText.length > 0}
-          <p
-            class="discover-head__definition"
-            data-testid="discover-definition"
-            data-field="definition"
-          >
-            {definitionText}
-          </p>
-        {/if}
-      </div>
-      <div class="discover-head__actions">
-        {#if discover.busy !== null}
-          <span class="muted">{discover.busy}</span>
-        {/if}
-      </div>
+  <header class="discover-page__header">
+    <div class="discover-page__heading">
+      <h1
+        class="discover-page__title discover-page__title--truncate"
+        title={projectPath}
+      >
+        {projectName}
+      </h1>
+      {#if definitionText.length > 0}
+        <p
+          class="discover-page__subtitle"
+          data-testid="discover-definition"
+          data-field="definition"
+        >
+          {definitionText}
+        </p>
+      {/if}
+      {#if discover.hasArtifacts && freshness !== null}
+        <p class="discover-page__meta" data-testid="discover-freshness">
+          <span>{discoveredLabel(freshness.discoveredAt)}</span>
+        </p>
+      {/if}
     </div>
-
-    {#if discover.hasArtifacts && freshness !== null}
-      <div class="discover-head__meta" data-testid="discover-freshness">
-        <span>{discoveredLabel(freshness.discoveredAt)}</span>
-      </div>
-    {/if}
+    <div class="discover-page__actions">
+      {#if discover.busy !== null}
+        <span class="muted">{discover.busy}</span>
+      {/if}
+    </div>
   </header>
 
   {@render questionPanel()}

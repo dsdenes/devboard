@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ghCommand } from "../issues/scout/preflight";
+import { ghCommand } from "./command";
 import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl } from "../lib/forge";
 import { giteaRepository } from "../lib/gitea";

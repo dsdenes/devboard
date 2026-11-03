@@ -39,6 +39,25 @@ export const VERIFY_DASHBOARD_AUTHORIZATION = {
 };
 
 /**
+ * The document credential every verification dashboard accepts. The variable
+ * is put back into the environment so each spawned dashboard inherits it, and
+ * `dashboardPageUrl` is the address a verification browser opens.
+ */
+export const VERIFY_DASHBOARD_BOOTSTRAP =
+  process.env.DEVBOARD_BOOTSTRAP_TOKEN?.trim() || "verify-dashboard-bootstrap";
+process.env.DEVBOARD_BOOTSTRAP_TOKEN = VERIFY_DASHBOARD_BOOTSTRAP;
+
+/**
+ * The address a browser opens for the dashboard on `port`. The document hands
+ * out the page's HttpOnly cookie only to a request that presents a credential,
+ * so every navigation carries the bootstrap value; the bare address stays for
+ * a fetch that presents the token itself.
+ */
+export function dashboardPageUrl(port: number): string {
+  return `http://127.0.0.1:${port}/?bootstrap=${VERIFY_DASHBOARD_BOOTSTRAP}`;
+}
+
+/**
  * Opens a dashboard socket with the verification credential. Bun's WebSocket
  * takes handshake headers, but the DOM declaration that `lib.dom` supplies has
  * only the protocols argument, so this is the one place the extension is cast.
@@ -203,8 +222,18 @@ export function freePort(): Promise<number> {
   });
 }
 
+/** The status of the dashboard's readiness probe, which requires its token. */
 export function httpStatus(port: number): number {
-  const result = run("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", `http://127.0.0.1:${port}/`]);
+  const result = run("curl", [
+    "-s",
+    "-o",
+    "/dev/null",
+    "-w",
+    "%{http_code}",
+    "-H",
+    `Authorization: ${VERIFY_DASHBOARD_AUTHORIZATION.authorization}`,
+    `http://127.0.0.1:${port}/ready`,
+  ]);
   return Number(result.stdout);
 }
 

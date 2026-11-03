@@ -175,7 +175,4 @@ export function giteaBaseUrl(
   return undefined;
 }
 
-/** The synthetic token used by a public forge with no configured credential. */
-export const PUBLIC_FORGE_TOKEN = "";
-
 export { GITEA_TOKEN_KEYS, GITEA_URL_KEYS };

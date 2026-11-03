@@ -587,14 +587,6 @@ function readTranscript(
   return parsed;
 }
 
-/** Every `.jsonl` transcript under the providers agent sessions tree. */
-export function listSessionFiles(
-  stateDir: string,
-  reader: SessionReader = defaultSessionReader,
-): string[] {
-  return reader.list(stateDir).map((meta) => meta.path);
-}
-
 function listSessionPaths(stateDir: string): string[] {
   const root = join(resolve(stateDir), "providers", "agents");
   const files: string[] = [];
@@ -974,28 +966,4 @@ export function searchSessions(options: {
     }
   }
   return { matches, truncated: false };
-}
-
-/** Bytes of the bounded excerpts one filed issue may quote for a session. */
-export const MCP_OPTIMIZER_SESSION_EXCERPT_MAX = 2_000;
-
-/**
- * A bounded, normalized excerpt of the messages that contributed evidence.
- * Deterministic for the same messages.
- */
-export function sessionExcerpt(session: AgentSession, repoDir: string): string {
-  const lines: string[] = [];
-  for (const message of session.messages) {
-    if (message.text.length === 0) continue;
-    const label =
-      message.role === "toolResult"
-        ? `${message.toolName ?? "tool"}${message.isError ? " (error)" : ""}`
-        : message.role;
-    lines.push(`${label}: ${firstNormalizedLine(message.text, { repoDir }) || "(empty)"}`);
-    if (lines.join("\n").length >= MCP_OPTIMIZER_SESSION_EXCERPT_MAX) break;
-  }
-  const text = lines.join("\n");
-  return text.length <= MCP_OPTIMIZER_SESSION_EXCERPT_MAX
-    ? text
-    : `${text.slice(0, MCP_OPTIMIZER_SESSION_EXCERPT_MAX - 1).trimEnd()}…`;
 }

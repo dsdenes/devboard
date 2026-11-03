@@ -47,14 +47,9 @@ export const DESIGN_CATEGORIES = [
   "placement",
 ] as const;
 
-export type DesignCategory = (typeof DESIGN_CATEGORIES)[number];
-
 export const DESIGN_LABEL = "design";
 export const LABEL_COLOR = "1f6feb";
 export const LABEL_DESCRIPTION = "Design system divergence from the documented interface";
-
-/** The interface source file types a cycle audits, plus the root index. */
-export const SOURCE_EXTENSIONS = [".svelte", ".css", ".ts"] as const;
 
 export const DEFAULT_SOURCE_DIRECTORY = ".devboard/client";
 export const DEFAULT_DESIGN_DOCUMENT = "DESIGN.md";
@@ -163,11 +158,6 @@ export function cycleClaimPath(repoDir: string): string {
 
 export function cycleDirectory(repoDir: string, cycleId: string): string {
   return join(cyclesDirectory(repoDir), cycleId);
-}
-
-/** The accepted audit answer the ACP peer writes. */
-export function auditPath(directory: string): string {
-  return join(directory, "audit.json");
 }
 
 /** The release request the MCP release tool records beside the draft. */

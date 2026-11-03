@@ -13,7 +13,7 @@ import type { ForgeTarget } from "./forge-pr";
 import { StubForge } from "./fixtures/stub-forge";
 import { openJournal } from "./journal";
 import { sourceCheckoutGiteaUrl } from "./local-gitea";
-import { relaunch, relaunchConfirmed } from "./relaunch";
+import { relaunch, relaunchConfirmed, replacementController } from "./relaunch";
 import { startSourceRefresher } from "./source-refresh";
 import { snapshotStaticDir } from "./static-snapshot";
 import { startUpdater, type Updater } from "./updates";
@@ -42,10 +42,11 @@ const agentCommand = process.env.AGENT_COMMAND ?? "omp acp";
 const stateDir = resolve(process.env.STATE_DIR ?? join(import.meta.dir, "..", ".tmp"));
 
 /**
- * The credential the mutating endpoints and the socket upgrade require. An
- * operator may configure it; otherwise this process generates one and keeps it
- * in its own environment, so a replacement inherits the same credential and an
- * open page's cookie keeps working across it.
+ * The credential the launcher's readiness probe, the mutating endpoints, and
+ * the socket upgrade require. The launcher supplies it to the dashboard it
+ * spawns; otherwise this process generates one and keeps it in its own
+ * environment, so a replacement inherits the same credential and an open
+ * page's cookie keeps working across it.
  */
 const dashboardToken =
   process.env.DEVBOARD_DASHBOARD_TOKEN?.trim() || randomBytes(32).toString("base64url");
@@ -55,6 +56,23 @@ if (!/^[A-Za-z0-9._~+/=:-]+$/.test(dashboardToken)) {
   );
 }
 process.env.DEVBOARD_DASHBOARD_TOKEN = dashboardToken;
+
+/**
+ * The credential a browser presents when it opens the page. It is distinct
+ * from the dashboard token, so the token the mutating endpoints and the socket
+ * upgrade trust never rides in a URL, and this process keeps it in its own
+ * environment so a replacement accepts the address the launcher printed.
+ * Without it, the document would answer only a caller that already holds the
+ * token's cookie, and a fresh browser could never get one.
+ */
+const bootstrapToken =
+  process.env.DEVBOARD_BOOTSTRAP_TOKEN?.trim() || randomBytes(32).toString("base64url");
+if (!/^[A-Za-z0-9._~+/=:-]+$/.test(bootstrapToken)) {
+  throw new Error(
+    "DEVBOARD_BOOTSTRAP_TOKEN must carry RFC 6750 characters only: no whitespace, ';', or ','.",
+  );
+}
+process.env.DEVBOARD_BOOTSTRAP_TOKEN = bootstrapToken;
 
 function isAddressInUse(error: unknown): boolean {
   if (typeof error === "object" && error !== null && "code" in error) {
@@ -183,25 +201,14 @@ process.once("exit", staticSnapshot.removeSync);
 type Dashboard = ReturnType<typeof createApp>;
 let updater: Updater | undefined;
 let server: Dashboard | undefined;
-/** One automatic replacement per installed version; the fallback control retries. */
-let attemptedReplacementFor: string | null = null;
-
-/**
- * Replaces the running server with the version under the host prefix. The
- * attempt happens once per installed version and runs without a click.
- */
-function replaceWithInstalled(version: string): void {
-  if (server === undefined || attemptedReplacementFor === version) return;
-  attemptedReplacementFor = version;
-  journal.write("update", `replacing ${runningVersion ?? "unknown"} with ${version}`);
-  try {
-    restart(server);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    journal.write("update-error", `could not replace the server with ${version}: ${detail}`);
-    server.noteReplacementFailure(error);
-  }
-}
+// The automatic replacement is one attempt per installed version; the reload
+// control retries. The controller owns that policy, so this module only wires.
+const replacement = replacementController({
+  restart,
+  journal,
+  runningVersion,
+  liveServer: () => server,
+});
 // The publish-driven source refresh waits for this marker before the old
 // listener stops. A replacement that never writes it is ended by the parent.
 const replacementReadyFile = process.env.DEVBOARD_REPLACEMENT_READY_FILE;
@@ -228,6 +235,7 @@ for (let attempt = 0; ; attempt += 1) {
       hostname,
       allowedHosts,
       token: dashboardToken,
+      bootstrap: bootstrapToken,
       port,
       journal,
       runningVersion,
@@ -277,8 +285,12 @@ updater = startUpdater({
   stateDir,
   currentVersion: runningVersion,
   journal,
-  onInstalled: (version) => replaceWithInstalled(version),
-  onStale: (version) => replaceWithInstalled(version),
+  onInstalled: replacement.replace,
+  onStale: replacement.replace,
 });
 
-console.log(`ADR interface listening on http://${hostname}:${server.port}`);
+// The document answers only a caller that presents the page's credential, so
+// the printed address is the one a browser opens to receive its cookie.
+console.log(
+  `ADR interface listening on http://${hostname}:${server.port}/?bootstrap=${bootstrapToken}`,
+);

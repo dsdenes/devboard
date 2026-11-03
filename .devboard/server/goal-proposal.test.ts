@@ -2,8 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { createApp } from "./app";
+import { GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints";
 import { GOAL_PROPOSALS_DIRECTORY, draftPathFromHref } from "../lib/goal-proposals";
 import {
   goalProposalBody,
@@ -145,9 +145,9 @@ async function responsePath(response: Response): Promise<string> {
   return path;
 }
 
-/** The absolute URI the server answers for one draft under `root`. */
-function draftHref(root: string, name: string): string {
-  return pathToFileURL(join(root, GOAL_PROPOSALS_DIRECTORY, name)).href;
+/** The absolute URL the server answers for one draft. */
+function draftHref(url: string, name: string): string {
+  return `http://${url}${GOAL_PROPOSALS_ENDPOINT}/${name}`;
 }
 
 describe("goal proposal drafts", () => {
@@ -160,8 +160,10 @@ describe("goal proposal drafts", () => {
 
       expect(response.status).toBe(201);
       const href = await responseHref(response);
-      expect(new URL(href).protocol).toBe("file:");
-      expect(href).toBe(draftHref(root, "the-start-button-is-clipped.md"));
+      expect(new URL(href).protocol).toBe("http:");
+      expect(new URL(href).origin).toBe(`http://${url}`);
+      expect(href).toBe(draftHref(url, "the-start-button-is-clipped.md"));
+      expect(href.startsWith("file:")).toBe(false);
       const location = response.headers.get("location");
       expect(location).toBe(href);
       expect(new URL(location!).href).toBe(href);
@@ -194,6 +196,44 @@ describe("goal proposal drafts", () => {
         "## Stop conditions",
       ]) {
         expect(text).not.toContain(heading);
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("serves the created draft at the link its response names", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const response = await propose(url, proposal());
+      expect(response.status).toBe(201);
+      const document = (await response.json()) as { links: { draft: { href: string } } };
+      const href = document.links.draft.href;
+      expect(JSON.stringify(document)).not.toContain("file:");
+      expect(response.headers.get("location")).toBe(href);
+      expect(new URL(href).origin).toBe(`http://${url}`);
+
+      const name = href.slice(href.lastIndexOf("/") + 1);
+      const written = await readFile(join(root, GOAL_PROPOSALS_DIRECTORY, name), "utf8");
+      const served = await fetch(href);
+      expect(served.status).toBe(200);
+      expect(served.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+      expect(await served.text()).toBe(written);
+
+      const head = await fetch(href, { method: "HEAD" });
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+      expect(await head.text()).toBe("");
+
+      for (const path of [
+        "/goal-proposals/missing.md",
+        "/goal-proposals/",
+        "/goal-proposals/..%2Fescape.md",
+      ]) {
+        const missing = await fetch(`http://${url}${path}`);
+        expect(missing.status).toBe(404);
+        expect(missing.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       }
     } finally {
       server.stop(true);
@@ -256,7 +296,7 @@ describe("goal proposal drafts", () => {
 
       const second = await propose(url, { report });
       expect(second.status).toBe(201);
-      expect(await responseHref(second)).toBe(draftHref(root, "name-two-editors-2.md"));
+      expect(await responseHref(second)).toBe(draftHref(url, "name-two-editors-2.md"));
       expect(await readFile(join(root, firstPath), "utf8")).toBe(firstText);
       expect(await drafts(root)).toEqual([
         "name-two-editors-2.md",
@@ -310,7 +350,7 @@ describe("goal proposal drafts", () => {
       const second = await propose(url, proposal());
       expect(second.status).toBe(201);
       expect(await responseHref(second)).toBe(
-        draftHref(root, "the-start-button-is-clipped-on-2.md"),
+        draftHref(url, "the-start-button-is-clipped-on-2.md"),
       );
 
       expect(await drafts(root)).toEqual([
@@ -342,7 +382,7 @@ describe("goal proposal drafts", () => {
       expect(href).not.toContain("\\");
       const files = await drafts(root);
       expect(files).toHaveLength(1);
-      expect(href).toBe(draftHref(root, files[0]!));
+      expect(href).toBe(draftHref(url, files[0]!));
       expect(existsSync(join(root, "outside.md"))).toBe(false);
     } finally {
       server.stop(true);
@@ -411,6 +451,31 @@ describe("goal proposal drafts", () => {
     }
   });
 
+  test("refuses an unknown turn field and accepts the same turn without it", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const accepted = proposal({ turns: [{ role: "AGENT", text: "hi" }] });
+      const refused = await propose(url, {
+        ...accepted,
+        turns: [{ role: "AGENT", text: "hi", extra: 1 }],
+      });
+
+      expect(refused.status).toBe(400);
+      expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await refused.json()).toEqual(
+        problemBody("Bad Request", 400, "unknown field: extra."),
+      );
+      expect(await drafts(root)).toEqual([]);
+
+      const created = await propose(url, accepted);
+      expect(created.status).toBe(201);
+      expect((await drafts(root)).length).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("refuses a captured_at that is not an RFC 3339 date-time", async () => {
     const { server, root, url } = await startServer();
 
@@ -473,9 +538,9 @@ describe("goal proposal drafts", () => {
       const host = `evil.example:${server.port}`;
       const response = await propose(url, proposal(), { host, origin: `http://${host}` });
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(421);
       expect(await response.json()).toEqual(
-        problemBody("Forbidden", 403, "The request host is not served by this dashboard."),
+        problemBody("Misdirected Request", 421, "The request host is not served by this dashboard."),
       );
       expect(await drafts(root)).toEqual([]);
     } finally {
@@ -593,7 +658,7 @@ describe("goal proposal naming and body", () => {
     });
 
     const filename = `${"a".repeat(64)}.md`;
-    expect(written.links.draft.href).toBe(draftHref(root, filename));
+    expect(written).toBe(filename);
     expect(await readdir(join(root, GOAL_PROPOSALS_DIRECTORY))).toEqual([filename]);
   });
 
@@ -636,7 +701,7 @@ describe("goal proposal naming and body", () => {
       repoDir: root,
       slugger: async () => "start-button-visibility",
     });
-    expect(chosen.links.draft.href).toBe(draftHref(root, "start-button-visibility.md"));
+    expect(chosen).toBe("start-button-visibility.md");
 
     const failed = await writeGoalProposal(submission, {
       repoDir: root,
@@ -644,9 +709,7 @@ describe("goal proposal naming and body", () => {
         throw new Error("The naming agent did not answer in time.");
       },
     });
-    expect(failed.links.draft.href).toBe(
-      draftHref(root, "make-the-start-button-visible.md"),
-    );
+    expect(failed).toBe("make-the-start-button-visible.md");
   });
 
   test("names the draft with the ACP naming agent's slug", async () => {
@@ -659,7 +722,7 @@ describe("goal proposal naming and body", () => {
       const response = await propose(url, proposal());
 
       expect(response.status).toBe(201);
-      expect(await responseHref(response)).toBe(draftHref(root, "clipped-start-button.md"));
+      expect(await responseHref(response)).toBe(draftHref(url, "clipped-start-button.md"));
       expect(await drafts(root)).toEqual(["clipped-start-button.md"]);
     } finally {
       server.stop(true);
@@ -693,7 +756,7 @@ describe("goal proposal naming and body", () => {
       expect(await responsePath(second)).toBe(firstPath);
       expect(second.headers.get("location")).toBe(first.headers.get("location"));
       expect(second.headers.get("location")).toBe(
-        draftHref(root, "the-start-button-is-clipped-on.md"),
+        draftHref(url, "the-start-button-is-clipped-on.md"),
       );
       expect(await drafts(root)).toEqual(["the-start-button-is-clipped-on.md"]);
     } finally {
@@ -744,7 +807,7 @@ describe("goal proposal naming and body", () => {
 
       expect(response.status).toBe(201);
       expect(await responseHref(response)).toBe(
-        draftHref(root, "the-start-button-is-clipped-on.md"),
+        draftHref(url, "the-start-button-is-clipped-on.md"),
       );
       expect(await drafts(root)).toEqual(["the-start-button-is-clipped-on.md"]);
     } finally {

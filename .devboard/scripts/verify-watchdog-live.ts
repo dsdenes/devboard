@@ -33,6 +33,7 @@ import { findingFingerprint } from "../watchdog/findings";
 import { readWorkerState } from "../watchdog/worker-state";
 import {
   assertTrue,
+  VERIFY_DASHBOARD_AUTHORIZATION,
   dashboardSocket,
   freePort,
   harnessRoot,
@@ -374,7 +375,8 @@ exit 0
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(2000),
         });
         return response.ok ? true : undefined;

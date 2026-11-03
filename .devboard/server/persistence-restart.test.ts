@@ -235,7 +235,10 @@ async function startProcess(
   const deadline = Date.now() + 20_000;
   for (;;) {
     try {
-      const response = await fetch(`http://127.0.0.1:${chosen}/`, { method: "HEAD" });
+      const response = await fetch(`http://127.0.0.1:${chosen}/ready`, {
+        method: "HEAD",
+        headers: { authorization: `Bearer ${DASHBOARD_TOKEN}` },
+      });
       if (response.ok || response.status === 404) break;
     } catch {
       // Still binding or still starting.
