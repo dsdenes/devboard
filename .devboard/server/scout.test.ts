@@ -11,14 +11,16 @@ import { writeActivity } from "../issues/state";
 import {
   closingCommitFromComments,
   closingCommitFromTimeline,
-  earliestRelease,
   parseJsonLines,
-  releaseAtClose,
-  resolveShippedVersion,
-  shippedVersion,
   type ScoutGitHubClient,
   type ScoutRelease,
 } from "../issues/scout/github";
+import {
+  earliestRelease,
+  releaseAtClose,
+  resolveShippedVersion,
+  shippedVersion,
+} from "../lib/release-resolution";
 import {
   DEFAULT_MAX_PENDING,
   controlDirectory,

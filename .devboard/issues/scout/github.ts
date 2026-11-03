@@ -4,8 +4,8 @@ import {
   isFullSha,
   isSha,
   shaTokens,
-  type GitHubRelease,
 } from "../../lib/github-release";
+import type { PublishedRelease } from "../../lib/release-resolution";
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
   giteaListIssues,
@@ -20,22 +20,17 @@ import { createGiteaVersionClient } from "../../lib/gitea-release";
  * published release, and the commit that closed an issue. Reads go through the
  * operator's `gh` credential; commit resolution also uses the checkout, and
  * release containment prefers the checkout's tags before asking the forge. The
- * release resolution itself lives in `lib/github-release.ts` and
+ * release resolution itself lives in `lib/release-resolution.ts` and
  * `lib/gitea-release.ts`, shared with the watchdog activity page.
  */
 
 export {
   closingCommitFromComments,
   closingCommitFromTimeline,
-  earliestRelease,
   isSha,
   parseJsonArray,
   parseJsonLines,
-  releaseAtClose,
-  resolveShippedVersion,
   shaTokens,
-  shippedVersion,
-  type VersionResolution,
 } from "../../lib/github-release";
 
 export interface ScoutGitHubIssue {
@@ -49,7 +44,7 @@ export interface ScoutGitHubIssue {
   body: string;
 }
 
-export type ScoutRelease = GitHubRelease;
+export type ScoutRelease = PublishedRelease;
 
 export interface ScoutGitHubClient {
   /** Every issue carrying the `scout` label, open or closed. */
