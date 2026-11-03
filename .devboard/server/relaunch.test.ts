@@ -3,7 +3,15 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { relaunch, relaunchConfirmed, type Listener, type RelaunchSettings } from "./relaunch";
+import type { JournalKind } from "./journal";
+import {
+  relaunch,
+  relaunchConfirmed,
+  replacementController,
+  type Listener,
+  type RelaunchSettings,
+  type ReplaceableServer,
+} from "./relaunch";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 
@@ -124,6 +132,84 @@ describe("relaunch", () => {
       STATIC_DIR: join("/host/.devboard", "dist"),
       STATE_DIR: "/host/.devboard/.tmp",
     });
+  });
+});
+
+describe("replacementController", () => {
+  function server(failures: unknown[] = []): ReplaceableServer {
+    return {
+      stop: () => {},
+      noteReplacementFailure: (error) => {
+        failures.push(error);
+        return String(error);
+      },
+    };
+  }
+
+  test("replaces once per installed version", () => {
+    const records: Array<[JournalKind, string]> = [];
+    const live = server();
+    const restarts: string[] = [];
+    const controller = replacementController({
+      restart: (target) => {
+        expect(target).toBe(live);
+        restarts.push("restart");
+      },
+      journal: { write: (kind, text) => records.push([kind, text]) },
+      runningVersion: "1.0.0",
+      liveServer: () => live,
+    });
+
+    controller.replace("1.1.0");
+    controller.replace("1.1.0");
+    controller.replace("1.2.0");
+
+    expect(restarts).toEqual(["restart", "restart"]);
+    expect(records).toEqual([
+      ["update", "replacing 1.0.0 with 1.1.0"],
+      ["update", "replacing 1.0.0 with 1.2.0"],
+    ]);
+  });
+
+  test("records a failed attempt and withdraws the handoff", () => {
+    const records: Array<[JournalKind, string]> = [];
+    const failures: unknown[] = [];
+    const live = server(failures);
+    const error = new Error("spawn failed");
+    const controller = replacementController({
+      restart: () => {
+        throw error;
+      },
+      journal: { write: (kind, text) => records.push([kind, text]) },
+      runningVersion: null,
+      liveServer: () => live,
+    });
+
+    controller.replace("1.1.0");
+
+    expect(records).toEqual([
+      ["update", "replacing unknown with 1.1.0"],
+      ["update-error", "could not replace the server with 1.1.0: spawn failed"],
+    ]);
+    expect(failures).toEqual([error]);
+  });
+
+  test("attempts nothing before the server listens", () => {
+    const records: Array<[JournalKind, string]> = [];
+    let restarts = 0;
+    const controller = replacementController({
+      restart: () => {
+        restarts += 1;
+      },
+      journal: { write: (kind, text) => records.push([kind, text]) },
+      runningVersion: "1.0.0",
+      liveServer: () => undefined,
+    });
+
+    controller.replace("1.1.0");
+
+    expect(restarts).toBe(0);
+    expect(records).toEqual([]);
   });
 });
 
