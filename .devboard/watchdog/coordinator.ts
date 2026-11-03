@@ -499,12 +499,77 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
         for (const record of records) byFingerprint.set(record.fingerprint, record);
         const reads = readDedupReads(dedupRunDir);
         dedup.openIssuesRead = reads.length === 0 ? 0 : (reads[reads.length - 1] ?? 0);
-        for (const fingerprint of candidates) {
-          const entry = ledger.findings[fingerprint];
-          if (entry === undefined) continue;
-          const record = byFingerprint.get(fingerprint);
-          if (record === undefined) {
-            const reason = "the deduplication turn recorded no decision";
+        if (reads.length === 0) {
+          // The gate's contract requires the peer to read the open issues before
+          // it files anything, so a turn that recorded no read filed nothing.
+          const reason = "the deduplication turn read no open issue";
+          failure ??= reason;
+          gateBlocked = true;
+          for (const fingerprint of candidates) {
+            markPending(ledger, fingerprint);
+            dedup.decisions.push({
+              fingerprint,
+              category: ledger.findings[fingerprint]?.category ?? "unknown",
+              decision: "failed",
+              reason,
+            });
+          }
+          context.log(`deduplication failed: ${reason}`);
+        } else {
+          for (const fingerprint of candidates) {
+            const entry = ledger.findings[fingerprint];
+            if (entry === undefined) continue;
+            const record = byFingerprint.get(fingerprint);
+            if (record === undefined) {
+              const reason = "the deduplication turn recorded no decision";
+              if (room > 0) failure ??= reason;
+              markPending(ledger, fingerprint);
+              dedup.decisions.push({
+                fingerprint,
+                category: entry.category,
+                decision: "failed",
+                reason,
+              });
+              continue;
+            }
+            if (record.action === "filed" && record.url !== undefined) {
+              uniqueCandidates.push(fingerprint);
+              markFiled(ledger, fingerprint, record.url, now);
+              saveLedger(context.stateDir, ledger);
+              report.issues.push({
+                url: record.url,
+                category: entry.category,
+                fingerprint,
+                line: entry.line,
+              });
+              dedup.decisions.push({
+                fingerprint,
+                category: entry.category,
+                decision: "unique",
+              });
+              context.log(`filed ${record.url} for ${entry.category}: ${entry.line}`);
+              continue;
+            }
+            if (record.action === "duplicate") {
+              if (record.issue !== undefined) {
+                markDuplicate(ledger, fingerprint, record.issue, now);
+              } else {
+                ledger.pendingFiling = ledger.pendingFiling.filter(
+                  (pending) => pending !== fingerprint,
+                );
+              }
+              dedup.decisions.push({
+                fingerprint,
+                category: entry.category,
+                decision: "duplicate",
+                ...(record.issue === undefined ? {} : { issue: record.issue }),
+                ...(record.representative === undefined
+                  ? {}
+                  : { representative: record.representative }),
+              });
+              continue;
+            }
+            const reason = "the deduplication turn recorded no filed issue";
             if (room > 0) failure ??= reason;
             markPending(ledger, fingerprint);
             dedup.decisions.push({
@@ -513,60 +578,13 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
               decision: "failed",
               reason,
             });
-            continue;
           }
-          if (record.action === "filed" && record.url !== undefined) {
-            uniqueCandidates.push(fingerprint);
-            markFiled(ledger, fingerprint, record.url, now);
-            saveLedger(context.stateDir, ledger);
-            report.issues.push({
-              url: record.url,
-              category: entry.category,
-              fingerprint,
-              line: entry.line,
-            });
-            dedup.decisions.push({
-              fingerprint,
-              category: entry.category,
-              decision: "unique",
-            });
-            context.log(`filed ${record.url} for ${entry.category}: ${entry.line}`);
-            continue;
-          }
-          if (record.action === "duplicate") {
-            if (record.issue !== undefined) {
-              markDuplicate(ledger, fingerprint, record.issue, now);
-            } else {
-              ledger.pendingFiling = ledger.pendingFiling.filter(
-                (pending) => pending !== fingerprint,
-              );
-            }
-            dedup.decisions.push({
-              fingerprint,
-              category: entry.category,
-              decision: "duplicate",
-              ...(record.issue === undefined ? {} : { issue: record.issue }),
-              ...(record.representative === undefined
-                ? {}
-                : { representative: record.representative }),
-            });
-            continue;
-          }
-          const reason = "the deduplication turn recorded no filed issue";
-          if (room > 0) failure ??= reason;
-          markPending(ledger, fingerprint);
-          dedup.decisions.push({
-            fingerprint,
-            category: entry.category,
-            decision: "failed",
-            reason,
-          });
+          context.log(
+            `deduplication: ${candidates.length} candidate(s), ` +
+              `${uniqueCandidates.length} unique, ` +
+              `${candidates.length - uniqueCandidates.length} duplicate`,
+          );
         }
-        context.log(
-          `deduplication: ${candidates.length} candidate(s), ` +
-            `${uniqueCandidates.length} unique, ` +
-            `${candidates.length - uniqueCandidates.length} duplicate`,
-        );
       } catch (error) {
         const reason = diagnosticLine(error);
         failure ??= `the deduplication agent failed: ${reason}`;

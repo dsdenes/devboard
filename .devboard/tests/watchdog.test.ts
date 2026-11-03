@@ -248,13 +248,14 @@ function dedupStub(
   return { dedup, calls };
 }
 
-/** Files every candidate the turn was given room for; reads no open issue. */
+/** Files every candidate the turn was given room for; it read the open issues. */
 function filedWithinRoom(request: DedupRequest): DedupTurn {
   const room = Math.min(request.filingRoom, request.candidates.length);
   return {
     records: request.candidates
       .slice(0, room)
       .map((candidate, index) => filedRecord(candidate, 100 + index)),
+    reads: [1],
   };
 }
 
@@ -267,6 +268,7 @@ function uniqueDedup(): Dedup {
         .map((candidate, index) => `${JSON.stringify(filedRecord(candidate, 100 + index))}\n`)
         .join(""),
     );
+    writeFileSync(join(runDir, "dedup-reads.jsonl"), `${JSON.stringify({ count: 1 })}\n`);
     return "";
   };
 }
@@ -1526,6 +1528,55 @@ describe("deduplication gate", () => {
     expect(result.report.deduplication.openIssuesRead).toBe(1);
   });
 
+  test("a turn that read no open issue files nothing and fails the cycle", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = stateDirFor(root);
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh, calls } = ghStub();
+    const { dedup } = dedupStub((request) => ({
+      records: request.candidates.map((candidate, index) => filedRecord(candidate, 100 + index)),
+    }));
+
+    const result = await runCycle(cycleFor(root, { events, gh, dedup }));
+    const reason = "the deduplication turn read no open issue";
+    expect(result.exitCode).toBe(1);
+    expect(result.report.action).toBe("failed");
+    expect(result.report.reason).toBe(reason);
+    expect(result.report.issues).toEqual([]);
+    expect(result.report.deduplication.openIssuesRead).toBe(0);
+    expect(forgeMutations(calls)).toEqual([]);
+
+    const fingerprint = result.report.findings[0]?.fingerprint as string;
+    expect(result.report.deduplication.decisions).toHaveLength(1);
+    expect(result.report.deduplication.decisions[0]?.fingerprint).toBe(fingerprint);
+    expect(result.report.deduplication.decisions[0]?.decision).toBe("failed");
+    expect(result.report.deduplication.decisions[0]?.reason).toBe(reason);
+
+    const ledger = loadLedger(stateDir);
+    expect(ledger.pendingFiling).toEqual([fingerprint]);
+    expect(ledger.findings[fingerprint]?.disposition).toBe("none");
+    expect(ledger.findings[fingerprint]?.url).toBeUndefined();
+    expect(result.report.pending).toBe(1);
+  });
+
+  test("a turn that read the open issues files the records it wrote", async () => {
+    const { root } = await fixtureRepository();
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh } = ghStub();
+    const { dedup } = dedupStub((request) => {
+      const candidate = request.candidates[0];
+      if (candidate === undefined) throw new Error("missing candidate");
+      return { records: [filedRecord(candidate, 100)], reads: [3] };
+    });
+
+    const result = await runCycle(cycleFor(root, { events, gh, dedup }));
+    expect(result.exitCode).toBe(0);
+    expect(result.report.action).toBe("filed");
+    expect(result.report.issues).toHaveLength(1);
+    expect(result.report.deduplication.openIssuesRead).toBe(3);
+    expect(loadLedger(stateDirFor(root)).pendingFiling).toEqual([]);
+  });
+
   test("a duplicate is silent, named in the report, and never filed in the ledger", async () => {
     const { root } = await fixtureRepository();
     const stateDir = stateDirFor(root);
@@ -1584,6 +1635,7 @@ describe("deduplication gate", () => {
           filedRecord(first, 100),
           duplicateRecord(second, { representative: first.fingerprint }),
         ],
+        reads: [1],
       };
     });
 
@@ -1608,6 +1660,7 @@ describe("deduplication gate", () => {
     const { gh, calls } = ghStub();
     const { dedup } = dedupStub((request) => ({
       records: request.candidates.map((candidate, index) => filedRecord(candidate, 700 + index)),
+      reads: [1],
     }));
 
     const result = await runCycle(cycleFor(root, { events, gh, dedup }));
@@ -1690,7 +1743,7 @@ describe("deduplication gate", () => {
       event(root, 1, "update install failed: checksum mismatch", "update-error"),
     ];
     const { gh, calls } = ghStub();
-    const { dedup } = dedupStub(() => ({ records: [] }));
+    const { dedup } = dedupStub(() => ({ records: [], reads: [1] }));
 
     const result = await runCycle(cycleFor(root, { events, gh, dedup }));
     expect(result.report.issues).toEqual([]);
@@ -1726,6 +1779,7 @@ describe("deduplication gate", () => {
           url: "https://github.com/acme/fixture/issues/900",
         },
       ],
+      reads: [1],
     }));
 
     const result = await runCycle(cycleFor(root, { events, gh, dedup }));
@@ -1848,6 +1902,7 @@ describe("deduplication gate", () => {
           filedRecord(first, 100),
           duplicateRecord(second, { representative: first.fingerprint }),
         ],
+        reads: [1],
       };
     });
     const one = await runCycle(cycleFor(root, { events, gh, dedup: grouped.dedup }));
