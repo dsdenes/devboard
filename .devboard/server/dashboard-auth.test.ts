@@ -224,11 +224,39 @@ describe("dashboard credential", () => {
     }
   });
 
-  test("answers readiness without a credential", async () => {
+  test("refuses readiness without the dashboard token and never reports the pid", async () => {
     const { server, url } = await startServer();
 
     try {
       const response = await fetch(`http://${url}/ready`);
+
+      expect(response.status).toBe(401);
+      expect(response.headers.get("www-authenticate")).toBe("Bearer");
+      expect(response.headers.get("content-type")).toBe("application/problem+json");
+      expect(await response.text()).not.toContain("pid");
+
+      const head = await fetch(`http://${url}/ready`, { method: "HEAD" });
+      expect(head.status).toBe(401);
+      expect(head.headers.get("www-authenticate")).toBe("Bearer");
+      expect(await head.text()).toBe("");
+
+      const foreign = await fetch(`http://${url}/ready`, {
+        headers: { authorization: "Bearer another-token" },
+      });
+      expect(foreign.status).toBe(401);
+      expect(await foreign.text()).not.toContain("pid");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers readiness with the dashboard token", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(`http://${url}/ready`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
 
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ pid: process.pid });
