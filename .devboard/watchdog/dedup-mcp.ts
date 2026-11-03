@@ -151,22 +151,36 @@ async function callDedupTool(
     return { value: issue };
   }
   if (name === "issue_create") {
+    // The fingerprint is the cycle's ledger key, so it is validated before the
+    // forge mutation: a malformed call files nothing instead of leaving an
+    // issue no record owns.
+    const fingerprint = args.fingerprint;
+    if (typeof fingerprint !== "string" || fingerprint.length === 0) {
+      return { value: undefined, error: "issue_create needs the candidate fingerprint" };
+    }
     try {
       const created = await createIssue(context, {
         title: args.title,
         body: args.body,
         labels: args.labels,
       });
-      const fingerprint = args.fingerprint;
-      if (typeof fingerprint !== "string" || fingerprint.length === 0) {
-        return { value: undefined, error: "issue_create needs the candidate fingerprint" };
+      try {
+        recordWatchdogFiling(context, {
+          fingerprint,
+          number: created.number,
+          url: created.url,
+          title: created.title,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          value: undefined,
+          error:
+            `issue #${created.number} (${created.url}) was created, but its filing ` +
+            `record could not be appended: ${detail}. The tracker holds an issue this ` +
+            `cycle did not record.`,
+        };
       }
-      recordWatchdogFiling(context, {
-        fingerprint,
-        number: created.number,
-        url: created.url,
-        title: created.title,
-      });
       return { value: { ...created, fingerprint } };
     } catch (error) {
       return {

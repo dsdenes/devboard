@@ -1987,6 +1987,114 @@ describe("deduplication gate", () => {
     expect(readAttempt.content[0]?.text).toContain(ISSUE_URL);
   });
 
+  test("issue_create validates the fingerprint first and reports an unrecorded filing", async () => {
+    const created: string[] = [];
+    const fake: ForgeIssues = {
+      forge: "gitea",
+      repository: "acme/fixture",
+      list: async () => [],
+      listAll: async () => [],
+      get: async (number) => ({
+        number,
+        title: "open",
+        body: "body",
+        state: "open",
+        labels: [],
+        url: ISSUE_URL,
+        createdAt: null,
+      }),
+      ensureLabel: async () => {},
+      create: async (input) => {
+        created.push(input.title);
+        return {
+          number: 601,
+          title: input.title,
+          body: input.body,
+          state: "open",
+          labels: input.labels ?? [],
+          url: `${ISSUE_URL}/601`,
+          createdAt: null,
+        };
+      },
+      comment: async () => {},
+      close: async () => {
+        throw new Error("mutation");
+      },
+    };
+    const call = async (
+      arguments_: Record<string, unknown>,
+      environment: Record<string, string | undefined>,
+    ) => {
+      let out = "";
+      await startDedupStdio({
+        issues: fake,
+        environment,
+        input: (async function* () {
+          yield new TextEncoder().encode(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: { name: "issue_create", arguments: arguments_ },
+            }),
+          );
+        })(),
+        output: {
+          write: (text: string) => {
+            out += text;
+            return true;
+          },
+        },
+        diagnostics: { write: () => true },
+      });
+      const reply = JSON.parse(out.trim()) as {
+        result: { isError?: boolean; content: Array<{ text: string }> };
+      };
+      return reply.result;
+    };
+    const base = await temporaryDirectory("test-watchdog-dedup-create");
+    const runDir = join(base, "run");
+    const candidate = { title: "Synthetic candidate", body: "## Summary\n\nEvidence.", labels: [] };
+    const bare = { REPO_DIR: base, STATE_DIR: base };
+
+    const missing = await call(candidate, bare);
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0]?.text).toContain("fingerprint");
+    const empty = await call({ ...candidate, fingerprint: "" }, bare);
+    expect(empty.isError).toBe(true);
+    expect(empty.content[0]?.text).toContain("fingerprint");
+    expect(created).toEqual([]);
+
+    // A valid call still files once and records the filing for its candidate.
+    const filed = await call({ ...candidate, fingerprint: "fp-1" }, {
+      ...bare,
+      DEVBOARD_DEDUP_RUN_DIR: runDir,
+    });
+    expect(filed.isError).toBeUndefined();
+    expect(created).toHaveLength(1);
+    const records = readFileSync(join(runDir, "dedup-records.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records).toEqual([
+      {
+        fingerprint: "fp-1",
+        action: "filed",
+        number: 601,
+        url: `${ISSUE_URL}/601`,
+        title: candidate.title,
+        at: expect.any(String),
+      },
+    ]);
+
+    // A filing record the cycle cannot append names the issue that exists now.
+    const unrecorded = await call({ ...candidate, fingerprint: "fp-2" }, bare);
+    expect(unrecorded.isError).toBe(true);
+    expect(unrecorded.content[0]?.text).toContain("#601");
+    expect(unrecorded.content[0]?.text).toContain(`${ISSUE_URL}/601`);
+    expect(created).toHaveLength(2);
+  });
+
   test("the four captured omp warnings file at most one issue", async () => {
     const base = await temporaryDirectory("test-watchdog-dedup-omp");
     const logsDir = join(base, "logs");
