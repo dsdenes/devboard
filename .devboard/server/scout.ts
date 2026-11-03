@@ -32,7 +32,7 @@ import {
 } from "../issues/scout/state";
 import { readActivity } from "../issues/state";
 import { hostHarnessDir, readHarnessVersion } from "./version";
-import { canonicalProcessPath } from "./state";
+import { canonicalProcessPath } from "./process";
 import { activityDelta } from "./activity";
 import { AgentForgeState } from "./agents/forge-state";
 import { createForgeIssueReader, type ForgeIssueReader } from "./agents/forge-reader";

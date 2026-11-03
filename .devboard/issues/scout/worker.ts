@@ -5,7 +5,7 @@ import {
   createWorkerProviderEnvironment,
   type WorkerProviderEnvironment,
 } from "../../server/providers/worker-environment";
-import { recordedChildAlive } from "../../server/state";
+import { recordedChildAlive } from "../../server/process";
 import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner, pidAlive, versionLockPath } from "../lock";
 import { originRepository } from "../repository";

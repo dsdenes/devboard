@@ -46,7 +46,7 @@ import {
   type IssuesState,
 } from "../issues/state";
 import { activityDelta } from "./activity";
-import { canonicalProcessPath } from "./state";
+import { canonicalProcessPath } from "./process";
 import { supervisedDetach } from "../watchdog/supervision";
 
 /**

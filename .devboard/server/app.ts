@@ -135,12 +135,11 @@ import {
   readStateFile,
   stateFile,
   STATE_VERSION,
-  terminateRecordedChildren,
   trimActivity,
   writeFileAtomically,
   writeStateFile,
-  type RecordedChild,
 } from "./state";
+import { terminateRecordedChildren, type RecordedChild } from "./process";
 import {
   findOpenEpics,
   normalizeEpics,

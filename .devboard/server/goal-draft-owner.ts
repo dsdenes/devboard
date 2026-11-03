@@ -33,7 +33,7 @@ import { pidAlive } from "../issues/lock";
 import { appendActivityLine, trimActivityLines } from "../issues/state";
 import { journalKey } from "./journal";
 import type { GoalDraftQuestion, GoalDraftRun, GoalDraftStatus } from "./goal-drafts";
-import { canonicalProcessPath, recordedChildAlive, type RecordedChild } from "./state";
+import { canonicalProcessPath, recordedChildAlive, type RecordedChild } from "./process";
 
 /** Envelope version of the owner state file. */
 export const GOAL_DRAFT_OWNER_VERSION = 1;

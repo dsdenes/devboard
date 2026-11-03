@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { IssuesBridge } from "../server/issues";
-import { recordedChildAlive } from "../server/state";
+import { recordedChildAlive } from "../server/process";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { writeCommand } from "../issues/control";
 import { claimIssue } from "../issues/claims";
