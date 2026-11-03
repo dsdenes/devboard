@@ -51,6 +51,7 @@ const MANAGED_SKILLS = [
   "devboard-restful-api-implementation",
   "devboard-single-responsibility-principle",
   "devboard-consistent-naming",
+  "devboard-architectural-layering",
 ] as const;
 const root = await makeRoot("verify-install");
 const startedHosts: string[] = [];
@@ -539,12 +540,14 @@ try {
   for (const line of doctor.stdout.trim().split("\n")) {
     assertTrue(line.startsWith("PASS "), `unexpected doctor line: ${line}`);
   }
-  assertTrue(
-    doctor.stdout
-      .split("\n")
-      .some((line) => line.startsWith("PASS skills:") && line.includes("devboard-ui-ux")),
-    "doctor reports the managed skills",
-  );
+  const skillLines = doctor.stdout.split("\n").filter((line) => line.startsWith("PASS skills:"));
+  assertTrue(skillLines.length === 1, `doctor did not print one PASS skills line:\n${doctor.stdout}`);
+  for (const name of MANAGED_SKILLS) {
+    assertTrue(
+      skillLines[0]?.includes(name) ?? false,
+      `doctor does not report ${name}:\n${skillLines[0]}`,
+    );
+  }
   step("doctor passes with the managed skills and the unmarked host skill");
 
   step("doctor failing on one differing skill byte");

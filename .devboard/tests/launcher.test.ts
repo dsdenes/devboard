@@ -108,6 +108,7 @@ describe("public package", () => {
       "devboard-restful-api-implementation",
       "devboard-single-responsibility-principle",
       "devboard-consistent-naming",
+      "devboard-architectural-layering",
     ]) {
       expect(present.has(`omp/skills/${name}/SKILL.md`)).toBe(true);
     }
@@ -136,6 +137,7 @@ describe("public package", () => {
     const skills = join(harnessRoot, "omp", "skills");
     const names = readdirSync(skills).filter((name) => name.startsWith("devboard-"));
     expect(names.sort()).toEqual([
+      "devboard-architectural-layering",
       "devboard-consistent-naming",
       "devboard-restful-api-implementation",
       "devboard-single-responsibility-principle",

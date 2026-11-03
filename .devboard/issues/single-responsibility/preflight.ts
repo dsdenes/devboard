@@ -1,5 +1,4 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { configuredGiteaToken, giteaBaseUrl } from "../../lib/forge";
 import {
@@ -10,7 +9,7 @@ import {
   type FetchLike,
 } from "../../lib/gitea";
 import { ghCommand } from "../../server/command";
-import { findOnPath, originForge, rootProblem } from "../repository";
+import { findOnPath, ompCommandPaths, originForge, rootProblem } from "../repository";
 import type { ForgeRemote } from "../../lib/forge";
 import {
   LABEL_COLOR,
@@ -66,12 +65,9 @@ export function singleResponsibilityCommandPaths(
   repoDir: string,
   environment: Record<string, string | undefined> = process.env,
 ): string[] {
-  const home = environment.HOME ?? homedir();
-  return [
-    join(resolve(repoDir), ".omp", "commands", "single-responsibility.md"),
-    join(home, ".omp", "commands", "single-responsibility.md"),
-    join(home, ".omp", "agent", "commands", "single-responsibility.md"),
-  ];
+  return ompCommandPaths(repoDir, environment).map((directory) =>
+    join(directory, "single-responsibility.md"),
+  );
 }
 
 export async function preflightSingleResponsibility(

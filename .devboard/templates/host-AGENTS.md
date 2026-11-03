@@ -202,11 +202,12 @@ hand-edit the installed `.omp/`.
 
 ## Skills
 
-The package ships four project-scoped skills, canonical under `.devboard/omp/skills/`:
+The package ships five project-scoped skills, canonical under `.devboard/omp/skills/`:
 `devboard-ui-ux`, `devboard-restful-api-implementation`,
-`devboard-single-responsibility-principle`, and `devboard-consistent-naming`. Every install,
-manual update, and automatic update copies them as real files into `<host>/.omp/skills/<name>/`,
-where a plain `omp` session at the host root discovers them at project scope.
+`devboard-single-responsibility-principle`, `devboard-consistent-naming`, and
+`devboard-architectural-layering`. Every install, manual update, and automatic update copies them
+as real files into `<host>/.omp/skills/<name>/`, where a plain `omp` session at the host root
+discovers them at project scope.
 
 Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
 Devboard Skills page renders that row as `Managed` and offers no delete control for it; only a
