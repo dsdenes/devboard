@@ -2,9 +2,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createApp } from "./app";
+import { GOAL_PROPOSALS_DIRECTORY, draftPathFromHref } from "../lib/goal-proposals";
 import {
-  GOAL_PROPOSALS_DIRECTORY,
   goalProposalBody,
   goalProposalName,
   normalizeGoalSlug,
@@ -121,17 +122,32 @@ async function drafts(root: string): Promise<string[]> {
   return (await readdir(directory)).filter((name) => name.endsWith(".md")).sort();
 }
 
-async function responsePath(response: Response): Promise<string> {
-  const body = (await response.json()) as unknown;
+/** The absolute URI the endpoint answers for a draft; throws on the old shape. */
+async function responseHref(response: Response): Promise<string> {
+  const body = (await response.json()) as {
+    path?: unknown;
+    links?: { draft?: { href?: unknown } };
+  } | null;
   if (
     typeof body !== "object" ||
     body === null ||
-    !("path" in body) ||
-    typeof body.path !== "string"
+    "path" in body ||
+    typeof body.links?.draft?.href !== "string"
   ) {
-    throw new Error("The endpoint returned no draft path.");
+    throw new Error("The endpoint returned no draft link.");
   }
-  return body.path;
+  return body.links.draft.href;
+}
+
+async function responsePath(response: Response): Promise<string> {
+  const path = draftPathFromHref(await responseHref(response));
+  if (path === null) throw new Error("The endpoint returned an unusable draft link.");
+  return path;
+}
+
+/** The absolute URI the server answers for one draft under `root`. */
+function draftHref(root: string, name: string): string {
+  return pathToFileURL(join(root, GOAL_PROPOSALS_DIRECTORY, name)).href;
 }
 
 describe("goal proposal drafts", () => {
@@ -143,9 +159,9 @@ describe("goal proposal drafts", () => {
       const response = await propose(url, proposal({ report }));
 
       expect(response.status).toBe(201);
-      expect(await response.json()).toEqual({
-        path: ".devboard/goal-proposals/the-start-button-is-clipped.md",
-      });
+      const href = await responseHref(response);
+      expect(new URL(href).protocol).toBe("file:");
+      expect(href).toBe(draftHref(root, "the-start-button-is-clipped.md"));
 
       const files = await drafts(root);
       expect(files).toEqual(["the-start-button-is-clipped.md"]);
@@ -237,9 +253,7 @@ describe("goal proposal drafts", () => {
 
       const second = await propose(url, { report });
       expect(second.status).toBe(201);
-      expect(await second.json()).toEqual({
-        path: ".devboard/goal-proposals/name-two-editors-2.md",
-      });
+      expect(await responseHref(second)).toBe(draftHref(root, "name-two-editors-2.md"));
       expect(await readFile(join(root, firstPath), "utf8")).toBe(firstText);
       expect(await drafts(root)).toEqual([
         "name-two-editors-2.md",
@@ -292,9 +306,9 @@ describe("goal proposal drafts", () => {
 
       const second = await propose(url, proposal());
       expect(second.status).toBe(201);
-      expect(await second.json()).toEqual({
-        path: ".devboard/goal-proposals/the-start-button-is-clipped-on-2.md",
-      });
+      expect(await responseHref(second)).toBe(
+        draftHref(root, "the-start-button-is-clipped-on-2.md"),
+      );
 
       expect(await drafts(root)).toEqual([
         "the-start-button-is-clipped-on-2.md",
@@ -320,13 +334,12 @@ describe("goal proposal drafts", () => {
       );
 
       expect(response.status).toBe(201);
-      const body = await responsePath(response);
-      expect(body.startsWith(`${GOAL_PROPOSALS_DIRECTORY}/`)).toBe(true);
-      expect(body).not.toContain("..");
-      expect(body).not.toContain("\\");
+      const href = await responseHref(response);
+      expect(href).not.toContain("..");
+      expect(href).not.toContain("\\");
       const files = await drafts(root);
       expect(files).toHaveLength(1);
-      expect(body).toBe(`${GOAL_PROPOSALS_DIRECTORY}/${files[0]!}`);
+      expect(href).toBe(draftHref(root, files[0]!));
       expect(existsSync(join(root, "outside.md"))).toBe(false);
     } finally {
       server.stop(true);
@@ -550,7 +563,7 @@ describe("goal proposal naming and body", () => {
     });
 
     const filename = `${"a".repeat(64)}.md`;
-    expect(written.path).toBe(`.devboard/goal-proposals/${filename}`);
+    expect(written.links.draft.href).toBe(draftHref(root, filename));
     expect(await readdir(join(root, GOAL_PROPOSALS_DIRECTORY))).toEqual([filename]);
   });
 
@@ -593,7 +606,7 @@ describe("goal proposal naming and body", () => {
       repoDir: root,
       slugger: async () => "start-button-visibility",
     });
-    expect(chosen.path).toBe(".devboard/goal-proposals/start-button-visibility.md");
+    expect(chosen.links.draft.href).toBe(draftHref(root, "start-button-visibility.md"));
 
     const failed = await writeGoalProposal(submission, {
       repoDir: root,
@@ -601,7 +614,9 @@ describe("goal proposal naming and body", () => {
         throw new Error("The naming agent did not answer in time.");
       },
     });
-    expect(failed.path).toBe(".devboard/goal-proposals/make-the-start-button-visible.md");
+    expect(failed.links.draft.href).toBe(
+      draftHref(root, "make-the-start-button-visible.md"),
+    );
   });
 
   test("names the draft with the ACP naming agent's slug", async () => {
@@ -614,9 +629,7 @@ describe("goal proposal naming and body", () => {
       const response = await propose(url, proposal());
 
       expect(response.status).toBe(201);
-      expect(await response.json()).toEqual({
-        path: ".devboard/goal-proposals/clipped-start-button.md",
-      });
+      expect(await responseHref(response)).toBe(draftHref(root, "clipped-start-button.md"));
       expect(await drafts(root)).toEqual(["clipped-start-button.md"]);
     } finally {
       server.stop(true);
@@ -696,9 +709,9 @@ describe("goal proposal naming and body", () => {
       const response = await propose(url, proposal());
 
       expect(response.status).toBe(201);
-      expect(await response.json()).toEqual({
-        path: ".devboard/goal-proposals/the-start-button-is-clipped-on.md",
-      });
+      expect(await responseHref(response)).toBe(
+        draftHref(root, "the-start-button-is-clipped-on.md"),
+      );
       expect(await drafts(root)).toEqual(["the-start-button-is-clipped-on.md"]);
     } finally {
       server.stop(true);

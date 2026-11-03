@@ -27,7 +27,7 @@ import {
   type Dirent,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { GOAL_PROPOSALS_DIRECTORY } from "./goal-proposal";
+import { GOAL_PROPOSALS_DIRECTORY } from "../lib/goal-proposals";
 import { pidAlive } from "../issues/lock";
 import {
   GOAL_DRAFT_INTERRUPTED,

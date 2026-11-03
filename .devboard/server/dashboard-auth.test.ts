@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createApp } from "./app";
-import { GOAL_PROPOSALS_DIRECTORY, goalProposalName } from "./goal-proposal";
+import { GOAL_PROPOSALS_DIRECTORY } from "../lib/goal-proposals";
+import { goalProposalName } from "./goal-proposal";
 import { testProviderService } from "./fixtures/test-providers";
 
 const TOKEN = "dashboard-test-token";

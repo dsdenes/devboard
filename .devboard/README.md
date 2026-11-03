@@ -3561,8 +3561,9 @@ a conversation is never resumed from storage.
 `Goal` turns the composer text into a raw proposed goal instead of an issue. With non-whitespace
 text it posts `report`, the Ask turns as `turns` when the panel has one, and the same captured
 element context to `POST /goal-proposals`; the server writes one Markdown draft under
-`<REPO_DIR>/.devboard/goal-proposals/` and answers
-`201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
+`<REPO_DIR>/.devboard/goal-proposals/` and answers `201` with the common hypertext control
+object `{ "links": { "draft": { "href": "file:///…/.devboard/goal-proposals/<file>.md" } } }`,
+carrying the draft's absolute URI. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
 The file name is chosen by one bounded naming turn: an ACP peer starts with
@@ -3580,8 +3581,8 @@ text verbatim, the `## Ask conversation` block when the panel has one, and the
 `## Captured UI context` block an issue report carries. It carries no notice line or other prose
 the operator did not write. A successful click closes the panel,
 stays in report selection mode with an empty composer, and shows the
-`Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
-with the server's error and leaves no draft. The drafts are ignored by git.
+`Goal proposed: <repository-relative path>` toast as plain text with no link; a failed write keeps
+the panel open with the server's error and leaves no draft. The drafts are ignored by git.
 
 Both `POST /feedback` and `POST /goal-proposals` accept an `Idempotency-Key` header. The
 server retains each key's result under `<STATE_DIR>/idempotency/` for 24 hours, so a retry with the
