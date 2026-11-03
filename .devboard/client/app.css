@@ -1731,7 +1731,9 @@ kbd {
   letter-spacing: -0.01em;
   line-height: 1.2;
   margin: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .discover-head__definition {
