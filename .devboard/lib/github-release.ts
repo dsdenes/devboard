@@ -58,13 +58,23 @@ export interface RepositoryGitHub {
   closingCommits(issueNumber: number): Promise<string[]>;
   /** The checkout's own commits whose landed subject ends with `(#<number>)`. */
   landedCommits(issueNumber: number): string[];
-  /** One unambiguous full commit, through the checkout or GitHub, or null. */
+  /**
+   * One unambiguous full commit, through the checkout or GitHub; null only
+   * when GitHub reports no such commit, never when the read itself failed.
+   */
   resolveCommit(short: string): Promise<string | null>;
   /** The published release tags whose history contains `commit`. */
   containingReleaseTags(commit: string, releases: GitHubRelease[]): Promise<string[]>;
 }
 
 const SHA = /^[0-9a-fA-F]{7,40}$/;
+
+/**
+ * The HTTP status `gh` names in the diagnostic of a failed request, when that
+ * status says the commit does not exist. Every other failure is distinct from
+ * an absent commit.
+ */
+const MISSING_COMMIT_STATUS = /\bHTTP\s*:?\s*\(?(?:404|422)\b/i;
 
 /**
  * The timeline's closing commit when GitHub reports one. The newest closing
@@ -148,6 +158,11 @@ export interface ClosingCommitClient {
    * exact landed commit outranks a forge that recorded no closing reference.
    */
   landedCommits?(issueNumber: number): string[];
+  /**
+   * The one full commit a candidate names. Null means the forge reports no
+   * such commit, so the candidate is skipped; a failed read throws, so the
+   * resolver reports it instead of inferring a release from the timeline.
+   */
   resolveCommit(short: string): Promise<string | null>;
   containingReleaseTags(commit: string, releases: GitHubRelease[]): Promise<string[]>;
 }
@@ -442,9 +457,20 @@ export function createRepositoryGitHub(options: RepositoryGitHubOptions): Reposi
         ["api", `repos/${repository}/commits/${short}`, "--jq", ".sha"],
         environment,
       );
-      if (result.code !== 0) return null;
+      if (result.code !== 0) {
+        // `gh` prints `<message> (HTTP <status>)`. A 404 or 422 means GitHub
+        // has no such commit, so the candidate is skipped and the next one is
+        // tried; every other failure — a rate limit, a 5xx, an expired
+        // credential — is a failed read. Reporting that as "no such commit"
+        // would let the release-timeline fallback persist a fabricated shipped
+        // version, so it is thrown and the resolver records the reason, the
+        // same way the Gitea client answers.
+        if (MISSING_COMMIT_STATUS.test(result.stderr)) return null;
+        throw new Error(firstLine(result.stderr));
+      }
       const sha = result.stdout.trim();
-      return isFullSha(sha) ? sha : null;
+      if (isFullSha(sha)) return sha;
+      throw new Error(`gh did not name a commit for ${short}`);
     },
 
     async containingReleaseTags(commit: string, releases: GitHubRelease[]): Promise<string[]> {
