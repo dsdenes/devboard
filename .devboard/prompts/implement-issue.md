@@ -68,17 +68,18 @@ context, but you never edit, comment on, close, or reopen another issue.
   .worktree/issue-<number> origin/main` places the task branch on the integration line the one
   task-start `git fetch origin` (see *Fetch budget*) named, so no rebase runs before the first
   edit and the worktree never fetches a second time. A rebase in this task belongs only to the
-  landing integration or a rejected push below, and each of those is entered from a
-  `git status --short --branch` marker (`[behind N]`, `[ahead N, behind M]`) or a rejected push,
-  never from the task start, never from re-verification, and never from re-checking state. Chain
-  nothing after one: no `git log`, no `git diff`, and no count. Confirm the result with the one
-  `git status --short --branch` sync-state read in *Landing*.
+  landing integration or a rejected push below: the landing rebase is the unconditional
+  `git rebase main` line of the canonical sequence in *Landing*, and the rejected-push rebase is
+  entered from a rejected `git push`. Neither is entered from the task start, from
+  re-verification, or from re-checking state. Chain nothing after one: no `git log`, no `git diff`,
+  and no count. Confirm the result with the one `git status --short --branch` sync-state read in
+  *Landing*.
 - A branch being rebased holds no unstaged change when that rebase starts, and those rebases are
   the landing integration and the rejected push below. `error: cannot rebase: You have unstaged
   changes.` is answered by committing the worktree's own work first — `git add -A`, then one
-  commit whose subject is a Conventional Commit describing the change — and then running the same
-  `git rebase origin/main` once. Never `git stash`, never leave the worktree stashed or
-  mid-rebase, and never answer the refusal with a `wip` subject the pre-push commit gate rejects.
+  commit whose subject is a Conventional Commit describing the change — and then running that same
+  rebase line once. Never `git stash`, never leave the worktree stashed or mid-rebase, and never
+  answer the refusal with a `wip` subject the pre-push commit gate rejects.
 - A `CONFLICT (content)` is part of the rebase that raised it, never a reason to abandon it: for
   each file the conflict line names, edit the conflicted hunks, `git add <file>`, and continue
   with `git rebase --continue`, repeating until the rebase completes. Never `git rebase --abort`
@@ -599,28 +600,34 @@ the commit is unrelated. When a ref looks missing, prove it absent with `git rev
 --quiet <ref>` first, then fetch `origin main` once under the fetch budget before concluding
 anything.
 
-Then land it with this one canonical sequence from the canonical checkout, on `main`, reusing the
-tip the task-start fetch named and never fetching again:
+Then land it with this one canonical sequence: the first two lines run in the canonical checkout on
+`main`, the third runs in the task worktree, and the last runs in the canonical checkout again;
+every line reuses the tip the task-start fetch named and never fetches again:
 
 ```sh
+# canonical checkout, on main
 git status --short --branch
 git merge --ff-only origin/main
+# task worktree
+git rebase main
+# canonical checkout, on main
 git merge --ff-only <task-branch>
 ```
 
 The status line decides whether the first merge may run: with no `[ahead N]` marker it
-fast-forwards `main` to the fetched tip, and the second merge adds the rebased task branch. An
-`[ahead N]` marker means the canonical checkout itself carries unpublished commits, so that
-fast-forward is forbidden: rebase `main` onto `origin/main`, rerun the checks the rebase
-invalidates, and read the line again before merging the task branch. After the first landing
-merge and before `git merge --ff-only <task-branch>`, rebase the task branch onto the canonical
-checkout's `main` — not `origin/main` — whenever the task branch lacks the current `main` tip,
-rerun the checks the rebase invalidates, then run the second merge. A canonical
-`## main...origin/main [ahead N]` line is a concurrent landing's unpublished commits, so the task
-branch must contain that tip for the second merge to fast-forward; `origin/main` cannot supply it
-and the fetch budget allows no second fetch. Run the sequence once per landing attempt: no `&&`
-chain between its lines, no `tail` pipe, and no `PIPESTATUS` probe. Never create a pull request or
-merge request.
+fast-forwards `main` to the fetched tip. An `[ahead N]` marker means the canonical checkout itself
+carries unpublished commits, so that fast-forward is forbidden: rebase `main` onto `origin/main`,
+rerun the checks the rebase invalidates, and read the line again before starting the sequence.
+
+The third line is unconditional and runs in the task worktree: it rebases the task branch onto the
+canonical checkout's `main` — not `origin/main` — which is a no-op when `main` is already
+contained and is required when a concurrent landing published into `main` after the task start,
+so the last merge always fast-forwards. Rerun the checks the rebase invalidates before that last
+line. A canonical `## main...origin/main [ahead N]` line is a concurrent landing's unpublished
+commits, so the task branch must contain that tip for the second merge to fast-forward;
+`origin/main` cannot supply it and the fetch budget allows no second fetch. Run the sequence once
+per landing attempt: no `&&` chain between its lines, no `tail` pipe, and no `PIPESTATUS` probe.
+Never create a pull request or merge request.
 
 Before pushing, read the behind state against the tip the task-start fetch named with this one
 pre-push probe, run in the canonical checkout and read as-is:
