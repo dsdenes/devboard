@@ -23,7 +23,7 @@ import {
   type PreflightResult,
 } from "../issues/preflight";
 import { DEADLINE_EXPIRED, withinDeadline } from "../lib/deadline";
-import { cachedRepository, topLevel } from "../issues/repository";
+import { cachedRepository } from "../issues/repository";
 import { hostHarnessDir, readHarnessVersion } from "./version";
 import { closedByRun } from "../issues/self-close";
 import { closeIssue as closeTrackerIssue, type CloseIssueRequest } from "./issue-close";
@@ -228,15 +228,14 @@ export class IssuesBridge {
   }
 
   /**
-   * The worker's published repository first, then the checkout's origin. A
-   * directory below the checkout root inherits its parent's origin from git,
-   * which would point the Open issues view at a different project, so only the
-   * checkout root itself is read.
+   * The worker's published repository first, then the checkout's origin. The
+   * origin read itself refuses a root below a checkout, which would otherwise
+   * inherit its parent's remote and point the Open issues view at a different
+   * project.
    */
   private currentRepository(): string | null {
     const state = this.currentState();
     if (state !== undefined && state.repo.length > 0) return state.repo;
-    if (topLevel(this.repoDir) !== resolve(this.repoDir)) return null;
     return this.repository();
   }
 
