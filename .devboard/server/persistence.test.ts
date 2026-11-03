@@ -2,7 +2,6 @@ import { pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
 import { agentPrompt } from "./acp";
@@ -40,7 +39,11 @@ const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "
 const PENDING_TWO = pendingRecord("0002-second.md", "Second decision", "Second.", "Choose the second.");
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "devboard-persistence-"));
+  // Inside the checkout, never the system temporary directory: the suite keeps
+  // every fixture under the repository root.
+  const base = join(import.meta.dir, "..", ".tmp", "persistence-tests");
+  await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "case-"));
   temporaryDirectories.push(directory);
   return directory;
 }

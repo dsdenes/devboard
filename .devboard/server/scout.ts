@@ -32,7 +32,7 @@ import {
 } from "../issues/scout/state";
 import { readActivity } from "../issues/state";
 import { hostHarnessDir, readHarnessVersion } from "./version";
-import { canonicalProcessPath } from "./state";
+import { canonicalProcessPath } from "./process";
 import { activityDelta } from "./activity";
 import { AgentForgeState } from "./agents/forge-state";
 import { createForgeIssueReader, type ForgeIssueReader } from "./agents/forge-reader";
@@ -649,7 +649,10 @@ export class ScoutBridge implements AgentAdapter {
     }
 
     this.starting = true;
-    this.startingSince = this.now();
+    // The publish proof starts at the spawn, not here: the preflight may
+    // legitimately run for its whole 20 s bound, and a stamp set now would
+    // expire the proof while no worker exists yet.
+    this.startingSince = null;
     this.startError = null;
     this.notice = null;
     try {
@@ -725,6 +728,9 @@ export class ScoutBridge implements AgentAdapter {
       this.startError = message;
       return { ok: false, message };
     }
+    // The 5 s publish proof counts from this spawn: nothing before it can be a
+    // missing worker state, only a slow preflight or environment read.
+    this.startingSince = this.now();
     const pid = this.spawnWorker(argv, {
       ...base,
       REPO_DIR: this.repoDir,

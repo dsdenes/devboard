@@ -4,7 +4,7 @@ import {
   type FetchLike,
   type GiteaTarget,
 } from "../../lib/gitea";
-import { ghCommand } from "../scout/preflight";
+import { ghCommand } from "../../server/command";
 import { SINGLE_RESPONSIBILITY_LABEL } from "./paths";
 
 /**
@@ -51,19 +51,6 @@ function firstLine(text: string): string {
       .map((line) => line.trim())
       .find((line) => line.length > 0) ?? "no diagnostic"
   );
-}
-
-const RATE_LIMIT_PATTERNS = [
-  "rate limit exceeded",
-  "secondary rate limit",
-  "abuse detection",
-  "too many requests",
-  "http 429",
-];
-
-export function isForgeRateLimited(text: string): boolean {
-  const message = text.toLowerCase();
-  return RATE_LIMIT_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
 function parseJsonArray(text: string): unknown[] | undefined {

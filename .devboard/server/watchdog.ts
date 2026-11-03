@@ -3,7 +3,7 @@ import { supervisedDetach } from "../watchdog/supervision";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { liveLockOwners, type LockOwner } from "../issues/lock";
-import { ghCommand } from "../issues/scout/preflight";
+import { ghCommand } from "./command";
 import { configuredGiteaToken, giteaBaseUrl } from "../lib/forge";
 import { giteaRepository } from "../lib/gitea";
 import { findOnPath, originForge, rootProblem } from "../issues/repository";

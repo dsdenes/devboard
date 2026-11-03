@@ -1,5 +1,6 @@
 import { git } from "../issues/repository";
-import { isFullSha, isSha, type GitHubRelease } from "./github-release";
+import { isFullSha, isSha } from "./commit";
+import type { PublishedRelease } from "./release-resolution";
 import { landedCommits, localReleaseContainment } from "./release-containment";
 import {
   GiteaError,
@@ -28,7 +29,7 @@ export interface GiteaVersionClient {
   /** One unambiguous full commit, through the checkout or the forge, or null. */
   resolveCommit(short: string): Promise<string | null>;
   /** The published release tags whose history contains `commit`. */
-  containingReleaseTags(commit: string, releases: GitHubRelease[]): Promise<string[]>;
+  containingReleaseTags(commit: string, releases: PublishedRelease[]): Promise<string[]>;
 }
 
 /**
@@ -97,7 +98,7 @@ export function createGiteaVersionClient(
 
   async function containingReleaseTags(
     commit: string,
-    releases: GitHubRelease[],
+    releases: PublishedRelease[],
   ): Promise<string[]> {
     const local = localReleaseContainment(repoDir, commit, releases);
     if (local.pending.length === 0) return local.contained;

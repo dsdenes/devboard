@@ -43,11 +43,14 @@ import {
 import {
   DetachedPeer,
   beginDetachedHandoff,
+  detachedRunDirectory,
   detachedRunLive,
   endDetachedHandoff,
+  readDetachedRunState,
   writeDetachedLease,
 } from "./detached-run";
 import type { PeerConnection } from "./peer";
+import { pidAlive } from "../issues/lock";
 import { ASK_TURN_TIMEOUT_MS, AskController } from "./ask";
 import {
   FeedbackDeliveryError,
@@ -57,6 +60,7 @@ import {
 } from "./feedback";
 import { FlowController, type CheckoutBlocker, type FlowOptions } from "./flow";
 import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints.ts";
+import { GOAL_PROPOSALS_DIRECTORY } from "../lib/goal-proposals";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { suggestGoalSlug } from "./goal-slug";
 import { IdempotencyStore, parseIdempotencyKey } from "./idempotency";
@@ -138,12 +142,11 @@ import {
   readStateFile,
   stateFile,
   STATE_VERSION,
-  terminateRecordedChildren,
   trimActivity,
   writeFileAtomically,
   writeStateFile,
-  type RecordedChild,
 } from "./state";
+import { terminateRecordedChildren, type RecordedChild } from "./process";
 import {
   findOpenEpics,
   normalizeEpics,
@@ -206,6 +209,15 @@ export interface AppOptions {
    * tokenless; a test may omit it to construct the tokenless surface.
    */
   token?: string;
+  /**
+   * The document credential the launcher prints with the address. A request
+   * that presents it is served the page, so the operator's browser receives
+   * the HttpOnly cookie the mutating endpoints and the socket upgrade require;
+   * the value never admits those endpoints itself. `index.ts` always supplies
+   * one, and a test may omit it, in which case only the token opens the
+   * document.
+   */
+  bootstrap?: string;
   port: number;
   repoDir?: string;
   goalFile?: string;
@@ -586,6 +598,11 @@ const RESET_PUSH_ENV = {
 };
 /** Wall-clock bound for one git invocation the dashboard spawns. */
 const GIT_TIMEOUT_MS = 60_000;
+/**
+ * Longest the implementation reset waits for a stopped Discover agent to exit
+ * before it removes the staging directory anyway.
+ */
+const PEER_EXIT_WAIT_MS = 10_000;
 /** Largest accepted feedback body, before JSON parsing. */
 const MAX_FEEDBACK_BYTES = 64_000;
 /** Default wall-clock bound for one issue creation. */
@@ -2189,6 +2206,19 @@ function requestRefusal(
   }
 }
 
+/**
+ * The Problem answer for a refused request. A Host this listener does not
+ * serve is a misdirected request, not an authorization failure.
+ */
+function refusalResponse(
+  request: Request,
+  refusal: Exclude<RequestRefusal, null>,
+  crossOriginDetail: string,
+): Response {
+  if (refusal === "origin") return problemResponse(request, 403, crossOriginDetail);
+  return problemResponse(request, 421, "The request host is not served by this dashboard.");
+}
+
 /** The reason phrase each status this server reports as a failure carries. */
 const PROBLEM_TITLES: Readonly<Record<number, string>> = {
   400: "Bad Request",
@@ -2197,6 +2227,7 @@ const PROBLEM_TITLES: Readonly<Record<number, string>> = {
   404: "Not Found",
   405: "Method Not Allowed",
   413: "Content Too Large",
+  421: "Misdirected Request",
   426: "Upgrade Required",
   500: "Internal Server Error",
   502: "Bad Gateway",
@@ -2415,13 +2446,7 @@ async function readMutationBody(
   const refusal = requestRefusal(request, url, allowedHostnames);
   if (refusal !== null) {
     return {
-      response: problemResponse(
-        request,
-        403,
-        refusal === "host"
-          ? "The request host is not served by this dashboard."
-          : "Cross-origin feedback is refused.",
-      ),
+      response: refusalResponse(request, refusal, "Cross-origin feedback is refused."),
     };
   }
 
@@ -2465,6 +2490,9 @@ export function createApp(options: AppOptions) {
   // Empty means this construction has no credential to compare, which only a
   // test uses: `index.ts` always resolves the token a running dashboard keeps.
   const dashboardToken = options.token?.trim() ?? "";
+  // Empty means this construction has no document handshake, which only a test
+  // uses: `index.ts` always resolves the value its launcher printed.
+  const bootstrapCredential = options.bootstrap?.trim() ?? "";
   const adrDir = resolve(options.adrDir);
   const repoDir = options.repoDir ?? dirname(adrDir);
   const project = projectLabel(repoDir);
@@ -2680,7 +2708,7 @@ export function createApp(options: AppOptions) {
   let remoteTarget: RemoteRepository | undefined;
   /** The run's checkout: a clone that never outlives the run that made it. */
   let remoteCheckout: { runId: string; dir: string; target: RemoteRepository } | null = null;
-  let discoverCloning: { url: string; target: RemoteRepository } | null = null;
+  let discoverCloning: { url: string; target: RemoteRepository; staging: string } | null = null;
   /**
    * True between a finished clone and the run that takes its checkout. The
    * gap crosses an await, so the checkout is owned even though no run exists.
@@ -3971,7 +3999,8 @@ export function createApp(options: AppOptions) {
     }
 
     // The clone state leaves before the child spawns, so every client sees it.
-    discoverCloning = { url: target.url, target };
+    const cloning = { url: target.url, target, staging };
+    discoverCloning = cloning;
     journal.write("lifecycle", "discover-remote-clone");
     broadcastDiscoverState();
 
@@ -3990,7 +4019,7 @@ export function createApp(options: AppOptions) {
     }
 
     const cloneFailed = (message: string): false => {
-      discoverCloning = null;
+      if (discoverCloning === cloning) discoverCloning = null;
       try {
         rmSync(staging, { recursive: true, force: true });
       } catch {
@@ -4001,6 +4030,18 @@ export function createApp(options: AppOptions) {
       broadcastDiscoverState();
       return false;
     };
+
+    // A stopped dashboard released this checkout and its claim while the clone
+    // ran. The clone must never claim or adopt one after that stop.
+    if (discoverCloning !== cloning) {
+      try {
+        rmSync(staging, { recursive: true, force: true });
+      } catch {
+        // The stop already removed it.
+      }
+      releaseScratchEntry(remoteRoot, basename(staging));
+      return false;
+    }
 
     if (result.timedOut) {
       return cloneFailed(`The repository clone timed out after ${requestTimeoutSeconds} seconds.`);
@@ -7481,12 +7522,39 @@ export function createApp(options: AppOptions) {
   }
 
   /**
+   * Resolves once the stopped Discover run's agent process is gone. A detached
+   * peer stops its agent through the owner's control directory, so its pid
+   * outlives `close()`; a last staged write would otherwise recreate the
+   * staging directory after the reset removed it.
+   */
+  async function waitForPeerExit(
+    peer: PeerConnection | undefined,
+    run: DiscoverRun | undefined,
+  ): Promise<void> {
+    if (peer === undefined || run === undefined) return;
+    const directory = detachedRunDirectory(stateDir, repoDir, "discover", run.runId);
+    const deadline = Date.now() + PEER_EXIT_WAIT_MS;
+    const gone = (): boolean => {
+      const pid = peer.pid;
+      if (pid !== undefined && pidAlive(pid)) return false;
+      const state = readDetachedRunState(directory);
+      if (state === undefined) return true;
+      if (state.peer === null) return state.status !== "starting" && state.status !== "running";
+      return !pidAlive(state.peer.pid);
+    };
+    while (Date.now() < deadline) {
+      if (gone()) return;
+      await Bun.sleep(25);
+    }
+  }
+
+  /**
    * Stops every operation that can still touch the checkout, so the reset
    * owns the working tree. In-flight starts are invalidated through their
    * request counters; an in-flight skills preparation settles before the
    * caller deletes anything.
    */
-  function stopActiveWorkForReset() {
+  async function stopActiveWorkForReset() {
     discoverRequest += 1;
     const discovering = discoverRun;
     discoverAllActive = false;
@@ -7563,6 +7631,18 @@ export function createApp(options: AppOptions) {
         });
       }
       broadcast({ type: "skillsPreparationStopped", completed: false });
+    }
+
+    if (discovering !== undefined) {
+      // The owner stops the real agent asynchronously; its last staged write
+      // would recreate the staging directory removed above. The directory is
+      // gone only once the agent itself is.
+      await waitForPeerExit(discovering.peer, discovering);
+      try {
+        removeStaging(discovering.cwd, discovering.runId);
+      } catch {
+        // Reset preserves `.omp`, so a leftover staging directory is harmless.
+      }
     }
   }
 
@@ -7656,7 +7736,7 @@ export function createApp(options: AppOptions) {
 
       // The checkout is confirmed resettable: take it over before deleting so
       // an active peer cannot race the deletion, staging, or commit.
-      stopActiveWorkForReset();
+      await stopActiveWorkForReset();
       const settling = skillsPreparationSettled;
       if (settling !== undefined) await settling;
 
@@ -7784,13 +7864,35 @@ export function createApp(options: AppOptions) {
   /**
    * The 401 for a request that presents no valid dashboard credential, or null
    * when the endpoint may run. The tokenless construction is a test seam; a
-   * running dashboard always has one, so its mutating endpoints and its socket
-   * upgrade are never reachable without it.
+   * running dashboard always has one, so its readiness probe, its mutating
+   * endpoints, and its socket upgrade are never reachable without it.
    */
   function credentialRefusal(request: Request, cookieName: string): Response | null {
     if (dashboardToken.length === 0) return null;
     if (credentialMatches(presentedCredential(request, cookieName), dashboardToken)) return null;
     return problemResponse(request, 401, "This endpoint requires the dashboard token.", {
+      "WWW-Authenticate": "Bearer",
+    });
+  }
+
+  /**
+   * The 401 for a document request that may not carry the page's credential,
+   * or null when it may. A request that presents the dashboard token, or the
+   * bootstrap value the launcher printed with the address, is admitted; the
+   * static fallback answers every other document request with this refusal, so
+   * the token guarding the mutating endpoints and the socket upgrade is never
+   * issued to a caller that presented no credential.
+   */
+  function documentRefusal(request: Request, url: URL, cookieName: string): Response | null {
+    if (dashboardToken.length === 0) return null;
+    if (credentialMatches(presentedCredential(request, cookieName), dashboardToken)) return null;
+    if (
+      bootstrapCredential.length > 0 &&
+      credentialMatches(url.searchParams.get("bootstrap"), bootstrapCredential)
+    ) {
+      return null;
+    }
+    return problemResponse(request, 401, "This page requires the dashboard credential.", {
       "WWW-Authenticate": "Bearer",
     });
   }
@@ -7906,19 +8008,88 @@ export function createApp(options: AppOptions) {
     try {
       const key = parseIdempotencyKey(request.headers.get("idempotency-key"));
       const submission = parseGoalProposalSubmission(guarded.value);
-      const proposal = await idempotency.run("goal-proposal", key, () =>
+      const filename = await idempotency.run("goal-proposal", key, () =>
         writeGoalProposal(submission, { repoDir, slugger: goalSlug }),
       );
       goalDrafts.publishDrafts();
-      return jsonResponse(request, proposal, {
-        status: 201,
-        headers: { Location: proposal.links.draft.href },
-      });
+      // The link names the host that answered this request, so any client can
+      // dereference the draft it just created; a `file:` URI would point at the
+      // server's own disk.
+      const href = new URL(
+        `${GOAL_PROPOSALS_ENDPOINT}/${encodeURIComponent(filename)}`,
+        url.origin,
+      ).href;
+      return jsonResponse(
+        request,
+        { links: { draft: { href } } },
+        { status: 201, headers: { Location: href } },
+      );
     } catch (error) {
       if (error instanceof FeedbackRequestError) {
         return problemResponse(request, error.status, error.message);
       }
       return internalErrorResponse(request, "POST /goal-proposals", error, flowId);
+    }
+  }
+
+  /**
+   * Serves one written draft as Markdown on the dashboard's own host, the
+   * resource `POST /goal-proposals` links to. Only a `.md` file directly under
+   * the proposals directory is a draft: a name that carries a separator, an
+   * empty name, or a path outside the directory is absent.
+   */
+  async function handleGoalProposalDraftRequest(
+    request: Request,
+    pathname: string,
+    flowId: string | null,
+  ): Promise<Response> {
+    const directory = join(repoDir, GOAL_PROPOSALS_DIRECTORY);
+    const name = pathname.slice(GOAL_PROPOSALS_ENDPOINT.length + 1);
+    if (name.length === 0 || name.includes("/") || !name.endsWith(".md")) {
+      return problemResponse(request, 404, "The requested draft was not found.");
+    }
+    const filePath = join(directory, name);
+    if (!filePath.startsWith(directory + sep)) {
+      return problemResponse(request, 404, "The requested draft was not found.");
+    }
+
+    try {
+      const file = Bun.file(filePath);
+      if (!(await file.exists())) {
+        return problemResponse(request, 404, "The requested draft was not found.");
+      }
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) {
+        return problemResponse(request, 404, "The requested draft was not found.");
+      }
+
+      // A method this route cannot serve is refused only for a draft that
+      // exists: an unknown name is a 404 on every method.
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return problemResponse(request, 405, "This path serves GET and HEAD only.", {
+          Allow: "GET, HEAD",
+        });
+      }
+
+      // The body differs by Accept-Encoding, so a shared cache must key on it:
+      // a draft has no content hash in its name, so both representations of the
+      // same URL stay revalidated. The identity Markdown stays available for a
+      // request that does not accept gzip.
+      const headers: Record<string, string> = {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Cache-Control": "no-store",
+        Vary: "Accept-Encoding",
+      };
+      // A HEAD response keeps the negotiated headers without paying for a body
+      // it never carries.
+      const head = request.method === "HEAD";
+      if (!acceptsGzip(request.headers.get("accept-encoding"))) {
+        return new Response(head ? null : file, { headers });
+      }
+      headers["Content-Encoding"] = "gzip";
+      return new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers });
+    } catch (error) {
+      return internalErrorResponse(request, "GET goal draft", error, flowId);
     }
   }
 
@@ -7941,7 +8112,16 @@ export function createApp(options: AppOptions) {
       const reply = (answer: Response | undefined): Response | undefined =>
         answer === undefined || flowId === null ? answer : echoFlowId(answer, flowId);
 
-      const url = new URL(request.url);
+      let url: URL | null = null;
+      try {
+        url = new URL(request.url);
+      } catch {
+        // Bun leaves `request.url` relative when the Host header names no host,
+        // so the request has neither an origin to compare nor a path to route.
+      }
+      if (url === null) {
+        return problemResponse(request, 400, "The request carries no valid Host header.");
+      }
       // Cookies ignore ports, so each listener reads only its own page's one.
       const cookieName = `${DASHBOARD_COOKIE}_${server.port}`;
 
@@ -7952,8 +8132,13 @@ export function createApp(options: AppOptions) {
       }
 
       // Readiness for the launcher that owns this process: the pid proves that
-      // this dashboard, and not another server on the port, answered.
+      // this dashboard, and not another server on the port, answered. The
+      // launcher passes this process its credential and presents it on the
+      // probe, so a stranger on the port learns neither the pid nor that a
+      // dashboard runs here.
       if (url.pathname === "/ready") {
+        const denied = credentialRefusal(request, cookieName);
+        if (denied !== null) return reply(denied);
         if (request.method !== "GET" && request.method !== "HEAD") {
           return reply(
             problemResponse(request, 405, "This path serves GET and HEAD only.", {
@@ -7992,13 +8177,7 @@ export function createApp(options: AppOptions) {
         const refusal = requestRefusal(request, url, allowedHostnames);
         if (refusal !== null) {
           return reply(
-            problemResponse(
-              request,
-              403,
-              refusal === "host"
-                ? "The request host is not served by this dashboard."
-                : "Cross-origin WebSocket upgrades are refused.",
-            ),
+            refusalResponse(request, refusal, "Cross-origin WebSocket upgrades are refused."),
           );
         }
         const denied = credentialRefusal(request, cookieName);
@@ -8039,9 +8218,26 @@ export function createApp(options: AppOptions) {
         );
       }
 
+      // One written draft, served where the POST above links to it. The route
+      // precedes the static fallback so a draft name never resolves against the
+      // built client bundle.
+      if (pathname.startsWith(`${GOAL_PROPOSALS_ENDPOINT}/`)) {
+        const denied = credentialRefusal(request, cookieName);
+        if (denied !== null) return reply(denied);
+        return reply(await handleGoalProposalDraftRequest(request, pathname, flowId));
+      }
+
       const relative = staticRelativePath(url.pathname, pathname);
       if (relative === null) {
         return reply(problemResponse(request, 404, "The requested file was not found."));
+      }
+
+      // The document carries the page's credential, so only a request that
+      // presents it, or the launcher's bootstrap handshake, is served one.
+      // Every other file is inert and needs no credential.
+      if (/\.html?$/i.test(relative)) {
+        const refused = documentRefusal(request, url, cookieName);
+        if (refused !== null) return reply(refused);
       }
 
       // A filesystem failure while serving a static file answers like every
@@ -8088,15 +8284,20 @@ export function createApp(options: AppOptions) {
         // The document carries the page's credential; every other asset is inert.
         attachDashboardCookie(headers, relative, cookieName);
         const head = request.method === "HEAD";
+        // A file answer is not correlated with the call that asked for it: the
+        // body and every header are decided by the path and Accept-Encoding, so
+        // a `public, max-age=31536000, immutable` asset is one shared cache
+        // entry for every client. An echoed `X-Flow-ID` would let a shared
+        // cache replay one client's flow id to another, and listing it in
+        // `Vary` instead would make every hashed asset uncacheable for any
+        // client that sends one. So these answers bypass `reply`.
         if (!acceptsGzip(request.headers.get("accept-encoding"))) {
-          return reply(new Response(head ? null : file, { headers }));
+          return new Response(head ? null : file, { headers });
         }
         headers["Content-Encoding"] = "gzip";
         // A HEAD response keeps the negotiated headers without paying for a body
         // it never carries.
-        return reply(
-          new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers }),
-        );
+        return new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers });
       } catch (error) {
         return reply(internalErrorResponse(request, "GET static", error, flowId));
       }
@@ -8646,6 +8847,19 @@ export function createApp(options: AppOptions) {
       } catch {
         // A staging directory left behind is removed by the replacement.
       }
+    }
+    // A clone still running when the dashboard stops owns a checkout and a
+    // claim nothing will take over; release both now and make its continuation
+    // see that it lost the clone.
+    const cloning = discoverCloning;
+    discoverCloning = null;
+    if (cloning !== null) {
+      try {
+        rmSync(cloning.staging, { recursive: true, force: true });
+      } catch {
+        // The next start removes a staging directory that cannot be removed.
+      }
+      releaseScratchEntry(remoteRoot, basename(cloning.staging));
     }
     // A stopped dashboard never leaves its checkout for the next start.
     clearRemoteCheckout();

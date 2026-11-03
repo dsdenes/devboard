@@ -11,6 +11,8 @@ import { snapshotRoot } from "./static-snapshot";
  */
 
 const SERVER = join(import.meta.dir, "index.ts");
+/** The dashboard refuses a document without this credential; the test supplies it. */
+const TOKEN = "fixture-snapshot-token-0001";
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
 const temporaryDirectories: string[] = [];
 
@@ -80,6 +82,7 @@ async function startProcess(fixture: Fixture): Promise<RunningServer> {
       STATE_DIR: fixture.stateDir,
       DEVBOARD_RELEASE_DIR: fixture.releases,
       DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+      DEVBOARD_DASHBOARD_TOKEN: TOKEN,
     },
     stdin: "ignore",
     stdout: "pipe",
@@ -92,7 +95,7 @@ async function startProcess(fixture: Fixture): Promise<RunningServer> {
   const deadline = Date.now() + 20_000;
   for (;;) {
     try {
-      const response = await fetch(`${url}/`);
+      const response = await fetch(`${url}/`, { headers: { authorization: `Bearer ${TOKEN}` } });
       if (response.ok) {
         await response.text();
         return { child, url };
@@ -124,7 +127,9 @@ async function stopProcess(server: RunningServer): Promise<void> {
 }
 
 async function body(server: RunningServer, path: string): Promise<string> {
-  return (await fetch(`${server.url}${path}`)).text();
+  return (
+    await fetch(`${server.url}${path}`, { headers: { authorization: `Bearer ${TOKEN}` } })
+  ).text();
 }
 
 test("a running dashboard serves its started bundle until the process restarts", async () => {

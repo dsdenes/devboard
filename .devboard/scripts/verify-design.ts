@@ -22,7 +22,16 @@ import {
 } from "node:fs";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { assertTrue, freePort, harnessRoot, makeRoot, run, waitFor } from "./verification";
+import {
+  assertTrue,
+  VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
+  freePort,
+  harnessRoot,
+  makeRoot,
+  run,
+  waitFor,
+} from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 import { DesignBridge } from "../server/design";
 import { agentRegistry } from "../server/agents/registry";
@@ -653,7 +662,8 @@ try {
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(2000),
         });
         return response.ok ? true : undefined;
@@ -680,7 +690,7 @@ try {
       "--window-size=1440,900",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
-      `http://127.0.0.1:${port}/`,
+      dashboardPageUrl(port),
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );

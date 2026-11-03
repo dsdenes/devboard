@@ -25,6 +25,8 @@ import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   assertTrue,
+  VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
   dashboardSocket,
   freePort,
   harnessRoot,
@@ -563,7 +565,8 @@ try {
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(2000),
         });
         return response.ok ? true : undefined;
@@ -590,7 +593,7 @@ try {
       "--window-size=1440,900",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
-      `http://127.0.0.1:${port}/`,
+      dashboardPageUrl(port),
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );

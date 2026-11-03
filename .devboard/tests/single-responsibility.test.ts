@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -23,6 +23,7 @@ import {
   requestPath,
   settingsPath,
   versionedControlDirectory,
+  versionedStatePath,
 } from "../issues/single-responsibility/paths";
 import {
   capacityFor,
@@ -388,6 +389,7 @@ function workerFor(options: {
   manual?: boolean;
   tickMs?: number;
   onRequest?: (request: Record<string, unknown>, directory: string) => void;
+  connect?: (options: IssuesPeerOptions) => AcpPeer;
 }): SingleResponsibilityWorker {
   return new SingleResponsibilityWorker({
     repoDir: options.repo,
@@ -399,7 +401,7 @@ function workerFor(options: {
     now: options.now ?? (() => new Date("2026-01-01T12:00:00Z")),
     harnessVersion: "test",
     github: options.forge,
-    connect: peerFor(options.forge, options.onRequest),
+    connect: options.connect ?? peerFor(options.forge, options.onRequest),
   });
 }
 
@@ -579,6 +581,101 @@ describe("single-responsibility worker", () => {
     await worker.tickNow();
     expect(readdirSync(cyclesDirectory(repo)).length).toBe(1);
     await worker.stop();
+  });
+
+  test("the caps count a labelled issue whose proof fails, and the read records it", async () => {
+    const silentPeer = (): AcpPeer => ({
+      pid: undefined,
+      argv: [],
+      async run(): Promise<unknown> {
+        return {};
+      },
+      async prompt(): Promise<unknown> {
+        return {};
+      },
+      answer(): boolean {
+        return true;
+      },
+      close(): void {},
+    });
+    const filing = (repo: string, drifted: boolean): SingleResponsibilityForgeIssue => {
+      const body = bodyFor(repo, {
+        category: "mixed-responsibilities",
+        title: "Mixed responsibilities",
+        path: "src/handler.ts",
+        line: 1,
+      });
+      return {
+        number: 1,
+        title: "Split the fixture handler",
+        url: "https://github.com/acme/fixture/issues/1",
+        state: "open",
+        createdAt: new Date().toISOString(),
+        body: drifted
+          ? body.replace("> export const handle = 1;", "> export const absent = 0;")
+          : body,
+        labels: [SINGLE_RESPONSIBILITY_LABEL],
+      };
+    };
+    const setup = async (state: "none" | "proven" | "drifted") => {
+      const root = await temporaryRoot(`capacity-${state}`);
+      const repo = join(root, "repo");
+      repositoryFiles(repo);
+      const stateDir = join(repo, ".devboard", ".tmp", "state");
+      mkdirSync(stateDir, { recursive: true });
+      const forge = new FakeForge();
+      if (state !== "none") forge.issues.push(filing(repo, state === "drifted"));
+      writeSettings(settingsPath(stateDir, repo), {
+        maxPerHour: 10,
+        maxPending: 1,
+        intervalMinutes: 60,
+      });
+      const worker = workerFor({ repo, stateDir, forge, connect: () => silentPeer() });
+      expect(existsSync(versionedStatePath(stateDir, repo, "test"))).toBe(false);
+      expect(worker.start("acme/fixture")).toBe(true);
+      return { repo, forge, worker };
+    };
+    const roomAfterOneRead = async (state: "none" | "proven" | "drifted") => {
+      const context = await setup(state);
+      await context.worker.refresh();
+      await context.worker.beginCycle();
+      await context.worker.waitForCycle();
+      const cycleIds = readdirSync(cyclesDirectory(context.repo)).sort();
+      const request = JSON.parse(
+        readFileSync(requestPath(join(cyclesDirectory(context.repo), cycleIds.at(-1)!)), "utf8"),
+      ) as Record<string, unknown>;
+      return { ...context, request };
+    };
+
+    const none = await roomAfterOneRead("none");
+    expect(none.request.issueRoom).toBe(1);
+    expect(none.worker.currentState.issues).toEqual([]);
+    await none.worker.stop();
+
+    const proven = await roomAfterOneRead("proven");
+    expect(proven.request.issueRoom).toBe(0);
+    expect(proven.worker.currentState.issues.map((row) => row.number)).toEqual([1]);
+    await proven.worker.stop();
+
+    const drifted = await roomAfterOneRead("drifted");
+    expect(drifted.request.issueRoom).toBe(0);
+    expect(drifted.worker.currentState.issues).toEqual([]);
+    await drifted.worker.stop();
+
+    // The periodic read appends the rejection to the newest cycle's activity.
+    const late = await setup("none");
+    await late.worker.refresh();
+    await late.worker.beginCycle();
+    await late.worker.waitForCycle();
+    const [cycleId] = readdirSync(cyclesDirectory(late.repo)).sort();
+    const activityPath = join(cyclesDirectory(late.repo), cycleId!, "activity.json");
+    expect(readFileSync(activityPath, "utf8")).not.toContain("verification failure");
+    late.forge.issues.push(filing(late.repo, true));
+    await late.worker.refresh();
+    expect(readFileSync(activityPath, "utf8")).toContain(
+      "verification failure: #1 “Split the fixture handler”",
+    );
+    await late.worker.stop();
   });
 
   test("a cycle leaves git status and HEAD unchanged", async () => {

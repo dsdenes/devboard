@@ -8,6 +8,7 @@ import { goalProposalName } from "./goal-proposal";
 import { testProviderService } from "./fixtures/test-providers";
 
 const TOKEN = "dashboard-test-token";
+const BOOTSTRAP = "dashboard-test-bootstrap";
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
 
@@ -57,6 +58,7 @@ async function startServer() {
     stateDir: join(root, "state"),
     providers: testProviderService(join(root, "state")),
     token: TOKEN,
+    bootstrap: BOOTSTRAP,
     goalSlug: async (report: string) => goalProposalName(report),
     feedback: {
       baseUrl: "https://gitea.example",
@@ -211,6 +213,34 @@ describe("dashboard credential", () => {
     }
   });
 
+  test("serves a created draft only with the dashboard credential", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const created = await submit(url, "/goal-proposals", proposal(), {
+        authorization: `Bearer ${TOKEN}`,
+      });
+      expect(created.status).toBe(201);
+      const location = created.headers.get("location")!;
+
+      const anonymous = await fetch(location);
+      expect(anonymous.status).toBe(401);
+      expect(anonymous.headers.get("content-type")).toBe("application/problem+json");
+      expect(anonymous.headers.get("www-authenticate")).toBe("Bearer");
+
+      const authenticated = await fetch(location, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      expect(authenticated.status).toBe(200);
+      expect(authenticated.headers.get("content-type")).toBe(
+        "text/markdown; charset=utf-8",
+      );
+      expect((await authenticated.text()).startsWith("# Proposed goal: ")).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("refuses the socket upgrade before it runs", async () => {
     const { server, url } = await startServer();
 
@@ -224,11 +254,39 @@ describe("dashboard credential", () => {
     }
   });
 
-  test("answers readiness without a credential", async () => {
+  test("refuses readiness without the dashboard token and never reports the pid", async () => {
     const { server, url } = await startServer();
 
     try {
       const response = await fetch(`http://${url}/ready`);
+
+      expect(response.status).toBe(401);
+      expect(response.headers.get("www-authenticate")).toBe("Bearer");
+      expect(response.headers.get("content-type")).toBe("application/problem+json");
+      expect(await response.text()).not.toContain("pid");
+
+      const head = await fetch(`http://${url}/ready`, { method: "HEAD" });
+      expect(head.status).toBe(401);
+      expect(head.headers.get("www-authenticate")).toBe("Bearer");
+      expect(await head.text()).toBe("");
+
+      const foreign = await fetch(`http://${url}/ready`, {
+        headers: { authorization: "Bearer another-token" },
+      });
+      expect(foreign.status).toBe(401);
+      expect(await foreign.text()).not.toContain("pid");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers readiness with the dashboard token", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(`http://${url}/ready`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
 
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ pid: process.pid });
@@ -237,22 +295,79 @@ describe("dashboard credential", () => {
     }
   });
 
-  test("hands the page an HttpOnly same-site cookie the browser sends back", async () => {
+  test("refuses an anonymous document without handing it the cookie", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(`http://${url}/`);
+
+      expect(response.status).toBe(401);
+      expect(response.headers.get("content-type")).toBe("application/problem+json");
+      expect(response.headers.get("www-authenticate")).toBe("Bearer");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(await response.json()).toEqual({
+        type: "about:blank",
+        title: "Unauthorized",
+        status: 401,
+        detail: "This page requires the dashboard credential.",
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("hands the page a cookie to the bootstrap handshake", async () => {
     const { server, url } = await startServer();
 
     try {
       const name = `devboard_dashboard_${server.port}`;
-      const page = await fetch(`http://${url}/`);
+      const page = await fetch(`http://${url}/?bootstrap=${BOOTSTRAP}`);
       const cookie = page.headers.get("set-cookie") ?? "";
+
+      expect(page.status).toBe(200);
       expect(cookie).toContain(`${name}=${TOKEN}`);
       expect(cookie).toContain("HttpOnly");
       expect(cookie).toContain("SameSite=Strict");
+    } finally {
+      server.stop(true);
+    }
+  });
 
+  test("hands the page a cookie to a request that already presents it", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const name = `devboard_dashboard_${server.port}`;
       const presented = `${name}=${TOKEN}`;
+      const page = await fetch(`http://${url}/`, { headers: { cookie: presented } });
+      const cookie = page.headers.get("set-cookie") ?? "";
+
+      expect(page.status).toBe(200);
+      expect(cookie).toContain(`${name}=${TOKEN}`);
+
       await openSocket(url, { cookie: presented });
 
       const response = await submit(url, "/goal-proposals", proposal(), { cookie: presented });
       expect(response.status).toBe(201);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("does not admit the endpoints with the bootstrap value", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      expect((await fetch(`http://${url}/?bootstrap=${BOOTSTRAP}`)).status).toBe(200);
+
+      const filed = await submit(url, "/feedback", report(), {
+        authorization: `Bearer ${BOOTSTRAP}`,
+      });
+      expect(filed.status).toBe(401);
+      expect(calls).toHaveLength(0);
+
+      const upgradeResponse = await upgrade(url, { cookie: `devboard_dashboard=${BOOTSTRAP}` });
+      expect(upgradeResponse.status).toBe(401);
     } finally {
       server.stop(true);
     }
