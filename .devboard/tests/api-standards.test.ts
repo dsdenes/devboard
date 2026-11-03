@@ -416,6 +416,7 @@ describe("api-standards registry", () => {
       "dead-code",
       "mcp-optimizer",
       "api-standards",
+      "single-responsibility",
       "release-train",
     ]);
     const descriptor = agentRegistry.require("api-standards");
@@ -1389,6 +1390,7 @@ describe("api-standards MCP projection", () => {
       "dead-code",
       "mcp-optimizer",
       "api-standards",
+      "single-responsibility",
       "release-train",
     ]);
     const snapshot = agents.find((agent) => agent.id === "api-standards");

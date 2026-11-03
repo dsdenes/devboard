@@ -15,6 +15,8 @@ export interface LiveDashboard {
   repoDir: string;
   harness: string;
   stateDir: string;
+  /** The dashboard's socket credential; empty when the process published none. */
+  token?: string;
 }
 
 export class DashboardRefusal extends Error {
@@ -58,6 +60,7 @@ export function discoverDashboards(repoDir: string, options: DiscoverOptions = {
       repoDir: instance.repoDir,
       harness: instance.harness,
       stateDir: instance.stateDir,
+      ...(instance.token === undefined ? {} : { token: instance.token }),
     }))
     .sort((left, right) => left.port - right.port);
 }
@@ -107,7 +110,13 @@ export async function dashboardCommand(
 ): Promise<DashboardReply> {
   const commands = Array.isArray(command) ? command : [command];
   const { promise, resolve: settle, reject } = Promise.withResolvers<DashboardReply>();
-  const socket = new WebSocket(`ws://127.0.0.1:${dashboard.port}/ws`);
+  const token = dashboard.token ?? "";
+  const socket =
+    token.length === 0
+      ? new WebSocket(`ws://127.0.0.1:${dashboard.port}/ws`)
+      : new WebSocket(`ws://127.0.0.1:${dashboard.port}/ws`, {
+          headers: { authorization: `Bearer ${token}` },
+        } as unknown as string[]);
   let opened = false;
   let sent = false;
   const timer = setTimeout(() => {

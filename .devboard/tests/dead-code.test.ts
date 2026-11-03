@@ -59,8 +59,13 @@ function write(path: string, content: string): void {
 }
 
 describe("entry point picker", () => {
-  test("ships exactly the three surfaces", () => {
-    expect([...ENTRY_POINT_SURFACES]).toEqual(["scout", "design", "dead-code"]);
+  test("ships exactly the four surfaces", () => {
+    expect([...ENTRY_POINT_SURFACES]).toEqual([
+      "scout",
+      "design",
+      "dead-code",
+      "single-responsibility",
+    ]);
   });
 
   test("the same seed and surface return the identical path and line", async () => {

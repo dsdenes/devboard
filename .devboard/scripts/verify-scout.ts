@@ -1224,6 +1224,7 @@ try {
           "dead-code",
           "mcp-optimizer",
           "api-standards",
+          "single-responsibility",
           "release-train",
         ]),
     "agentsState does not carry all background agents",

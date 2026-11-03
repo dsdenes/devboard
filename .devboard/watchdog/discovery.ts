@@ -26,6 +26,11 @@ export interface Instance {
   harness: string;
   /** The dashboard's own state directory, from `STATE_DIR`. */
   stateDir: string;
+  /**
+   * The dashboard's socket credential, from its own environment. A client that
+   * does not present it cannot open the `/ws` upgrade.
+   */
+  token?: string;
   journal: string;
   /** False when the serving harness never wrote a journal for this project. */
   instrumented: boolean;
@@ -167,6 +172,7 @@ export function instancesFromProcesses(
       host: process.env.get("HOST") ?? "127.0.0.1",
       harness,
       stateDir,
+      token: process.env.get("DEVBOARD_DASHBOARD_TOKEN") ?? "",
       journal,
       instrumented: existsSync(join(stateDir, "journal")),
       ...(existsSync(legacy) ? { legacyLog: legacy } : {}),

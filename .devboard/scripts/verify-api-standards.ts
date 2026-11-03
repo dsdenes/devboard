@@ -626,6 +626,7 @@ try {
         "open-devboard-dead-code",
         "open-devboard-mcp-optimizer",
         "open-devboard-api-standards",
+        "open-devboard-single-responsibility",
         "open-devboard-release-train",
       ]),
     "the Background agents order is wrong",

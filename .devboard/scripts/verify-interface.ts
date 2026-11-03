@@ -3197,7 +3197,7 @@ try {
   })()`);
   check(
     devboardSidebar.entries === 2 &&
-      devboardSidebar.items === 9 &&
+      devboardSidebar.items === 10 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify([
           "Auto Scout",
@@ -3206,6 +3206,7 @@ try {
           "Dead Code",
           "MCP optimizer",
           "API Standards",
+          "Single Responsibility",
           "Release Train",
         ]) &&
       JSON.stringify(devboardSidebar.agentCommands) ===
@@ -3216,6 +3217,7 @@ try {
           "open.devboard.dead-code",
           "open.devboard.mcp-optimizer",
           "open.devboard.api-standards",
+          "open.devboard.single-responsibility",
           "open.devboard.release-train",
         ]),
     "the Devboard sidebar does not carry the background agents beside the two page entries",
@@ -11174,6 +11176,7 @@ try {
     ["open.devboard.design", "design"],
     ["open.devboard.mcp-optimizer", "mcp-optimizer"],
     ["open.devboard.api-standards", "api-standards"],
+    ["open.devboard.single-responsibility", "single-responsibility"],
     ["open.devboard.release-train", "release-train"],
   ]) {
     await runPalette(command);
@@ -11798,7 +11801,7 @@ try {
     }))`,
   );
   check(
-    devboardEntries.length === 7 &&
+    devboardEntries.length === 8 &&
       devboardEntries.every(
         (entry) => entry.run === devboardMapping[entry.lifecycle],
       ) &&

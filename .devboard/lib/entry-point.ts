@@ -14,7 +14,12 @@ import { designConfig } from "../issues/design/paths";
  * repository root before it is chosen.
  */
 
-export const ENTRY_POINT_SURFACES = ["scout", "design", "dead-code"] as const;
+export const ENTRY_POINT_SURFACES = [
+  "scout",
+  "design",
+  "dead-code",
+  "single-responsibility",
+] as const;
 
 export type EntryPointSurface = (typeof ENTRY_POINT_SURFACES)[number];
 
@@ -217,6 +222,51 @@ export function deadCodePool(repoDir: string): string[] {
     .sort(byteOrder);
 }
 
+/**
+ * Directories whose files are evidence of behavior, never the component under
+ * audit: a test, a fixture, and a stub each describe another unit's contract.
+ */
+const NON_COMPONENT_DIRECTORIES = new Set(["fixtures", "tests", "stubs"]);
+
+/** A test or spec file names the behavior of another component. */
+function isTestFile(path: string): boolean {
+  return /\.(test|spec)\./.test(path);
+}
+
+/** Formats that are documentation or configuration, never audited source. */
+const NON_SOURCE_EXTENSIONS: Record<string, true> = {
+  ".md": true,
+  ".markdown": true,
+  ".txt": true,
+  ".json": true,
+  ".yml": true,
+  ".yaml": true,
+  ".toml": true,
+  ".lock": true,
+};
+
+/** A path outside every fixtures, tests, or stubs directory. */
+function isComponentPath(path: string): boolean {
+  const directories = path.split("/").slice(0, -1);
+  return !directories.some((directory) => NON_COMPONENT_DIRECTORIES.has(directory));
+}
+
+/**
+ * The single-responsibility pool: source files the host actually writes as
+ * components, excluding test, specification, fixture, stub, and documentation
+ * files.
+ */
+export function singleResponsibilityPool(repoDir: string): string[] {
+  return deadCodePool(repoDir)
+    .filter(
+      (path) =>
+        !isTestFile(path) &&
+        isComponentPath(path) &&
+        !NON_SOURCE_EXTENSIONS[extname(path).toLowerCase()],
+    )
+    .sort(byteOrder);
+}
+
 /** One pool by surface; an unknown surface is refused before any read. */
 export function eligibleFiles(
   repoDir: string,
@@ -230,6 +280,8 @@ export function eligibleFiles(
       return designPool(repoDir, environment);
     case "dead-code":
       return deadCodePool(repoDir);
+    case "single-responsibility":
+      return singleResponsibilityPool(repoDir);
   }
 }
 

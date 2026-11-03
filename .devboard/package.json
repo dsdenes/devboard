@@ -35,7 +35,8 @@
     "verify:mcp-optimizer": "bun run scripts/verify-mcp-optimizer.ts",
     "verify:mcp": "bun run scripts/verify-mcp.ts",
     "verify:api-standards": "bun run scripts/verify-api-standards.ts",
-    "verify:discover": "bun run scripts/verify-discover.ts"
+    "verify:discover": "bun run scripts/verify-discover.ts",
+    "verify:single-responsibility": "bun run scripts/verify-single-responsibility.ts"
   },
   "files": [
     "package.json",

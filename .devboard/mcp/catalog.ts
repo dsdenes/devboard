@@ -316,7 +316,10 @@ const TOOLS: readonly McpToolDefinition[] = [
       "produces a fresh one that replays the same pick. Read-only.",
     inputSchema: object(
       {
-        surface: { type: "string", enum: ["scout", "design", "dead-code"] },
+        surface: {
+          type: "string",
+          enum: ["scout", "design", "dead-code", "single-responsibility"],
+        },
         seed: STRING,
       },
       ["surface"],
@@ -520,6 +523,7 @@ const TOOLS: readonly McpToolDefinition[] = [
       "bun run verify:mcp",
       "bun run verify:providers",
       "bun run verify:scout",
+      "bun run verify:single-responsibility",
       "bun run verify:dead-code",
       "bun run verify:ui",
       "bun run verify:update",
