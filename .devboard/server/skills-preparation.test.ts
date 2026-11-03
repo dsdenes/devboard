@@ -22,7 +22,12 @@ const QUESTION_OPTIONS = [
   { label: "Alpha", description: "Alpha leads to the first outcome.", recommended: true },
   { label: "Beta", description: "Beta leads to the second outcome.", recommended: false },
 ];
-const TEST_ROOT = join(import.meta.dir, "..", ".test-tmp");
+/**
+ * This file owns its scratch root. Another test file's `afterAll` runs in a
+ * different worker under `--parallel`, so a shared parent would let it delete
+ * this file's state while a test is mid-run.
+ */
+const TEST_ROOT = join(import.meta.dir, "..", ".test-tmp", "skills-preparation");
 const temporaryDirectories: string[] = [];
 
 async function temporaryDirectory() {
@@ -193,7 +198,7 @@ function errors(client: TestClient): Record<string, unknown>[] {
   return client.events.filter((message) => message.type === "error");
 }
 
-async function waitUntil(predicate: () => boolean, label: string, timeout = 8000) {
+async function waitUntil(predicate: () => boolean, label: string, timeout = 30_000) {
   const deadline = Date.now() + timeout;
   while (!predicate() && Date.now() < deadline) await Bun.sleep(20);
   if (!predicate()) throw new Error(label);
@@ -395,7 +400,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -429,7 +434,7 @@ describe("skills preparation", () => {
         }
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -475,7 +480,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -506,7 +511,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -531,7 +536,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -570,7 +575,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -597,7 +602,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -624,7 +629,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -781,7 +786,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -810,7 +815,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -925,7 +930,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -958,7 +963,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -988,7 +993,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -1013,7 +1018,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -1065,7 +1070,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -1095,7 +1100,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test(
@@ -1136,7 +1141,7 @@ describe("skills preparation", () => {
         server.stop(true);
       }
     },
-    15000,
+    60_000,
   );
 
   test("deletes one prepared skill and refuses every other owner", async () => {

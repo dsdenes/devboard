@@ -92,7 +92,7 @@ describe("shipped prompt assets", () => {
 			});
 		}
 		expect(packed.has("scripts/forge-auth.ts")).toBe(true);
-	});
+	}, 60_000);
 
 	test("install copies the forge-auth wrapper into the host prefix and it runs", async () => {
 		const host = temporaryDirectory("prompt-host");

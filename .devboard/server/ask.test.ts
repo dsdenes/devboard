@@ -388,7 +388,7 @@ describe("ask conversations", () => {
       client.close();
       testServer.server.stop(true);
     }
-  });
+  }, 60_000);
 
   test("clears the turn deadline when the ask settles", async () => {
     const turnTimeoutMs = 424_242;

@@ -663,9 +663,13 @@ describe("restart after SIGKILL", () => {
             .every((lane) => lane.status === "paused"),
         ).toBe(true);
 
-        // Nothing spawns while the restored run stays paused.
+        // Nothing spawns while the restored run stays paused. The baseline is
+        // read once the restored paused state is observable, so a spawn line the
+        // killed process flushed after its lanes were paused cannot read as new
+        // work of the restored run.
+        const restoredPids = spawnPids(fixture.logPath).length;
         await Bun.sleep(700);
-        expect(spawnPids(fixture.logPath).length).toBe(pausedPids);
+        expect(spawnPids(fixture.logPath).length).toBe(restoredPids);
         expect(prompts(fixture.logPath).filter((prompt) => prompt === "/epic-next")).toEqual([]);
 
         client.send({ type: "resumeLifecycle" });

@@ -84,7 +84,14 @@ function install(args: string[], cwd = root) {
 }
 
 describe("install.sh", () => {
-  test("copies every harness wrapper into the host .omp directory", () => {
+  /**
+   * Every case runs the installer twice and snapshots the copied tree. On a
+   * shared host that is six times the serial cost, so the 5-second default
+   * measures the machine rather than the installer.
+   */
+  const installerTest = (name: string, body: () => void) => test(name, body, 60_000);
+
+  installerTest("copies every harness wrapper into the host .omp directory", () => {
     const host = makeHost();
     const result = install([host]);
     expect(result.stderr).toBe("");
@@ -95,7 +102,7 @@ describe("install.sh", () => {
     expect(snapshot(join(host, ".omp"))).toEqual(snapshot(OMP_SOURCE));
   });
 
-  test("leaves unrelated host files and matching files alone on a rerun", () => {
+  installerTest("leaves unrelated host files and matching files alone on a rerun", () => {
     const host = makeHost();
     expect(install([host]).code).toBe(0);
     mkdirSync(join(host, ".omp"), { recursive: true });
@@ -109,7 +116,7 @@ describe("install.sh", () => {
     expect(readFileSync(join(host, ".omp", "unrelated.txt"), "utf8")).toBe("host-owned\n");
   });
 
-  test("refuses a host without a .devboard directory", () => {
+  installerTest("refuses a host without a .devboard directory", () => {
     const host = join(root, "bare");
     mkdirSync(host);
 
@@ -123,7 +130,7 @@ describe("install.sh", () => {
     expect(missing.stderr).toContain("does not exist");
   });
 
-  test("refuses differing files without --force and changes nothing", () => {
+  installerTest("refuses differing files without --force and changes nothing", () => {
     const host = makeHost();
     expect(install([host]).code).toBe(0);
     const conflict = join(host, ".omp", "commands", "adr-resolve.md");
@@ -137,7 +144,7 @@ describe("install.sh", () => {
     expect(readFileSync(conflict, "utf8")).toBe("host edit\n");
   });
 
-  test("overwrites differing files with --force and keeps unrelated files", () => {
+  installerTest("overwrites differing files with --force and keeps unrelated files", () => {
     const host = makeHost();
     expect(install([host]).code).toBe(0);
     writeFileSync(join(host, ".omp", "commands", "adr-resolve.md"), "host edit\n");
@@ -153,7 +160,7 @@ describe("install.sh", () => {
     expect(installed.get("unrelated.txt")).toBe("host-owned\n");
   });
 
-  test("defaults to the git repository root of the working directory", () => {
+  installerTest("defaults to the git repository root of the working directory", () => {
     const host = makeHost();
     const init = Bun.spawnSync(["git", "init", "-q", host], { stdout: "pipe", stderr: "pipe" });
     expect(init.exitCode).toBe(0);
@@ -164,7 +171,7 @@ describe("install.sh", () => {
     expect(snapshot(join(host, ".omp"))).toEqual(snapshot(OMP_SOURCE));
   });
 
-  test("restores a tampered managed skill, prunes an omitted one, and keeps unmarked skills", () => {
+  installerTest("restores a tampered managed skill, prunes an omitted one, and keeps unmarked skills", () => {
     const host = makeHost();
     expect(install([host]).code).toBe(0);
     const skills = join(host, ".omp", "skills");
@@ -193,7 +200,7 @@ describe("install.sh", () => {
     }
   });
 
-  test("replaces a symlinked managed skill with a real directory without writing its target", () => {
+  installerTest("replaces a symlinked managed skill with a real directory without writing its target", () => {
     const host = makeHost();
     expect(install([host]).code).toBe(0);
     const skills = join(host, ".omp", "skills");
@@ -212,7 +219,7 @@ describe("install.sh", () => {
     expect(readdirSync(target)).toEqual(["sentinel.md"]);
   });
 
-  test("ignores one line per shipped skill and adds nothing on a rerun", () => {
+  installerTest("ignores one line per shipped skill and adds nothing on a rerun", () => {
     const host = makeHost();
     expect(install([host]).code).toBe(0);
     expect(ignoreLines(host).sort()).toEqual(

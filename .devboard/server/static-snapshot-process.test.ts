@@ -157,4 +157,4 @@ test("a running dashboard serves its started bundle until the process restarts",
     await stopProcess(second);
   }
   expect(await readdir(snapshotRoot(fixture.stateDir))).toEqual([]);
-});
+}, 60_000);

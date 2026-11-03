@@ -516,7 +516,13 @@ describe("elaboration", () => {
     expect(existsSync(join(drafts, "stay.md"))).toBe(true);
     expect(existsSync(join(root, ".devboard", "goals", "win.md"))).toBe(true);
     expect(existsSync(join(root, ".devboard", "goals", "lose.md"))).toBe(false);
-    expect(startPids(log)).toHaveLength(3);
+    // The third peer starts before the first two settle, but its start line is
+    // written by its own process, so the count settles after the run states do.
+    const starts = await waitFor(
+      () => (startPids(log).length === 3 ? startPids(log) : undefined),
+      "all three draft peers",
+    );
+    expect(starts).toHaveLength(3);
   });
 
   test("dispose ends every running owner with one interrupted failure", async () => {

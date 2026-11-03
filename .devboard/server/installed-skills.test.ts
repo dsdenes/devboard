@@ -15,7 +15,12 @@ import type { Server } from "bun";
 import { createApp } from "./app";
 import { testProviderService } from "./fixtures/test-providers";
 
-const TEST_ROOT = join(import.meta.dir, "..", ".test-tmp");
+/**
+ * This file owns its scratch root. Another test file's `afterAll` runs in a
+ * different worker under `--parallel`, so a shared parent would let it delete
+ * this file's fixtures while a test is mid-run.
+ */
+const TEST_ROOT = join(import.meta.dir, "..", ".test-tmp", "installed-skills");
 const temporaryDirectories: string[] = [];
 const servers: Server<unknown>[] = [];
 

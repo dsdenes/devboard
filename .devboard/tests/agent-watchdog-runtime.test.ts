@@ -49,7 +49,7 @@ async function temporaryRoot(): Promise<string> {
 async function waitFor<T>(
   read: () => T | undefined,
   description: string,
-  timeoutMs = 20_000,
+  timeoutMs = 45_000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -150,7 +150,7 @@ describe("detached watchdog worker", () => {
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
     }
-  }, 30_000);
+  }, 90_000);
 
   test("Stop and SIGTERM during a filing cycle finish it and keep its filing", async () => {
     const root = await temporaryRoot();
@@ -289,7 +289,7 @@ describe("detached watchdog worker", () => {
       if (child.exitCode === null) child.kill("SIGKILL");
       activity.dispose();
     }
-  }, 30_000);
+  }, 90_000);
 
   test("applies a saved cadence without restarting the worker", async () => {
     const root = await temporaryRoot();
@@ -336,7 +336,7 @@ describe("detached watchdog worker", () => {
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
     }
-  }, 30_000);
+  }, 90_000);
 });
 
 describe("watchdog lifecycle and ownership", () => {

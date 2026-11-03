@@ -21,8 +21,12 @@ jobs:
         working-directory: .devboard
         # One worker per file: the DOM tests in client/ install a global document
         # and unmount it in afterAll, so a shared module registry lets one file
-        # tear down another's live component.
-        run: bun test --parallel
+        # tear down another's live component. Eight workers leave cores for the
+        # servers and child processes these tests spawn; at one worker per core
+        # the spawn-heavy tests inflate five to seven times and overrun their
+        # deadlines. The default per-test timeout is raised for the same reason:
+        # this runner shares its host with the dashboard and its agent runs.
+        run: bun test --parallel=8 --timeout=60000
       - name: Typecheck
         working-directory: .devboard
         run: bunx tsc --noEmit

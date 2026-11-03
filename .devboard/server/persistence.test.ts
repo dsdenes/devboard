@@ -496,7 +496,15 @@ describe("durable writes", () => {
           stdout: "ignore",
           stderr: "ignore",
         });
-        await Bun.sleep(40 + attempt * 15);
+        // The completed first write is the signal that the child is inside its
+        // loop: a fixed sleep measures process startup on a loaded host instead
+        // and kills the child before it has written anything. Every window after
+        // it still lands between two writes.
+        await waitUntil(
+          () => readStateFile(statePath).kind === "loaded",
+          "the writer never completed its first write",
+        );
+        await Bun.sleep(15 + attempt * 10);
         child.kill("SIGKILL");
         await child.exited;
         const load = readStateFile(statePath);

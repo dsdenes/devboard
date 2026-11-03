@@ -256,7 +256,7 @@ function laneState(message: Record<string, unknown>): LaneStateView | undefined 
 async function waitForLanes(
   client: TestClient,
   predicate: (state: LaneStateView) => boolean,
-  timeoutMs = 10_000,
+  timeoutMs = 30_000,
 ): Promise<LaneStateView> {
   const existing = [...client.events]
     .reverse()
@@ -294,7 +294,7 @@ function spawnCount(logPath: string): number {
 async function waitUntil(
   predicate: () => boolean,
   message: string,
-  timeoutMs = 10_000,
+  timeoutMs = 30_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) await Bun.sleep(10);
@@ -416,7 +416,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -459,7 +459,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -512,7 +512,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -562,7 +562,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -604,7 +604,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -648,7 +648,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -705,7 +705,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -772,7 +772,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -823,7 +823,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -867,7 +867,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -895,7 +895,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 
   test(
@@ -932,7 +932,7 @@ describe("parallel lifecycle", () => {
         server.stop(true);
       }
     },
-    30_000,
+    60_000,
   );
 });
 

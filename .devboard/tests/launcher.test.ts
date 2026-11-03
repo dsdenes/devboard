@@ -130,7 +130,7 @@ describe("public package", () => {
       expect(files.some((path) => path.startsWith(forbidden))).toBe(false);
     }
     expect(paths).toContain("bin/devboard.mjs");
-  });
+  }, 60_000);
 
   test("ships managed skill directories whose frontmatter names match", () => {
     const skills = join(harnessRoot, "omp", "skills");
@@ -177,6 +177,7 @@ describe("fallback tarball", () => {
       expect(files).toContain("server/index.ts");
       expect(files).toContain("dist/index.html");
     },
+    60_000,
   );
 
   test("keeps templates/host-AGENTS.md byte-identical to the root contract", () => {
