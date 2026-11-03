@@ -2585,20 +2585,24 @@ trimmed — equals that of any `single-responsibility` issue in any state, any o
 draft-goal heading. The prompt reads the tracker and skips duplicates, and `issue_create`
 enforces the same guard for the `single-responsibility` label and files nothing for a duplicate.
 The page's limits are each empty (unlimited) or an integer 1 through 100, defaulting to 10 per
-rolling hour and 5 open. The hourly cap counts every `single-responsibility` issue created in the
-last rolling 60 minutes in any state; the pending cap counts every open one; one cycle files at
-most the smaller room and 100. A zero room files nothing and records every skip in activity, and
-a failed forge read files nothing while keeping the last known rows. `agent-cadence` defaults to
-60 minutes, accepts 1 through 1440, persists across reload and restart, applies to a running
-worker without a restart, and starts no cycle sooner than that interval after the previous cycle
-start.
+rolling hour and 5 open. The caps count every `single-responsibility` issue the forge read
+returns, whether or not its body still passes the proof: the hourly cap counts every such issue
+created in the last rolling 60 minutes in any state, and the pending cap every open one; one
+cycle files at most the smaller room and 100. A filing whose evidence quote drifted therefore
+keeps its slot, even though it publishes no row. A zero room files nothing and records every skip
+in activity, and a failed forge read files nothing while keeping the last known rows.
+`agent-cadence` defaults to 60 minutes, accepts 1 through 1440, persists across reload and
+restart, applies to a running worker without a restart, and starts no cycle sooner than that
+interval after the previous cycle start.
 
 The worker files nothing itself. It reads the MCP tool log's `issue_create` records, re-reads
 each created issue from the origin, and publishes a row only for an issue it read back carrying
 the `single-responsibility` label and a body whose category, skill path, directive, component,
 evidence quote, refactor, and acceptance criteria all verify. A filing that fails that proof is
-recorded in activity as a verification failure and is not published as a row; a tool error files
-nothing and is recorded, never claimed as a filing. The issue lands in the origin: on GitHub
+recorded in activity as a verification failure and is not published as a row; the periodic read
+records the same failure when a published row stops proving, so the drop is visible in the newest
+cycle's activity; a tool error files nothing and is recorded, never claimed as a filing. The
+issue lands in the origin: on GitHub
 through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
 `forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue
 is open and `implemented` once it is closed, and records a failed sync in `agent-sync-error`
