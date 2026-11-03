@@ -193,6 +193,30 @@ describe("entry point picker", () => {
     );
   });
 
+  test("a file with no non-whitespace byte is never an entry point", async () => {
+    const root = await temporaryRoot("blank-files");
+    write(join(root, "kept.ts"), "export const kept = 1;\n");
+    write(join(root, "marker"), "");
+    write(join(root, "spaces.ts"), " \n\t\n");
+    expect(scoutPool(root)).toEqual(["kept.ts"]);
+    expect(deadCodePool(root)).toEqual(["kept.ts"]);
+    const picked = new Set(
+      Array.from({ length: 20 }, (_, index) =>
+        pickEntryPoint({ repoDir: root, surface: "scout", seed: `blank-${index}` }),
+      ).map((entry) => entry.path),
+    );
+    expect([...picked]).toEqual(["kept.ts"]);
+  });
+
+  test("a pool holding only an empty file is refused", async () => {
+    const root = await temporaryRoot("empty-file");
+    write(join(root, "marker"), "");
+    expect(scoutPool(root)).toEqual([]);
+    expect(() => pickEntryPoint({ repoDir: root, surface: "scout", seed: "empty-file" })).toThrow(
+      /pool has no eligible file/,
+    );
+  });
+
   test("the catalog holds one read-only entry-point tool", async () => {
     expect(MCP_TOOL_NAMES.filter((name) => name.includes("entry"))).toEqual(["entry_point"]);
     const root = await temporaryRoot("read-only");

@@ -162,16 +162,22 @@ function sample(path: string): Buffer | undefined {
   }
 }
 
-/** A regular file whose first bytes carry no NUL and almost no control bytes. */
+/**
+ * A regular file whose first bytes carry no NUL, almost no control bytes, and
+ * at least one non-whitespace byte. A file with nothing to read has no line to
+ * name, so it never enters a pool.
+ */
 function isTextFile(path: string): boolean {
   const bytes = sample(path);
   if (bytes === undefined) return false;
   if (bytes.includes(0)) return false;
   let control = 0;
+  let visible = false;
   for (const byte of bytes) {
     if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) control += 1;
+    if (byte > 32) visible = true;
   }
-  return bytes.length === 0 || control / bytes.length < 0.1;
+  return visible && control / bytes.length < 0.1;
 }
 
 /** Every regular text file the scout pool admits. */
@@ -195,7 +201,10 @@ export function designPool(
   environment: Record<string, string | undefined> = process.env,
 ): string[] {
   try {
-    return designSourcePaths(repoDir, designConfig(environment)).sort(byteOrder);
+    const root = resolve(repoDir);
+    return designSourcePaths(root, designConfig(environment))
+      .filter((path) => isTextFile(resolve(root, path)))
+      .sort(byteOrder);
   } catch (error) {
     if (error instanceof DesignInputError) {
       throw new EntryPointError(`the design pool is empty: ${error.message}`);
@@ -316,13 +325,13 @@ function withoutTrailingNewline(text: string): string[] {
 }
 
 /** A deterministic line inside the chosen file among its non-blank lines. */
-function lineInside(text: string, hash: Buffer): number {
-  const lines = withoutTrailingNewline(text);
-  if (lines.length === 0) return 1;
-  const meaningful = lines
+function lineInside(text: string, path: string, hash: Buffer): number {
+  const candidates = withoutTrailingNewline(text)
     .map((line, index) => ({ line, index }))
     .filter((entry) => entry.line.trim().length > 0);
-  const candidates = meaningful.length > 0 ? meaningful : lines.map((line, index) => ({ line, index }));
+  if (candidates.length === 0) {
+    throw new EntryPointError(`the entry point ${path} has no non-blank line to name`);
+  }
   const offset = hash.readUInt32BE(4) % candidates.length;
   return candidates[offset]!.index + 1;
 }
@@ -378,5 +387,5 @@ export function pickEntryPoint(request: EntryPointRequest): EntryPoint {
   } catch {
     throw new EntryPointError(`the ${surface} entry point ${path} is not readable`);
   }
-  return { path, line: lineInside(text, hash), surface, seed };
+  return { path, line: lineInside(text, path, hash), surface, seed };
 }
