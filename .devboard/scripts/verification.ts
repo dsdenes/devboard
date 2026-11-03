@@ -34,8 +34,17 @@ export const templateAgents = join(harnessRoot, "templates", "host-AGENTS.md");
 export const VERIFY_DASHBOARD_TOKEN =
   process.env.DEVBOARD_DASHBOARD_TOKEN?.trim() || "verify-dashboard-token";
 process.env.DEVBOARD_DASHBOARD_TOKEN = VERIFY_DASHBOARD_TOKEN;
-export const VERIFY_DASHBOARD_AUTHORIZATION = {
+/** The one header a verification fetch or socket presents. */
+export const VERIFY_DASHBOARD_HEADERS = {
   authorization: `Bearer ${VERIFY_DASHBOARD_TOKEN}`,
+};
+/**
+ * The RequestInit fragment every verification fetch spreads. It carries the
+ * header under `headers`, because `fetch` ignores a bare `authorization` field
+ * at the top of its init object.
+ */
+export const VERIFY_DASHBOARD_AUTHORIZATION = {
+  headers: VERIFY_DASHBOARD_HEADERS,
 };
 
 /**
@@ -76,7 +85,7 @@ export function dashboardPageUrl(port: number): string {
  */
 export function dashboardSocket(url: string): WebSocket {
   return new WebSocket(url, {
-    headers: VERIFY_DASHBOARD_AUTHORIZATION,
+    headers: VERIFY_DASHBOARD_HEADERS,
   } as unknown as string[]);
 }
 
@@ -243,7 +252,7 @@ export function httpStatus(port: number): number {
     "-w",
     "%{http_code}",
     "-H",
-    `Authorization: ${VERIFY_DASHBOARD_AUTHORIZATION.authorization}`,
+    `Authorization: ${VERIFY_DASHBOARD_HEADERS.authorization}`,
     `http://127.0.0.1:${port}/ready`,
   ]);
   return Number(result.stdout);
