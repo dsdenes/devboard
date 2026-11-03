@@ -429,7 +429,7 @@ backdrop blur to panels, cards, or rows.
 
 ## Shapes
 
-- 3px (`sm`) — small badges, inline code, tabs and compact controls.
+- 3px (`sm`) — inline code, tabs and compact controls.
 - 4px (`md`) — buttons, inputs, panels, table containers, the default for functional UI.
 - 6px (`lg`) — chips and popovers.
 - 999px (`full`) — status pills and badges.
