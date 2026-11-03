@@ -901,6 +901,63 @@ describe("createApp", () => {
     }
   });
 
+  test("echoes the flow id on a successful WebSocket upgrade and only there", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      // A browser's WebSocket hides the handshake response, so the raw request
+      // line is the only way to read the headers on the 101.
+      const handshake = (flowId: string | null): Promise<string> => {
+        const { promise, resolve: settle, reject: fail } = Promise.withResolvers<string>();
+        const [host, port] = url.split(":");
+        const socket = connect({ host, port: Number(port) });
+        let response = "";
+        socket.setEncoding("utf8");
+        socket.on("connect", () => {
+          socket.write(
+            [
+              "GET /ws HTTP/1.1",
+              `Host: ${url}`,
+              "Connection: Upgrade",
+              "Upgrade: websocket",
+              "Sec-WebSocket-Version: 13",
+              "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+              ...(flowId === null ? [] : [`X-Flow-ID: ${flowId}`]),
+              "",
+              "",
+            ].join("\r\n"),
+          );
+        });
+        socket.on("data", (chunk) => {
+          response += chunk;
+          if (!response.includes("\r\n\r\n")) return;
+          socket.destroy();
+          settle(response);
+        });
+        socket.on("error", fail);
+        return promise;
+      };
+      const correlated = await handshake("4d1c");
+      expect(correlated.startsWith("HTTP/1.1 101 ")).toBe(true);
+      expect(
+        correlated.slice(0, correlated.indexOf("\r\n\r\n")).toLowerCase(),
+      ).toContain("x-flow-id: 4d1c");
+
+      const plain = await handshake(null);
+      expect(plain.startsWith("HTTP/1.1 101 ")).toBe(true);
+      expect(plain.slice(0, plain.indexOf("\r\n\r\n")).toLowerCase()).not.toContain("x-flow-id");
+
+      // A malformed flow id is still refused before the upgrade runs.
+      const refused = await handshake("x".repeat(MAX_FLOW_ID + 1));
+      expect(refused.startsWith("HTTP/1.1 400 ")).toBe(true);
+      expect(
+        refused.slice(0, refused.indexOf("\r\n\r\n")).toLowerCase(),
+      ).not.toContain("x-flow-id");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("refuses a WebSocket upgrade whose Host is not one of the listener's names", async () => {
     const { server, url } = await startServer();
 

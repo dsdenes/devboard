@@ -3706,9 +3706,11 @@ or oversized key is refused with `400`.
 
 Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
 dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
-on that request's response, forwards it on the outbound Gitea issue request `POST /feedback`
-makes, and records it as the scope of the `server-error` journal record a failed mutating request
-writes. A value is 1–200 printable ASCII characters with no spaces or control characters;
+on that request's response — including the `101` a `/ws` upgrade answers with, which carries it on
+the upgrade's own headers because the upgrade assembles that response itself — forwards it on the
+outbound Gitea issue request `POST /feedback` makes, and records it as the scope of the
+`server-error` journal record a failed mutating request writes. A value is 1–200 printable ASCII
+characters with no spaces or control characters;
 surrounding whitespace is trimmed, and an empty, oversized, or non-printable value is refused with
 `400` before any handler runs. A request without the header keeps today's behavior: no outbound
 header, no echoed header, and an unchanged journal record.

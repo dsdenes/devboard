@@ -60,7 +60,7 @@ import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints.ts"
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { suggestGoalSlug } from "./goal-slug";
 import { IdempotencyStore, parseIdempotencyKey } from "./idempotency";
-import { echoFlowId, parseFlowId } from "./flow-id";
+import { FLOW_ID_HEADER, echoFlowId, parseFlowId } from "./flow-id";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -7918,7 +7918,13 @@ export function createApp(options: AppOptions) {
         }
         const denied = credentialRefusal(request, cookieName);
         if (denied !== null) return reply(denied);
-        if (server.upgrade(request)) return;
+        // The 101 is assembled by the upgrade itself, not by `reply`, so the
+        // flow id rides on its headers instead.
+        const upgraded = server.upgrade(
+          request,
+          flowId === null ? undefined : { headers: { [FLOW_ID_HEADER]: flowId } },
+        );
+        if (upgraded) return;
         return reply(
           problemResponse(426, "This path upgrades to a WebSocket.", {
             Upgrade: "websocket",
