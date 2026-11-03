@@ -12,7 +12,6 @@ import {
   issuesControl,
   lifecycleControl,
 } from "./control";
-import type { McpToolDefinition } from "./catalog";
 import { toolDefinition } from "./catalog";
 import { fileGoalDraft, goalDraft, goalDrafts, goalText, writeGoalSpec } from "./goals";
 import {
@@ -384,11 +383,6 @@ async function dispatch(
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
-}
-
-/** The catalog entry for a tool name, if one exists. */
-export function definition(name: string): McpToolDefinition | undefined {
-  return toolDefinition(name);
 }
 
 export async function callTool(
