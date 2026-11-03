@@ -18,13 +18,22 @@ jobs:
           fetch-depth: 0
       - name: Format
         working-directory: .devboard
-        run: cargo fmt --check --all
+        # rustup installs the toolchain under `$HOME/.cargo/bin`, which a runner
+        # that never sourced a login shell does not have on `PATH`. Naming it
+        # here keeps the step runnable wherever the harness is checked out.
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo fmt --check --all
       - name: Lint
         working-directory: .devboard
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         working-directory: .devboard
-        run: cargo test --workspace
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo test --workspace
       - name: Install client dependencies
         working-directory: .devboard
         run: bun install --frozen-lockfile
