@@ -1,6 +1,6 @@
 import { git } from "../issues/repository";
 import { COMMIT_CANDIDATE_LIMIT, isFullSha } from "./commit";
-import type { GitHubRelease } from "./github-release";
+import type { PublishedRelease } from "./release-resolution";
 
 /**
  * What the checkout alone can say about the published releases that contain a
@@ -18,7 +18,7 @@ export interface LocalReleaseContainment {
   /** Release tags the checkout proves contain the commit. */
   contained: string[];
   /** Releases the checkout cannot answer, in release-list order. */
-  pending: GitHubRelease[];
+  pending: PublishedRelease[];
 }
 
 function tagNames(output: string): Set<string> {
@@ -66,14 +66,14 @@ export function landedCommits(repoDir: string, issueNumber: number): string[] {
 export function localReleaseContainment(
   repoDir: string,
   commit: string,
-  releases: GitHubRelease[],
+  releases: PublishedRelease[],
 ): LocalReleaseContainment {
   const listed = git(repoDir, "tag", "--list");
   const containing = git(repoDir, "tag", "--contains", commit);
   const present = listed.code === 0 ? tagNames(listed.stdout) : new Set<string>();
   const named = containing.code === 0 ? tagNames(containing.stdout) : null;
   const contained: string[] = [];
-  const pending: GitHubRelease[] = [];
+  const pending: PublishedRelease[] = [];
   for (const release of releases) {
     if (!present.has(release.tag) || named === null) pending.push(release);
     else if (named.has(release.tag)) contained.push(release.tag);

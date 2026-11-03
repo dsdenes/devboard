@@ -18,7 +18,16 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
+import {
+  VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
+  freePort,
+  harnessRoot,
+  makeHost,
+  makeRoot,
+  run,
+  waitFor,
+} from "./verification";
 
 const chromeCandidates = [
   "/usr/bin/google-chrome",
@@ -628,7 +637,10 @@ try {
   await waitFor(
     async () => {
       try {
-        const response = await fetch(baseUrl, { signal: AbortSignal.timeout(2000) });
+        const response = await fetch(`${baseUrl}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
+          signal: AbortSignal.timeout(2000),
+        });
         return response.ok ? true : undefined;
       } catch {
         return undefined;
@@ -675,7 +687,7 @@ try {
   // raise notifications with the document focused and visible.
   await devtools.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   await devtools.send("Page.addScriptToEvaluateOnNewDocument", { source: PRELOAD });
-  await devtools.send("Page.navigate", { url: baseUrl });
+  await devtools.send("Page.navigate", { url: dashboardPageUrl(port) });
   await page.wait(
     `document.readyState === "complete" &&
       document.querySelector('[data-testid="os-notifications"]') !== null`,

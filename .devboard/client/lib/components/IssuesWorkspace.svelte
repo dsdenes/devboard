@@ -233,9 +233,15 @@
           {#if issues.notice !== null}
             <p class="issues-notice" data-testid="issues-notice" role="status">{issues.notice}</p>
           {/if}
-          {#if issues.snapshot?.poll?.error ?? issues.snapshot?.lastError ?? null}
+          {#if issues.snapshot?.poll?.error != null}
+            <p class="issues-error" data-testid="issues-poll-error" role="alert">
+              {issues.snapshot.poll.error}
+            </p>
+          {/if}
+          {#if issues.snapshot?.lastError != null &&
+            issues.snapshot.lastError !== issues.snapshot.poll?.error}
             <p class="issues-error" data-testid="issues-error" role="alert">
-              {issues.snapshot?.poll?.error ?? issues.snapshot?.lastError}
+              {issues.snapshot.lastError}
             </p>
           {/if}
         </div>

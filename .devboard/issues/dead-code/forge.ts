@@ -1,7 +1,5 @@
-import {
-  createRepositoryGitHub,
-  type GitHubRelease,
-} from "../../lib/github-release";
+import { createRepositoryGitHub } from "../../lib/github-release";
+import type { PublishedRelease } from "../../lib/release-resolution";
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
   giteaListIssues,
@@ -10,7 +8,7 @@ import {
   type GiteaTarget,
 } from "../../lib/gitea";
 import { createGiteaVersionClient } from "../../lib/gitea-release";
-import { ghCommand } from "../scout/preflight";
+import { ghCommand } from "../../server/command";
 import { DEAD_CODE_LABEL } from "./paths";
 
 /**
@@ -30,7 +28,7 @@ export interface DeadCodeForgeIssue {
   body: string;
 }
 
-export type DeadCodeRelease = GitHubRelease;
+export type DeadCodeRelease = PublishedRelease;
 
 export interface DeadCodeForgeClient {
   listIssues(): Promise<DeadCodeForgeIssue[]>;

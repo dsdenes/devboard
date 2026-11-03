@@ -7,7 +7,7 @@ import {
 import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner, liveLockOwners, versionLockPath } from "../lock";
 import { originForge, originRepository } from "../repository";
-import { appendActivityLine, writeActivity } from "../state";
+import { appendActivityLine, readActivity, writeActivity } from "../state";
 import { readDraftGoalHeadings } from "../../lib/draft-goals";
 import { giteaBaseUrl } from "../../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";
@@ -15,7 +15,6 @@ import { readToolLog, toolValueNumber, toolValueString } from "../../lib/tool-lo
 import { takeCommands, type SingleResponsibilityCommand } from "./control";
 import {
   createSingleResponsibilityForge,
-  isForgeRateLimited,
   type SingleResponsibilityForgeClient,
   type SingleResponsibilityForgeIssue,
 } from "./forge";
@@ -24,6 +23,7 @@ import {
   SYNC_INTERVAL_MS,
   controlDirectory,
   cycleClaimPath,
+  cycleDirectory,
   lockPath,
   settingsPath,
   singleResponsibilityConfig,
@@ -42,6 +42,7 @@ import {
   readSettings,
   writeSettings,
   writeState,
+  type SingleResponsibilityCapacityRow,
   type SingleResponsibilityIssueRow,
   type SingleResponsibilitySettings,
   type SingleResponsibilityState,
@@ -162,6 +163,12 @@ export class SingleResponsibilityWorker {
   private readonly manualCycles: boolean;
 
   private state: SingleResponsibilityState;
+  /**
+   * Every labelled issue the last successful forge read returned, proven or
+   * not. The caps count this table, while `state.issues` publishes only the
+   * rows the proof accepts.
+   */
+  private capacityRows: SingleResponsibilityCapacityRow[] = [];
   private github: SingleResponsibilityForgeClient | undefined;
   private active: ActiveCycle | undefined;
   private starting = false;
@@ -469,7 +476,7 @@ export class SingleResponsibilityWorker {
   /* ------------------------------------------------------------------ */
 
   private capacity(now: Date = this.clock()) {
-    return capacityFor(this.state.issues, this.state.limits, now);
+    return capacityFor(this.capacityRows, this.state.limits, now);
   }
 
   /* ------------------------------------------------------------------ */
@@ -519,7 +526,21 @@ export class SingleResponsibilityWorker {
         this.recordSyncFailure(detailOf(error));
         return;
       }
-      this.applyRead(read);
+      // A periodic read can drop a row whose quote drifted; the newest cycle's
+      // activity carries that verification failure, as a cycle's own re-read does.
+      let activity: string[] | null = null;
+      const cycleId = this.state.newestCycleId;
+      const directory = cycleId === null ? null : cycleDirectory(this.repoDir, cycleId);
+      this.applyRead(read, (line) => {
+        if (directory === null) return;
+        activity ??= readActivity(directory);
+        appendActivityLine(activity, line, false);
+        try {
+          writeActivity(directory, activity);
+        } catch {
+          // Activity is diagnostic.
+        }
+      });
       this.retry.succeed();
       this.nextSyncAt = this.clock().getTime() + this.syncMs;
       this.publish();
@@ -544,7 +565,7 @@ export class SingleResponsibilityWorker {
       this.retry.record(kind);
     }
     this.state.sync = { state: "error", at: this.state.sync.at, error: detail };
-    this.state.lastError = kind === "rate-limit" || isForgeRateLimited(detail) ? null : detail;
+    this.state.lastError = kind === "rate-limit" ? null : detail;
     this.state.notice = `Could not read the forge: ${detail}`;
     this.nextSyncAt = this.clock().getTime() + this.syncMs;
     this.publish();
@@ -610,9 +631,18 @@ export class SingleResponsibilityWorker {
       });
     }
     this.state.issues = newestFirst(rows);
+    // The caps count every labelled issue the read returned, so a filing the
+    // proof rejects still occupies its slot.
+    this.capacityRows = read.issues.map((issue) => ({
+      number: issue.number,
+      state: issue.state === "closed" ? "implemented" : "pending",
+      createdAt: issue.createdAt,
+    }));
     this.openTitles = read.openTitles;
     this.state.sync = { state: "ok", at: this.clock().toISOString(), error: null };
-    if (!isForgeRateLimited(this.state.lastError ?? "")) this.state.lastError = null;
+    if (classifyForgeReadFailure(this.state.lastError ?? "") !== "rate-limit") {
+      this.state.lastError = null;
+    }
   }
 
   /* ------------------------------------------------------------------ */

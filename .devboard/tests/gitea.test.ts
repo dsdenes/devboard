@@ -15,7 +15,7 @@ import {
   giteaListReleases,
   type FetchLike,
 } from "../lib/gitea.ts";
-import { shippedVersion, resolveShippedVersion } from "../lib/github-release.ts";
+import { shippedVersion, resolveShippedVersion } from "../lib/release-resolution.ts";
 import { createGiteaVersionClient } from "../lib/gitea-release.ts";
 import { createScoutGitHub } from "../issues/scout/github.ts";
 import { createDesignForge } from "../issues/design/forge.ts";

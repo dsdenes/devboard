@@ -8,7 +8,7 @@ import {
   giteaRepository,
   type FetchLike,
 } from "../../lib/gitea";
-import { ghCommand } from "../scout/preflight";
+import { ghCommand } from "../../server/command";
 import { findOnPath, originForge, rootProblem } from "../repository";
 import type { ForgeRemote } from "../../lib/forge";
 import { DESIGN_LABEL, LABEL_COLOR, LABEL_DESCRIPTION, type DesignConfig } from "./paths";

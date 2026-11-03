@@ -1,7 +1,5 @@
 import type { QueuedIssue } from "./types";
-import { hasProcessingLabel, PROCESSING_LABEL } from "../../lib/issue-labels";
-
-export { PROCESSING_LABEL };
+import { hasProcessingLabel } from "../../lib/issue-labels";
 
 export interface QueueCounts {
   /** Open issues whose labels do not contain `processing`. */

@@ -5,7 +5,7 @@ import {
   createWorkerProviderEnvironment,
   type WorkerProviderEnvironment,
 } from "../../server/providers/worker-environment";
-import { recordedChildAlive } from "../../server/state";
+import { recordedChildAlive } from "../../server/process";
 import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner, pidAlive, versionLockPath } from "../lock";
 import { originRepository } from "../repository";
@@ -14,14 +14,15 @@ import { claimScan, releaseScanClaim, updateScanClaim } from "./claims";
 import { takeCommands, type ScoutCommand } from "./control";
 import {
   createScoutGitHub,
-  isGitHubRateLimited,
-  resolveShippedVersion,
   type ScoutGitHubClient,
   type ScoutGitHubIssue,
   type ScoutRelease,
-  type VersionResolution,
 } from "./github";
-import { ghCommand } from "./preflight";
+import { ghCommand } from "../../server/command";
+import {
+  resolveShippedVersion,
+  type VersionResolution,
+} from "../../lib/release-resolution";
 import { originForge } from "../repository";
 import { giteaBaseUrl } from "../../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";
@@ -714,8 +715,7 @@ export class ScoutWorker {
     // A spent GitHub request budget is environmental and clears itself. The
     // reason stays in the sync banner, but a rate limit never raises the
     // global error notification the operator can file as a harness issue.
-    this.state.lastError =
-      kind === "rate-limit" || isGitHubRateLimited(detail) ? null : detail;
+    this.state.lastError = kind === "rate-limit" ? null : detail;
     this.state.notice = `Could not read the forge: ${detail}`;
     this.state.nextAttemptAt = null;
     this.nextSyncAt = this.clock().getTime() + this.syncMs;
@@ -1247,7 +1247,8 @@ export class ScoutWorker {
     this.state.newestScanId = active.scanId;
     // The scan still failed, but a throttled GitHub read or write is
     // environmental: it must not raise the global error notification.
-    this.state.lastError = error !== null && isGitHubRateLimited(error) ? null : error;
+    this.state.lastError =
+      error !== null && classifyForgeReadFailure(error) === "rate-limit" ? null : error;
     this.state.notice = error === null ? this.state.notice : `Scan failed: ${error}`;
     this.state.lifecycle = error === null ? "idle" : "failed";
     const now = this.clock();

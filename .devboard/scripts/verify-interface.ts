@@ -38,6 +38,7 @@ import { statePath } from "../issues/scout/paths";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import {
   VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
   dashboardSocket,
   dashboardsFor,
   freePort,
@@ -774,6 +775,7 @@ async function seedIssuesState(
   lifecycle: "stopped" | "idle" | "running" | "paused" | "failed",
   answeredRunId?: string,
   missingQueueIssue?: number,
+  pollError: string | null = null,
 ): Promise<void> {
   const directory = join(stateDir, "issues", journalKey(host));
   await mkdir(join(directory, "runs"), { recursive: true });
@@ -889,7 +891,7 @@ async function seedIssuesState(
       etag: enabled ? '"etag"' : null,
       notModified: false,
       rateLimitedUntil: null,
-      error: null,
+      error: pollError,
     },
     queue,
     runs,
@@ -1333,16 +1335,22 @@ async function stopHostDashboards(host: string): Promise<void> {
 }
 
 async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
+  // The readiness probe requires the dashboard token; the document requires
+  // the credential a page navigation carries.
+  const ready = `${url.replace(/\/+$/, "")}/ready`;
   await waitFor(
     async () => {
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(1500) });
+        const response = await fetch(ready, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
+          signal: AbortSignal.timeout(1500),
+        });
         return response.ok ? true : undefined;
       } catch {
         return undefined;
       }
     },
-    `the dashboard at ${url}`,
+    `the dashboard at ${ready}`,
     timeoutMs,
   );
 }
@@ -1995,7 +2003,7 @@ try {
     })();`,
   });
 
-  await devtools.send("Page.navigate", { url: baseUrl });
+  await devtools.send("Page.navigate", { url: dashboardPageUrl(port) });
   await page.wait(
     `document.readyState === "complete" && document.querySelector('[data-testid="app-shell"]') !== null`,
     "the initial shell",
@@ -5119,6 +5127,9 @@ try {
     freshnessText: string;
     definitionText: string;
     definitionBelowTitle: boolean;
+    frameHeader: boolean;
+    frameSubtitleType: string;
+    frameMetaType: string;
     dirtyBadges: number;
     evidence: number;
     confidence: number;
@@ -5190,14 +5201,30 @@ try {
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
       freshnessText: document.querySelector('[data-testid="discover-freshness"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
-      definitionText: document.querySelector('#workspace-discover .discover-head__definition')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      definitionText: document.querySelector('#workspace-discover .discover-page__subtitle')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
       definitionBelowTitle: (() => {
-        const title = document.querySelector('#workspace-discover .discover-head__title');
-        const definition = document.querySelector('#workspace-discover .discover-head__definition');
+        const title = document.querySelector('#workspace-discover .discover-page__title');
+        const definition = document.querySelector('#workspace-discover .discover-page__subtitle');
         if (title === null || definition === null) return false;
         return definition.getBoundingClientRect().top >= title.getBoundingClientRect().bottom - 1;
       })(),
-      dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-head .badge')]
+      frameHeader: document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] > header.discover-page__header') !== null,
+      frameSubtitleType: (() => {
+        const subtitle = document.querySelector('#workspace-discover .discover-page__subtitle');
+        if (subtitle === null) return "";
+        const style = getComputedStyle(subtitle);
+        const size = Number.parseFloat(style.fontSize);
+        const line = Number.parseFloat(style.lineHeight);
+        const ratio = size > 0 ? Math.round((line / size) * 100) / 100 : 0;
+        return [size, style.fontWeight, ratio].join("/");
+      })(),
+      frameMetaType: (() => {
+        const meta = document.querySelector('#workspace-discover .discover-page__meta');
+        if (meta === null) return "";
+        const style = getComputedStyle(meta);
+        return [Number.parseFloat(style.fontSize), style.fontFamily].join("/");
+      })(),
+      dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-page__header .badge')]
         .filter((badge) => badge.textContent.trim() === "dirty").length,
       evidence: document.querySelectorAll('[data-testid="discover-evidence"]').length,
       confidence: document.querySelectorAll('[data-testid="discover-confidence"]').length,
@@ -5304,6 +5331,22 @@ try {
     "the Discover definition does not sit below the project title",
     discoverTables,
   );
+  check(
+    discoverTables.frameHeader,
+    "the Discover overview identity is not the shared page frame",
+    discoverTables.frameHeader,
+  );
+  check(
+    discoverTables.frameSubtitleType === "12/400/1.45",
+    "the Discover definition is not body-small type",
+    discoverTables.frameSubtitleType,
+  );
+  check(
+    discoverTables.frameMetaType.startsWith("11.5/") &&
+      discoverTables.frameMetaType.includes("monospace"),
+    "the Discover freshness line is not mono-small type",
+    discoverTables.frameMetaType,
+  );
   check(discoverTables.staticText === 0, "Discover still renders static lead or note prose", discoverTables.staticText);
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
@@ -5349,7 +5392,7 @@ try {
     levelChips: number;
     statLabels: string[];
   }>(`(() => {
-    const head = document.querySelector('#workspace-discover .discover-head');
+    const head = document.querySelector('#workspace-discover .discover-page__header');
     const sheet = document.querySelector('[data-testid="discover-sheet"]');
     const rail = sheet?.querySelector('.discover-rail');
     const column = sheet?.querySelector('.discover-col');
@@ -6556,7 +6599,7 @@ try {
     remoteStrip,
   );
   const retainedTitle = await page.eval<string>(
-    `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
+    `document.querySelector('#workspace-discover .discover-page__title')?.textContent?.trim() ?? ""`,
   );
   check(
     retainedTitle === "octocat/Hello-World",
@@ -6608,7 +6651,7 @@ try {
     20_000,
   );
   const switchedTitle = await page.eval<string>(
-    `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
+    `document.querySelector('#workspace-discover .discover-page__title')?.textContent?.trim() ?? ""`,
   );
   check(
     switchedTitle === "octocat/Second-Project",
@@ -6715,7 +6758,7 @@ try {
   await stopServer();
   startServer();
   await waitForHttp(baseUrl);
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
     "the reconnection after the removal restart",
@@ -6857,7 +6900,7 @@ try {
   );
   (seededEntries as string[]).push("/etc/passwd", ...escapees);
   await writeFile(containmentSheetPath, `${JSON.stringify(seededSheet, null, 2)}\n`);
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
     "the reconnection after seeding the absolute reference",
@@ -6893,7 +6936,7 @@ try {
   );
   (escapeEntries as string[]).push(...escapees);
   await writeFile(containmentSheetPath, `${JSON.stringify(escapeSheet, null, 2)}\n`);
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
     "the reconnection after seeding the escaping references",
@@ -6930,7 +6973,7 @@ try {
     containment,
   );
   await writeFile(containmentSheetPath, publishedSheet);
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
     "the reconnection after restoring the fixture sheet",
@@ -6962,7 +7005,7 @@ try {
   gateOffProcess.stdout?.on("data", (chunk) => gateOffWriter.write(chunk));
   gateOffProcess.stderr?.on("data", (chunk) => gateOffWriter.write(chunk));
   await waitForHttp(`http://127.0.0.1:${gateOffPort}/`);
-  await page.navigate(`http://127.0.0.1:${gateOffPort}/`);
+  await page.navigate(dashboardPageUrl(gateOffPort));
   await runPalette("discover.tab.overview");
   await page.wait(
     `document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`,
@@ -7009,7 +7052,7 @@ try {
   feedbackOffProcess.stdout?.on("data", (chunk) => feedbackOffWriter.write(chunk));
   feedbackOffProcess.stderr?.on("data", (chunk) => feedbackOffWriter.write(chunk));
   await waitForHttp(`http://127.0.0.1:${feedbackOffPort}/`);
-  await page.navigate(`http://127.0.0.1:${feedbackOffPort}/`);
+  await page.navigate(dashboardPageUrl(feedbackOffPort));
   await page.wait(
     `document.readyState === "complete" && document.querySelector('[data-testid="app-shell"]') !== null`,
     "the shell without harness reporting",
@@ -7048,7 +7091,7 @@ try {
   );
   gateOffProcess.kill("SIGTERM");
   gateOffProcess = undefined;
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
 
   // 13. Reset layout restores defaults.
   await runPalette("view.layout.reset");
@@ -10564,6 +10607,30 @@ try {
   check(failed.indicator === "issues failed", "the failed indicator is wrong", failed);
   check(failed.error.includes("the agent exited with code 1"), "the failure is not shown", failed);
 
+  // A rate-limited tracker read leaves the settled run's failure intact, so
+  // the overview must keep both errors instead of letting one hide the other.
+  await seedIssuesState(stateDir, host, "failed", undefined, undefined, "tracker read rate limited");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-poll-error"]')?.textContent?.includes("tracker read rate limited") === true &&
+      document.querySelector('[data-testid="issues-error"]')?.textContent?.includes("the agent exited with code 1") === true`,
+    "the poll error beside the run failure",
+    8_000,
+  );
+  const bothErrors = await page.eval<{ poll: string; run: string }>(`(() => ({
+    poll: document.querySelector('[data-testid="issues-poll-error"]')?.textContent?.trim() ?? "",
+    run: document.querySelector('[data-testid="issues-error"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    bothErrors.poll.includes("tracker read rate limited"),
+    "the overview drops the poll error when a run also failed",
+    bothErrors,
+  );
+  check(
+    bothErrors.run.includes("the agent exited with code 1"),
+    "the overview drops the run failure when the tracker poll failed",
+    bothErrors,
+  );
+
   await clearIssuesState(stateDir, host);
   await page.wait(
     `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues stopped"`,
@@ -11872,7 +11939,7 @@ try {
   extraServerProcess.stdout?.on("data", (chunk) => logWriter.write(chunk));
   extraServerProcess.stderr?.on("data", (chunk) => logWriter.write(chunk));
   await waitForHttp(runStateBase);
-  await devtools.send("Page.navigate", { url: runStateBase });
+  await devtools.send("Page.navigate", { url: dashboardPageUrl(runStatePort) });
   await page.wait(
     `location.port === "${runStatePort}" &&
       document.readyState === "complete" &&

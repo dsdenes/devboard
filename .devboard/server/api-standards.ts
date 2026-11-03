@@ -32,7 +32,7 @@ import {
 } from "../issues/api-standards/state";
 import { readActivity } from "../issues/state";
 import { activityDelta } from "./activity";
-import { canonicalProcessPath } from "./state";
+import { canonicalProcessPath } from "./process";
 import { hostHarnessDir, readHarnessVersion } from "./version";
 import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";

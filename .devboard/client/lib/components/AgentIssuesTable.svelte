@@ -1,15 +1,19 @@
 <script lang="ts">
+  import CircleAlert from "lucide-svelte/icons/circle-alert";
+  import Clock from "lucide-svelte/icons/clock";
   import Inbox from "lucide-svelte/icons/inbox";
   import { sortAgentIssues } from "../../../server/agents/registry";
   import { statusTone } from "../status-tone";
-  import type { AgentIssueRow } from "../types";
+  import type { AgentIssueRow, AgentSync } from "../types";
 
   interface Props {
     issues: AgentIssueRow[];
     agentLabel: string;
+    /** The tracker read behind `issues`; an empty list means zero only when read. */
+    sync: AgentSync;
   }
 
-  let { issues, agentLabel }: Props = $props();
+  let { issues, agentLabel, sync }: Props = $props();
 
   /** A local clock reading; the raw ISO value stays in the cell tooltip. */
   function filedLabel(value: string): string {
@@ -25,19 +29,46 @@
   }
 
   const rows = $derived(sortAgentIssues(issues));
+
+  /**
+   * A zero-row table claims zero filed issues only after a successful read.
+   * Before one, or after a failed one, the rows are unknown, not empty.
+   */
+  const read = $derived(sync.at !== null && sync.error === null);
+  const lastRead = $derived(sync.at === null ? "never" : filedLabel(sync.at));
 </script>
 
 <div class="agent-issues" data-testid="agent-issues">
   {#if rows.length === 0}
-    <div class="agent-issues__empty" data-testid="agent-issues-empty">
+    <div class="agent-issues__empty" data-testid="agent-issues-empty" data-sync={sync.state}>
       <div class="agent-issues__empty-body">
         <span class="agent-issues__empty-icon" aria-hidden="true">
-          <Inbox size={20} strokeWidth={1.5} />
+          {#if read}
+            <Inbox size={20} strokeWidth={1.5} />
+          {:else if sync.error === null}
+            <Clock size={20} strokeWidth={1.5} />
+          {:else}
+            <CircleAlert size={20} strokeWidth={1.5} />
+          {/if}
         </span>
-        <p class="agent-issues__empty-title">No issues filed yet</p>
-        <p class="agent-issues__empty-copy">
-          {agentLabel} files significant findings here after each scan.
-        </p>
+        {#if read}
+          <p class="agent-issues__empty-title">No issues filed yet</p>
+          <p class="agent-issues__empty-copy">
+            {agentLabel} files significant findings here after each scan.
+          </p>
+        {:else}
+          <p class="agent-issues__empty-title" data-testid="agent-issues-unread">
+            {sync.error === null
+              ? "The tracker has not been read yet"
+              : "The tracker could not be read"}
+          </p>
+          <p class="agent-issues__empty-copy" data-testid="agent-issues-unread-copy">
+            Last read {lastRead}.
+            {sync.error === null
+              ? `${agentLabel}'s filed issues are unknown until the first read completes.`
+              : sync.error}
+          </p>
+        {/if}
       </div>
     </div>
   {:else}

@@ -799,10 +799,19 @@ describe("parallel lifecycle", () => {
             ).length === 2,
         );
         expect(paused.lanes.filter((lane) => lane.kind === "implementation")).toHaveLength(2);
-        // A detached owner starts when its lane starts; the pause lands while
-        // the owners are being created, so wait for both before counting.
-        await waitUntil(() => spawnCount(host.logPath) >= 2, "both paused peers");
-        const spawnsAtPause = spawnCount(host.logPath);
+        // A detached owner starts when its lane starts, and the pause can land
+        // either before or after that owner's first prompt. Take the baseline
+        // only once no in-flight start can add one: a spawn after it is the
+        // pause violation this asserts, a spawn before it is the start itself.
+        let spawnsAtPause = spawnCount(host.logPath);
+        for (let stableSince = Date.now(); Date.now() - stableSince < 750; ) {
+          await Bun.sleep(25);
+          const counted = spawnCount(host.logPath);
+          if (counted !== spawnsAtPause) {
+            spawnsAtPause = counted;
+            stableSince = Date.now();
+          }
+        }
         await Bun.sleep(400);
         expect(spawnCount(host.logPath)).toBe(spawnsAtPause);
 

@@ -549,6 +549,54 @@ describe("createApp", () => {
     }
   });
 
+  test("carries no flow id on a static answer a shared cache may serve to anyone", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      await mkdir(join(root, "static", "assets"), { recursive: true });
+      await writeFile(join(root, "static", "assets", "app-abc123.js"), "console.log(1);\n");
+
+      const get = await fetch(`http://${url}/assets/app-abc123.js`, {
+        headers: { "x-flow-id": "alpha", "accept-encoding": "identity" },
+      });
+      expect(get.status).toBe(200);
+      expect(get.headers.get("x-flow-id")).toBeNull();
+      expect(get.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(get.headers.get("vary")).toBe("Accept-Encoding");
+
+      // A compressed answer is the same public cache entry, so it carries no
+      // request-specific header either.
+      const compressed = await fetch(`http://${url}/assets/app-abc123.js`, {
+        headers: { "x-flow-id": "alpha", "accept-encoding": "gzip" },
+        decompress: false,
+      });
+      expect(compressed.status).toBe(200);
+      expect(compressed.headers.get("content-encoding")).toBe("gzip");
+      expect(compressed.headers.get("x-flow-id")).toBeNull();
+
+      // HEAD answers with exactly the headers its GET answer carries.
+      const head = await fetch(`http://${url}/assets/app-abc123.js`, {
+        method: "HEAD",
+        headers: { "x-flow-id": "alpha", "accept-encoding": "identity" },
+      });
+      expect(head.status).toBe(200);
+      expect(head.headers.get("x-flow-id")).toBeNull();
+      expect(head.headers.get("content-type")).toBe(get.headers.get("content-type"));
+      expect(head.headers.get("vary")).toBe(get.headers.get("vary"));
+      expect(head.headers.get("cache-control")).toBe(get.headers.get("cache-control"));
+
+      // A Problem answer about a missing file is this call's answer, so it
+      // still echoes the flow id that asked for it.
+      const missing = await fetch(`http://${url}/assets/missing.js`, {
+        headers: { "x-flow-id": "alpha" },
+      });
+      expect(missing.status).toBe(404);
+      expect(missing.headers.get("x-flow-id")).toBe("alpha");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("answers /ready for GET and HEAD and refuses every other method", async () => {
     const { server, url } = await startServer();
 

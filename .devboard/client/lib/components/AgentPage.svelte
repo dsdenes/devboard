@@ -3,7 +3,13 @@
   import { agents } from "../agents.svelte";
   import { connection } from "../connection.svelte";
   import { layout } from "../layout.svelte";
-  import type { AgentCycle, AgentDocumentationEntry, AgentIssueRow, AgentReleaseRow } from "../types";
+  import type {
+    AgentCycle,
+    AgentDocumentationEntry,
+    AgentIssueRow,
+    AgentReleaseRow,
+    AgentSync,
+  } from "../types";
   import AgentActivityBar from "./AgentActivityBar.svelte";
   import AgentDocumentationPanel from "./AgentDocumentationPanel.svelte";
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
@@ -23,7 +29,7 @@
   const descriptor = $derived(agentRegistry.get(agentId));
   const snapshot = $derived(agents.snapshot(agentId));
   const lifecycle = $derived(snapshot?.lifecycle ?? "stopped");
-  const sync = $derived(snapshot?.sync ?? { state: "stale", at: null, error: null });
+  const sync = $derived<AgentSync>(snapshot?.sync ?? { state: "stale", at: null, error: null });
   const issues = $derived<AgentIssueRow[]>(snapshot?.issues ?? []);
   const releases = $derived<AgentReleaseRow[]>(snapshot?.releases ?? []);
   const documentation = $derived<AgentDocumentationEntry[]>(snapshot?.documentation ?? []);
@@ -378,7 +384,7 @@
               <span class="panel__subtitle" data-testid="agent-issues-count">{issues.length} filed</span>
             </div>
             <div class="panel__body panel__body--flush">
-              <AgentIssuesTable {issues} agentLabel={descriptor.label} />
+              <AgentIssuesTable {issues} agentLabel={descriptor.label} {sync} />
             </div>
           </section>
         {/if}

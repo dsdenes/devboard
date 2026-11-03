@@ -994,6 +994,11 @@ async function startDashboard(host, harness, port, stateDir) {
   const log = join(stateDir, "dashboard.log");
   await mkdir(stateDir, { recursive: true });
   const fd = openSync(log, "a");
+  // The document hands out the page's cookie only to this credential, so the
+  // launcher issues it and prints the address that carries it; the dashboard
+  // token itself never rides in a URL.
+  const bootstrap =
+    process.env.DEVBOARD_BOOTSTRAP_TOKEN?.trim() || randomBytes(32).toString("base64url");
   const child = spawn(bun, [join(harness, "server", "index.ts")], {
     // Keep the dashboard out of the replaceable package directory: an update
     // renames and removes it, leaving a deleted cwd that child processes
@@ -1012,6 +1017,7 @@ async function startDashboard(host, harness, port, stateDir) {
       STATE_DIR: stateDir,
       AGENT_COMMAND: process.env.AGENT_COMMAND ?? "omp acp",
       DEVBOARD_DASHBOARD_TOKEN: DASHBOARD_TOKEN,
+      DEVBOARD_BOOTSTRAP_TOKEN: bootstrap,
     },
   });
   closeSync(fd);
@@ -1030,7 +1036,7 @@ async function startDashboard(host, harness, port, stateDir) {
         `${tail.length > 0 ? `: ${firstLine(tail)}` : ""}`,
     );
   }
-  return child.pid;
+  return { pid: child.pid, bootstrap };
 }
 
 function installStatePath(prefix) {
@@ -1122,9 +1128,15 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
         port: kept[0].port,
         pid: kept[0].pid,
         url: `http://127.0.0.1:${kept[0].port}/`,
+        bootstrap: state.bootstrap,
         stateDir,
       });
-      return { port: kept[0].port, pid: kept[0].pid, reused: true };
+      return {
+        port: kept[0].port,
+        pid: kept[0].pid,
+        reused: true,
+        bootstrap: state.bootstrap,
+      };
     }
     await stopDashboardProcesses(host);
   }
@@ -1135,9 +1147,12 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
       : undefined;
   let port = await choosePort(preferred);
   let pid = 0;
+  let bootstrap;
   for (let attempt = 1; ; attempt += 1) {
     try {
-      pid = await startDashboard(host, harness, port, stateDir);
+      const started = await startDashboard(host, harness, port, stateDir);
+      pid = started.pid;
+      bootstrap = started.bootstrap;
       break;
     } catch (error) {
       // A concurrent install may claim the port between the free check and
@@ -1153,6 +1168,7 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
     port,
     pid,
     url: `http://127.0.0.1:${port}/`,
+    bootstrap,
     stateDir,
     installedAt: new Date().toISOString(),
   });
@@ -1161,7 +1177,7 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
     await stopDashboardProcesses(host);
     throw new LauncherError(`expected one dashboard process, found ${remaining.length}`);
   }
-  return { port, pid, reused: false };
+  return { port, pid, reused: false, bootstrap };
 }
 
 /**
@@ -1286,9 +1302,16 @@ async function installCommand(options) {
     console.log("devboard: AGENTS.md is tracked and deleted; left absent (drift)");
   }
   if (ignored.length > 0) console.log(`devboard: added ${ignored.join(", ")} to .gitignore`);
+  // The document hands out the page's credential only to the address that
+  // carries the bootstrap value, so this is the address the operator opens
+  // once; a later visit to the bare address relies on the cookie it set.
+  const bootstrap =
+    typeof dashboard.bootstrap === "string" && dashboard.bootstrap.length > 0
+      ? `?bootstrap=${dashboard.bootstrap}`
+      : "";
   console.log(
     `devboard: dashboard ${dashboard.reused ? "already running" : "running"} at ` +
-      `http://127.0.0.1:${dashboard.port}/ (pid ${dashboard.pid})`,
+      `http://127.0.0.1:${dashboard.port}/${bootstrap} (pid ${dashboard.pid})`,
   );
 }
 

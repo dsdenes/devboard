@@ -1,11 +1,11 @@
-import { ghCommand } from "./preflight";
+import { ghCommand } from "../../server/command";
 import {
   createRepositoryGitHub,
   isFullSha,
   isSha,
   shaTokens,
-  type GitHubRelease,
 } from "../../lib/github-release";
+import type { PublishedRelease } from "../../lib/release-resolution";
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
   giteaListIssues,
@@ -20,22 +20,17 @@ import { createGiteaVersionClient } from "../../lib/gitea-release";
  * published release, and the commit that closed an issue. Reads go through the
  * operator's `gh` credential; commit resolution also uses the checkout, and
  * release containment prefers the checkout's tags before asking the forge. The
- * release resolution itself lives in `lib/github-release.ts` and
+ * release resolution itself lives in `lib/release-resolution.ts` and
  * `lib/gitea-release.ts`, shared with the watchdog activity page.
  */
 
 export {
   closingCommitFromComments,
   closingCommitFromTimeline,
-  earliestRelease,
   isSha,
   parseJsonArray,
   parseJsonLines,
-  releaseAtClose,
-  resolveShippedVersion,
   shaTokens,
-  shippedVersion,
-  type VersionResolution,
 } from "../../lib/github-release";
 
 export interface ScoutGitHubIssue {
@@ -49,7 +44,7 @@ export interface ScoutGitHubIssue {
   body: string;
 }
 
-export type ScoutRelease = GitHubRelease;
+export type ScoutRelease = PublishedRelease;
 
 export interface ScoutGitHubClient {
   /** Every issue carrying the `scout` label, open or closed. */
@@ -77,27 +72,6 @@ function firstLine(text: string): string {
       .map((line) => line.trim())
       .find((line) => line.length > 0) ?? "no diagnostic"
   );
-}
-
-/**
- * Text `gh` prints when GitHub refuses a request because the caller spent its
- * request budget: a primary limit, a secondary limit or abuse detection, and
- * the HTTP 429 that can carry either. The operator's credential is shared with
- * every other process on the host, so the refusal is environmental and clears
- * itself; it is never a harness defect.
- */
-const RATE_LIMIT_PATTERNS = [
-  "rate limit exceeded",
-  "secondary rate limit",
-  "abuse detection",
-  "too many requests",
-  "http 429",
-];
-
-/** True when a `gh` diagnostic reports GitHub rate-limiting the request. */
-export function isGitHubRateLimited(text: string): boolean {
-  const message = text.toLowerCase();
-  return RATE_LIMIT_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
 /** Parses a JSON array `gh` printed, refusing a shape it does not know. */

@@ -37,6 +37,7 @@ import {
   listGoalDraftOwnerStates,
   readGoalDraftHandoff,
   readGoalDraftLease,
+  readGoalDraftOwnerState,
   removeGoalDraftHandoff,
   resetGoalDraftRun,
   writeGoalDraftHandoff,
@@ -46,7 +47,7 @@ import {
   type GoalDraftLease,
   type GoalDraftOwnerState,
 } from "./goal-draft-owner";
-import { canonicalProcessPath, recordedChildAlive, type RecordedChild } from "./state";
+import { canonicalProcessPath, recordedChildAlive, type RecordedChild } from "./process";
 
 export type GoalDraftStatus = "idle" | "running" | "succeeded" | "failed" | "stopped";
 
@@ -426,6 +427,21 @@ export class GoalDraftManager {
   }
 
   /**
+   * The run to publish for one durable state. An owner that has exited may
+   * have written its own terminal status between the listing and the liveness
+   * check, so a run still marked running is read again before it is declared
+   * interrupted: the owner's recorded outcome wins over the interruption.
+   */
+  private settled(stored: GoalDraftOwnerState): GoalDraftOwnerState {
+    if (stored.run.status !== "running") return stored;
+    if (GoalDraftManager.stateOwnerAlive(stored)) return stored;
+    const reread = readGoalDraftOwnerState(this.stateDir, this.repoDir, stored.run.path!);
+    if (reread === undefined) return this.markInterrupted(stored);
+    if (reread.run.status !== "running") return reread;
+    return GoalDraftManager.stateOwnerAlive(reread) ? reread : this.markInterrupted(reread);
+  }
+
+  /**
    * Records the missing owner's run as the interrupted failure the next
    * dashboard shows; the draft stays in place and startable.
    */
@@ -459,8 +475,9 @@ export class GoalDraftManager {
     const states = listGoalDraftOwnerStates(this.stateDir, this.repoDir);
     const handoff = readGoalDraftHandoff(this.stateDir, this.repoDir);
     let adoptable = false;
-    for (const state of states) {
-      const path = state.run.path!;
+    for (const stored of states) {
+      const path = stored.run.path!;
+      const state = this.settled(stored);
       this.owners.set(path, state);
       this.runs.set(path, copyRun(state.run));
       if (state.run.status !== "running") continue;
@@ -529,10 +546,7 @@ export class GoalDraftManager {
       seen.add(path);
       if (this.starting.has(path)) continue;
       const previous = this.runs.get(path);
-      const current =
-        stored.run.status === "running" && !GoalDraftManager.stateOwnerAlive(stored)
-          ? this.markInterrupted(stored)
-          : stored;
+      const current = this.settled(stored);
       this.owners.set(path, current);
       const next = current.run;
       if (JSON.stringify(next) === JSON.stringify(previous)) continue;

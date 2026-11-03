@@ -17,7 +17,8 @@ import type { Server } from "bun";
 import { createApp } from "./app";
 import { FlowController } from "./flow";
 import { detachedRunDirectory, readDetachedRunState } from "./detached-run";
-import { recordedChildAlive, stateFile, type RecordedChild } from "./state";
+import { recordedChildAlive, type RecordedChild } from "./process";
+import { stateFile } from "./state";
 import { StubForge } from "./fixtures/stub-forge";
 import { UNTRACKED_BODY_MAX_BYTES } from "./flow";
 import { journalKey } from "./journal";
@@ -1073,8 +1074,12 @@ describe("Flow Mode contract", () => {
     // The first checkpoint proves the implementation turn is under way, so the
     // peer's own log lines exist before they are asserted.
     await waitForStub(fixture, (line) => line.startsWith("flow-checkpoint 1 "));
-    expect(spawns(fixture)).toHaveLength(2);
-    const implementationPrompts = prompts(fixture).filter((line) =>
+    // One goal interview and one implementation turn; the analyst peer this
+    // fixture enables starts from the same diff the checkpoint publishes, so a
+    // total stub count would count it too.
+    const promptsByRole = prompts(fixture);
+    expect(promptsByRole.filter((line) => line.startsWith("prompt /flow-goal "))).toHaveLength(1);
+    const implementationPrompts = promptsByRole.filter((line) =>
       line.startsWith("prompt /flow-implement "),
     );
     expect(implementationPrompts).toHaveLength(1);
@@ -3163,7 +3168,10 @@ async function startFlowProcess(fixture: Fixture, command: string): Promise<Flow
   const deadline = Date.now() + 20_000;
   for (;;) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/`, { method: "HEAD" });
+      const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+        method: "HEAD",
+        headers: { authorization: `Bearer ${DASHBOARD_TOKEN}` },
+      });
       if (response.ok || response.status === 404) break;
     } catch {
       // Still binding or still starting.

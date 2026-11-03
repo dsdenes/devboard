@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import type { Journal } from "./journal";
 import { hostHarnessDir } from "./version";
 
 /**
@@ -141,6 +142,63 @@ export function relaunch(
   hooks.beforeStop?.();
   hooks.stop(server);
   hooks.exit(0);
+}
+
+/** The running dashboard an automatic replacement drives. */
+export interface ReplaceableServer extends Listener {
+  /** Withdraws a prepared handoff after a replacement that could not start. */
+  noteReplacementFailure(error: unknown): string;
+}
+
+export interface ReplacementControllerOptions<Server extends ReplaceableServer> {
+  /** Starts the replacement for the live server. */
+  restart: (server: Server) => void;
+  journal: Pick<Journal, "write">;
+  /** The version this process loaded; the record names it. */
+  runningVersion: string | null;
+  /** The server this process serves with, or `undefined` before it listens. */
+  liveServer: () => Server | undefined;
+}
+
+export interface ReplacementController {
+  /**
+   * Replaces the live server with `version`, at most once per installed
+   * version. The reload control stays the retry for a failed attempt.
+   */
+  replace(version: string): void;
+}
+
+/**
+ * The automatic-replacement policy: which installed version has already been
+ * attempted, what the attempt records, and the fallback that withdraws a
+ * prepared handoff when the replacement cannot start. It is separate from the
+ * process composition that supplies the live server and the restart.
+ */
+export function replacementController<Server extends ReplaceableServer>(
+  options: ReplacementControllerOptions<Server>,
+): ReplacementController {
+  let attemptedFor: string | null = null;
+  return {
+    replace(version) {
+      const server = options.liveServer();
+      if (server === undefined || attemptedFor === version) return;
+      attemptedFor = version;
+      options.journal.write(
+        "update",
+        `replacing ${options.runningVersion ?? "unknown"} with ${version}`,
+      );
+      try {
+        options.restart(server);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        options.journal.write(
+          "update-error",
+          `could not replace the server with ${version}: ${detail}`,
+        );
+        server.noteReplacementFailure(error);
+      }
+    },
+  };
 }
 
 export interface ReadyRelaunchOptions {

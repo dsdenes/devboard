@@ -18,7 +18,6 @@ import { liveScanClaim } from "../issues/scout/claims";
 import { versionLockPath } from "../issues/lock";
 import {
   createScoutGitHub,
-  isGitHubRateLimited,
   type ScoutGitHubClient,
   type ScoutGitHubIssue,
   type ScoutRelease,
@@ -32,7 +31,7 @@ import {
   statePath,
   versionedControlDirectory,
 } from "../issues/scout/paths";
-import { ghCommand } from "../issues/scout/preflight";
+import { ghCommand } from "../server/command";
 import { readScanFile, readSettings, type ScoutState } from "../issues/scout/state";
 import { buildRequest, createScanDirectory } from "../issues/scout/scan";
 import { excludedRoots, pickEntryPoint, scoutPool } from "../lib/entry-point";
@@ -147,25 +146,6 @@ const RATE_LIMIT_ERROR =
   "please include the request ID D6E0:2832D4:EE3810:157BF95:6AE1FE3B. For more on scraping " +
   "GitHub and how it may affect your rights, please review our Terms of Service " +
   "(https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) (HTTP 403)";
-
-describe("isGitHubRateLimited", () => {
-  test("recognizes every throttling diagnostic gh prints", () => {
-    for (const message of [
-      RATE_LIMIT_ERROR,
-      "You have exceeded a secondary rate limit.",
-      "gh: You have triggered an abuse detection mechanism.",
-      "gh: HTTP 429: Too Many Requests",
-    ]) {
-      expect(isGitHubRateLimited(message)).toBe(true);
-    }
-  });
-
-  test("leaves an authorization failure an error", () => {
-    expect(isGitHubRateLimited("gh: HTTP 403: Resource not accessible by integration")).toBe(
-      false,
-    );
-  });
-});
 
 class FakeGitHub implements ScoutGitHubClient {
   readonly issues: ScoutGitHubIssue[] = [];
