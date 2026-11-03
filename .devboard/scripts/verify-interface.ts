@@ -3650,8 +3650,10 @@ try {
     "a refused delete rewrote the project settings",
   );
 
-  // One click removes the prepare-family directory with no confirmation and
-  // clears exactly its exclusion entry, and the row stays gone after a reload.
+  // The delete control takes the documented error-surface hover, and one
+  // activation opens a confirmation naming the skill. Cancelling keeps the
+  // directory and its settings entry; only the confirm deletes it, clears
+  // exactly its exclusion entry, and leaves the row gone after a reload.
   const deleteSettings = {
     modelRoles: { commit: "provider/model" },
     skills: { includeSkills: ["kept"], ignoredSkills: ["fixture-deletable", "kept-pattern"] },
@@ -3670,14 +3672,81 @@ try {
     existsSync(join(host, ".omp", "skills", "fixture-deletable")),
     "the deletable fixture skill is missing before the click",
   );
+  await page.hover('[data-testid="delete-skill"][data-name="fixture-deletable"]');
+  const deleteHover = await page.eval<{
+    background: string;
+    errorSurface: string;
+    rowHover: string;
+  }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--error-surface)";
+    document.body.append(probe);
+    const rowProbe = document.createElement("div");
+    rowProbe.style.cssText = "position:absolute;background:var(--row-hover)";
+    document.body.append(rowProbe);
+    const expected = {
+      errorSurface: getComputedStyle(probe).backgroundColor,
+      rowHover: getComputedStyle(rowProbe).backgroundColor,
+    };
+    probe.remove();
+    rowProbe.remove();
+    const control = document.querySelector(
+      '[data-testid="delete-skill"][data-name="fixture-deletable"]',
+    );
+    return {
+      background: control === null ? "" : getComputedStyle(control).backgroundColor,
+      ...expected,
+    };
+  })()`);
+  check(
+    deleteHover.background === deleteHover.errorSurface &&
+      deleteHover.background !== deleteHover.rowHover,
+    "the delete control does not take the error-surface fill on hover",
+    deleteHover,
+  );
   await page.click('[data-testid="delete-skill"][data-name="fixture-deletable"]');
+  await page.wait(
+    `document.querySelector('[data-testid="delete-skill-confirmation"]') !== null`,
+    "the prepared-skill deletion confirmation",
+  );
+  const deletePrompt = await page.eval<string>(
+    `document.querySelector('[data-testid="delete-skill-confirmation"]')?.textContent ?? ""`,
+  );
+  check(
+    deletePrompt.includes("fixture-deletable"),
+    "the deletion confirmation does not name the skill",
+    deletePrompt,
+  );
+  check(
+    existsSync(join(host, ".omp", "skills", "fixture-deletable")) &&
+      (await page.eval<number>(
+        `document.querySelectorAll('[data-testid="skill-row"][data-skill="fixture-deletable"]').length`,
+      )) === 1,
+    "opening the confirmation deleted the skill before the confirm",
+  );
+  await page.click('[data-command="devboard.skills.delete.cancel"]');
+  await page.wait(
+    `document.querySelector('[data-testid="delete-skill-confirmation"]') === null`,
+    "the cancelled deletion confirmation to close",
+  );
+  check(
+    existsSync(join(host, ".omp", "skills", "fixture-deletable")) &&
+      readFileSync(devboardSettingsFile, "utf8") === `${JSON.stringify(deleteSettings)}\n`,
+    "cancelling the confirmation deleted the skill or rewrote the settings",
+  );
+  await page.click('[data-testid="delete-skill"][data-name="fixture-deletable"]');
+  await page.wait(
+    `document.querySelector('[data-testid="delete-skill-confirmation"]') !== null`,
+    "the prepared-skill deletion confirmation again",
+  );
+  await page.click('[data-command="devboard.skills.delete.confirm"]');
   await page.wait(
     `document.querySelector('[data-testid="skill-row"][data-skill="fixture-deletable"]') === null`,
     "the deleted prepared skill row",
   );
   check(
     !existsSync(join(host, ".omp", "skills", "fixture-deletable")),
-    "one click did not remove the prepared skill directory",
+    "confirming the dialog did not remove the prepared skill directory",
   );
   check(
     JSON.stringify(JSON.parse(readFileSync(devboardSettingsFile, "utf8"))) ===
