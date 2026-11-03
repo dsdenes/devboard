@@ -766,7 +766,8 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
 
 ## Do's and Don'ts
 
-- **Do** keep density: 12–13px type, 24–30px controls, 27px table rows, 8px panel padding.
+- **Do** keep density: 12–13px type, 24–30px controls, 27px table rows (28px when a 24px `sm`
+  control sets the row height), 8px panel padding.
 - **Do** express hierarchy with `background` → `surface` → `surface-raised` and 1px borders.
 - **Do** use `mono` for every path, identifier, commit, count, and command.
 - **Do** give every state badge a word, not only a color.
