@@ -327,17 +327,20 @@ export class DeadCodeBridge implements AgentAdapter {
       .filter((issue) => this.forge.reported(issue.url))
       .map((issue) => {
         const fact = this.forge.fact(issue.url);
-        return fact === undefined
-          ? projectIssue(issue)
-          : {
-              title: issue.title,
-              category: issue.category,
-              filedAt: issue.createdAt,
-              url: issue.url,
-              state: fact.state,
-              version: fact.version,
-              note: fact.version === null ? issue.versionError : null,
-            };
+        if (fact !== undefined) {
+          return {
+            title: issue.title,
+            category: issue.category,
+            filedAt: issue.createdAt,
+            url: issue.url,
+            state: fact.state,
+            version: fact.version,
+            note: fact.version === null ? issue.versionError : null,
+          };
+        }
+        return this.forge.unreadable(issue.url)
+          ? { ...projectIssue(issue), state: "unknown" as const }
+          : projectIssue(issue);
       });
     const cycleId = newestCycle(states);
     const lastRunAt =

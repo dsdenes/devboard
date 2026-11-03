@@ -424,7 +424,11 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
       report.reason = "a filing cap is set and the GitHub projection is not ok; nothing new was filed";
       return 0;
     }
-    const open = projection.issues.filter((issue) => issue.state === "pending").length;
+    // An unreadable row stays open: another forge serves it, so this check
+    // cannot prove it closed and must not file past its cap.
+    const open = projection.issues.filter(
+      (issue) => issue.state === "pending" || issue.state === "unreadable",
+    ).length;
     const hourlyRoom =
       settings.maxPerHour === null
         ? Number.POSITIVE_INFINITY

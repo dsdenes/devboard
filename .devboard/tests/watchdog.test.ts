@@ -2619,6 +2619,34 @@ describe("watchdog filing caps", () => {
     expect(loadLedger(stateDir).pendingFiling).toHaveLength(2);
   });
 
+  test("an unreadable row counts as open against the pending cap", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    writeProjection(stateDir, {
+      version: 1,
+      state: "ok",
+      at: fixedNow.toISOString(),
+      error: null,
+      issues: [
+        { url: "https://github.com/acme/fixture/issues/377", state: "unreadable", version: null },
+      ],
+    });
+    const { gh, calls } = ghStub();
+    const dedup = dedupStub((request) => filedWithinRoom(request));
+    const result = await runCycle(
+      cycleFor(root, {
+        events: twoFindings(root),
+        gh,
+        dedup: dedup.dedup,
+        settings: { intervalMinutes: 10, maxPerHour: null, maxPending: 1 },
+      }),
+    );
+    expect(result.report.issues).toEqual([]);
+    expect(dedup.calls[0]?.request.filingRoom).toBe(0);
+    expect(calls).toEqual([]);
+    expect(loadLedger(stateDir).pendingFiling).toHaveLength(2);
+  });
+
   test("files nothing new while a cap is set and the projection is not ok", async () => {
     const { root } = await fixtureRepository();
     const stateDir = join(root, ".devboard", ".tmp", "watchdog");

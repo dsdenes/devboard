@@ -2100,10 +2100,13 @@ each row it lists, the issue's current forge state and its shipping release. The
 the dashboard and never depends on the agent's worker: a stopped agent's table reflects a
 closure in the origin forge within one interval, with no Start, no worker restart, no browser
 reload, and no reconnect. An open issue reads `pending` and a closed one reads `implemented`.
-A closed issue whose shipping release cannot be resolved still reads `implemented` with `—` in
-the Shipped cell and stays listed. A successful read is authoritative for its rows: a filed
-issue the answer no longer names leaves the table on the next publish, and `agent-issues-count`
-and the sidebar `agent-count-<id>` count exactly the rendered rows.
+A row filed through another forge is answered as `unreadable`: the Gitea reader cannot read it,
+so the row stays listed with `unknown` in the State cell, claims no version, and a successful
+read never removes it. Only a row the reader actually asked its own forge about is dropped when
+the answer omits it. A closed issue whose shipping release cannot be resolved still reads
+`implemented` with `—` in the Shipped cell and stays listed. A successful read is authoritative
+for its rows: a filed issue the answer no longer names leaves the table on the next publish, and
+`agent-issues-count` and the sidebar `agent-count-<id>` count exactly the rendered rows.
 
 While at least one dashboard client is connected, each table is read at most once every 60
 seconds, and one read per table is in flight at a time. Opening a page whose last read is older
@@ -2207,7 +2210,9 @@ Auto Scout, Design System, and Dead Code default to 10 per rolling hour and 5 op
 defaults to both empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
 keeps its rolling-hour and open-issue enforcement. Watchdog files at most the hourly cap of new
 issues and at most the pending cap of its own open issues, counts open
-state from the last successful projection (`projection.json`), keeps excess fingerprints in
+state from the last successful projection (`projection.json`) — a `pending` row and an
+`unreadable` one, which another forge serves and this dashboard cannot prove closed, both count
+as open — keeps excess fingerprints in
 `pendingFiling` instead of dropping them, files nothing new while a cap is set and the projection
 is not `ok`, and never caps comments. With both caps empty its cycle behaves exactly as before.
 
