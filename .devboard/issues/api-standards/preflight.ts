@@ -8,7 +8,7 @@ import {
   giteaRepository,
   type FetchLike,
 } from "../../lib/gitea";
-import { ghCommand } from "../scout/preflight";
+import { ghCommand } from "../../server/command";
 import { originForge } from "../repository";
 import type { ForgeRemote } from "../../lib/forge";
 import { ApiStandardsInputError, readRestSkill } from "./rules";

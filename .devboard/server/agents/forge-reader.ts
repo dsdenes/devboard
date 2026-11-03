@@ -16,7 +16,7 @@ import {
   type GitHubRelease,
   type RepositoryGitHub,
 } from "../../lib/github-release";
-import { ghCommand } from "../../issues/scout/preflight";
+import { ghCommand } from "../command";
 
 /**
  * The one forge read behind every background agent's filed-issues table. It

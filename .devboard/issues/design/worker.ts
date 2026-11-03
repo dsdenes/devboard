@@ -20,7 +20,7 @@ import {
   type DesignForgeIssue,
   type DesignRelease,
 } from "./forge";
-import { ghCommand } from "../scout/preflight";
+import { ghCommand } from "../../server/command";
 import { giteaBaseUrl } from "../../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";
 import {

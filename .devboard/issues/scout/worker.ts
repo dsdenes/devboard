@@ -20,7 +20,7 @@ import {
   type ScoutRelease,
   type VersionResolution,
 } from "./github";
-import { ghCommand } from "./preflight";
+import { ghCommand } from "../../server/command";
 import { originForge } from "../repository";
 import { giteaBaseUrl } from "../../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";

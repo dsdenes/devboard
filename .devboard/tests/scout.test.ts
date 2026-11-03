@@ -31,7 +31,7 @@ import {
   statePath,
   versionedControlDirectory,
 } from "../issues/scout/paths";
-import { ghCommand } from "../issues/scout/preflight";
+import { ghCommand } from "../server/command";
 import { readScanFile, readSettings, type ScoutState } from "../issues/scout/state";
 import { buildRequest, createScanDirectory } from "../issues/scout/scan";
 import { excludedRoots, pickEntryPoint, scoutPool } from "../lib/entry-point";

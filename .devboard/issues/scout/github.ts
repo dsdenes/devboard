@@ -1,4 +1,4 @@
-import { ghCommand } from "./preflight";
+import { ghCommand } from "../../server/command";
 import {
   createRepositoryGitHub,
   isFullSha,
