@@ -43,6 +43,8 @@ import { callTool } from "../mcp/tools";
 import type { McpContext } from "../mcp/context";
 import type { AcpPeer, IssuesPeerOptions } from "../issues/worker";
 import type { ForgeIssueSummary, ForgeIssues } from "../lib/forge-issues";
+import { preflightSingleResponsibility } from "../issues/single-responsibility/preflight";
+import { makeRepository } from "./fixtures/scout-helpers";
 
 const harnessRoot = join(import.meta.dir, "..");
 const roots: string[] = [];
@@ -892,5 +894,32 @@ describe("single-responsibility dedupe guard", () => {
       labels: [SINGLE_RESPONSIBILITY_LABEL],
     });
     expect(result.error).toContain("already exists");
+  });
+});
+
+describe("single-responsibility preflight", () => {
+  test("accepts a command installed under the checkout's .omp/agent/commands", async () => {
+    const root = await makeRepository({
+      files: {
+        [SKILL_PATH]: SKILL,
+        ".omp/agent/commands/single-responsibility.md": "# command\n",
+      },
+      origin: "acme/fixture",
+    });
+    roots.push(root);
+    const bin = join(root, "bin");
+    write(join(bin, "omp"), "");
+    write(join(bin, "gh"), "");
+    const result = await preflightSingleResponsibility({
+      repoDir: root,
+      stateDir: join(root, ".devboard", ".tmp", "state"),
+      environment: { PATH: bin, HOME: join(root, "home") },
+      run: async (argv) => ({
+        code: 0,
+        stdout: argv.at(-1) === ".permissions.push" ? "true" : SINGLE_RESPONSIBILITY_LABEL,
+        stderr: "",
+      }),
+    });
+    expect(result).toEqual({ ok: true, repository: "acme/fixture" });
   });
 });

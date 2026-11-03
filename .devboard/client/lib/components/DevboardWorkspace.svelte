@@ -5,6 +5,7 @@
   import { devboard } from "../devboard.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import AgentPage from "./AgentPage.svelte";
+  import DevboardComplexity from "./DevboardComplexity.svelte";
   import DevboardSkills from "./DevboardSkills.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
@@ -31,6 +32,8 @@
   <AgentPage agentId={agentDescriptor.id} />
 {:else if tab?.kind === "devboard-skills"}
   <DevboardSkills />
+{:else if tab?.kind === "devboard-complexity"}
+  <DevboardComplexity />
 {:else}
   <div class="mode-body" data-testid="devboard-workspace">
     <PageHeader
