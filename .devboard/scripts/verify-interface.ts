@@ -37,7 +37,7 @@ import { stateFile } from "../server/state";
 import { statePath } from "../issues/scout/paths";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import {
-  VERIFY_DASHBOARD_AUTHORIZATION,
+  VERIFY_DASHBOARD_HEADERS,
   dashboardPageUrl,
   dashboardSocket,
   dashboardsFor,
@@ -1342,7 +1342,7 @@ async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
     async () => {
       try {
         const response = await fetch(ready, {
-          headers: VERIFY_DASHBOARD_AUTHORIZATION,
+          headers: VERIFY_DASHBOARD_HEADERS,
           signal: AbortSignal.timeout(1500),
         });
         return response.ok ? true : undefined;
@@ -7075,7 +7075,7 @@ try {
   );
   const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/feedback`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...VERIFY_DASHBOARD_AUTHORIZATION },
+    headers: { "content-type": "application/json", ...VERIFY_DASHBOARD_HEADERS },
     body: JSON.stringify({ action: "REPORT", report: "disabled check" }),
   });
   const refusal = await refused.text();

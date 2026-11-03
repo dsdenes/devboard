@@ -39,7 +39,7 @@ import type { ForgeIssueSummary, ForgeIssues } from "../lib/forge-issues";
 import { readHarnessVersion } from "../server/version";
 import {
   assertTrue,
-  VERIFY_DASHBOARD_AUTHORIZATION,
+  VERIFY_DASHBOARD_HEADERS,
   dashboardPageUrl,
   dashboardSocket,
   freePort,
@@ -692,7 +692,7 @@ try {
     async () => {
       try {
         const response = await fetch(`http://127.0.0.1:${port}/ready`, {
-          headers: VERIFY_DASHBOARD_AUTHORIZATION,
+          headers: VERIFY_DASHBOARD_HEADERS,
           signal: AbortSignal.timeout(2000),
         });
         return response.ok ? true : undefined;
