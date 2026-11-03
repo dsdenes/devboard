@@ -9274,6 +9274,47 @@ try {
     "a draft does not show its first heading",
     draftHeadings,
   );
+  const draftNameType = await page.eval<{
+    fontSize: number;
+    lineHeight: number;
+    mono: boolean;
+    nowrap: boolean;
+    overflow: string;
+    ellipsis: string;
+    title: string;
+    path: string;
+  }>(`(() => {
+    const name = document.querySelector('[data-testid="issues-draft"] .issues-draft__name');
+    const style = name === null ? null : getComputedStyle(name);
+    const row = name?.closest('[data-testid="issues-draft"]') ?? null;
+    return {
+      fontSize: style === null ? 0 : Number.parseFloat(style.fontSize),
+      lineHeight: style === null ? 0 : Number.parseFloat(style.lineHeight),
+      mono: style === null ? false : style.fontFamily.toLowerCase().includes("mono"),
+      nowrap: style === null ? false : style.whiteSpace === "nowrap",
+      overflow: style === null ? "" : style.overflow,
+      ellipsis: style === null ? "" : style.textOverflow,
+      title: name?.getAttribute("title") ?? "",
+      path: row?.getAttribute("data-path") ?? "",
+    };
+  })()`);
+  check(
+    Math.abs(draftNameType.fontSize - 12) < 0.05 &&
+      Math.abs(draftNameType.lineHeight - 17.4) < 0.05 &&
+      draftNameType.mono,
+    "the draft file name does not render the mono 12px/17.4px type",
+    draftNameType,
+  );
+  check(
+    draftNameType.nowrap && draftNameType.overflow === "hidden" && draftNameType.ellipsis === "ellipsis",
+    "the draft file name is no longer a single ellipsized line",
+    draftNameType,
+  );
+  check(
+    draftNameType.path !== "" && draftNameType.title === draftNameType.path,
+    "the draft file name does not carry its full path as the tooltip",
+    draftNameType,
+  );
 
   // The report panel's earlier write is listed and its bytes are exact.
   const reportDraftPath = expectedDrafts.find((path) => path.includes(goalFiles[0]!));
