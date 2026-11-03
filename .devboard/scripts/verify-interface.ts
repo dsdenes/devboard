@@ -4760,6 +4760,44 @@ try {
   );
   await runPalette("open.flow.steering");
   await page.wait(`document.querySelector('[data-testid="flow-steering-note"]') !== null`, "the Flow steering note");
+  const flowSteeringMeta = await page.eval<{
+    rows: number;
+    parts: number;
+    fontSize: number;
+    fontWeight: string;
+    letterSpacing: number;
+    lineHeight: number;
+    display: string;
+    wrap: string;
+  }>(`(() => {
+    const rows = [...document.querySelectorAll('[data-testid="flow-steering-note"] .steering-meta')];
+    const meta = rows[0] ?? null;
+    const style = meta === null ? null : getComputedStyle(meta);
+    return {
+      rows: rows.length,
+      parts: meta?.children.length ?? 0,
+      fontSize: style === null ? 0 : parseFloat(style.fontSize),
+      fontWeight: style?.fontWeight ?? "",
+      letterSpacing: style === null ? 0 : parseFloat(style.letterSpacing),
+      lineHeight: style === null ? 0 : parseFloat(style.lineHeight),
+      display: style?.display ?? "",
+      wrap: style?.flexWrap ?? "",
+    };
+  })()`);
+  check(
+    flowSteeringMeta.rows > 0 &&
+      Math.abs(flowSteeringMeta.fontSize - 11) < 0.05 &&
+      flowSteeringMeta.fontWeight === "600" &&
+      Math.abs(flowSteeringMeta.letterSpacing / flowSteeringMeta.fontSize - 0.03) < 0.005 &&
+      Math.abs(flowSteeringMeta.lineHeight - 14.3) < 0.05,
+    "the Flow steering metadata does not render the label type",
+    flowSteeringMeta,
+  );
+  check(
+    flowSteeringMeta.display === "flex" && flowSteeringMeta.wrap === "wrap" && flowSteeringMeta.parts === 3,
+    "the Flow steering metadata does not keep its wrapping meta row",
+    flowSteeringMeta,
+  );
 
   await runPalette("open.flow.overview");
   await page.wait(`document.querySelector('[data-testid="dismiss-flow-blocker"]') !== null`, "the Flow blocker control");
