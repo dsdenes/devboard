@@ -2260,8 +2260,11 @@ fn asset_field<'a>(asset: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn release_asset_url(asset: &Value) -> Option<String> {
-    asset_field(asset, "browser_download_url")
-        .or_else(|| asset_field(asset, "url"))
+    // The API asset URL honors the token and the octet-stream Accept header;
+    // the browser URL redirects to a signed storage address that a private
+    // repository's token cannot follow reliably.
+    asset_field(asset, "url")
+        .or_else(|| asset_field(asset, "browser_download_url"))
         .map(str::to_string)
 }
 
@@ -2290,7 +2293,15 @@ async fn verify_github_assets(
 ) -> Result<VerifiedAssets> {
     let deadline = clock.now_millis() + args.wait_timeout.as_millis() as i64;
     loop {
-        match verify_github_assets_once(api, tag, version).await {
+        let attempt = tokio::time::timeout(
+            Duration::from_secs(120),
+            verify_github_assets_once(api, tag, version),
+        );
+        let attempt = match attempt.await {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!("asset verification timed out")),
+        };
+        match attempt {
             Ok(verified) => {
                 (log)(&format!(
                     "verified {} GitHub asset(s) for {tag}",
