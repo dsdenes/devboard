@@ -188,17 +188,20 @@ class Owner {
         this.#state.turnSeq = 1;
         this.#state.turnStatus = "failed";
         this.#state.turnError = detail;
-        this.#persist();
-        if (
-          this.#peer === undefined ||
-          !this.#peer.hasSession ||
-          this.#peer.closed ||
-          this.#peer.pid === undefined ||
-          !pidAlive(this.#peer.pid)
-        ) {
+        const usable =
+          this.#peer !== undefined &&
+          this.#peer.hasSession &&
+          !this.#peer.closed &&
+          this.#peer.pid !== undefined &&
+          pidAlive(this.#peer.pid);
+        // A run that is about to end publishes its terminal state alone: an
+        // intermediate `running` document with a failed turn lets a dashboard
+        // poll settle the run before the owner's own status lands.
+        if (!usable) {
           this.#finish("failed", detail);
           return;
         }
+        this.#persist();
         clearInterval(this.#timer);
         this.#timer = undefined;
         await this.#loop(control);
