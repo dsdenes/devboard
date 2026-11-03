@@ -775,6 +775,7 @@ async function seedIssuesState(
   lifecycle: "stopped" | "idle" | "running" | "paused" | "failed",
   answeredRunId?: string,
   missingQueueIssue?: number,
+  pollError: string | null = null,
 ): Promise<void> {
   const directory = join(stateDir, "issues", journalKey(host));
   await mkdir(join(directory, "runs"), { recursive: true });
@@ -890,7 +891,7 @@ async function seedIssuesState(
       etag: enabled ? '"etag"' : null,
       notModified: false,
       rateLimitedUntil: null,
-      error: null,
+      error: pollError,
     },
     queue,
     runs,
@@ -10605,6 +10606,30 @@ try {
   }))()`);
   check(failed.indicator === "issues failed", "the failed indicator is wrong", failed);
   check(failed.error.includes("the agent exited with code 1"), "the failure is not shown", failed);
+
+  // A rate-limited tracker read leaves the settled run's failure intact, so
+  // the overview must keep both errors instead of letting one hide the other.
+  await seedIssuesState(stateDir, host, "failed", undefined, undefined, "tracker read rate limited");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-poll-error"]')?.textContent?.includes("tracker read rate limited") === true &&
+      document.querySelector('[data-testid="issues-error"]')?.textContent?.includes("the agent exited with code 1") === true`,
+    "the poll error beside the run failure",
+    8_000,
+  );
+  const bothErrors = await page.eval<{ poll: string; run: string }>(`(() => ({
+    poll: document.querySelector('[data-testid="issues-poll-error"]')?.textContent?.trim() ?? "",
+    run: document.querySelector('[data-testid="issues-error"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    bothErrors.poll.includes("tracker read rate limited"),
+    "the overview drops the poll error when a run also failed",
+    bothErrors,
+  );
+  check(
+    bothErrors.run.includes("the agent exited with code 1"),
+    "the overview drops the run failure when the tracker poll failed",
+    bothErrors,
+  );
 
   await clearIssuesState(stateDir, host);
   await page.wait(
