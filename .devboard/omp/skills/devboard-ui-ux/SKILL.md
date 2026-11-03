@@ -29,7 +29,22 @@ Run this before inspecting UI code, proposing a redesign, or touching a design-s
 bun "$(realpath skill://devboard-ui-ux)/scripts/preflight.mjs" .
 ```
 
-The script prints JSON. Read `applicable`, `checks`, and `missing`.
+The script prints JSON. Read `applicable`, `checks`, `missing`, and `unverified`.
+
+### If `unverified` is not empty
+
+These checks could not run. They are not missing prerequisites: the artifact is present and
+structurally valid, the check itself was unavailable. Print the following once, then run this
+skill's steps and state which check went unverified in the result.
+
+```text
+UI/UX skill preflight could not verify:
+
+- <requirement>: <detail>
+  Command tried: <command>
+
+These checks did not run. Everything else in this workflow still applies.
+```
 
 ### If `applicable` is false
 

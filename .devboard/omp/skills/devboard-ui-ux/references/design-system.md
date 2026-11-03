@@ -105,19 +105,29 @@ The preflight script rejects a `DESIGN.md` without a Layout section that describ
 
 ### Validate and project
 
+Install the pinned linter once in the project root, so every run stays inside the project and
+needs no registry access:
+
+```bash
+bun add -d @google/design.md@0.4.0
+```
+
 Run from the project root:
 
 ```bash
-npx --yes @google/design.md@0.4.0 lint --format json DESIGN.md
-npx --yes @google/design.md@0.4.0 export --format dtcg DESIGN.md > design/tokens.json
+node_modules/.bin/design-md lint --format json DESIGN.md
+node_modules/.bin/design-md export --format dtcg DESIGN.md > design/tokens.json
 ```
 
 `lint` must report zero errors. Treat warnings as review items; do not ignore contrast or broken
 token-reference findings. Use `diff` before changing an established design system:
 
 ```bash
-npx --yes @google/design.md@0.4.0 diff DESIGN.md DESIGN.before.md
+node_modules/.bin/design-md diff DESIGN.md DESIGN.before.md
 ```
+
+When the pinned linter is absent, preflight reports the lint as `unverified` instead of failing
+the gate: a DESIGN.md that is present and structurally valid keeps the workflow applicable.
 
 DTCG is the exchange artifact. Generate it from `DESIGN.md`; do not hand-edit a generated
 `design/tokens.json`. If the project cannot generate DTCG, keep a checked-in DTCG file and prove it
@@ -289,7 +299,7 @@ Step 5 sync checklist:
 - [ ] Storybook story covers default and all relevant states.
 - [ ] Tokens used by the component exist in `DESIGN.md`.
 - [ ] `design/tokens.json` regenerated or diffed against `DESIGN.md`.
-- [ ] `npx @google/design.md@0.4.0 lint --format json DESIGN.md` has zero errors.
+- [ ] `node_modules/.bin/design-md lint --format json DESIGN.md` has zero errors.
 - [ ] OpenUI catalog parses and the component entry has props/examples.
 - [ ] Storybook builds or the targeted story tests pass.
 - [ ] No stale prop, token, or story references remain.
