@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { pidAlive } from "../issues/lock";
@@ -7,15 +7,21 @@ import {
   DETACHED_RUN_VERSION,
   DetachedPeer,
   appendDetachedRunActivity,
+  appendDetachedRunText,
   beginDetachedHandoff,
+  detachedRunActivityPath,
   detachedRunDirectory,
   detachedRunLeasePath,
   endDetachedHandoff,
   readDetachedRunActivity,
+  readDetachedRunActivitySince,
   readDetachedRunState,
+  readDetachedRunText,
+  readDetachedRunTextSince,
   writeDetachedLease,
   writeDetachedRunState,
 } from "./detached-run";
+import type { DetachedRunJournalCursor } from "./detached-run";
 
 const harness = resolve(import.meta.dir, "..");
 const testRoot = join(harness, ".tmp");
@@ -270,4 +276,69 @@ describe("detached runs", () => {
     peer.close();
     await run;
   }, 30_000);
+});
+
+describe("detached run journals", () => {
+  test("a poll parses only the bytes appended since the previous one", async () => {
+    const { repoDir, stateDir } = await fixture();
+    const directory = detachedRunDirectory(stateDir, repoDir, "lane", "incremental");
+    appendDetachedRunActivity(directory, { text: "first", append: false });
+    appendDetachedRunText(directory, "alpha");
+    const activity: DetachedRunJournalCursor = { offset: 0, dropped: 0 };
+    const text: DetachedRunJournalCursor = { offset: 0, dropped: 0 };
+    expect(readDetachedRunActivitySince(directory, activity).entries).toEqual([
+      { text: "first", append: false },
+    ]);
+    expect(readDetachedRunTextSince(directory, text).entries).toEqual(["alpha"]);
+
+    // The second poll parses only the appends, though the journals still hold
+    // the entries the first poll delivered.
+    appendDetachedRunActivity(directory, { text: "second", append: true });
+    appendDetachedRunText(directory, "beta");
+    expect(readDetachedRunActivitySince(directory, activity).entries).toEqual([
+      { text: "second", append: true },
+    ]);
+    expect(readDetachedRunTextSince(directory, text).entries).toEqual(["beta"]);
+    expect(readDetachedRunActivity(directory).map((entry) => entry.text)).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(readDetachedRunText(directory)).toEqual(["alpha", "beta"]);
+  });
+
+  test("a poll holds back a line the owner is still appending", async () => {
+    const { repoDir, stateDir } = await fixture();
+    const directory = detachedRunDirectory(stateDir, repoDir, "lane", "torn");
+    appendDetachedRunActivity(directory, { text: "whole", append: false });
+    const cursor: DetachedRunJournalCursor = { offset: 0, dropped: 0 };
+    expect(readDetachedRunActivitySince(directory, cursor).entries).toEqual([
+      { text: "whole", append: false },
+    ]);
+    await appendFile(detachedRunActivityPath(directory), '{"text":"tor');
+    expect(readDetachedRunActivitySince(directory, cursor).entries).toEqual([]);
+    await appendFile(detachedRunActivityPath(directory), 'n","append":false}\n');
+    expect(readDetachedRunActivitySince(directory, cursor).entries).toEqual([
+      { text: "torn", append: false },
+    ]);
+  });
+
+  test("the text journal keeps the newest chunks inside its bound", async () => {
+    const { repoDir, stateDir } = await fixture();
+    const directory = detachedRunDirectory(stateDir, repoDir, "lane", "window");
+    const chunk = (index: number): string => `chunk ${index} ${"x".repeat(900)}`;
+    for (let index = 0; index < 1200; index += 1) appendDetachedRunText(directory, chunk(index));
+    // The bound already dropped the oldest chunks before this first read.
+    const cursor: DetachedRunJournalCursor = { offset: 0, dropped: 0 };
+    const first = readDetachedRunTextSince(directory, cursor);
+    expect(first.fromStart).toBe(true);
+    expect(first.dropped).toBeGreaterThan(0);
+    expect(first.entries.length).toBeLessThan(1200);
+    expect(first.entries[0]).not.toBe(chunk(0));
+    expect(first.entries.at(-1)).toBe(chunk(1199));
+
+    appendDetachedRunText(directory, chunk(1200));
+    const second = readDetachedRunTextSince(directory, cursor);
+    expect(second.fromStart).toBe(false);
+    expect(second.entries).toEqual([chunk(1200)]);
+  });
 });

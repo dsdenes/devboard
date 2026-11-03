@@ -2,12 +2,17 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -40,8 +45,9 @@ export const DETACHED_HANDOFF_GRACE_MS = 30_000;
 /** The recorded error of a run an ordinary server exit ended. */
 export const DETACHED_RUN_INTERRUPTED =
   "The server exit interrupted the run, so it was not resumed. Start it again.";
-const ACTIVITY_MAX_ENTRIES = 1_000;
-const ACTIVITY_MAX_BYTES = 1024 * 1024;
+/** Bound on each run journal: both the activity and the text journal. */
+const JOURNAL_MAX_ENTRIES = 1_000;
+const JOURNAL_MAX_BYTES = 1024 * 1024;
 
 export type DetachedRunStatus = "starting" | "running" | "succeeded" | "failed" | "stopped";
 
@@ -108,29 +114,171 @@ export function detachedRunTextPath(directory: string): string {
   return join(directory, "text.jsonl");
 }
 
-export function readDetachedRunText(directory: string): string[] {
+/** One journal's consumed byte offset, so a poll reads only appended bytes. */
+export interface DetachedRunJournalCursor {
+  offset: number;
+  /** The drop count in the header of the generation this offset belongs to. */
+  dropped: number;
+}
+
+/** What one journal read returned, and whether it began at byte 0. */
+export interface DetachedRunJournalRead<T> {
+  entries: T[];
+  /**
+   * True when the read began at byte 0: the cursor is new, or the journal was
+   * rewritten by its bound. The caller drops the prefix it already delivered.
+   */
+  fromStart: boolean;
+  /** Entries the bound discarded before this read's first entry. */
+  dropped: number;
+}
+
+/** One read of a journal, with the header's drop count the bound records. */
+interface DetachedRunJournal<T> {
+  entries: T[];
+  dropped: number;
+}
+
+/** The count in an optional `{"dropped":<n>}` header line, or 0. */
+function parseDroppedHeader(line: string | undefined): number {
+  if (line === undefined) return 0;
+  const parsed = readJsonText(line);
+  if (!isRecord(parsed) || !isInteger(parsed.dropped) || parsed.dropped <= 0) return 0;
+  return parsed.dropped;
+}
+
+const LINE_BREAK = 0x0a;
+
+/** Bytes a header probe reads; a `{"dropped":<n>}` line is far shorter. */
+const HEADER_PROBE_BYTES = 128;
+
+/** Reads the lines past `cursor`, holding back a trailing partial line. */
+function readJournalAppend(
+  path: string,
+  cursor: DetachedRunJournalCursor,
+): { lines: string[]; fromStart: boolean; dropped: number } {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, "r");
+  } catch {
+    return { lines: [], fromStart: false, dropped: cursor.dropped };
+  }
+  try {
+    const size = fstatSync(descriptor).size;
+    const probe = Buffer.allocUnsafe(HEADER_PROBE_BYTES);
+    const probed = readSync(descriptor, probe, 0, probe.length, 0);
+    const dropped = parseDroppedHeader(
+      probe.subarray(0, probed).toString("utf8").split("\n")[0],
+    );
+    // A rewritten journal carries a new drop count in its header, so a header
+    // this cursor has not recorded means the bytes it consumed are gone.
+    const rewritten = dropped !== cursor.dropped || size < cursor.offset;
+    if (rewritten) {
+      cursor.offset = 0;
+      cursor.dropped = dropped;
+    }
+    // A read at byte 0 covers the whole journal: a new cursor or a rewrite.
+    const fromStart = rewritten || cursor.offset === 0;
+    if (size === cursor.offset) return { lines: [], fromStart, dropped };
+    const buffer = Buffer.allocUnsafe(size - cursor.offset);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const count = readSync(
+        descriptor,
+        buffer,
+        filled,
+        buffer.length - filled,
+        cursor.offset + filled,
+      );
+      if (count === 0) break;
+      filled += count;
+    }
+    const chunk = buffer.subarray(0, filled);
+    // A line still being appended stays unread until the next poll completes it.
+    const end = chunk.lastIndexOf(LINE_BREAK);
+    if (end < 0) return { lines: [], fromStart, dropped };
+    cursor.offset += end + 1;
+    return {
+      lines: chunk.subarray(0, end).toString("utf8").split("\n"),
+      fromStart,
+      dropped,
+    };
+  } catch {
+    return { lines: [], fromStart: false, dropped: cursor.dropped };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function parseTextLine(line: string): string | undefined {
+  if (line.length === 0) return undefined;
+  try {
+    const value: unknown = JSON.parse(line);
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseActivityLine(line: string): DetachedRunActivity | undefined {
+  if (line.length === 0) return undefined;
+  const parsed = readJsonText(line);
+  if (!isRecord(parsed) || typeof parsed.text !== "string") return undefined;
+  return { text: parsed.text, append: parsed.append === true };
+}
+
+/** The text journal: an optional `{"dropped":<n>}` header, then one string per line. */
+function readDetachedRunTextJournal(directory: string): DetachedRunJournal<string> {
   let text: string;
   try {
     text = readFileSync(detachedRunTextPath(directory), "utf8");
   } catch {
-    return [];
+    return { entries: [], dropped: 0 };
   }
   const chunks: string[] = [];
-  for (const line of text.split("\n")) {
-    if (line.length === 0) continue;
-    try {
-      const value: unknown = JSON.parse(line);
-      if (typeof value === "string") chunks.push(value);
-    } catch {
-      // A torn final line is retried by the next read.
-    }
+  let dropped = 0;
+  for (const [index, line] of text.split("\n").entries()) {
+    if (index === 0) dropped = parseDroppedHeader(line);
+    const chunk = parseTextLine(line);
+    if (chunk !== undefined) chunks.push(chunk);
   }
-  return chunks;
+  return { entries: chunks, dropped };
 }
 
+/** Every chunk the text journal holds, for a caller replaying the run. */
+export function readDetachedRunText(directory: string): string[] {
+  return readDetachedRunTextJournal(directory).entries;
+}
+
+/** Only the chunks appended past `cursor`: the path a 20 Hz poll takes. */
+export function readDetachedRunTextSince(
+  directory: string,
+  cursor: DetachedRunJournalCursor,
+): DetachedRunJournalRead<string> {
+  const { lines, fromStart, dropped } = readJournalAppend(detachedRunTextPath(directory), cursor);
+  const entries: string[] = [];
+  for (const line of lines) {
+    const chunk = parseTextLine(line);
+    if (chunk !== undefined) entries.push(chunk);
+  }
+  return { entries, fromStart, dropped };
+}
+
+/** Appends one chunk, then bounds the journal to the documented window. */
 export function appendDetachedRunText(directory: string, text: string): void {
   mkdirSync(directory, { recursive: true });
-  appendFileSync(detachedRunTextPath(directory), `${JSON.stringify(text)}\n`);
+  const path = detachedRunTextPath(directory);
+  appendFileSync(path, `${JSON.stringify(text)}\n`);
+  try {
+    if (statSync(path).size <= JOURNAL_MAX_BYTES) return;
+  } catch {
+    return;
+  }
+  const { entries, dropped } = readDetachedRunTextJournal(directory);
+  const kept = entries.slice(-JOURNAL_MAX_ENTRIES);
+  const discarded = dropped + entries.length - kept.length;
+  const header = discarded === 0 ? "" : `${JSON.stringify({ dropped: discarded })}\n`;
+  writeFileSync(path, `${header}${kept.map((chunk) => `${JSON.stringify(chunk)}\n`).join("")}`);
 }
 
 export function detachedRunControlDirectory(directory: string): string {
@@ -268,18 +416,13 @@ export function writeDetachedRunState(directory: string, state: DetachedRunState
 }
 
 /**
- * One read of the activity journal. `dropped` counts every entry the size bound
- * has discarded since the journal was created; a reader that counts entries
- * adds it back so its cursor stays a count of everything the run ever appended
- * instead of a position in the rewritten file.
+ * The activity journal: an optional `{"dropped":<n>}` header, then one object
+ * per line. `dropped` counts every entry the size bound has discarded since the
+ * journal was created; a reader that counts entries adds it back so its cursor
+ * stays a count of everything the run ever appended instead of a position in
+ * the rewritten file.
  */
-interface DetachedRunActivityJournal {
-  entries: DetachedRunActivity[];
-  dropped: number;
-}
-
-/** The activity journal: an optional `{"dropped":<n>}` header, then one object per line. */
-function readDetachedRunActivityJournal(directory: string): DetachedRunActivityJournal {
+function readDetachedRunActivityJournal(directory: string): DetachedRunJournal<DetachedRunActivity> {
   let text: string;
   try {
     text = readFileSync(detachedRunActivityPath(directory), "utf8");
@@ -290,14 +433,12 @@ function readDetachedRunActivityJournal(directory: string): DetachedRunActivityJ
   const entries: DetachedRunActivity[] = [];
   let dropped = 0;
   for (const [index, line] of lines.entries()) {
-    const parsed = readJsonText(line);
-    if (!isRecord(parsed)) continue;
-    if (index === 0 && isInteger(parsed.dropped) && parsed.dropped > 0) {
-      dropped = parsed.dropped;
-      continue;
+    if (index === 0) {
+      dropped = parseDroppedHeader(line);
+      if (dropped > 0) continue;
     }
-    if (typeof parsed.text !== "string") continue;
-    entries.push({ text: parsed.text, append: parsed.append === true });
+    const entry = parseActivityLine(line);
+    if (entry !== undefined) entries.push(entry);
   }
   return { entries, dropped };
 }
@@ -305,6 +446,23 @@ function readDetachedRunActivityJournal(directory: string): DetachedRunActivityJ
 /** The activity journal's entries, oldest first. */
 export function readDetachedRunActivity(directory: string): DetachedRunActivity[] {
   return readDetachedRunActivityJournal(directory).entries;
+}
+
+/** Only the entries appended past `cursor`: the path a 20 Hz poll takes. */
+export function readDetachedRunActivitySince(
+  directory: string,
+  cursor: DetachedRunJournalCursor,
+): DetachedRunJournalRead<DetachedRunActivity> {
+  const { lines, fromStart, dropped } = readJournalAppend(
+    detachedRunActivityPath(directory),
+    cursor,
+  );
+  const entries: DetachedRunActivity[] = [];
+  for (const line of lines) {
+    const entry = parseActivityLine(line);
+    if (entry !== undefined) entries.push(entry);
+  }
+  return { entries, fromStart, dropped };
 }
 
 function readJsonText(text: string): unknown {
@@ -324,12 +482,12 @@ export function appendDetachedRunActivity(
   const path = detachedRunActivityPath(directory);
   appendFileSync(path, `${JSON.stringify(activity)}\n`);
   try {
-    if (readFileSync(path).byteLength <= ACTIVITY_MAX_BYTES) return;
+    if (statSync(path).size <= JOURNAL_MAX_BYTES) return;
   } catch {
     return;
   }
   const { entries, dropped } = readDetachedRunActivityJournal(directory);
-  const kept = entries.slice(-ACTIVITY_MAX_ENTRIES);
+  const kept = entries.slice(-JOURNAL_MAX_ENTRIES);
   const discarded = dropped + entries.length - kept.length;
   const header = discarded === 0 ? "" : `${JSON.stringify({ dropped: discarded })}\n`;
   writeFileSync(path, `${header}${kept.map((entry) => `${JSON.stringify(entry)}\n`).join("")}`);
@@ -532,6 +690,9 @@ export class DetachedPeer {
   readonly #control: string;
   readonly #spawnOwner: NonNullable<DetachedPeerOptions["spawnOwner"]>;
   readonly #pollMs: number;
+  /** Byte offsets this peer has consumed, so a poll parses only appends. */
+  readonly #activityCursor: DetachedRunJournalCursor = { offset: 0, dropped: 0 };
+  readonly #textCursor: DetachedRunJournalCursor = { offset: 0, dropped: 0 };
   #seenActivity: number;
   #seenText = 0;
   #lastQuestion: string | null = null;
@@ -803,30 +964,45 @@ export class DetachedPeer {
     this.#poll();
   }
 
+  /**
+   * Drops the entries this peer already delivered. `seen` counts every entry
+   * the run ever appended, and the journal's header re-bases that count onto
+   * the file its bound rewrote; an append read starts at the cursor, so only a
+   * first read or a rewrite carries a delivered prefix.
+   */
+  #consume<T>(
+    read: DetachedRunJournalRead<T>,
+    seen: number,
+  ): { entries: T[]; seen: number } {
+    if (read.fromStart) {
+      const base = Math.min(Math.max(0, seen - read.dropped), read.entries.length);
+      return {
+        entries: read.entries.slice(base),
+        seen: read.dropped + read.entries.length,
+      };
+    }
+    return { entries: read.entries, seen: seen + read.entries.length };
+  }
+
   #poll(): void {
     const state = readDetachedRunState(this.#directory);
     if (state === undefined) return;
     this.#state = state;
-    // The journal discards its oldest entries when it outgrows its size bound,
-    // so the cursor counts every entry the run ever appended and the journal's
-    // drop count re-bases it onto the current file. Discarded entries are never
-    // delivered; every entry still in the file past the cursor is.
-    const { entries: activities, dropped } = readDetachedRunActivityJournal(this.#directory);
-    const seen = Math.max(0, this.#seenActivity - dropped);
-    if (this.#paused) {
-      this.#seenActivity = dropped + activities.length;
-    } else if (activities.length > seen) {
-      for (const activity of activities.slice(seen)) {
-        this.#options.onActivity(activity as AcpActivity);
-      }
-      this.#seenActivity = dropped + activities.length;
+    const activity = this.#consume(
+      readDetachedRunActivitySince(this.#directory, this.#activityCursor),
+      this.#seenActivity,
+    );
+    this.#seenActivity = activity.seen;
+    if (!this.#paused) {
+      for (const entry of activity.entries) this.#options.onActivity(entry as AcpActivity);
     }
-    const chunks = readDetachedRunText(this.#directory);
-    if (this.#paused) {
-      this.#seenText = chunks.length;
-    } else if (this.#options.onText !== undefined && chunks.length > this.#seenText) {
-      for (const chunk of chunks.slice(this.#seenText)) this.#options.onText(chunk);
-      this.#seenText = chunks.length;
+    const text = this.#consume(
+      readDetachedRunTextSince(this.#directory, this.#textCursor),
+      this.#seenText,
+    );
+    this.#seenText = text.seen;
+    if (!this.#paused && this.#options.onText !== undefined) {
+      for (const chunk of text.entries) this.#options.onText(chunk);
     }
     if (this.#options.multi === true) {
       const seq = state.turnSeq ?? 0;
