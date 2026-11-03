@@ -70,22 +70,6 @@ export function originRemoteUrl(root: string): string | undefined {
 }
 
 /**
- * True only for a GitHub remote. GitLab, a local path, and an unreadable URL
- * are all refused: this harness supports one tracker and adds no webhook.
- */
-export function isGitHubRemote(url: string): boolean {
-  const trimmed = url.trim();
-  const scp = /^[A-Za-z0-9_.-]+@([^:/]+):/.exec(trimmed);
-  if (scp !== null) return scp[1]!.toLowerCase() === "github.com";
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.hostname.toLowerCase() === "github.com";
-  } catch {
-    return false;
-  }
-}
-
-/**
  * The remote URL of `origin` when `root` is the checkout root itself, or
  * undefined. A directory below a checkout inherits that checkout's remote from
  * git, which would name a project that is not the caller's host, so only the
@@ -135,13 +119,6 @@ export function cachedRepository(
     }
     return value;
   };
-}
-
-/** A repository path: `owner/name`, or a GitLab namespace with subgroups. */
-const REPOSITORY = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/;
-
-export function isRepositoryName(value: string): boolean {
-  return REPOSITORY.test(value);
 }
 
 /** The harness directory a canonical checkout carries. */
