@@ -52,7 +52,7 @@ pub const RELEASE_TARGETS: [&str; 6] = [
     "x86_64-unknown-linux-musl",
 ];
 /// The installers cargo-dist generates.
-pub const RELEASE_INSTALLERS: [&str; 2] = ["devboard-installer.sh", "devboard-installer.ps1"];
+pub const RELEASE_INSTALLERS: [&str; 1] = ["devboard-installer.sh"];
 /// The directory source-refresh documents live under.
 pub const SOURCE_REFRESH_DIRECTORY: &str = "source-refresh";
 /// The request a publish writes.

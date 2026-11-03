@@ -1154,7 +1154,7 @@ async fn a_stale_checkout_rederives_from_the_forge_release() {
 #[tokio::test]
 async fn a_missing_platform_asset_fails_the_verification() {
     let mut assets = release_assets();
-    assets.remove("devboard-installer.ps1");
+    assets.remove("devboard-installer.sh");
     let live = live("missing-asset", assets).await;
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.wait_timeout = Duration::from_millis(60);
@@ -1162,7 +1162,7 @@ async fn a_missing_platform_asset_fails_the_verification() {
     let error = publish(args).await.expect_err("a missing installer fails");
     let message = format!("{error:#}");
     assert!(message.contains("GitHub assets"), "{message}");
-    assert!(message.contains("devboard-installer.ps1"), "{message}");
+    assert!(message.contains("devboard-installer.sh"), "{message}");
 }
 
 #[tokio::test]
