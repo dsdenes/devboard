@@ -3,7 +3,6 @@
     conceptTitle,
     contextTitle,
     labelText,
-    labelTexts,
     TABS,
   } from "../discover-format";
   import { DISCOVER_AGENTS } from "../../../server/agents/registry";
