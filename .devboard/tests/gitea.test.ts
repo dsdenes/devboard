@@ -304,6 +304,29 @@ describe("Gitea forge resolution", () => {
     });
   });
 
+  test("keeps the instance path prefix of an HTTP(S) origin in the address", () => {
+    const nested = parseForgeRemote("https://gitea.example.com/gitea/owner/repo.git", {});
+    expect(nested).toEqual({
+      forge: "gitea",
+      host: "gitea.example.com",
+      project: "owner/repo",
+      originUrl: "https://gitea.example.com/gitea",
+    });
+    expect(giteaBaseUrl(nested, {})).toBe("https://gitea.example.com/gitea");
+    expect(parseForgeRemote("https://gitea.example.com/owner/repo.git", {})).toEqual({
+      forge: "gitea",
+      host: "gitea.example.com",
+      project: "owner/repo",
+      originUrl: "https://gitea.example.com",
+    });
+    expect(parseForgeRemote("https://gitlab.example.com/group/sub/project.git", {})).toEqual({
+      forge: "gitlab",
+      host: "gitlab.example.com",
+      project: "group/sub/project",
+      originUrl: "https://gitlab.example.com",
+    });
+  });
+
   test("selects a write-capable Gitea token against the exact repository", async () => {
     const auth = await resolveForgeAuth(async () => ({ code: 1, stdout: "", stderr: "" }), {
       forge: "gitea",

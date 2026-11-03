@@ -21,7 +21,11 @@ export interface ForgeRemote {
    * project below a subgroup.
    */
   project: string;
-  /** HTTP origin for an HTTP(S) remote; undefined for SSH and scp forms. */
+  /**
+   * Instance address for an HTTP(S) remote: its origin plus every path segment
+   * the repository path sits under, as in `https://host/gitea`. Undefined for
+   * SSH and scp forms, whose HTTP service is never guessed.
+   */
   originUrl?: string;
 }
 
@@ -58,6 +62,15 @@ export function configuredGiteaToken(
 
 const PROJECT_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 
+function pathSegments(path: string): string[] {
+  return path
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .split("/")
+    .filter((segment) => segment.length > 0);
+}
+
 /**
  * The repository path a forge addresses. GitHub and Gitea name exactly
  * `owner/name`, so only the final two segments count. A GitLab project lives
@@ -65,16 +78,24 @@ const PROJECT_SEGMENT = /^[A-Za-z0-9_.-]+$/;
  * dropping them would point every reader at a different project.
  */
 export function projectFromPath(path: string, forge: Forge): string | undefined {
-  const segments = path
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "")
-    .replace(/\.git$/i, "")
-    .split("/")
-    .filter((segment) => segment.length > 0);
+  const segments = pathSegments(path);
   if (segments.length < 2) return undefined;
   const kept = forge === "gitlab" ? segments : segments.slice(-2);
   if (!kept.every((segment) => PROJECT_SEGMENT.test(segment))) return undefined;
   return kept.join("/");
+}
+
+/**
+ * The path prefix an HTTP(S) repository path sits under: the segments that
+ * `projectFromPath` does not keep, joined and opened by `/`. Empty when the
+ * project owns the whole path, as `https://host/owner/repo.git` does, and for
+ * a GitLab project, whose subgroups are part of the project itself.
+ */
+function instancePrefix(path: string, forge: Forge): string {
+  const segments = pathSegments(path);
+  const kept = forge === "gitlab" ? segments.length : 2;
+  const prefix = segments.slice(0, segments.length - kept);
+  return prefix.length === 0 ? "" : `/${prefix.join("/")}`;
 }
 
 /** The forge a hostname names. An explicit `DEVBOARD_FORGE` always wins. */
@@ -103,7 +124,7 @@ export function parseForgeRemote(
 
   let host = "";
   let path = "";
-  let originUrl: string | undefined;
+  let httpOrigin: string | undefined;
   const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/.exec(value);
   if (scp !== null && !value.includes("://")) {
     host = scp[1] ?? "";
@@ -119,7 +140,7 @@ export function parseForgeRemote(
     host = parsed.hostname;
     path = parsed.pathname;
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      originUrl = parsed.origin;
+      httpOrigin = parsed.origin;
     }
   }
 
@@ -132,14 +153,17 @@ export function parseForgeRemote(
     forge,
     host: host.toLowerCase(),
     project,
-    ...(originUrl === undefined ? {} : { originUrl }),
+    ...(httpOrigin === undefined
+      ? {}
+      : { originUrl: `${httpOrigin}${instancePrefix(path, forge)}` }),
   };
 }
 
 /**
- * The Gitea HTTP origin for a resolved remote: explicit configuration first,
- * then an HTTP(S) origin. An SSH origin names a different port than the HTTP
- * service, so it is never guessed.
+ * The Gitea instance address for a resolved remote: explicit configuration
+ * first, then the HTTP(S) remote's instance address, which keeps any path
+ * prefix the clone URL carries. An SSH origin names a different port than the
+ * HTTP service, so it is never guessed.
  */
 export function giteaBaseUrl(
   remote: ForgeRemote | undefined,
