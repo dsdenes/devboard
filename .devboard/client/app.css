@@ -2272,6 +2272,7 @@ a.code-chip--link:focus-visible {
 }
 
 .discover-page .table-wrap td {
+  height: 27px;
   padding-left: 8px;
   padding-right: 8px;
 }
@@ -2283,7 +2284,7 @@ a.code-chip--link:focus-visible {
 .discover-page .table-wrap td[data-column="line"] {
   font-family: var(--font-mono);
   font-size: 11.5px;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .discover-page .table-wrap .discover-command-label {
