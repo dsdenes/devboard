@@ -373,7 +373,10 @@ use `label`; never apply tracking to sentence-case prose.
 ## Layout
 
 Spacing uses a **2px base unit** with a half-step grid. The approved scale is 2, 4, 6, 8, 10, 12,
-14, 16, 24, and 28px; values outside it are forbidden.
+14, 16, 24, and 28px; spacing outside it is forbidden unless this document names that value for
+one component. A height, track width, offset, dot size, scroll cap, or dense-row padding named
+that way is that component's geometry, not a spacing step, and it never licenses an unnamed
+padding or gap elsewhere.
 
 - **Rhythm.** 8px is the default macro rhythm: panel body padding, the default flex gap, and the
   gap between stacked panels. 12px is the card-grid gap. 24–28px separates page-level sections.
