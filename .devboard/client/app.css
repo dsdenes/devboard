@@ -1247,43 +1247,6 @@ kbd {
   background: var(--error-surface);
 }
 
-.agent-output {
-  font-size: 12px;
-  overflow: auto;
-}
-
-.agent-output > :first-child {
-  margin-top: 0;
-}
-
-.agent-output > :last-child {
-  margin-bottom: 0;
-}
-
-.agent-output pre {
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  overflow: auto;
-  padding: 6px;
-}
-
-.agent-output code {
-  font-family: var(--font-mono);
-}
-
-.agent-output table {
-  border-collapse: collapse;
-}
-
-.agent-output th,
-.agent-output td {
-  border: 1px solid var(--border);
-  padding: 2px 6px;
-}
-
 .choice-list {
   display: flex;
   flex-direction: column;
