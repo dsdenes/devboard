@@ -140,6 +140,23 @@ async function waitFor<T>(
   }
 }
 
+/**
+ * Completes one poll this call owns. The worker skips a poll call while an
+ * interval poll is still in flight, so a single call can report no completion
+ * of its own; repeat it until the poll that finished is one this call asked
+ * for.
+ */
+async function pollCompleted(fixture: Fixture, timeoutMs = 20_000): Promise<void> {
+  const before = fixture.state().poll.lastPollAt;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await fixture.worker.poll();
+    if (fixture.state().poll.lastPollAt !== before) return;
+    await Bun.sleep(20);
+  }
+  throw new Error("timed out waiting for a completed poll");
+}
+
 /** A live process plus the exact identity `recordedChildAlive` compares. */
 async function recordedProcess() {
   const child = Bun.spawn({
@@ -1250,11 +1267,8 @@ describe("closed issues", () => {
       // The worker's own read still lists #1, so its queue alone would restart
       // the dismissed issue. The suppression must hold.
       const before = f.state().poll.lastPollAt;
-      await f.worker.poll();
-      await waitFor(
-        () => (f.state().poll.lastPollAt !== before ? true : undefined),
-        "a completed poll",
-      );
+      await pollCompleted(f);
+      expect(f.state().poll.lastPollAt).not.toBe(before);
       expect(f.peers).toHaveLength(2);
       expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([2]);
 

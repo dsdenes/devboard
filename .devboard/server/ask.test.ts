@@ -332,7 +332,10 @@ describe("ask conversations", () => {
   });
 
   test("times out a stalled turn and accepts the next ask on a fresh peer", async () => {
-    const turnTimeoutMs = 500;
+    // The deadline also covers the peer's own start-up, so it is far above the
+    // spawn and handshake this fixture needs on a loaded runner while still far
+    // below the suite's own bound.
+    const turnTimeoutMs = 3_000;
     const testServer = await startServer({
       agentArguments: ["--ask-stall"],
       askTurnTimeoutMs: turnTimeoutMs,
@@ -347,7 +350,7 @@ describe("ask conversations", () => {
         (message) =>
           message.type === "askError" && message.conversationId === "conversation-timeout",
       );
-      expect(String(timedOut.message)).toContain(`did not answer within ${turnTimeoutMs}ms`);
+      expect(String(timedOut.message)).toContain("did not answer within 3 seconds");
 
       // The deadline kills the peer, so its pending turn cannot complete; one
       // socket delivers in order, so the reply to this command proves every
