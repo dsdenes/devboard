@@ -20,7 +20,8 @@
       header.region { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
       h1 { font-size: 20px; margin: 0; }
       .identity { color: #555; font-family: ui-monospace, monospace; font-size: 12px; }
-      main { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); gap: 12px; }
+      main { display: flex; flex-direction: column; gap: 8px; }
+      .body-grid { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); gap: 12px; }
       .panel { display: flex; flex-direction: column; gap: 10px; min-height: 420px; }
       .panel-head { align-items: center; border-bottom: 1px solid #ddd; display: flex; gap: 8px; justify-content: space-between; padding-bottom: 8px; }
       h2 { font-size: 12px; margin: 0; }
@@ -35,7 +36,7 @@
       .stack-title { font-size: 13px; font-weight: 600; margin: 0; }
       .stack-copy { color: #555; font-size: 12px; margin: 0; max-width: 360px; }
       @media (max-width: 768px) {
-        main { grid-template-columns: 1fr; }
+        .body-grid { grid-template-columns: 1fr; }
         body { padding: 12px; }
       }
     </style>
@@ -48,39 +49,43 @@
         <span class="identity">owner/repo · idle · 2 draft(s)</span>
       </header>
       <main aria-label="Draft goals body">
-        <section class="region panel" aria-labelledby="list-title">
-          <span class="note">region_list · P0</span>
-          <div class="panel-head">
-            <h2 id="list-title">Proposed goals</h2>
-            <span class="button">New goal</span>
-          </div>
-          <div class="row">
-            <span class="row-identity">
-              <span class="file">020-retired-goals.md</span>
-              <span class="heading">Make the dashboard show retired goals</span>
-            </span>
-            <span class="state">idle</span>
-            <span class="button">Start</span>
-          </div>
-          <div class="row">
-            <span class="row-identity">
-              <span class="file">021-theme-persistence.md</span>
-              <span class="heading">Keep the theme across reloads</span>
-            </span>
-            <span class="state">idle</span>
-            <span class="button">Start</span>
-          </div>
-        </section>
-        <section class="region panel" aria-label="Draft detail">
-          <span class="note">region_detail · P1</span>
-          <div class="stack">
-            <span class="mark" aria-hidden="true">▢</span>
-            <p class="stack-title">No draft selected</p>
-            <p class="stack-copy">
-              Choose a draft from Proposed goals to read its proposal and elaborate it.
-            </p>
-          </div>
-        </section>
+        <span class="note">region_body · P0 · list + detail</span>
+        <div class="body-grid">
+          <section class="region panel" aria-labelledby="list-title">
+            <span class="note">region_list · P0</span>
+            <div class="panel-head">
+              <h2 id="list-title">Proposed goals</h2>
+              <span class="button">New goal</span>
+            </div>
+            <div class="row">
+              <span class="row-identity">
+                <span class="file">020-retired-goals.md</span>
+                <span class="heading">Make the dashboard show retired goals</span>
+              </span>
+              <span class="state">idle</span>
+              <span class="button">Start</span>
+            </div>
+            <div class="row">
+              <span class="row-identity">
+                <span class="file">021-theme-persistence.md</span>
+                <span class="heading">Keep the theme across reloads</span>
+              </span>
+              <span class="state">idle</span>
+              <span class="button">Start</span>
+            </div>
+          </section>
+          <section class="region panel" aria-label="Draft detail">
+            <span class="note">region_detail · P1</span>
+            <div class="stack">
+              <span class="note">region_selection · P1</span>
+              <span class="mark" aria-hidden="true">▢</span>
+              <p class="stack-title">No draft selected</p>
+              <p class="stack-copy">
+                Choose a draft from Proposed goals to read its proposal and elaborate it.
+              </p>
+            </div>
+          </section>
+        </div>
       </main>
     </div>
   </body>

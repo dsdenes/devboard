@@ -30,6 +30,18 @@ body (one full-width panel; no detail column)
     centered stack: notebook mark, No drafts yet, creation copy C1, C2
 ```
 
+## Regions by state
+
+- `region_page_header`, `region_body`, and `region_list` exist in every state; `root` holds
+  `region_page_header` and `region_body` in both state files.
+- `region_empty` replaces the row list inside `region_list` when there are no drafts.
+- `region_detail` and `region_selection` exist only with drafts: `region_detail` is the detail
+  column and `region_selection` is its stack while no draft is selected.
+- `drafts-body.a2ui.jsonl` carries the with-drafts set and `drafts-body.empty.a2ui.jsonl` the empty
+  set, so every ID above appears in the file for the state that carries it. Both wireframes
+  annotate `region_body`; the empty one renders it as the single-column body that owns the
+  one-column layout.
+
 ## Primary action
 
 - `New goal` in the Proposed goals panel header is the only filled primary. It stays in the same
