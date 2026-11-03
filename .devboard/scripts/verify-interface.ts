@@ -1342,7 +1342,7 @@ async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
     async () => {
       try {
         const response = await fetch(ready, {
-          ...VERIFY_DASHBOARD_AUTHORIZATION,
+          headers: VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(1500),
         });
         return response.ok ? true : undefined;
