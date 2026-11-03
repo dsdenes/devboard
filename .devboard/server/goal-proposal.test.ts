@@ -473,9 +473,9 @@ describe("goal proposal drafts", () => {
       const host = `evil.example:${server.port}`;
       const response = await propose(url, proposal(), { host, origin: `http://${host}` });
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(421);
       expect(await response.json()).toEqual(
-        problemBody("Forbidden", 403, "The request host is not served by this dashboard."),
+        problemBody("Misdirected Request", 421, "The request host is not served by this dashboard."),
       );
       expect(await drafts(root)).toEqual([]);
     } finally {

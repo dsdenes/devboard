@@ -1019,9 +1019,41 @@ describe("createApp", () => {
           "Sec-WebSocket-Version": "13",
         },
       });
-      expect(refused.status).toBe(403);
+      expect(refused.status).toBe(421);
+      expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await refused.json()).toEqual(
-        problemBody("Forbidden", 403, "The request host is not served by this dashboard."),
+        problemBody("Misdirected Request", 421, "The request host is not served by this dashboard."),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers a request with no parseable Host header with 400", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      // `fetch` always sends a usable Host, so the raw request line is the only
+      // way to observe a request that names no host at all.
+      const { promise, resolve: settle, reject: fail } = Promise.withResolvers<string>();
+      const [host, port] = url.split(":");
+      const socket = connect({ host, port: Number(port) });
+      let response = "";
+      socket.setEncoding("utf8");
+      socket.on("connect", () => {
+        socket.write(["GET /ws HTTP/1.1", "Host: ", "Connection: close", "", ""].join("\r\n"));
+      });
+      socket.on("data", (chunk) => {
+        response += chunk;
+      });
+      socket.on("end", () => settle(response));
+      socket.on("error", fail);
+
+      const raw = await promise;
+      expect(raw.startsWith("HTTP/1.1 400 ")).toBe(true);
+      expect(raw.toLowerCase()).toContain(`content-type: ${PROBLEM_CONTENT_TYPE}`);
+      expect(JSON.parse(raw.slice(raw.indexOf("\r\n\r\n") + 4))).toEqual(
+        problemBody("Bad Request", 400, "The request carries no valid Host header."),
       );
     } finally {
       server.stop(true);
@@ -1046,7 +1078,7 @@ describe("createApp", () => {
           "Sec-WebSocket-Version": "13",
         },
       });
-      expect(refused.status).toBe(403);
+      expect(refused.status).toBe(421);
 
       const Socket = WebSocket as unknown as new (
         url: string,
