@@ -9,6 +9,7 @@
     "start": "bun run server/index.ts",
     "publish": "bun run scripts/publish.ts",
     "release": "bun run scripts/release.ts",
+    "test:release": "bun run scripts/test-release.ts",
     "test": "bun test",
     "adr:lint": "adr lint --dir ../adrs",
     "adr:graph": "adr graph --dir ../adrs",

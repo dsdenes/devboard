@@ -1940,6 +1940,24 @@ component that dispatches it.
   the same tarball plus its `.sha256` as a fallback. A rerun on the same commit leaves the existing
   npm version and release assets untouched. Nothing is published under
   `@dsdenes/devboard-harness`.
+- The suite step is `bun run test:release`. It runs the whole harness suite under the workflow's
+  load settings (`--parallel=8 --timeout=60000`), retries the whole suite when individual tests
+  fail, and stops at the first attempt that reports no failing test, so at most nine attempts run.
+  A test that fails three consecutive whole-suite attempts is marked `test.skip(` in the step's
+  own working copy before the next attempt, and every marked registration is restored byte for
+  byte before the step ends: no commit, push, tag, or tracked-file change carries the quarantine,
+  and the checkout, `main`, and the packed package are untouched. One issue per skipped test is
+  filed in the checkout's origin forge, deduplicated by the test name in its title — a repeat of
+  the same flake appends one comment instead of a second issue. The step exits 0 so the later
+  typecheck, client-check, and publish steps still run and the version still ships. Filing is best
+  effort: an unreachable forge or a refused token prints one line naming the failure and never
+  blocks the release.
+- A structural suite failure is never retried or skipped. A file that does not compile or import,
+  a crashed runner, or output with no per-test result exits the step nonzero, files nothing, and
+  fails the workflow, so a flaky test unblocks the release while a suite that cannot run does not.
+  The step adds no `continue-on-error`, path exclusion, name filter, `--retry`, shard, or second
+  suite definition. This supersedes the earlier rule that forbade any retry, skip, filter, or
+  second attempt for the release suite step.
 - A failing workflow conclusion, a missing npm version, missing release assets, or a rejected
   derived version records the failure with its detail, ships nothing, and leaves the range
   unreleased. The next due tick starts a new run without operator action; a failed run is never
