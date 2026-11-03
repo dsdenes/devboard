@@ -137,13 +137,15 @@ The `Skills` sidebar entry opens the Devboard mode's other page. It renders one
 carries `data-testid="skill-row"` and `data-skill="<name>"`; its first cell holds one
 `data-testid="skill-disclosure"` button naming the skill installed under the repository's
 `.omp/skills` root verbatim, its second cell holds exactly one `data-testid="skill-enabled"`
-checkbox, and its third holds at most one delete control. A built-in `devboard-*` row carries a
+checkbox, and its third holds at most one delete control. A built-in row carries a
 visible `Managed` label, and a prepare-family row carries one
 `data-testid="delete-skill"` control with accessible name `Delete <skill>`. Built-in,
 Discover-generated, hand-authored, and symlinked rows carry no delete control, and no row carries
-a description or family text. The rows come from that directory and nothing else: a skill
-directory holding a `SKILL.md` appears whether hand-authored, prepared, Discover-generated, or
-reached through a symlink, while a name only a Discover manifest carries and no directory backs
+a description or family text. Managed rows lead the table: every built-in row renders above every
+other row, and each of the two groups follows the skill name, so the package's own skills stay at
+the top however the server orders its frame. The rows come from that directory and nothing else: a
+skill directory holding a `SKILL.md` appears whether hand-authored, prepared, Discover-generated,
+or reached through a symlink, while a name only a Discover manifest carries and no directory backs
 produces no row.
 
 One click on a prepare-family row's delete control removes the whole `.omp/skills/<name>/`
@@ -553,7 +555,7 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 |---|---|
 |`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.mjs`.|
 |`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
-|`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs.|
+|`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs, with the five violation categories; the Single Responsibility worker's normative source.|
 |`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym.|
 
 Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
@@ -2050,17 +2052,17 @@ sudo userdel --remove <user>
 
 ## Background agents
 
-Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer, and API Standards are the six continuous
-instances of one background-agent contract; the Release Train is a seventh descriptor of the same
-shape. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
-description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
-start/stop commands, issue projection, detail panel, and prompt source. The shared page, the
-shared filed-issues table, and the Devboard sidebar are built from that registry; adding a further
-continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
-sidebar, and issue table have no agent-id branch: a synthetic further descriptor projects and
-validates unchanged.
+Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer, API Standards, and Single
+Responsibility are the seven continuous instances of one background-agent contract; the Release
+Train is an eighth descriptor of the same shape. A typed registry in `server/agents/registry.ts`
+declares each descriptor's id, label, description, scope, lifecycle vocabulary, cadence field and
+defaults, nullable limits schema, start/stop commands, issue projection, detail panel, and prompt
+source. The shared page, the shared filed-issues table, and the Devboard sidebar are built from
+that registry; adding a further continuous agent means writing its engine, its adapter, and one
+registry entry. The shared page, sidebar, and issue table have no agent-id branch: a synthetic
+further descriptor projects and validates unchanged.
 
-All six continuous agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
+All seven continuous agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
 `stopping` from the moment Stop is accepted until the worker exits. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
@@ -2084,7 +2086,8 @@ so a field never separates from its save control. Either save validates all thre
 sends one settings command. The Devboard sidebar has two groups in order: `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
 `open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`,
-`open-devboard-dead-code`, `open-devboard-mcp-optimizer`, `open-devboard-api-standards`, then
+`open-devboard-dead-code`, `open-devboard-mcp-optimizer`, `open-devboard-api-standards`,
+`open-devboard-single-responsibility`, then
 `open-devboard-release-train`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
 `Devboard sections` (the `devboard-tab` MCP tools and Skills entries). The Issues sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
@@ -2093,8 +2096,9 @@ queue.
 
 ### Periodic forge reads
 
-All six filed-issues tables — Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer, and
-API Standards — obtain, age, and fail their issue state through one shared read
+All seven filed-issues tables — Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer,
+API Standards, and Single Responsibility — obtain, age, and fail their issue state through one
+shared read
 (`server/agents/forge-state.ts`) that names, for
 each row it lists, the issue's current forge state and its shipping release. The read runs in
 the dashboard and never depends on the agent's worker: a stopped agent's table reflects a
@@ -2401,12 +2405,13 @@ inside the checkout, and the worker's audit input never leaves the repository ro
 
 ### Entry points for background-agent crawls
 
-Auto Scout, Design System, and Dead Code each begin a cycle from one seeded entry point instead
-of a fixed survey. The Devboard MCP tool `entry_point` accepts a `surface` of `scout`, `design`,
-or `dead-code` and an optional `seed`, and returns the chosen repository-relative `path`, a
-1-based `line` inside that file, the `surface`, and the `seed` used. It is read-only, absent from
-the mutating-tool set, creates no file, and refuses an unknown surface, an empty eligible set, or
-a path that resolves outside the repository.
+Auto Scout, Design System, Dead Code, and Single Responsibility each begin a cycle from one
+seeded entry point instead of a fixed survey. The Devboard MCP tool `entry_point` accepts a
+`surface` of `scout`, `design`, `dead-code`, or `single-responsibility` and an optional `seed`,
+and returns the chosen repository-relative `path`, a 1-based `line` inside that file, the
+`surface`, and the `seed` used. It is read-only, absent from the mutating-tool set, creates no
+file, and refuses an unknown surface, an empty eligible set, or a path that resolves outside the
+repository.
 
 The `scout` pool is every regular text file under the repository root outside `.git`,
 `node_modules`, `dist`, `.worktree`, `.tmp`, and `.devboard/.tmp`. The `design` pool is the
@@ -2414,8 +2419,13 @@ configured Design System source set that `DESIGN_SOURCE_DIR` names, read through
 input the Design System cycle uses. The `dead-code` pool is the repository's source-code files:
 the picker discovers the extensions the host actually uses from files whose content is shaped
 like code or a style rule, so a Ruby or Go host is not limited to this project's TypeScript
-layout. No pool follows a symbolic link, and every entry is proven inside the real repository
-root.
+layout. The `single-responsibility` pool is that same source set narrowed to components: a
+`*.test.*` or `*.spec.*` file is excluded, and so is any file under a `fixtures/`, `tests/`, or
+`stubs/` directory, because a test, a fixture, and a stub describe another unit's contract. No
+pool follows a symbolic link, and every entry is proven inside the real repository root. A
+directory the walk cannot read is refused, never skipped: the picker throws one
+`EntryPointError` naming every such directory by its repository-relative path and the reason, so
+a pool that omits a subtree is never reported as a repository that lacks those files.
 
 One surface and one seed over an unchanged eligible set always return the same path and line. An
 omitted seed produces a fresh pseudo-random seed and returns it; replaying that seed with
@@ -2480,6 +2490,87 @@ Shipped cell's tooltip shows that reason. The row is resolved again only when th
 release list changes, which retries every unresolved row at once, or after six hours, so an
 unchanged read costs no forge call for a row it already failed to resolve. A release the row was
 waiting for fills the version and clears the reason.
+
+### Single Responsibility
+
+Single Responsibility is the `single-responsibility` descriptor. Its sidebar entry
+`open-devboard-single-responsibility` opens the shared `agent-page` with
+`data-agent="single-responsibility"`: the same core id sequence every background-agent page
+renders, exactly one of `agent-start`/`agent-stop`, `agent-cadence`, `agent-last-run`,
+`agent-next-run`, `agent-limit-hour`, `agent-limit-pending`, `agent-issues`,
+`agent-issues-count`, `agent-sync-at`, and the pinned `agent-activity-bar`. It renders no
+`agent-detail` and no `agent-documentation` panel, and `agent-count-single-responsibility`
+equals the rendered row count. Its prompt section shows
+`.devboard/prompts/single-responsibility.md`, the file the `/single-responsibility` command
+reads, as read-only bytes exactly like the Auto Scout prompt.
+
+The normative source is the project OMP skill
+`<REPO_DIR>/.omp/skills/devboard-single-responsibility-principle/SKILL.md`. It is the only
+normative text of a cycle: the agent reads it once and quotes it verbatim. Its
+`## Architectural Violations` section publishes exactly five categories:
+
+- `mixed-responsibilities` — unrelated concerns share one component;
+- `divergent-change` — one component changes for multiple independent reasons;
+- `accidental-aggregation` — unrelated functionality is grouped for convenience;
+- `responsibility-leakage` — a component implements another component's responsibility;
+- `artificial-fragmentation` — a cohesive responsibility is split into trivial components.
+
+A candidate outside those five is recorded in activity and never filed. Every issue carries
+exactly one component and exactly one category: two violations proved in one component are two
+issues, and one violation proved in two components is two issues. Never two of either in one
+issue.
+
+Each cycle writes `<REPO_DIR>/.devboard/.tmp/single-responsibility/cycles/<id>/request.json`
+naming the `surface`, `seed`, `entryPoint`, the five `categories`, the `skillPath`, the
+normalized `knownTitles`, `issueRoom`, `maxPerHour`, `maxPending`, and `createdAt`, runs one ACP
+turn with that directory as its working directory, and writes nothing in the checkout. The crawl
+starts at the seeded entry point, follows imports, exports, references, callers, and callees
+outward, records the reachable region in activity, and admits only evidence inside that region.
+A filed issue carries the category, the affected component, the skill path, the category's
+directive bullet quoted verbatim, the reason its responsibilities are mixed, at least one
+repository-relative `path:lines` evidence entry with a quote copied from exactly those lines, the
+concrete refactor, and binary acceptance criteria. The title is one plain line of at most 200
+characters with no prefix, and the labels are exactly `["single-responsibility"]`.
+
+A candidate is a duplicate when its normalized title — lowercased, whitespace runs collapsed,
+trimmed — equals that of any `single-responsibility` issue in any state, any open issue, or any
+draft-goal heading. The prompt reads the tracker and skips duplicates, and `issue_create`
+enforces the same guard for the `single-responsibility` label and files nothing for a duplicate.
+The page's limits are each empty (unlimited) or an integer 1 through 100, defaulting to 10 per
+rolling hour and 5 open. The hourly cap counts every `single-responsibility` issue created in the
+last rolling 60 minutes in any state; the pending cap counts every open one; one cycle files at
+most the smaller room and 100. A zero room files nothing and records every skip in activity, and
+a failed forge read files nothing while keeping the last known rows. `agent-cadence` defaults to
+60 minutes, accepts 1 through 1440, persists across reload and restart, applies to a running
+worker without a restart, and starts no cycle sooner than that interval after the previous cycle
+start.
+
+The worker files nothing itself. It reads the MCP tool log's `issue_create` records, re-reads
+each created issue from the origin, and publishes a row only for an issue it read back carrying
+the `single-responsibility` label and a body whose category, skill path, directive, component,
+evidence quote, refactor, and acceptance criteria all verify. A filing that fails that proof is
+recorded in activity as a verification failure and is not published as a row; a tool error files
+nothing and is recorded, never claimed as a filing. The issue lands in the origin: on GitHub
+through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
+`forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue
+is open and `implemented` once it is closed, and records a failed sync in `agent-sync-error`
+without dropping rows.
+
+Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
+the skill is missing, unreadable, or resolves outside the repository, the state directory is
+outside the checkout, the origin is not a supported forge, the account cannot write, `omp` or
+`gh` is missing, the `/single-responsibility` command is not installed, or the
+`single-responsibility` label cannot be created with its documented color and description. At
+most one cycle runs at a time per checkout: Start during a cycle, a cadence change, a page open,
+a tab restore, or a reload starts no second cycle, and a replacement dashboard drains an older
+live worker of the family. Stop ends the worker and leaves the settings and filed rows. State
+lives at `<STATE_DIR>/single-responsibility/<journalKey(REPO_DIR)>/`, the lock and cycles stay
+inside `<REPO_DIR>/.devboard/.tmp/single-responsibility/`, and a cycle leaves
+`git status --porcelain` and `git rev-parse HEAD` unchanged. `bun run verify:single-responsibility`
+proves the entry, the shared page, the seeded entry point, the excluded test and fixture files,
+one issue per component and violation with provenance, the five-category restriction, dedupe, the
+caps, the label, the preflight refusals, the read-only checkout, single flight, and activity
+freshness against a stub ACP peer and a stub `gh`.
 
 ## Harness watchdog
 
@@ -3314,6 +3405,18 @@ path, a directory, a missing file, or a symlink whose real path leaves the draft
 refused with a visible error, and nothing outside the directory is read. The list never follows
 symlinks.
 
+Every row also carries a delete control (`issues-draft-row-delete`, `issues.draft.delete`) beside
+its Start control. Activating it opens `issues-draft-delete-confirmation` naming the draft and the
+directory it leaves; Cancel closes the dialog without writing anything, and the confirm control
+(`issues.draft.delete.confirm`) sends `deleteGoalDraft` for that path. The row leaves only when
+the server's republished list arrives, so a refusal leaves the draft listed and its reason arrives
+as a server error notification. The server unlinks the draft and its recorded run, then
+republishes the list to every client; deleting the open draft clears the selection to the
+`No draft selected` state, and every other draft keeps its own run state. A draft whose
+elaboration is live or still closing stays listed: its delete control is disabled with
+`This draft is being elaborated.` as its title, and a command that reaches that state anyway is
+refused with the same reason. Deletion files nothing, runs no `gh`, and starts no peer.
+
 Every draft may elaborate at the same time; there is no concurrency cap beyond the repository's
 own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND --no-skills` in
 `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. The
@@ -3565,7 +3668,8 @@ text it posts `report`, the Ask turns as `turns` when the panel has one, and the
 element context to `POST /goal-proposals`; the server writes one Markdown draft under
 `<REPO_DIR>/.devboard/goal-proposals/` and answers `201` with the common hypertext control
 object `{ "links": { "draft": { "href": "file:///…/.devboard/goal-proposals/<file>.md" } } }`,
-carrying the draft's absolute URI. The directory is deliberately separate
+carrying the draft's absolute URI, plus a `Location` header naming that same URI. An idempotent
+replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
 The file name is chosen by one bounded naming turn: an ACP peer starts with
@@ -3714,6 +3818,7 @@ The client sends:
 { "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "stopGoalDraft", "path": ".devboard/goal-proposals/example.md" }
+{ "type": "deleteGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "answerGoalDraft", "path": ".devboard/goal-proposals/example.md", "id": 4, "value": "The whole goal" }
 
 { "type": "getAgents" }
@@ -3803,7 +3908,11 @@ The client sends:
   already running is refused with `This draft is being elaborated.` and starts no peer.
   `stopGoalDraft` and `answerGoalDraft` carry the draft `path`; stop closes only that peer and
   records `stopped`, and an answer reaches only that path's pending question. Each run's activity
-  is sent as its own `issuesDraftState` snapshot while its peer runs.
+  is sent as its own `issuesDraftState` snapshot while its peer runs. `deleteGoalDraft` carries the
+  draft `path`, removes the draft file and its recorded run, and broadcasts the shorter list to
+  every client; a path whose elaboration is live or still closing is refused with `error` and
+  `This draft is being elaborated. Stop the elaboration and delete it again.`, and a missing or
+  refused path answers `error` with the refusal.
 
   lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
   next attempt, errors, and the harness version the worker loaded. A missing state and no live

@@ -3,6 +3,7 @@ import { boundBytes } from "../lib/text-budget";
 import { normalizeIssueTitle } from "../lib/issue-title";
 import { readDraftGoalHeadings } from "../lib/draft-goals";
 import { DEAD_CODE_LABEL } from "../issues/dead-code/paths";
+import { SINGLE_RESPONSIBILITY_LABEL } from "../issues/single-responsibility/paths";
 import { recordClosedByRun } from "../issues/self-close";
 import { issuesFor, type McpContext } from "./context";
 
@@ -138,18 +139,31 @@ export async function createIssue(
   }
   const labels = issueLabels(options.labels);
   const forge = issuesFor(context);
-  // A dead-code finding is a claim about absence, so an already known title is
-  // never filed again: the guard covers every dead-code issue in any state,
-  // every open issue, and every draft-goal heading. It reads the forge page by
-  // page instead of the newest `issues_list` window, because a closed finding
-  // older than that window is exactly the duplicate this guard exists for.
-  if (labels.includes(DEAD_CODE_LABEL)) {
+  // A finding is a claim about absence, so an already known title is never
+  // filed again: the guard covers every finding issue of that label in any
+  // state, every open issue, and every draft-goal heading. It reads the forge
+  // page by page instead of the newest `issues_list` window, because a closed
+  // finding older than that window is exactly the duplicate this guard exists
+  // for.
+  for (const guarded of [
+    {
+      label: DEAD_CODE_LABEL,
+      noun: "dead-code finding",
+      titleError: "A dead-code title must be at most 200 characters.",
+    },
+    {
+      label: SINGLE_RESPONSIBILITY_LABEL,
+      noun: "single-responsibility finding",
+      titleError: "A single-responsibility title must be at most 200 characters.",
+    },
+  ]) {
+    if (!labels.includes(guarded.label)) continue;
     if ([...title].length > 200) {
-      throw new Error("A dead-code title must be at most 200 characters.");
+      throw new Error(guarded.titleError);
     }
     const known = new Set<string>();
     for (const issue of await forge.listAll("all")) {
-      if (issue.state === "open" || issue.labels.includes(DEAD_CODE_LABEL)) {
+      if (issue.state === "open" || issue.labels.includes(guarded.label)) {
         known.add(normalizeIssueTitle(issue.title));
       }
     }
@@ -158,7 +172,7 @@ export async function createIssue(
     }
     if (known.has(normalizeIssueTitle(title))) {
       throw new Error(
-        `A dead-code finding titled "${title}" already exists; nothing was filed. ` +
+        `A ${guarded.noun} titled "${title}" already exists; nothing was filed. ` +
           `The guard compared ${known.size} issue titles.`,
       );
     }

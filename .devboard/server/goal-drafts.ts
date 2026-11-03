@@ -24,6 +24,7 @@ import {
   readFileSync,
   realpathSync,
   statSync,
+  unlinkSync,
   type Dirent,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -713,6 +714,36 @@ export class GoalDraftManager {
       { type: "answer", id, value },
     );
     return true;
+  }
+
+  /**
+   * Removes one draft and its recorded run. A draft whose elaboration is live
+   * or still closing stays: its owner is reading that file and would write a
+   * goal for a proposal the operator just deleted. The list is republished
+   * only after the file and its run state are gone, so no client can select a
+   * draft that no longer exists.
+   */
+  delete(relativePath: unknown): GoalDraftSummary {
+    this.refresh();
+    const resolved = resolveGoalDraft(this.repoDir, relativePath);
+    const draft = readGoalDraft(this.repoDir, resolved.path);
+    if (this.isRunning(draft.path) || this.ownerAlive(draft.path)) {
+      throw new GoalDraftError(
+        409,
+        "This draft is being elaborated. Stop the elaboration and delete it again.",
+      );
+    }
+    try {
+      unlinkSync(resolved.file);
+    } catch {
+      throw new GoalDraftError(404, `No draft at ${draft.path}.`);
+    }
+    resetGoalDraftRun(this.stateDir, this.repoDir, draft.path);
+    this.runs.delete(draft.path);
+    this.owners.delete(draft.path);
+    this.owned.delete(draft.path);
+    this.publishDrafts();
+    return { path: draft.path, name: draft.name, heading: draft.heading };
   }
 
   /**

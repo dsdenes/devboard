@@ -288,7 +288,7 @@
     letter-spacing: 0.08em;
     line-height: 1.2;
     margin-left: 8px;
-    padding: 1px 6px;
+    padding: 2px 6px;
     text-transform: uppercase;
     vertical-align: middle;
   }

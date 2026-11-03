@@ -52,8 +52,10 @@ export const DEVBOARD_SIDEBAR: readonly DevboardSidebarEntry[] = [
 ];
 
 /**
- * The server's installed skills in the order it sent them. A malformed row is
- * dropped rather than rendered with a name the filesystem never had.
+ * The server's installed skills, managed rows first and each group by name, so
+ * the package's own skills lead the table whatever the server sends. A
+ * malformed row is dropped rather than rendered with a name the filesystem
+ * never had.
  */
 export function skillRows(value: unknown): DevboardSkillRow[] {
   if (!Array.isArray(value)) return [];
@@ -71,7 +73,10 @@ export function skillRows(value: unknown): DevboardSkillRow[] {
       deletable: row.deletable === true,
     });
   }
-  return rows;
+  return rows.sort(
+    (left, right) =>
+      Number(right.builtin) - Number(left.builtin) || left.name.localeCompare(right.name),
+  );
 }
 
 /**

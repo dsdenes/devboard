@@ -480,6 +480,7 @@ try {
         "dead-code",
         "mcp-optimizer",
         "api-standards",
+        "single-responsibility",
         "release-train",
       ]),
     "verify:mcp: the live agents snapshot is wrong",
@@ -513,7 +514,7 @@ try {
   const entryProperties = entrySchema.properties as Record<string, Record<string, unknown>>;
   assertTrue(
     JSON.stringify(entryProperties.surface?.enum) ===
-      JSON.stringify(["scout", "design", "dead-code"]) &&
+      JSON.stringify(["scout", "design", "dead-code", "single-responsibility"]) &&
       entryProperties.seed?.type === "string",
     `verify:mcp: entry_point schema is ${JSON.stringify(entrySchema)}`,
   );
@@ -838,6 +839,30 @@ try {
     releaseTrainControl.id === "release-train" &&
       typeof (releaseTrainControl.agent as Record<string, unknown>).cadence === "object",
     "verify:mcp: Release Train control returned no snapshot",
+  );
+  const singleResponsibilityControl = await client.call("background_agent_control", {
+    id: "single-responsibility",
+    action: "set_settings",
+    minutes: 60,
+    maxPerHour: 10,
+    maxPending: 5,
+  });
+  const singleResponsibilityAgent = singleResponsibilityControl.agent;
+  const savedCadence =
+    "cadence" in singleResponsibilityAgent ? singleResponsibilityAgent.cadence : undefined;
+  const savedLimits =
+    "limits" in singleResponsibilityAgent ? singleResponsibilityAgent.limits : undefined;
+  assertTrue(
+    singleResponsibilityControl.id === "single-responsibility" &&
+      savedCadence !== null &&
+      typeof savedCadence === "object" &&
+      "minutes" in savedCadence &&
+      savedCadence.minutes === 60 &&
+      savedLimits !== null &&
+      typeof savedLimits === "object" &&
+      "maxPerHour" in savedLimits &&
+      savedLimits.maxPerHour === 10,
+    "verify:mcp: Single Responsibility control returned no saved snapshot",
   );
   const flow = await client.call("flow_control", { action: "create_goal" });
   assertTrue(

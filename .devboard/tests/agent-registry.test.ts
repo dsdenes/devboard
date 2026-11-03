@@ -131,6 +131,7 @@ describe("background agent registry", () => {
       "dead-code",
       "mcp-optimizer",
       "api-standards",
+      "single-responsibility",
       "release-train",
     ]);
     const scout = agentRegistry.require("scout");
@@ -187,6 +188,27 @@ describe("background agent registry", () => {
     expect(mcpOptimizer.detail.panel).toBe("cycles");
     expect(mcpOptimizer.tab).toEqual({ id: "mcp-optimizer", kind: "mcp-optimizer", title: "MCP optimizer" });
     expect(mcpOptimizer.prompt.kind).toBe("template");
+    const singleResponsibility = agentRegistry.require("single-responsibility");
+    expect(singleResponsibility.label).toBe("Single Responsibility");
+    expect(singleResponsibility.description).toContain("Single Responsibility");
+    expect(singleResponsibility.scope).toBe("repository");
+    expect(singleResponsibility.cadence).toEqual({
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    });
+    expect(singleResponsibility.limits.default).toEqual({ maxPerHour: 10, maxPending: 5 });
+    expect(singleResponsibility.detail.panel).toBe("activity");
+    expect(singleResponsibility.tab).toEqual({
+      id: "single-responsibility",
+      kind: "single-responsibility",
+      title: "Single Responsibility",
+    });
+    expect(singleResponsibility.prompt).toEqual({
+      kind: "file",
+      file: "single-responsibility.md",
+    });
     const releaseTrain = agentRegistry.require("release-train");
     expect(releaseTrain.label).toBe("Release Train");
     expect(releaseTrain.scope).toBe("repository");
@@ -243,6 +265,7 @@ describe("background agent registry", () => {
       "dead-code",
       "mcp-optimizer",
       "api-standards",
+      "single-responsibility",
       "release-train",
       "patrol",
     ]);
@@ -306,6 +329,7 @@ describe("background agent registry", () => {
       "dead-code",
       "mcp-optimizer",
       "api-standards",
+      "single-responsibility",
       "release-train",
       "patrol",
     ]);

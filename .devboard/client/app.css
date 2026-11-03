@@ -2281,7 +2281,7 @@ a.code-chip--link:focus-visible {
   background: none;
   border: 0;
   display: flex;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
   padding: 0;
 }
@@ -3127,7 +3127,7 @@ a.code-chip--link:focus-visible {
   border: 1px solid var(--warning);
   background: var(--warning-surface);
   border-radius: 4px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .issues-error {
@@ -3136,7 +3136,7 @@ a.code-chip--link:focus-visible {
   border: 1px solid var(--error);
   background: var(--error-surface);
   border-radius: 4px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .issues-activity {
@@ -3464,6 +3464,20 @@ a.code-chip--link:focus-visible {
   align-items: center;
   display: flex;
   flex: 0 0 auto;
+  gap: 6px;
+}
+
+.issues-draft-row__delete {
+  color: var(--muted-foreground);
+}
+
+.issues-draft-row__delete:hover:not(:disabled) {
+  color: var(--destructive);
+}
+
+.issues-draft-row__delete:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .issues-drafts__placeholder {
@@ -3823,37 +3837,6 @@ a.issues-agent-row__issue:focus-visible {
 .issues-agent-focus .issues-activity {
   flex: 1;
   min-height: 200px;
-}
-
-.issues-run-identity {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.issues-run-identity__label {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.issues-run-identity__id {
-  max-width: 220px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.issues-run-identity__started {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  white-space: nowrap;
 }
 
 .issues-draft-detail {

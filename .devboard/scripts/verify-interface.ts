@@ -619,6 +619,13 @@ async function writeFixture(root: string): Promise<string> {
     "---\nname: fixture-handwritten\ndescription: The fixture developer's own policy.\n---\n\n# House style\n\n- Keep it.\n",
   );
   await symlink("fixture-conventions", join(host, ".omp", "skills", "fixture-linked"));
+  // A built-in whose name sorts after every other skill proves the page leads
+  // with its Managed rows instead of ordering the whole table by name.
+  await mkdir(join(host, ".omp", "skills", "zz-builtin-fixture"), { recursive: true });
+  await writeFile(
+    join(host, ".omp", "skills", "zz-builtin-fixture", "SKILL.md"),
+    "---\nname: zz-builtin-fixture\nmetadata:\n  devboard-builtin: \"true\"\n---\n\n# Built-in fixture\n\n- Lead the table.\n",
+  );
   for (const name of [
     "devboard-ui-ux",
     "devboard-restful-api-implementation",
@@ -2863,8 +2870,8 @@ try {
     "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
     "goal.create", "goal.revise", "goal.skills.prepare",
-    "goal.adr.start-next", "goal.lifecycle.start", "goal.lifecycle.pause",
-    "goal.lifecycle.resume", "goal.lifecycle.stop", "goal.reset",
+    "goal.adr.start-next", "goal.lifecycle.toggle", "goal.lifecycle.pause",
+    "goal.lifecycle.resume", "goal.reset",
     "flow.goal.create", "flow.start", "flow.stop",
     "flow.pr.retry", "flow.pr.ready", "flow.pr.merge",
     "flow.steering.focus", "discover.start", "discover.stop",
@@ -2884,8 +2891,8 @@ try {
   check((await sourceOnlyMarkers(page)) === 0, "the command palette renders a source-only marker");
   const agentsCommand = palette.items.find((item) => item.id === "open.issues.agents");
   check(
-    agentsCommand?.title === "Open Agents" && agentsCommand?.group === "Workspace",
-    "the palette does not list Open Agents in the Workspace group",
+    agentsCommand?.title === "Open Issues: Agents" && agentsCommand?.group === "Workspace",
+    "the palette does not list the Issues Agents page in the Workspace group",
     agentsCommand,
   );
   const disabledMirror = palette.items.find((item) => item.id === "flow.pr.merge");
@@ -3211,7 +3218,7 @@ try {
   })()`);
   check(
     devboardSidebar.entries === 2 &&
-      devboardSidebar.items === 9 &&
+      devboardSidebar.items === 10 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify([
           "Auto Scout",
@@ -3220,6 +3227,7 @@ try {
           "Dead Code",
           "MCP optimizer",
           "API Standards",
+          "Single Responsibility",
           "Release Train",
         ]) &&
       JSON.stringify(devboardSidebar.agentCommands) ===
@@ -3230,6 +3238,7 @@ try {
           "open.devboard.dead-code",
           "open.devboard.mcp-optimizer",
           "open.devboard.api-standards",
+          "open.devboard.single-responsibility",
           "open.devboard.release-train",
         ]),
     "the Devboard sidebar does not carry the background agents beside the two page entries",
@@ -3280,6 +3289,8 @@ try {
       fontWeight: string;
       letterSpacing: number;
       lineHeight: number;
+      paddingBlock: number;
+      paddingInline: number;
     } | null;
   }>(`(() => {
     const table = document.querySelector('[data-testid="skills-table"]');
@@ -3320,6 +3331,8 @@ try {
         fontWeight: managedStyle.fontWeight,
         letterSpacing: parseFloat(managedStyle.letterSpacing),
         lineHeight: parseFloat(managedStyle.lineHeight),
+        paddingBlock: parseFloat(managedStyle.paddingBlock),
+        paddingInline: parseFloat(managedStyle.paddingInline),
       },
     };
   })()`);
@@ -3329,7 +3342,15 @@ try {
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-ui-ux",
+    "zz-builtin-fixture",
   ];
+  /** The page's row order: the managed rows lead, each group ordered by name. */
+  const devboardManagedFirst = (names: readonly string[]): string[] =>
+    [...names].sort(
+      (left, right) =>
+        Number(devboardBuiltins.includes(right)) - Number(devboardBuiltins.includes(left)) ||
+        left.localeCompare(right),
+    );
   check(devboardSkillsTable.tables === 1, "the Skills page does not render one table", devboardSkillsTable);
   check(devboardSkillsTable.columns === 3, "the Skills table does not have three columns", devboardSkillsTable);
   check(
@@ -3354,9 +3375,17 @@ try {
     devboardSkillsTable.managedType,
   );
   check(
-    JSON.stringify(devboardSkillsTable.names) === JSON.stringify(devboardInstalledSkills),
-    "the Skills rows do not equal the installed directories",
-    { rendered: devboardSkillsTable.names, installed: devboardInstalledSkills },
+    devboardSkillsTable.managedType !== null &&
+      Math.abs(devboardSkillsTable.managedType.paddingBlock - 2) < 0.05 &&
+      Math.abs(devboardSkillsTable.managedType.paddingInline - 6) < 0.05,
+    "the Managed marker does not render the badge padding",
+    devboardSkillsTable.managedType,
+  );
+  check(
+    JSON.stringify(devboardSkillsTable.names) ===
+      JSON.stringify(devboardManagedFirst(devboardInstalledSkills)),
+    "the Skills rows do not lead with the managed skills and then follow the names",
+    { rendered: devboardSkillsTable.names, installed: devboardManagedFirst(devboardInstalledSkills) },
   );
   check(
     devboardSkillsTable.cells.every((cells) => cells === 3) &&
@@ -3375,8 +3404,9 @@ try {
     devboardSkillsTable,
   );
   check(
-    JSON.stringify(devboardSkillsTable.managed) === JSON.stringify(devboardBuiltins),
-    "the Managed marker does not belong to exactly the four built-in rows",
+    JSON.stringify(devboardSkillsTable.managed) ===
+      JSON.stringify(devboardManagedFirst(devboardBuiltins)),
+    "the Managed marker does not belong to exactly the five built-in rows",
     devboardSkillsTable,
   );
   check(
@@ -3540,7 +3570,8 @@ try {
     `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
   );
   check(
-    JSON.stringify(devboardWithExtra) === JSON.stringify([...devboardInstalledSkills, "extra-skill"].sort()),
+    JSON.stringify(devboardWithExtra) ===
+      JSON.stringify(devboardManagedFirst([...devboardInstalledSkills, "extra-skill"])),
     "an added skill directory does not add exactly its row",
     devboardWithExtra,
   );
@@ -3563,7 +3594,9 @@ try {
     `[...document.querySelectorAll('[data-testid="skill-row"]')].map((row) => row.getAttribute("data-skill") ?? "")`,
   );
   check(
-    JSON.stringify(devboardGhostRows) === JSON.stringify(devboardInstalledSkills) && !devboardGhostRows.includes("ghost-skill"),
+    JSON.stringify(devboardGhostRows) ===
+      JSON.stringify(devboardManagedFirst(devboardInstalledSkills)) &&
+      !devboardGhostRows.includes("ghost-skill"),
     "an exclusion name without a directory produced a row",
     devboardGhostRows,
   );
@@ -9985,6 +10018,55 @@ try {
     20_000,
   );
 
+  // A draft nobody wants to elaborate is deleted from its row after one confirmation.
+  const draftDelete = (name: string): string =>
+    `[data-testid="issues-draft-row-delete"][data-path=".devboard/goal-proposals/${name}"]`;
+  await page.click(draftDelete("001-question.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null`,
+    "the delete confirmation",
+  );
+  await page.click('[data-command="issues.draft.delete.cancel"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') === null`,
+    "the cancelled delete confirmation",
+  );
+  const cancelledListed = await page.eval<boolean>(
+    `document.querySelector('${draftRow("001-question.md")}') !== null`,
+  );
+  check(
+    cancelledListed && existsSync(join(draftDirectory, "001-question.md")),
+    "cancelling a delete removed the draft",
+    { cancelledListed, file: existsSync(join(draftDirectory, "001-question.md")) },
+  );
+
+  await page.click(draftDelete("002-hang.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null`,
+    "the delete confirmation for the selected draft",
+  );
+  await page.click('[data-command="issues.draft.delete.confirm"]');
+  await page.wait(
+    `document.querySelector('${draftRow("002-hang.md")}') === null &&
+      document.querySelector('[data-testid="issues-draft-detail"]') === null &&
+      document.querySelector('[data-testid="issues-drafts-selection"]') !== null`,
+    "the deleted draft to leave the list and the selection",
+    8_000,
+  );
+  const deletedDraft = await page.eval<{ count: string; dialog: boolean }>(`(() => ({
+    count: document.querySelector('[data-testid="open-issues-drafts"] .sidebar-item__meta')?.textContent?.trim() ?? "",
+    dialog: document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null,
+  }))()`);
+  check(
+    deletedDraft.count === "6" && !deletedDraft.dialog,
+    "deleting a draft left the count or the confirmation behind",
+    deletedDraft,
+  );
+  check(
+    !existsSync(join(draftDirectory, "002-hang.md")),
+    "the deleted draft is still on disk",
+  );
+
   // A vanished draft leaves the list and selection; a reload opens the list.
   await rm(draftDirectory, { recursive: true, force: true });
   await page.wait(
@@ -11292,6 +11374,7 @@ try {
     ["open.devboard.design", "design"],
     ["open.devboard.mcp-optimizer", "mcp-optimizer"],
     ["open.devboard.api-standards", "api-standards"],
+    ["open.devboard.single-responsibility", "single-responsibility"],
     ["open.devboard.release-train", "release-train"],
   ]) {
     await runPalette(command);
@@ -11476,7 +11559,7 @@ try {
     ["open.issues.runs", "issues"],
     ["devboard.tab.tools", "devboard"],
     ["devboard.tab.skills", "devboard"],
-    ["open.discover.contribution", "discover"],
+    ["discover.tab.contribution", "discover"],
     ["open.flow.decisions", "flow"],
     ["flow.checkpoint.open.cp-1", "flow"],
     ["flow.file.open.src/order.ts", "flow"],
@@ -11916,7 +11999,7 @@ try {
     }))`,
   );
   check(
-    devboardEntries.length === 7 &&
+    devboardEntries.length === 8 &&
       devboardEntries.every(
         (entry) => entry.run === devboardMapping[entry.lifecycle],
       ) &&

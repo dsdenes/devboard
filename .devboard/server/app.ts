@@ -75,6 +75,10 @@ import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { ApiStandardsBridge, type ApiStandardsBridgeOptions } from "./api-standards";
 import { DeadCodeBridge, type DeadCodeBridgeOptions } from "./dead-code";
+import {
+  SingleResponsibilityBridge,
+  type SingleResponsibilityBridgeOptions,
+} from "./single-responsibility";
 import { McpOptimizerActivity, type McpOptimizerActivityOptions } from "./mcp-optimizer";
 import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./release-train";
 import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
@@ -256,6 +260,11 @@ export interface AppOptions {
   apiStandards?: Pick<ApiStandardsBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
   /** Dead Code's test seams; production uses the detached worker itself. */
   deadCode?: Pick<DeadCodeBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "reader">;
+  /** Single Responsibility's test seams; production uses the detached worker itself. */
+  singleResponsibility?: Pick<
+    SingleResponsibilityBridgeOptions,
+    "pollMs" | "preflight" | "spawnWorker" | "reader"
+  >;
   /** MCP optimizer's test seams; production reads its worker's state and ledger. */
   mcpOptimizer?: Pick<
     McpOptimizerActivityOptions,
@@ -652,6 +661,7 @@ type ClientMessage =
   | { type: "getGoalDraft"; path?: unknown }
   | { type: "startGoalDraft"; path?: unknown }
   | { type: "stopGoalDraft"; path?: unknown }
+  | { type: "deleteGoalDraft"; path?: unknown }
   | { type: "answerGoalDraft"; path?: unknown; id?: unknown; value?: unknown }
   | { type: "getAgents" }
   | { type: "getAgent"; id?: unknown }
@@ -795,6 +805,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "startGoalDraft", path: "path" in value ? value.path : undefined };
     case "stopGoalDraft":
       return { type: "stopGoalDraft", path: "path" in value ? value.path : undefined };
+    case "deleteGoalDraft":
+      return { type: "deleteGoalDraft", path: "path" in value ? value.path : undefined };
     case "answerGoalDraft":
       return {
         type: "answerGoalDraft",
@@ -2231,7 +2243,8 @@ function credentialMatches(presented: string | null, token: string): boolean {
  * One RFC 9457 failure body. Every 4xx and 5xx response this server writes
  * goes through it, so a client reads one media type and one shape. `detail`
  * carries the cause a caller can act on and never a stack trace or an
- * implementation internal.
+ * implementation internal. A failure is never a cacheable representation, so
+ * every answer declares `no-store` unless a caller overrides it.
  */
 function problemResponse(
   status: number,
@@ -2247,7 +2260,11 @@ function problemResponse(
     }),
     {
       status,
-      headers: { "Content-Type": "application/problem+json", ...headers },
+      headers: {
+        "Content-Type": "application/problem+json",
+        "Cache-Control": "no-store",
+        ...headers,
+      },
     },
   );
 }
@@ -2920,6 +2937,7 @@ export function createApp(options: AppOptions) {
   const watchdogDescriptor = agentRegistry.require("watchdog");
   const designDescriptor = agentRegistry.require("design");
   const deadCodeDescriptor = agentRegistry.require("dead-code");
+  const singleResponsibilityDescriptor = agentRegistry.require("single-responsibility");
   const mcpOptimizerDescriptor = agentRegistry.require("mcp-optimizer");
   const apiStandardsDescriptor = agentRegistry.require("api-standards");
   const releaseTrainDescriptor = agentRegistry.require("release-train");
@@ -3024,6 +3042,36 @@ export function createApp(options: AppOptions) {
   });
 
   /**
+   * Single Responsibility audits the repository source against the managed
+   * SRP skill from a seeded entry point and files `single-responsibility`
+   * issues. It runs as a detached worker so it outlives this server.
+   */
+  const singleResponsibility = new SingleResponsibilityBridge({
+    descriptor: singleResponsibilityDescriptor,
+    repoDir,
+    stateDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    runningVersion,
+    harnessDir: runnableHarnessDir(repoDir),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.singleResponsibility?.pollMs === undefined
+      ? {}
+      : { pollMs: options.singleResponsibility.pollMs }),
+    ...(options.singleResponsibility?.preflight === undefined
+      ? {}
+      : { preflight: options.singleResponsibility.preflight }),
+    ...(options.singleResponsibility?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.singleResponsibility.spawnWorker }),
+    ...(options.singleResponsibility?.reader === undefined
+      ? {}
+      : { reader: options.singleResponsibility.reader }),
+    hasClients: () => clients.size > 0,
+  });
+
+  /**
    * MCP optimizer reads the ACP transcripts and journal records already on disk,
    * overlays the forge projection its caps count, and commands its detached
    * worker. Opening the page never starts a cycle.
@@ -3099,7 +3147,16 @@ export function createApp(options: AppOptions) {
   /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog, design, deadCode, mcpOptimizer, apiStandards, releaseTrain],
+    adapters: [
+      scout,
+      watchdog,
+      design,
+      deadCode,
+      mcpOptimizer,
+      apiStandards,
+      singleResponsibility,
+      releaseTrain,
+    ],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });
@@ -7771,7 +7828,10 @@ export function createApp(options: AppOptions) {
         writeGoalProposal(submission, { repoDir, slugger: goalSlug }),
       );
       goalDrafts.publishDrafts();
-      return Response.json(proposal, { status: 201 });
+      return Response.json(proposal, {
+        status: 201,
+        headers: { Location: proposal.links.draft.href },
+      });
     } catch (error) {
       if (error instanceof FeedbackRequestError) {
         return problemResponse(error.status, error.message);
@@ -8210,6 +8270,21 @@ export function createApp(options: AppOptions) {
                 path: command.path,
                 message: "That draft is not being elaborated.",
               });
+            }
+          } else if (command.type === "deleteGoalDraft") {
+            if (typeof command.path !== "string") {
+              send(ws, { type: "error", message: "Deleting a draft needs its path." });
+            } else {
+              try {
+                // The manager republishes the list for every client, so a
+                // successful deletion is its own frame and needs no reply here.
+                goalDrafts.delete(command.path);
+              } catch (error) {
+                send(ws, {
+                  type: "error",
+                  message: error instanceof GoalDraftError ? error.message : String(error),
+                });
+              }
             }
           } else if (command.type === "answerGoalDraft") {
             if (

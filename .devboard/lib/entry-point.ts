@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
+import type { Dirent } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { designSourcePaths, DesignInputError } from "../issues/design/audit";
 import { designConfig } from "../issues/design/paths";
@@ -14,7 +15,12 @@ import { designConfig } from "../issues/design/paths";
  * repository root before it is chosen.
  */
 
-export const ENTRY_POINT_SURFACES = ["scout", "design", "dead-code"] as const;
+export const ENTRY_POINT_SURFACES = [
+  "scout",
+  "design",
+  "dead-code",
+  "single-responsibility",
+] as const;
 
 export type EntryPointSurface = (typeof ENTRY_POINT_SURFACES)[number];
 
@@ -77,29 +83,37 @@ function byteOrder(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+/** Lists one directory; the walk's seam for an injected unreadable subtree. */
+export type DirectoryReader = (directory: string) => Dirent[];
+
+const listDirectory: DirectoryReader = (directory) =>
+  readdirSync(directory, { withFileTypes: true });
+
 /**
  * Every regular file under the root, as repository-relative paths in one
  * stable order. A symbolic link is never followed, so no file outside the
- * repository can enter a pool.
+ * repository can enter a pool. A directory the walk cannot read is never
+ * dropped: the walk throws one `EntryPointError` naming every such directory
+ * by its repository-relative path and the reason, so a pool that omits a
+ * subtree can never pass for a repository that lacks those files.
  */
-function walkRegularFiles(repoDir: string): string[] {
+export function walkRegularFiles(
+  repoDir: string,
+  readDirectory: DirectoryReader = listDirectory,
+): string[] {
   const root = resolve(repoDir);
-  let entries;
-  try {
-    entries = readdirSync(root, { withFileTypes: true });
-  } catch (error) {
-    throw new EntryPointError(
-      `the repository root ${root} is not readable: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
+  const unreadable: { path: string; reason: string }[] = [];
   const found: string[] = [];
   const visit = (directory: string, prefix: string): void => {
     let children;
     try {
-      children = readdirSync(directory, { withFileTypes: true });
-    } catch {
+      children = readDirectory(directory);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (prefix.length === 0) {
+        throw new EntryPointError(`the repository root ${directory} is not readable: ${reason}`);
+      }
+      unreadable.push({ path: prefix, reason });
       return;
     }
     children.sort((left, right) => byteOrder(left.name, right.name));
@@ -117,6 +131,15 @@ function walkRegularFiles(repoDir: string): string[] {
     }
   };
   visit(root, "");
+  if (unreadable.length > 0) {
+    unreadable.sort((left, right) => byteOrder(left.path, right.path));
+    const paths = unreadable.map((entry) => entry.path);
+    const detail = unreadable.map((entry) => `${entry.path}: ${entry.reason}`).join("; ");
+    throw new EntryPointError(
+      `the repository ${paths.length === 1 ? "directory" : "directories"} ${paths.join(", ")} ` +
+        `${paths.length === 1 ? "is" : "are"} not readable: ${detail}`,
+    );
+  }
   found.sort(byteOrder);
   return found;
 }
@@ -139,16 +162,22 @@ function sample(path: string): Buffer | undefined {
   }
 }
 
-/** A regular file whose first bytes carry no NUL and almost no control bytes. */
+/**
+ * A regular file whose first bytes carry no NUL, almost no control bytes, and
+ * at least one non-whitespace byte. A file with nothing to read has no line to
+ * name, so it never enters a pool.
+ */
 function isTextFile(path: string): boolean {
   const bytes = sample(path);
   if (bytes === undefined) return false;
   if (bytes.includes(0)) return false;
   let control = 0;
+  let visible = false;
   for (const byte of bytes) {
     if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) control += 1;
+    if (byte > 32) visible = true;
   }
-  return bytes.length === 0 || control / bytes.length < 0.1;
+  return visible && control / bytes.length < 0.1;
 }
 
 /** Every regular text file the scout pool admits. */
@@ -172,7 +201,10 @@ export function designPool(
   environment: Record<string, string | undefined> = process.env,
 ): string[] {
   try {
-    return designSourcePaths(repoDir, designConfig(environment)).sort(byteOrder);
+    const root = resolve(repoDir);
+    return designSourcePaths(root, designConfig(environment))
+      .filter((path) => isTextFile(resolve(root, path)))
+      .sort(byteOrder);
   } catch (error) {
     if (error instanceof DesignInputError) {
       throw new EntryPointError(`the design pool is empty: ${error.message}`);
@@ -217,6 +249,51 @@ export function deadCodePool(repoDir: string): string[] {
     .sort(byteOrder);
 }
 
+/**
+ * Directories whose files are evidence of behavior, never the component under
+ * audit: a test, a fixture, and a stub each describe another unit's contract.
+ */
+const NON_COMPONENT_DIRECTORIES = new Set(["fixtures", "tests", "stubs"]);
+
+/** A test or spec file names the behavior of another component. */
+function isTestFile(path: string): boolean {
+  return /\.(test|spec)\./.test(path);
+}
+
+/** Formats that are documentation or configuration, never audited source. */
+const NON_SOURCE_EXTENSIONS: Record<string, true> = {
+  ".md": true,
+  ".markdown": true,
+  ".txt": true,
+  ".json": true,
+  ".yml": true,
+  ".yaml": true,
+  ".toml": true,
+  ".lock": true,
+};
+
+/** A path outside every fixtures, tests, or stubs directory. */
+function isComponentPath(path: string): boolean {
+  const directories = path.split("/").slice(0, -1);
+  return !directories.some((directory) => NON_COMPONENT_DIRECTORIES.has(directory));
+}
+
+/**
+ * The single-responsibility pool: source files the host actually writes as
+ * components, excluding test, specification, fixture, stub, and documentation
+ * files.
+ */
+export function singleResponsibilityPool(repoDir: string): string[] {
+  return deadCodePool(repoDir)
+    .filter(
+      (path) =>
+        !isTestFile(path) &&
+        isComponentPath(path) &&
+        !NON_SOURCE_EXTENSIONS[extname(path).toLowerCase()],
+    )
+    .sort(byteOrder);
+}
+
 /** One pool by surface; an unknown surface is refused before any read. */
 export function eligibleFiles(
   repoDir: string,
@@ -230,6 +307,8 @@ export function eligibleFiles(
       return designPool(repoDir, environment);
     case "dead-code":
       return deadCodePool(repoDir);
+    case "single-responsibility":
+      return singleResponsibilityPool(repoDir);
   }
 }
 
@@ -246,13 +325,13 @@ function withoutTrailingNewline(text: string): string[] {
 }
 
 /** A deterministic line inside the chosen file among its non-blank lines. */
-function lineInside(text: string, hash: Buffer): number {
-  const lines = withoutTrailingNewline(text);
-  if (lines.length === 0) return 1;
-  const meaningful = lines
+function lineInside(text: string, path: string, hash: Buffer): number {
+  const candidates = withoutTrailingNewline(text)
     .map((line, index) => ({ line, index }))
     .filter((entry) => entry.line.trim().length > 0);
-  const candidates = meaningful.length > 0 ? meaningful : lines.map((line, index) => ({ line, index }));
+  if (candidates.length === 0) {
+    throw new EntryPointError(`the entry point ${path} has no non-blank line to name`);
+  }
   const offset = hash.readUInt32BE(4) % candidates.length;
   return candidates[offset]!.index + 1;
 }
@@ -308,5 +387,5 @@ export function pickEntryPoint(request: EntryPointRequest): EntryPoint {
   } catch {
     throw new EntryPointError(`the ${surface} entry point ${path} is not readable`);
   }
-  return { path, line: lineInside(text, hash), surface, seed };
+  return { path, line: lineInside(text, path, hash), surface, seed };
 }

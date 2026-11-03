@@ -828,6 +828,38 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     tab: { id: "api-standards", kind: "api-standards", title: "API Standards" },
   }),
   validateAgentDescriptor({
+    id: "single-responsibility",
+    label: "Single Responsibility",
+    description:
+      "Audits the repository source against the project Single Responsibility skill and files " +
+      "one capped issue per component and violation.",
+    scope: "repository",
+    prompt: {
+      kind: "file",
+      file: "single-responsibility.md",
+    },
+    lifecycle: AGENT_LIFECYCLES,
+    cadence: {
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    },
+    limits: {
+      maxPerHour: { min: 1, max: 100, nullable: true },
+      maxPending: { min: 1, max: 100, nullable: true },
+      default: { maxPerHour: 10, maxPending: 5 },
+    },
+    commands: SHARED_COMMANDS,
+    issues: SHARED_ISSUES,
+    detail: { panel: "activity", testId: "agent-detail" },
+    tab: {
+      id: "single-responsibility",
+      kind: "single-responsibility",
+      title: "Single Responsibility",
+    },
+  }),
+  validateAgentDescriptor({
     id: "release-train",
     label: "Release Train",
     description:

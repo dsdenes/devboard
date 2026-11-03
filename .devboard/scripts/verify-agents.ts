@@ -1112,6 +1112,7 @@ try {
           "open-devboard-dead-code",
           "open-devboard-mcp-optimizer",
           "open-devboard-api-standards",
+          "open-devboard-single-responsibility",
           "open-devboard-release-train",
         ]),
     `the Background agents section is wrong: ${JSON.stringify(groups)}`,
@@ -1131,6 +1132,7 @@ try {
     ["dead-code", "Dead Code"],
     ["mcp-optimizer", "MCP optimizer"],
     ["api-standards", "API Standards"],
+    ["single-responsibility", "Single Responsibility"],
     ["release-train", "Release Train"],
   ]) {
     const entry = await devtools.evaluate(`(() => {
@@ -2551,7 +2553,15 @@ try {
   console.log("PASS sync-retry-clears");
 
   /* No page shows an error for the retry that just succeeded. */
-  for (const id of ["scout", "watchdog", "design", "mcp-optimizer", "api-standards", "release-train"]) {
+  for (const id of [
+    "scout",
+    "watchdog",
+    "design",
+    "mcp-optimizer",
+    "api-standards",
+    "single-responsibility",
+    "release-train",
+  ]) {
     await click(devtools, `open-devboard-${id}`);
     await waitFor(
       async () =>

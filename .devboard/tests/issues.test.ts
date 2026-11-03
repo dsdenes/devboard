@@ -2705,6 +2705,20 @@ describe("detached goal drafts", () => {
         const deadline = Date.now() + 5_000;
         while (pidAlive(pid) && Date.now() < deadline) await Bun.sleep(25);
         expect(pidAlive(pid)).toBe(false);
+
+        after.send({ type: "deleteGoalDraft", path });
+        const deleted = await after.waitFor(
+          (frame) =>
+            frame.type === "issuesDrafts" &&
+            Array.isArray(frame.drafts) &&
+            !(frame.drafts as Array<Record<string, unknown>>).some(
+              (draft) => draft.path === path,
+            ),
+          "the republished list without the deleted draft",
+        );
+        expect(JSON.stringify(deleted)).not.toContain(path);
+        expect(existsSync(join(drafts, "detached.md"))).toBe(false);
+        expect(readGoalDraftOwnerState(stateDir, repo, path)).toBeUndefined();
       } finally {
         after.close();
       }
