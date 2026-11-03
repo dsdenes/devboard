@@ -632,6 +632,7 @@ async function writeFixture(root: string): Promise<string> {
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-consistent-naming",
+    "devboard-architectural-layering",
   ]) {
     await cp(join(harnessRoot, "omp", "skills", name), join(host, ".omp", "skills", name), {
       recursive: true,
@@ -1806,7 +1807,9 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
+    // The turn stays active long enough for the bar to render its running
+    // state, and still ends well inside the Discover observation window.
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=4000 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
     // Harness-owned reporting goes through the local Gitea API stub, never
     // through `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
@@ -1953,6 +1956,9 @@ try {
     const requestId = String(params.requestId ?? "");
     const url = requestUrls.get(requestId) ?? "";
     if (url.includes("favicon")) return;
+    // A report attempted while the fixture deliberately stops the server is
+    // answered by the page's own error surface, which the case asserts.
+    if (url.endsWith("/feedback")) return;
     if (expectedReloadFailures && String(params.errorText ?? "").includes("ERR_CONNECTION_REFUSED")) {
       return;
     }
@@ -3243,8 +3249,8 @@ try {
     };
   })()`);
   check(
-    devboardSidebar.entries === 2 &&
-      devboardSidebar.items === 10 &&
+    devboardSidebar.entries === 3 &&
+      devboardSidebar.items === 11 &&
       JSON.stringify(devboardSidebar.agentLabels) ===
         JSON.stringify([
           "Auto Scout",
@@ -3267,14 +3273,15 @@ try {
           "open.devboard.single-responsibility",
           "open.devboard.release-train",
         ]),
-    "the Devboard sidebar does not carry the background agents beside the two page entries",
+    "the Devboard sidebar does not carry the background agents beside the three page entries",
     devboardSidebar,
   );
   check(
-    JSON.stringify(devboardSidebar.labels) === JSON.stringify(["MCP tools", "Skills"]) &&
+    JSON.stringify(devboardSidebar.labels) ===
+      JSON.stringify(["MCP tools", "Skills", "Complexity"]) &&
       JSON.stringify(devboardSidebar.commands) ===
-        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills"]),
-    "the Devboard sidebar entries are not the MCP tools and Skills pages",
+        JSON.stringify(["devboard.tab.tools", "devboard.tab.skills", "devboard.tab.complexity"]),
+    "the Devboard sidebar entries are not the MCP tools, Skills, and Complexity pages",
     devboardSidebar,
   );
   check(devboardSidebar.toolNames.length === 0, "a tool name leaked into the sidebar", devboardSidebar);
@@ -3364,6 +3371,7 @@ try {
   })()`);
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
   const devboardBuiltins = [
+    "devboard-architectural-layering",
     "devboard-consistent-naming",
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
@@ -3432,7 +3440,7 @@ try {
   check(
     JSON.stringify(devboardSkillsTable.managed) ===
       JSON.stringify(devboardManagedFirst(devboardBuiltins)),
-    "the Managed marker does not belong to exactly the five built-in rows",
+    "the Managed marker does not belong to exactly the six built-in rows",
     devboardSkillsTable,
   );
   check(
@@ -3604,7 +3612,7 @@ try {
   const devboardSidebarAfterAdd = await page.eval<number>(
     `document.querySelectorAll('[data-testid="sidebar"] [data-testid="devboard-tab"]').length`,
   );
-  check(devboardSidebarAfterAdd === 2, "a skill directory changed the sidebar entry count", devboardSidebarAfterAdd);
+  check(devboardSidebarAfterAdd === 3, "a skill directory changed the sidebar entry count", devboardSidebarAfterAdd);
   await rm(devboardExtraSkill, { recursive: true, force: true });
   await page.reload();
   await showDevboardSkills();
@@ -12181,9 +12189,10 @@ try {
       ADRS_DIR: join(runStateHost, "adrs"),
       GOAL_FILE: join(runStateHost, "GOAL.md"),
       STATE_DIR: runStateDir,
+      // One agent turn that finishes inside the sheet's observation window.
       AGENT_COMMAND:
         `bun ${stubAgent} --log=${runStateLog} --delay-ms=2500 --questions=1 ` +
-        `--prepare-skills --discover --discover-delay-ms=15000 --goal-draft ` +
+        `--prepare-skills --discover --discover-delay-ms=3000 --goal-draft ` +
         `--flow-implement --flow-question`,
     },
     stdio: ["ignore", "pipe", "pipe"],
