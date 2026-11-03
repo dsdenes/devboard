@@ -877,61 +877,6 @@ export class DetachedPeer {
   }
 }
 
-/**
- * Ends owners left by an earlier dashboard instance when no replacement
- * handoff exists. A new instance never adopts or duplicates their runs.
- */
-export function stopStaleDetachedRuns(
-  stateDir: string,
-  repoDir: string,
-  instance: string,
-): void {
-  if (readDetachedHandoff(stateDir, repoDir) !== null) return;
-  const root = detachedRunsRoot(stateDir, repoDir);
-  let kinds: string[];
-  try {
-    kinds = readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch {
-    return;
-  }
-  const pids: number[] = [];
-  for (const kind of kinds) {
-    let keys: string[];
-    try {
-      keys = readdirSync(join(root, kind), { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name);
-    } catch {
-      continue;
-    }
-    for (const key of keys) {
-      const directory = join(root, kind, key);
-      const state = readDetachedRunState(directory);
-      if (state === undefined || state.instance === instance) continue;
-      if (state.owner === null || !pidAlive(state.owner.pid)) continue;
-      if (TERMINAL.has(state.status)) continue;
-      writeDetachedRunCommand(detachedRunControlDirectory(directory), { type: "stop" });
-      pids.push(state.owner.pid);
-    }
-  }
-  const deadline = Date.now() + 2_000;
-  while (pids.some((pid) => pidAlive(pid)) && Date.now() < deadline) {
-    Bun.sleepSync(25);
-  }
-}
-
-/** Test seam: the directory one run key owns. */
-export function detachedRunStateFile(
-  stateDir: string,
-  repoDir: string,
-  kind: string,
-  key: string,
-): string {
-  return detachedRunStatePath(detachedRunDirectory(stateDir, repoDir, kind, key));
-}
-
 /** True while a run key has a live owner. */
 export function detachedRunLive(
   stateDir: string,

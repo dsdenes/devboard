@@ -753,6 +753,8 @@
                       "data-found": row.missing === true ? "false" : "true",
                     })}
                     cell={commandCell}
+                    cellAttrs={(_row, columnId) =>
+                      columnId === "value" ? { "data-column": "line" } : {}}
                     hideHeader
                     columnWidths={COMMAND_WIDTHS}
                     full

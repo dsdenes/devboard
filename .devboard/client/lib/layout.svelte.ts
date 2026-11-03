@@ -155,10 +155,6 @@ export class LayoutStore {
     }
   }
 
-  get activeTabId(): string | null {
-    return this.activeTab[this.mode];
-  }
-
   get activeWorkspaceTab(): WorkspaceTab | null {
     const id = this.activeTab[this.mode];
     return this.tabs[this.mode].find((tab) => tab.id === id) ?? null;

@@ -1,4 +1,10 @@
-import { createForgeIssues, ForgeIssueError, type ForgeIssues } from "../lib/forge-issues";
+import {
+  createForgeIssues,
+  FORGE_ISSUE_ALL_MAX,
+  ForgeIssueError,
+  type ForgeIssues,
+} from "../lib/forge-issues";
+import { GITEA_ISSUE_READ_MAX } from "../lib/gitea";
 import { redactSecrets } from "../lib/secret-redaction";
 import { join } from "node:path";
 import type { McpContext } from "../mcp/context";
@@ -30,14 +36,21 @@ export const DEDUP_TOOLS = [
     name: "issues_list",
     title: "List open issues",
     description:
-      "Lists the repository's open issues with number, title, state, labels, URL, " +
-      "and creation time. Closed issues are never listed.",
+      "Lists every open issue in the repository with number, title, state, labels, " +
+      "URL, and creation time, read page by page. `truncated` is true when an " +
+      "explicit `limit` or a forge read ceiling kept rows back. Closed issues are " +
+      "never listed.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         state: { type: "string", enum: ["open"] },
-        limit: { type: "integer", minimum: 1, maximum: 200 },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Report only the newest N rows; omitted reports every open issue.",
+        },
       },
     },
   },
@@ -131,13 +144,22 @@ async function callDedupTool(
     if (args.state !== undefined && args.state !== "open") {
       return { value: undefined, error: "issues_list reads only open issues" };
     }
-    const limit = args.limit === undefined ? 200 : Number(args.limit);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+    const limit = args.limit === undefined ? undefined : Number(args.limit);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 200)) {
       return { value: undefined, error: "issues_list limit must be 1..200" };
     }
-    const issues_ = await issues.list("open", limit);
-    recordWatchdogRead(context, issues_.length);
-    return { value: { issues: issues_ } };
+    // One `list` page leaves the oldest open issue invisible, so the peer reads
+    // every page and reports the rows it could not reach instead.
+    const open = await issues.listAll("open");
+    const reported = limit === undefined ? open : open.slice(0, limit);
+    recordWatchdogRead(context, reported.length);
+    const ceiling = issues.forge === "github" ? FORGE_ISSUE_ALL_MAX : GITEA_ISSUE_READ_MAX;
+    return {
+      value: {
+        issues: reported,
+        truncated: open.length >= ceiling || reported.length < open.length,
+      },
+    };
   }
   if (name === "issue_get") {
     const number = Number(args.number);
@@ -151,22 +173,36 @@ async function callDedupTool(
     return { value: issue };
   }
   if (name === "issue_create") {
+    // The fingerprint is the cycle's ledger key, so it is validated before the
+    // forge mutation: a malformed call files nothing instead of leaving an
+    // issue no record owns.
+    const fingerprint = args.fingerprint;
+    if (typeof fingerprint !== "string" || fingerprint.length === 0) {
+      return { value: undefined, error: "issue_create needs the candidate fingerprint" };
+    }
     try {
       const created = await createIssue(context, {
         title: args.title,
         body: args.body,
         labels: args.labels,
       });
-      const fingerprint = args.fingerprint;
-      if (typeof fingerprint !== "string" || fingerprint.length === 0) {
-        return { value: undefined, error: "issue_create needs the candidate fingerprint" };
+      try {
+        recordWatchdogFiling(context, {
+          fingerprint,
+          number: created.number,
+          url: created.url,
+          title: created.title,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          value: undefined,
+          error:
+            `issue #${created.number} (${created.url}) was created, but its filing ` +
+            `record could not be appended: ${detail}. The tracker holds an issue this ` +
+            `cycle did not record.`,
+        };
       }
-      recordWatchdogFiling(context, {
-        fingerprint,
-        number: created.number,
-        url: created.url,
-        title: created.title,
-      });
       return { value: { ...created, fingerprint } };
     } catch (error) {
       return {

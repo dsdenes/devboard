@@ -76,15 +76,16 @@ describe("idempotency store", () => {
     const operation = async () => {
       calls += 1;
       await gate.promise;
-      return { path: ".devboard/goal-proposals/one.md" };
+      return { links: { draft: { href: "file:///repo/.devboard/goal-proposals/one.md" } } };
     };
 
     const first = store.run("goal-proposal", "retry-1", operation);
     const second = store.run("goal-proposal", "retry-1", operation);
     gate.resolve();
 
-    expect(await first).toEqual({ path: ".devboard/goal-proposals/one.md" });
-    expect(await second).toEqual({ path: ".devboard/goal-proposals/one.md" });
+    const draft = { links: { draft: { href: "file:///repo/.devboard/goal-proposals/one.md" } } };
+    expect(await first).toEqual(draft);
+    expect(await second).toEqual(draft);
     expect(calls).toBe(1);
   });
 

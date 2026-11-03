@@ -9,7 +9,7 @@ import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner, liveLockOwners, versionLockPath } from "../lock";
 import { originForge, originRepository } from "../repository";
 import { appendActivityLine, writeActivity } from "../state";
-import { shippedVersion } from "../../lib/github-release";
+import { resolveShippedVersion } from "../../lib/github-release";
 import { readDraftGoalHeadings } from "../../lib/draft-goals";
 import { giteaBaseUrl } from "../../lib/forge";
 import { ForgeReadRetry, classifyForgeReadFailure } from "../../lib/forge-read-retry";
@@ -23,6 +23,7 @@ import {
 } from "./forge";
 import {
   CYCLE_ISSUE_LIMIT,
+  HOUR_MS,
   SYNC_INTERVAL_MS,
   controlDirectory,
   cycleClaimPath,
@@ -66,6 +67,12 @@ const FIRST_LINE_MAX = 400;
 const MAX_ACTIVITY_LINE = 2000;
 const READ_TIMEOUT_MS = 30_000;
 const CYCLE_TIMEOUT_MS = 20 * 60_000;
+/**
+ * How long a closed issue whose release could not be determined waits before
+ * another attempt. A newly published release revives every unresolved row at
+ * once, so this only bounds the traffic when nothing changed.
+ */
+export const RESOLUTION_RETRY_MS = 6 * HOUR_MS;
 
 export interface DeadCodeWorkerOptions {
   repoDir: string;
@@ -140,6 +147,21 @@ function latest(left: string | null, right: string | null): string | null {
   if (left === null) return right;
   if (right === null) return left;
   return Date.parse(left) >= Date.parse(right) ? left : right;
+}
+
+/** Identifies the published release list, so a new release revives retries. */
+function releaseSignature(releases: DeadCodeRelease[]): string {
+  return releases
+    .map((release) => `${release.tag}@${release.publishedAt}`)
+    .sort()
+    .join("\n");
+}
+
+/** A row's last resolution attempt in epoch milliseconds; never attempted is 0. */
+function attemptTime(row: DeadCodeIssueRow): number {
+  if (row.versionAttemptAt === null) return 0;
+  const at = Date.parse(row.versionAttemptAt);
+  return Number.isFinite(at) ? at : 0;
 }
 
 export class DeadCodeWorker {
@@ -270,6 +292,7 @@ export class DeadCodeWorker {
       intervalMinutes: settings.intervalMinutes,
       lastCycleStartedAt: previous?.lastCycleStartedAt ?? null,
       issues: previous?.issues ?? [],
+      releaseSignature: previous?.releaseSignature ?? null,
       sync: previous?.sync ?? { state: "stale", at: null, error: null },
       newestCycleId: previous?.newestCycleId ?? null,
       lastError: null,
@@ -553,25 +576,42 @@ export class DeadCodeWorker {
   private async applyRead(read: ForgeRead): Promise<void> {
     const github = this.github;
     const previous = new Map(this.state.issues.map((row) => [row.number, row]));
+    const signature = releaseSignature(read.releases);
+    const releasesChanged = signature !== this.state.releaseSignature;
+    const now = this.clock();
     const rows: DeadCodeIssueRow[] = [];
     for (const issue of read.issues) {
       const before = previous.get(issue.number);
       const state = issue.state === "closed" ? "implemented" : "pending";
       const category = before?.category ?? categoryFromBody(issue.body);
-      let version: string | null = state === "implemented" ? (before?.version ?? null) : null;
-      if (state === "implemented" && version === null && github !== undefined) {
-        version = await shippedVersion(issue, github, read.releases);
-      }
-      rows.push({
+      const row: DeadCodeIssueRow = {
         number: issue.number,
         title: issue.title,
         url: issue.url,
         createdAt: issue.createdAt,
         state,
         category,
-        version,
-      });
+        version: state === "implemented" ? (before?.version ?? null) : null,
+        versionAttemptAt: state === "implemented" ? (before?.versionAttemptAt ?? null) : null,
+        versionError: state === "implemented" ? (before?.versionError ?? null) : null,
+      };
+      rows.push(row);
+      // A null version is a fact about the release history, not a gap to fill
+      // on every read: only a release the row's last attempt did not see, or
+      // the bounded backoff, buys the resolution again. The reason it stays
+      // empty is recorded, so an unresolved row is distinct from an untried
+      // one.
+      if (row.state !== "implemented" || row.version !== null || github === undefined) continue;
+      if (!releasesChanged && now.getTime() - attemptTime(row) < RESOLUTION_RETRY_MS) continue;
+      const resolution = await resolveShippedVersion(issue, github, read.releases);
+      row.versionAttemptAt = this.clock().toISOString();
+      row.versionError = resolution.error;
+      if (resolution.version !== null) {
+        row.version = resolution.version;
+        row.versionError = null;
+      }
     }
+    this.state.releaseSignature = signature;
     this.state.issues = newestFirst(rows);
     this.openTitles = read.openTitles;
     this.state.sync = { state: "ok", at: this.clock().toISOString(), error: null };

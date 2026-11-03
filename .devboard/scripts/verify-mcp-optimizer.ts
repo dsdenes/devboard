@@ -662,7 +662,7 @@ try {
   );
   for (const key of [FAMILIES[0], FAMILIES[2]]) {
     assertTrue(
-      capLedger.families?.[key]?.lastAction === "none",
+      capLedger.families?.[key]?.lastAction === "capped",
       `verify:mcp-optimizer: the cap ledger action for ${key} is ${capLedger.families?.[key]?.lastAction}`,
     );
   }

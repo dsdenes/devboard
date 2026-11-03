@@ -77,9 +77,10 @@ export const FORGE_ISSUE_LIST_MAX = 201;
  * The row ceiling one `listAll` read may reach on GitHub, where a page is one
  * `gh issue list --limit` call and the limit doubles until a short page proves
  * the end. A repository holding more rows than this is reported by the
- * dead-code guard's compared count instead of paging forever.
+ * dead-code guard's compared count instead of paging forever, and the dedup
+ * peer's `issues_list` reports `truncated: true` when its read stops here.
  */
-const FORGE_ISSUE_ALL_MAX = 100_000;
+export const FORGE_ISSUE_ALL_MAX = 100_000;
 
 export interface ForgeIssues {
   readonly forge: "github" | "gitea";

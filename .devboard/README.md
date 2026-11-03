@@ -546,7 +546,7 @@ their `/.omp/skills/devboard-<name>` lines to the host `.gitignore`, adding noth
 
 ## Skills
 
-The package ships three project-scoped skills, canonical under `.devboard/omp/skills/` and
+The package ships four project-scoped skills, canonical under `.devboard/omp/skills/` and
 installed on every install and update into `<host>/.omp/skills/<name>/` as real files:
 
 |Skill|Carries|
@@ -554,6 +554,7 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 |`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.mjs`.|
 |`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
 |`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs, with the five violation categories; the Single Responsibility worker's normative source.|
+|`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym.|
 
 Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
 Devboard mode's Skills page renders that marker as a visible `Managed` label and never renders a
@@ -576,9 +577,10 @@ The name prefix is the ownership marker, and the marked namespace is reserved fo
   or prune; a host that wants a skill of its own uses an unmarked name.
 
 `install` adds exactly one `/.omp/skills/devboard-<name>` line per shipped skill to the host
-`.gitignore` and adds nothing on a rerun. The three entries are `/.omp/skills/devboard-ui-ux`,
-`/.omp/skills/devboard-restful-api-implementation`, and
-`/.omp/skills/devboard-single-responsibility-principle`. `doctor` and the update verification
+`.gitignore` and adds nothing on a rerun. The four entries are `/.omp/skills/devboard-ui-ux`,
+`/.omp/skills/devboard-restful-api-implementation`,
+`/.omp/skills/devboard-single-responsibility-principle`, and
+`/.omp/skills/devboard-consistent-naming`. `doctor` and the update verification
 compare each shipped skill directory with the installed package and exit nonzero when one byte
 differs; an unmarked host skill is never inspected and never fails the check.
 
@@ -2100,10 +2102,13 @@ each row it lists, the issue's current forge state and its shipping release. The
 the dashboard and never depends on the agent's worker: a stopped agent's table reflects a
 closure in the origin forge within one interval, with no Start, no worker restart, no browser
 reload, and no reconnect. An open issue reads `pending` and a closed one reads `implemented`.
-A closed issue whose shipping release cannot be resolved still reads `implemented` with `—` in
-the Shipped cell and stays listed. A successful read is authoritative for its rows: a filed
-issue the answer no longer names leaves the table on the next publish, and `agent-issues-count`
-and the sidebar `agent-count-<id>` count exactly the rendered rows.
+A row filed through another forge is answered as `unreadable`: the Gitea reader cannot read it,
+so the row stays listed with `unknown` in the State cell, claims no version, and a successful
+read never removes it. Only a row the reader actually asked its own forge about is dropped when
+the answer omits it. A closed issue whose shipping release cannot be resolved still reads
+`implemented` with `—` in the Shipped cell and stays listed. A successful read is authoritative
+for its rows: a filed issue the answer no longer names leaves the table on the next publish, and
+`agent-issues-count` and the sidebar `agent-count-<id>` count exactly the rendered rows.
 
 While at least one dashboard client is connected, each table is read at most once every 60
 seconds, and one read per table is in flight at a time. Opening a page whose last read is older
@@ -2207,7 +2212,9 @@ Auto Scout, Design System, and Dead Code default to 10 per rolling hour and 5 op
 defaults to both empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
 keeps its rolling-hour and open-issue enforcement. Watchdog files at most the hourly cap of new
 issues and at most the pending cap of its own open issues, counts open
-state from the last successful projection (`projection.json`), keeps excess fingerprints in
+state from the last successful projection (`projection.json`) — a `pending` row and an
+`unreadable` one, which another forge serves and this dashboard cannot prove closed, both count
+as open — keeps excess fingerprints in
 `pendingFiling` instead of dropping them, files nothing new while a cap is set and the projection
 is not `ok`, and never caps comments. With both caps empty its cycle behaves exactly as before.
 
@@ -2472,6 +2479,13 @@ most one cycle runs at a time for a checkout. Stop ends the worker and leaves th
 filed rows. State lives at `<STATE_DIR>/dead-code/<journalKey(REPO_DIR)>/`, the lock and cycles
 stay inside the checkout, and a dashboard restart, page open, or tab restore starts nothing.
 
+The periodic read records every resolution attempt, not just its empty version: a closed issue
+whose commit no release contains yet keeps the attempt time and the reason on its row, and the
+Shipped cell's tooltip shows that reason. The row is resolved again only when the published
+release list changes, which retries every unresolved row at once, or after six hours, so an
+unchanged read costs no forge call for a row it already failed to resolve. A release the row was
+waiting for fills the version and clears the reason.
+
 ### Single Responsibility
 
 Single Responsibility is the `single-responsibility` descriptor. Its sidebar entry
@@ -2630,7 +2644,9 @@ and never asks for, parses, or validates an answer object. A candidate with no r
 pending, so a failed tool call files nothing and the next cycle retries it. A duplicate of an open
 issue is suppressed silently: no issue, no comment. Its ledger entry records `duplicate:<url>` with
 no `filed:` disposition, so it is never treated as filed and never takes a 24-hour recurrence
-comment.
+comment. `issues_list` reads every open issue page by page and reports `truncated: true` when an
+explicit `limit` or a forge read ceiling kept the older rows back, so an open issue below one
+`list` page is never invisible by silence.
 
 Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
 that issue is closed, the next cycle that observes the same evidence sends the candidate to the
@@ -2830,7 +2846,9 @@ OpenRouter token shapes.
 
 Before filing, the agent reads the repository's open issues. A family is skipped when an open issue
 has the exact computed title or its body contains `family:<tag>`; the skip is recorded as
-`duplicate` with the existing URL. There is no suppression, no cooldown, and no recurrence comment.
+`duplicate` with the existing URL and the URL and number of the issue the turn just filed, and
+nothing closes or comments on that issue. There is no suppression, no cooldown, and no recurrence
+comment.
 
 `maxIssuesPerCycle` (1 to 20, default 2) caps filings per cycle, and `maxPerHour` caps filings per
 rolling hour. Each family's prompt receives a `filingRoom` of 0 or 1 after the caps and the already
@@ -2845,7 +2863,8 @@ as `dropped`, never filed. It is written atomically after every filing. A versio
 discarded on load, the report states `ledgerReset: true`, and deduplication relies on the forge.
 `report.json` and `report.md` carry the window, session and journal counts, total family count,
 selected keys with scores, omitted count, each synthesis call's model and duration, each recorded
-outcome with its rule or skip reason, filed URLs, duplicate skips, dropped count, and `pending: 0`.
+outcome with its rule or skip reason, filed URLs, duplicate skips with both the matched and the
+created URL, dropped count, and `pending: 0`.
 The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`, `failed`),
 `reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`, and `cycles`.
 
@@ -3628,8 +3647,9 @@ a conversation is never resumed from storage.
 `Goal` turns the composer text into a raw proposed goal instead of an issue. With non-whitespace
 text it posts `report`, the Ask turns as `turns` when the panel has one, and the same captured
 element context to `POST /goal-proposals`; the server writes one Markdown draft under
-`<REPO_DIR>/.devboard/goal-proposals/` and answers
-`201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
+`<REPO_DIR>/.devboard/goal-proposals/` and answers `201` with the common hypertext control
+object `{ "links": { "draft": { "href": "file:///…/.devboard/goal-proposals/<file>.md" } } }`,
+carrying the draft's absolute URI. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
 The file name is chosen by one bounded naming turn: an ACP peer starts with
@@ -3647,8 +3667,8 @@ text verbatim, the `## Ask conversation` block when the panel has one, and the
 `## Captured UI context` block an issue report carries. It carries no notice line or other prose
 the operator did not write. A successful click closes the panel,
 stays in report selection mode with an empty composer, and shows the
-`Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
-with the server's error and leaves no draft. The drafts are ignored by git.
+`Goal proposed: <repository-relative path>` toast as plain text with no link; a failed write keeps
+the panel open with the server's error and leaves no draft. The drafts are ignored by git.
 
 Both `POST /feedback` and `POST /goal-proposals` accept an `Idempotency-Key` header. The
 server retains each key's result under `<STATE_DIR>/idempotency/` for 24 hours, so a retry with the
@@ -3709,12 +3729,14 @@ an HTTP(S) origin needs no discovery, and an installed host never probes. Withou
 discovered origin the endpoint answers HTTP 503 naming `DEVBOARD_GITEA_URL` and performs no
 request. A refused or failing request is reported in the filing toast and creates nothing. The
 endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and gives the request
-60 seconds.
+60 seconds. A request whose method is not `POST` answers `405` with `Allow: POST` before the
+disabled-reporting `503`, which therefore answers a `POST` only.
 
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
 `title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
 `POST /feedback` answers `201` with `title` and the `links.issue.href` hypertext control carrying
-the filed issue's absolute URL; no top-level `url` property remains.
+the filed issue's absolute URL, plus a `Location` header naming that same URL; no top-level `url`
+property remains. An idempotent replay answers the same `201` body and the same `Location`.
 
 `POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade require the dashboard token
 before their handler runs. The request carries `Authorization: Bearer <token>`, which the server
@@ -3733,6 +3755,13 @@ detail "An internal error occurred.": `POST /feedback` and
 `POST /goal-proposals` share that one fixed detail, record the exception text as a
 `server-error` journal record prefixed with the endpoint, and never return the text to the
 client.
+
+A failed Gitea delivery answers `502` with the fixed Problem JSON detail "The issue could not be
+filed.", and a delivery that runs past its bound answers `504` with the timeout detail. The
+upstream error text, which names the Gitea request path and carries the first line of the
+upstream response, reaches only the `server-error` journal record prefixed with the endpoint, so
+no stack trace or other implementation internal is ever returned. A refused payload keeps its
+own `400` detail.
 
 ## Container
 

@@ -27,15 +27,25 @@ import { ghCommand } from "../../issues/scout/preflight";
 
 export type ForgeIssueState = "pending" | "implemented";
 
+/**
+ * What one requested URL's read answered. `unreadable` marks a URL another
+ * forge serves: this reader cannot answer it, so its row keeps no state.
+ */
+export type ForgeIssueOutcome = ForgeIssueState | "unreadable";
+
 export interface ForgeIssueFact {
   url: string;
-  /** An open issue is `pending`; a closed one is `implemented`. */
-  state: ForgeIssueState;
+  /** `pending` is open, `implemented` closed, `unreadable` served by another forge. */
+  state: ForgeIssueOutcome;
   /** The earliest published release that shipped it, or null. */
   version: string | null;
 }
 
-/** Reads every issue's forge facts; rejection means the read failed. */
+/**
+ * Reads every issue's forge facts. Every requested URL is answered — a URL
+ * this reader cannot serve is `unreadable` — and rejection means the read
+ * failed.
+ */
 export interface ForgeIssueReader {
   project(urls: string[]): Promise<ForgeIssueFact[]>;
 }
@@ -91,9 +101,13 @@ function createGiteaIssueReader(
       // of that repository, and a second repository gets its own scan.
       const releases = new Map<string, GitHubRelease[]>();
       for (const url of urls) {
-        // An issue filed through another forge cannot be read here; the row
-        // stays without a state instead of failing the whole projection.
-        if (!servedBy(url, baseUrl)) continue;
+        // An issue filed through another forge cannot be read here; the read
+        // still answers it, so the row stays listed without a state instead of
+        // failing the whole projection.
+        if (!servedBy(url, baseUrl)) {
+          facts.push({ url, state: "unreadable", version: null });
+          continue;
+        }
         const locator = issueLocator(url);
         if (locator === null) throw new Error(`not a supported issue URL: ${url}`);
         const target: GiteaTarget = {

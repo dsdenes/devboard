@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { boundBytes } from "../lib/text-budget";
 import { AcpConnection } from "../server/acp";
 import type { PeerBinding } from "../server/providers/selection";
 import { MCP_COVERS, MCP_TOOLS } from "../mcp/catalog";
@@ -143,6 +142,73 @@ function catalogJson(): string {
   });
 }
 
+type FamilyFragmentList = McpOptimizerFamily["fragments"];
+type FamilyFragment = FamilyFragmentList[number];
+
+/** The marker a cut fragment string ends with, so the cut is visible to the peer. */
+const FRAGMENT_CUT_MARKER = "…";
+
+/** The first `units` UTF-16 code units of `text`, never splitting a surrogate pair. */
+function prefixOf(text: string, units: number): string {
+  if (units >= text.length) return text;
+  const code = text.charCodeAt(units - 1);
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? units - 1 : units);
+}
+
+/**
+ * One fragment whose text is cut to the longest prefix that still fits beside
+ * `kept`, or `undefined` when not even the marker fits.
+ */
+function cutFragmentJson(
+  fragment: FamilyFragment,
+  kept: FamilyFragmentList,
+  allowance: number,
+): string | undefined {
+  const render = (units: number): string | undefined => {
+    const text = json([...kept, { text: `${prefixOf(fragment.text, units)}${FRAGMENT_CUT_MARKER}`, count: fragment.count }]);
+    return Buffer.byteLength(text, "utf8") <= allowance ? text : undefined;
+  };
+  let best = render(0);
+  let low = 0;
+  let high = fragment.text.length;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const candidate = render(mid);
+    if (candidate === undefined) {
+      high = mid - 1;
+    } else {
+      best = candidate;
+      low = mid + 1;
+    }
+  }
+  return best;
+}
+
+/**
+ * The fragments section, bounded to `allowance` UTF-8 bytes. The highest-count
+ * fragments survive; the least frequent are dropped first, and the one that
+ * straddles the budget keeps the prefix of its text that fits, closed with a
+ * marker, so the section stays a JSON array instead of a document cut
+ * mid-token. When not even `[]` fits, the fixed sections alone exceed the
+ * budget and nothing inside this value can bring the prompt under it.
+ */
+function boundedFragmentsJson(fragments: FamilyFragmentList, allowance: number): string {
+  const ordered = fragments
+    .slice()
+    .sort((left, right) => right.count - left.count || left.text.localeCompare(right.text));
+  const kept: FamilyFragmentList = [];
+  let text = json(kept);
+  for (const fragment of ordered) {
+    const next = json([...kept, fragment]);
+    if (Buffer.byteLength(next, "utf8") > allowance) {
+      return cutFragmentJson(fragment, kept, allowance) ?? text;
+    }
+    kept.push(fragment);
+    text = next;
+  }
+  return text;
+}
+
 /** The three fields of one open issue the prompt and the template publish. */
 function issueRows(issues: McpOptimizerOpenIssue[]): Array<{
   number: number;
@@ -187,7 +253,7 @@ export function synthesisPrompt(input: {
   const family = input.family;
   let excerpts = family.excerpts.slice();
   let issues = input.openIssues.slice().sort((left, right) => left.number - right.number);
-  const render = (): string =>
+  const render = (fragmentText: string): string =>
     promptText({
       family: json({
         key: family.key,
@@ -199,7 +265,7 @@ export function synthesisPrompt(input: {
         last_at: family.lastAt,
         tag: `family:${familyTag(family.key)}`,
       }),
-      fragments: json(family.fragments),
+      fragments: fragmentText,
       excerpts: json(excerpts),
       catalog: catalogJson(),
       issues: json(issueRows(issues)),
@@ -212,17 +278,24 @@ export function synthesisPrompt(input: {
       }),
     });
 
-  let text = render();
+  const fragments = json(family.fragments);
+  let text = render(fragments);
   while (Buffer.byteLength(text, "utf8") >= SYNTHESIS_PROMPT_MAX_BYTES) {
     if (excerpts.length > 0) {
       excerpts = excerpts.slice(0, -1);
     } else if (issues.length > 1) {
       issues = issues.slice(0, -1);
     } else {
-      text = boundBytes(text, SYNTHESIS_PROMPT_MAX_BYTES - 1, "…").text;
+      // Evidence shrinks; the filing contract never does. The fragments value is
+      // the last unbounded section, so the budget is spent there: the section is
+      // cut inside its own JSON string and closed, and every heading that follows
+      // it, `Rules:` first among them, survives with a parseable JSON section.
+      const allowance =
+        SYNTHESIS_PROMPT_MAX_BYTES - 1 - Buffer.byteLength(render(""), "utf8");
+      text = render(boundedFragmentsJson(family.fragments, allowance));
       break;
     }
-    text = render();
+    text = render(fragments);
   }
   return text;
 }

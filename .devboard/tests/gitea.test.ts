@@ -26,6 +26,11 @@ import { fakeGiteaPull } from "../server/fixtures/fake-gitea-pull";
 import { CommandFlowForge } from "../server/forge-pr";
 import { createWatchdogDelivery } from "../watchdog/delivery";
 import { createForgeIssueReader } from "../server/agents/forge-reader";
+import { agentRegistry } from "../server/agents/registry";
+import { WatchdogActivity } from "../server/watchdog";
+import { readProjection } from "../watchdog/projection";
+import { saveLedger as saveWatchdogLedger, type Ledger } from "../watchdog/ledger";
+import { writeWatchdogSettings } from "../watchdog/settings";
 
 /**
  * Gitea is a first-class forge: resolution, issue polling and closing, Flow's
@@ -788,20 +793,95 @@ describe("Gitea watchdog activity", () => {
     throw new Error("gh must not run for a Gitea origin");
   };
 
-  test("reads only the issues its own instance serves", async () => {
+  test("answers a foreign-forge URL as unreadable instead of omitting it", async () => {
+    const calls: string[] = [];
     const reader = createForgeIssueReader({
       repoDir: repository(),
       environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
       run: noGh,
-      fetchImpl: openIssue,
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        return openIssue(input);
+      },
     });
     const facts = await reader.project([
       "https://github.com/acme/fixture/issues/377",
       "http://gitea.test/acme/fixture/issues/5",
     ]);
     expect(facts).toEqual([
+      { url: "https://github.com/acme/fixture/issues/377", state: "unreadable", version: null },
       { url: "http://gitea.test/acme/fixture/issues/5", state: "pending", version: null },
     ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("/acme/fixture/issues/5");
+  });
+
+  test("a skipped row survives the read and stays in the persisted projection", async () => {
+    const root = repository();
+    const watchdogDir = join(root, "watchdog");
+    const stateDir = join(root, "state");
+    mkdirSync(stateDir, { recursive: true });
+    const foreign = "https://github.com/acme/fixture/issues/377";
+    const served = "http://gitea.test/acme/fixture/issues/5";
+    const ledger: Ledger = { version: 2, findings: {}, pendingFiling: [] };
+    for (const [fingerprint, url] of [
+      ["foreign", foreign],
+      ["served", served],
+    ] as const) {
+      ledger.findings[fingerprint] = {
+        category: "server-error",
+        line: `synthetic ${fingerprint} error`,
+        firstSeen: "2026-10-01T00:00:00Z",
+        lastSeen: "2026-10-01T00:00:00Z",
+        count: 1,
+        disposition: `filed:${url}`,
+        url,
+        filedAt: "2026-10-01T00:00:00Z",
+        instances: [],
+      };
+    }
+    saveWatchdogLedger(watchdogDir, ledger);
+    // One pending cap makes the adapter persist the projection its worker counts.
+    writeWatchdogSettings(watchdogDir, { intervalMinutes: 10, maxPerHour: null, maxPending: 1 });
+    const calls: string[] = [];
+    const reader = createForgeIssueReader({
+      repoDir: root,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        return openIssue(input);
+      },
+    });
+    const adapter = new WatchdogActivity({
+      descriptor: agentRegistry.require("watchdog"),
+      repoDir: root,
+      stateDir,
+      harnessDir: join(import.meta.dir, ".."),
+      watchdogDir,
+      send: () => undefined,
+      reader,
+      hasClients: () => true,
+      now: () => 1_000_000,
+      spawnWorker: () => undefined,
+    });
+    adapter.snapshot();
+    await adapter.settled();
+    const rows = adapter.snapshot().issues;
+    expect(rows.map((row) => row.url)).toEqual([served, foreign]);
+    expect(rows.find((row) => row.url === served)?.state).toBe("pending");
+    expect(rows.find((row) => row.url === foreign)?.state).toBe("unknown");
+    expect(calls.some((call) => call.includes("/issues/377"))).toBe(false);
+    const projection = readProjection(watchdogDir);
+    expect(projection?.state).toBe("ok");
+    expect(projection?.issues).toHaveLength(2);
+    expect(projection?.issues).toContainEqual({ url: served, state: "pending", version: null });
+    expect(projection?.issues).toContainEqual({
+      url: foreign,
+      state: "unreadable",
+      version: null,
+    });
+    adapter.dispose();
   });
 
   test("treats loopback aliases as the same instance", async () => {

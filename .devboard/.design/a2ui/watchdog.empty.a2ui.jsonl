@@ -1,0 +1,22 @@
+{"version":"v0.9.1","createSurface":{"surfaceId":"watchdog","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json","sendDataModel":false}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"root","component":"Column","children":["header","summary","body"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"header","component":"Row","children":["identity","meta"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"identity","component":"Column","children":["eyebrow","title"]},{"id":"eyebrow","component":"Text","text":"ISSUES","variant":"caption"},{"id":"title","component":"Text","text":"Watchdog","variant":"h1"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"meta","component":"Row","children":["sync","last_read"]},{"id":"sync","component":"Text","text":"GitHub read ok","variant":"caption"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"last_read","component":"Text","text":"Last read 14:02:48","variant":"caption"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"summary","component":"Card","children":["summary_header","verdict","facts"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"summary_header","component":"Row","children":["summary_title","summary_age"]},{"id":"summary_title","component":"Text","text":"Newest cycle","variant":"h2"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"summary_age","component":"Text","text":"never","variant":"caption"},{"id":"verdict","component":"Row","children":["action"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"action","component":"Text","text":"none","variant":"caption"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"facts","component":"Row","children":["fact_started","fact_findings","fact_pending"]},{"id":"fact_started","component":"Text","text":"STARTED Never","variant":"caption"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"fact_findings","component":"Text","text":"FINDINGS 0","variant":"caption"},{"id":"fact_pending","component":"Text","text":"PENDING FILINGS 0","variant":"caption"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"body","component":"Row","children":["issues","history"]},{"id":"issues","component":"Card","children":["issues_header","issues_empty"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_header","component":"Row","children":["issues_title","issues_count"]},{"id":"issues_title","component":"Text","text":"Filed issues","variant":"h2"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_count","component":"Text","text":"0 filed · 0 pending filing","variant":"caption"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_empty","component":"Column","children":["issues_empty_title","issues_empty_copy"]},{"id":"issues_empty_title","component":"Text","text":"No issues filed","variant":"h2"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"issues_empty_copy","component":"Text","text":"Findings worth an issue appear here after a cycle.","variant":"caption"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history","component":"Card","children":["history_header","history_empty"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_header","component":"Row","children":["history_title"]},{"id":"history_title","component":"Text","text":"Cycle history","variant":"h2"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_empty","component":"Column","children":["history_empty_title","history_empty_copy"]},{"id":"history_empty_title","component":"Text","text":"No cycles yet","variant":"h2"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"watchdog","components":[{"id":"history_empty_copy","component":"Text","text":"The watchdog records one cycle every ten minutes.","variant":"caption"}]}}
+{"version":"v0.9.1","updateDataModel":{"surfaceId":"watchdog","path":"/","value":{"cycle":null,"issues":[],"cycles":[]}}}

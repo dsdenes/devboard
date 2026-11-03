@@ -212,7 +212,7 @@ export class McpOptimizerActivity implements AgentAdapter {
         state: sync.state,
         at: sync.at,
         error: sync.error,
-        issues: [...this.forge.entries()].map(([url, fact]) => ({
+        issues: [...this.forge.rows()].map(([url, fact]) => ({
           url,
           state: fact.state,
           version: fact.version,

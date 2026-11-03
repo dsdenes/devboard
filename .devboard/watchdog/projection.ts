@@ -4,14 +4,15 @@ import { projectionPath, PROJECTION_VERSION } from "./paths";
 import { writeJsonAtomic } from "./settings";
 
 /**
- * The last GitHub projection the dashboard computed, persisted where the
+ * The last forge projection the dashboard computed, persisted where the
  * worker can read it. A Watchdog cap counts open state only from this file and
  * files nothing new while its sync is not `ok`; without a cap the file is
- * ignored, so the default cycle is unchanged.
+ * ignored, so the default cycle is unchanged. `unreadable` names a row another
+ * forge serves: it stays listed and counts as open.
  */
 export interface ProjectionIssue {
   url: string;
-  state: "pending" | "implemented";
+  state: "pending" | "implemented" | "unreadable";
   version: string | null;
 }
 
@@ -41,7 +42,13 @@ export function readProjection(directory: string): WatchdogProjection | undefine
   for (const entry of parsed.issues) {
     if (!isRecord(entry)) continue;
     if (typeof entry.url !== "string") continue;
-    if (entry.state !== "pending" && entry.state !== "implemented") continue;
+    if (
+      entry.state !== "pending" &&
+      entry.state !== "implemented" &&
+      entry.state !== "unreadable"
+    ) {
+      continue;
+    }
     if (!(entry.version === null || typeof entry.version === "string")) continue;
     issues.push({ url: entry.url, state: entry.state, version: entry.version });
   }

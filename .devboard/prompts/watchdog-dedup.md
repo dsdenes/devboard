@@ -15,8 +15,10 @@ Repository: `{{repository}}`
 Read that repository's currently open issues yourself, through the `devboard` MCP server's
 read-only tools:
 
-- `issues_list` with `{"state": "open", "limit": 200}` lists every open issue with its number,
-  title, state, labels, URL, and creation time.
+- `issues_list` with `{"state": "open"}` lists every open issue with its number, title, state,
+  labels, URL, and creation time. Its `truncated` field is `false` only when that answer holds the
+  whole open set; a `true` means the `limit` you passed or a forge read ceiling kept older rows
+  back, so never treat it as the complete open set.
 - `issue_get` with `{"number": <n>}` returns one issue's title, body, labels, and URL.
 
 Never run a shell command. Compare the candidates with the open issues you read and with one

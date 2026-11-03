@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -14,10 +14,15 @@ const result = {
   applicable: false,
   checks: {},
   missing: [],
+  unverified: [],
 };
 
 function addMissing(id, requirement, remediation, detail = "") {
   result.missing.push({ id, requirement, remediation, detail });
+}
+
+function addUnverified(id, requirement, detail, command) {
+  result.unverified.push({ id, requirement, detail, command });
 }
 
 function rel(path) {
@@ -93,20 +98,46 @@ function checkLayout(text) {
   return { ok: true };
 }
 
+const designMdLintArgs = ["lint", "--format", "json", "DESIGN.md"];
+const designMdLintDisplay = "node_modules/.bin/design-md lint --format json DESIGN.md";
+
+function resolveDesignMdBin() {
+  const packageDir = join(root, "node_modules", "@google", "design.md");
+  const manifest = readJson(join(packageDir, "package.json"));
+  if (!manifest.ok) return undefined;
+  const bin = manifest.value.bin;
+  const entry =
+    typeof bin === "string"
+      ? bin
+      : bin && typeof bin === "object"
+        ? (bin["design.md"] ?? Object.values(bin)[0])
+        : undefined;
+  if (typeof entry !== "string") return undefined;
+  const path = join(packageDir, entry);
+  return isFile(path) ? path : undefined;
+}
+
 function runDesignMdLint() {
-  const proc = spawnSync(
-    "npx",
-    ["--yes", "@google/design.md@0.4.0", "lint", "--format", "json", "DESIGN.md"],
-    {
-      cwd: root,
-      encoding: "utf8",
-      timeout: 180_000,
-      maxBuffer: 10 * 1024 * 1024,
-    },
-  );
+  const bin = resolveDesignMdBin();
+  if (!bin) {
+    return {
+      status: "unverified",
+      command: designMdLintDisplay,
+      error:
+        "no local @google/design.md install; run `bun add -d @google/design.md@0.4.0` in the " +
+        "project root so the lint runs without a registry fetch",
+    };
+  }
+  const command = `${rel(bin)} ${designMdLintArgs.join(" ")}`;
+  const proc = spawnSync(process.execPath, [bin, ...designMdLintArgs], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 180_000,
+    maxBuffer: 10 * 1024 * 1024,
+  });
 
   if (proc.error) {
-    return { status: "unverified", error: proc.error.message };
+    return { status: "unverified", command, error: proc.error.message };
   }
 
   let parsed;
@@ -127,6 +158,7 @@ function runDesignMdLint() {
       : [];
     return {
       status: errors > 0 ? "invalid" : "pass",
+      command,
       errors,
       warnings,
       errorFindings,
@@ -134,13 +166,14 @@ function runDesignMdLint() {
   }
 
   if (proc.status === 0) {
-    return { status: "unverified", error: "lint exited 0 without parseable JSON" };
+    return { status: "unverified", command, error: "lint exited 0 without parseable JSON" };
   }
 
   const stderr = (proc.stderr ?? "").trim();
   const stdout = (proc.stdout ?? "").trim();
   return {
     status: "unverified",
+    command,
     error: stderr || stdout || `lint exited ${proc.status}`,
   };
 }
@@ -236,7 +269,7 @@ async function main() {
       "designMd",
       "DESIGN.md at the project root",
       "Create DESIGN.md in the DESIGN.md alpha format; include tokens and a ## Layout spacing " +
-        "section; run `npx --yes @google/design.md@0.4.0 lint --format json DESIGN.md`.",
+        "section; run `node_modules/.bin/design-md lint --format json DESIGN.md`.",
     );
   } else {
     const text = readFileSync(designPath, "utf8");
@@ -244,27 +277,34 @@ async function main() {
     const lint = runDesignMdLint();
     const details = [];
     if (!layout.ok) details.push(`Layout: ${layout.reason}`);
-    if (lint.status !== "pass") {
+    if (lint.status === "invalid") {
       const lintDetail = lint.errorFindings?.length
         ? lint.errorFindings.join("; ")
-        : lint.error ?? "lint did not pass";
+        : lint.error ?? "lint reported errors";
       details.push(`Lint: ${lintDetail}`);
     }
-    const pass = layout.ok && lint.status === "pass";
+    const invalid = !layout.ok || lint.status === "invalid";
     result.checks.designMd = {
-      status: pass ? "pass" : lint.status === "unverified" ? "unverified" : "invalid",
+      status: invalid ? "invalid" : lint.status === "unverified" ? "unverified" : "pass",
       path: "DESIGN.md",
       layout,
       lint,
     };
-    if (!pass) {
+    if (invalid) {
       addMissing(
         "designMd",
         "valid DESIGN.md with mandatory spacing conventions",
         "Fix the DESIGN.md findings; add a ## Layout section with base unit, scale, rhythm, " +
           "component padding, gaps, section spacing, container widths, and token mapping; rerun " +
-          "`npx --yes @google/design.md@0.4.0 lint --format json DESIGN.md`.",
+          "`node_modules/.bin/design-md lint --format json DESIGN.md`.",
         details.join(" "),
+      );
+    } else if (lint.status === "unverified") {
+      addUnverified(
+        "designMd",
+        "DESIGN.md lint",
+        `The lint could not run, so DESIGN.md was checked for structure only: ${lint.error}`,
+        lint.command,
       );
     }
   }

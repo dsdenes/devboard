@@ -184,10 +184,17 @@ describe("feedback endpoint", () => {
 
       expect(response.status).toBe(201);
       expect(response.headers.get("x-flow-id")).toBeNull();
-      expect(await response.json()).toEqual({
+      const created = (await response.json()) as {
+        title: string;
+        links: { issue: { href: string } };
+      };
+      expect(created).toEqual({
         title: "[ui] The Start button is clipped on narrow windows.",
         links: { issue: { href: ISSUE_URL } },
       });
+      const location = response.headers.get("location");
+      expect(location).toBe(created.links.issue.href);
+      expect(location).toBe(ISSUE_URL);
 
       expect(calls).toHaveLength(1);
       const call = calls[0]!;
@@ -451,24 +458,34 @@ describe("feedback endpoint", () => {
     }
   });
 
-  test("reports a delivery failure with its diagnostic", async () => {
-    const { server, url } = await startServer({ mode: "fail" });
+  test("reports a delivery failure with a fixed detail and journals the upstream text", async () => {
+    const { journal, records } = journalRecorder();
+    const { server, url } = await startServer({ mode: "fail", journal });
 
     try {
-      const response = await submit(url, report());
+      const response = await submit(url, report(), { "x-flow-id": "4d1c" });
 
       expect(response.status).toBe(502);
-      const body = (await response.json()) as { type: string; status: number; detail: string };
-      expect(body.type).toBe("about:blank");
-      expect(body.status).toBe(502);
-      expect(body.detail.startsWith("Issue creation failed:")).toBe(true);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Bad Gateway", 502, "The issue could not be filed."),
+      );
+      expect(records).toEqual([
+        [
+          "server-error",
+          "POST /feedback: Issue creation failed: " +
+            "POST /repos/dsdenes/devboard/issues failed (HTTP 500): boom",
+          "4d1c",
+        ],
+      ]);
     } finally {
       server.stop(true);
     }
   });
 
-  test("reports a delivery timeout", async () => {
-    const { server, url } = await startServer({ mode: "hang", timeoutMs: 100 });
+  test("reports a delivery timeout and journals it", async () => {
+    const { journal, records } = journalRecorder();
+    const { server, url } = await startServer({ mode: "hang", timeoutMs: 100, journal });
 
     try {
       const response = await submit(url, report());
@@ -477,6 +494,9 @@ describe("feedback endpoint", () => {
       expect(await response.json()).toEqual(
         problemBody("Gateway Timeout", 504, "Issue creation timed out after 100 ms."),
       );
+      expect(records).toEqual([
+        ["server-error", "POST /feedback: Issue creation timed out after 100 ms."],
+      ]);
     } finally {
       server.stop(true);
     }
@@ -518,6 +538,42 @@ describe("feedback endpoint", () => {
       const body = (await response.json()) as { title: string; detail: string };
       expect(body.title).toBe("Service Unavailable");
       expect(body.detail).toContain("DEVBOARD_GITEA_URL");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers a non-POST method with 405 when reporting is disabled", async () => {
+    const { server, url, calls } = await startServer({ enabled: false });
+
+    try {
+      const get = await fetch(`http://${url}/feedback`);
+      expect(get.status).toBe(405);
+      expect(get.headers.get("allow")).toBe("POST");
+      expect(get.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await get.json()).toEqual(
+        problemBody("Method Not Allowed", 405, "This endpoint accepts POST only."),
+      );
+
+      const head = await fetch(`http://${url}/feedback`, { method: "HEAD" });
+      expect(head.status).toBe(405);
+      expect(head.headers.get("allow")).toBe("POST");
+      expect(await head.text()).toBe("");
+
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers a non-POST method with 405 when reporting is enabled", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(`http://${url}/feedback`);
+
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("POST");
     } finally {
       server.stop(true);
     }
@@ -751,6 +807,8 @@ describe("feedback endpoint", () => {
       };
       expect(await first.json()).toEqual(expected);
       expect(await second.json()).toEqual(expected);
+      expect(first.headers.get("location")).toBe(ISSUE_URL);
+      expect(second.headers.get("location")).toBe(ISSUE_URL);
       expect(calls).toHaveLength(1);
     } finally {
       server.stop(true);

@@ -1503,26 +1503,46 @@ describe("MCP optimizer synthesis contract and prompt", () => {
     expect(unavailable).not.toBe("[]");
   });
 
-  test("a prompt above the byte budget is cut to the budget", () => {
-    const huge: McpOptimizerFamily = {
-      key: family.key,
-      kind: "command",
-      calls: 1,
-      sessions: ["a"],
-      days: 1,
-      firstAt: family.firstAt,
-      lastAt: family.lastAt,
-      score: 1,
-      fragments: [{ text: "界".repeat(30_000), count: 1 }],
-      excerpts: [],
-    };
+  test("a prompt above the byte budget bounds the fragments and keeps the filing contract", () => {
+    // `buildFamilies` bounds one fragment to 300 characters, so 200 distinct
+    // 300-byte fragments plus a maximal allowlist is real evidence.
+    const fragments = Array.from({ length: 200 }, (_, index) => ({
+      text: `${String(index).padStart(3, "0")}${"界".repeat(99)}`,
+      count: 200 - index,
+    }));
+    const allowlist = Array.from(
+      { length: 50 },
+      (_, index) => `${String(index).padStart(2, "0")}${"x".repeat(198)}`,
+    );
     const prompt = synthesisPrompt({
-      family: huge,
-      settings: DEFAULT_MCP_OPTIMIZER_SETTINGS,
+      family: { ...family, fragments, excerpts: [] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, allowlist },
       openIssues: [],
       filingRoom: 1,
     });
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(SYNTHESIS_PROMPT_MAX_BYTES);
+    // The Rules block is the whole filing contract: it survives, last bullet included.
+    expect(prompt).toContain("Rules:");
+    expect(prompt.trimEnd().endsWith("never both.")).toBe(true);
+    for (const heading of [
+      "Family:",
+      "Excerpts:",
+      "MCP catalog:",
+      "Open MCP optimizer issues:",
+      "Command allowlist:",
+      "Limits:",
+    ]) {
+      expect(() => JSON.parse(sectionValue(prompt, heading))).not.toThrow();
+    }
+    expect(JSON.parse(sectionValue(prompt, "Command allowlist:"))).toEqual(allowlist);
+    const kept = JSON.parse(sectionValue(prompt, "Fragments:")) as typeof fragments;
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(fragments.length);
+    // The least frequent are dropped first, so the survivors are the top counts in order.
+    expect(kept.map((entry) => entry.count)).toEqual(
+      fragments.slice(0, kept.length).map((entry) => entry.count),
+    );
+    expect(kept[0]!.text).toBe(fragments[0]!.text);
   });
 });
 
@@ -1646,7 +1666,11 @@ describe("MCP optimizer cycle", () => {
       now: NOW,
       collect: () => collection,
       delivery,
-      synthesize: stubSynthesis(() => ({ action: "file" }), calls),
+      synthesize: stubSynthesis(() => ({
+        action: "file",
+        number: 7,
+        url: "https://forge.test/acme/fixture/issues/7",
+      }), calls),
       settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
     });
     expect(result.report.action).toBe("filed");
@@ -1659,11 +1683,23 @@ describe("MCP optimizer cycle", () => {
     expect(result.report.duplicates.map((entry) => entry.family).sort()).toEqual(
       [first.key, second.key].sort(),
     );
+    const created = "https://forge.test/acme/fixture/issues/7";
+    for (const entry of result.report.duplicates) {
+      expect(entry.createdUrl).toBe(created);
+      expect(entry.number).toBe(7);
+      expect(entry.url).not.toBe(created);
+    }
+    const markdown = readFileSync(join(dirname(result.report.reportPath), "report.md"), "utf8");
+    expect(markdown).toContain(created);
+    expect(markdown).toContain("https://forge.test/acme/fixture/issues/1");
+    expect(markdown).toContain("https://forge.test/acme/fixture/issues/2");
     expect(result.report.issues.map((entry) => entry.family)).not.toContain(first.key);
     expect(result.report.issues.map((entry) => entry.family)).not.toContain(second.key);
-    expect(
-      result.report.validations.filter((entry) => entry.outcome === "duplicate"),
-    ).toHaveLength(2);
+    const duplicates = result.report.validations.filter((entry) => entry.outcome === "duplicate");
+    expect(duplicates).toHaveLength(2);
+    for (const entry of duplicates) {
+      expect(entry.reason).toContain(created);
+    }
   });
 
   test("two families recording one title file it once and record the duplicate", async () => {
@@ -1948,9 +1984,16 @@ for await (const chunk of Bun.stdin.stream()) {
       synthesize: fileWhileRoom(secondCalls),
       settings,
     });
-    expect(second.report.action).toBe("none");
+    expect(second.report.action).toBe("capped");
+    expect(second.report.reason).toContain("maxPerHour 1 reached");
     expect(second.report.issues).toEqual([]);
     expect(secondCalls.every((call) => filingRoomOf(call.prompt) === 0)).toBe(true);
+    expect(describeCycle(second)).toContain("capped");
+    const cappedLedger = loadLedger(mcpOptimizerDirectory(stateDir)).ledger;
+    expect(secondCalls.length).toBeGreaterThan(0);
+    for (const call of secondCalls) {
+      expect(cappedLedger.families[call.key]?.lastAction).toBe("capped");
+    }
 
     const thirdCalls: SynthesisCall[] = [];
     const third = await runCycle({

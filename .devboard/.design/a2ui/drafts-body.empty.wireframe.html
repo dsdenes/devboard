@@ -20,7 +20,8 @@
       header.region { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
       h1 { font-size: 20px; margin: 0; }
       .identity { color: #555; font-family: ui-monospace, monospace; font-size: 12px; }
-      main { display: grid; grid-template-columns: minmax(0, 1fr); }
+      main { display: flex; flex-direction: column; gap: 8px; }
+      .body-grid { display: grid; grid-template-columns: minmax(0, 1fr); }
       .panel { display: flex; flex-direction: column; gap: 10px; min-height: 420px; }
       .panel-head { align-items: center; border-bottom: 1px solid #ddd; display: flex; gap: 8px; justify-content: space-between; padding-bottom: 8px; }
       h2 { font-size: 12px; margin: 0; }
@@ -51,21 +52,24 @@
         <span class="identity">owner/repo · idle · 0 draft(s)</span>
       </header>
       <main aria-label="Draft goals body">
-        <section class="region panel" aria-labelledby="list-title">
-          <span class="note">region_list · P0</span>
-          <div class="panel-head">
-            <h2 id="list-title">Proposed goals</h2>
-            <span class="button">New goal</span>
-          </div>
-          <div class="stack" aria-label="region_empty">
-            <span class="mark" aria-hidden="true">✎</span>
-            <p class="stack-title">No drafts yet</p>
-            <p class="stack-copy">
-              Create one with New goal, or propose it from a report. Each draft becomes a goal you
-              can elaborate here.
-            </p>
-          </div>
-        </section>
+        <span class="note">region_body · P0 · one column (empty)</span>
+        <div class="body-grid">
+          <section class="region panel" aria-labelledby="list-title">
+            <span class="note">region_list · P0</span>
+            <div class="panel-head">
+              <h2 id="list-title">Proposed goals</h2>
+              <span class="button">New goal</span>
+            </div>
+            <div class="stack" aria-label="region_empty">
+              <span class="mark" aria-hidden="true">✎</span>
+              <p class="stack-title">No drafts yet</p>
+              <p class="stack-copy">
+                Create one with New goal, or propose it from a report. Each draft becomes a goal you
+                can elaborate here.
+              </p>
+            </div>
+          </section>
+        </div>
       </main>
     </div>
   </body>

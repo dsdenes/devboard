@@ -12,6 +12,8 @@
 
 import { link, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { GOAL_PROPOSALS_DIRECTORY } from "../lib/goal-proposals";
 import {
   FeedbackRequestError,
   GOAL_PROPOSAL_BODY_KEYS,
@@ -23,9 +25,6 @@ import {
   type CapturedFields,
   type FeedbackTurn,
 } from "./feedback";
-
-/** Repository-relative directory holding every draft. */
-export const GOAL_PROPOSALS_DIRECTORY = ".devboard/goal-proposals";
 
 const MAX_HEADING = 200;
 const MAX_NAME_WORDS = 6;
@@ -47,8 +46,12 @@ export interface GoalProposalSubmission extends CapturedFields {
 }
 
 export interface GoalProposal {
-  /** Repository-relative path of the written draft, with `/` separators. */
-  path: string;
+  /** The common hypertext control object: a link to the written draft. */
+  links: {
+    draft: {
+      href: string;
+    };
+  };
 }
 
 /** Validates one proposal body, refusing any key the endpoint does not accept. */
@@ -240,5 +243,5 @@ export async function writeGoalProposal(
     await chooseGoalName(submission.report, options.slugger),
     goalProposalBody(submission),
   );
-  return { path: `${GOAL_PROPOSALS_DIRECTORY}/${filename}` };
+  return { links: { draft: { href: pathToFileURL(join(directory, filename)).href } } };
 }

@@ -25,10 +25,6 @@
     return "";
   }
 
-  function percentText(fact: ContributionFact): string {
-    return typeof fact.value === "number" ? `${fact.value}%` : "";
-  }
-
   function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
@@ -110,8 +106,8 @@
                 <dd>
                   {#if fact.confidence === "unknown"}
                     <span class="muted">{emptyText(fact)}</span>
-                  {:else if PERCENT_KEY.test(fact.key)}
-                    <span>{percentText(fact)}</span>
+                  {:else if PERCENT_KEY.test(fact.key) && typeof fact.value === "number"}
+                    <span>{fact.value}%</span>
                   {:else if isRecord(fact.value)}
                     <span class="discover-contribution-record">
                       {#each recordRows(fact.value) as row (row.key)}

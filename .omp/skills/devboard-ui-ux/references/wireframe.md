@@ -58,8 +58,9 @@ for v1.0, use the v1.0 catalog and still do not invent components.
 
 These are wireframe vocabulary, not a decision to use a production `Button` or `Card` in Step 4.
 If a structural need does not map to a catalog component, compose `Column`, `Row`, `Card`, `Text`,
-and `Divider`. Do not invent `Page`, `Section`, `Hero`, or `Grid` component types. Encode the
-region name in the component `id` (for example `region_header`, `region_primary_action`).
+and `Divider`. Do not invent `Page`, `Section`, `Hero`, `Grid`, or `Table` component types: a
+tabular region is a `List` of `Row` children under a header `Row`, never a table component. Encode
+the region name in the component `id` (for example `region_header`, `region_primary_action`).
 
 ## Structure for the wireframe
 

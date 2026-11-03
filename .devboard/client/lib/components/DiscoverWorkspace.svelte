@@ -3,7 +3,6 @@
     conceptTitle,
     contextTitle,
     labelText,
-    labelTexts,
     TABS,
   } from "../discover-format";
   import { DISCOVER_AGENTS } from "../../../server/agents/registry";
@@ -417,7 +416,9 @@
         {:else if tab.kind === "overview"}
           {#if discover.active}
             <CommandButton
-              variant="destructive"
+              bare
+              type="button"
+              class="discover-run__stop"
               label="Stop"
               evidence={() => discover.active}
               command={() => discover.stop()}

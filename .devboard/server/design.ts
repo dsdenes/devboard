@@ -334,16 +334,19 @@ export class DesignBridge implements AgentAdapter {
       .filter((issue) => this.forge.reported(issue.url))
       .map((issue) => {
         const fact = this.forge.fact(issue.url);
-        return fact === undefined
-          ? projectIssue(issue)
-          : {
-              title: issue.title,
-              category: issue.category,
-              filedAt: issue.createdAt,
-              url: issue.url,
-              state: fact.state,
-              version: fact.version,
-            };
+        if (fact !== undefined) {
+          return {
+            title: issue.title,
+            category: issue.category,
+            filedAt: issue.createdAt,
+            url: issue.url,
+            state: fact.state,
+            version: fact.version,
+          };
+        }
+        return this.forge.unreadable(issue.url)
+          ? { ...projectIssue(issue), state: "unknown" as const }
+          : projectIssue(issue);
       });
     const cycleId = newestCycle(states);
     const lastRunAt =

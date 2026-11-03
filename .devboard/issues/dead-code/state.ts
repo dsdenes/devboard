@@ -51,6 +51,15 @@ export interface DeadCodeIssueRow {
   category: string | null;
   /** The earliest published release that shipped the closing commit, or null. */
   version: string | null;
+  /** The last resolution attempt, ISO 8601; null before the first one. */
+  versionAttemptAt: string | null;
+  /**
+   * Why the last attempt left `version` null, as the resolution reported it:
+   * the commit no release contains yet, the commit that could not be
+   * resolved, or the read that failed. Null while the issue is open and once
+   * a version resolves.
+   */
+  versionError: string | null;
 }
 
 export interface DeadCodeSync {
@@ -71,6 +80,12 @@ export interface DeadCodeState {
   /** The start of the newest cycle, so cadence survives a restart. */
   lastCycleStartedAt: string | null;
   issues: DeadCodeIssueRow[];
+  /**
+   * The published releases the last successful read saw. A published release
+   * changes it, which lets every unresolved row attempt resolution again at
+   * once instead of waiting out the backoff.
+   */
+  releaseSignature: string | null;
   sync: DeadCodeSync;
   /** The newest cycle, running or finished, so its activity can be replayed. */
   newestCycleId: string | null;
@@ -162,8 +177,19 @@ function isIssueRow(value: unknown): value is DeadCodeIssueRow {
     typeof value.createdAt === "string" &&
     isIssueState(value.state) &&
     nullableString(value.category) &&
-    nullableString(value.version)
+    nullableString(value.version) &&
+    (value.versionAttemptAt === undefined || nullableString(value.versionAttemptAt)) &&
+    (value.versionError === undefined || nullableString(value.versionError))
   );
+}
+
+/** A parsed row from a state an older worker wrote, before the attempt fields. */
+function normalizeRow(row: DeadCodeIssueRow): DeadCodeIssueRow {
+  return {
+    ...row,
+    versionAttemptAt: row.versionAttemptAt ?? null,
+    versionError: row.versionError ?? null,
+  };
 }
 
 function isSync(value: unknown): value is DeadCodeSync {
@@ -212,6 +238,7 @@ export function emptyState(options: {
     intervalMinutes: options.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES,
     lastCycleStartedAt: null,
     issues: [],
+    releaseSignature: null,
     sync: { state: "stale", at: null, error: null },
     newestCycleId: null,
     nextAttemptAt: null,
@@ -238,6 +265,9 @@ export function parseState(text: string): DeadCodeState | undefined {
   if (!isValidCadence(parsed.intervalMinutes)) return undefined;
   if (!nullableString(parsed.lastCycleStartedAt)) return undefined;
   if (!Array.isArray(parsed.issues) || !parsed.issues.every(isIssueRow)) return undefined;
+  if (parsed.releaseSignature !== undefined && !nullableString(parsed.releaseSignature)) {
+    return undefined;
+  }
   if (!isSync(parsed.sync)) return undefined;
   if (!nullableString(parsed.newestCycleId)) return undefined;
   if (!nullableString(parsed.nextAttemptAt) || !nullableString(parsed.lastError)) return undefined;
@@ -254,7 +284,8 @@ export function parseState(text: string): DeadCodeState | undefined {
     limits: parsed.limits,
     intervalMinutes: parsed.intervalMinutes,
     lastCycleStartedAt: parsed.lastCycleStartedAt,
-    issues: parsed.issues,
+    issues: (parsed.issues as DeadCodeIssueRow[]).map(normalizeRow),
+    releaseSignature: (parsed.releaseSignature as string | null | undefined) ?? null,
     sync: parsed.sync,
     newestCycleId: parsed.newestCycleId,
     nextAttemptAt: parsed.nextAttemptAt,

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { GOAL_PROPOSALS_DIRECTORY } from "../server/goal-proposal";
+import { GOAL_PROPOSALS_DIRECTORY } from "./goal-proposals";
 
 /**
  * The `# heading` of every draft under `<REPO_DIR>/.devboard/goal-proposals/`.

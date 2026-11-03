@@ -623,6 +623,7 @@ async function writeFixture(root: string): Promise<string> {
     "devboard-ui-ux",
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
+    "devboard-consistent-naming",
   ]) {
     await cp(join(harnessRoot, "omp", "skills", name), join(host, ".omp", "skills", name), {
       recursive: true,
@@ -2404,6 +2405,7 @@ try {
     text: string;
     html: string;
     focusInside: boolean;
+    inputTypes: Array<{ fontWeight: string; lineHeight: number }>;
   }>(`(() => {
     const dialog = document.querySelector('[data-testid="providers-dialog"]');
     const select = document.querySelector('[data-testid="provider-select"]');
@@ -2420,6 +2422,10 @@ try {
       text: dialog?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
       html: document.body.innerHTML,
       focusInside: document.activeElement?.closest('[data-testid="providers-dialog"]') !== null,
+      inputTypes: [...document.querySelectorAll('[data-slot="input"]')].map((node) => {
+        const style = getComputedStyle(node);
+        return { fontWeight: style.fontWeight, lineHeight: parseFloat(style.lineHeight) };
+      }),
     };
   })()`);
   check(
@@ -2472,6 +2478,14 @@ try {
     providers.checked,
   );
   check(providers.focusInside, "the dialog does not take focus");
+  check(
+    providers.inputTypes.length > 0 &&
+      providers.inputTypes.every(
+        (type) => type.fontWeight === "500" && Math.abs(type.lineHeight - 15.6) < 0.05,
+      ),
+    "an input does not render the 12px control type at weight 500 and 1.3 leading",
+    providers.inputTypes,
+  );
   await page.key("Tab");
   await page.key("Tab");
   const focusTrapped = await page.eval<boolean>(
@@ -3263,11 +3277,19 @@ try {
       letterSpacing: number;
       lineHeight: number;
     } | null;
+    managedType: {
+      fontSize: number;
+      fontWeight: string;
+      letterSpacing: number;
+      lineHeight: number;
+    } | null;
   }>(`(() => {
     const table = document.querySelector('[data-testid="skills-table"]');
     const rows = [...document.querySelectorAll('[data-testid="skill-row"]')];
     const head = table?.querySelector("th") ?? null;
     const headStyle = head === null ? null : getComputedStyle(head);
+    const managed = document.querySelector('[data-testid="skill-managed"]');
+    const managedStyle = managed === null ? null : getComputedStyle(managed);
     return {
       tables: document.querySelectorAll('[data-testid="skills-table"] table, [data-testid="skills-table"]').length,
       columns: table?.rows[0]?.cells.length ?? -1,
@@ -3295,10 +3317,17 @@ try {
         letterSpacing: parseFloat(headStyle.letterSpacing),
         lineHeight: parseFloat(headStyle.lineHeight),
       },
+      managedType: managedStyle === null ? null : {
+        fontSize: parseFloat(managedStyle.fontSize),
+        fontWeight: managedStyle.fontWeight,
+        letterSpacing: parseFloat(managedStyle.letterSpacing),
+        lineHeight: parseFloat(managedStyle.lineHeight),
+      },
     };
   })()`);
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
   const devboardBuiltins = [
+    "devboard-consistent-naming",
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-ui-ux",
@@ -3314,6 +3343,17 @@ try {
       Math.abs(devboardSkillsTable.headType.lineHeight - 14.3) < 0.05,
     "the Skills table head does not render the label type",
     devboardSkillsTable.headType,
+  );
+  check(
+    devboardSkillsTable.managedType !== null &&
+      Math.abs(devboardSkillsTable.managedType.fontSize - 10) < 0.05 &&
+      devboardSkillsTable.managedType.fontWeight === "700" &&
+      Math.abs(
+        devboardSkillsTable.managedType.letterSpacing / devboardSkillsTable.managedType.fontSize - 0.08,
+      ) < 0.005 &&
+      Math.abs(devboardSkillsTable.managedType.lineHeight - 12) < 0.05,
+    "the Managed marker does not render the overline type",
+    devboardSkillsTable.managedType,
   );
   check(
     JSON.stringify(devboardSkillsTable.names) === JSON.stringify(devboardInstalledSkills),
@@ -3338,7 +3378,7 @@ try {
   );
   check(
     JSON.stringify(devboardSkillsTable.managed) === JSON.stringify(devboardBuiltins),
-    "the Managed marker does not belong to exactly the three built-in rows",
+    "the Managed marker does not belong to exactly the four built-in rows",
     devboardSkillsTable,
   );
   check(
@@ -3612,8 +3652,10 @@ try {
     "a refused delete rewrote the project settings",
   );
 
-  // One click removes the prepare-family directory with no confirmation and
-  // clears exactly its exclusion entry, and the row stays gone after a reload.
+  // The delete control takes the documented error-surface hover, and one
+  // activation opens a confirmation naming the skill. Cancelling keeps the
+  // directory and its settings entry; only the confirm deletes it, clears
+  // exactly its exclusion entry, and leaves the row gone after a reload.
   const deleteSettings = {
     modelRoles: { commit: "provider/model" },
     skills: { includeSkills: ["kept"], ignoredSkills: ["fixture-deletable", "kept-pattern"] },
@@ -3632,14 +3674,81 @@ try {
     existsSync(join(host, ".omp", "skills", "fixture-deletable")),
     "the deletable fixture skill is missing before the click",
   );
+  await page.hover('[data-testid="delete-skill"][data-name="fixture-deletable"]');
+  const deleteHover = await page.eval<{
+    background: string;
+    errorSurface: string;
+    rowHover: string;
+  }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--error-surface)";
+    document.body.append(probe);
+    const rowProbe = document.createElement("div");
+    rowProbe.style.cssText = "position:absolute;background:var(--row-hover)";
+    document.body.append(rowProbe);
+    const expected = {
+      errorSurface: getComputedStyle(probe).backgroundColor,
+      rowHover: getComputedStyle(rowProbe).backgroundColor,
+    };
+    probe.remove();
+    rowProbe.remove();
+    const control = document.querySelector(
+      '[data-testid="delete-skill"][data-name="fixture-deletable"]',
+    );
+    return {
+      background: control === null ? "" : getComputedStyle(control).backgroundColor,
+      ...expected,
+    };
+  })()`);
+  check(
+    deleteHover.background === deleteHover.errorSurface &&
+      deleteHover.background !== deleteHover.rowHover,
+    "the delete control does not take the error-surface fill on hover",
+    deleteHover,
+  );
   await page.click('[data-testid="delete-skill"][data-name="fixture-deletable"]');
+  await page.wait(
+    `document.querySelector('[data-testid="delete-skill-confirmation"]') !== null`,
+    "the prepared-skill deletion confirmation",
+  );
+  const deletePrompt = await page.eval<string>(
+    `document.querySelector('[data-testid="delete-skill-confirmation"]')?.textContent ?? ""`,
+  );
+  check(
+    deletePrompt.includes("fixture-deletable"),
+    "the deletion confirmation does not name the skill",
+    deletePrompt,
+  );
+  check(
+    existsSync(join(host, ".omp", "skills", "fixture-deletable")) &&
+      (await page.eval<number>(
+        `document.querySelectorAll('[data-testid="skill-row"][data-skill="fixture-deletable"]').length`,
+      )) === 1,
+    "opening the confirmation deleted the skill before the confirm",
+  );
+  await page.click('[data-command="devboard.skills.delete.cancel"]');
+  await page.wait(
+    `document.querySelector('[data-testid="delete-skill-confirmation"]') === null`,
+    "the cancelled deletion confirmation to close",
+  );
+  check(
+    existsSync(join(host, ".omp", "skills", "fixture-deletable")) &&
+      readFileSync(devboardSettingsFile, "utf8") === `${JSON.stringify(deleteSettings)}\n`,
+    "cancelling the confirmation deleted the skill or rewrote the settings",
+  );
+  await page.click('[data-testid="delete-skill"][data-name="fixture-deletable"]');
+  await page.wait(
+    `document.querySelector('[data-testid="delete-skill-confirmation"]') !== null`,
+    "the prepared-skill deletion confirmation again",
+  );
+  await page.click('[data-command="devboard.skills.delete.confirm"]');
   await page.wait(
     `document.querySelector('[data-testid="skill-row"][data-skill="fixture-deletable"]') === null`,
     "the deleted prepared skill row",
   );
   check(
     !existsSync(join(host, ".omp", "skills", "fixture-deletable")),
-    "one click did not remove the prepared skill directory",
+    "confirming the dialog did not remove the prepared skill directory",
   );
   check(
     JSON.stringify(JSON.parse(readFileSync(devboardSettingsFile, "utf8"))) ===
@@ -5900,6 +6009,7 @@ try {
       color: string;
       fontSize: string;
       radius: string;
+      columnGap: string;
       dot: { width: string; height: string; background: string } | null;
       success: string;
       warning: string;
@@ -5928,6 +6038,7 @@ try {
         color: pillStyle?.color ?? "",
         fontSize: pillStyle?.fontSize ?? "",
         radius: pillStyle?.borderRadius ?? "",
+        columnGap: pillStyle?.columnGap ?? "",
         dot: dotStyle === null ? null : {
           width: dotStyle.width,
           height: dotStyle.height,
@@ -6044,6 +6155,11 @@ try {
       missingPill.dot?.background === missingPill.error,
     "the missing skill state is not on the error tint",
     missingPill,
+  );
+  check(
+    generatedPill.columnGap === "2px" && editedPill.columnGap === "2px" && missingPill.columnGap === "2px",
+    "the skill state pill does not gap its dot from the word by the 2px hairline step",
+    { generated: generatedPill.columnGap, edited: editedPill.columnGap, missing: missingPill.columnGap },
   );
   for (const testid of ["discover-skill-save", "discover-skill-restore", "discover-skill-dirty"]) {
     check(
@@ -7166,7 +7282,7 @@ try {
     ),
   }))()`);
   check(
-    failedReport.panel && failedReport.error.includes("Issue creation failed"),
+    failedReport.panel && failedReport.error === "The issue could not be filed.",
     "a failed report left its panel",
     failedReport,
   );
@@ -7513,8 +7629,9 @@ try {
     };
   })()`);
   check(
-    failure.text.startsWith("Redesign issue failed: Issue creation failed:") &&
-      failure.text.includes("boom"),
+    failure.text.startsWith("Redesign issue failed: The issue could not be filed.") &&
+      !failure.text.includes("boom") &&
+      !failure.text.includes("/api/v1"),
     "the redesign failure alert is wrong",
     failure,
   );
@@ -10649,7 +10766,8 @@ try {
     `[...document.querySelectorAll('[data-testid="notification-history"] .notification')].some(
       (entry) =>
         entry.textContent.includes("Not connected") &&
-        entry.querySelector(".notification__error")?.textContent?.includes("Issue creation failed") === true,
+        entry.querySelector(".notification__error")?.textContent
+          ?.includes("The issue could not be filed.") === true,
     )`,
     "the notification filing error",
     20_000,
@@ -10665,7 +10783,7 @@ try {
     };
   })()`);
   check(
-    notificationFailure.text.startsWith("Issue not filed: Issue creation failed") &&
+    notificationFailure.text.startsWith("Issue not filed: The issue could not be filed.") &&
       notificationFailure.retry,
     "a failed notification filing does not offer a retry",
     notificationFailure,

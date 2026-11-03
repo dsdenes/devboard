@@ -6,6 +6,7 @@ import {
   parseGoalProposalSubmission,
   writeGoalProposal,
 } from "../server/goal-proposal";
+import { draftPathFromHref } from "../lib/goal-proposals";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -359,21 +360,28 @@ describe("elaboration", () => {
       { repoDir: root },
     );
     const { manager } = managerFor(root, stateDir, log);
+    const firstPath = draftPathFromHref(first.links.draft.href);
+    const secondPath = draftPathFromHref(second.links.draft.href);
+    if (firstPath === null || secondPath === null) {
+      throw new Error("The created drafts returned no repository-relative link.");
+    }
 
-    expect((await manager.start(first.path)).ok).toBe(true);
-    expect((await manager.start(second.path)).ok).toBe(true);
+    expect((await manager.start(firstPath)).ok).toBe(true);
+    expect((await manager.start(secondPath)).ok).toBe(true);
     await waitFor(() => (startPids(log).length === 2 ? true : undefined), "both created peers");
     // One prompt line per draft proves neither started twice.
     await waitFor(
       () =>
-        promptsFor(log, first.path).length === 1 && promptsFor(log, second.path).length === 1
+        promptsFor(log, firstPath).length === 1 && promptsFor(log, secondPath).length === 1
           ? true
           : undefined,
       "both draft prompts",
     );
-    expect(promptsFor(log, first.path)).toHaveLength(1);
-    expect(promptsFor(log, second.path)).toHaveLength(1);
-    expect(listGoalDrafts(root).map((draft) => draft.path)).toEqual([first.path, second.path].sort());
+    expect(promptsFor(log, firstPath)).toHaveLength(1);
+    expect(promptsFor(log, secondPath)).toHaveLength(1);
+    expect(listGoalDrafts(root).map((draft) => draft.path)).toEqual(
+      [firstPath, secondPath].sort(),
+    );
   });
 
   test("stops only the addressed draft and keeps the other running", async () => {

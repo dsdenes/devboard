@@ -437,6 +437,33 @@ describe("all four filed-issues tables share one forge read", () => {
       adapter.dispose();
     });
 
+    test(`${entry.name}: a row this forge answers as unreadable stays listed without a state`, async () => {
+      const { root, stateDir } = await workspace();
+      const served = issue(9);
+      const foreign = issue(10);
+      entry.seed(root, stateDir, [served, foreign]);
+      const reader = fakeReader({
+        [served.url]: { state: "pending", version: null },
+        [foreign.url]: { state: "unreadable", version: null },
+      });
+      const { adapter } = build(root, stateDir, reader, {
+        hasClients: () => true,
+        now: () => 8_000_000,
+      });
+      await readOnce(adapter);
+      const snapshot = adapter.snapshot();
+      expect(snapshot.issues.map((row) => row.url).sort()).toEqual(
+        [served.url, foreign.url].sort(),
+      );
+      expect(firstRow(snapshot, served.url)).toMatchObject({ state: "pending", version: null });
+      expect(firstRow(snapshot, foreign.url)).toMatchObject({
+        url: foreign.url,
+        state: "unknown",
+        version: null,
+      });
+      adapter.dispose();
+    });
+
     test(`${entry.name}: no client makes no read, and a stale page open starts exactly one`, async () => {
       const { root, stateDir } = await workspace();
       const row = issue(6);

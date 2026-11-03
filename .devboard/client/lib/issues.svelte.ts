@@ -1,6 +1,7 @@
 import { connection } from "./connection.svelte";
 import { queueCounts } from "./issues-queue";
 import { GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
+import { draftPathFromHref } from "../../lib/goal-proposals.ts";
 import { notifications } from "./notifications.svelte";
 import type {
   GoalDraftDetail,
@@ -331,10 +332,12 @@ export class IssuesStore {
         body: JSON.stringify({ report }),
       });
       const body = (await response.json().catch(() => null)) as {
-        path?: unknown;
+        links?: { draft?: { href?: unknown } };
         detail?: unknown;
       } | null;
-      if (!response.ok || typeof body?.path !== "string") {
+      const href = body?.links?.draft?.href;
+      const path = typeof href === "string" ? draftPathFromHref(href) : null;
+      if (!response.ok || path === null) {
         this.draftCreateError =
           typeof body?.detail === "string"
             ? body.detail
@@ -342,10 +345,10 @@ export class IssuesStore {
         return false;
       }
       this.draftCreateOpen = false;
-      this.pendingCreatedPath = body.path;
-      this.openDraft(body.path);
+      this.pendingCreatedPath = path;
+      this.openDraft(path);
       this.refreshDrafts();
-      this.startDraft(body.path);
+      this.startDraft(path);
       return true;
     } catch (error) {
       this.draftCreateError = error instanceof Error ? error.message : String(error);

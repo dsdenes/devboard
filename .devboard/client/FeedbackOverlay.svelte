@@ -11,6 +11,7 @@
   import { createCommandBusy } from "./lib/command-busy.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
   import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints.ts";
+  import { draftPathFromHref } from "../lib/goal-proposals.ts";
 
   /**
    * Operator issue reporter. The activity bar's three issue actions start a
@@ -594,10 +595,12 @@
         body: JSON.stringify(payload),
       });
       const body = (await response.json().catch(() => null)) as {
-        path?: unknown;
+        links?: { draft?: { href?: unknown } };
         detail?: unknown;
       } | null;
-      if (!response.ok || typeof body?.path !== "string") {
+      const href = body?.links?.draft?.href;
+      const path = typeof href === "string" ? draftPathFromHref(href) : null;
+      if (!response.ok || path === null) {
         return {
           ok: false,
           error:
@@ -606,7 +609,7 @@
               : `The server refused the proposal (${response.status}).`,
         };
       }
-      return { ok: true, path: body.path };
+      return { ok: true, path };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }

@@ -62,6 +62,8 @@ export interface AgentIssueRow {
   url: string;
   state: AgentIssueState;
   version: string | null;
+  /** Why `version` is still null, when the agent recorded a reason. */
+  note?: string | null;
 }
 
 export interface AgentCycleWindow {
@@ -287,10 +289,6 @@ function isNullableLimit(value: unknown): value is number | null {
   return value === null || isIntegerIn(value, 1, 100);
 }
 
-export function isValidLimitValue(value: unknown): value is number | null {
-  return isNullableLimit(value);
-}
-
 export function isAgentLimits(value: unknown): value is AgentLimits {
   return (
     isRecord(value) &&
@@ -490,6 +488,7 @@ function normalizeIssue(row: AgentIssueRow): AgentIssueRow {
     url: row.url,
     state: AGENT_ISSUE_STATES.includes(row.state) ? row.state : "unknown",
     version: typeof row.version === "string" && row.version.length > 0 ? row.version : null,
+    note: typeof row.note === "string" && row.note.length > 0 ? row.note : null,
   };
 }
 

@@ -10,9 +10,13 @@ import {
   pickEntryPoint,
   scoutPool,
 } from "../lib/entry-point";
-import type { DeadCodeForgeClient, DeadCodeForgeIssue } from "../issues/dead-code/forge";
+import type {
+  DeadCodeForgeClient,
+  DeadCodeForgeIssue,
+  DeadCodeRelease,
+} from "../issues/dead-code/forge";
 import { writeCommand } from "../issues/dead-code/control";
-import { DeadCodeWorker } from "../issues/dead-code/worker";
+import { DeadCodeWorker, RESOLUTION_RETRY_MS } from "../issues/dead-code/worker";
 import {
   cyclesDirectory,
   DEFAULT_INTERVAL_MINUTES,
@@ -22,6 +26,7 @@ import {
   settingsPath,
   statePath,
   versionedControlDirectory,
+  versionedStatePath,
 } from "../issues/dead-code/paths";
 import {
   DEFAULT_SETTINGS,
@@ -177,6 +182,8 @@ function issueRow(overrides: Partial<DeadCodeIssueRow> = {}): DeadCodeIssueRow {
     state: "pending",
     category: "unreferenced-symbol",
     version: null,
+    versionAttemptAt: null,
+    versionError: null,
     ...overrides,
   };
 }
@@ -216,6 +223,60 @@ class FakeForge implements DeadCodeForgeClient {
   async containingReleaseTags(): Promise<string[]> {
     return [];
   }
+}
+
+/** A forge whose one closed issue names a commit that releases may contain. */
+class ResolvingForge implements DeadCodeForgeClient {
+  readonly issues: DeadCodeForgeIssue[] = [];
+  readonly releases: DeadCodeRelease[] = [];
+  closingCalls = 0;
+  resolveCalls = 0;
+  readonly commit = "0123456789abcdef0123456789abcdef01234567";
+
+  async listIssues(): Promise<DeadCodeForgeIssue[]> {
+    return [...this.issues];
+  }
+
+  async listOpenIssueTitles(): Promise<string[]> {
+    return [];
+  }
+
+  async listReleases(): Promise<DeadCodeRelease[]> {
+    return [...this.releases];
+  }
+
+  async closingCommit(): Promise<string> {
+    return this.commit;
+  }
+
+  async closingCommits(): Promise<string[]> {
+    this.closingCalls += 1;
+    return [this.commit];
+  }
+
+  async resolveCommit(): Promise<string> {
+    this.resolveCalls += 1;
+    return this.commit;
+  }
+
+  async containingReleaseTags(
+    _commit: string,
+    releases: DeadCodeRelease[],
+  ): Promise<string[]> {
+    return releases.map((release) => release.tag);
+  }
+}
+
+function closedIssue(number: number): DeadCodeForgeIssue {
+  return {
+    number,
+    title: "Remove dead fixture code",
+    url: `https://github.com/acme/fixture/issues/${number}`,
+    state: "closed",
+    createdAt: "2026-01-01T00:00:00Z",
+    closedAt: "2026-01-01T00:00:00Z",
+    body: "## Category\n\nunreferenced-symbol\n\n## Evidence\n\n- `src/a.ts:1-1`\n",
+  };
 }
 
 function fileIssue(forge: FakeForge, directory: string, title: string): void {
@@ -307,6 +368,87 @@ describe("dead-code descriptor", () => {
     expect(
       parseState(JSON.stringify({ ...state, version: 99 })),
     ).toBeUndefined();
+  });
+});
+
+describe("dead-code shipped version", () => {
+  async function resolvingWorker(name: string) {
+    const root = await temporaryRoot(name);
+    const repo = join(root, "repo");
+    write(join(repo, "src", "a.ts"), "export const dead = 1;\n");
+    const stateDir = join(repo, ".devboard", ".tmp", "state");
+    mkdirSync(stateDir, { recursive: true });
+    const forge = new ResolvingForge();
+    forge.issues.push(closedIssue(1));
+    const clock = { now: new Date("2026-01-01T00:00:00Z") };
+    const worker = new DeadCodeWorker({
+      repoDir: repo,
+      stateDir,
+      manualCycles: true,
+      syncMs: 60_000,
+      cadenceMs: 60 * 60_000,
+      // The ticker never fires: each test drives the sync it asserts.
+      tickMs: 60 * 60_000,
+      now: () => clock.now,
+      harnessVersion: "test",
+      github: forge,
+      connect: peerFor(new FakeForge()),
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    return { worker, forge, clock, stateDir, repo };
+  }
+
+  test("an unchanged release list resolves the closed issue only once", async () => {
+    const { worker, forge, stateDir, repo } = await resolvingWorker("version-once");
+    await worker.refresh();
+    const first = worker.currentState.issues[0]!;
+    expect(first.state).toBe("implemented");
+    expect(first.version).toBeNull();
+    expect(first.versionError).toBe(`no published release contains ${forge.commit}`);
+    expect(first.versionAttemptAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(forge.closingCalls).toBe(1);
+
+    await worker.refresh();
+    expect(forge.closingCalls).toBe(1);
+    expect(forge.resolveCalls).toBe(1);
+    expect(worker.currentState.issues[0]).toEqual(first);
+
+    const persisted = readState(versionedStatePath(stateDir, repo, "test"));
+    expect(persisted?.issues[0]?.version).toBeNull();
+    expect(persisted?.issues[0]?.versionError).toBe(
+      `no published release contains ${forge.commit}`,
+    );
+    await worker.stop();
+  });
+
+  test("a release the failed attempt did not see fills the row and clears the reason", async () => {
+    const { worker, forge } = await resolvingWorker("version-release");
+    await worker.refresh();
+    expect(worker.currentState.issues[0]?.version).toBeNull();
+
+    forge.releases.push({ tag: "v0.1.0", publishedAt: "2026-01-01T00:00:30Z" });
+    await worker.refresh();
+
+    const row = worker.currentState.issues[0]!;
+    expect(row.version).toBe("v0.1.0");
+    expect(row.versionError).toBeNull();
+    expect(forge.closingCalls).toBe(2);
+    await worker.stop();
+  });
+
+  test("an unchanged release list retries only after the bounded backoff", async () => {
+    const { worker, forge, clock } = await resolvingWorker("version-backoff");
+    await worker.refresh();
+    const started = Date.parse("2026-01-01T00:00:00Z");
+
+    clock.now = new Date(started + RESOLUTION_RETRY_MS - 1);
+    await worker.refresh();
+    expect(forge.closingCalls).toBe(1);
+
+    clock.now = new Date(started + RESOLUTION_RETRY_MS);
+    await worker.refresh();
+    expect(forge.closingCalls).toBe(2);
+    await worker.stop();
   });
 });
 

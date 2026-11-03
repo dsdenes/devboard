@@ -93,14 +93,23 @@ export class FeedbackRequestError extends Error {
   }
 }
 
-/** A delivery failure: the Gitea API refused the request or timed out. */
+/** The fixed Problem detail a failed delivery answers, whatever the cause. */
+const DELIVERY_ERROR_DETAIL = "The issue could not be filed.";
+
+/**
+ * A delivery failure: the Gitea API refused the request or timed out. The
+ * message is the fixed detail the client may show; `diagnostic` is the
+ * failure's own text, which only the journal records.
+ */
 export class FeedbackDeliveryError extends Error {
   readonly status: number;
+  readonly diagnostic: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, diagnostic: string) {
     super(message);
     this.name = "FeedbackDeliveryError";
     this.status = status;
+    this.diagnostic = diagnostic;
   }
 }
 
@@ -403,12 +412,14 @@ export async function fileFeedbackIssue(
     return { title, links: { issue: { href: issue.url } } };
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
-      throw new FeedbackDeliveryError(
-        504,
-        `Issue creation timed out after ${options.timeoutMs} ms.`,
-      );
+      const detail = `Issue creation timed out after ${options.timeoutMs} ms.`;
+      throw new FeedbackDeliveryError(504, detail, detail);
     }
     const detail = error instanceof Error ? error.message : String(error);
-    throw new FeedbackDeliveryError(502, `Issue creation failed: ${firstLine(detail)}`);
+    throw new FeedbackDeliveryError(
+      502,
+      DELIVERY_ERROR_DETAIL,
+      `Issue creation failed: ${firstLine(detail)}`,
+    );
   }
 }

@@ -2,7 +2,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readlinkSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -36,7 +35,6 @@ import {
   type DiscoverAgentId,
 } from "./agents/registry";
 import {
-  AcpConnection,
   agentPrompt,
   type AcpActivity,
   type AcpQuestion,
@@ -86,11 +84,10 @@ import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./releas
 import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
 import { readMcpOptimizerSettings } from "../mcp-optimizer/settings";
 import { mcpOptimizerPromptTemplate } from "../mcp-optimizer/synthesize";
-import { openJournal, type Journal, type JournalKind } from "./journal";
+import { openJournal, type Journal } from "./journal";
 import { toolListPayload } from "../mcp/catalog";
 import { toolInvocationCounts } from "../mcp/invocations";
 import {
-  DISCOVER_SKILLS,
   artifactsStale,
   confirmGlossaryTerm,
   declaredCommandAliases,
@@ -155,7 +152,6 @@ import {
 import {
   isHarnessSourceCheckout,
   readHarnessVersion,
-  hostHarnessDir,
   runningHarnessDir,
   runnableHarnessDir,
   serverVersion,
@@ -2346,6 +2342,16 @@ function staticRelativePath(rawPathname: string, pathname: string): string | nul
 }
 
 /**
+ * The 405 for a request that is not a POST, or null when the method may run.
+ * The method is the more specific fact about a request, so a handler answers
+ * it before a capability state such as disabled reporting.
+ */
+function mutationMethodRefusal(request: Request): Response | null {
+  if (request.method === "POST") return null;
+  return problemResponse(405, "This endpoint accepts POST only.", { Allow: "POST" });
+}
+
+/**
  * The method, host, origin, size, and JSON guards shared by the mutating
  * browser endpoints. A request for another host, or a cross-origin page, must
  * never reach a handler with a side effect; the body is bounded before it is
@@ -2356,9 +2362,8 @@ async function readMutationBody(
   url: URL,
   allowedHostnames: ReadonlySet<string>,
 ): Promise<{ value: unknown } | { response: Response }> {
-  if (request.method !== "POST") {
-    return { response: problemResponse(405, "This endpoint accepts POST only.", { Allow: "POST" }) };
-  }
+  const refusedMethod = mutationMethodRefusal(request);
+  if (refusedMethod !== null) return { response: refusedMethod };
 
   const refusal = requestRefusal(request, url, allowedHostnames);
   if (refusal !== null) {
@@ -7740,14 +7745,17 @@ export function createApp(options: AppOptions) {
    * Files one browser report as a Gitea issue. The request is bounded before
    * parsing, and a cross-origin browser request is refused: this endpoint has
    * the side effect of creating issues, so another page must not reach it.
-   * Without DEVBOARD_GITEA_URL the endpoint refuses before parsing and makes
-   * no request.
+   * A request whose method is not POST is refused first, so the disabled state
+   * below answers a POST only. Without DEVBOARD_GITEA_URL the endpoint refuses
+   * before parsing and makes no request.
    */
   async function handleFeedbackRequest(
     request: Request,
     url: URL,
     flowId: string | null,
   ): Promise<Response> {
+    const refusedMethod = mutationMethodRefusal(request);
+    if (refusedMethod !== null) return refusedMethod;
     if (!feedbackEnabled) {
       return problemResponse(
         503,
@@ -7772,9 +7780,20 @@ export function createApp(options: AppOptions) {
           ...(feedbackFetch === undefined ? {} : { fetchImpl: feedbackFetch }),
         }),
       );
-      return Response.json(filed, { status: 201 });
+      return Response.json(filed, {
+        status: 201,
+        headers: { Location: filed.links.issue.href },
+      });
     } catch (error) {
-      if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
+      if (error instanceof FeedbackRequestError) {
+        return problemResponse(error.status, error.message);
+      }
+      if (error instanceof FeedbackDeliveryError) {
+        journal.write(
+          "server-error",
+          `POST /feedback: ${error.diagnostic}`,
+          flowId ?? undefined,
+        );
         return problemResponse(error.status, error.message);
       }
       return internalErrorResponse("POST /feedback", error, flowId);

@@ -98,7 +98,7 @@
       cursorBlink: false,
       disableStdin: true,
       fontSize: 12,
-      lineHeight: 1.25,
+      lineHeight: 1.45,
       fontFamily: MONO_FONT,
       scrollback: 5000,
       screenReaderMode: true,

@@ -1,7 +1,7 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Trash2 from "lucide-svelte/icons/trash-2";
-  import CommandButton from "./CommandButton.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import { connection } from "../connection.svelte";
   import { devboard } from "../devboard.svelte";
   import { renderSkillDocument } from "../skill-document";
@@ -10,6 +10,8 @@
 
   const count = $derived(devboard.skills.length);
   let expanded = $state<string[]>([]);
+  /** The prepared skill whose deletion waits for the dialog's confirmation. */
+  let deleteTarget = $state<string | null>(null);
 
   // The page reads when it opens and after a reconnect; the server pushes a
   // frame after every toggle. No watcher, poll, or start trigger is involved.
@@ -104,20 +106,18 @@
             </td>
             <td class="skills-table__actions">
               {#if skill.deletable}
-                <CommandButton
+                <Button
                   bare
-                  label="Delete"
                   class="skills-table__delete"
                   data-testid="delete-skill"
                   data-name={skill.name}
                   aria-label={`Delete ${skill.name}`}
                   title={`Delete ${skill.name} from .omp/skills/`}
-                  evidence={() => devboard.skills}
-                  command={() => devboard.deleteSkill(skill.name)}
                   disabled={!connection.open}
+                  onclick={() => (deleteTarget = skill.name)}
                 >
                   <Trash2 size={14} aria-hidden="true" />
-                </CommandButton>
+                </Button>
               {/if}
             </td>
           </tr>
@@ -160,6 +160,25 @@
     </table>
   </section>
 </div>
+
+<ConfirmDialog
+  open={deleteTarget !== null}
+  title="Delete skill"
+  message={deleteTarget === null
+    ? ""
+    : `Delete "${deleteTarget}" from .omp/skills/? Implementing agents will no longer read it.`}
+  confirmLabel="Delete skill"
+  destructive
+  testid="delete-skill-confirmation"
+  confirmCommand="devboard.skills.delete.confirm"
+  cancelCommand="devboard.skills.delete.cancel"
+  evidence={() => devboard.skills}
+  onconfirm={() => {
+    if (deleteTarget !== null) devboard.deleteSkill(deleteTarget);
+    deleteTarget = null;
+  }}
+  oncancel={() => (deleteTarget = null)}
+/>
 
 <style>
   .devboard-count {
@@ -265,7 +284,9 @@
     color: var(--muted-foreground);
     font-family: var(--font-sans);
     font-size: 10px;
-    letter-spacing: 0.04em;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
     margin-left: 8px;
     padding: 1px 6px;
     text-transform: uppercase;
@@ -289,7 +310,7 @@
   }
 
   :global(.skills-table__delete:hover) {
-    background: var(--row-hover);
+    background: var(--error-surface);
     color: var(--destructive);
   }
 </style>

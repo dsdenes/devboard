@@ -3,7 +3,7 @@ import {
   classifyForgeReadFailure,
 } from "../../lib/forge-read-retry";
 import type { AgentSync } from "./registry";
-import type { ForgeIssueFact, ForgeIssueReader } from "./forge-reader";
+import type { ForgeIssueFact, ForgeIssueReader, ForgeIssueState } from "./forge-reader";
 
 /**
  * The one periodic forge read behind the four background agents' filed-issues
@@ -45,6 +45,13 @@ function firstLine(text: string): string {
   );
 }
 
+/** A fact a read or a seed published for a row this forge served. */
+export interface ForgeIssueAnswer {
+  url: string;
+  state: ForgeIssueState;
+  version: string | null;
+}
+
 export class AgentForgeState {
   private readonly reader: ForgeIssueReader;
   private readonly urls: () => string[];
@@ -55,11 +62,13 @@ export class AgentForgeState {
   private readonly onRead: (() => void) | undefined;
   private readonly log: (line: string) => void;
 
-  private facts = new Map<string, ForgeIssueFact>();
+  private facts = new Map<string, ForgeIssueAnswer>();
   /** The URLs the last successful read asked for, or null before one. */
   private asked: ReadonlySet<string> | null = null;
-  /** The URLs the last successful read answered. */
+  /** The URLs the last successful read answered with a state. */
   private answered: ReadonlySet<string> = new Set();
+  /** The URLs the last successful read could not answer for this forge. */
+  private unreadableUrls: ReadonlySet<string> = new Set();
   private lastStartedAt: number | null = null;
   private lastSuccess: number | null = null;
   private lastFailure: string | null = null;
@@ -79,7 +88,15 @@ export class AgentForgeState {
     this.onRead = options.onRead;
     this.log = options.log ?? (() => undefined);
     if (options.seed !== undefined) {
-      for (const [url, fact] of options.seed) this.facts.set(url, fact);
+      const unreadable = new Set<string>();
+      for (const [url, fact] of options.seed) {
+        if (fact.state === "unreadable") {
+          unreadable.add(url);
+          continue;
+        }
+        this.facts.set(url, { url, state: fact.state, version: fact.version });
+      }
+      this.unreadableUrls = unreadable;
     }
   }
 
@@ -116,24 +133,45 @@ export class AgentForgeState {
 
   /**
    * The fact the last successful read published for one row. Before a read,
-   * only a seeded fact answers.
+   * only a seeded fact answers; a row this forge could not read never does.
    */
-  fact(url: string): ForgeIssueFact | undefined {
+  fact(url: string): ForgeIssueAnswer | undefined {
     return this.facts.get(url);
   }
 
   /**
+   * Whether the last successful read could not answer for this row's forge.
+   * The row stays listed, and it claims no state.
+   */
+  unreadable(url: string): boolean {
+    return this.unreadableUrls.has(url);
+  }
+
+  /**
    * Whether the table may still list this row. A row filed after the read
-   * began has no answer and stays; a row the successful read omitted is gone.
+   * began has no answer and stays; a row this forge cannot serve stays; a
+   * row the successful read omitted is gone.
    */
   reported(url: string): boolean {
     if (this.asked === null) return true;
-    return !this.asked.has(url) || this.answered.has(url);
+    return !this.asked.has(url) || this.answered.has(url) || this.unreadableUrls.has(url);
   }
 
   /** Every fact the last successful read (or the seed) published. */
-  entries(): IterableIterator<[string, ForgeIssueFact]> {
+  entries(): IterableIterator<[string, ForgeIssueAnswer]> {
     return this.facts.entries();
+  }
+
+  /**
+   * Every row a persisted projection lists: the answered facts and the
+   * unreadable ones, which a filing cap counts as open.
+   */
+  rows(): IterableIterator<[string, ForgeIssueFact]> {
+    const rows: Array<[string, ForgeIssueFact]> = [...this.facts];
+    for (const url of this.unreadableUrls) {
+      rows.push([url, { url, state: "unreadable", version: null }]);
+    }
+    return rows[Symbol.iterator]();
   }
 
   get sync(): AgentSync {
@@ -173,8 +211,13 @@ export class AgentForgeState {
       this.failed(error instanceof Error ? error.message : String(error));
       return;
     }
-    const next = new Map<string, ForgeIssueFact>();
+    const next = new Map<string, ForgeIssueAnswer>();
+    const unreadable = new Set<string>();
     for (const fact of facts) {
+      if (fact.state === "unreadable") {
+        unreadable.add(fact.url);
+        continue;
+      }
       next.set(fact.url, {
         url: fact.url,
         state: fact.state,
@@ -184,6 +227,7 @@ export class AgentForgeState {
     this.facts = next;
     this.asked = new Set(urls);
     this.answered = new Set(next.keys());
+    this.unreadableUrls = unreadable;
     this.lastSuccess = this.now();
     this.lastFailure = null;
     this.nextAttemptAt = null;
