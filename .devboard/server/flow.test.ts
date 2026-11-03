@@ -1073,8 +1073,12 @@ describe("Flow Mode contract", () => {
     // The first checkpoint proves the implementation turn is under way, so the
     // peer's own log lines exist before they are asserted.
     await waitForStub(fixture, (line) => line.startsWith("flow-checkpoint 1 "));
-    expect(spawns(fixture)).toHaveLength(2);
-    const implementationPrompts = prompts(fixture).filter((line) =>
+    // One goal interview and one implementation turn; the analyst peer this
+    // fixture enables starts from the same diff the checkpoint publishes, so a
+    // total stub count would count it too.
+    const promptsByRole = prompts(fixture);
+    expect(promptsByRole.filter((line) => line.startsWith("prompt /flow-goal "))).toHaveLength(1);
+    const implementationPrompts = promptsByRole.filter((line) =>
       line.startsWith("prompt /flow-implement "),
     );
     expect(implementationPrompts).toHaveLength(1);
