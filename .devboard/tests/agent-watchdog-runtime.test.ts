@@ -427,6 +427,38 @@ describe("watchdog preflight and timer gate", () => {
     expect(result.message).toContain("devboard-watchdog.timer");
   });
 
+  test("a denied gh permission reports its stdout instead of no diagnostic", async () => {
+    const root = await temporaryRoot();
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const result = await preflightWatchdog({
+      repoDir: root,
+      environment: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      run: async () => ({ code: 0, stdout: "false\n", stderr: "" }),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("did not return true: false");
+    expect(result.message).not.toContain("no diagnostic");
+  });
+
+  test("a silent failing gh permission reports its exit code", async () => {
+    const root = await temporaryRoot();
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const result = await preflightWatchdog({
+      repoDir: root,
+      environment: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      run: async () => ({ code: 1, stdout: "", stderr: "" }),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("did not return true: gh exited with code 1");
+    expect(result.message).not.toContain("no diagnostic");
+  });
+
   test("reads the timer gate, offers a disable, and clears the block", async () => {
     const root = await temporaryRoot();
     const calls: string[][] = [];
@@ -489,6 +521,32 @@ describe("watchdog preflight and timer gate", () => {
       expect(snapshot.timer?.blocked).toBe(true);
       expect(snapshot.timer?.error).toContain("Access denied");
       expect(snapshot.error).toContain("Access denied");
+    } finally {
+      activity.dispose();
+    }
+  });
+
+  test("a failed disable with no output names the unit and its exit code", async () => {
+    const root = await temporaryRoot();
+    const activity = adapter(root, {
+      systemctl: (args) => {
+        if (args[0] === "disable") return { code: 3, stdout: "", stderr: "" };
+        if (args[0] === "is-active") return { code: 0, stdout: "active", stderr: "" };
+        return { code: 0, stdout: "enabled", stderr: "" };
+      },
+    });
+    try {
+      activity.begin();
+      await waitFor(
+        () => (activity.snapshot().timer?.blocked === true ? true : undefined),
+        "the timer gate",
+      );
+      const result = await activity.disableTimer();
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toContain("could not disable devboard-watchdog.timer");
+      expect(result.message).toContain("systemctl exited with code 3");
+      expect(result.message).not.toContain("undefined");
     } finally {
       activity.dispose();
     }

@@ -109,12 +109,16 @@ const STOP_KILL_GRACE_MS = 2_000;
 /** The timer gate is re-read in the background at most this often. */
 const TIMER_REFRESH_MS = 5_000;
 
-function firstLineOf(text: string): string {
+/**
+ * The first non-empty line of command output, or undefined when the output
+ * carries none, so a caller's `??` chain can fall through to the next source.
+ */
+function firstLineOf(text: string): string | undefined {
   return (
     text
       .split("\n")
       .map((line) => line.trim())
-      .find((line) => line.length > 0) ?? "no diagnostic"
+      .find((line) => line.length > 0)
   );
 }
 
@@ -652,7 +656,8 @@ export class WatchdogActivity implements AgentAdapter {
     if (result.code !== 0) {
       const message =
         `could not disable ${unit}: ` +
-        firstLineOf(result.stderr.length > 0 ? result.stderr : result.stdout);
+        (firstLineOf(result.stderr.length > 0 ? result.stderr : result.stdout) ??
+          `systemctl exited with code ${result.code}`);
       this.startError = message;
       if (this.timerGate !== null && this.timerGate !== undefined) {
         this.timerGate = { ...this.timerGate, error: message };
