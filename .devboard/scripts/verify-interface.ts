@@ -8399,6 +8399,36 @@ try {
     "the overview running-agent issue numbers are not tracker links",
     overview.summaryIssueLinks,
   );
+  const elapsedType = await page.eval<{
+    fontSize: number;
+    lineHeight: number;
+    mono: boolean;
+    tabular: boolean;
+    started: boolean;
+  }>(`(() => {
+    const elapsed = document.querySelector('[data-testid="issues-agent-summary"] .issues-agent-row__elapsed');
+    const style = elapsed === null ? null : getComputedStyle(elapsed);
+    return {
+      fontSize: style === null ? 0 : Number.parseFloat(style.fontSize),
+      lineHeight: style === null ? 0 : Number.parseFloat(style.lineHeight),
+      mono: style === null ? false : style.fontFamily.toLowerCase().includes("mono"),
+      tabular: style === null ? false : style.fontVariantNumeric.includes("tabular-nums"),
+      started: (elapsed?.getAttribute("title") ?? "").startsWith("Started "),
+    };
+  })()`);
+  check(
+    Math.abs(elapsedType.fontSize - 11.5) < 0.05 &&
+      Math.abs(elapsedType.lineHeight - 16.1) < 0.05 &&
+      elapsedType.mono &&
+      elapsedType.tabular,
+    "the running agent elapsed time does not render the mono-small 11.5px/16.1px type",
+    elapsedType,
+  );
+  check(
+    elapsedType.started,
+    "the running agent elapsed time does not carry its start clock as the tooltip",
+    elapsedType,
+  );
   check(overview.sideBeforeOutput, "the agent list is not in the left column", overview);
   check(overview.leftOfOutput, "the side column does not sit to the left of the output", overview);
   check(
