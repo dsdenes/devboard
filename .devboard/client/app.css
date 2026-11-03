@@ -852,7 +852,7 @@ kbd {
   color: var(--muted-foreground);
   display: inline-flex;
   flex: 0 0 auto;
-  gap: 5px;
+  gap: 2px;
   height: 20px;
   max-width: 320px;
   overflow: hidden;
