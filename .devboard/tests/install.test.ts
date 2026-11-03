@@ -21,6 +21,7 @@ const MANAGED_SKILLS = [
   "devboard-ui-ux",
   "devboard-restful-api-implementation",
   "devboard-single-responsibility-principle",
+  "devboard-consistent-naming",
 ] as const;
 
 let root: string;
@@ -220,6 +221,6 @@ describe("install.sh", () => {
     const before = readFileSync(join(host, ".gitignore"), "utf8");
     expect(install([host]).code).toBe(0);
     expect(readFileSync(join(host, ".gitignore"), "utf8")).toBe(before);
-    expect(ignoreLines(host)).toHaveLength(3);
+    expect(ignoreLines(host)).toHaveLength(MANAGED_SKILLS.length);
   });
 });
