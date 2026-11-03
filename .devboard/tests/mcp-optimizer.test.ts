@@ -1502,26 +1502,46 @@ describe("MCP optimizer synthesis contract and prompt", () => {
     expect(unavailable).not.toBe("[]");
   });
 
-  test("a prompt above the byte budget is cut to the budget", () => {
-    const huge: McpOptimizerFamily = {
-      key: family.key,
-      kind: "command",
-      calls: 1,
-      sessions: ["a"],
-      days: 1,
-      firstAt: family.firstAt,
-      lastAt: family.lastAt,
-      score: 1,
-      fragments: [{ text: "界".repeat(30_000), count: 1 }],
-      excerpts: [],
-    };
+  test("a prompt above the byte budget bounds the fragments and keeps the filing contract", () => {
+    // `buildFamilies` bounds one fragment to 300 characters, so 200 distinct
+    // 300-byte fragments plus a maximal allowlist is real evidence.
+    const fragments = Array.from({ length: 200 }, (_, index) => ({
+      text: `${String(index).padStart(3, "0")}${"界".repeat(99)}`,
+      count: 200 - index,
+    }));
+    const allowlist = Array.from(
+      { length: 50 },
+      (_, index) => `${String(index).padStart(2, "0")}${"x".repeat(198)}`,
+    );
     const prompt = synthesisPrompt({
-      family: huge,
-      settings: DEFAULT_MCP_OPTIMIZER_SETTINGS,
+      family: { ...family, fragments, excerpts: [] },
+      settings: { ...DEFAULT_MCP_OPTIMIZER_SETTINGS, allowlist },
       openIssues: [],
       filingRoom: 1,
     });
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(SYNTHESIS_PROMPT_MAX_BYTES);
+    // The Rules block is the whole filing contract: it survives, last bullet included.
+    expect(prompt).toContain("Rules:");
+    expect(prompt.trimEnd().endsWith("never both.")).toBe(true);
+    for (const heading of [
+      "Family:",
+      "Excerpts:",
+      "MCP catalog:",
+      "Open MCP optimizer issues:",
+      "Command allowlist:",
+      "Limits:",
+    ]) {
+      expect(() => JSON.parse(sectionValue(prompt, heading))).not.toThrow();
+    }
+    expect(JSON.parse(sectionValue(prompt, "Command allowlist:"))).toEqual(allowlist);
+    const kept = JSON.parse(sectionValue(prompt, "Fragments:")) as typeof fragments;
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(fragments.length);
+    // The least frequent are dropped first, so the survivors are the top counts in order.
+    expect(kept.map((entry) => entry.count)).toEqual(
+      fragments.slice(0, kept.length).map((entry) => entry.count),
+    );
+    expect(kept[0]!.text).toBe(fragments[0]!.text);
   });
 });
 
