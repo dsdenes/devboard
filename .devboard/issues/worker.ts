@@ -327,59 +327,6 @@ export function continuationPrompt(
   ].join(" ");
 }
 
-/**
- * Collects the previous state document's recorded ACP children and run ids
- * verbatim. It reads the bytes a load already read, so an unparseable file
- * that load quarantined still yields its records.
- */
-function previousRecords(text: string | undefined): {
-  children: IssuesAcpChild[];
-  runIds: string[];
-} {
-  if (text === undefined) return { children: [], runIds: [] };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { children: [], runIds: [] };
-  }
-  if (typeof parsed !== "object" || parsed === null) return { children: [], runIds: [] };
-  const record = parsed as Record<string, unknown>;
-  const children: IssuesAcpChild[] = [];
-  const runIds: string[] = [];
-  const collect = (value: unknown): void => {
-    if (typeof value !== "object" || value === null) return;
-    const candidate = value as Record<string, unknown>;
-    if (
-      typeof candidate.pid === "number" &&
-      Number.isInteger(candidate.pid) &&
-      candidate.pid > 0 &&
-      Array.isArray(candidate.argv) &&
-      candidate.argv.every((entry) => typeof entry === "string") &&
-      typeof candidate.cwd === "string"
-    ) {
-      children.push({
-        pid: candidate.pid,
-        argv: candidate.argv as string[],
-        cwd: candidate.cwd,
-      });
-    }
-  };
-  const agents = Array.isArray(record.agents) ? record.agents : [];
-  for (const agent of agents) {
-    if (typeof agent !== "object" || agent === null) continue;
-    const entry = agent as Record<string, unknown>;
-    if (typeof entry.runId === "string") runIds.push(entry.runId);
-    collect(entry.acp);
-  }
-  collect(record.acp);
-  if (typeof record.activeRun === "object" && record.activeRun !== null) {
-    const active = record.activeRun as Record<string, unknown>;
-    if (typeof active.runId === "string") runIds.push(active.runId);
-  }
-  return { children, runIds };
-}
-
 export class IssuesWorker {
   readonly repoDir: string;
   readonly stateDir: string;
@@ -529,7 +476,7 @@ export class IssuesWorker {
     const legacyPath = statePath(this.stateDir, this.repoDir);
     const source = existsSync(path) ? path : existsSync(legacyPath) ? legacyPath : path;
     const loaded = loadStateWithText(source);
-    const records = previousRecords(loaded.text);
+    const records = loaded.records;
     this.ledger = loadLedger(this.stateDir, this.repoDir);
     let migrationError: string | null = null;
     const migrated = migrateLegacyLedger({

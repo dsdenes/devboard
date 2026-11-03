@@ -30,6 +30,7 @@ import {
   appendActivityLine,
   emptyState,
   loadState,
+  loadStateWithText,
   parseRunFile,
   parseState,
   readActivity,
@@ -2298,6 +2299,48 @@ describe("state document", () => {
     const path = join(testRoot, "state-document.json");
     writeState(path, state);
     expect(loadState(path)?.repo).toBe("acme/fixture");
+  });
+
+  test("recovers recorded children and run ids from a file it quarantines", () => {
+    const path = join(testRoot, "quarantined-records.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 999,
+        repo: "acme/fixture",
+        root: "/tmp/repo",
+        agents: [
+          {
+            runId: "agent-run",
+            issueNumber: 1,
+            startedAt: "2026-10-27T00:00:00Z",
+            acp: { pid: 4242, argv: ["omp", "acp"], cwd: "/tmp/repo" },
+          },
+          {
+            runId: "agent-run-2",
+            issueNumber: 2,
+            startedAt: "2026-10-27T00:00:01Z",
+            acp: null,
+          },
+        ],
+        acp: { pid: 4343, argv: ["omp"], cwd: "/tmp/repo" },
+        activeRun: { runId: "legacy-run" },
+      }),
+    );
+
+    const loaded = loadStateWithText(path);
+    expect(loaded.state).toBeUndefined();
+    expect(loaded.records.children).toEqual([
+      { pid: 4242, argv: ["omp", "acp"], cwd: "/tmp/repo" },
+      { pid: 4343, argv: ["omp"], cwd: "/tmp/repo" },
+    ]);
+    expect(loaded.records.runIds).toEqual(["agent-run", "agent-run-2", "legacy-run"]);
+    expect(existsSync(path)).toBe(false);
+    expect(
+      readdirSync(dirname(path)).some((name) =>
+        name.startsWith("quarantined-records.json.invalid-"),
+      ),
+    ).toBe(true);
   });
 
   test("loads a version 1 document with empty agents and its goal cooldowns", () => {
