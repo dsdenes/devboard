@@ -1724,15 +1724,6 @@ kbd {
   min-width: 0;
 }
 
-.discover-page__eyebrow {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
 .discover-page__title {
   color: var(--foreground);
   font-size: 20px;
@@ -1869,48 +1860,6 @@ kbd {
 
 .discover-notices .message {
   margin: 0;
-}
-
-/* One run tag above every Discover page: the run's state, age, and last line. */
-.discover-run-tag {
-  align-items: center;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-  padding: 6px 8px;
-}
-
-.discover-run-tag strong {
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.discover-run-tag .muted {
-  font-size: 11px;
-}
-
-.discover-run-tag__activity {
-  color: var(--muted-foreground);
-  flex: 1 1 160px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Run tag: the live status dot and the quiet Stop. */
-.discover-run__dot {
-  background: var(--accent);
-  border-radius: 999px;
-  flex: 0 0 6px;
-  height: 6px;
-  width: 6px;
 }
 
 .discover-run__stop {
@@ -2625,11 +2574,6 @@ a.code-chip--link:focus-visible {
   min-width: 46px;
   padding: 2px 6px;
   text-align: center;
-}
-
-.discover-uses {
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
 }
 
 .discover-examples {
@@ -4179,37 +4123,6 @@ a.issues-agent-row__issue:focus-visible {
 
 .discover-agent__header {
   align-items: flex-start;
-}
-
-.discover-agent__actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.discover-agent__state {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.discover-agent__state[data-state="running"] {
-  color: var(--accent);
-}
-
-.discover-agent__state[data-state="failed"] {
-  color: var(--error);
-}
-
-.discover-agent__state[data-state="succeeded"] {
-  color: var(--success, var(--accent));
-}
-
-.discover-agent .discover-run-tag {
-  border: 0;
-  padding: 0;
 }
 
 /* One button primitive: every activation paints a pressed fill from
