@@ -6,6 +6,7 @@ import { DesignBridge } from "../server/design";
 import { ApiStandardsBridge } from "../server/api-standards";
 import { DeadCodeBridge } from "../server/dead-code";
 import { SingleResponsibilityBridge } from "../server/single-responsibility";
+import { ConsistentNamingBridge } from "../server/consistent-naming";
 import { agentRegistry, projectAgentSnapshot, type AgentSnapshot } from "../server/agents/registry";
 import { readWatchdogStatus } from "../watchdog/status";
 import { readWatchdogSettings } from "../watchdog/settings";
@@ -125,6 +126,22 @@ function deadCodeSnapshot(context: McpContext): AgentSnapshot {
 function singleResponsibilitySnapshot(context: McpContext): AgentSnapshot {
   const descriptor = agentRegistry.require("single-responsibility");
   const bridge = new SingleResponsibilityBridge({
+    descriptor,
+    repoDir: context.repoDir,
+    stateDir: context.stateDir,
+    agentCommand: context.environment.AGENT_COMMAND ?? "omp acp",
+    agentEnvironment: async () => context.environment,
+    runningVersion: readHarnessVersion(context.harnessDir),
+    harnessDir: context.harnessDir,
+    send: () => undefined,
+    environment: context.environment,
+  });
+  return projectAgentSnapshot(descriptor, bridge.snapshot());
+}
+
+function consistentNamingSnapshot(context: McpContext): AgentSnapshot {
+  const descriptor = agentRegistry.require("consistent-naming");
+  const bridge = new ConsistentNamingBridge({
     descriptor,
     repoDir: context.repoDir,
     stateDir: context.stateDir,
@@ -300,6 +317,7 @@ function persistedAgents(context: McpContext): AgentSnapshot[] {
     if (descriptor.id === "single-responsibility") {
       return singleResponsibilitySnapshot(context);
     }
+    if (descriptor.id === "consistent-naming") return consistentNamingSnapshot(context);
     if (descriptor.id === "release-train") return releaseTrainSnapshot(context);
     return mcpOptimizerSnapshot(context);
   });

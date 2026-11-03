@@ -1626,6 +1626,7 @@ describe("issues protocol", () => {
         "mcp-optimizer",
         "api-standards",
         "single-responsibility",
+        "consistent-naming",
         "release-train",
       ]);
     } finally {

@@ -36,7 +36,8 @@
     "verify:mcp": "bun run scripts/verify-mcp.ts",
     "verify:api-standards": "bun run scripts/verify-api-standards.ts",
     "verify:discover": "bun run scripts/verify-discover.ts",
-    "verify:single-responsibility": "bun run scripts/verify-single-responsibility.ts"
+    "verify:single-responsibility": "bun run scripts/verify-single-responsibility.ts",
+    "verify:consistent-naming": "bun run scripts/verify-consistent-naming.ts"
   },
   "files": [
     "package.json",

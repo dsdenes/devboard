@@ -641,6 +641,7 @@ describe("MCP context tools", () => {
       "mcp-optimizer",
       "api-standards",
       "single-responsibility",
+      "consistent-naming",
       "release-train",
     ]);
     const mcpOptimizer = valueOf(await callTool(context, "background_agent_get", { id: "mcp-optimizer" })) as {

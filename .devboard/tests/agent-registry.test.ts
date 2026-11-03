@@ -132,6 +132,7 @@ describe("background agent registry", () => {
       "mcp-optimizer",
       "api-standards",
       "single-responsibility",
+      "consistent-naming",
       "release-train",
     ]);
     const scout = agentRegistry.require("scout");
@@ -209,6 +210,27 @@ describe("background agent registry", () => {
       kind: "file",
       file: "single-responsibility.md",
     });
+    const consistentNaming = agentRegistry.require("consistent-naming");
+    expect(consistentNaming.label).toBe("Consistent Naming");
+    expect(consistentNaming.description).toContain("naming skill");
+    expect(consistentNaming.scope).toBe("repository");
+    expect(consistentNaming.cadence).toEqual({
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    });
+    expect(consistentNaming.limits.default).toEqual({ maxPerHour: 10, maxPending: 5 });
+    expect(consistentNaming.detail.panel).toBe("activity");
+    expect(consistentNaming.tab).toEqual({
+      id: "consistent-naming",
+      kind: "consistent-naming",
+      title: "Consistent Naming",
+    });
+    expect(consistentNaming.prompt).toEqual({
+      kind: "file",
+      file: "consistent-naming.md",
+    });
     const releaseTrain = agentRegistry.require("release-train");
     expect(releaseTrain.label).toBe("Release Train");
     expect(releaseTrain.scope).toBe("repository");
@@ -266,6 +288,7 @@ describe("background agent registry", () => {
       "mcp-optimizer",
       "api-standards",
       "single-responsibility",
+      "consistent-naming",
       "release-train",
       "patrol",
     ]);
@@ -330,6 +353,7 @@ describe("background agent registry", () => {
       "mcp-optimizer",
       "api-standards",
       "single-responsibility",
+      "consistent-naming",
       "release-train",
       "patrol",
     ]);

@@ -4,6 +4,7 @@ import { normalizeIssueTitle } from "../lib/issue-title";
 import { readDraftGoalHeadings } from "../lib/draft-goals";
 import { DEAD_CODE_LABEL } from "../issues/dead-code/paths";
 import { SINGLE_RESPONSIBILITY_LABEL } from "../issues/single-responsibility/paths";
+import { CONSISTENT_NAMING_LABEL } from "../issues/consistent-naming/paths";
 import { recordClosedByRun } from "../issues/self-close";
 import { issuesFor, type McpContext } from "./context";
 
@@ -155,6 +156,11 @@ export async function createIssue(
       label: SINGLE_RESPONSIBILITY_LABEL,
       noun: "single-responsibility finding",
       titleError: "A single-responsibility title must be at most 200 characters.",
+    },
+    {
+      label: CONSISTENT_NAMING_LABEL,
+      noun: "consistent-naming finding",
+      titleError: "A consistent-naming title must be at most 200 characters.",
     },
   ]) {
     if (!labels.includes(guarded.label)) continue;

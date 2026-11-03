@@ -860,6 +860,38 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     },
   }),
   validateAgentDescriptor({
+    id: "consistent-naming",
+    label: "Consistent Naming",
+    description:
+      "Audits the repository's vocabulary against the project naming skill and files one capped " +
+      "vocabulary issue per concept and violation.",
+    scope: "repository",
+    prompt: {
+      kind: "file",
+      file: "consistent-naming.md",
+    },
+    lifecycle: AGENT_LIFECYCLES,
+    cadence: {
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    },
+    limits: {
+      maxPerHour: { min: 1, max: 100, nullable: true },
+      maxPending: { min: 1, max: 100, nullable: true },
+      default: { maxPerHour: 10, maxPending: 5 },
+    },
+    commands: SHARED_COMMANDS,
+    issues: SHARED_ISSUES,
+    detail: { panel: "activity", testId: "agent-detail" },
+    tab: {
+      id: "consistent-naming",
+      kind: "consistent-naming",
+      title: "Consistent Naming",
+    },
+  }),
+  validateAgentDescriptor({
     id: "release-train",
     label: "Release Train",
     description:

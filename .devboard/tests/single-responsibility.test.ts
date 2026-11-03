@@ -158,6 +158,7 @@ describe("single-responsibility entry point", () => {
       "design",
       "dead-code",
       "single-responsibility",
+      "consistent-naming",
     ]);
   });
 

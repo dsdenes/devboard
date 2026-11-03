@@ -556,7 +556,7 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 |`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.mjs`.|
 |`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
 |`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs, with the five violation categories; the Single Responsibility worker's normative source.|
-|`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym.|
+|`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym; the Consistent Naming worker's normative source.|
 
 Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
 Devboard mode's Skills page renders that marker as a visible `Managed` label and never renders a
@@ -2447,9 +2447,10 @@ inside the checkout, and the worker's audit input never leaves the repository ro
 
 ### Entry points for background-agent crawls
 
-Auto Scout, Design System, Dead Code, and Single Responsibility each begin a cycle from one
-seeded entry point instead of a fixed survey. The Devboard MCP tool `entry_point` accepts a
-`surface` of `scout`, `design`, `dead-code`, or `single-responsibility` and an optional `seed`,
+Auto Scout, Design System, Dead Code, Single Responsibility, and Consistent Naming each begin a
+cycle from one seeded entry point instead of a fixed survey. The Devboard MCP tool `entry_point`
+accepts a `surface` of `scout`, `design`, `dead-code`, `single-responsibility`, or
+`consistent-naming` and an optional `seed`,
 and returns the chosen repository-relative `path`, a 1-based `line` inside that file, the
 `surface`, and the `seed` used. It is read-only, absent from the mutating-tool set, creates no
 file, and refuses an unknown surface, an empty eligible set, or a path that resolves outside the
@@ -2468,7 +2469,9 @@ shaped like code or a style rule, so a Ruby or Go host is not limited to this pr
 TypeScript layout. The `single-responsibility` pool is that same source set narrowed to
 components: a `*.test.*` or `*.spec.*` file is excluded, and so is any file under a
 `fixtures/`, `tests/`, or `stubs/` directory, because a test, a fixture, and a stub describe
-another unit's contract. No pool follows a symbolic link, and every entry is proven inside the
+another unit's contract. The `consistent-naming` pool is that same component source set, because
+a concept's name is audited in code and not in a test, a fixture, or a stub; it spans every
+source tree the host writes, the server and the client alike. No pool follows a symbolic link, and every entry is proven inside the
 real repository root. A directory the walk cannot read is refused, never skipped: the picker
 throws one `EntryPointError` naming every such directory by its repository-relative path and the
 reason, so a pool that omits a subtree is never reported as a repository that lacks those files.
@@ -2619,6 +2622,112 @@ proves the entry, the shared page, the seeded entry point, the excluded test and
 one issue per component and violation with provenance, the five-category restriction, dedupe, the
 caps, the label, the preflight refusals, the read-only checkout, single flight, and activity
 freshness against a stub ACP peer and a stub `gh`.
+
+### Consistent Naming
+
+Consistent Naming is the `consistent-naming` descriptor. Its sidebar entry
+`open-devboard-consistent-naming` opens the shared `agent-page` with
+`data-agent="consistent-naming"`: the same core id sequence every background-agent page renders,
+exactly one of `agent-start`/`agent-stop`, `agent-cadence`, `agent-last-run`, `agent-next-run`,
+`agent-limit-hour`, `agent-limit-pending`, `agent-issues`, `agent-issues-count`, `agent-sync-at`,
+and the pinned `agent-activity-bar`. It renders no `agent-detail` and no `agent-documentation`
+panel, and `agent-count-consistent-naming` equals the rendered row count. Its prompt section shows
+`.devboard/prompts/consistent-naming.md`, the file the `/consistent-naming` command reads, as
+read-only bytes exactly like the Auto Scout prompt.
+
+The normative source is the project OMP skill
+`<REPO_DIR>/.omp/skills/devboard-consistent-naming/SKILL.md`. It is the only normative text of a
+cycle: the agent reads it once and quotes it verbatim. Its `## Architectural Violations` section
+publishes exactly seven categories:
+
+- `synonymous naming` — the same concept appears under two or more names;
+- `semantic ambiguity` — one name denotes more than one concept, or its meaning depends on where
+  it is read;
+- `inconsistent vocabulary` — the same concept is named differently across layers, modules, tests,
+  or documentation;
+- `misleading naming` — a name suggests a meaning the concept does not have;
+- `unnecessary terminology` — a new term is introduced for a concept that already has a name;
+- `conceptual collision` — two distinct concepts share one name within a context;
+- `implementation-driven naming` — a concept is named after its current implementation detail.
+
+A candidate outside those seven is recorded in activity and never filed. Every issue carries
+exactly one concept and exactly one category: two violations proved on one concept are two issues,
+and one violation proved on two concepts is two issues. Never two of either in one issue.
+
+Each cycle writes `<REPO_DIR>/.devboard/.tmp/consistent-naming/cycles/<id>/request.json` naming
+the `surface`, `seed`, `entryPoint`, the seven `categories`, the `skillPath`, every published
+glossary path in `glossaries`, the normalized `knownTitles`, `issueRoom`, `maxPerHour`,
+`maxPending`, and `createdAt`, runs one ACP turn with that directory as its working directory, and
+writes nothing in the checkout. The crawl starts at the seeded entry point, follows imports,
+exports, references, callers, and callees outward, records the reachable region in activity, and
+admits only evidence inside that region.
+
+The name is not local to the file that showed it. Once a cycle has a concept and the name in use,
+it searches the whole repository for that name — server source, client source, tests, and
+documentation alike — and `## Occurrences` lists every line the rename must touch as a
+repository-relative `path` with a `lines` span. The list must be complete: every line that uses
+the name appears inside one listed span, and no listed span lacks a use. The worker proves that
+completeness itself by repeating the search over `.git`, `node_modules`, `dist`, `.worktree`, and
+`.devboard/.tmp` excluded, so a filing that omits one layer is recorded as a verification failure
+and never published. A concept used by a client component and its server handler is one concept
+and one issue.
+
+Where the repository publishes UbiLang glossaries at
+`.omp/discover/glossary/<bounded-context>.glossary.yaml`, that glossary is the authoritative
+vocabulary of its bounded context. An issue about a concept a glossary defines names the glossary
+path, its preferred label, and the concept id, and its proposed name is that preferred label. A
+name the glossary assigns to a different concept is reported in `## Glossary conflict` with the
+same three facts and never silently renamed into a new synonym. The published glossaries are the
+authority, never a rename target: the occurrence search does not list them.
+
+A filed issue carries the category, the one concept, the name in use, the proposed name, the
+skill path, the category's directive bullet quoted verbatim, the reason the name is inconsistent,
+at least one repository-relative `path:lines` evidence entry with a quote copied from exactly
+those lines, the complete occurrence list, the concrete rename, and binary acceptance criteria.
+A naming issue proposes only a vocabulary change: it never changes behavior, and a step-by-step
+structural refactor belongs in no section. The title is one plain line of at most 200 characters
+with no prefix, and the labels are exactly `["consistent-naming"]`.
+
+A candidate is a duplicate when its normalized title — lowercased, whitespace runs collapsed,
+trimmed — equals that of any `consistent-naming` issue in any state, any open issue, or any
+draft-goal heading. The prompt reads the tracker and skips duplicates, and `issue_create`
+enforces the same guard for the `consistent-naming` label and files nothing for a duplicate. The
+page's limits are each empty (unlimited) or an integer 1 through 100, defaulting to 10 per rolling
+hour and 5 open. The hourly cap counts every `consistent-naming` issue created in the last
+rolling 60 minutes in any state; the pending cap counts every open one; one cycle files at most
+the smaller room and 100. A zero room files nothing and records every skip in activity, and a
+failed forge read files nothing while keeping the last known rows. `agent-cadence` defaults to
+60 minutes, accepts 1 through 1440, persists across reload and restart, applies to a running
+worker without a restart, and starts no cycle sooner than that interval after the previous cycle
+start.
+
+The worker files nothing itself. It reads the MCP tool log's `issue_create` records, re-reads each
+created issue from the origin, and publishes a row only for an issue it read back carrying the
+`consistent-naming` label and a body whose category, skill path, directive, concept, names,
+evidence quote, occurrence list, rename, and acceptance criteria all verify. A filing that fails
+that proof is recorded in activity as a verification failure and is not published as a row; a tool
+error files nothing and is recorded, never claimed as a filing. The issue lands in the origin: on
+GitHub through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
+`forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue is
+open and `implemented` once it is closed, and records a failed sync in `agent-sync-error` without
+dropping rows.
+
+Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
+the skill is missing, unreadable, or resolves outside the repository, the state directory is
+outside the checkout, the origin is not a supported forge, the account cannot write, `omp` or `gh`
+is missing, the `/consistent-naming` command is not installed, or the `consistent-naming` label
+cannot be created with its documented color and description. At most one cycle runs at a time per
+checkout: Start during a cycle, a cadence change, a page open, a tab restore, or a reload starts no
+second cycle, and a replacement dashboard drains an older live worker of the family. Stop ends the
+worker and leaves the settings and filed rows. State lives at
+`<STATE_DIR>/consistent-naming/<journalKey(REPO_DIR)>/`, the lock and cycles stay inside
+`<REPO_DIR>/.devboard/.tmp/consistent-naming/`, and a cycle leaves `git status --porcelain` and
+`git rev-parse HEAD` unchanged. `bun run verify:consistent-naming` proves the entry, the shared
+page, the seeded entry point, the excluded test and fixture files, both-layer coverage, one issue
+per concept and violation with provenance, the seven-category restriction, the repository-wide
+occurrence list, the glossary authority and conflict rule, the vocabulary-only proposed change,
+dedupe, the caps, the label, the preflight refusals, the read-only checkout, single flight, and
+activity freshness against a stub ACP peer and a stub `gh`.
 
 ## Harness watchdog
 

@@ -72,6 +72,7 @@ describe("entry point picker", () => {
       "design",
       "dead-code",
       "single-responsibility",
+      "consistent-naming",
     ]);
   });
 

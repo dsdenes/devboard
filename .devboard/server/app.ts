@@ -79,6 +79,10 @@ import {
   SingleResponsibilityBridge,
   type SingleResponsibilityBridgeOptions,
 } from "./single-responsibility";
+import {
+  ConsistentNamingBridge,
+  type ConsistentNamingBridgeOptions,
+} from "./consistent-naming";
 import { McpOptimizerActivity, type McpOptimizerActivityOptions } from "./mcp-optimizer";
 import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./release-train";
 import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
@@ -263,6 +267,11 @@ export interface AppOptions {
   /** Single Responsibility's test seams; production uses the detached worker itself. */
   singleResponsibility?: Pick<
     SingleResponsibilityBridgeOptions,
+    "pollMs" | "preflight" | "spawnWorker" | "reader"
+  >;
+  /** Consistent Naming's test seams; production uses the detached worker itself. */
+  consistentNaming?: Pick<
+    ConsistentNamingBridgeOptions,
     "pollMs" | "preflight" | "spawnWorker" | "reader"
   >;
   /** MCP optimizer's test seams; production reads its worker's state and ledger. */
@@ -2977,6 +2986,7 @@ export function createApp(options: AppOptions) {
   const designDescriptor = agentRegistry.require("design");
   const deadCodeDescriptor = agentRegistry.require("dead-code");
   const singleResponsibilityDescriptor = agentRegistry.require("single-responsibility");
+  const consistentNamingDescriptor = agentRegistry.require("consistent-naming");
   const mcpOptimizerDescriptor = agentRegistry.require("mcp-optimizer");
   const apiStandardsDescriptor = agentRegistry.require("api-standards");
   const releaseTrainDescriptor = agentRegistry.require("release-train");
@@ -3111,6 +3121,36 @@ export function createApp(options: AppOptions) {
   });
 
   /**
+   * Consistent Naming audits the repository vocabulary against the managed
+   * naming skill from a seeded entry point and files `consistent-naming`
+   * issues. It runs as a detached worker so it outlives this server.
+   */
+  const consistentNaming = new ConsistentNamingBridge({
+    descriptor: consistentNamingDescriptor,
+    repoDir,
+    stateDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    runningVersion,
+    harnessDir: runnableHarnessDir(repoDir),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.consistentNaming?.pollMs === undefined
+      ? {}
+      : { pollMs: options.consistentNaming.pollMs }),
+    ...(options.consistentNaming?.preflight === undefined
+      ? {}
+      : { preflight: options.consistentNaming.preflight }),
+    ...(options.consistentNaming?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.consistentNaming.spawnWorker }),
+    ...(options.consistentNaming?.reader === undefined
+      ? {}
+      : { reader: options.consistentNaming.reader }),
+    hasClients: () => clients.size > 0,
+  });
+
+  /**
    * MCP optimizer reads the ACP transcripts and journal records already on disk,
    * overlays the forge projection its caps count, and commands its detached
    * worker. Opening the page never starts a cycle.
@@ -3194,6 +3234,7 @@ export function createApp(options: AppOptions) {
       mcpOptimizer,
       apiStandards,
       singleResponsibility,
+      consistentNaming,
       releaseTrain,
     ],
     broadcast: (event) => sendAll(event),

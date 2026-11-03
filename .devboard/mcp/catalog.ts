@@ -318,7 +318,13 @@ const TOOLS: readonly McpToolDefinition[] = [
       {
         surface: {
           type: "string",
-          enum: ["scout", "design", "dead-code", "single-responsibility"],
+          enum: [
+            "scout",
+            "design",
+            "dead-code",
+            "single-responsibility",
+            "consistent-naming",
+          ],
         },
         seed: STRING,
       },
@@ -524,6 +530,7 @@ const TOOLS: readonly McpToolDefinition[] = [
       "bun run verify:providers",
       "bun run verify:scout",
       "bun run verify:single-responsibility",
+      "bun run verify:consistent-naming",
       "bun run verify:dead-code",
       "bun run verify:ui",
       "bun run verify:update",

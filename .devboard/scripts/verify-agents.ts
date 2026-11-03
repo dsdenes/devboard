@@ -1113,6 +1113,7 @@ try {
           "open-devboard-mcp-optimizer",
           "open-devboard-api-standards",
           "open-devboard-single-responsibility",
+          "open-devboard-consistent-naming",
           "open-devboard-release-train",
         ]),
     `the Background agents section is wrong: ${JSON.stringify(groups)}`,
@@ -1133,6 +1134,7 @@ try {
     ["mcp-optimizer", "MCP optimizer"],
     ["api-standards", "API Standards"],
     ["single-responsibility", "Single Responsibility"],
+    ["consistent-naming", "Consistent Naming"],
     ["release-train", "Release Train"],
   ]) {
     const entry = await devtools.evaluate(`(() => {
@@ -1224,6 +1226,54 @@ try {
     `the Dead Code pending limit is ${await valueOf(devtools, "agent-limit-pending")}`,
   );
   console.log("PASS dead-code-descriptor open-devboard-dead-code agent-page agent-cadence=60 agent-limit-hour=10 agent-limit-pending=5");
+
+  await click(devtools, "open-devboard-consistent-naming");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-page")) ? true : undefined),
+    "the Consistent Naming page",
+    10_000,
+  );
+  const consistentNamingPage = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? ''`,
+  );
+  assertTrue(
+    consistentNamingPage === "consistent-naming",
+    `the Consistent Naming page names ${String(consistentNamingPage)}`,
+  );
+  assertTrue(
+    await present(devtools, "agent-issues-empty"),
+    "Consistent Naming has no empty table",
+  );
+  assertTrue(
+    !(await present(devtools, "agent-detail")),
+    "Consistent Naming still renders the detail panel",
+  );
+  assertTrue(
+    !(await present(devtools, "agent-documentation")),
+    "Consistent Naming renders a documentation panel",
+  );
+  const consistentNamingCore = await coreSequence(devtools);
+  assertTrue(
+    JSON.stringify(consistentNamingCore.filter((id) => id !== "agent-stop")) ===
+      JSON.stringify(CORE_IDS.filter((id) => id !== "agent-stop")),
+    `the Consistent Naming core ids differ: ${JSON.stringify(consistentNamingCore)}`,
+  );
+  assertTrue(
+    (await valueOf(devtools, "agent-cadence")) === "60",
+    `the Consistent Naming cadence is ${await valueOf(devtools, "agent-cadence")}`,
+  );
+  assertTrue(
+    (await valueOf(devtools, "agent-limit-hour")) === "10",
+    `the Consistent Naming hourly limit is ${await valueOf(devtools, "agent-limit-hour")}`,
+  );
+  assertTrue(
+    (await valueOf(devtools, "agent-limit-pending")) === "5",
+    `the Consistent Naming pending limit is ${await valueOf(devtools, "agent-limit-pending")}`,
+  );
+  console.log(
+    "PASS consistent-naming-descriptor open-devboard-consistent-naming agent-page " +
+      "agent-cadence=60 agent-limit-hour=10 agent-limit-pending=5",
+  );
 
   await click(devtools, "open-devboard-watchdog");
   await waitFor(
@@ -2560,6 +2610,7 @@ try {
     "mcp-optimizer",
     "api-standards",
     "single-responsibility",
+    "consistent-naming",
     "release-train",
   ]) {
     await click(devtools, `open-devboard-${id}`);

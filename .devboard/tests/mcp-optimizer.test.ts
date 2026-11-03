@@ -526,6 +526,7 @@ describe("MCP optimizer registration and lifecycle", () => {
       "mcp-optimizer",
       "api-standards",
       "single-responsibility",
+      "consistent-naming",
       "release-train",
     ]);
     const mcpOptimizer = agentRegistry.require("mcp-optimizer");

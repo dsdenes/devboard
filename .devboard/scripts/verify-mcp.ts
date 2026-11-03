@@ -481,6 +481,7 @@ try {
         "mcp-optimizer",
         "api-standards",
         "single-responsibility",
+        "consistent-naming",
         "release-train",
       ]),
     "verify:mcp: the live agents snapshot is wrong",
@@ -514,7 +515,13 @@ try {
   const entryProperties = entrySchema.properties as Record<string, Record<string, unknown>>;
   assertTrue(
     JSON.stringify(entryProperties.surface?.enum) ===
-      JSON.stringify(["scout", "design", "dead-code", "single-responsibility"]) &&
+      JSON.stringify([
+        "scout",
+        "design",
+        "dead-code",
+        "single-responsibility",
+        "consistent-naming",
+      ]) &&
       entryProperties.seed?.type === "string",
     `verify:mcp: entry_point schema is ${JSON.stringify(entrySchema)}`,
   );
@@ -863,6 +870,30 @@ try {
       "maxPerHour" in savedLimits &&
       savedLimits.maxPerHour === 10,
     "verify:mcp: Single Responsibility control returned no saved snapshot",
+  );
+  const consistentNamingControl = await client.call("background_agent_control", {
+    id: "consistent-naming",
+    action: "set_settings",
+    minutes: 60,
+    maxPerHour: 10,
+    maxPending: 5,
+  });
+  const consistentNamingAgent = consistentNamingControl.agent;
+  const namingCadence =
+    "cadence" in consistentNamingAgent ? consistentNamingAgent.cadence : undefined;
+  const namingLimits =
+    "limits" in consistentNamingAgent ? consistentNamingAgent.limits : undefined;
+  assertTrue(
+    consistentNamingControl.id === "consistent-naming" &&
+      namingCadence !== null &&
+      typeof namingCadence === "object" &&
+      "minutes" in namingCadence &&
+      namingCadence.minutes === 60 &&
+      namingLimits !== null &&
+      typeof namingLimits === "object" &&
+      "maxPending" in namingLimits &&
+      namingLimits.maxPending === 5,
+    "verify:mcp: Consistent Naming control returned no saved snapshot",
   );
   const flow = await client.call("flow_control", { action: "create_goal" });
   assertTrue(

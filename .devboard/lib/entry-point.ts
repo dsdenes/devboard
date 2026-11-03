@@ -30,6 +30,7 @@ export const ENTRY_POINT_SURFACES = [
   "design",
   "dead-code",
   "single-responsibility",
+  "consistent-naming",
 ] as const;
 
 export type EntryPointSurface = (typeof ENTRY_POINT_SURFACES)[number];
@@ -498,6 +499,15 @@ export function singleResponsibilityPool(repoDir: string): string[] {
     .sort(byteOrder);
 }
 
+/**
+ * The consistent-naming pool: the same component source set, because a
+ * concept's name is audited in code, never in a test, a fixture, or a stub. It
+ * covers every source tree the host writes — the server and the client alike.
+ */
+export function consistentNamingPool(repoDir: string): string[] {
+  return singleResponsibilityPool(repoDir);
+}
+
 /** One pool by surface; an unknown surface is refused before any read. */
 export function eligibleFiles(
   repoDir: string,
@@ -513,6 +523,8 @@ export function eligibleFiles(
       return deadCodePool(repoDir);
     case "single-responsibility":
       return singleResponsibilityPool(repoDir);
+    case "consistent-naming":
+      return consistentNamingPool(repoDir);
   }
 }
 

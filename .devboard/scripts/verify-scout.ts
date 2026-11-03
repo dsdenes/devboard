@@ -1225,6 +1225,7 @@ try {
           "mcp-optimizer",
           "api-standards",
           "single-responsibility",
+          "consistent-naming",
           "release-train",
         ]),
     "agentsState does not carry all background agents",
