@@ -42,10 +42,11 @@ const agentCommand = process.env.AGENT_COMMAND ?? "omp acp";
 const stateDir = resolve(process.env.STATE_DIR ?? join(import.meta.dir, "..", ".tmp"));
 
 /**
- * The credential the mutating endpoints and the socket upgrade require. An
- * operator may configure it; otherwise this process generates one and keeps it
- * in its own environment, so a replacement inherits the same credential and an
- * open page's cookie keeps working across it.
+ * The credential the launcher's readiness probe, the mutating endpoints, and
+ * the socket upgrade require. The launcher supplies it to the dashboard it
+ * spawns; otherwise this process generates one and keeps it in its own
+ * environment, so a replacement inherits the same credential and an open
+ * page's cookie keeps working across it.
  */
 const dashboardToken =
   process.env.DEVBOARD_DASHBOARD_TOKEN?.trim() || randomBytes(32).toString("base64url");

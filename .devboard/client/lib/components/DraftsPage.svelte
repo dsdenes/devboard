@@ -247,9 +247,17 @@
         class="panel issues-draft-detail"
         data-testid="issues-draft-detail"
         data-path={issues.draft.path}
+        aria-labelledby="issues-draft-detail-title"
       >
         <div class="issues-draft-detail__header">
           <div class="issues-draft-detail__identity">
+            <h2
+              class="issues-draft-detail__title"
+              id="issues-draft-detail-title"
+              title={issues.draft.heading || issues.draft.name}
+            >
+              {issues.draft.heading || issues.draft.name}
+            </h2>
             <span class="issues-draft-detail__path mono" title={issues.draft.path}>
               {issues.draft.name}
             </span>

@@ -659,7 +659,7 @@
           {/if}
           {#if discover.cloning !== null}
             <p class="discover-remote__cloning" data-testid="discover-remote-cloning">
-              Cloning <code>{discover.cloning.url}</code>…
+              Cloning <code class="code-chip">{discover.cloning.url}</code>…
             </p>
           {/if}
         </div>

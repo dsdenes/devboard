@@ -2180,6 +2180,19 @@ function requestRefusal(
   }
 }
 
+/**
+ * The Problem answer for a refused request. A Host this listener does not
+ * serve is a misdirected request, not an authorization failure.
+ */
+function refusalResponse(
+  request: Request,
+  refusal: Exclude<RequestRefusal, null>,
+  crossOriginDetail: string,
+): Response {
+  if (refusal === "origin") return problemResponse(request, 403, crossOriginDetail);
+  return problemResponse(request, 421, "The request host is not served by this dashboard.");
+}
+
 /** The reason phrase each status this server reports as a failure carries. */
 const PROBLEM_TITLES: Readonly<Record<number, string>> = {
   400: "Bad Request",
@@ -2188,6 +2201,7 @@ const PROBLEM_TITLES: Readonly<Record<number, string>> = {
   404: "Not Found",
   405: "Method Not Allowed",
   413: "Content Too Large",
+  421: "Misdirected Request",
   426: "Upgrade Required",
   500: "Internal Server Error",
   502: "Bad Gateway",
@@ -2406,13 +2420,7 @@ async function readMutationBody(
   const refusal = requestRefusal(request, url, allowedHostnames);
   if (refusal !== null) {
     return {
-      response: problemResponse(
-        request,
-        403,
-        refusal === "host"
-          ? "The request host is not served by this dashboard."
-          : "Cross-origin feedback is refused.",
-      ),
+      response: refusalResponse(request, refusal, "Cross-origin feedback is refused."),
     };
   }
 
@@ -7743,8 +7751,8 @@ export function createApp(options: AppOptions) {
   /**
    * The 401 for a request that presents no valid dashboard credential, or null
    * when the endpoint may run. The tokenless construction is a test seam; a
-   * running dashboard always has one, so its mutating endpoints and its socket
-   * upgrade are never reachable without it.
+   * running dashboard always has one, so its readiness probe, its mutating
+   * endpoints, and its socket upgrade are never reachable without it.
    */
   function credentialRefusal(request: Request, cookieName: string): Response | null {
     if (dashboardToken.length === 0) return null;
@@ -7900,7 +7908,16 @@ export function createApp(options: AppOptions) {
       const reply = (answer: Response | undefined): Response | undefined =>
         answer === undefined || flowId === null ? answer : echoFlowId(answer, flowId);
 
-      const url = new URL(request.url);
+      let url: URL | null = null;
+      try {
+        url = new URL(request.url);
+      } catch {
+        // Bun leaves `request.url` relative when the Host header names no host,
+        // so the request has neither an origin to compare nor a path to route.
+      }
+      if (url === null) {
+        return problemResponse(request, 400, "The request carries no valid Host header.");
+      }
       // Cookies ignore ports, so each listener reads only its own page's one.
       const cookieName = `${DASHBOARD_COOKIE}_${server.port}`;
 
@@ -7911,8 +7928,13 @@ export function createApp(options: AppOptions) {
       }
 
       // Readiness for the launcher that owns this process: the pid proves that
-      // this dashboard, and not another server on the port, answered.
+      // this dashboard, and not another server on the port, answered. The
+      // launcher passes this process its credential and presents it on the
+      // probe, so a stranger on the port learns neither the pid nor that a
+      // dashboard runs here.
       if (url.pathname === "/ready") {
+        const denied = credentialRefusal(request, cookieName);
+        if (denied !== null) return reply(denied);
         if (request.method !== "GET" && request.method !== "HEAD") {
           return reply(
             problemResponse(request, 405, "This path serves GET and HEAD only.", {
@@ -7951,13 +7973,7 @@ export function createApp(options: AppOptions) {
         const refusal = requestRefusal(request, url, allowedHostnames);
         if (refusal !== null) {
           return reply(
-            problemResponse(
-              request,
-              403,
-              refusal === "host"
-                ? "The request host is not served by this dashboard."
-                : "Cross-origin WebSocket upgrades are refused.",
-            ),
+            refusalResponse(request, refusal, "Cross-origin WebSocket upgrades are refused."),
           );
         }
         const denied = credentialRefusal(request, cookieName);

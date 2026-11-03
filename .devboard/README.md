@@ -3816,17 +3816,18 @@ Every 4xx and 5xx response these routes answer is `application/problem+json` car
 the filed issue's absolute URL, plus a `Location` header naming that same URL; no top-level `url`
 property remains. An idempotent replay answers the same `201` body and the same `Location`.
 
-`POST /feedback`, `POST /goal-proposals`, and the `/ws` upgrade require the dashboard token
-before their handler runs. The request carries `Authorization: Bearer <token>`, which the server
-compares with its own token in constant time; a missing or wrong credential answers `401` with
-`WWW-Authenticate: Bearer`, and the request then files no issue, writes no draft, and never
-upgrades the socket. `/ready` stays unauthenticated because the launcher probes it before it
-holds a credential. The token comes from `DEVBOARD_DASHBOARD_TOKEN`, or is generated at startup
-when that variable is unset and kept in the process environment so a replacement inherits it. The
-page never reads the token in JavaScript: the `index.html` response sets the same value as an
-`HttpOnly`, `SameSite=Strict` cookie, which the browser attaches to its own socket upgrade and
-mutating fetches. A reverse proxy, a script, or a health probe that is not a page sends the
-bearer header.
+`POST /feedback`, `POST /goal-proposals`, the `/ws` upgrade, and `/ready` require the dashboard
+token before their handler runs. The request carries `Authorization: Bearer <token>`, which the
+server compares with its own token in constant time; a missing or wrong credential answers `401`
+with `WWW-Authenticate: Bearer`, and the request then files no issue, writes no draft, never
+upgrades the socket, and never learns the process id. The launcher owns the credential: it
+generates `DEVBOARD_DASHBOARD_TOKEN` when the environment does not supply one, passes it in the
+spawned dashboard's environment, and sends it as `Authorization: Bearer` on the readiness probe
+that matches the reported pid. Without one, the server generates a token at startup and keeps it
+in the process environment so a replacement inherits it. The page never reads the token in
+JavaScript: the `index.html` response sets the same value as an `HttpOnly`, `SameSite=Strict`
+cookie, which the browser attaches to its own socket upgrade and mutating fetches. A reverse
+proxy, a script, or a health probe that is not a page sends the bearer header.
 
 An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
 detail "An internal error occurred.": `POST /feedback` and
