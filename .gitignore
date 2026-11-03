@@ -31,3 +31,9 @@ dist/
 .devboard/.npm-*
 /.issue*
 /.worktree*
+/.omp/skills/devboard-architectural-layering
+/.omp/skills/devboard-consistent-naming
+/.omp/skills/devboard-gh-stack
+/.omp/skills/devboard-restful-api-implementation
+/.omp/skills/devboard-single-responsibility-principle
+/.omp/skills/devboard-ui-ux
