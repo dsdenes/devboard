@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { createApp, type FeedbackOptions } from "./app";
 import { REDESIGN_INSTRUCTION } from "./feedback";
 import { MAX_FLOW_ID } from "./flow-id";
@@ -211,6 +212,34 @@ describe("feedback endpoint", () => {
       expect(call.body).toContain("### DOM excerpt");
       expect(call.body).toContain('<button class="start-button">Start</button>');
       expect(call.body).not.toContain("## Ask conversation");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("negotiates gzip for the filed report and keeps the identity response", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const compressed = await fetch(`http://${url}/feedback`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "accept-encoding": "gzip" },
+        body: JSON.stringify(report()),
+        // Read the wire bytes so the assertion covers the encoded body itself.
+        decompress: false,
+      });
+      expect(compressed.status).toBe(201);
+      expect(compressed.headers.get("content-encoding")).toBe("gzip");
+      expect(compressed.headers.get("vary")).toBe("Accept-Encoding");
+      const decoded = JSON.parse(
+        gunzipSync(Buffer.from(await compressed.arrayBuffer())).toString(),
+      ) as unknown;
+
+      const identity = await submit(url, report(), { "accept-encoding": "identity" });
+      expect(identity.status).toBe(201);
+      expect(identity.headers.get("content-encoding")).toBeNull();
+      expect(await identity.json()).toEqual(decoded);
+      expect(calls).toHaveLength(2);
     } finally {
       server.stop(true);
     }

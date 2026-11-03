@@ -2244,20 +2244,24 @@ function credentialMatches(presented: string | null, token: string): boolean {
  * goes through it, so a client reads one media type and one shape. `detail`
  * carries the cause a caller can act on and never a stack trace or an
  * implementation internal. A failure is never a cacheable representation, so
- * every answer declares `no-store` unless a caller overrides it.
+ * every answer declares `no-store` unless a caller overrides it. The body is
+ * negotiated through `Accept-Encoding` like every other JSON answer this
+ * server writes.
  */
 function problemResponse(
+  request: Request,
   status: number,
   detail: string,
   headers: Readonly<Record<string, string>> = {},
 ): Response {
-  return new Response(
-    JSON.stringify({
+  return jsonResponse(
+    request,
+    {
       type: "about:blank",
       title: PROBLEM_TITLES[status] ?? "Error",
       status,
       detail,
-    }),
+    },
     {
       status,
       headers: {
@@ -2267,6 +2271,32 @@ function problemResponse(
       },
     },
   );
+}
+
+/**
+ * One JSON answer negotiated through `Accept-Encoding`.
+ *
+ * The gzip coding is offered and the unencoded body stays available: a request
+ * that accepts gzip receives the same document compressed, and every other
+ * request receives it as written. The representation therefore depends on the
+ * header, so each answer declares `Vary: Accept-Encoding` for a shared cache.
+ */
+function jsonResponse(
+  request: Request,
+  body: unknown,
+  init: { status?: number; headers?: Readonly<Record<string, string>> } = {},
+): Response {
+  const document = JSON.stringify(body);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json;charset=utf-8",
+    ...init.headers,
+    Vary: "Accept-Encoding",
+  };
+  if (!acceptsGzip(request.headers.get("accept-encoding"))) {
+    return new Response(document, { status: init.status, headers });
+  }
+  headers["Content-Encoding"] = "gzip";
+  return new Response(Bun.gzipSync(document), { status: init.status, headers });
 }
 
 /**
@@ -2356,7 +2386,7 @@ function staticRelativePath(rawPathname: string, pathname: string): string | nul
  */
 function mutationMethodRefusal(request: Request): Response | null {
   if (request.method === "POST") return null;
-  return problemResponse(405, "This endpoint accepts POST only.", { Allow: "POST" });
+  return problemResponse(request, 405, "This endpoint accepts POST only.", { Allow: "POST" });
 }
 
 /**
@@ -2377,6 +2407,7 @@ async function readMutationBody(
   if (refusal !== null) {
     return {
       response: problemResponse(
+        request,
         403,
         refusal === "host"
           ? "The request host is not served by this dashboard."
@@ -2388,7 +2419,11 @@ async function readMutationBody(
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_FEEDBACK_BYTES) {
     return {
-      response: problemResponse(413, `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.`),
+      response: problemResponse(
+        request,
+        413,
+        `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.`,
+      ),
     };
   }
 
@@ -2396,18 +2431,22 @@ async function readMutationBody(
   try {
     raw = await request.text();
   } catch {
-    return { response: problemResponse(400, "The report could not be read.") };
+    return { response: problemResponse(request, 400, "The report could not be read.") };
   }
   if (raw.length > MAX_FEEDBACK_BYTES) {
     return {
-      response: problemResponse(413, `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.`),
+      response: problemResponse(
+        request,
+        413,
+        `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.`,
+      ),
     };
   }
 
   try {
     return { value: JSON.parse(raw) };
   } catch {
-    return { response: problemResponse(400, "The report is not valid JSON.") };
+    return { response: problemResponse(request, 400, "The report is not valid JSON.") };
   }
 }
 
@@ -7710,7 +7749,7 @@ export function createApp(options: AppOptions) {
   function credentialRefusal(request: Request, cookieName: string): Response | null {
     if (dashboardToken.length === 0) return null;
     if (credentialMatches(presentedCredential(request, cookieName), dashboardToken)) return null;
-    return problemResponse(401, "This endpoint requires the dashboard token.", {
+    return problemResponse(request, 401, "This endpoint requires the dashboard token.", {
       "WWW-Authenticate": "Bearer",
     });
   }
@@ -7740,13 +7779,14 @@ export function createApp(options: AppOptions) {
    * exception line the watchdog fingerprints.
    */
   function internalErrorResponse(
+    request: Request,
     endpoint: string,
     error: unknown,
     flowId: string | null,
   ): Response {
     const detail = error instanceof Error ? error.message : String(error);
     journal.write("server-error", `${endpoint}: ${detail}`, flowId ?? undefined);
-    return problemResponse(500, INTERNAL_ERROR_DETAIL);
+    return problemResponse(request, 500, INTERNAL_ERROR_DETAIL);
   }
 
   /**
@@ -7766,6 +7806,7 @@ export function createApp(options: AppOptions) {
     if (refusedMethod !== null) return refusedMethod;
     if (!feedbackEnabled) {
       return problemResponse(
+        request,
         503,
         "Harness reporting is disabled. Set DEVBOARD_GITEA_URL and GITEA_TOKEN to file issues.",
       );
@@ -7788,13 +7829,13 @@ export function createApp(options: AppOptions) {
           ...(feedbackFetch === undefined ? {} : { fetchImpl: feedbackFetch }),
         }),
       );
-      return Response.json(filed, {
+      return jsonResponse(request, filed, {
         status: 201,
         headers: { Location: filed.links.issue.href },
       });
     } catch (error) {
       if (error instanceof FeedbackRequestError) {
-        return problemResponse(error.status, error.message);
+        return problemResponse(request, error.status, error.message);
       }
       if (error instanceof FeedbackDeliveryError) {
         journal.write(
@@ -7802,9 +7843,9 @@ export function createApp(options: AppOptions) {
           `POST /feedback: ${error.diagnostic}`,
           flowId ?? undefined,
         );
-        return problemResponse(error.status, error.message);
+        return problemResponse(request, error.status, error.message);
       }
-      return internalErrorResponse("POST /feedback", error, flowId);
+      return internalErrorResponse(request, "POST /feedback", error, flowId);
     }
   }
 
@@ -7828,15 +7869,15 @@ export function createApp(options: AppOptions) {
         writeGoalProposal(submission, { repoDir, slugger: goalSlug }),
       );
       goalDrafts.publishDrafts();
-      return Response.json(proposal, {
+      return jsonResponse(request, proposal, {
         status: 201,
         headers: { Location: proposal.links.draft.href },
       });
     } catch (error) {
       if (error instanceof FeedbackRequestError) {
-        return problemResponse(error.status, error.message);
+        return problemResponse(request, error.status, error.message);
       }
-      return internalErrorResponse("POST /goal-proposals", error, flowId);
+      return internalErrorResponse(request, "POST /goal-proposals", error, flowId);
     }
   }
 
@@ -7852,7 +7893,7 @@ export function createApp(options: AppOptions) {
         // A malformed flow id is refused before a handler runs, and an invalid
         // value is never echoed.
         if (!(error instanceof FeedbackRequestError)) throw error;
-        return problemResponse(error.status, error.message);
+        return problemResponse(request, error.status, error.message);
       }
       // Every answer to a correlated request carries the same flow id back, so
       // a client can match its call to the server's journal.
@@ -7874,14 +7915,16 @@ export function createApp(options: AppOptions) {
       if (url.pathname === "/ready") {
         if (request.method !== "GET" && request.method !== "HEAD") {
           return reply(
-            problemResponse(405, "This path serves GET and HEAD only.", {
+            problemResponse(request, 405, "This path serves GET and HEAD only.", {
               Allow: "GET, HEAD",
             }),
           );
         }
         // A readiness probe answers from the process that is running now, so
-        // neither a shared nor a private cache may reuse it.
-        const ready = Response.json(
+        // neither a shared nor a private cache may reuse it. A launcher that
+        // offers gzip receives it compressed and decompresses the same pid.
+        const ready = jsonResponse(
+          request,
           { pid: process.pid },
           { headers: { "Cache-Control": "no-store" } },
         );
@@ -7902,13 +7945,14 @@ export function createApp(options: AppOptions) {
         // method error, and never reaches the upgrade.
         if (request.method !== "GET") {
           return reply(
-            problemResponse(405, "This path serves GET only.", { Allow: "GET" }),
+            problemResponse(request, 405, "This path serves GET only.", { Allow: "GET" }),
           );
         }
         const refusal = requestRefusal(request, url, allowedHostnames);
         if (refusal !== null) {
           return reply(
             problemResponse(
+              request,
               403,
               refusal === "host"
                 ? "The request host is not served by this dashboard."
@@ -7926,7 +7970,7 @@ export function createApp(options: AppOptions) {
         );
         if (upgraded) return;
         return reply(
-          problemResponse(426, "This path upgrades to a WebSocket.", {
+          problemResponse(request, 426, "This path upgrades to a WebSocket.", {
             Upgrade: "websocket",
           }),
         );
@@ -7937,7 +7981,7 @@ export function createApp(options: AppOptions) {
         pathname = decodeURIComponent(url.pathname);
       } catch {
         return reply(
-          problemResponse(400, "The request path is not valid percent-encoding."),
+          problemResponse(request, 400, "The request path is not valid percent-encoding."),
         );
       }
 
@@ -7947,6 +7991,7 @@ export function createApp(options: AppOptions) {
       if (CONTROL_CHARACTER.test(pathname)) {
         return reply(
           problemResponse(
+            request,
             400,
             `The request path ${JSON.stringify(url.pathname)} carries a control character.`,
           ),
@@ -7955,7 +8000,7 @@ export function createApp(options: AppOptions) {
 
       const relative = staticRelativePath(url.pathname, pathname);
       if (relative === null) {
-        return reply(problemResponse(404, "The requested file was not found."));
+        return reply(problemResponse(request, 404, "The requested file was not found."));
       }
 
       // A filesystem failure while serving a static file answers like every
@@ -7964,24 +8009,24 @@ export function createApp(options: AppOptions) {
       try {
         const filePath = resolve(staticRoot, relative);
         if (filePath !== staticRoot && !filePath.startsWith(staticRoot + sep)) {
-          return reply(problemResponse(404, "The requested file was not found."));
+          return reply(problemResponse(request, 404, "The requested file was not found."));
         }
 
         const file = Bun.file(filePath);
         if (!(await file.exists())) {
-          return reply(problemResponse(404, "The requested file was not found."));
+          return reply(problemResponse(request, 404, "The requested file was not found."));
         }
 
         const fileStat = await stat(filePath);
         if (!fileStat.isFile()) {
-          return reply(problemResponse(404, "The requested file was not found."));
+          return reply(problemResponse(request, 404, "The requested file was not found."));
         }
 
         // A method the static fallback cannot serve is refused only for a file
         // that exists: an unknown path is a 404 on every method.
         if (request.method !== "GET" && request.method !== "HEAD") {
           return reply(
-            problemResponse(405, "This path serves GET and HEAD only.", {
+            problemResponse(request, 405, "This path serves GET and HEAD only.", {
               Allow: "GET, HEAD",
             }),
           );
@@ -8012,7 +8057,7 @@ export function createApp(options: AppOptions) {
           new Response(head ? null : await gzipStaticFile(filePath, fileStat), { headers }),
         );
       } catch (error) {
-        return reply(internalErrorResponse("GET static", error, flowId));
+        return reply(internalErrorResponse(request, "GET static", error, flowId));
       }
     },
 

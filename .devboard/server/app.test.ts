@@ -577,6 +577,49 @@ describe("createApp", () => {
     }
   });
 
+  test("negotiates gzip for the ready and Problem JSON bodies", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      // A launcher that offers gzip receives the same pid compressed.
+      const compressed = await fetch(`http://${url}/ready`, {
+        headers: { "accept-encoding": "gzip" },
+        decompress: false,
+      });
+      expect(compressed.status).toBe(200);
+      expect(compressed.headers.get("content-encoding")).toBe("gzip");
+      expect(compressed.headers.get("vary")).toBe("Accept-Encoding");
+      expect(
+        JSON.parse(gunzipSync(Buffer.from(await compressed.arrayBuffer())).toString()),
+      ).toEqual({ pid: process.pid });
+
+      // A request that does not accept gzip keeps the unencoded body.
+      const identity = await fetch(`http://${url}/ready`, {
+        headers: { "accept-encoding": "identity" },
+        decompress: false,
+      });
+      expect(identity.status).toBe(200);
+      expect(identity.headers.get("content-encoding")).toBeNull();
+      expect(identity.headers.get("vary")).toBe("Accept-Encoding");
+      expect(await identity.json()).toEqual({ pid: process.pid });
+
+      // Problem JSON is negotiated the same way.
+      const problem = await fetch(`http://${url}/assets/missing.js`, {
+        headers: { "accept-encoding": "gzip" },
+        decompress: false,
+      });
+      expect(problem.status).toBe(404);
+      expect(problem.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(problem.headers.get("cache-control")).toBe("no-store");
+      expect(problem.headers.get("content-encoding")).toBe("gzip");
+      expect(
+        JSON.parse(gunzipSync(Buffer.from(await problem.arrayBuffer())).toString()),
+      ).toEqual(problemBody("Not Found", 404, "The requested file was not found."));
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("echoes a valid flow id on every answer and refuses a malformed one", async () => {
     const { server, url } = await startServer();
 
@@ -683,9 +726,10 @@ describe("createApp", () => {
       expect(response.status).toBe(500);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
-      expect(await response.json()).toEqual(
-        problemBody("Internal Server Error", 500, "An internal error occurred."),
-      );
+      expect(response.headers.get("content-encoding")).toBe("gzip");
+      expect(
+        JSON.parse(gunzipSync(Buffer.from(await response.arrayBuffer())).toString()),
+      ).toEqual(problemBody("Internal Server Error", 500, "An internal error occurred."));
     } finally {
       await chmod(lockedPath, 0o644);
       server.stop(true);
