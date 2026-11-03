@@ -548,7 +548,7 @@ their `/.omp/skills/devboard-<name>` lines to the host `.gitignore`, adding noth
 
 ## Skills
 
-The package ships four project-scoped skills, canonical under `.devboard/omp/skills/` and
+The package ships five project-scoped skills, canonical under `.devboard/omp/skills/` and
 installed on every install and update into `<host>/.omp/skills/<name>/` as real files:
 
 |Skill|Carries|
@@ -557,6 +557,7 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 |`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
 |`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs, with the five violation categories; the Single Responsibility worker's normative source.|
 |`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym.|
+|`devboard-architectural-layering`|The architectural-layering policy: every concern belongs to one clearly defined architectural boundary, dependencies follow the architecture's defined direction, and infrastructure details never leak into business abstractions, across layered, Clean, Onion, and Hexagonal styles.|
 
 Each shipped `SKILL.md` carries `metadata.devboard-builtin: "true"` in its frontmatter. The
 Devboard mode's Skills page renders that marker as a visible `Managed` label and never renders a
@@ -579,10 +580,11 @@ The name prefix is the ownership marker, and the marked namespace is reserved fo
   or prune; a host that wants a skill of its own uses an unmarked name.
 
 `install` adds exactly one `/.omp/skills/devboard-<name>` line per shipped skill to the host
-`.gitignore` and adds nothing on a rerun. The four entries are `/.omp/skills/devboard-ui-ux`,
+`.gitignore` and adds nothing on a rerun. The five entries are `/.omp/skills/devboard-ui-ux`,
 `/.omp/skills/devboard-restful-api-implementation`,
-`/.omp/skills/devboard-single-responsibility-principle`, and
-`/.omp/skills/devboard-consistent-naming`. `doctor` and the update verification
+`/.omp/skills/devboard-single-responsibility-principle`,
+`/.omp/skills/devboard-consistent-naming`, and
+`/.omp/skills/devboard-architectural-layering`. `doctor` and the update verification
 compare each shipped skill directory with the installed package and exit nonzero when one byte
 differs; an unmarked host skill is never inspected and never fails the check.
 
