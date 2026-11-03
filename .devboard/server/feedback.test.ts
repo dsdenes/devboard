@@ -458,24 +458,34 @@ describe("feedback endpoint", () => {
     }
   });
 
-  test("reports a delivery failure with its diagnostic", async () => {
-    const { server, url } = await startServer({ mode: "fail" });
+  test("reports a delivery failure with a fixed detail and journals the upstream text", async () => {
+    const { journal, records } = journalRecorder();
+    const { server, url } = await startServer({ mode: "fail", journal });
 
     try {
-      const response = await submit(url, report());
+      const response = await submit(url, report(), { "x-flow-id": "4d1c" });
 
       expect(response.status).toBe(502);
-      const body = (await response.json()) as { type: string; status: number; detail: string };
-      expect(body.type).toBe("about:blank");
-      expect(body.status).toBe(502);
-      expect(body.detail.startsWith("Issue creation failed:")).toBe(true);
+      expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await response.json()).toEqual(
+        problemBody("Bad Gateway", 502, "The issue could not be filed."),
+      );
+      expect(records).toEqual([
+        [
+          "server-error",
+          "POST /feedback: Issue creation failed: " +
+            "POST /repos/dsdenes/devboard/issues failed (HTTP 500): boom",
+          "4d1c",
+        ],
+      ]);
     } finally {
       server.stop(true);
     }
   });
 
-  test("reports a delivery timeout", async () => {
-    const { server, url } = await startServer({ mode: "hang", timeoutMs: 100 });
+  test("reports a delivery timeout and journals it", async () => {
+    const { journal, records } = journalRecorder();
+    const { server, url } = await startServer({ mode: "hang", timeoutMs: 100, journal });
 
     try {
       const response = await submit(url, report());
@@ -484,6 +494,9 @@ describe("feedback endpoint", () => {
       expect(await response.json()).toEqual(
         problemBody("Gateway Timeout", 504, "Issue creation timed out after 100 ms."),
       );
+      expect(records).toEqual([
+        ["server-error", "POST /feedback: Issue creation timed out after 100 ms."],
+      ]);
     } finally {
       server.stop(true);
     }

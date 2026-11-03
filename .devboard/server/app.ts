@@ -7740,7 +7740,15 @@ export function createApp(options: AppOptions) {
         headers: { Location: filed.links.issue.href },
       });
     } catch (error) {
-      if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
+      if (error instanceof FeedbackRequestError) {
+        return problemResponse(error.status, error.message);
+      }
+      if (error instanceof FeedbackDeliveryError) {
+        journal.write(
+          "server-error",
+          `POST /feedback: ${error.diagnostic}`,
+          flowId ?? undefined,
+        );
         return problemResponse(error.status, error.message);
       }
       return internalErrorResponse("POST /feedback", error, flowId);

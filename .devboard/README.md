@@ -3664,6 +3664,13 @@ detail "An internal error occurred.": `POST /feedback` and
 `server-error` journal record prefixed with the endpoint, and never return the text to the
 client.
 
+A failed Gitea delivery answers `502` with the fixed Problem JSON detail "The issue could not be
+filed.", and a delivery that runs past its bound answers `504` with the timeout detail. The
+upstream error text, which names the Gitea request path and carries the first line of the
+upstream response, reaches only the `server-error` journal record prefixed with the endpoint, so
+no stack trace or other implementation internal is ever returned. A refused payload keeps its
+own `400` detail.
+
 ## Container
 
 Build the container from the `.devboard` context at the repository root:

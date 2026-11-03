@@ -7273,7 +7273,7 @@ try {
     ),
   }))()`);
   check(
-    failedReport.panel && failedReport.error.includes("Issue creation failed"),
+    failedReport.panel && failedReport.error === "The issue could not be filed.",
     "a failed report left its panel",
     failedReport,
   );
@@ -7620,8 +7620,9 @@ try {
     };
   })()`);
   check(
-    failure.text.startsWith("Redesign issue failed: Issue creation failed:") &&
-      failure.text.includes("boom"),
+    failure.text.startsWith("Redesign issue failed: The issue could not be filed.") &&
+      !failure.text.includes("boom") &&
+      !failure.text.includes("/api/v1"),
     "the redesign failure alert is wrong",
     failure,
   );
@@ -10756,7 +10757,8 @@ try {
     `[...document.querySelectorAll('[data-testid="notification-history"] .notification')].some(
       (entry) =>
         entry.textContent.includes("Not connected") &&
-        entry.querySelector(".notification__error")?.textContent?.includes("Issue creation failed") === true,
+        entry.querySelector(".notification__error")?.textContent
+          ?.includes("The issue could not be filed.") === true,
     )`,
     "the notification filing error",
     20_000,
@@ -10772,7 +10774,7 @@ try {
     };
   })()`);
   check(
-    notificationFailure.text.startsWith("Issue not filed: Issue creation failed") &&
+    notificationFailure.text.startsWith("Issue not filed: The issue could not be filed.") &&
       notificationFailure.retry,
     "a failed notification filing does not offer a retry",
     notificationFailure,
