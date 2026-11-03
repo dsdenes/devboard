@@ -709,6 +709,58 @@ describe("window and attribution", () => {
     expect(findings[0]?.quote).not.toContain("raw-http-request");
     expect(findings[0]?.instances).toEqual([instance]);
   });
+
+  test("an interrupted Python runner is no finding and a failed one still is", async () => {
+    const base = await temporaryDirectory("test-watchdog-omp-runner");
+    const logsDir = join(base, "logs");
+    await mkdir(logsDir, { recursive: true });
+    const instance = instanceFor(base, 8080);
+    const runner = (offsetMs: number, traceback: string) =>
+      JSON.stringify({
+        timestamp: new Date(window.end.getTime() - offsetMs).toISOString(),
+        level: "warn",
+        pid: 500,
+        message: "Python runner stderr",
+        text: traceback,
+      });
+    await writeFile(
+      join(logsDir, "omp.2026-10-24.1.log"),
+      [
+        runner(
+          60_000,
+          "Traceback (most recent call last):\n" +
+            '  File "/tmp/omp-python-runner-1000/runner-1.py", line 3100, in <module>\n' +
+            "    main()\n" +
+            "KeyboardInterrupt",
+        ),
+        runner(
+          59_000,
+          "Traceback (most recent call last):\n" +
+            '  File "/tmp/omp-python-runner-1000/runner-2.py", line 12, in <module>\n' +
+            "    import numpy\n" +
+            "ModuleNotFoundError: No module named 'numpy'",
+        ),
+      ].join("\n"),
+    );
+
+    const collected = readOmpEvidence({
+      logsDir,
+      window,
+      instances: [instance],
+      selfPids: new Set([42]),
+      processInfo: () => ({ ancestors: [instance.pid, 1] }),
+    });
+    const [interrupted, failed] = [
+      collected.events.filter((item) => item.detail?.endsWith("KeyboardInterrupt")),
+      collected.events.filter((item) => item.detail?.includes("ModuleNotFoundError")),
+    ];
+    expect(interrupted).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    expect(analyzeEvidence(interrupted, { window })).toEqual([]);
+    expect(analyzeEvidence(failed, { window }).map((finding) => finding.category)).toEqual([
+      "omp-warn",
+    ]);
+  });
 });
 
 describe("evidence mapping", () => {

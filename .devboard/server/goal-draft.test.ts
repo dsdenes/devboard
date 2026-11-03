@@ -189,6 +189,70 @@ describe("draft listing and reading", () => {
   });
 });
 
+describe("draft deletion", () => {
+  test("removes the file and publishes the shorter list", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "keep.md"), draftText("Keep heading", "keep body"));
+    writeFileSync(join(drafts, "drop.md"), draftText("Drop heading", "drop body"));
+    const { manager, events } = managerFor(root, stateDir, log);
+
+    expect(manager.delete(draftPath("drop.md"))).toEqual({
+      path: ".devboard/goal-proposals/drop.md",
+      name: "drop.md",
+      heading: "Drop heading",
+    });
+    expect(existsSync(join(drafts, "drop.md"))).toBe(false);
+    expect(listGoalDrafts(root).map((draft) => draft.name)).toEqual(["keep.md"]);
+
+    const published = events
+      .filter((event) => isEventType(event, "issuesDrafts"))
+      .at(-1) as { drafts: Array<{ name: string }> } | undefined;
+    expect(published?.drafts.map((draft) => draft.name)).toEqual(["keep.md"]);
+
+    let error: unknown;
+    try {
+      manager.delete(draftPath("drop.md"));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(GoalDraftError);
+    expect((error as GoalDraftError).status).toBe(404);
+    expect(listGoalDrafts(root).map((draft) => draft.name)).toEqual(["keep.md"]);
+  });
+
+  test("refuses a live elaboration and removes it once stopped", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "running.md"), draftText("Running", "STUB-HANG body"));
+    const { manager } = managerFor(root, stateDir, log);
+
+    expect((await manager.start(draftPath("running.md"))).ok).toBe(true);
+    let refusal: unknown;
+    try {
+      manager.delete(draftPath("running.md"));
+    } catch (caught) {
+      refusal = caught;
+    }
+    expect(refusal).toBeInstanceOf(GoalDraftError);
+    expect((refusal as GoalDraftError).status).toBe(409);
+    expect(existsSync(join(drafts, "running.md"))).toBe(true);
+    expect(readGoalDraftOwnerState(stateDir, root, draftPath("running.md"))).toBeDefined();
+
+    expect(manager.stop(draftPath("running.md"))).toBe(true);
+    await waitFor(() => {
+      try {
+        manager.delete(draftPath("running.md"));
+        return true;
+      } catch {
+        return undefined;
+      }
+    }, "the stopped draft to become deletable");
+
+    expect(existsSync(join(drafts, "running.md"))).toBe(false);
+    expect(readGoalDraftOwnerState(stateDir, root, draftPath("running.md"))).toBeUndefined();
+    expect(manager.snapshot()).toEqual([]);
+  });
+});
+
 describe("elaboration", () => {
   test("starts the elaboration peer without skills", async () => {
     const { root, drafts, stateDir, log } = await fixture();

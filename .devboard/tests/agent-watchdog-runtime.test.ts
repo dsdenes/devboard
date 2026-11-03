@@ -3,13 +3,15 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { acquireWorkerLock } from "../issues/lock";
 import { agentRegistry } from "../server/agents/registry";
 import { readHarnessVersion } from "../server/version";
 import { WatchdogActivity, preflightWatchdog } from "../server/watchdog";
-import { writeWatchdogCommand } from "../watchdog/control";
+import { takeWatchdogCommands, writeWatchdogCommand } from "../watchdog/control";
 import { loadLedger, saveLedger } from "../watchdog/ledger";
 import {
   controlDirectory,
+  lockPath,
   versionedControlDirectory,
   versionedLockPath,
   versionedWorkerDirectory,
@@ -86,6 +88,7 @@ function adapter(
       repoDir: string;
       environment: Record<string, string | undefined>;
     }) => Promise<{ ok: true } | { ok: false; message: string }>;
+    now?: () => number;
   } = {},
 ): WatchdogActivity {
   return new WatchdogActivity({
@@ -97,6 +100,7 @@ function adapter(
     ...(options.systemctl === undefined ? {} : { systemctl: options.systemctl }),
     ...(options.spawnWorker === undefined ? {} : { spawnWorker: options.spawnWorker }),
     ...(options.preflight === undefined ? {} : { preflight: options.preflight }),
+    ...(options.now === undefined ? {} : { now: options.now }),
   });
 }
 
@@ -336,6 +340,82 @@ describe("detached watchdog worker", () => {
 });
 
 describe("watchdog lifecycle and ownership", () => {
+  test("a Stop during the preflight cancels the start instead of being lost", async () => {
+    const root = await temporaryRoot();
+    const gate = Promise.withResolvers<void>();
+    let spawned = 0;
+    const activity = adapter(root, {
+      preflight: async () => {
+        await gate.promise;
+        return { ok: true };
+      },
+      spawnWorker: () => {
+        spawned += 1;
+        return undefined;
+      },
+    });
+    try {
+      const pending = activity.start();
+      expect(activity.snapshot().lifecycle).toBe("starting");
+      const stopped = activity.stop();
+      expect(stopped.ok).toBe(true);
+      gate.resolve();
+      const started = await pending;
+      expect(started.ok).toBe(true);
+      expect(spawned).toBe(0);
+      expect(activity.snapshot().lifecycle).toBe("stopped");
+    } finally {
+      activity.dispose();
+    }
+  }, 20_000);
+
+  test("Stop writes the stop command to every owned worker", async () => {
+    const root = await temporaryRoot();
+    const directory = watchdogDirectory(root);
+    const stateDir = join(root, "state");
+    const sleeper = spawn("sleep", ["30"], { stdio: "ignore" });
+    const acquired = acquireWorkerLock(lockPath(directory), "0.0.1", {
+      repo: root,
+      stateDir,
+      harnessVersion: "0.0.1",
+      argv: [],
+    });
+    expect(acquired.acquired).toBe(true);
+    try {
+      writeWorkerState(directory, {
+        version: 1,
+        pid: sleeper.pid!,
+        startedAt: new Date().toISOString(),
+        root,
+        stateDir,
+        lifecycle: "running",
+        enabled: true,
+        harnessVersion: "0.0.2",
+        argv: [],
+        lastRunAt: null,
+        nextRunAt: null,
+        lastError: null,
+        notice: null,
+        updatedAt: new Date().toISOString(),
+      });
+      const activity = adapter(root, { spawnWorker: () => undefined });
+      try {
+        expect(activity.snapshot().workers?.length).toBe(2);
+        const stopped = activity.stop();
+        expect(stopped.ok).toBe(true);
+        expect(takeWatchdogCommands(versionedControlDirectory(directory, "0.0.1"))).toEqual([
+          { type: "stop" },
+        ]);
+        expect(takeWatchdogCommands(controlDirectory(directory))).toEqual([{ type: "stop" }]);
+      } finally {
+        activity.dispose();
+      }
+    } finally {
+      if (acquired.acquired) acquired.release();
+      sleeper.kill("SIGKILL");
+    }
+  }, 20_000);
+
   test("Start reaches starting before the worker and running once its state is readable", async () => {
     const root = await temporaryRoot();
     const directory = watchdogDirectory(root);
@@ -432,6 +512,72 @@ describe("watchdog lifecycle and ownership", () => {
       sleeper.kill("SIGKILL");
     }
   }, 20_000);
+
+  test("a slow preflight is not charged to the worker's publication", async () => {
+    const root = await temporaryRoot();
+    const directory = watchdogDirectory(root);
+    let clock = 1_000_000;
+    const preflight = Promise.withResolvers<{ ok: true }>();
+    const activity = adapter(root, {
+      now: () => clock,
+      preflight: () => preflight.promise,
+      spawnWorker: () => {
+        writeWorkerState(directory, {
+          version: 1,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          root,
+          stateDir: join(root, "state"),
+          lifecycle: "running",
+          enabled: true,
+          harnessVersion: "test",
+          argv: [],
+          lastRunAt: null,
+          nextRunAt: null,
+          lastError: null,
+          notice: null,
+          updatedAt: new Date().toISOString(),
+        });
+        return process.pid;
+      },
+    });
+    try {
+      const pending = activity.start();
+      // The forge round trip outlasts the proof: it is not the worker's delay.
+      clock += 6_000;
+      const waiting = activity.snapshot();
+      expect(waiting.lifecycle).toBe("starting");
+      expect(waiting.error).toBeNull();
+      preflight.resolve({ ok: true });
+      expect((await pending).ok).toBe(true);
+      const running = activity.snapshot();
+      expect(running.lifecycle).toBe("running");
+      expect(running.error).toBeNull();
+    } finally {
+      activity.dispose();
+    }
+  });
+
+  test("a start whose worker never publishes still fails the 5-second proof", async () => {
+    const root = await temporaryRoot();
+    let clock = 1_000_000;
+    const activity = adapter(root, {
+      now: () => clock,
+      preflight: async () => ({ ok: true }),
+      spawnWorker: () => 999_999,
+    });
+    try {
+      expect((await activity.start()).ok).toBe(true);
+      clock += 6_000;
+      const expired = activity.snapshot();
+      expect(expired.error).toBe(
+        "the Watchdog worker did not publish its state within 5 seconds",
+      );
+      expect(expired.lifecycle).toBe("stopped");
+    } finally {
+      activity.dispose();
+    }
+  });
 });
 
 describe("watchdog preflight and timer gate", () => {
@@ -458,6 +604,38 @@ describe("watchdog preflight and timer gate", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.message).toContain("devboard-watchdog.timer");
+  });
+
+  test("a denied gh permission reports its stdout instead of no diagnostic", async () => {
+    const root = await temporaryRoot();
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const result = await preflightWatchdog({
+      repoDir: root,
+      environment: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      run: async () => ({ code: 0, stdout: "false\n", stderr: "" }),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("did not return true: false");
+    expect(result.message).not.toContain("no diagnostic");
+  });
+
+  test("a silent failing gh permission reports its exit code", async () => {
+    const root = await temporaryRoot();
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const result = await preflightWatchdog({
+      repoDir: root,
+      environment: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      run: async () => ({ code: 1, stdout: "", stderr: "" }),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("did not return true: gh exited with code 1");
+    expect(result.message).not.toContain("no diagnostic");
   });
 
   test("reads the timer gate, offers a disable, and clears the block", async () => {
@@ -522,6 +700,32 @@ describe("watchdog preflight and timer gate", () => {
       expect(snapshot.timer?.blocked).toBe(true);
       expect(snapshot.timer?.error).toContain("Access denied");
       expect(snapshot.error).toContain("Access denied");
+    } finally {
+      activity.dispose();
+    }
+  });
+
+  test("a failed disable with no output names the unit and its exit code", async () => {
+    const root = await temporaryRoot();
+    const activity = adapter(root, {
+      systemctl: (args) => {
+        if (args[0] === "disable") return { code: 3, stdout: "", stderr: "" };
+        if (args[0] === "is-active") return { code: 0, stdout: "active", stderr: "" };
+        return { code: 0, stdout: "enabled", stderr: "" };
+      },
+    });
+    try {
+      activity.begin();
+      await waitFor(
+        () => (activity.snapshot().timer?.blocked === true ? true : undefined),
+        "the timer gate",
+      );
+      const result = await activity.disableTimer();
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toContain("could not disable devboard-watchdog.timer");
+      expect(result.message).toContain("systemctl exited with code 3");
+      expect(result.message).not.toContain("undefined");
     } finally {
       activity.dispose();
     }

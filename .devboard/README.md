@@ -2413,19 +2413,25 @@ and returns the chosen repository-relative `path`, a 1-based `line` inside that 
 file, and refuses an unknown surface, an empty eligible set, or a path that resolves outside the
 repository.
 
-The `scout` pool is every regular text file under the repository root outside `.git`,
-`node_modules`, `dist`, `.worktree`, `.tmp`, and `.devboard/.tmp`. The `design` pool is the
-configured Design System source set that `DESIGN_SOURCE_DIR` names, read through the same audit
-input the Design System cycle uses. The `dead-code` pool is the repository's source-code files:
-the picker discovers the extensions the host actually uses from files whose content is shaped
-like code or a style rule, so a Ruby or Go host is not limited to this project's TypeScript
-layout. The `single-responsibility` pool is that same source set narrowed to components: a
-`*.test.*` or `*.spec.*` file is excluded, and so is any file under a `fixtures/`, `tests/`, or
-`stubs/` directory, because a test, a fixture, and a stub describe another unit's contract. No
-pool follows a symbolic link, and every entry is proven inside the real repository root. A
-directory the walk cannot read is refused, never skipped: the picker throws one
-`EntryPointError` naming every such directory by its repository-relative path and the reason, so
-a pool that omits a subtree is never reported as a repository that lacks those files.
+The `scout` pool is every regular text file the repository actually keeps: in a git work tree
+the tracked, untracked, and non-ignored files git reports, and in a root git does not own the
+walk through that root's own `.gitignore` files. A path the repository's ignore rules exclude —
+a secrets file such as `.env`, a generated tree, a scratch directory — never enters a pool, so
+a seeded crawl cannot quote it into a filed issue. Either way the fixed trees `.git`,
+`node_modules`, `dist`, `.worktree`, `.tmp`, and `.devboard/.tmp` are skipped. The `design` pool
+is the configured Design System source set that `DESIGN_SOURCE_DIR` names, read through the same
+audit input the Design System cycle uses. The `dead-code` pool is the repository's source-code
+files: the picker discovers the extensions the host actually uses from files whose content is
+shaped like code or a style rule, so a Ruby or Go host is not limited to this project's
+TypeScript layout. The `single-responsibility` pool is that same source set narrowed to
+components: a `*.test.*` or `*.spec.*` file is excluded, and so is any file under a
+`fixtures/`, `tests/`, or `stubs/` directory, because a test, a fixture, and a stub describe
+another unit's contract. No pool follows a symbolic link, and every entry is proven inside the
+real repository root. A directory the walk cannot read is refused, never skipped: the picker
+throws one `EntryPointError` naming every such directory by its repository-relative path and the
+reason, so a pool that omits a subtree is never reported as a repository that lacks those files.
+The scout pool's exclusions are also what its scan request publishes as `excludedRoots`, so the
+prompt and the pool cannot disagree.
 
 One surface and one seed over an unchanged eligible set always return the same path and line. An
 omitted seed produces a fresh pseudo-random seed and returns it; replaying that seed with
@@ -2616,7 +2622,9 @@ category and the normalized evidence line only: the per-occurrence `raw-http-req
 omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
 omp's own thinking-loop notice — `Thinking loop detected; aborting stream for retry.` — is a
 recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
-provider-error record.
+provider-error record. A `Python runner stderr` warning whose traceback ends in `KeyboardInterrupt`
+is the runner stopping the cell it ran, which is how it exits, so it is never a finding either; a
+runner traceback that ends in any other exception still files its `omp-warn` record.
 
 The ledger outlives a forge change: an entry may name an issue filed through another forge, or
 through the same project under a different instance. The delivery reports the URLs its configured
@@ -3167,12 +3175,13 @@ A proven duplicate, invalid, or already-fixed issue is closed with evidence and 
 unrelated work. A successful agent removes only the worktree and branch it created; a failed or
 blocked agent leaves its worktree in place and reports its path.
 
-The `goal` label keeps its goal-mode implementation contract: every goal-labeled issue runs
-`/implement-goal-issue <number>` concurrently with the rest. The command follows the origin's
-forge: GitHub reads and closes the issue through `gh` under the forge-auth wrapper, and Gitea
-reads it through the API (`GET /api/v1/repos/<owner/repo>/issues/<number>`) and closes it with an
-API `PATCH` after the wrapper's `check` confirms the write identity. A GitLab goal issue is
-refused with that reason.
+A goal label keeps its goal-mode implementation contract: every goal-labeled issue runs
+`/implement-goal-issue <number>` concurrently with the rest. For every origin the command reads the
+issue through the repository's forge, and the emitted goal prompt closes it through the Devboard
+MCP `issue_close` tool with that issue number and `reason` `completed`. That tool records the
+closing run, so a finished goal run settles `succeeded` instead of being read as an operator's
+cancellation, and the prompt names no other tracker write. A GitLab goal issue is refused with
+that reason.
 
 ### Per-agent state, lifecycle, and history
 
@@ -3404,6 +3413,18 @@ path, a directory, a missing file, or a symlink whose real path leaves the draft
 refused with a visible error, and nothing outside the directory is read. The list never follows
 symlinks.
 
+Every row also carries a delete control (`issues-draft-row-delete`, `issues.draft.delete`) beside
+its Start control. Activating it opens `issues-draft-delete-confirmation` naming the draft and the
+directory it leaves; Cancel closes the dialog without writing anything, and the confirm control
+(`issues.draft.delete.confirm`) sends `deleteGoalDraft` for that path. The row leaves only when
+the server's republished list arrives, so a refusal leaves the draft listed and its reason arrives
+as a server error notification. The server unlinks the draft and its recorded run, then
+republishes the list to every client; deleting the open draft clears the selection to the
+`No draft selected` state, and every other draft keeps its own run state. A draft whose
+elaboration is live or still closing stays listed: its delete control is disabled with
+`This draft is being elaborated.` as its title, and a command that reaches that state anyway is
+refused with the same reason. Deletion files nothing, runs no `gh`, and starts no peer.
+
 Every draft may elaborate at the same time; there is no concurrency cap beyond the repository's
 own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND --no-skills` in
 `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. The
@@ -3476,9 +3497,10 @@ branch under `.worktree/`, activates the `goal` tool, and calls the `goal` creat
 the fetched issue body verbatim as the objective: no distillation, no section filtering, and no
 appended requirements. It then implements the body, verifies every criterion through the product
 surface, merges into `main` with conflict integration and retry, pushes `main` to origin, removes
-the worktree and branch, and closes the issue only after the push. On Gitea it fetches the issue
-through the API, resolves the close identity with the wrapper's `check`, and closes it with an API
-`PATCH`; GitHub keeps `gh issue view` and `gh issue close` under the wrapper's `exec`.
+the worktree and branch, and closes the issue only after the push through the Devboard MCP
+`issue_close` tool with `reason` `completed`. That close records the closing run, so the finished
+goal run settles `succeeded` instead of reading as an operator's cancellation. The command's
+prompt carries no forge CLI or forge API write of its own.
 
 Pause lets every active peer finish, then reports `paused` and starts no new peer or poll.
 Resume polls immediately. Stop closes every peer, records every active run as `stopped`, leaves
@@ -3723,9 +3745,13 @@ spelling — is refused with HTTP 400 before the Gitea request. Both endpoints a
 body: `POST /feedback` accepts `action`, `report`, `turns`, `route`, `url`, `selector`,
 `dom_excerpt`, `visible_text`, `viewport`, and `captured_at`, `POST /goal-proposals` accepts the
 same set without `action`, and any other top-level key is refused with HTTP 400 naming the first
-unknown key before any Gitea request or draft write. Harness-owned reporting uses only the Gitea
-API: `DEVBOARD_GITEA_URL` names the instance, `GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`)
-authenticates it, and `DEVBOARD_RELEASE_REPO` selects the repository (default `dsdenes/devboard`),
+unknown key before any Gitea request or draft write. A present `captured_at` must be an RFC 3339
+date-time with upper-case `T` and `Z` separators, such as `2026-11-03T10:32:14.584Z`, and is
+refused with HTTP 400 naming `captured_at` otherwise; an absent value stays optional, and an
+accepted value is stored unchanged, so the filed issue or draft carries its upper-case `T` and `Z`.
+Harness-owned reporting uses only the Gitea API: `DEVBOARD_GITEA_URL` names the instance,
+`GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`) authenticates it, and `DEVBOARD_RELEASE_REPO` selects
+the repository (default `dsdenes/devboard`),
 whatever host project the interface is serving. Nothing is created in the host's own tracker, and
 no `github.com` repository is used for filing. Starting the dashboard from the canonical
 `.devboard` checkout resolves the HTTP origin itself when the `origin` remote is a Gitea SSH address
@@ -3804,6 +3830,7 @@ The client sends:
 { "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "stopGoalDraft", "path": ".devboard/goal-proposals/example.md" }
+{ "type": "deleteGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "answerGoalDraft", "path": ".devboard/goal-proposals/example.md", "id": 4, "value": "The whole goal" }
 
 { "type": "getAgents" }
@@ -3893,7 +3920,11 @@ The client sends:
   already running is refused with `This draft is being elaborated.` and starts no peer.
   `stopGoalDraft` and `answerGoalDraft` carry the draft `path`; stop closes only that peer and
   records `stopped`, and an answer reaches only that path's pending question. Each run's activity
-  is sent as its own `issuesDraftState` snapshot while its peer runs.
+  is sent as its own `issuesDraftState` snapshot while its peer runs. `deleteGoalDraft` carries the
+  draft `path`, removes the draft file and its recorded run, and broadcasts the shorter list to
+  every client; a path whose elaboration is live or still closing is refused with `error` and
+  `This draft is being elaborated. Stop the elaboration and delete it again.`, and a missing or
+  refused path answers `error` with the refusal.
 
   lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
   next attempt, errors, and the harness version the worker loaded. A missing state and no live

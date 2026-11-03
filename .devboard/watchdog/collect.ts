@@ -24,6 +24,12 @@ export interface EvidenceEvent {
   scope?: string;
   /** Severity token an `omp-log` record carried. */
   level?: "error" | "warn" | "fatal";
+  /**
+   * The body an `omp-log` record carried past its message: the traceback omp
+   * logged for a runner's stderr. It classifies the record and never joins the
+   * quote, because a traceback differs per occurrence.
+   */
+  detail?: string;
   /** Project the evidence belongs to, when attribution resolved it. */
   instance?: Instance;
 }
@@ -272,6 +278,7 @@ export function readOmpEvidence(options: OmpOptions): {
         ts: new Date(ts).toISOString(),
         text: describeOmpLine(record),
         level,
+        detail: typeof record.text === "string" ? record.text : undefined,
         instance: owner,
       });
     }

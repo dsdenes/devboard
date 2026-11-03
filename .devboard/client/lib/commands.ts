@@ -43,6 +43,15 @@ function disabledWhen(condition: boolean, reason: string): string | null {
   return condition ? reason : null;
 }
 
+/** The mode prefix that keeps every tab command's palette title unique. */
+const MODE_LABELS: Record<Mode, string> = {
+  goal: "Goal",
+  issues: "Issues",
+  flow: "Flow",
+  discover: "Discover",
+  devboard: "Devboard",
+};
+
 function tabId(kind: string, resourceId: string): string {
   return `${kind}:${resourceId}`;
 }
@@ -223,18 +232,12 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     ["flow", { id: "decisions", kind: "decisions", resourceId: "decisions", title: "Decision board" }],
     ["flow", { id: "steering", kind: "steering", resourceId: "steering", title: "Steering" }],
     ["flow", { id: "history", kind: "history", resourceId: "history", title: "History" }],
-    ["discover", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
-    ["discover", { id: "glossary", kind: "glossary", resourceId: "glossary", title: "Glossary" }],
-    [
-      "discover",
-      { id: "contribution", kind: "contribution", resourceId: "contribution", title: "Contribution" },
-    ],
     ["discover", { id: "warnings", kind: "warnings", resourceId: "warnings", title: "Warnings" }],
   ];
   tabCommands.forEach(([mode, tab]) => {
     add({
       id: `open.${mode}.${tab.id}`,
-      title: `Open ${tab.title}`,
+      title: `Open ${MODE_LABELS[mode]}: ${tab.title}`,
       group: "Workspace",
       keywords: `tab ${mode}`,
       run: () => {
@@ -395,15 +398,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     run: () => goal.startNext(),
   });
   add({
-    id: "goal.lifecycle.start",
-    title: "Start implementation",
-    group: "Goal",
-    disabled: () =>
-      disabledWhen(goal.lifecycleActive, "Implementation is already running.") ??
-      disabledWhen(goal.lifecycleButtonDisabled, "The goal and skills must be ready."),
-    run: () => goal.toggleLifecycle(),
-  });
-  add({
     id: "goal.lifecycle.toggle",
     title: goal.lifecycleActive ? "Stop implementation" : "Start implementation",
     group: "Goal",
@@ -428,13 +422,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "Goal",
     disabled: () => disabledWhen(!goal.lifecycleActive || !goal.lifecycle.paused, "Implementation is not paused."),
     run: () => goal.resumeLifecycle(),
-  });
-  add({
-    id: "goal.lifecycle.stop",
-    title: "Stop implementation",
-    group: "Goal",
-    disabled: () => disabledWhen(!goal.lifecycleActive, "Implementation is not running."),
-    run: () => goal.stopLifecycle(),
   });
   add({
     id: "goal.reset",
@@ -791,7 +778,10 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
   for (const tab of TABS) {
     add({
       id: `discover.tab.${tab.id}`,
-      title: `Open ${tab.label}`,
+      title:
+        tab.skill === null
+          ? `Open Discover: ${tab.label}`
+          : `Open Discover: ${tab.label} skill`,
       group: "Discover sections",
       run: () =>
         ctx.openTab("discover", {

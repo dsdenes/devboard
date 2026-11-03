@@ -7,6 +7,7 @@ import {
   EntryPointError,
   deadCodePool,
   eligibleFiles,
+  excludedRoots,
   pickEntryPoint,
   scoutPool,
   walkRegularFiles,
@@ -145,6 +146,29 @@ describe("entry point picker", () => {
     expect(scoutPool(root)).toEqual(["kept.ts"]);
   });
 
+  test("a root whose own ignore rules exclude a secret and a tree admits neither", async () => {
+    const root = await temporaryRoot("ignored");
+    write(join(root, ".gitignore"), ".env\nout/\n");
+    write(join(root, ".env"), "TOKEN=secret\n");
+    write(join(root, "out", "generated.ts"), "export const generated = 1;\n");
+    write(join(root, "out", "nested", "deep.ts"), "export const deep = 1;\n");
+    write(join(root, "kept.ts"), "export const kept = 1;\n");
+    expect(scoutPool(root)).toEqual([".gitignore", "kept.ts"]);
+    for (let index = 0; index < 40; index += 1) {
+      const pick = pickEntryPoint({ repoDir: root, surface: "scout", seed: `ignored-${index}` });
+      expect(pick.path).not.toBe(".env");
+      expect(pick.path.startsWith("out/")).toBe(false);
+    }
+    expect(excludedRoots(root)).toContain("out");
+  });
+
+  test("a root without ignore rules still admits every regular text file", async () => {
+    const root = await temporaryRoot("plain");
+    write(join(root, "one.ts"), "export const one = 1;\n");
+    write(join(root, "notes.md"), "# Notes\n");
+    expect(scoutPool(root)).toEqual(["notes.md", "one.ts"]);
+  });
+
   test("the walk names every directory it cannot read instead of shrinking the pool", async () => {
     const root = await temporaryRoot("unreadable");
     write(join(root, "kept.ts"), "export const kept = 1;\n");
@@ -190,6 +214,30 @@ describe("entry point picker", () => {
     expect(single).toBeInstanceOf(EntryPointError);
     expect((single as Error).message).toBe(
       "the repository directory blocked is not readable: blocked: EACCES: permission denied",
+    );
+  });
+
+  test("a file with no non-whitespace byte is never an entry point", async () => {
+    const root = await temporaryRoot("blank-files");
+    write(join(root, "kept.ts"), "export const kept = 1;\n");
+    write(join(root, "marker"), "");
+    write(join(root, "spaces.ts"), " \n\t\n");
+    expect(scoutPool(root)).toEqual(["kept.ts"]);
+    expect(deadCodePool(root)).toEqual(["kept.ts"]);
+    const picked = new Set(
+      Array.from({ length: 20 }, (_, index) =>
+        pickEntryPoint({ repoDir: root, surface: "scout", seed: `blank-${index}` }),
+      ).map((entry) => entry.path),
+    );
+    expect([...picked]).toEqual(["kept.ts"]);
+  });
+
+  test("a pool holding only an empty file is refused", async () => {
+    const root = await temporaryRoot("empty-file");
+    write(join(root, "marker"), "");
+    expect(scoutPool(root)).toEqual([]);
+    expect(() => pickEntryPoint({ repoDir: root, surface: "scout", seed: "empty-file" })).toThrow(
+      /pool has no eligible file/,
     );
   });
 

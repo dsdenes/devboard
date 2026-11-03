@@ -2870,8 +2870,8 @@ try {
     "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
     "goal.create", "goal.revise", "goal.skills.prepare",
-    "goal.adr.start-next", "goal.lifecycle.start", "goal.lifecycle.pause",
-    "goal.lifecycle.resume", "goal.lifecycle.stop", "goal.reset",
+    "goal.adr.start-next", "goal.lifecycle.toggle", "goal.lifecycle.pause",
+    "goal.lifecycle.resume", "goal.reset",
     "flow.goal.create", "flow.start", "flow.stop",
     "flow.pr.retry", "flow.pr.ready", "flow.pr.merge",
     "flow.steering.focus", "discover.start", "discover.stop",
@@ -2891,8 +2891,8 @@ try {
   check((await sourceOnlyMarkers(page)) === 0, "the command palette renders a source-only marker");
   const agentsCommand = palette.items.find((item) => item.id === "open.issues.agents");
   check(
-    agentsCommand?.title === "Open Agents" && agentsCommand?.group === "Workspace",
-    "the palette does not list Open Agents in the Workspace group",
+    agentsCommand?.title === "Open Issues: Agents" && agentsCommand?.group === "Workspace",
+    "the palette does not list the Issues Agents page in the Workspace group",
     agentsCommand,
   );
   const disabledMirror = palette.items.find((item) => item.id === "flow.pr.merge");
@@ -3289,6 +3289,8 @@ try {
       fontWeight: string;
       letterSpacing: number;
       lineHeight: number;
+      paddingBlock: number;
+      paddingInline: number;
     } | null;
   }>(`(() => {
     const table = document.querySelector('[data-testid="skills-table"]');
@@ -3329,6 +3331,8 @@ try {
         fontWeight: managedStyle.fontWeight,
         letterSpacing: parseFloat(managedStyle.letterSpacing),
         lineHeight: parseFloat(managedStyle.lineHeight),
+        paddingBlock: parseFloat(managedStyle.paddingBlock),
+        paddingInline: parseFloat(managedStyle.paddingInline),
       },
     };
   })()`);
@@ -3368,6 +3372,13 @@ try {
       ) < 0.005 &&
       Math.abs(devboardSkillsTable.managedType.lineHeight - 12) < 0.05,
     "the Managed marker does not render the overline type",
+    devboardSkillsTable.managedType,
+  );
+  check(
+    devboardSkillsTable.managedType !== null &&
+      Math.abs(devboardSkillsTable.managedType.paddingBlock - 2) < 0.05 &&
+      Math.abs(devboardSkillsTable.managedType.paddingInline - 6) < 0.05,
+    "the Managed marker does not render the badge padding",
     devboardSkillsTable.managedType,
   );
   check(
@@ -4749,6 +4760,44 @@ try {
   );
   await runPalette("open.flow.steering");
   await page.wait(`document.querySelector('[data-testid="flow-steering-note"]') !== null`, "the Flow steering note");
+  const flowSteeringMeta = await page.eval<{
+    rows: number;
+    parts: number;
+    fontSize: number;
+    fontWeight: string;
+    letterSpacing: number;
+    lineHeight: number;
+    display: string;
+    wrap: string;
+  }>(`(() => {
+    const rows = [...document.querySelectorAll('[data-testid="flow-steering-note"] .steering-meta')];
+    const meta = rows[0] ?? null;
+    const style = meta === null ? null : getComputedStyle(meta);
+    return {
+      rows: rows.length,
+      parts: meta?.children.length ?? 0,
+      fontSize: style === null ? 0 : parseFloat(style.fontSize),
+      fontWeight: style?.fontWeight ?? "",
+      letterSpacing: style === null ? 0 : parseFloat(style.letterSpacing),
+      lineHeight: style === null ? 0 : parseFloat(style.lineHeight),
+      display: style?.display ?? "",
+      wrap: style?.flexWrap ?? "",
+    };
+  })()`);
+  check(
+    flowSteeringMeta.rows > 0 &&
+      Math.abs(flowSteeringMeta.fontSize - 11) < 0.05 &&
+      flowSteeringMeta.fontWeight === "600" &&
+      Math.abs(flowSteeringMeta.letterSpacing / flowSteeringMeta.fontSize - 0.03) < 0.005 &&
+      Math.abs(flowSteeringMeta.lineHeight - 14.3) < 0.05,
+    "the Flow steering metadata does not render the label type",
+    flowSteeringMeta,
+  );
+  check(
+    flowSteeringMeta.display === "flex" && flowSteeringMeta.wrap === "wrap" && flowSteeringMeta.parts === 3,
+    "the Flow steering metadata does not keep its wrapping meta row",
+    flowSteeringMeta,
+  );
 
   await runPalette("open.flow.overview");
   await page.wait(`document.querySelector('[data-testid="dismiss-flow-blocker"]') !== null`, "the Flow blocker control");
@@ -9263,6 +9312,47 @@ try {
     "a draft does not show its first heading",
     draftHeadings,
   );
+  const draftNameType = await page.eval<{
+    fontSize: number;
+    lineHeight: number;
+    mono: boolean;
+    nowrap: boolean;
+    overflow: string;
+    ellipsis: string;
+    title: string;
+    path: string;
+  }>(`(() => {
+    const name = document.querySelector('[data-testid="issues-draft"] .issues-draft__name');
+    const style = name === null ? null : getComputedStyle(name);
+    const row = name?.closest('[data-testid="issues-draft"]') ?? null;
+    return {
+      fontSize: style === null ? 0 : Number.parseFloat(style.fontSize),
+      lineHeight: style === null ? 0 : Number.parseFloat(style.lineHeight),
+      mono: style === null ? false : style.fontFamily.toLowerCase().includes("mono"),
+      nowrap: style === null ? false : style.whiteSpace === "nowrap",
+      overflow: style === null ? "" : style.overflow,
+      ellipsis: style === null ? "" : style.textOverflow,
+      title: name?.getAttribute("title") ?? "",
+      path: row?.getAttribute("data-path") ?? "",
+    };
+  })()`);
+  check(
+    Math.abs(draftNameType.fontSize - 12) < 0.05 &&
+      Math.abs(draftNameType.lineHeight - 17.4) < 0.05 &&
+      draftNameType.mono,
+    "the draft file name does not render the mono 12px/17.4px type",
+    draftNameType,
+  );
+  check(
+    draftNameType.nowrap && draftNameType.overflow === "hidden" && draftNameType.ellipsis === "ellipsis",
+    "the draft file name is no longer a single ellipsized line",
+    draftNameType,
+  );
+  check(
+    draftNameType.path !== "" && draftNameType.title === draftNameType.path,
+    "the draft file name does not carry its full path as the tooltip",
+    draftNameType,
+  );
 
   // The report panel's earlier write is listed and its bytes are exact.
   const reportDraftPath = expectedDrafts.find((path) => path.includes(goalFiles[0]!));
@@ -10005,6 +10095,55 @@ try {
     `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
     "the selected draft after reload",
     20_000,
+  );
+
+  // A draft nobody wants to elaborate is deleted from its row after one confirmation.
+  const draftDelete = (name: string): string =>
+    `[data-testid="issues-draft-row-delete"][data-path=".devboard/goal-proposals/${name}"]`;
+  await page.click(draftDelete("001-question.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null`,
+    "the delete confirmation",
+  );
+  await page.click('[data-command="issues.draft.delete.cancel"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') === null`,
+    "the cancelled delete confirmation",
+  );
+  const cancelledListed = await page.eval<boolean>(
+    `document.querySelector('${draftRow("001-question.md")}') !== null`,
+  );
+  check(
+    cancelledListed && existsSync(join(draftDirectory, "001-question.md")),
+    "cancelling a delete removed the draft",
+    { cancelledListed, file: existsSync(join(draftDirectory, "001-question.md")) },
+  );
+
+  await page.click(draftDelete("002-hang.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null`,
+    "the delete confirmation for the selected draft",
+  );
+  await page.click('[data-command="issues.draft.delete.confirm"]');
+  await page.wait(
+    `document.querySelector('${draftRow("002-hang.md")}') === null &&
+      document.querySelector('[data-testid="issues-draft-detail"]') === null &&
+      document.querySelector('[data-testid="issues-drafts-selection"]') !== null`,
+    "the deleted draft to leave the list and the selection",
+    8_000,
+  );
+  const deletedDraft = await page.eval<{ count: string; dialog: boolean }>(`(() => ({
+    count: document.querySelector('[data-testid="open-issues-drafts"] .sidebar-item__meta')?.textContent?.trim() ?? "",
+    dialog: document.querySelector('[data-testid="issues-draft-delete-confirmation"]') !== null,
+  }))()`);
+  check(
+    deletedDraft.count === "6" && !deletedDraft.dialog,
+    "deleting a draft left the count or the confirmation behind",
+    deletedDraft,
+  );
+  check(
+    !existsSync(join(draftDirectory, "002-hang.md")),
+    "the deleted draft is still on disk",
   );
 
   // A vanished draft leaves the list and selection; a reload opens the list.
@@ -11499,7 +11638,7 @@ try {
     ["open.issues.runs", "issues"],
     ["devboard.tab.tools", "devboard"],
     ["devboard.tab.skills", "devboard"],
-    ["open.discover.contribution", "discover"],
+    ["discover.tab.contribution", "discover"],
     ["open.flow.decisions", "flow"],
     ["flow.checkpoint.open.cp-1", "flow"],
     ["flow.file.open.src/order.ts", "flow"],

@@ -411,6 +411,33 @@ describe("goal proposal drafts", () => {
     }
   });
 
+  test("refuses a captured_at that is not an RFC 3339 date-time", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      for (const capturedAt of [
+        "2026-11-03 10:32:14",
+        "yesterday",
+        "2026-11-03t10:32:14z",
+      ]) {
+        const response = await propose(url, proposal({ captured_at: capturedAt }));
+
+        expect(response.status).toBe(400);
+        expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+        expect(await response.json()).toEqual(
+          problemBody(
+            "Bad Request",
+            400,
+            "captured_at must be an RFC 3339 date-time.",
+          ),
+        );
+      }
+      expect(await drafts(root)).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("applies the feedback field limits", async () => {
     const { server, root, url } = await startServer();
 

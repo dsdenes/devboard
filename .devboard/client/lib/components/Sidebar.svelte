@@ -43,9 +43,6 @@
   );
   const resolvedCount = $derived(goal.records.filter((record) => !record.pending).length);
   const pendingRecords = $derived(goal.records.filter((record) => record.pending));
-  const nextRecord = $derived(
-    goal.next === null ? null : (goal.records.find((record) => record.file === goal.next) ?? null),
-  );
   const progressPercent = $derived(
     goal.records.length === 0 ? 0 : Math.round((resolvedCount / goal.records.length) * 100),
   );

@@ -96,6 +96,36 @@ function recoveredStreamWarning(event: EvidenceEvent): boolean {
   );
 }
 
+/** omp's Python runner reports its stderr under this one message. */
+const PYTHON_RUNNER_STDERR = "Python runner stderr";
+
+/** The last line of a traceback names the exception it ended with. */
+function tracebackException(detail: string | undefined): string | undefined {
+  if (detail === undefined) return undefined;
+  const lines = detail
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines[lines.length - 1];
+}
+
+/**
+ * omp's Python runner writes a traceback to stderr whenever the cell it runs is
+ * interrupted, which is how it stops at the end of a session. That traceback
+ * records an ordinary shutdown — the operator's Stop, or the run's last cell —
+ * never a defect the repository could fix, so it is not a finding. A traceback
+ * that ends in an exception still is: the runner failing to complete a cell is
+ * evidence, and the interrupt names itself as the exception.
+ */
+function interruptedPythonRunner(event: EvidenceEvent): boolean {
+  return (
+    event.kind === "omp-log" &&
+    event.level === "warn" &&
+    normalizeEvidenceLine(event.text) === PYTHON_RUNNER_STDERR &&
+    tracebackException(event.detail) === "KeyboardInterrupt"
+  );
+}
+
 function eventKey(event: EvidenceEvent): string {
   return event.instance === undefined
     ? event.source
@@ -220,7 +250,9 @@ export function analyzeEvidence(
     }
     if (!inWindow(occurred)) continue;
     if (event.kind === "omp-log" && event.level !== undefined) {
-      if (!recoveredStreamWarning(event)) add(`omp-${event.level}` as FindingCategory, event);
+      if (!recoveredStreamWarning(event) && !interruptedPythonRunner(event)) {
+        add(`omp-${event.level}` as FindingCategory, event);
+      }
       continue;
     }
     const category = SIGNAL_KINDS[event.kind];

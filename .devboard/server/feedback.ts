@@ -168,6 +168,29 @@ function feedbackAction(value: unknown): FeedbackAction {
   throw new FeedbackRequestError(400, ACTION_ERROR);
 }
 
+/**
+ * The RFC 3339 date-time grammar: a four-digit year, a two-digit month, day,
+ * hour, minute, and second, an optional fractional second, and an upper-case
+ * `Z` or numeric offset. The `T` and `Z` separators are upper case, so no
+ * space separator or lower-case spelling reaches the filed issue or draft.
+ */
+const RFC3339_DATE_TIME =
+  /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+/**
+ * Validates the optional capture time. An absent value stays optional; a
+ * present one must be an RFC 3339 date-time and is stored unchanged, so the
+ * filed issue or draft carries its upper-case `T` and `Z`.
+ */
+function capturedAtField(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  const at = field(value, "captured_at", MAX_CONTEXT_FIELD, false);
+  if (!RFC3339_DATE_TIME.test(at)) {
+    throw new FeedbackRequestError(400, "captured_at must be an RFC 3339 date-time.");
+  }
+  return at;
+}
+
 /** The element context every browser request carries. */
 export interface CapturedFields {
   route: string;
@@ -188,7 +211,7 @@ export function parseCapturedFields(source: Record<string, unknown>): CapturedFi
     domExcerpt: field(source.dom_excerpt, "dom_excerpt", MAX_DOM_EXCERPT, false),
     visibleText: field(source.visible_text, "visible_text", MAX_VISIBLE_TEXT, false),
     viewport: field(source.viewport, "viewport", MAX_VIEWPORT, false),
-    capturedAt: field(source.captured_at, "captured_at", MAX_CONTEXT_FIELD, false),
+    capturedAt: capturedAtField(source.captured_at),
   };
 }
 

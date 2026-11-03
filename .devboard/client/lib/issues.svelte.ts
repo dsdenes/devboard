@@ -303,6 +303,17 @@ export class IssuesStore {
     connection.send({ type: "stopGoalDraft", path });
   }
 
+  /**
+   * Asks the server to remove one draft from `.devboard/goal-proposals/`. The
+   * row leaves only when the server's authoritative list arrives, so a refusal
+   * (a live elaboration, a missing file) leaves the draft in place and its
+   * reason arrives as a server error frame.
+   */
+  deleteDraft(path: string): void {
+    if (path.length === 0 || this.draftRunning(path)) return;
+    connection.send({ type: "deleteGoalDraft", path });
+  }
+
   /** Opens the New goal popover; opening it writes nothing. */
   beginDraftCreate(): void {
     this.draftCreateError = null;

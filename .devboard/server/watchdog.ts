@@ -109,12 +109,16 @@ const STOP_KILL_GRACE_MS = 2_000;
 /** The timer gate is re-read in the background at most this often. */
 const TIMER_REFRESH_MS = 5_000;
 
-function firstLineOf(text: string): string {
+/**
+ * The first non-empty line of command output, or undefined when the output
+ * carries none, so a caller's `??` chain can fall through to the next source.
+ */
+function firstLineOf(text: string): string | undefined {
   return (
     text
       .split("\n")
       .map((line) => line.trim())
-      .find((line) => line.length > 0) ?? "no diagnostic"
+      .find((line) => line.length > 0)
   );
 }
 
@@ -166,6 +170,10 @@ export class WatchdogActivity implements AgentAdapter {
   private timerReading = false;
   private starting = false;
   private startingSince: number | null = null;
+  /** A start is awaiting its preflight or spawn, whatever it displays. */
+  private startPending = false;
+  /** A Stop that arrived during `startPending`, honoured before any spawn. */
+  private startCancelled = false;
   private stopRequested = false;
   private startError: string | null = null;
   private notice: string | null = null;
@@ -414,6 +422,9 @@ export class WatchdogActivity implements AgentAdapter {
       this.starting = false;
       this.startingSince = null;
     }
+    // A worker that published is proof the start succeeded: a proof that
+    // expired while it was still warming up must not outlive it.
+    if (attached) this.startError = null;
     if (
       this.starting &&
       this.startingSince !== null &&
@@ -515,7 +526,7 @@ export class WatchdogActivity implements AgentAdapter {
   }
 
   async start(): Promise<AgentCommandResult> {
-    if (this.starting) return { ok: true };
+    if (this.startPending) return { ok: true };
     // Start never adds a second worker to a live family, whatever version it
     // is: only Stop (or the automatic drain/exiting takeover) ends one.
     const owners = this.owners();
@@ -530,8 +541,13 @@ export class WatchdogActivity implements AgentAdapter {
       return { ok: true };
     }
 
+    this.startPending = true;
     this.starting = true;
-    this.startingSince = this.now();
+    // The proof measures the worker's own publication, so its clock starts
+    // when the worker is spawned. The prerequisite check before that is a
+    // forge round trip, not the worker, and must not be charged to it.
+    this.startingSince = null;
+    this.startCancelled = false;
     this.startError = null;
     this.notice = null;
     try {
@@ -539,33 +555,56 @@ export class WatchdogActivity implements AgentAdapter {
         repoDir: this.repoDir,
         environment: this.environment,
       });
+      // A Stop that arrived during the preflight cancels this start: nothing is
+      // spawned and the worker runs no cycle, so the operator's intent holds.
+      if (this.startCancelled) {
+        this.endStart();
+        return { ok: true };
+      }
       if (!result.ok) {
-        this.starting = false;
-        this.startingSince = null;
+        this.endStart();
         this.startError = result.message;
         return { ok: false, message: result.message };
       }
+      this.startingSince = this.now();
       const pid = this.spawnNewest();
       if (pid === undefined) {
-        this.starting = false;
-        this.startingSince = null;
+        this.endStart();
         this.startError = "the Watchdog worker could not be started";
         return { ok: false, message: this.startError };
       }
+      // The spawn happened, so only the in-flight marker ends here; `starting`
+      // stays until the worker publishes its state or the proof times out.
+      this.startPending = false;
+      this.startCancelled = false;
       this.forge.requestSync();
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.starting = false;
-      this.startingSince = null;
+      this.endStart();
       this.startError = message;
       return { ok: false, message };
     }
   }
 
+  /** Ends the in-flight start, whether it spawned a worker or not. */
+  private endStart(): void {
+    this.startPending = false;
+    this.starting = false;
+    this.startingSince = null;
+    this.startCancelled = false;
+  }
+
   stop(): AgentCommandResult {
     const owners = this.owners();
     if (owners.length === 0) {
+      // While a start awaits its preflight no owner exists yet; record the
+      // cancel so that start returns without spawning, instead of losing Stop.
+      if (this.startPending) {
+        this.startCancelled = true;
+        this.startError = null;
+        return { ok: true };
+      }
       return { ok: false, message: "No Watchdog worker is running for this root." };
     }
     const foreign = owners.find((owner) => this.foreignOwner(owner));
@@ -652,7 +691,8 @@ export class WatchdogActivity implements AgentAdapter {
     if (result.code !== 0) {
       const message =
         `could not disable ${unit}: ` +
-        firstLineOf(result.stderr.length > 0 ? result.stderr : result.stdout);
+        (firstLineOf(result.stderr.length > 0 ? result.stderr : result.stdout) ??
+          `systemctl exited with code ${result.code}`);
       this.startError = message;
       if (this.timerGate !== null && this.timerGate !== undefined) {
         this.timerGate = { ...this.timerGate, error: message };
