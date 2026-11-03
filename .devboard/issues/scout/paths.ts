@@ -64,20 +64,6 @@ export const CATEGORIES = [
 
 export type ScoutCategory = (typeof CATEGORIES)[number];
 
-/**
- * Trees the scan request tells the agent to ignore and evidence may never
- * point into: generated output, vendored packages, temporary state, and
- * per-task worktrees are not the repository under review.
- */
-export const EXCLUDED_ROOTS = [
-  ".git",
-  "node_modules",
-  "dist",
-  ".worktree",
-  ".tmp",
-  ".devboard/.tmp",
-];
-
 /** `<STATE_DIR>/scout`: every repository's state below one dashboard. */
 export function scoutRoot(stateDir: string): string {
   return join(stateDir, SCOUT_DIRECTORY);

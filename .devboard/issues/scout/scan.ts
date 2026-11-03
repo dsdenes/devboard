@@ -1,10 +1,14 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { pickEntryPoint, type EntryPoint, type EntryPointSurface } from "../../lib/entry-point";
+import {
+  excludedRoots,
+  pickEntryPoint,
+  type EntryPoint,
+  type EntryPointSurface,
+} from "../../lib/entry-point";
 import { runIdentifier } from "../worker";
 import {
   CATEGORIES,
-  EXCLUDED_ROOTS,
   HOUR_MS,
   SIGNIFICANCE_THRESHOLD,
   requestPath,
@@ -99,7 +103,7 @@ export function buildRequest(options: {
     seed: pick.seed,
     entryPoint: { path: pick.path, line: pick.line },
     categories: [...CATEGORIES],
-    excludedRoots: [...EXCLUDED_ROOTS],
+    excludedRoots: excludedRoots(options.repoDir),
     draftGoalHeadings: [...options.draftGoalHeadings],
     significanceThreshold: SIGNIFICANCE_THRESHOLD,
     maxPerHour: options.maxPerHour,
