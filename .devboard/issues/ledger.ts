@@ -89,10 +89,6 @@ export function writeLedger(stateDir: string, repoDir: string, ledger: Ledger): 
   renameSync(temporary, path);
 }
 
-export function handledNumbers(ledger: Ledger): Set<number> {
-  return new Set(Object.values(ledger.handled).map((entry) => entry.number));
-}
-
 export function recordHandled(
   ledger: Ledger,
   issues: Array<{ number: number }>,
