@@ -632,6 +632,7 @@ async function writeFixture(root: string): Promise<string> {
     "devboard-restful-api-implementation",
     "devboard-single-responsibility-principle",
     "devboard-consistent-naming",
+    "devboard-architectural-layering",
     "devboard-gh-stack",
   ]) {
     await cp(join(harnessRoot, "omp", "skills", name), join(host, ".omp", "skills", name), {
@@ -1807,7 +1808,9 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
+    // The turn stays active long enough for the bar to render its running
+    // state, and still ends well inside the Discover observation window.
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=4000 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft --flow-goal --flow-goal-hang=${flowGoalGate}`,
     // Harness-owned reporting goes through the local Gitea API stub, never
     // through `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
@@ -1882,9 +1885,6 @@ try {
   // The reload control's page retries the root while the replacement binds;
   // those refusals are the handoff working, not a broken asset.
   let expectedReloadFailures = false;
-  // A deliberate outage also fails the commands the test issues while the
-  // dashboard is down, including the automatic /feedback report.
-  let expectedOfflineFailures = false;
   const requestUrls = new Map<string, string>();
   const feedbackRequests: Array<Record<string, unknown>> = [];
   const feedbackPosts: string[] = [];
@@ -1957,10 +1957,10 @@ try {
     const requestId = String(params.requestId ?? "");
     const url = requestUrls.get(requestId) ?? "";
     if (url.includes("favicon")) return;
-    if (
-      (expectedReloadFailures || expectedOfflineFailures) &&
-      String(params.errorText ?? "").includes("ERR_CONNECTION_REFUSED")
-    ) {
+    // A report attempted while the fixture deliberately stops the server is
+    // answered by the page's own error surface, which the case asserts.
+    if (url.endsWith("/feedback")) return;
+    if (expectedReloadFailures && String(params.errorText ?? "").includes("ERR_CONNECTION_REFUSED")) {
       return;
     }
     networkProblems.push({
@@ -3278,7 +3278,8 @@ try {
     devboardSidebar,
   );
   check(
-    JSON.stringify(devboardSidebar.labels) === JSON.stringify(["MCP tools", "Skills", "Complexity"]) &&
+    JSON.stringify(devboardSidebar.labels) ===
+      JSON.stringify(["MCP tools", "Skills", "Complexity"]) &&
       JSON.stringify(devboardSidebar.commands) ===
         JSON.stringify(["devboard.tab.tools", "devboard.tab.skills", "devboard.tab.complexity"]),
     "the Devboard sidebar entries are not the MCP tools, Skills, and Complexity pages",
@@ -3371,6 +3372,7 @@ try {
   })()`);
   const devboardInstalledSkills = readdirSync(join(host, ".omp", "skills")).sort();
   const devboardBuiltins = [
+    "devboard-architectural-layering",
     "devboard-consistent-naming",
     "devboard-gh-stack",
     "devboard-restful-api-implementation",
@@ -3440,7 +3442,7 @@ try {
   check(
     JSON.stringify(devboardSkillsTable.managed) ===
       JSON.stringify(devboardManagedFirst(devboardBuiltins)),
-    "the Managed marker does not belong to exactly the six built-in rows",
+    "the Managed marker does not belong to exactly the seven built-in rows",
     devboardSkillsTable,
   );
   check(
@@ -3670,6 +3672,7 @@ try {
     const names = [
       "devboard-ui-ux",
       "devboard-gh-stack",
+      "devboard-architectural-layering",
       "discover-testing-strategy",
       "fixture-handwritten",
       "fixture-linked",
@@ -3698,19 +3701,22 @@ try {
     return results;
   })()`);
   check(
-    refusals.length === 6 &&
+    refusals.length === 7 &&
       refusals[0]?.message === '"devboard-ui-ux" is a built-in skill and cannot be deleted.' &&
       refusals[1]?.message === '"devboard-gh-stack" is a built-in skill and cannot be deleted.' &&
-      refusals.slice(2).every(
+      refusals[2]?.message ===
+        '"devboard-architectural-layering" is a built-in skill and cannot be deleted.' &&
+      refusals.slice(3).every(
         (entry) => entry.message === `No prepared skill named "${entry.name}" is installed.`,
       ),
-    "the server did not refuse the two built-ins, Discover, hand-authored, symlinked, " +
+    "the server did not refuse the three built-ins, Discover, hand-authored, symlinked, " +
       "and unknown names",
     refusals,
   );
   for (const name of [
     "devboard-ui-ux",
     "devboard-gh-stack",
+    "devboard-architectural-layering",
     "fixture-handwritten",
     "fixture-conventions",
   ]) {
@@ -10943,7 +10949,6 @@ try {
   );
 
   // 16. Notifications and history: stop the server, attempt a command, restart.
-  expectedOfflineFailures = true;
   serverProcess?.kill("SIGTERM");
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() !== "Connected"`,
@@ -11112,7 +11117,6 @@ try {
   );
   startServer();
   await waitForHttp(baseUrl);
-  expectedOfflineFailures = false;
   await page.wait(`document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`, "reconnection", 30_000);
   await page.key("Escape");
   await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
@@ -12199,9 +12203,10 @@ try {
       ADRS_DIR: join(runStateHost, "adrs"),
       GOAL_FILE: join(runStateHost, "GOAL.md"),
       STATE_DIR: runStateDir,
+      // One agent turn that finishes inside the sheet's observation window.
       AGENT_COMMAND:
         `bun ${stubAgent} --log=${runStateLog} --delay-ms=2500 --questions=1 ` +
-        `--prepare-skills --discover --discover-delay-ms=15000 --goal-draft ` +
+        `--prepare-skills --discover --discover-delay-ms=3000 --goal-draft ` +
         `--flow-implement --flow-question`,
     },
     stdio: ["ignore", "pipe", "pipe"],

@@ -121,6 +121,7 @@ const MANAGED_SKILLS = [
   "devboard-restful-api-implementation",
   "devboard-single-responsibility-principle",
   "devboard-consistent-naming",
+  "devboard-architectural-layering",
   "devboard-gh-stack",
 ] as const;
 
