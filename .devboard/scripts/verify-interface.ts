@@ -2870,8 +2870,8 @@ try {
     "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
     "goal.create", "goal.revise", "goal.skills.prepare",
-    "goal.adr.start-next", "goal.lifecycle.start", "goal.lifecycle.pause",
-    "goal.lifecycle.resume", "goal.lifecycle.stop", "goal.reset",
+    "goal.adr.start-next", "goal.lifecycle.toggle", "goal.lifecycle.pause",
+    "goal.lifecycle.resume", "goal.reset",
     "flow.goal.create", "flow.start", "flow.stop",
     "flow.pr.retry", "flow.pr.ready", "flow.pr.merge",
     "flow.steering.focus", "discover.start", "discover.stop",
@@ -2891,8 +2891,8 @@ try {
   check((await sourceOnlyMarkers(page)) === 0, "the command palette renders a source-only marker");
   const agentsCommand = palette.items.find((item) => item.id === "open.issues.agents");
   check(
-    agentsCommand?.title === "Open Agents" && agentsCommand?.group === "Workspace",
-    "the palette does not list Open Agents in the Workspace group",
+    agentsCommand?.title === "Open Issues: Agents" && agentsCommand?.group === "Workspace",
+    "the palette does not list the Issues Agents page in the Workspace group",
     agentsCommand,
   );
   const disabledMirror = palette.items.find((item) => item.id === "flow.pr.merge");
@@ -11499,7 +11499,7 @@ try {
     ["open.issues.runs", "issues"],
     ["devboard.tab.tools", "devboard"],
     ["devboard.tab.skills", "devboard"],
-    ["open.discover.contribution", "discover"],
+    ["discover.tab.contribution", "discover"],
     ["open.flow.decisions", "flow"],
     ["flow.checkpoint.open.cp-1", "flow"],
     ["flow.file.open.src/order.ts", "flow"],
