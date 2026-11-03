@@ -289,10 +289,6 @@ function isNullableLimit(value: unknown): value is number | null {
   return value === null || isIntegerIn(value, 1, 100);
 }
 
-export function isValidLimitValue(value: unknown): value is number | null {
-  return isNullableLimit(value);
-}
-
 export function isAgentLimits(value: unknown): value is AgentLimits {
   return (
     isRecord(value) &&
