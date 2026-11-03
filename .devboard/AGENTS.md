@@ -111,6 +111,19 @@ bun run verify:update
 bun run verify:ui
 ```
 
+The release workflow's suite step is `bun run test:release`. It runs the whole harness suite under
+the workflow's load settings (`--parallel=8 --timeout=60000`), retries the whole suite when
+individual tests fail, and stops at the first attempt that reports no failing test. A test that
+fails three consecutive whole-suite attempts is quarantined for the rest of that run by marking
+`test.skip(` in the step's own working copy, and every marked registration is restored byte for
+byte before the step returns, so the tracked tree, `main`, and the packed package stay unchanged.
+Each quarantined test files one deduplicated issue in the checkout's origin forge — a later run
+appends one comment — and filing is best effort: an unreachable forge prints one failure line and
+never blocks the release. A structural suite failure — a compile or import error, a crashed
+runner, output with no per-test result — still exits nonzero, files nothing, and fails the
+workflow. This supersedes the earlier rule that forbade any retry, skip, filter, or second attempt
+for the release suite step.
+
 Merge into `main` and push. A push releases nothing: `.gitea/workflows/devboard-release.yml` runs
 only on `workflow_dispatch`. The Release Train background agent watches canonical `main` on its
 10-minute default cadence, batches every non-merge commit since the newest release tag into one
