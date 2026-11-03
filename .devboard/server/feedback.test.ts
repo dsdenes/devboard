@@ -523,6 +523,42 @@ describe("feedback endpoint", () => {
     }
   });
 
+  test("answers a non-POST method with 405 when reporting is disabled", async () => {
+    const { server, url, calls } = await startServer({ enabled: false });
+
+    try {
+      const get = await fetch(`http://${url}/feedback`);
+      expect(get.status).toBe(405);
+      expect(get.headers.get("allow")).toBe("POST");
+      expect(get.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
+      expect(await get.json()).toEqual(
+        problemBody("Method Not Allowed", 405, "This endpoint accepts POST only."),
+      );
+
+      const head = await fetch(`http://${url}/feedback`, { method: "HEAD" });
+      expect(head.status).toBe(405);
+      expect(head.headers.get("allow")).toBe("POST");
+      expect(await head.text()).toBe("");
+
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers a non-POST method with 405 when reporting is enabled", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(`http://${url}/feedback`);
+
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("POST");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("clamps a long report line to the title limit", async () => {
     const { server, url } = await startServer();
 

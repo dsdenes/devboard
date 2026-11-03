@@ -2337,6 +2337,16 @@ function staticRelativePath(rawPathname: string, pathname: string): string | nul
 }
 
 /**
+ * The 405 for a request that is not a POST, or null when the method may run.
+ * The method is the more specific fact about a request, so a handler answers
+ * it before a capability state such as disabled reporting.
+ */
+function mutationMethodRefusal(request: Request): Response | null {
+  if (request.method === "POST") return null;
+  return problemResponse(405, "This endpoint accepts POST only.", { Allow: "POST" });
+}
+
+/**
  * The method, host, origin, size, and JSON guards shared by the mutating
  * browser endpoints. A request for another host, or a cross-origin page, must
  * never reach a handler with a side effect; the body is bounded before it is
@@ -2347,9 +2357,8 @@ async function readMutationBody(
   url: URL,
   allowedHostnames: ReadonlySet<string>,
 ): Promise<{ value: unknown } | { response: Response }> {
-  if (request.method !== "POST") {
-    return { response: problemResponse(405, "This endpoint accepts POST only.", { Allow: "POST" }) };
-  }
+  const refusedMethod = mutationMethodRefusal(request);
+  if (refusedMethod !== null) return { response: refusedMethod };
 
   const refusal = requestRefusal(request, url, allowedHostnames);
   if (refusal !== null) {
@@ -7691,14 +7700,17 @@ export function createApp(options: AppOptions) {
    * Files one browser report as a Gitea issue. The request is bounded before
    * parsing, and a cross-origin browser request is refused: this endpoint has
    * the side effect of creating issues, so another page must not reach it.
-   * Without DEVBOARD_GITEA_URL the endpoint refuses before parsing and makes
-   * no request.
+   * A request whose method is not POST is refused first, so the disabled state
+   * below answers a POST only. Without DEVBOARD_GITEA_URL the endpoint refuses
+   * before parsing and makes no request.
    */
   async function handleFeedbackRequest(
     request: Request,
     url: URL,
     flowId: string | null,
   ): Promise<Response> {
+    const refusedMethod = mutationMethodRefusal(request);
+    if (refusedMethod !== null) return refusedMethod;
     if (!feedbackEnabled) {
       return problemResponse(
         503,

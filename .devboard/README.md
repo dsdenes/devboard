@@ -3623,7 +3623,8 @@ an HTTP(S) origin needs no discovery, and an installed host never probes. Withou
 discovered origin the endpoint answers HTTP 503 naming `DEVBOARD_GITEA_URL` and performs no
 request. A refused or failing request is reported in the filing toast and creates nothing. The
 endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and gives the request
-60 seconds.
+60 seconds. A request whose method is not `POST` answers `405` with `Allow: POST` before the
+disabled-reporting `503`, which therefore answers a `POST` only.
 
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
 `title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
