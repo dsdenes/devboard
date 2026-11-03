@@ -1508,6 +1508,83 @@ describe("design version handover", () => {
     expect(activity).toContain("cycle ");
   }, 20_000);
 
+  test("a drain consumed during a forge read starts no cycle when the tick resumes", async () => {
+    const { repo, stateDir } = await fixture("drain-race");
+    const hold = Promise.withResolvers<void>();
+    const reading = Promise.withResolvers<void>();
+    const github: NonNullable<DesignWorkerOptions["github"]> = {
+      ...quietForge(),
+      async listIssues() {
+        reading.resolve();
+        await hold.promise;
+        return [];
+      },
+    };
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      harnessVersion: "test",
+      cadenceMs: 60 * 60_000,
+      syncMs: 60_000,
+      tickMs: 10 * 60_000,
+      github,
+      connect: () => fakePeer(async () => undefined, { connects: 0 }).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    const startedAt = worker.currentState.lastCycleStartedAt;
+
+    const readingTick = worker.tickNow();
+    await reading.promise;
+
+    const control = versionedControlDirectory(stateDir, repo, "test");
+    writeCommand(control, { type: "drain" });
+    // The tick that consumes the drain stays inside `consumeCommands` past the
+    // settlement of the read, so the tick resuming from that read runs its own
+    // body while `draining` is already true and before the consumer reaches its
+    // own drain branch. That is the interleaving the resumed tick must honour.
+    for (let index = 0; index < 32; index += 1) {
+      writeCommand(control, {
+        type: "settings",
+        intervalMinutes: 60,
+        maxPerHour: 10,
+        maxPending: 5,
+      });
+    }
+    const drainingTick = worker.tickNow();
+    hold.resolve();
+    await Promise.all([readingTick, drainingTick]);
+
+    expect(worker.cyclingNow).toBe(false);
+    expect(worker.currentState.lastCycleStartedAt).toBe(startedAt);
+    const cycles = existsSync(cyclesDirectory(repo)) ? readdirSync(cyclesDirectory(repo)) : [];
+    expect(cycles).toEqual([]);
+    expect(worker.currentState.lifecycle).toBe("stopped");
+  }, 20_000);
+
+  test("a tick with no drain still starts a cycle", async () => {
+    const { repo, stateDir } = await fixture("no-drain");
+    const harness = designForge();
+    const clock = { now: new Date("2026-01-10T12:00:00.000Z") };
+    const connects = { connects: 0 };
+    const worker = retryWorker({
+      repo,
+      stateDir,
+      github: harness.client,
+      clock,
+      manualCycles: false,
+      connects,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    try {
+      await worker.tickNow();
+      await worker.waitForCycle();
+      expect(readdirSync(cyclesDirectory(repo))).toHaveLength(1);
+      expect(connects.connects).toBe(1);
+    } finally {
+      await worker.stop();
+    }
+  }, 20_000);
+
   test("leaves a live legacy worker's control directory to that worker", async () => {
     const { repo, stateDir } = await fixture("legacy-live");
     const sleeper = Bun.spawn({

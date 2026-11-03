@@ -349,7 +349,7 @@ export class DesignWorker {
     await this.consumeCommands();
     if (this.stopping || !this.state.enabled) return;
     if (this.draining) {
-      if (this.active === undefined && !this.cycling && !this.starting) await this.stop();
+      await this.leaveIfIdle();
       return;
     }
     this.markStale();
@@ -357,11 +357,22 @@ export class DesignWorker {
     if (this.clock().getTime() >= this.nextSyncAt) {
       await this.refresh();
       if (this.stopping || !this.state.enabled) return;
+      // The check above ran before the read was awaited, so a drain another
+      // tick consumed while it was in flight is only visible here.
+      if (this.draining) {
+        await this.leaveIfIdle();
+        return;
+      }
     }
     if (this.active !== undefined || this.starting) return;
     if (this.state.sync.state !== "ok") return;
     if (this.manualCycles || this.cadenceRemaining()) return;
     await this.beginCycle();
+  }
+
+  /** A draining worker exits as soon as it holds no unit. */
+  private async leaveIfIdle(): Promise<void> {
+    if (this.active === undefined && !this.cycling && !this.starting) await this.stop();
   }
 
   private markStale(): void {
@@ -639,7 +650,8 @@ export class DesignWorker {
   }
 
   async beginCycle(): Promise<void> {
-    if (this.stopping || this.active !== undefined || this.cycling) return;
+    // A drained worker starts no unit, whatever tick or caller asks for one.
+    if (this.stopping || this.draining || this.active !== undefined || this.cycling) return;
     if (!this.state.enabled) return;
     // One cycle at a time for the checkout, whatever version started the
     // other worker. The lease is released when this cycle reaches a terminal
