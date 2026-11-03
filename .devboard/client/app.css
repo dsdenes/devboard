@@ -2661,7 +2661,6 @@ a.code-chip--link:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 6px 8px;
 }
 
 .goal-filters__body > input {
