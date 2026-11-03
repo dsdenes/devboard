@@ -567,6 +567,7 @@ describe("createApp", () => {
       const post = await fetch(`http://${url}/ready`, { method: "POST" });
       expect(post.status).toBe(405);
       expect(post.headers.get("allow")).toBe("GET, HEAD");
+      expect(post.headers.get("cache-control")).toBe("no-store");
       expect(post.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await post.json()).toEqual(
         problemBody("Method Not Allowed", 405, "This path serves GET and HEAD only."),
@@ -593,6 +594,7 @@ describe("createApp", () => {
         headers: { "x-flow-id": "x".repeat(MAX_FLOW_ID + 1) },
       });
       expect(refused.status).toBe(400);
+      expect(refused.headers.get("cache-control")).toBe("no-store");
       expect(refused.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await refused.json()).toEqual(
         problemBody(
@@ -613,6 +615,7 @@ describe("createApp", () => {
       const response = await fetch(`http://${url}/assets/missing.js`);
 
       expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("no-store");
       expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await response.json()).toEqual(
         problemBody("Not Found", 404, "The requested file was not found."),
@@ -678,6 +681,7 @@ describe("createApp", () => {
       });
 
       expect(response.status).toBe(500);
+      expect(response.headers.get("cache-control")).toBe("no-store");
       expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await response.json()).toEqual(
         problemBody("Internal Server Error", 500, "An internal error occurred."),
@@ -740,10 +744,11 @@ describe("createApp", () => {
     const { server, url } = await startServer();
 
     try {
-      const response = await fetch(`http://${url}/index.html`, { method: "DELETE" });
+      const response = await fetch(`http://${url}/index.html`, { method: "PUT" });
 
       expect(response.status).toBe(405);
       expect(response.headers.get("allow")).toBe("GET, HEAD");
+      expect(response.headers.get("cache-control")).toBe("no-store");
       expect(response.headers.get("content-type")).toBe(PROBLEM_CONTENT_TYPE);
       expect(await response.json()).toEqual(
         problemBody("Method Not Allowed", 405, "This path serves GET and HEAD only."),

@@ -2231,7 +2231,8 @@ function credentialMatches(presented: string | null, token: string): boolean {
  * One RFC 9457 failure body. Every 4xx and 5xx response this server writes
  * goes through it, so a client reads one media type and one shape. `detail`
  * carries the cause a caller can act on and never a stack trace or an
- * implementation internal.
+ * implementation internal. A failure is never a cacheable representation, so
+ * every answer declares `no-store` unless a caller overrides it.
  */
 function problemResponse(
   status: number,
@@ -2247,7 +2248,11 @@ function problemResponse(
     }),
     {
       status,
-      headers: { "Content-Type": "application/problem+json", ...headers },
+      headers: {
+        "Content-Type": "application/problem+json",
+        "Cache-Control": "no-store",
+        ...headers,
+      },
     },
   );
 }
