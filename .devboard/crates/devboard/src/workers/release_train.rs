@@ -2994,11 +2994,39 @@ impl ReleaseTrainWorker {
             read_release: None,
         })
         .await;
-        let result = match result {
-            ReleaseVerification::Ok { version, url } => ReleaseRunResult::Ok { version, url },
-            ReleaseVerification::Failed { detail, .. } => ReleaseRunResult::failed(detail),
-        };
-        self.settle(run, result, &target, &failure.range, Some(version), now);
+        match result {
+            ReleaseVerification::Ok { version, url } => {
+                self.settle(
+                    run,
+                    ReleaseRunResult::Ok {
+                        version: version.clone(),
+                        url,
+                    },
+                    &target,
+                    &failure.range,
+                    Some(version),
+                    now,
+                );
+            }
+            ReleaseVerification::Failed { detail, .. } => {
+                // The tag exists but its release does not: recover by running
+                // the release agent against the existing tag instead of only
+                // recording the same failure again.
+                self.activity(&format!(
+                    "verification failed ({detail}); starting a recovery release"
+                ));
+                self.execute(
+                    target.clone(),
+                    None,
+                    failure.range.clone(),
+                    version.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    now,
+                )
+                .await;
+            }
+        }
         true
     }
 
