@@ -1180,8 +1180,9 @@ impl Api {
 
     async fn github_runs(&self, commit: &str) -> Result<Vec<WorkflowRun>> {
         let path = format!(
-            "/repos/{}/actions/runs?head_sha={}&per_page=50",
+            "/repos/{}/actions/workflows/{}/runs?head_sha={}&per_page=50",
             github_repo_path(&self.github_repo),
+            encode_component(RELEASE_WORKFLOW),
             encode_component(commit)
         );
         let document = self
