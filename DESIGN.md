@@ -611,13 +611,14 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `warning-surface`; it carries no `running` or `needs answer` pill because the page header counts
   the fleet and the question text names the state. Grid rows stretch and the activity absorbs the
   slack, so cards in one row share a height.
-- **Filed issues empty state** (`.scout-issues__empty`) — the Auto Scout results panel with no
-  rows: one compact stack centered in the available panel area, never a full-width strip. A 20px
-  `muted-foreground` Lucide inbox mark (`aria-hidden`) sits above a 13px/600 `No issues filed yet`
-  and one 12px `muted-foreground` line stating that Auto Scout files significant findings after
-  each scan. The stack is capped at 360px, uses 24px 16px padding and a 4px rhythm, and adds no
-  frame, fill, shadow, or action; the page header keeps the only Start/Stop control and the panel
-  header keeps the count.
+- **Agent results empty state** (`.agent-issues__empty`, `.agent-releases__empty`) — the agent
+  result panel with no rows, whether it lists filed issues or releases: one compact stack centered
+  in the available panel area, never a full-width strip. A 20px `muted-foreground` Lucide mark
+  (`aria-hidden`; `Inbox` for filed issues, `Tag` for releases) sits above a 13px/600 title naming
+  the absence (`No issues filed yet`, `No releases yet`) and one 12px `muted-foreground` line
+  stating what will appear here. The stack is capped at 360px, uses 24px 16px padding and a 4px
+  rhythm, and adds no frame, fill, shadow, or action; the agent page's pinned activity bar keeps
+  the only Start/Stop control and the panel header keeps the count.
 - **Watchdog page** (`.watchdog-page`, `.watchdog-body`) — the Issues mode's watchdog surface: a
   framed page header with the `Watchdog` title, its one-sentence purpose, and the GitHub read
   badge with the mono last-read time (no mode eyebrow — the rail and sidebar already name it).
