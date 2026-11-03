@@ -11,14 +11,16 @@ import { writeActivity } from "../issues/state";
 import {
   closingCommitFromComments,
   closingCommitFromTimeline,
-  earliestRelease,
   parseJsonLines,
-  releaseAtClose,
-  resolveShippedVersion,
-  shippedVersion,
   type ScoutGitHubClient,
   type ScoutRelease,
 } from "../issues/scout/github";
+import {
+  earliestRelease,
+  releaseAtClose,
+  resolveShippedVersion,
+  shippedVersion,
+} from "../lib/release-resolution";
 import {
   DEFAULT_MAX_PENDING,
   controlDirectory,
@@ -1327,6 +1329,53 @@ describe("bridge", () => {
         { ok: true },
         { ok: true },
       ]);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  test("a preflight slower than the start proof keeps reporting starting", async () => {
+    const root = await temporaryDirectory("scout-bridge-slow-preflight");
+    const stateDir = join(root, "state");
+    const gate = Promise.withResolvers<void>();
+    const spawned: string[][] = [];
+    let clock = 1_000;
+    const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      now: () => clock,
+      preflight: async () => {
+        await gate.promise;
+        return { ok: true, repository: "acme/fixture" };
+      },
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      const start = bridge.start();
+      // Past START_PROOF_MS with the preflight still legitimately running: no
+      // worker was spawned yet, so no publish proof can have expired.
+      clock += 30_000;
+      const during = bridge.snapshot();
+      expect(during.lifecycle).toBe("starting");
+      expect(during.error).toBeNull();
+
+      gate.resolve();
+      expect(await start).toEqual({ ok: true });
+      expect(spawned).toHaveLength(1);
+      const after = bridge.snapshot();
+      expect(after.error).toBeNull();
+      expect(after.error ?? "").not.toContain("did not publish its state");
       expect(spawned).toHaveLength(1);
     } finally {
       bridge.dispose();

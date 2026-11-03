@@ -388,7 +388,8 @@ kbd {
   color: var(--muted-foreground);
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
 }
 
 .sidebar-item__meta[data-tone="warning"] {
@@ -1245,43 +1246,6 @@ kbd {
 
 .diff-html .d2h-del {
   background: var(--error-surface);
-}
-
-.agent-output {
-  font-size: 12px;
-  overflow: auto;
-}
-
-.agent-output > :first-child {
-  margin-top: 0;
-}
-
-.agent-output > :last-child {
-  margin-bottom: 0;
-}
-
-.agent-output pre {
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  overflow: auto;
-  padding: 6px;
-}
-
-.agent-output code {
-  font-family: var(--font-mono);
-}
-
-.agent-output table {
-  border-collapse: collapse;
-}
-
-.agent-output th,
-.agent-output td {
-  border: 1px solid var(--border);
-  padding: 2px 6px;
 }
 
 .choice-list {

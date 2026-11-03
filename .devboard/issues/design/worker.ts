@@ -12,7 +12,7 @@ import { originForge, originRepository } from "../repository";
 import { appendActivityLine, writeActivity } from "../state";
 import { readAuditInput } from "./audit";
 import { takeCommands, type DesignCommand } from "./control";
-import { shippedVersion } from "../../lib/github-release";
+import { shippedVersion } from "../../lib/release-resolution";
 import {
   createDesignForge,
   isForgeRateLimited,
