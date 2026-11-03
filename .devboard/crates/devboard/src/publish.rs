@@ -1576,24 +1576,29 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         (log)(&format!("{tag} at {}", short_sha(&published_head)));
 
         bump_workspace_version(&args.harness_root.join("Cargo.toml"), &version)?;
-        let relative = relative_git_path(&args.repo_dir, &args.harness_root.join("Cargo.toml"));
+        refresh_lockfile(git.runner, &args.environment, &args.harness_root).await?;
+        let manifest = relative_git_path(&args.repo_dir, &args.harness_root.join("Cargo.toml"));
+        let lock_path = args.harness_root.join("Cargo.lock");
+        let lock = relative_git_path(&args.repo_dir, &lock_path);
         let commit_message = format!("chore(release): v{version}");
-        let committed = git
-            .run(&[
-                "-c",
-                "user.name=Devboard Release",
-                "-c",
-                "user.email=release@devboard.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "--only",
-                "-m",
-                &commit_message,
-                "--",
-                &relative,
-            ])
-            .await;
+        let mut commit_args: Vec<&str> = vec![
+            "-c",
+            "user.name=Devboard Release",
+            "-c",
+            "user.email=release@devboard.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--only",
+            "-m",
+            &commit_message,
+            "--",
+            &manifest,
+        ];
+        if lock_path.exists() {
+            commit_args.push(&lock);
+        }
+        let committed = git.run(&commit_args).await;
         if committed.code != 0 {
             bail!(
                 "could not commit the version bump: {}",
@@ -2046,6 +2051,40 @@ pub fn commit_violations(commits: &[CommitRecord]) -> Vec<CommitViolation> {
         }
     }
     violations
+}
+
+async fn refresh_lockfile(
+    runner: &dyn CommandRunner,
+    environment: &Environment,
+    root: &Path,
+) -> Result<()> {
+    if !root.join("Cargo.toml").is_file() || !root.join("Cargo.lock").is_file() {
+        return Ok(());
+    }
+    let outcome = runner
+        .run(CommandInvocation {
+            program: "cargo".to_string(),
+            args: vec![
+                "metadata".to_string(),
+                "--format-version=1".to_string(),
+                "--no-deps".to_string(),
+            ],
+            cwd: root.to_path_buf(),
+            env: environment.clone(),
+            timeout: Duration::from_secs(600),
+        })
+        .await;
+    if outcome.code != 0 {
+        bail!(
+            "could not refresh Cargo.lock: {}",
+            first_line(if outcome.stderr.is_empty() {
+                outcome.stdout.as_str()
+            } else {
+                outcome.stderr.as_str()
+            })
+        );
+    }
+    Ok(())
 }
 
 fn bump_workspace_version(path: &Path, version: &str) -> Result<()> {
