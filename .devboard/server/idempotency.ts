@@ -57,6 +57,15 @@ function entryId(scope: string, key: string): string {
   return `${scope}\u0000${key}`;
 }
 
+/**
+ * Whether an entry created at `createdAt` has left the retention window. The
+ * same boundary governs the document read at startup and every live lookup, so
+ * a dashboard that stays up never replays a key a restart would forget.
+ */
+function isExpired(createdAt: number, threshold: number): boolean {
+  return createdAt <= threshold;
+}
+
 export interface IdempotencyStoreOptions {
   stateDir: string;
   repoDir: string;
@@ -105,7 +114,12 @@ export class IdempotencyStore {
     if (key === null) return await operation();
     const id = entryId(scope, key);
     const settled = this.entries.get(id);
-    if (settled !== undefined) return settled.result as T;
+    if (settled !== undefined) {
+      if (!isExpired(settled.createdAt, this.now() - RETENTION_MS)) {
+        return settled.result as T;
+      }
+      this.entries.delete(id);
+    }
     const running = this.pending.get(id);
     if (running !== undefined) return (await running) as T;
 
@@ -142,7 +156,7 @@ export class IdempotencyStore {
     for (const entry of document.entries) {
       if (typeof entry !== "object" || entry === null) continue;
       if (typeof entry.scope !== "string" || typeof entry.key !== "string") continue;
-      if (typeof entry.createdAt !== "number" || entry.createdAt < threshold) continue;
+      if (typeof entry.createdAt !== "number" || isExpired(entry.createdAt, threshold)) continue;
       this.entries.set(entryId(entry.scope, entry.key), {
         scope: entry.scope,
         key: entry.key,
@@ -154,6 +168,10 @@ export class IdempotencyStore {
   }
 
   private prune(): void {
+    const threshold = this.now() - RETENTION_MS;
+    for (const [id, entry] of this.entries) {
+      if (isExpired(entry.createdAt, threshold)) this.entries.delete(id);
+    }
     if (this.entries.size <= MAX_ENTRIES) return;
     const newestFirst = [...this.entries.entries()].sort(
       ([, first], [, second]) => second.createdAt - first.createdAt,
