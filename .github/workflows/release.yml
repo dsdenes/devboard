@@ -258,6 +258,9 @@ jobs:
           merge-multiple: true
       - name: Cleanup
         run: |
+          # The build artifact upload keeps dist's unpacked tree beside the
+          # archives; a GitHub Release takes files, so drop those directories.
+          find artifacts -mindepth 1 -type d -exec rm -rf {} +
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
       - name: Create GitHub Release
