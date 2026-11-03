@@ -2467,6 +2467,13 @@ most one cycle runs at a time for a checkout. Stop ends the worker and leaves th
 filed rows. State lives at `<STATE_DIR>/dead-code/<journalKey(REPO_DIR)>/`, the lock and cycles
 stay inside the checkout, and a dashboard restart, page open, or tab restore starts nothing.
 
+The periodic read records every resolution attempt, not just its empty version: a closed issue
+whose commit no release contains yet keeps the attempt time and the reason on its row, and the
+Shipped cell's tooltip shows that reason. The row is resolved again only when the published
+release list changes, which retries every unresolved row at once, or after six hours, so an
+unchanged read costs no forge call for a row it already failed to resolve. A release the row was
+waiting for fills the version and clears the reason.
+
 ## Harness watchdog
 
 Watchdog is a detached worker started and stopped from the dashboard, not a systemd timer. It is

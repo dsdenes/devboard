@@ -336,6 +336,7 @@ export class DeadCodeBridge implements AgentAdapter {
               url: issue.url,
               state: fact.state,
               version: fact.version,
+              note: fact.version === null ? issue.versionError : null,
             };
       });
     const cycleId = newestCycle(states);
@@ -755,6 +756,7 @@ function projectIssue(issue: DeadCodeIssueRow): {
   url: string;
   state: "pending" | "implemented";
   version: string | null;
+  note: string | null;
 } {
   return {
     title: issue.title,
@@ -763,5 +765,6 @@ function projectIssue(issue: DeadCodeIssueRow): {
     url: issue.url,
     state: issue.state,
     version: issue.version,
+    note: issue.versionError,
   };
 }

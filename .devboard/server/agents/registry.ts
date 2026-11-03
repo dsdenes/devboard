@@ -62,6 +62,8 @@ export interface AgentIssueRow {
   url: string;
   state: AgentIssueState;
   version: string | null;
+  /** Why `version` is still null, when the agent recorded a reason. */
+  note?: string | null;
 }
 
 export interface AgentCycleWindow {
@@ -490,6 +492,7 @@ function normalizeIssue(row: AgentIssueRow): AgentIssueRow {
     url: row.url,
     state: AGENT_ISSUE_STATES.includes(row.state) ? row.state : "unknown",
     version: typeof row.version === "string" && row.version.length > 0 ? row.version : null,
+    note: typeof row.note === "string" && row.note.length > 0 ? row.note : null,
   };
 }
 

@@ -86,7 +86,14 @@
                   {row.state}
                 </span>
               </td>
-              <td class="mono" data-testid="agent-issue-version">{row.version ?? "—"}</td>
+              <td
+                class="mono"
+                data-testid="agent-issue-version"
+                data-note={row.note ?? ""}
+                title={row.note ?? undefined}
+              >
+                {row.version ?? "—"}
+              </td>
             </tr>
           {/each}
         </tbody>
