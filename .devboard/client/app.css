@@ -3825,37 +3825,6 @@ a.issues-agent-row__issue:focus-visible {
   min-height: 200px;
 }
 
-.issues-run-identity {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.issues-run-identity__label {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.issues-run-identity__id {
-  max-width: 220px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.issues-run-identity__started {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
 .issues-draft-detail {
   min-height: 0;
   overflow: hidden;
