@@ -11,7 +11,6 @@
   import CommandButton from "./lib/components/CommandButton.svelte";
   import CommandNotice from "./lib/components/CommandNotice.svelte";
   import DetailSplit from "./lib/components/DetailSplit.svelte";
-  import Terminal from "./lib/components/Terminal.svelte";
   import Button from "./lib/components/ui/button.svelte";
 
   interface Props {
