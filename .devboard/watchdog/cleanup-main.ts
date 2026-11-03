@@ -2,11 +2,13 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runCleanup } from "./cleanup";
 import { discoverInstances } from "./discovery";
+import { runOrphanReaper } from "./reaper";
 
 /**
  * `bun run cleanup -- --dry-run` prints one week's retention plan for every
  * covered state directory; `--once` applies it. The watchdog cycle performs
  * the same sweep; this entry point exists for operators and verification.
+ * `--processes` runs the orphan reaper instead of the file sweep.
  */
 
 const usage = `Usage: bun run cleanup [options]
@@ -17,6 +19,9 @@ dashboards. Journal retention stays with the journal.
 
   --once             Delete every eligible entry. The default is dry-run.
   --dry-run          Print the plan and change nothing.
+  --processes        Reap orphaned harness processes instead of sweeping files:
+                     a recorded child whose owner is gone, or an unrecorded
+                     verification process reparented to PID 1.
   --root <path>      Canonical repository root. Defaults to this checkout.
   -h, --help         Show this text.
 `;
@@ -24,12 +29,14 @@ dashboards. Journal retention stays with the journal.
 const args = process.argv.slice(2);
 let once = false;
 let dryRun = false;
+let processes = false;
 let rootOption: string | undefined;
 
 for (let index = 0; index < args.length; index += 1) {
   const argument = args[index];
   if (argument === "--once") once = true;
   else if (argument === "--dry-run") dryRun = true;
+  else if (argument === "--processes") processes = true;
   else if (argument === "--root") {
     rootOption = args[index + 1];
     index += 1;
@@ -71,6 +78,22 @@ const root = resolve(rootOption ?? gitTopLevel());
 if (!existsSync(join(root, ".devboard"))) {
   console.error(`cleanup: missing prerequisite: ${join(root, ".devboard")} does not exist`);
   process.exit(2);
+}
+
+if (processes) {
+  const report = runOrphanReaper({
+    root,
+    stateDir: join(root, ".devboard", ".tmp"),
+    dryRun: dryRun || !once,
+  });
+  for (const decision of report.decisions) {
+    if (decision.action === "would-kill") {
+      console.log(`cleanup: would kill ${decision.pid} (${decision.reason}): ${decision.detail}`);
+    } else if (decision.action === "killed") {
+      console.log(`cleanup: killed ${decision.pid} (${decision.reason}): ${decision.detail}`);
+    }
+  }
+  process.exit(0);
 }
 
 const instances = discoverInstances({ selfPids: new Set([process.pid]) });

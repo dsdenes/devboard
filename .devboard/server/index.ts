@@ -17,6 +17,7 @@ import { relaunch, relaunchConfirmed } from "./relaunch";
 import { startSourceRefresher } from "./source-refresh";
 import { snapshotStaticDir } from "./static-snapshot";
 import { startUpdater, type Updater } from "./updates";
+import { runOrphanReaper } from "../watchdog/reaper";
 import {
   hostHarnessDir,
   isHarnessSourceCheckout,
@@ -159,6 +160,20 @@ if (discoveredGiteaUrl !== undefined) {
 const injectedFlow = flowOptions();
 const injectedFeedback = feedbackOptions();
 const journal = openJournal({ stateDir, repoDir, port });
+// Every dashboard start reaps what a killed owner left behind. The pass is
+// process-only, bounded, and never blocks the listener: a state directory that
+// cannot be read only leaves the candidates for the next tick.
+try {
+  const reaped = runOrphanReaper({ root: repoDir, stateDir });
+  if (reaped.killed.length > 0) {
+    journal.write(
+      "lifecycle",
+      `reaped ${reaped.killed.length} orphaned process(es): ${reaped.killed.join(", ")}`,
+    );
+  }
+} catch {
+  // A failed pass is the watchdog's job on its next interval.
+}
 const runningVersion = readHarnessVersion(runningHarnessDir());
 // The updater replaces the installed package while this process serves. The
 // bundle is copied out of it first, so an update changes what a restart loads

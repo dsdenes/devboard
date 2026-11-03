@@ -827,6 +827,44 @@ unsupported-version state file never prevents startup: the server renames it asi
 read-only state directory never stops the server: it keeps serving from memory and reports one
 `error` on stderr and in the journal.
 
+### Process supervision
+
+Every long-lived process the harness starts — a dashboard under verification, an ACP peer, a
+detached run owner, a goal-draft owner, a background worker entry point, and a fixture peer —
+starts through one helper. The child leads its own process group and is recorded before the
+caller uses it, as `{pid, argv, cwd, ownerPid, startedAt, startTicks, pgid}` under
+`<STATE_DIR>/supervision/<pid>.json`. `argv` and `startTicks` are read from `/proc` right after
+the spawn, so a recycled pid is never mistaken for the recorded child. The record leaves when the
+child exits, or with the reaping pass that ends it.
+
+One reaper ends a child only under one of two proofs:
+
+- The record exists, its recorded `argv` and start ticks still match the live process, and the
+  recorded owner pid is dead (a zombie counts as dead). The child's whole process group is
+  signalled: SIGTERM, then SIGKILL after a two-second grace, and then the record is removed.
+- No record exists, the process is a fixture peer, a run owner, a goal-draft owner, or a worker
+  entry point of any family or harness version, its cwd or `REPO_DIR` sits in a
+  `.devboard/.tmp` scratch directory, and it was reparented to PID 1 because whatever started
+  it died. It must also have lived five seconds, so a child whose record is still being written
+  is never a candidate. A dashboard is never a candidate for this proof: a replacement and a
+  verification dashboard are reparented by design, so only their own record can end them.
+
+A doubt never signals. A recorded child whose owner is alive is left alone, and its record is
+touched so the age-based sweep never deletes the proof. A pid that a live detached-run or
+goal-draft lease or handoff names, and a pid a live worker lock of any version holds, is never
+signalled. Every candidate the reaper leaves, and every kill, is appended to
+`<STATE_DIR>/supervision/reaped.jsonl`.
+
+The reaper is one implementation with two activations: the running watchdog worker reaps on its
+own 30-second interval, independent of the cycle cadence, and every dashboard start reaps once
+before it serves. On a platform without `/proc` the reaper reports itself unavailable and signals
+nothing. Run one pass by hand from `.devboard`:
+
+```bash
+bun run cleanup -- --processes --dry-run   # print candidates; change nothing
+bun run cleanup -- --processes --once      # kill under the two proofs
+```
+
 ## Flow Mode
 
 The activity bar carries five client-only modes, `Goal`, `Issues`, `Flow`, `Discover`, and
@@ -2711,6 +2749,8 @@ Run the sweep by hand from `.devboard`:
 ```bash
 bun run cleanup -- --dry-run --root <root>
 bun run cleanup -- --once --root <root>
+bun run cleanup -- --processes --dry-run   # orphaned processes, print only
+bun run cleanup -- --processes --once      # orphaned processes, kill
 ```
 
 The manual watchdog CLI remains:

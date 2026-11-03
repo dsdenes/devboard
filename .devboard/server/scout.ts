@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { liveLockOwners, pidAlive, type LockOwner } from "../issues/lock";
@@ -40,6 +39,7 @@ import { createForgeIssueReader, type ForgeIssueReader } from "./agents/forge-re
 import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 import type { AgentDescriptor } from "./agents/registry";
+import { supervisedDetach } from "../watchdog/supervision";
 
 /**
  * The dashboard half of Auto Scout. It never owns a scan loop, an agent, or a
@@ -240,21 +240,16 @@ export class ScoutBridge implements AgentAdapter {
   }
 
   private detach(argv: string[], environment: Record<string, string | undefined>): number | undefined {
-    try {
-      const child = spawn(argv[0]!, argv.slice(1), {
-        cwd: this.repoDir,
-        env: environment,
-        detached: true,
-        stdio: "ignore",
-      });
-      child.unref();
-      return child.pid;
-    } catch (error) {
-      this.log(
-        `could not start the scout worker: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return undefined;
-    }
+    return supervisedDetach(argv, {
+      cwd: this.repoDir,
+      env: environment,
+      stateDir: this.stateDir,
+      onError: (error) => {
+        this.log(
+          `could not start the scout worker: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    });
   }
 
   /* ------------------------------------------------------------------ */

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { liveLockOwners, pidAlive, type LockOwner } from "../issues/lock";
@@ -38,6 +37,7 @@ import { createForgeIssueReader, type ForgeIssueReader } from "./agents/forge-re
 import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 import type { AgentDescriptor } from "./agents/registry";
+import { supervisedDetach } from "../watchdog/supervision";
 
 /**
  * The dashboard half of Single Responsibility. It never owns an audit loop or a lock:
@@ -200,23 +200,16 @@ export class SingleResponsibilityBridge implements AgentAdapter {
   }
 
   private detach(argv: string[], environment: Record<string, string | undefined>): number | undefined {
-    try {
-      const child = spawn(argv[0]!, argv.slice(1), {
-        cwd: this.repoDir,
-        env: environment,
-        detached: true,
-        stdio: "ignore",
-      });
-      child.unref();
-      return child.pid;
-    } catch (error) {
-      this.log(
-        `could not start the single-responsibility worker: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return undefined;
-    }
+    return supervisedDetach(argv, {
+      cwd: this.repoDir,
+      env: environment,
+      stateDir: this.stateDir,
+      onError: (error) => {
+        this.log(
+          `could not start the single-responsibility worker: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    });
   }
 
   /** Owners of every live lock beside this checkout's legacy lock. */

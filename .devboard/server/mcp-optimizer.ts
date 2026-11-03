@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ghCommand } from "../issues/scout/preflight";
@@ -33,6 +32,7 @@ import {
 } from "./agents/forge-reader";
 import type { AgentDescriptor, AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
+import { supervisedDetach } from "../watchdog/supervision";
 
 /**
  * The MCP optimizer page's server half and its background-agent adapter. It reads the
@@ -149,25 +149,17 @@ export class McpOptimizerActivity implements AgentAdapter {
     this.preflight = options.preflight ?? ((request) => preflightMcpOptimizer(request));
     this.spawnWorker =
       options.spawnWorker ??
-      ((argv, environment) => {
-        try {
-          const child = spawn(argv[0]!, argv.slice(1), {
-            cwd: this.repoDir,
-            env: environment,
-            detached: true,
-            stdio: "ignore",
-          });
-          child.unref();
-          return child.pid;
-        } catch (error) {
-          this.log(
-            `could not start the MCP optimizer worker: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          return undefined;
-        }
-      });
+      ((argv, environment) =>
+        supervisedDetach(argv, {
+          cwd: this.repoDir,
+          env: environment,
+          stateDir: this.stateDir,
+          onError: (error) => {
+            this.log(
+              `could not start the MCP optimizer worker: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          },
+        }));
   }
 
   begin(): void {

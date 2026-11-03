@@ -16,7 +16,6 @@
  * owner; any other server exit ends them with interrupted `failed` runs.
  */
 
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -30,6 +29,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { GOAL_PROPOSALS_DIRECTORY } from "../lib/goal-proposals";
 import { pidAlive } from "../issues/lock";
+import { supervisedDetach } from "../watchdog/supervision";
 import {
   GOAL_DRAFT_INTERRUPTED,
   GOAL_DRAFT_OWNER_VERSION,
@@ -302,25 +302,19 @@ export class GoalDraftManager {
     this.pollMs = Math.max(20, options.pollMs ?? DEFAULT_POLL_MS);
     this.spawnOwner =
       options.spawnOwner ??
-      ((argv, env) => {
-        try {
-          const child = spawn(argv[0]!, argv.slice(1), {
-            cwd: this.repoDir,
-            env,
-            detached: true,
-            stdio: "ignore",
-          });
-          child.unref();
-          return child.pid;
-        } catch (error) {
-          this.log(
-            `could not start the goal-draft owner: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          return undefined;
-        }
-      });
+      ((argv, env) =>
+        supervisedDetach(argv, {
+          cwd: this.repoDir,
+          env,
+          stateDir: this.stateDir,
+          onError: (error) => {
+            this.log(
+              `could not start the goal-draft owner: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          },
+        }));
   }
 
   /**

@@ -1,4 +1,4 @@
-import type { Subprocess } from "bun";
+import { supervisedSpawn, signalProcessGroup, type PipedSubprocess } from "../watchdog/supervision";
 import { sessionMcpServers, type SessionMcpServer } from "./peer-mcp";
 
 export interface AcpQuestionOption {
@@ -44,6 +44,8 @@ export interface AcpConnectionOptions {
   /** Receives assistant message text only; thoughts and tool activity are dropped. */
   onText?: (text: string) => void;
   onStderr?: (text: string) => void;
+  /** State directory that carries the peer's supervision record. */
+  stateDir?: string;
 }
 
 interface PendingRequest {
@@ -236,7 +238,7 @@ export function nextActivity(
  * activity, and holds elicitation requests until the developer answers.
  */
 export class AcpConnection {
-  readonly #process: Subprocess<"pipe", "pipe", "pipe">;
+  readonly #process: PipedSubprocess;
   readonly #options: AcpConnectionOptions;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #questions = new Map<string, PendingQuestion>();
@@ -253,12 +255,10 @@ export class AcpConnection {
     if (argv.length === 0) throw new Error("AGENT_COMMAND is empty.");
     this.#argv = argv;
 
-    this.#process = Bun.spawn(argv, {
+    this.#process = supervisedSpawn(argv, {
       cwd: options.cwd,
       ...(options.env === undefined ? {} : { env: options.env }),
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+      ...(options.stateDir === undefined ? {} : { stateDir: options.stateDir }),
     });
 
     void this.#readStdout();
@@ -358,12 +358,15 @@ export class AcpConnection {
     if (this.#closed) return;
     this.#closed = true;
     this.#closing = true;
+    const pid = this.#process.pid;
     try {
       // A stopped child does not process SIGTERM until it runs again.
       this.#process.kill("SIGCONT");
     } catch {
       // The process already exited.
     }
+    // The peer leads its own group, so the tools it started end with it.
+    if (pid !== undefined) signalProcessGroup(pid, "SIGTERM");
     try {
       this.#process.kill();
     } catch {

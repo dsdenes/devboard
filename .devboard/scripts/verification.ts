@@ -13,6 +13,7 @@ import {
 import { cp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
+import { supervisedDetach } from "../watchdog/supervision";
 
 /**
  * Shared fixtures for the launcher and update verification scripts. Every
@@ -240,9 +241,10 @@ export async function startInstalledDashboard(
   const log = join(prefix, ".tmp", `verify-${randomUUID()}.log`);
   await mkdir(join(prefix, ".tmp"), { recursive: true });
   const out = openSync(log, "a");
-  const child = spawn("bun", [join(harness, "server", "index.ts")], {
+  const stateDir = join(prefix, ".tmp");
+  const pid = supervisedDetach(["bun", join(harness, "server", "index.ts")], {
     cwd: harness,
-    detached: true,
+    stateDir,
     stdio: ["ignore", out, out],
     env: {
       ...process.env,
@@ -253,11 +255,10 @@ export async function startInstalledDashboard(
       REPO_DIR: host,
       GOAL_FILE: join(host, "GOAL.md"),
       STATIC_DIR: join(harness, "dist"),
-      STATE_DIR: join(prefix, ".tmp"),
+      STATE_DIR: stateDir,
       AGENT_COMMAND: env.AGENT_COMMAND ?? "omp acp",
     },
   });
-  child.unref();
   closeSync(out);
   await waitFor(
     () => (httpStatus(chosen) === 200 ? chosen : undefined),
@@ -266,7 +267,7 @@ export async function startInstalledDashboard(
     const tail = readFileSync(log, "utf8").split("\n").slice(-12).join("\n");
     throw new Error(`${error instanceof Error ? error.message : String(error)}\n${tail}`);
   });
-  return { pid: child.pid ?? 0, port: chosen, log };
+  return { pid: pid ?? 0, port: chosen, log };
 }
 
 export function stopPid(pid: number): void {

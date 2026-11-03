@@ -1,4 +1,5 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { supervisedDetach } from "../watchdog/supervision";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { liveLockOwners, type LockOwner } from "../issues/lock";
@@ -214,25 +215,17 @@ export class WatchdogActivity implements AgentAdapter {
     this.preflight = options.preflight ?? ((request) => preflightWatchdog(request));
     this.spawnWorker =
       options.spawnWorker ??
-      ((argv, environment) => {
-        try {
-          const child = spawn(argv[0]!, argv.slice(1), {
-            cwd: this.repoDir,
-            env: environment,
-            detached: true,
-            stdio: "ignore",
-          });
-          child.unref();
-          return child.pid;
-        } catch (error) {
-          this.log(
-            `could not start the watchdog worker: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          return undefined;
-        }
-      });
+      ((argv, environment) =>
+        supervisedDetach(argv, {
+          cwd: this.repoDir,
+          env: environment,
+          stateDir: this.stateDir,
+          onError: (error) => {
+            this.log(
+              `could not start the watchdog worker: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          },
+        }));
     this.systemctl = options.systemctl ?? defaultSystemctl;
   }
 

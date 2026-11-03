@@ -540,6 +540,7 @@ export async function runGoalDraftOwner(argv: string[]): Promise<void> {
       // request, so this peer discovers none.
       command: `${process.env.AGENT_COMMAND ?? "omp acp"} --no-skills`,
       cwd: repoDir,
+      stateDir,
       onActivity: (activity: AcpActivity) => {
         if (done) return;
         appendActivityLine(run.activity, activity.text, activity.append);

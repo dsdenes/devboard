@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -48,6 +47,7 @@ import {
 } from "../issues/state";
 import { activityDelta } from "./activity";
 import { canonicalProcessPath } from "./state";
+import { supervisedDetach } from "../watchdog/supervision";
 
 /**
  * The dashboard half of Issues mode. It never owns a poll loop, an agent, or
@@ -410,19 +410,16 @@ export class IssuesBridge {
   }
 
   private detach(argv: string[], environment: Record<string, string | undefined>): number | undefined {
-    try {
-      const child = spawn(argv[0]!, argv.slice(1), {
-        cwd: this.repoDir,
-        env: environment,
-        detached: true,
-        stdio: "ignore",
-      });
-      child.unref();
-      return child.pid;
-    } catch (error) {
-      this.log(`could not start the issues worker: ${error instanceof Error ? error.message : String(error)}`);
-      return undefined;
-    }
+    return supervisedDetach(argv, {
+      cwd: this.repoDir,
+      env: environment,
+      stateDir: this.stateDir,
+      onError: (error) => {
+        this.log(
+          `could not start the issues worker: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    });
   }
 
   /* ------------------------------------------------------------------ */

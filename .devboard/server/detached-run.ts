@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -20,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import type { AcpActivity, AcpConnectionOptions, AcpQuestion } from "./acp";
 import { isInteger, isRecord } from "../issues/guards";
 import { pidAlive } from "../issues/lock";
+import { supervisedDetach } from "../watchdog/supervision";
 import { journalKey } from "./journal";
 import { runningHarnessDir } from "./version";
 
@@ -718,21 +718,15 @@ export class DetachedPeer {
     this.#control = detachedRunControlDirectory(this.#directory);
     this.#spawnOwner =
       options.spawnOwner ??
-      ((argv, environment) => {
-        try {
-          const child = spawn(argv[0]!, argv.slice(1), {
-            cwd: options.repoDir,
-            env: environment,
-            detached: true,
-            stdio: "ignore",
-          });
-          child.unref();
-          return child.pid;
-        } catch (error) {
-          options.onStderr?.(`could not start the ${options.kind} run owner: ${String(error)}\n`);
-          return undefined;
-        }
-      });
+      ((argv, environment) =>
+        supervisedDetach(argv, {
+          cwd: options.repoDir,
+          env: environment,
+          stateDir: options.stateDir,
+          onError: (error) => {
+            options.onStderr?.(`could not start the ${options.kind} run owner: ${String(error)}\n`);
+          },
+        }));
     this.#pollMs = options.pollMs ?? 50;
     this.#seenActivity = Math.max(0, options.skipActivity ?? 0);
   }

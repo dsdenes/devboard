@@ -19,6 +19,8 @@ import {
   writeWatchdogSettings,
   type WatchdogSettings,
 } from "./settings";
+import { startOrphanReaper } from "./reaper";
+import { SUPERVISION_INTERVAL_MS } from "./supervision";
 import {
   readNewestWorkerState,
   readWorkerState,
@@ -95,6 +97,15 @@ export interface WatchdogWorkerOptions {
   harnessVersion: string | null;
   /** Test seam; production runs the real cycle. */
   cycle?: WatchdogCycleRunner;
+  /**
+   * Test seam; production starts the orphan reaper on its own interval, which
+   * is independent of the cycle cadence.
+   */
+  supervisor?: (options: {
+    root: string;
+    stateDir: string;
+    intervalMs: number;
+  }) => { stop: () => void };
   pollMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -127,6 +138,14 @@ export async function runWorker(options: WatchdogWorkerOptions): Promise<Watchdo
       ...(lock.owner === undefined ? {} : { ownerPid: lock.owner.pid }),
     };
   }
+
+  // Orphans are reaped on their own interval, not once per cycle: a leaked
+  // child is ended even while the watchdog is waiting for the next window.
+  const supervisor = (options.supervisor ?? startOrphanReaper)({
+    root,
+    stateDir: ownerStateDir,
+    intervalMs: SUPERVISION_INTERVAL_MS,
+  });
 
   // The predecessor's cadence is the family's cadence: a new version must not
   // start a second cycle for a window the old worker is already running.
@@ -300,6 +319,7 @@ export async function runWorker(options: WatchdogWorkerOptions): Promise<Watchdo
       await sleep(Math.min(pollMs, Math.max(1, next - now)));
     }
   } finally {
+    supervisor.stop();
     clearInterval(controlTimer);
     process.off("SIGTERM", requestStop);
     process.off("SIGINT", requestStop);

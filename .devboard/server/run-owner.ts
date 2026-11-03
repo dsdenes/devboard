@@ -116,6 +116,7 @@ class Owner {
       this.#peer = new AcpConnection({
         command,
         cwd,
+        stateDir: this.#stateDir,
         permissionPolicy:
           permission === "read-only" || permission === "deny" ? permission : "allow",
         onActivity: (activity: AcpActivity) => {

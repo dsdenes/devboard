@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { liveLockOwners, type LockOwner } from "../issues/lock";
 import { rootProblem } from "../issues/repository";
@@ -25,6 +24,7 @@ import { releaseTrainWorkerStates } from "../release-train/worker";
 import type { AgentDescriptor, AgentReleaseRow, AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
 import { hostHarnessDir, readHarnessVersion } from "./version";
+import { supervisedDetach } from "../watchdog/supervision";
 
 /**
  * The Release Train page's server half. It reads the detached worker's state
@@ -93,25 +93,17 @@ export class ReleaseTrainActivity implements AgentAdapter {
     this.log = options.log ?? (() => undefined);
     this.spawnWorker =
       options.spawnWorker ??
-      ((argv, environment) => {
-        try {
-          const child = spawn(argv[0]!, argv.slice(1), {
-            cwd: this.repoDir,
-            env: environment,
-            detached: true,
-            stdio: "ignore",
-          });
-          child.unref();
-          return child.pid;
-        } catch (error) {
-          this.log(
-            `could not start the Release Train worker: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          return undefined;
-        }
-      });
+      ((argv, environment) =>
+        supervisedDetach(argv, {
+          cwd: this.repoDir,
+          env: environment,
+          stateDir: this.stateDir,
+          onError: (error) => {
+            this.log(
+              `could not start the Release Train worker: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          },
+        }));
   }
 
   begin(): void {
