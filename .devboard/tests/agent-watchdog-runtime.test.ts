@@ -3,13 +3,15 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { acquireWorkerLock } from "../issues/lock";
 import { agentRegistry } from "../server/agents/registry";
 import { readHarnessVersion } from "../server/version";
 import { WatchdogActivity, preflightWatchdog } from "../server/watchdog";
-import { writeWatchdogCommand } from "../watchdog/control";
+import { takeWatchdogCommands, writeWatchdogCommand } from "../watchdog/control";
 import { loadLedger, saveLedger } from "../watchdog/ledger";
 import {
   controlDirectory,
+  lockPath,
   versionedControlDirectory,
   versionedLockPath,
   versionedWorkerDirectory,
@@ -303,6 +305,82 @@ describe("detached watchdog worker", () => {
 });
 
 describe("watchdog lifecycle and ownership", () => {
+  test("a Stop during the preflight cancels the start instead of being lost", async () => {
+    const root = await temporaryRoot();
+    const gate = Promise.withResolvers<void>();
+    let spawned = 0;
+    const activity = adapter(root, {
+      preflight: async () => {
+        await gate.promise;
+        return { ok: true };
+      },
+      spawnWorker: () => {
+        spawned += 1;
+        return undefined;
+      },
+    });
+    try {
+      const pending = activity.start();
+      expect(activity.snapshot().lifecycle).toBe("starting");
+      const stopped = activity.stop();
+      expect(stopped.ok).toBe(true);
+      gate.resolve();
+      const started = await pending;
+      expect(started.ok).toBe(true);
+      expect(spawned).toBe(0);
+      expect(activity.snapshot().lifecycle).toBe("stopped");
+    } finally {
+      activity.dispose();
+    }
+  }, 20_000);
+
+  test("Stop writes the stop command to every owned worker", async () => {
+    const root = await temporaryRoot();
+    const directory = watchdogDirectory(root);
+    const stateDir = join(root, "state");
+    const sleeper = spawn("sleep", ["30"], { stdio: "ignore" });
+    const acquired = acquireWorkerLock(lockPath(directory), "0.0.1", {
+      repo: root,
+      stateDir,
+      harnessVersion: "0.0.1",
+      argv: [],
+    });
+    expect(acquired.acquired).toBe(true);
+    try {
+      writeWorkerState(directory, {
+        version: 1,
+        pid: sleeper.pid!,
+        startedAt: new Date().toISOString(),
+        root,
+        stateDir,
+        lifecycle: "running",
+        enabled: true,
+        harnessVersion: "0.0.2",
+        argv: [],
+        lastRunAt: null,
+        nextRunAt: null,
+        lastError: null,
+        notice: null,
+        updatedAt: new Date().toISOString(),
+      });
+      const activity = adapter(root, { spawnWorker: () => undefined });
+      try {
+        expect(activity.snapshot().workers?.length).toBe(2);
+        const stopped = activity.stop();
+        expect(stopped.ok).toBe(true);
+        expect(takeWatchdogCommands(versionedControlDirectory(directory, "0.0.1"))).toEqual([
+          { type: "stop" },
+        ]);
+        expect(takeWatchdogCommands(controlDirectory(directory))).toEqual([{ type: "stop" }]);
+      } finally {
+        activity.dispose();
+      }
+    } finally {
+      if (acquired.acquired) acquired.release();
+      sleeper.kill("SIGKILL");
+    }
+  }, 20_000);
+
   test("Start reaches starting before the worker and running once its state is readable", async () => {
     const root = await temporaryRoot();
     const directory = watchdogDirectory(root);

@@ -170,6 +170,10 @@ export class WatchdogActivity implements AgentAdapter {
   private timerReading = false;
   private starting = false;
   private startingSince: number | null = null;
+  /** A start is awaiting its preflight or spawn, whatever it displays. */
+  private startPending = false;
+  /** A Stop that arrived during `startPending`, honoured before any spawn. */
+  private startCancelled = false;
   private stopRequested = false;
   private startError: string | null = null;
   private notice: string | null = null;
@@ -519,7 +523,7 @@ export class WatchdogActivity implements AgentAdapter {
   }
 
   async start(): Promise<AgentCommandResult> {
-    if (this.starting) return { ok: true };
+    if (this.startPending) return { ok: true };
     // Start never adds a second worker to a live family, whatever version it
     // is: only Stop (or the automatic drain/exiting takeover) ends one.
     const owners = this.owners();
@@ -534,8 +538,10 @@ export class WatchdogActivity implements AgentAdapter {
       return { ok: true };
     }
 
+    this.startPending = true;
     this.starting = true;
     this.startingSince = this.now();
+    this.startCancelled = false;
     this.startError = null;
     this.notice = null;
     try {
@@ -543,33 +549,55 @@ export class WatchdogActivity implements AgentAdapter {
         repoDir: this.repoDir,
         environment: this.environment,
       });
+      // A Stop that arrived during the preflight cancels this start: nothing is
+      // spawned and the worker runs no cycle, so the operator's intent holds.
+      if (this.startCancelled) {
+        this.endStart();
+        return { ok: true };
+      }
       if (!result.ok) {
-        this.starting = false;
-        this.startingSince = null;
+        this.endStart();
         this.startError = result.message;
         return { ok: false, message: result.message };
       }
       const pid = this.spawnNewest();
       if (pid === undefined) {
-        this.starting = false;
-        this.startingSince = null;
+        this.endStart();
         this.startError = "the Watchdog worker could not be started";
         return { ok: false, message: this.startError };
       }
+      // The spawn happened, so only the in-flight marker ends here; `starting`
+      // stays until the worker publishes its state or the proof times out.
+      this.startPending = false;
+      this.startCancelled = false;
       this.forge.requestSync();
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.starting = false;
-      this.startingSince = null;
+      this.endStart();
       this.startError = message;
       return { ok: false, message };
     }
   }
 
+  /** Ends the in-flight start, whether it spawned a worker or not. */
+  private endStart(): void {
+    this.startPending = false;
+    this.starting = false;
+    this.startingSince = null;
+    this.startCancelled = false;
+  }
+
   stop(): AgentCommandResult {
     const owners = this.owners();
     if (owners.length === 0) {
+      // While a start awaits its preflight no owner exists yet; record the
+      // cancel so that start returns without spawning, instead of losing Stop.
+      if (this.startPending) {
+        this.startCancelled = true;
+        this.startError = null;
+        return { ok: true };
+      }
       return { ok: false, message: "No Watchdog worker is running for this root." };
     }
     const foreign = owners.find((owner) => this.foreignOwner(owner));
