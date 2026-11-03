@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { homedir } from "node:os";
 import {
   findOnPath,
+  ompCommandPaths,
   originForge,
   rootProblem,
 } from "../repository";
@@ -59,12 +59,9 @@ export function scoutCommandPaths(
   repoDir: string,
   environment: Record<string, string | undefined> = process.env,
 ): string[] {
-  const home = environment.HOME ?? homedir();
-  return [
-    join(resolve(repoDir), ".omp", "commands", "scout-recommendations.md"),
-    join(home, ".omp", "commands", "scout-recommendations.md"),
-    join(home, ".omp", "agent", "commands", "scout-recommendations.md"),
-  ];
+  return ompCommandPaths(repoDir, environment).map((directory) =>
+    join(directory, "scout-recommendations.md"),
+  );
 }
 
 export async function preflightScout(options: ScoutPreflightOptions): Promise<ScoutPreflightResult> {
