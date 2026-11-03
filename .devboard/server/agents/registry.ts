@@ -662,6 +662,9 @@ const SHARED_ISSUES = {
 /** The Consistent Naming family id, shared by its descriptor and its tab. */
 const CONSISTENT_NAMING_ID = "consistent-naming";
 
+/** The Single Responsibility family's identity: its descriptor and its tab. */
+const SINGLE_RESPONSIBILITY_ID = "single-responsibility";
+
 export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.freeze([
   validateAgentDescriptor({
     id: "scout",
@@ -857,8 +860,8 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     issues: SHARED_ISSUES,
     detail: { panel: "activity", testId: "agent-detail" },
     tab: {
-      id: "single-responsibility",
-      kind: "single-responsibility",
+      id: SINGLE_RESPONSIBILITY_ID,
+      kind: SINGLE_RESPONSIBILITY_ID,
       title: "Single Responsibility",
     },
   }),
