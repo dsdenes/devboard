@@ -1679,12 +1679,34 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* The overview names the project path, so a long identity truncates with a tooltip. */
+.discover-page__title--truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .discover-page__subtitle {
   color: var(--muted-foreground);
   font-size: 12px;
+  font-weight: 400;
   line-height: 1.45;
   margin: 0;
   max-width: 72ch;
+}
+
+/* The frame's optional meta line: mono-small, muted, one dense row. */
+.discover-page__meta {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  gap: 4px 8px;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .discover-page__actions {
@@ -1702,63 +1724,6 @@ kbd {
 
 .discover-card {
   min-width: 0;
-}
-
-.discover-head {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.discover-head__top {
-  align-items: flex-start;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-}
-
-.discover-head__identity {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.discover-head__title {
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.discover-head__definition {
-  font-size: 13px;
-  line-height: 1.45;
-  margin: 0;
-  max-width: 72ch;
-  overflow-wrap: anywhere;
-}
-
-.discover-head__actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.discover-head__meta {
-  align-items: center;
-  color: var(--muted-foreground);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 11px;
-  gap: 4px 8px;
 }
 
 .discover-sheet {

@@ -5119,6 +5119,9 @@ try {
     freshnessText: string;
     definitionText: string;
     definitionBelowTitle: boolean;
+    frameHeader: boolean;
+    frameSubtitleType: string;
+    frameMetaType: string;
     dirtyBadges: number;
     evidence: number;
     confidence: number;
@@ -5190,14 +5193,30 @@ try {
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
       freshnessText: document.querySelector('[data-testid="discover-freshness"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
-      definitionText: document.querySelector('#workspace-discover .discover-head__definition')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      definitionText: document.querySelector('#workspace-discover .discover-page__subtitle')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
       definitionBelowTitle: (() => {
-        const title = document.querySelector('#workspace-discover .discover-head__title');
-        const definition = document.querySelector('#workspace-discover .discover-head__definition');
+        const title = document.querySelector('#workspace-discover .discover-page__title');
+        const definition = document.querySelector('#workspace-discover .discover-page__subtitle');
         if (title === null || definition === null) return false;
         return definition.getBoundingClientRect().top >= title.getBoundingClientRect().bottom - 1;
       })(),
-      dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-head .badge')]
+      frameHeader: document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] > header.discover-page__header') !== null,
+      frameSubtitleType: (() => {
+        const subtitle = document.querySelector('#workspace-discover .discover-page__subtitle');
+        if (subtitle === null) return "";
+        const style = getComputedStyle(subtitle);
+        const size = Number.parseFloat(style.fontSize);
+        const line = Number.parseFloat(style.lineHeight);
+        const ratio = size > 0 ? Math.round((line / size) * 100) / 100 : 0;
+        return [size, style.fontWeight, ratio].join("/");
+      })(),
+      frameMetaType: (() => {
+        const meta = document.querySelector('#workspace-discover .discover-page__meta');
+        if (meta === null) return "";
+        const style = getComputedStyle(meta);
+        return [Number.parseFloat(style.fontSize), style.fontFamily].join("/");
+      })(),
+      dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-page__header .badge')]
         .filter((badge) => badge.textContent.trim() === "dirty").length,
       evidence: document.querySelectorAll('[data-testid="discover-evidence"]').length,
       confidence: document.querySelectorAll('[data-testid="discover-confidence"]').length,
@@ -5304,6 +5323,22 @@ try {
     "the Discover definition does not sit below the project title",
     discoverTables,
   );
+  check(
+    discoverTables.frameHeader,
+    "the Discover overview identity is not the shared page frame",
+    discoverTables.frameHeader,
+  );
+  check(
+    discoverTables.frameSubtitleType === "12/400/1.45",
+    "the Discover definition is not body-small type",
+    discoverTables.frameSubtitleType,
+  );
+  check(
+    discoverTables.frameMetaType.startsWith("11.5/") &&
+      discoverTables.frameMetaType.includes("monospace"),
+    "the Discover freshness line is not mono-small type",
+    discoverTables.frameMetaType,
+  );
   check(discoverTables.staticText === 0, "Discover still renders static lead or note prose", discoverTables.staticText);
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
@@ -5349,7 +5384,7 @@ try {
     levelChips: number;
     statLabels: string[];
   }>(`(() => {
-    const head = document.querySelector('#workspace-discover .discover-head');
+    const head = document.querySelector('#workspace-discover .discover-page__header');
     const sheet = document.querySelector('[data-testid="discover-sheet"]');
     const rail = sheet?.querySelector('.discover-rail');
     const column = sheet?.querySelector('.discover-col');
@@ -6556,7 +6591,7 @@ try {
     remoteStrip,
   );
   const retainedTitle = await page.eval<string>(
-    `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
+    `document.querySelector('#workspace-discover .discover-page__title')?.textContent?.trim() ?? ""`,
   );
   check(
     retainedTitle === "octocat/Hello-World",
@@ -6608,7 +6643,7 @@ try {
     20_000,
   );
   const switchedTitle = await page.eval<string>(
-    `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
+    `document.querySelector('#workspace-discover .discover-page__title')?.textContent?.trim() ?? ""`,
   );
   check(
     switchedTitle === "octocat/Second-Project",
