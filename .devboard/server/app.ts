@@ -88,6 +88,7 @@ import {
   type ConsistentNamingBridgeOptions,
 } from "./consistent-naming";
 import { McpOptimizerActivity, type McpOptimizerActivityOptions } from "./mcp-optimizer";
+import { ComplexitySnapshots, complexityClock, type ComplexityOptions } from "./complexity/snapshots";
 import { ReleaseTrainActivity, type ReleaseTrainActivityOptions } from "./release-train";
 import { mcpOptimizerDirectory } from "../mcp-optimizer/paths";
 import { readMcpOptimizerSettings } from "../mcp-optimizer/settings";
@@ -293,6 +294,11 @@ export interface AppOptions {
   >;
   /** Release Train's test seams; production reads its worker's state. */
   releaseTrain?: Pick<ReleaseTrainActivityOptions, "now" | "spawnWorker">;
+  /**
+   * Complexity dashboard's test seams: the clock the daily rule follows and
+   * the measurement it records; production measures this harness's source.
+   */
+  complexity?: Pick<ComplexityOptions, "now" | "analyze" | "intervalMs">;
   /** Watchdog's test seams; production reads `gh` in the background. */
   watchdog?: Pick<
     WatchdogActivityOptions,
@@ -673,6 +679,7 @@ type ClientMessage =
   | { type: "getVersion" }
   | { type: "getMcpTools" }
   | { type: "getInstalledSkills" }
+  | { type: "getComplexity" }
   | { type: "setInstalledSkillEnabled"; name?: unknown; enabled?: unknown }
   | { type: "getIssues" }
   | { type: "getIssuesRun"; runId?: unknown }
@@ -794,6 +801,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getMcpTools" };
     case "getInstalledSkills":
       return { type: "getInstalledSkills" };
+    case "getComplexity":
+      return { type: "getComplexity" };
     case "setInstalledSkillEnabled":
       return {
         type: "setInstalledSkillEnabled",
@@ -2890,6 +2899,30 @@ export function createApp(options: AppOptions) {
     // modes hold, so a transition is pushed once per change.
     syncDiscoverBusy();
   }
+
+  /**
+   * The complexity dashboard records one snapshot per UTC calendar day of this
+   * harness's own application source. A restart on a day that already has one
+   * writes nothing, and a day that rolls over while the server runs gets its
+   * own file on the next check. The check is part of this process's lifecycle.
+   */
+  const complexitySubscribers = new Set<ServerWebSocket<unknown>>();
+  const complexity = new ComplexitySnapshots({
+    stateDir,
+    repoDir,
+    now: complexityClock(),
+    ...options.complexity,
+    reportError: (line) => process.stderr.write(`${line}\n`),
+    // A page that asked for the history holds the only interest in it, so a
+    // new daily snapshot reaches exactly those clients and never interrupts
+    // another page's own reply.
+    onRecorded: () => {
+      const state = complexity.frame();
+      for (const client of complexitySubscribers) {
+        send(client, { type: "complexityState", state });
+      }
+    },
+  });
 
   /** Re-reads stale usage and pushes the masked provider state to everyone. */
   async function publishProviders(force = false): Promise<void> {
@@ -8391,6 +8424,7 @@ export function createApp(options: AppOptions) {
 
       close(ws) {
         clients.delete(ws);
+        complexitySubscribers.delete(ws);
         ask.disconnect(ws);
       },
 
@@ -8415,6 +8449,7 @@ export function createApp(options: AppOptions) {
           command.type === "getVersion" ||
           command.type === "getMcpTools" ||
           command.type === "getInstalledSkills" ||
+          command.type === "getComplexity" ||
           command.type === "getIssues" ||
           command.type === "getIssuesRun" ||
           command.type === "getGoalDrafts" ||
@@ -8450,6 +8485,9 @@ export function createApp(options: AppOptions) {
             });
           } else if (command.type === "getInstalledSkills") {
             await sendInstalledSkills(ws);
+          } else if (command.type === "getComplexity") {
+            complexitySubscribers.add(ws);
+            send(ws, { type: "complexityState", state: complexity.frame() });
           } else if (command.type === "setInstalledSkillEnabled") {
             await setInstalledSkillEnabled(ws, command.name, command.enabled);
           } else if (command.type === "getIssues") {
@@ -8774,6 +8812,7 @@ export function createApp(options: AppOptions) {
    */
   try {
     startProviderRefresh();
+    complexity.begin();
     flow.begin();
     issues.begin();
     goalDrafts.begin();
@@ -8800,6 +8839,7 @@ export function createApp(options: AppOptions) {
       persistSuppressed = true;
     }
     ask.dispose();
+    complexity.dispose();
     flow.dispose();
     issues.dispose();
     goalDrafts.dispose(restarting);

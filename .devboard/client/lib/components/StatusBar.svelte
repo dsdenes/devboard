@@ -7,6 +7,7 @@
   import { issuesIndicatorTitle, issuesLabel as issuesLabelFor } from "../issues-label";
   import { layout } from "../layout.svelte";
   import { osNotifications } from "../os-notifications.svelte";
+  import { providerIndicatorLabel, providerIndicatorTitle } from "../provider-label";
   import { providers } from "../providers.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
@@ -48,6 +49,16 @@
     }),
   );
 
+  const providersLabel = $derived(providerIndicatorLabel(providers.selection));
+
+  const providersTitle = $derived(
+    providerIndicatorTitle({
+      selection: providers.selection,
+      refusal: providers.refusal,
+      rule: providers.rule,
+    }),
+  );
+
   /**
    * A source checkout's second value is the source version a restart would
    * load, so it is labeled `source`; an installed host keeps `installed` for
@@ -85,12 +96,12 @@
       data-testid="providers-indicator"
       data-command="settings.providers"
       data-state={providers.selection === null ? "none" : providers.selection.provider}
-      title={providers.indicatorTitle}
-      aria-label={`${providers.indicatorLabel}. Open the Providers dialog.`}
+      title={providersTitle}
+      aria-label={`${providersLabel}. Open the Providers dialog.`}
       onclick={() => providers.openDialog()}
     >
       <span class="status-providers__dot" aria-hidden="true"></span>
-      <span class="status-providers__label">{providers.indicatorLabel}</span>
+      <span class="status-providers__label">{providersLabel}</span>
     </Button>
   </div>
   <span class="status-bar__spacer" aria-hidden="true"></span>

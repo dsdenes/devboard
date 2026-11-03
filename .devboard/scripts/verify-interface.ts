@@ -1342,7 +1342,7 @@ async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
     async () => {
       try {
         const response = await fetch(ready, {
-          ...VERIFY_DASHBOARD_AUTHORIZATION,
+          headers: { ...VERIFY_DASHBOARD_AUTHORIZATION },
           signal: AbortSignal.timeout(1500),
         });
         return response.ok ? true : undefined;
@@ -1566,6 +1566,7 @@ interface FeedbackCall {
   url: string;
   title: string;
   body: string;
+  labels: string[];
 }
 
 const PROVIDER_GO_KEY = "sk-go-verify-interface-0000abcd";
@@ -1575,6 +1576,8 @@ const PROVIDER_OR_SECOND_KEY = "sk-or-verify-interface-second-2222f00d";
 const PROVIDER_INVALID_KEY = "sk-verify-interface-invalid-3333dead";
 /** Refused slowly, so another client's state frame lands during the save. */
 const PROVIDER_SLOW_INVALID_KEY = "sk-verify-interface-slow-invalid-4444f00d";
+/** A distinct invalid-key text for the automatic notification filing. */
+const PROVIDER_FORBIDDEN_KEY = "sk-verify-interface-forbidden-5555beef";
 
 const providerBehaviors = new Map<
   string,
@@ -1591,6 +1594,7 @@ providerBehaviors.set(PROVIDER_OR_KEY, { or: { limit: 100, remaining: 40 } });
 providerBehaviors.set(PROVIDER_OR_SECOND_KEY, { or: { limit: 100, remaining: 0 } });
 providerBehaviors.set(PROVIDER_INVALID_KEY, { status: 401 });
 providerBehaviors.set(PROVIDER_SLOW_INVALID_KEY, { status: 401, delayMs: 400 });
+providerBehaviors.set(PROVIDER_FORBIDDEN_KEY, { status: 403 });
 
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
@@ -1761,11 +1765,15 @@ try {
       const payload = (await request.json().catch(() => ({}))) as {
         title?: unknown;
         body?: unknown;
+        labels?: unknown;
       };
       const record = {
         url: request.url,
         title: typeof payload.title === "string" ? payload.title : "",
         body: typeof payload.body === "string" ? payload.body : "",
+        labels: Array.isArray(payload.labels)
+          ? payload.labels.filter((label): label is string => typeof label === "string")
+          : [],
       };
       feedbackCalls.push(record);
       if (feedbackMode === "fail") {
@@ -1989,6 +1997,16 @@ try {
         try { window.__viFrames.push(String(data)); } catch (error) { /* ignored */ }
         return original.call(this, data);
       };
+      // Records every socket the page opens, so the notification phase can
+      // raise the browser's own socket error event on the live connection.
+      window.__viSockets = [];
+      window.WebSocket = new Proxy(WebSocket, {
+        construct(target, args) {
+          const socket = new target(...args);
+          window.__viSockets.push(socket);
+          return socket;
+        },
+      });
       window.__viExceptions = [];
       window.addEventListener("error", (event) => window.__viExceptions.push(String(event.message)));
       window.addEventListener("unhandledrejection", (event) => window.__viExceptions.push(String(event.reason)));
@@ -7086,6 +7104,56 @@ try {
     "the disabled feedback endpoint did not name DEVBOARD_GITEA_URL",
     { status: refused.status, refusal },
   );
+  // An error notification files nothing while harness reporting is absent: the
+  // card names the disabled reporting and keeps the manual retry control.
+  const feedbackOffRequests = feedbackRequests.length;
+  feedbackOffProcess.kill("SIGTERM");
+  feedbackOffProcess = undefined;
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() !== "Connected"`,
+    "the closed connection without harness reporting",
+    20_000,
+  );
+  await runPalette("goal.document.open");
+  await page.wait(
+    `document.querySelector('[data-testid="goal-text"]') !== null`,
+    "the Goal document without harness reporting",
+  );
+  await page.click('[data-testid="revise-goal"]');
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+      (entry) =>
+        entry.getAttribute("data-severity") === "error" &&
+        entry.textContent.includes("Not connected") &&
+        entry.querySelector(".notification__error")?.textContent?.includes("reporting is disabled") === true,
+    )`,
+    "the disabled-reporting notification",
+    20_000,
+  );
+  const disabledNotification = await page.eval<{ message: string; button: boolean; link: boolean }>(`(() => {
+    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+      (item) => item.getAttribute("data-severity") === "error" && item.textContent.includes("Not connected"),
+    );
+    const button = entry?.querySelector(".notification__file");
+    return {
+      message: entry?.querySelector(".notification__error")?.textContent?.trim() ?? "",
+      button: button instanceof HTMLButtonElement && button.textContent?.trim() === "File issue",
+      link: entry?.querySelector(".notification__link") !== null,
+    };
+  })()`);
+  check(
+    disabledNotification.message.startsWith("Issue not filed:") &&
+      disabledNotification.message.includes("reporting is disabled") &&
+      disabledNotification.button &&
+      !disabledNotification.link,
+    "an error notification without reporting did not reveal the retry button",
+    disabledNotification,
+  );
+  check(
+    feedbackRequests.length === feedbackOffRequests,
+    "the client attempted a report while harness reporting is disabled",
+    feedbackRequests,
+  );
   check(!gateOff.skills, "the host without Discover artifacts renders a Skills group", gateOff);
   check(
     !existsSync(join(root, "gate-off-state", "discover-remote")),
@@ -10879,6 +10947,7 @@ try {
   );
   await runPalette("goal.document.open");
   await page.wait(`document.querySelector('[data-testid="goal-text"]') !== null`, "the Goal document while disconnected");
+  const feedbackAttempts = feedbackRequests.length;
   await page.click('[data-testid="revise-goal"]');
   await page.wait(
     `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some((entry) => entry.textContent.includes("Not connected"))`,
@@ -11013,8 +11082,13 @@ try {
       10_000,
     );
   }
-  // The card closes itself after five seconds, so the rest of the filing flow
-  // runs on its history entry, where the same controls stay available.
+  // The disconnected errors were attempted automatically: the identical
+  // second one sent no second report.
+  check(
+    feedbackRequests.length === feedbackAttempts + 1,
+    "two identical error notifications sent more than one report",
+    feedbackRequests.length - feedbackAttempts,
+  );
   await saveShot("notification-issue-file");
   await page.click('[data-testid="notification-indicator"]');
   await page.wait(
@@ -11024,15 +11098,53 @@ try {
   startServer();
   await waitForHttp(baseUrl);
   await page.wait(`document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`, "reconnection", 30_000);
+  await page.key("Escape");
+  await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
+  // A fresh page session: nothing filed before it exists, and the warning
+  // path is raised by the browser's own socket error event.
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="app-shell"]') !== null &&
+      document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reloaded dashboard",
+    30_000,
+  );
   await clearFeedback();
-  const notificationFile = await page.eval<{
+  await setFeedbackMode("ok");
+  const socketEvent = await page.eval<boolean>(`(() => {
+    const sockets = window.__viSockets ?? [];
+    const socket = sockets[sockets.length - 1];
+    if (socket === undefined) return false;
+    socket.dispatchEvent(new Event("error"));
+    return true;
+  })()`);
+  check(socketEvent, "the page exposed no live socket for the warning");
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+      (entry) => entry.getAttribute("data-severity") === "warning" && entry.textContent.includes("Connection lost"),
+    )`,
+    "the connection warning notification",
+    20_000,
+  );
+  await delay(300);
+  check(
+    feedbackCalls.length === 0 && feedbackRequests.length === 0,
+    "a warning notification filed itself",
+    { calls: feedbackCalls.length, requests: feedbackRequests.length },
+  );
+  await page.click('[data-testid="notification-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="notification-history"]') !== null`,
+    "the notification history for the warning",
+  );
+  const warningControl = await page.eval<{
     present: boolean;
     label: string;
     text: string;
     disabled: boolean;
   }>(`(() => {
     const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
-      (item) => item.textContent.includes("Not connected"),
+      (item) => item.getAttribute("data-severity") === "warning" && item.textContent.includes("Connection lost"),
     );
     const button = entry?.querySelector(".notification__file");
     return {
@@ -11043,101 +11155,241 @@ try {
     };
   })()`);
   check(
-    notificationFile.present &&
-      notificationFile.label === "File an issue from this notification" &&
-      notificationFile.text === "File issue" &&
-      !notificationFile.disabled,
-    "an error notification has no filing control",
-    notificationFile,
+    warningControl.present &&
+      warningControl.label === "File an issue from this notification" &&
+      warningControl.text === "File issue" &&
+      !warningControl.disabled,
+    "a warning notification has no manual filing control",
+    warningControl,
   );
-  const clickNotificationFile = (): Promise<unknown> =>
-    page.eval(`(() => {
-      const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
-        (item) => item.textContent.includes("Not connected"),
-      );
-      entry?.querySelector(".notification__file")?.click();
-    })()`);
-
-  // A failed filing keeps the card and returns the button for a retry.
-  await setFeedbackMode("fail");
-  await clickNotificationFile();
+  await page.eval(`(() => {
+    const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
+      (item) => item.getAttribute("data-severity") === "warning" && item.textContent.includes("Connection lost"),
+    );
+    entry?.querySelector(".notification__file")?.click();
+  })()`);
+  await waitForFeedbackCalls(1);
   await page.wait(
     `[...document.querySelectorAll('[data-testid="notification-history"] .notification')].some(
-      (entry) =>
-        entry.textContent.includes("Not connected") &&
-        entry.querySelector(".notification__error")?.textContent
-          ?.includes("The issue could not be filed.") === true,
+      (entry) => entry.textContent.includes("Connection lost") && entry.querySelector(".notification__link") !== null,
     )`,
-    "the notification filing error",
+    "the warning notification issue link",
     20_000,
   );
-  const notificationFailure = await page.eval<{ text: string; retry: boolean }>(`(() => {
+  check(
+    feedbackCalls[0]!.title.startsWith("[ui] Warning notification: ") &&
+      feedbackCalls[0]!.title.includes("Connection lost") &&
+      !feedbackCalls[0]!.body.includes("Investigate this error and fix it if it is needed."),
+    "the warning notification filing is not the manual warning flow",
+    feedbackCalls[0],
+  );
+  await page.key("Escape");
+  await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
+
+  // A forced delivery failure keeps the card, names the failure, and reveals
+  // the retry button; the retry replaces the message with the issue link.
+  await clearFeedback();
+  await setFeedbackMode("fail");
+  await runPalette("settings.providers");
+  await page.wait(
+    `document.querySelector('[data-testid="provider-key-input"]') !== null`,
+    "the providers dialog for the failing notification",
+  );
+  await page.fill('[data-testid="provider-key-input"]', PROVIDER_FORBIDDEN_KEY);
+  await page.click('[data-testid="provider-save"]');
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+      (entry) =>
+        entry.textContent.includes("HTTP 403") &&
+        entry.querySelector(".notification__error")?.textContent
+          ?.includes("Issue not filed: The issue could not be filed.") === true,
+    )`,
+    "the automatic filing failure",
+    20_000,
+  );
+  await waitForFeedbackCalls(1);
+  await page.key("Escape");
+  await page.wait(
+    `document.querySelector('[data-testid="providers-dialog"]') === null`,
+    "the providers dialog to close",
+  );
+  // The history keeps the failed card readable after its five-second expiry.
+  await page.click('[data-testid="notification-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="notification-history"]') !== null`,
+    "the notification history for the failed filing",
+  );
+  const failedCard = await page.eval<{ message: string; button: boolean; link: boolean }>(`(() => {
     const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
-      (item) => item.textContent.includes("Not connected"),
+      (item) => item.textContent.includes("HTTP 403"),
     );
-    const retry = entry?.querySelector(".notification__file");
+    const button = entry?.querySelector(".notification__file");
     return {
-      text: entry?.querySelector(".notification__error")?.textContent?.trim() ?? "",
-      retry: retry instanceof HTMLButtonElement && !retry.disabled && retry.textContent?.trim() === "File issue",
+      message: entry?.querySelector(".notification__error")?.textContent?.trim() ?? "",
+      button: button instanceof HTMLButtonElement && !button.disabled && button.textContent?.trim() === "File issue",
+      link: entry?.querySelector(".notification__link") !== null,
     };
   })()`);
   check(
-    notificationFailure.text.startsWith("Issue not filed: The issue could not be filed.") &&
-      notificationFailure.retry,
-    "a failed notification filing does not offer a retry",
-    notificationFailure,
+    failedCard.message.startsWith("Issue not filed: The issue could not be filed.") &&
+      failedCard.button &&
+      !failedCard.link,
+    "a failed automatic filing does not reveal the retry button",
+    failedCard,
   );
-
   await setFeedbackMode("ok");
-  await clickNotificationFile();
+  await page.eval(`(() => {
+    const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
+      (item) => item.textContent.includes("HTTP 403"),
+    );
+    entry?.querySelector(".notification__file")?.click();
+  })()`);
   await waitForFeedbackCalls(2);
   await page.wait(
     `[...document.querySelectorAll('[data-testid="notification-history"] .notification')].some(
-      (entry) => entry.textContent.includes("Not connected") && entry.querySelector(".notification__link") !== null,
+      (entry) =>
+        entry.textContent.includes("HTTP 403") &&
+        entry.querySelector(".notification__link") !== null &&
+        entry.querySelector(".notification__error") === null,
     )`,
-    "the notification issue link",
+    "the retried notification issue link",
     20_000,
   );
-  const notificationCall = feedbackCalls[1]!;
   check(
-    notificationCall.title.includes("[ui] Error notification: ") &&
-      notificationCall.title.includes("Not connected"),
-    "a notification issue has the wrong title",
-    notificationCall.title,
+    feedbackCalls.length === 2 &&
+      feedbackCalls[1]!.title.includes("[ui] Error notification: ") &&
+      feedbackCalls[1]!.body.includes("Investigate this error and fix it if it is needed."),
+    "the retried notification issue is wrong",
+    feedbackCalls,
+  );
+  await page.key("Escape");
+  await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
+
+  // A fresh page session files a new error with no click. The card carries no
+  // filing button, links to the returned issue, and an identical error links
+  // to the same issue without a second request.
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="app-shell"]') !== null &&
+      document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reloaded dashboard",
+    30_000,
+  );
+  await clearFeedback();
+  await setFeedbackMode("ok");
+  const saveInvalidProvider = async (key: string): Promise<void> => {
+    await runPalette("settings.providers");
+    await page.wait(
+      `document.querySelector('[data-testid="provider-key-input"]') !== null`,
+      "the providers dialog for the automatic filing",
+    );
+    await page.fill('[data-testid="provider-key-input"]', key);
+    await page.click('[data-testid="provider-save"]');
+    await page.wait(
+      `document.querySelector('[data-testid="provider-error"]') !== null`,
+      "the provider refusal",
+      20_000,
+    );
+    await page.key("Escape");
+    await page.wait(
+      `document.querySelector('[data-testid="providers-dialog"]') === null`,
+      "the providers dialog to close",
+    );
+  };
+  await saveInvalidProvider(PROVIDER_INVALID_KEY);
+  await waitForFeedbackCalls(1);
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+      (entry) =>
+        entry.textContent.includes("HTTP 401") &&
+        entry.querySelector(".notification__link")?.getAttribute("href") === ${JSON.stringify(stubIssueUrl)} &&
+        entry.querySelector(".notification__file") === null,
+    )`,
+    "the automatic error notification link",
+    20_000,
+  );
+  const automaticCall = feedbackCalls[0]!;
+  check(
+    automaticCall.title === "[ui] Error notification: The provider rejected this key (HTTP 401).",
+    "an automatically filed issue has the wrong title",
+    automaticCall.title,
   );
   check(
-    notificationCall.body.startsWith("## Operator report") &&
-      notificationCall.body.includes("Not connected") &&
-      notificationCall.body.includes("### DOM excerpt") &&
-      notificationCall.body.includes(`- Selected element: \`.notification[data-notification-id=`) &&
-      notificationCall.body.includes("- Route: `/"),
-    "a notification issue lost its text or captured context",
-    notificationCall.body,
+    automaticCall.body.startsWith("## Operator report") &&
+      automaticCall.body.includes("The provider rejected this key (HTTP 401).") &&
+      automaticCall.body.includes("Investigate this error and fix it if it is needed.") &&
+      automaticCall.body.includes("Source: Providers") &&
+      automaticCall.body.includes("Raised at: ") &&
+      automaticCall.body.includes("### DOM excerpt") &&
+      automaticCall.body.includes(`- Selected element: \`.notification[data-notification-id=`) &&
+      automaticCall.body.includes("- Route: `/"),
+    "an automatic notification issue lost the text, instruction, or captured context",
+    automaticCall.body,
   );
   check(
-    feedbackRequests.length === 2 &&
+    automaticCall.labels.length === 0,
+    "an automatic notification issue carries an automatic label",
+    automaticCall.labels,
+  );
+  check(
+    feedbackRequests.length === 1 &&
       feedbackRequests.every((request) => request.action === "REPORT") &&
-      String(feedbackRequests[1]?.report).startsWith("Error notification: ") &&
-      String(feedbackRequests[1]?.report).includes("Raised at: "),
-    "the notification filing request is wrong",
+      String(feedbackRequests[0]?.report).startsWith("Error notification: ") &&
+      String(feedbackRequests[0]?.report).includes("Raised at: ") &&
+      String(feedbackRequests[0]?.report).includes("Investigate this error and fix it if it is needed."),
+    "the automatic notification filing request is wrong",
     feedbackRequests,
   );
-  const notificationLink = await page.eval<{ text: string; href: string }>(`(() => {
+  await page.click('[data-testid="notification-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="notification-history"]') !== null`,
+    "the notification history after the automatic filing",
+  );
+  const automaticEntry = await page.eval<{ button: boolean; link: string; error: string }>(`(() => {
     const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
-      (item) => item.textContent.includes("Not connected"),
+      (item) => item.textContent.includes("HTTP 401"),
     );
-    const link = entry?.querySelector(".notification__link");
     return {
-      text: link?.textContent?.trim() ?? "",
-      href: link?.getAttribute("href") ?? "",
+      button: entry?.querySelector(".notification__file") !== null,
+      link: entry?.querySelector(".notification__link")?.getAttribute("href") ?? "",
+      error: entry?.querySelector(".notification__error")?.textContent?.trim() ?? "",
     };
   })()`);
-  await saveShot("notification-issue-filed");
   check(
-    notificationLink.text === "Open issue" && notificationLink.href === stubIssueUrl,
-    "the notification does not link to the filed issue",
-    notificationLink,
+    !automaticEntry.button && automaticEntry.link === stubIssueUrl && automaticEntry.error.length === 0,
+    "the notification history offers a filing control for a filed error",
+    automaticEntry,
   );
+  await page.key("Escape");
+  await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
+
+  await saveInvalidProvider(PROVIDER_INVALID_KEY);
+  await page.click('[data-testid="notification-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="notification-history"]') !== null`,
+    "the notification history after the repeated error",
+  );
+  await page.wait(
+    `(() => {
+      const entries = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].filter(
+        (entry) => entry.textContent.includes("HTTP 401"),
+      );
+      return entries.length === 2 && entries.every(
+        (entry) =>
+          entry.querySelector(".notification__link")?.getAttribute("href") === ${JSON.stringify(stubIssueUrl)} &&
+          entry.querySelector(".notification__file") === null,
+      );
+    })()`,
+    "the repeated error's shared issue link",
+    20_000,
+  );
+  await delay(300);
+  check(
+    feedbackCalls.length === 1 && feedbackRequests.length === 1,
+    "a repeated identical error filed a second issue",
+    { calls: feedbackCalls.length, requests: feedbackRequests.length },
+  );
+  await saveShot("notification-issue-filed");
   const dismiss = await page.eval<boolean>(`(() => {
     const button = document.querySelector(
       '[data-testid="notification-history"] .notification [aria-label="Dismiss notification"]',

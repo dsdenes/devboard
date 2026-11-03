@@ -1,8 +1,12 @@
 <script lang="ts">
   import { Dialog } from "bits-ui";
   import X from "lucide-svelte/icons/x";
-  import { notificationReport } from "../notification-issue";
-  import { FEEDBACK_ENDPOINT } from "../../../lib/endpoints.ts";
+  import {
+    notificationFiler,
+    REPORTING_DISABLED_DETAIL,
+    type NotificationContext,
+    type NotificationFiling,
+  } from "../notification-issue";
   import { notifications, type AppNotification } from "../notifications.svelte";
   import Button from "./ui/button.svelte";
   import CommandButton from "./CommandButton.svelte";
@@ -19,13 +23,13 @@
   const MAX_DOM_EXCERPT = 4000;
   const MAX_VISIBLE_TEXT = 1500;
 
-  /** The notification whose issue is being filed, if any. */
-  let filing = $state<number | null>(null);
-  /** Filed issue URLs, keyed by notification id. */
+  /** Filed issue URLs, keyed by notification id, for warnings and retries. */
   let filed = $state<Record<number, string>>({});
-  /** Filing failures, keyed by notification id; an empty value is cleared. */
+  /** Manual filing failures, keyed by notification id; an empty value is cleared. */
   let failed = $state<Record<number, string>>({});
-  /** Counts each answered filing: the busy word's evidence. */
+  /** The notification whose manual filing is in flight, if any. */
+  let filing = $state<number | null>(null);
+  /** Counts each answered manual filing: the busy word's evidence. */
   let filedSeq = $state(0);
 
   function setHistoryOpen(open: boolean): void {
@@ -38,97 +42,152 @@
     return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString();
   }
 
-  /** Files one notification as a UI issue, with the card as its captured context. */
-  async function fileIssue(item: AppNotification): Promise<void> {
-    if (filing !== null || filed[item.id] !== undefined) return;
-    const scope = notifications.historyOpen
-      ? document.querySelector('[data-testid="notification-history"]')
-      : document.querySelector(".notification-region");
-    const element =
-      scope?.querySelector(`.notification[data-notification-id="${item.id}"]`) ?? null;
-    if (element === null) return;
-    filing = item.id;
-    failed = { ...failed, [item.id]: "" };
-    const payload = {
-      action: "REPORT",
-      report: notificationReport(item),
+  /**
+   * Files every error notification raised in this page session without a
+   * click. An identity that already has an outcome is skipped, so the same
+   * error twice links to the one issue and posts nothing more.
+   */
+  $effect(() => {
+    if (!feedbackenabled) return;
+    for (const item of notifications.items) {
+      if (item.severity !== "error") continue;
+      if (notificationFiler.state(item) !== undefined) continue;
+      void notificationFiler.autoFile(item, () => captureContext(item));
+    }
+  });
+
+  /**
+   * The card's page context, shaped exactly like the manual report's: the
+   * card itself when it is on screen, the live region when it is not.
+   */
+  function captureContext(item: AppNotification): NotificationContext {
+    const selector = `.notification[data-notification-id="${item.id}"]`;
+    const card = document.querySelector(selector);
+    const target = card ?? document.querySelector(".notification-region") ?? document.body;
+    return {
       route: window.location.pathname,
       url: window.location.href,
-      selector: `.notification[data-notification-id="${item.id}"]`,
-      dom_excerpt: (element.outerHTML ?? "").slice(0, MAX_DOM_EXCERPT),
-      visible_text: ((element as HTMLElement).innerText ?? element.textContent ?? "").slice(
+      selector: card === null ? ".notification-region" : selector,
+      domExcerpt: (target.outerHTML ?? "").slice(0, MAX_DOM_EXCERPT),
+      visibleText: ((target as HTMLElement).innerText ?? target.textContent ?? "").slice(
         0,
         MAX_VISIBLE_TEXT,
       ),
       viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
-      captured_at: new Date().toISOString(),
+      capturedAt: new Date().toISOString(),
     };
-    try {
-      const response = await fetch(FEEDBACK_ENDPOINT, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const body = (await response.json().catch(() => null)) as {
-        links?: { issue?: { href?: unknown } };
-        detail?: unknown;
-      } | null;
-      const href = body?.links?.issue?.href;
-      if (!response.ok || typeof href !== "string") {
-        throw new Error(
-          typeof body?.detail === "string"
-            ? body.detail
-            : `The server refused the report (${response.status}).`,
-        );
-      }
-      filed = { ...filed, [item.id]: href };
-    } catch (error) {
-      failed = {
-        ...failed,
-        [item.id]: error instanceof Error ? error.message : String(error),
-      };
-    } finally {
-      filing = null;
+  }
+
+  /** Files one notification by hand: the warning button and the error retry. */
+  async function fileIssue(item: AppNotification): Promise<void> {
+    if (item.severity === "error") {
+      await notificationFiler.file(item, () => captureContext(item));
       filedSeq += 1;
+      return;
     }
+    if (filing !== null || filed[item.id] !== undefined) return;
+    filing = item.id;
+    failed = { ...failed, [item.id]: "" };
+    const outcome = await notificationFiler.submit(item, () => captureContext(item));
+    if (outcome.status === "filed") {
+      filed = { ...filed, [item.id]: outcome.href };
+    } else if (outcome.status === "failed") {
+      failed = { ...failed, [item.id]: outcome.detail };
+    }
+    filing = null;
+    filedSeq += 1;
+  }
+
+  /** The error card's shared automatic outcome, if it has one. */
+  function errorFiling(item: AppNotification): NotificationFiling | undefined {
+    return item.severity === "error" ? notificationFiler.state(item) : undefined;
+  }
+
+  /** Why this card names no issue, if it does. */
+  function failureDetail(item: AppNotification): string | null {
+    if (item.severity === "error") {
+      const outcome = errorFiling(item);
+      if (outcome?.status === "failed") return outcome.detail;
+      if (outcome === undefined && !feedbackenabled) return REPORTING_DISABLED_DETAIL;
+      return null;
+    }
+    return failed[item.id] ?? null;
+  }
+
+  /** The filed issue this card links to, from the shared or the manual state. */
+  function issueHref(item: AppNotification): string | undefined {
+    if (item.severity === "error") {
+      const outcome = errorFiling(item);
+      return outcome?.status === "filed" ? outcome.href : undefined;
+    }
+    return filed[item.id];
+  }
+
+  /** Whether this card offers the manual filing button. */
+  function showsFilingButton(item: AppNotification): boolean {
+    if (item.severity === "error") {
+      const outcome = errorFiling(item);
+      return outcome === undefined ? !feedbackenabled : outcome.status === "failed";
+    }
+    return item.severity === "warning" && feedbackenabled;
   }
 </script>
 
-{#snippet actions(item: AppNotification)}
-  <div class="notification__actions">
-    {#if filed[item.id] !== undefined}
-      <a
-        class="notification__link"
-        href={filed[item.id]}
-        target="_blank"
-        rel="noreferrer"
-        title="Open the filed issue"
+{#snippet card(item: AppNotification)}
+  {@const href = issueHref(item)}
+  {@const detail = failureDetail(item)}
+  <div
+    class="notification"
+    data-severity={item.severity}
+    data-source={item.source}
+    data-notification-id={item.id}
+  >
+    <div class="notification__body">
+      <div class="notification__meta">
+        {item.severity} · {item.source} · {timestamp(item.at)}
+      </div>
+      <p class="notification__text" role={item.severity === "error" ? "alert" : "status"}>
+        {item.text}
+      </p>
+      {#if detail !== null}
+        <p class="notification__error" role="alert">Issue not filed: {detail}</p>
+      {/if}
+    </div>
+    <div class="notification__actions">
+      {#if href !== undefined}
+        <a
+          class="notification__link"
+          {href}
+          target="_blank"
+          rel="noreferrer"
+          title="Open the filed issue"
+        >
+          Open issue
+        </a>
+      {:else if showsFilingButton(item)}
+        <CommandButton
+          variant="ghost"
+          size="sm"
+          label="File issue"
+          evidence={() => filedSeq}
+          command={() => void fileIssue(item)}
+          class="notification__file"
+          aria-label="File an issue from this notification"
+          title="File an issue from this notification"
+          disabled={filing !== null}
+        >
+          File issue
+        </CommandButton>
+      {/if}
+      <IconButton
+        label="Dismiss notification"
+        command="app.notifications.dismiss"
+        class="hover:bg-[var(--secondary-hover)] focus-visible:bg-[var(--secondary-hover)]"
+        onclick={() => notifications.dismiss(item.id)}
       >
-        Open issue
-      </a>
-    {:else if feedbackenabled && (item.severity === "error" || item.severity === "warning")}
-      <CommandButton
-        variant="ghost"
-        size="sm"
-        label="File issue"
-        evidence={() => filedSeq}
-        command={() => void fileIssue(item)}
-        class="notification__file"
-        aria-label="File an issue from this notification"
-        title="File an issue from this notification"
-        disabled={filing !== null}
-      >
-        File issue
-      </CommandButton>
-    {/if}
-    <IconButton
-      label="Dismiss notification"
-      command="app.notifications.dismiss"
-      class="hover:bg-[var(--secondary-hover)] focus-visible:bg-[var(--secondary-hover)]"
-      onclick={() => notifications.dismiss(item.id)}
-    >
-      <X size={12} aria-hidden="true" />
-    </IconButton>
+        <X size={12} aria-hidden="true" />
+      </IconButton>
+    </div>
   </div>
 {/snippet}
 
@@ -139,25 +198,7 @@
   aria-live="polite"
 >
   {#each visible as item (item.id)}
-    <div
-      class="notification"
-      data-severity={item.severity}
-      data-source={item.source}
-      data-notification-id={item.id}
-    >
-      <div class="notification__body">
-        <div class="notification__meta">
-          {item.severity} · {item.source} · {timestamp(item.at)}
-        </div>
-        <p class="notification__text" role={item.severity === "error" ? "alert" : "status"}>
-          {item.text}
-        </p>
-        {#if failed[item.id]}
-          <p class="notification__error" role="alert">Issue not filed: {failed[item.id]}</p>
-        {/if}
-      </div>
-      {@render actions(item)}
-    </div>
+    {@render card(item)}
   {/each}
 </section>
 
@@ -177,25 +218,7 @@
         {:else}
           <div class="history-list">
             {#each notifications.items as item (item.id)}
-              <div
-                class="notification"
-                data-severity={item.severity}
-                data-source={item.source}
-                data-notification-id={item.id}
-              >
-                <div class="notification__body">
-                  <div class="notification__meta">
-                    {item.severity} · {item.source} · {timestamp(item.at)}
-                  </div>
-                  <p class="notification__text">{item.text}</p>
-                  {#if failed[item.id]}
-                    <p class="notification__error" role="alert">
-                      Issue not filed: {failed[item.id]}
-                    </p>
-                  {/if}
-                </div>
-                {@render actions(item)}
-              </div>
+              {@render card(item)}
             {/each}
           </div>
         {/if}

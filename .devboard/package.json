@@ -9,6 +9,7 @@
     "start": "bun run server/index.ts",
     "publish": "bun run scripts/publish.ts",
     "release": "bun run scripts/release.ts",
+    "test:release": "bun run scripts/test-release.ts",
     "test": "bun test",
     "adr:lint": "adr lint --dir ../adrs",
     "adr:graph": "adr graph --dir ../adrs",
@@ -37,7 +38,8 @@
     "verify:api-standards": "bun run scripts/verify-api-standards.ts",
     "verify:discover": "bun run scripts/verify-discover.ts",
     "verify:single-responsibility": "bun run scripts/verify-single-responsibility.ts",
-    "verify:consistent-naming": "bun run scripts/verify-consistent-naming.ts"
+    "verify:consistent-naming": "bun run scripts/verify-consistent-naming.ts",
+    "verify:complexity": "bun run scripts/verify-complexity.ts"
   },
   "files": [
     "package.json",
