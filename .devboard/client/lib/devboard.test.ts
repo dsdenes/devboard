@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { toolListPayload } from "../../mcp/catalog";
 import {
+  complexityView,
   DevboardStore,
+  DEVBOARD_COMPLEXITY_TAB,
   DEVBOARD_SIDEBAR,
   DEVBOARD_SKILLS_TAB,
   DEVBOARD_TAB,
@@ -58,18 +60,30 @@ test("drops malformed catalog entries instead of inventing rows", () => {
 });
 
 test("the mode's sidebar carries one entry per page and no per-skill entry", () => {
-  expect(DEVBOARD_SIDEBAR.map((entry) => entry.label)).toEqual(["MCP tools", "Skills"]);
+  expect(DEVBOARD_SIDEBAR.map((entry) => entry.label)).toEqual([
+    "MCP tools",
+    "Skills",
+    "Complexity",
+  ]);
   expect(DEVBOARD_SIDEBAR.map((entry) => entry.command)).toEqual([
     "devboard.tab.tools",
     "devboard.tab.skills",
+    "devboard.tab.complexity",
   ]);
   expect(DEVBOARD_SIDEBAR[0]?.tab).toEqual(DEVBOARD_TAB);
   expect(DEVBOARD_SIDEBAR[1]?.tab).toEqual(DEVBOARD_SKILLS_TAB);
+  expect(DEVBOARD_SIDEBAR[2]?.tab).toEqual(DEVBOARD_COMPLEXITY_TAB);
   expect(DEVBOARD_SKILLS_TAB).toEqual({
     id: "devboard-skills",
     kind: "devboard-skills",
     resourceId: "devboard-skills",
     title: "Skills",
+  });
+  expect(DEVBOARD_COMPLEXITY_TAB).toEqual({
+    id: "complexity",
+    kind: "devboard-complexity",
+    resourceId: "complexity",
+    title: "Complexity",
   });
   const catalogNames = new Set(toolListPayload().tools.map((tool) => tool.name));
   for (const entry of DEVBOARD_SIDEBAR) {
@@ -163,4 +177,64 @@ test("each frame replaces its own rows and leaves the other page alone", () => {
     { name: "wire-format-conformance", enabled: false, content: "", builtin: false, deletable: false },
   ]);
   expect(store.tools.length).toBe(payload.tools.length);
+});
+
+test("a complexity frame keeps every recorded date and the newest file rows", () => {
+  const project = {
+    files: 2,
+    functions: 3,
+    loc: 40,
+    meanCyclomatic: 1.67,
+    maxCyclomatic: 3,
+    functionsOverThreshold: 0,
+    duplicatedLineRatio: 0.05,
+    meanMaintainability: 88.4,
+  };
+  const view = complexityView({
+    snapshots: [
+      { date: "2026-11-01", recordedAt: "2026-11-01T00:00:00.000Z", project },
+      { date: "2026-11-02", recordedAt: "2026-11-02T00:00:00.000Z", project },
+    ],
+    latest: {
+      date: "2026-11-02",
+      recordedAt: "2026-11-02T00:00:00.000Z",
+      project,
+      files: [
+        { path: ".devboard/server/a.ts", loc: 20, functions: 2, duplicatedLineRatio: 0.1, maintainability: 90 },
+        { path: ".devboard/server/b.ts", loc: 20, functions: 1, duplicatedLineRatio: 0, maintainability: 86.8 },
+      ],
+    },
+  });
+
+  expect(view.points.map((point) => point.date)).toEqual(["2026-11-01", "2026-11-02"]);
+  expect(view.latest?.files.map((row) => row.path)).toEqual([
+    ".devboard/server/a.ts",
+    ".devboard/server/b.ts",
+  ]);
+  expect(view.latest?.project).toEqual(project);
+});
+
+test("a malformed complexity frame drops nothing it can keep and invents no figure", () => {
+  const project = {
+    files: 1,
+    functions: 1,
+    loc: 10,
+    meanCyclomatic: 1,
+    maxCyclomatic: 1,
+    functionsOverThreshold: 0,
+    duplicatedLineRatio: 0,
+    meanMaintainability: 95,
+  };
+  const view = complexityView({
+    snapshots: [
+      { date: "2026-11-01", recordedAt: "2026-11-01T00:00:00.000Z" },
+      { date: "2026-11-02", recordedAt: "2026-11-02T00:00:00.000Z", project },
+      { date: "2026-11-03", recordedAt: "2026-11-03T00:00:00.000Z", project: { files: 1 } },
+    ],
+    latest: { date: "2026-11-02", recordedAt: "2026-11-02T00:00:00.000Z", project, files: [{ path: "" }] },
+  });
+
+  expect(view.points.map((point) => point.date)).toEqual(["2026-11-02"]);
+  expect(view.latest?.files).toEqual([]);
+  expect(complexityView(undefined)).toEqual({ points: [], latest: null });
 });

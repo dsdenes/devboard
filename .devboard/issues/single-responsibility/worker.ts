@@ -15,7 +15,6 @@ import { readToolLog, toolValueNumber, toolValueString } from "../../lib/tool-lo
 import { takeCommands, type SingleResponsibilityCommand } from "./control";
 import {
   createSingleResponsibilityForge,
-  isForgeRateLimited,
   type SingleResponsibilityForgeClient,
   type SingleResponsibilityForgeIssue,
 } from "./forge";
@@ -566,7 +565,7 @@ export class SingleResponsibilityWorker {
       this.retry.record(kind);
     }
     this.state.sync = { state: "error", at: this.state.sync.at, error: detail };
-    this.state.lastError = kind === "rate-limit" || isForgeRateLimited(detail) ? null : detail;
+    this.state.lastError = kind === "rate-limit" ? null : detail;
     this.state.notice = `Could not read the forge: ${detail}`;
     this.nextSyncAt = this.clock().getTime() + this.syncMs;
     this.publish();
@@ -641,7 +640,9 @@ export class SingleResponsibilityWorker {
     }));
     this.openTitles = read.openTitles;
     this.state.sync = { state: "ok", at: this.clock().toISOString(), error: null };
-    if (!isForgeRateLimited(this.state.lastError ?? "")) this.state.lastError = null;
+    if (classifyForgeReadFailure(this.state.lastError ?? "") !== "rate-limit") {
+      this.state.lastError = null;
+    }
   }
 
   /* ------------------------------------------------------------------ */

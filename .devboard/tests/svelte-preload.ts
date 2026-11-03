@@ -54,6 +54,12 @@ const sveltePackage = fileURLToPath(import.meta.resolve("svelte/package.json"));
 const svelteClientEntry = join(dirname(sveltePackage), "src", "index-client.js");
 const svelteClient = await import(svelteClientEntry);
 mock.module("svelte", () => svelteClient);
+// Bun resolves `svelte/reactivity` to the server entry, whose `SvelteMap` is a
+// plain Map. The browser build the bundle uses must back the test runtime too,
+// or a map written after mount never invalidates the template.
+const svelteReactivityEntry = join(dirname(sveltePackage), "src", "reactivity", "index-client.js");
+const svelteReactivityClient = await import(svelteReactivityEntry);
+mock.module("svelte/reactivity", () => svelteReactivityClient);
 
 plugin({
   name: "svelte-runes",

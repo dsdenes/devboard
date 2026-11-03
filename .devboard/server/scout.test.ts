@@ -1549,6 +1549,23 @@ describe("preflight", () => {
     expect(allow).toEqual({ ok: true, repository: "acme/fixture" });
   });
 
+  test("a scan command under the checkout's .omp/agent/commands is accepted", async () => {
+    const root = await repository();
+    await mkdir(join(root, ".omp", "agent", "commands"), { recursive: true });
+    await writeFile(
+      join(root, ".omp", "agent", "commands", "scout-recommendations.md"),
+      "# command\n",
+    );
+    const home = await temporaryDirectory("scout-home");
+    const result = await preflightScout({
+      repoDir: root,
+      stateDir: join(root, ".devboard", ".tmp", "state"),
+      environment: { PATH: await pathWithTools(), HOME: home },
+      run: async () => ({ code: 0, stdout: "true", stderr: "" }),
+    });
+    expect(result).toEqual({ ok: true, repository: "acme/fixture" });
+  });
+
   test("a permission probe that never settles fails at the preflight deadline", async () => {
     const root = await makeRepository({ files: sourceFiles(1), origin: "acme/fixture" });
     const home = await temporaryDirectory("scout-home");

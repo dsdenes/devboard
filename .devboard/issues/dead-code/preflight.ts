@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { homedir } from "node:os";
 import { configuredGiteaToken, giteaBaseUrl } from "../../lib/forge";
 import {
   GiteaError,
@@ -10,7 +9,7 @@ import {
   type FetchLike,
 } from "../../lib/gitea";
 import { ghCommand } from "../../server/command";
-import { findOnPath, originForge, rootProblem } from "../repository";
+import { findOnPath, ompCommandPaths, originForge, rootProblem } from "../repository";
 import type { ForgeRemote } from "../../lib/forge";
 import { DEAD_CODE_LABEL, LABEL_COLOR, LABEL_DESCRIPTION } from "./paths";
 
@@ -55,12 +54,9 @@ export function deadCodeCommandPaths(
   repoDir: string,
   environment: Record<string, string | undefined> = process.env,
 ): string[] {
-  const home = environment.HOME ?? homedir();
-  return [
-    join(resolve(repoDir), ".omp", "commands", "dead-code-removal.md"),
-    join(home, ".omp", "commands", "dead-code-removal.md"),
-    join(home, ".omp", "agent", "commands", "dead-code-removal.md"),
-  ];
+  return ompCommandPaths(repoDir, environment).map((directory) =>
+    join(directory, "dead-code-removal.md"),
+  );
 }
 
 export async function preflightDeadCode(

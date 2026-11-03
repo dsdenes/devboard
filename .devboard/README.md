@@ -181,6 +181,47 @@ of that state lives in `localStorage`; none of it is sent to the server. A layou
 before Devboard existed still restores every stored mode and page; Devboard starts on its default
 `MCP tools` page.
 
+### Complexity page
+
+The `Complexity` sidebar entry follows `Skills` and opens the Devboard mode's complexity page,
+`data-testid="complexity-page"`. Every figure on it comes from a recorded daily snapshot of this
+harness's own application source under `.devboard/server`, `.devboard/client`, `.devboard/lib`,
+`.devboard/scripts`, `.devboard/extensions`, `.devboard/mcp`, `.devboard/issues`,
+`.devboard/watchdog`, `.devboard/release-train`, and `.devboard/mcp-optimizer`. TypeScript,
+Svelte, JavaScript, and ESM files are measured; `*.test.ts` files and `node_modules`, `dist`,
+`.tmp`, and `public` are never read. The analyzer is a deterministic token scanner inside the
+dashboard process: it needs no parser, external binary, network call, or runtime dependency, and
+two analyses of the same unchanged tree produce the same values.
+
+One snapshot records three levels. Per function it records cyclomatic complexity (1 plus `if`,
+`for`, `while`, `do`, `catch`, `case`, `&&`, `||`, `??`, and a ternary `?` in its own body), source
+length in lines, maximum brace-block nesting, and parameter count. Per file it records
+non-blank, non-comment lines of code, function count, duplicated-line ratio, and a maintainability
+index clamped to 0-100 and derived from Halstead volume, mean cyclomatic complexity, and lines of
+code. Per project it records file count, function count, total lines of code, mean and maximum
+cyclomatic complexity, the number of functions above cyclomatic complexity 10, the duplicated-line
+ratio, and the mean maintainability index. A line counts as duplicated when its normalized tokens
+(comments removed, at least four tokens) appear more than once across the analyzed set.
+
+The page renders `data-testid="complexity-summary"` with the latest snapshot's date, its recording
+timestamp, and the recorded-date count; one `data-testid="complexity-card"` per project metric with
+`data-metric` and the latest `data-value`; one `data-testid="complexity-series"` per project metric
+with `data-points`, one `data-testid="complexity-series-point"` per recorded date carrying
+`data-date` and `data-value`, and a `data-testid="complexity-series-latest"` marker on the newest
+point; and one `data-testid="complexity-file-table"` whose `data-testid="complexity-file-row"` rows
+carry `data-path` and one `data-testid="complexity-cell"` per per-file metric. Each series is
+scaled to its own range, so a changed value between two dates moves its point and its line
+direction. Clicking any `data-testid="complexity-sort"` header orders the table by that column, and
+a second click reverses it; the default order is the file path.
+
+Snapshots live in `<stateDir>/complexity/<24-hex project key>/<YYYY-MM-DD>.json`, the same project
+key the journal and dashboard state use, and nowhere else. The server records exactly one snapshot
+per UTC calendar day: at server start and whenever the UTC date changes while it runs, it records
+that day when and only when no file for it exists. A restart, a page open, a reload, a reconnect,
+or a later check on the same day writes no second file, which needs no background worker,
+detached process, or service. `DEVBOARD_COMPLEXITY_NOW` pins the analyzed instant for a fixture
+host or a verification run; the real clock is used when it is unset or unparseable.
+
 ### Single-agent activity bar
 
 Every page whose work is exactly one agent leads its workspace with the same pinned bar. It is
@@ -339,8 +380,15 @@ scrollback, and expose their full buffer to assistive technology.
 Server errors and notices appear in the notification region (`data-testid="notifications"`) with
 severity, the subsystem or the exact agent label that raised them, text, and dismissal. Each card
 closes itself after five seconds; every entry stays in the history opened from the status bar.
-Every error and warning card also carries `File issue`: it files that notification's text and card
-context as a UI issue through `/feedback` at once, then replaces itself with the issue URL.
+An error card files one UI issue by itself through `/feedback`, with no operator click: the issue
+carries the notification's text, severity, source, raise time, the card context, and the fixed
+instruction `Investigate this error and fix it if it is needed.`, and the card links to it as
+`Open issue`. A later error with the same severity, source, and text in the same page session
+files nothing and links to the issue filed for the first. Warning notifications keep the
+`File issue` button and file the same way when it is clicked. When automatic filing fails, or
+reporting is disabled because `DEVBOARD_GITEA_URL` is absent, the card reads
+`Issue not filed:` with the reason and reveals the `File issue` button again, so a retry files
+the issue and replaces the message with the issue link.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's
@@ -2154,7 +2202,8 @@ sends one settings command. The Devboard sidebar has two groups in order: `Backg
 `open-devboard-dead-code`, `open-devboard-mcp-optimizer`, `open-devboard-api-standards`,
 `open-devboard-single-responsibility`, then
 `open-devboard-release-train`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
-`Devboard sections` (the `devboard-tab` MCP tools and Skills entries). The Issues sidebar carries no
+`Devboard sections` (the `devboard-tab` MCP tools, Skills, and Complexity entries). The Issues
+sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
 queue.
@@ -2291,9 +2340,15 @@ All five pages render one `agent-issues` table with columns Title, Category, Fil
 Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
-(`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). With no rows,
-`agent-issues-empty` renders the same inbox composition on every page, naming the agent.
-`agent-issues-count` counts the rows. Auto Scout maps its GitHub title and creation time;
+(`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). The zero-row
+region `agent-issues-empty` carries `data-sync` with the page's read state and renders two bodies:
+after a successful read (`sync.at` set, `sync.error` null) it is the inbox composition with
+`No issues filed yet` and the agent's one-line explanation, naming the agent; before the first
+successful read, or while `sync.error` is set, it is `agent-issues-unread`, whose title is
+`The tracker has not been read yet` or `The tracker could not be read` and whose copy
+`agent-issues-unread-copy` names the last read and, on failure, the reason. An unread or failed
+zero-row table therefore never claims the tracker is empty. `agent-issues-count` counts the rows.
+Auto Scout maps its GitHub title and creation time;
 Watchdog keeps `[watchdog] <category>: <line>`; Design System and Dead Code keep their finding
 title with its category.
 
@@ -4361,6 +4416,7 @@ bun run verify:ui
 bun run verify:issues
 bun run verify:scout
 bun run verify:dead-code
+bun run verify:complexity
 ```
 
 `verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and

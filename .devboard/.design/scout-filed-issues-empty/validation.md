@@ -24,10 +24,14 @@ artifacts were synchronized instead.
   below the table owns scan progress and failures. An empty table is a valid result, not a failed
   read.
 - **Journeys.**
-  - *Confirm an empty result.* Open Auto Scout → the panel header reads `Filed issues 0` → the
-    centered stack says `No issues filed yet` and what will be filed → continue to Start or read
-    activity. Failure route: the read state is `error`/`stale` in the page header and the reason is
-    in the alert row, so the empty panel never claims the tracker is empty when it could not read.
+  - *Confirm an empty result.* Open Auto Scout → the panel header reads `Filed issues 0` → after
+    a successful tracker read the centered stack says `No issues filed yet` and what will be filed
+    → continue to Start or read activity. Failure route: the read state is `error`/`stale` in the
+    page header and the reason is in the alert row, so the empty panel never claims the tracker is
+    empty when it could not read. The panel now renders that route too: before the first successful
+    read, or while the read carries an error, the zero-row body is `agent-issues-unread`, titled
+    `The tracker has not been read yet` or `The tracker could not be read` and naming the last read
+    and, on failure, the reason.
   - *Wait for a scan.* The same empty state stays until the first row arrives; the store swap
     replaces it with the table in place.
 - **Non-goals.** Changing the panel header, the page header, the filing limits, the activity log,
@@ -39,7 +43,7 @@ artifacts were synchronized instead.
 
 | ID | Information | Source | Journey | Enables decision/action | Keep? | Reason |
 |---|---|---|---|---|---|---|
-| C1 | No issues are filed (`No issues filed yet`) | `rows.length === 0` | confirm | yes | yes | The one state word that explains the empty region. |
+| C1 | No issues are filed (`No issues filed yet`) | `rows.length === 0` after a successful read (`sync.at` set, no error) | confirm | yes | yes | The one state word that explains the empty region; an unread or failed read renders `agent-issues-unread` instead. |
 | C2 | Auto Scout will file significant findings after each scan | page purpose | wait | yes | yes | Explains what the panel will hold; kept to one line. |
 | C3 | Inbox mark | none (decorative) | confirm | no | yes | Orients the eye in a 590px panel; `aria-hidden`, carries no meaning. |
 | C4 | Row count `0` | `rows.length` | confirm | yes | stays in panel header | Already the source of truth for emptiness; not repeated in the body. |
@@ -75,8 +79,14 @@ Auto Scout files significant findings here after each scan.
   a nested box would add chrome without information.
 - The mark sits 4px above the title (8px total), matching the micro-icon-to-text step.
 - Only the empty state changes; the populated table, its headers, and scrolling are untouched.
-- Loading, error, permission, and partial states are not rendered here: the page header and the
-  alert row own read failures, and the parent always supplies either zero rows or the table.
+- The same centered stack carries the unread and failed read states: the title becomes
+  `The tracker has not been read yet` (a `clock` mark) or `The tracker could not be read` (a
+  `circle-alert` mark), and the copy names the last read and, on failure, the reason. The
+  confirmed-empty body stays exactly as drawn above, and it is what a successful zero-row read
+  renders; an age-based `stale` value with surviving rows leaves the table and the count alone.
+- The zero-row region `agent-issues-empty` keeps its test id in both bodies and carries
+  `data-sync` with the read state; the unread title and copy additionally expose
+  `agent-issues-unread` and `agent-issues-unread-copy`.
 - At 1024×720 the page stacks and the Filed issues panel is capped at 320px; the same centered
   stack fits without clipping.
 

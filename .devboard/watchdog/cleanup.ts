@@ -195,6 +195,9 @@ export function sweepStateDir(
     // a finished draft's status is the only record of its outcome; nothing
     // recreates either.
     join(directory, "goal-drafts"),
+    // One complexity snapshot per UTC day is the dashboard's own measurement
+    // history; nothing recreates a swept day, so the series must survive.
+    join(directory, "complexity"),
     // The watchdog's command channel and every version's state/control are
     // operator input and readable history, not scratch.
     join(directory, "watchdog", "control"),
