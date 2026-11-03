@@ -2553,7 +2553,9 @@ and never asks for, parses, or validates an answer object. A candidate with no r
 pending, so a failed tool call files nothing and the next cycle retries it. A duplicate of an open
 issue is suppressed silently: no issue, no comment. Its ledger entry records `duplicate:<url>` with
 no `filed:` disposition, so it is never treated as filed and never takes a 24-hour recurrence
-comment.
+comment. `issues_list` reads every open issue page by page and reports `truncated: true` when an
+explicit `limit` or a forge read ceiling kept the older rows back, so an open issue below one
+`list` page is never invisible by silence.
 
 Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
 that issue is closed, the next cycle that observes the same evidence sends the candidate to the
