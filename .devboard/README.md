@@ -2273,9 +2273,15 @@ All five pages render one `agent-issues` table with columns Title, Category, Fil
 Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
-(`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). With no rows,
-`agent-issues-empty` renders the same inbox composition on every page, naming the agent.
-`agent-issues-count` counts the rows. Auto Scout maps its GitHub title and creation time;
+(`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). The zero-row
+region `agent-issues-empty` carries `data-sync` with the page's read state and renders two bodies:
+after a successful read (`sync.at` set, `sync.error` null) it is the inbox composition with
+`No issues filed yet` and the agent's one-line explanation, naming the agent; before the first
+successful read, or while `sync.error` is set, it is `agent-issues-unread`, whose title is
+`The tracker has not been read yet` or `The tracker could not be read` and whose copy
+`agent-issues-unread-copy` names the last read and, on failure, the reason. An unread or failed
+zero-row table therefore never claims the tracker is empty. `agent-issues-count` counts the rows.
+Auto Scout maps its GitHub title and creation time;
 Watchdog keeps `[watchdog] <category>: <line>`; Design System and Dead Code keep their finding
 title with its category.
 
