@@ -88,6 +88,7 @@ function adapter(
       repoDir: string;
       environment: Record<string, string | undefined>;
     }) => Promise<{ ok: true } | { ok: false; message: string }>;
+    now?: () => number;
   } = {},
 ): WatchdogActivity {
   return new WatchdogActivity({
@@ -99,6 +100,7 @@ function adapter(
     ...(options.systemctl === undefined ? {} : { systemctl: options.systemctl }),
     ...(options.spawnWorker === undefined ? {} : { spawnWorker: options.spawnWorker }),
     ...(options.preflight === undefined ? {} : { preflight: options.preflight }),
+    ...(options.now === undefined ? {} : { now: options.now }),
   });
 }
 
@@ -477,6 +479,72 @@ describe("watchdog lifecycle and ownership", () => {
       sleeper.kill("SIGKILL");
     }
   }, 20_000);
+
+  test("a slow preflight is not charged to the worker's publication", async () => {
+    const root = await temporaryRoot();
+    const directory = watchdogDirectory(root);
+    let clock = 1_000_000;
+    const preflight = Promise.withResolvers<{ ok: true }>();
+    const activity = adapter(root, {
+      now: () => clock,
+      preflight: () => preflight.promise,
+      spawnWorker: () => {
+        writeWorkerState(directory, {
+          version: 1,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          root,
+          stateDir: join(root, "state"),
+          lifecycle: "running",
+          enabled: true,
+          harnessVersion: "test",
+          argv: [],
+          lastRunAt: null,
+          nextRunAt: null,
+          lastError: null,
+          notice: null,
+          updatedAt: new Date().toISOString(),
+        });
+        return process.pid;
+      },
+    });
+    try {
+      const pending = activity.start();
+      // The forge round trip outlasts the proof: it is not the worker's delay.
+      clock += 6_000;
+      const waiting = activity.snapshot();
+      expect(waiting.lifecycle).toBe("starting");
+      expect(waiting.error).toBeNull();
+      preflight.resolve({ ok: true });
+      expect((await pending).ok).toBe(true);
+      const running = activity.snapshot();
+      expect(running.lifecycle).toBe("running");
+      expect(running.error).toBeNull();
+    } finally {
+      activity.dispose();
+    }
+  });
+
+  test("a start whose worker never publishes still fails the 5-second proof", async () => {
+    const root = await temporaryRoot();
+    let clock = 1_000_000;
+    const activity = adapter(root, {
+      now: () => clock,
+      preflight: async () => ({ ok: true }),
+      spawnWorker: () => 999_999,
+    });
+    try {
+      expect((await activity.start()).ok).toBe(true);
+      clock += 6_000;
+      const expired = activity.snapshot();
+      expect(expired.error).toBe(
+        "the Watchdog worker did not publish its state within 5 seconds",
+      );
+      expect(expired.lifecycle).toBe("stopped");
+    } finally {
+      activity.dispose();
+    }
+  });
 });
 
 describe("watchdog preflight and timer gate", () => {

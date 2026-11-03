@@ -422,6 +422,9 @@ export class WatchdogActivity implements AgentAdapter {
       this.starting = false;
       this.startingSince = null;
     }
+    // A worker that published is proof the start succeeded: a proof that
+    // expired while it was still warming up must not outlive it.
+    if (attached) this.startError = null;
     if (
       this.starting &&
       this.startingSince !== null &&
@@ -540,7 +543,10 @@ export class WatchdogActivity implements AgentAdapter {
 
     this.startPending = true;
     this.starting = true;
-    this.startingSince = this.now();
+    // The proof measures the worker's own publication, so its clock starts
+    // when the worker is spawned. The prerequisite check before that is a
+    // forge round trip, not the worker, and must not be charged to it.
+    this.startingSince = null;
     this.startCancelled = false;
     this.startError = null;
     this.notice = null;
@@ -560,6 +566,7 @@ export class WatchdogActivity implements AgentAdapter {
         this.startError = result.message;
         return { ok: false, message: result.message };
       }
+      this.startingSince = this.now();
       const pid = this.spawnNewest();
       if (pid === undefined) {
         this.endStart();
