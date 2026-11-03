@@ -416,9 +416,12 @@ goal drafting fails the same way. Both entries come from `lib/endpoints.ts`, whi
 the server read too, so the three cannot disagree about a path.
 
 The backend requires its dashboard token on the `/ws` upgrade, and the page carries that token in
-an `HttpOnly` cookie the backend sets on its own `index.html`. Open `http://127.0.0.1:8080/` once
-in the same browser profile before loading the dev page, so the profile holds the cookie the proxy
-forwards; otherwise the dev page's socket stays on `Connecting`.
+an `HttpOnly` cookie the backend sets when it serves `index.html` to a credentialed request. The
+server prints that document's address with a `?bootstrap=<value>` handshake, and only that address
+or a request that already presents the cookie is served the document: an anonymous `GET /` answers
+`401`. Open the printed address once in the same browser profile before loading the dev page, so
+the profile holds the cookie the proxy forwards; otherwise the dev page's socket stays on
+`Connecting`.
 
 The dev server ignores the generated trees (`.tmp`, `.test-tmp`, `dist`, `coverage`). A busy
 checkout writes hundreds of thousands of files under `.tmp`; watching them reloads the page for
@@ -687,7 +690,9 @@ ADRS_DIR="<host>/adrs" bun run start
 `bun run check` type-checks every `.svelte` and `.ts` file under `client/` and `server/`;
 `bunx tsc --noEmit` type-checks the TypeScript sources.
 
-Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
+Open the address the server prints, `http://127.0.0.1:8080/?bootstrap=<value>`. The document answers
+an anonymous `GET /` with `401`, so only that address, or a request that already presents the
+`HttpOnly` cookie it sets, is served the page. The server binds to `127.0.0.1` by default.
 
 ## Decision records
 

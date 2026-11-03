@@ -57,6 +57,23 @@ if (!/^[A-Za-z0-9._~+/=:-]+$/.test(dashboardToken)) {
 }
 process.env.DEVBOARD_DASHBOARD_TOKEN = dashboardToken;
 
+/**
+ * The credential a browser presents when it opens the page. It is distinct
+ * from the dashboard token, so the token the mutating endpoints and the socket
+ * upgrade trust never rides in a URL, and this process keeps it in its own
+ * environment so a replacement accepts the address the launcher printed.
+ * Without it, the document would answer only a caller that already holds the
+ * token's cookie, and a fresh browser could never get one.
+ */
+const bootstrapToken =
+  process.env.DEVBOARD_BOOTSTRAP_TOKEN?.trim() || randomBytes(32).toString("base64url");
+if (!/^[A-Za-z0-9._~+/=:-]+$/.test(bootstrapToken)) {
+  throw new Error(
+    "DEVBOARD_BOOTSTRAP_TOKEN must carry RFC 6750 characters only: no whitespace, ';', or ','.",
+  );
+}
+process.env.DEVBOARD_BOOTSTRAP_TOKEN = bootstrapToken;
+
 function isAddressInUse(error: unknown): boolean {
   if (typeof error === "object" && error !== null && "code" in error) {
     if (error.code === "EADDRINUSE") return true;
@@ -229,6 +246,7 @@ for (let attempt = 0; ; attempt += 1) {
       hostname,
       allowedHosts,
       token: dashboardToken,
+      bootstrap: bootstrapToken,
       port,
       journal,
       runningVersion,
@@ -282,4 +300,8 @@ updater = startUpdater({
   onStale: (version) => replaceWithInstalled(version),
 });
 
-console.log(`ADR interface listening on http://${hostname}:${server.port}`);
+// The document answers only a caller that presents the page's credential, so
+// the printed address is the one a browser opens to receive its cookie.
+console.log(
+  `ADR interface listening on http://${hostname}:${server.port}/?bootstrap=${bootstrapToken}`,
+);

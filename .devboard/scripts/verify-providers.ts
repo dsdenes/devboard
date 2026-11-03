@@ -27,6 +27,7 @@ import {
 import { stateFile } from "../server/state";
 import { runCleanup } from "../watchdog/cleanup";
 import {
+  VERIFY_DASHBOARD_AUTHORIZATION,
   dashboardSocket,
   freePort,
   makeRoot,
@@ -372,7 +373,8 @@ async function startDashboard(): Promise<void> {
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${dashboardPort}/`, {
+        const response = await fetch(`http://127.0.0.1:${dashboardPort}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(1000),
         });
         return response.ok ? true : undefined;

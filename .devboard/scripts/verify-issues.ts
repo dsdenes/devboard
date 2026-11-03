@@ -32,6 +32,8 @@ import { queueCounts } from "../client/lib/issues-queue";
 import { pollStatus } from "../client/lib/poll-status";
 import type { IssuesSnapshot as ClientIssuesSnapshot } from "../client/lib/types";
 import {
+  VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
   dashboardSocket,
   freePort,
   run,
@@ -199,7 +201,8 @@ async function startDashboard(
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
           signal: AbortSignal.timeout(1000),
         });
         return response.ok ? true : undefined;
@@ -570,7 +573,7 @@ try {
       "--window-size=1440,900",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
-      `http://127.0.0.1:${dashboardA.port}/`,
+      dashboardPageUrl(dashboardA.port),
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
@@ -580,7 +583,7 @@ try {
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
   await devtools.send("Page.navigate", {
-    url: `http://127.0.0.1:${dashboardA.port}/`,
+    url: dashboardPageUrl(dashboardA.port),
   });
 
   await click(devtools, "mode-issues");

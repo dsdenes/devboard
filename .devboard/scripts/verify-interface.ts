@@ -38,6 +38,7 @@ import { statePath } from "../issues/scout/paths";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import {
   VERIFY_DASHBOARD_AUTHORIZATION,
+  dashboardPageUrl,
   dashboardSocket,
   dashboardsFor,
   freePort,
@@ -1333,16 +1334,22 @@ async function stopHostDashboards(host: string): Promise<void> {
 }
 
 async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
+  // The readiness probe requires the dashboard token; the document requires
+  // the credential a page navigation carries.
+  const ready = `${url.replace(/\/+$/, "")}/ready`;
   await waitFor(
     async () => {
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(1500) });
+        const response = await fetch(ready, {
+          ...VERIFY_DASHBOARD_AUTHORIZATION,
+          signal: AbortSignal.timeout(1500),
+        });
         return response.ok ? true : undefined;
       } catch {
         return undefined;
       }
     },
-    `the dashboard at ${url}`,
+    `the dashboard at ${ready}`,
     timeoutMs,
   );
 }
@@ -1995,7 +2002,7 @@ try {
     })();`,
   });
 
-  await devtools.send("Page.navigate", { url: baseUrl });
+  await devtools.send("Page.navigate", { url: dashboardPageUrl(port) });
   await page.wait(
     `document.readyState === "complete" && document.querySelector('[data-testid="app-shell"]') !== null`,
     "the initial shell",
@@ -6750,7 +6757,7 @@ try {
   await stopServer();
   startServer();
   await waitForHttp(baseUrl);
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
     "the reconnection after the removal restart",
@@ -6892,7 +6899,7 @@ try {
   );
   (seededEntries as string[]).push("/etc/passwd", ...escapees);
   await writeFile(containmentSheetPath, `${JSON.stringify(seededSheet, null, 2)}\n`);
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
     "the reconnection after seeding the absolute reference",
@@ -6928,7 +6935,7 @@ try {
   );
   (escapeEntries as string[]).push(...escapees);
   await writeFile(containmentSheetPath, `${JSON.stringify(escapeSheet, null, 2)}\n`);
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
     "the reconnection after seeding the escaping references",
@@ -6965,7 +6972,7 @@ try {
     containment,
   );
   await writeFile(containmentSheetPath, publishedSheet);
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
     "the reconnection after restoring the fixture sheet",
@@ -6997,7 +7004,7 @@ try {
   gateOffProcess.stdout?.on("data", (chunk) => gateOffWriter.write(chunk));
   gateOffProcess.stderr?.on("data", (chunk) => gateOffWriter.write(chunk));
   await waitForHttp(`http://127.0.0.1:${gateOffPort}/`);
-  await page.navigate(`http://127.0.0.1:${gateOffPort}/`);
+  await page.navigate(dashboardPageUrl(gateOffPort));
   await runPalette("discover.tab.overview");
   await page.wait(
     `document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`,
@@ -7044,7 +7051,7 @@ try {
   feedbackOffProcess.stdout?.on("data", (chunk) => feedbackOffWriter.write(chunk));
   feedbackOffProcess.stderr?.on("data", (chunk) => feedbackOffWriter.write(chunk));
   await waitForHttp(`http://127.0.0.1:${feedbackOffPort}/`);
-  await page.navigate(`http://127.0.0.1:${feedbackOffPort}/`);
+  await page.navigate(dashboardPageUrl(feedbackOffPort));
   await page.wait(
     `document.readyState === "complete" && document.querySelector('[data-testid="app-shell"]') !== null`,
     "the shell without harness reporting",
@@ -7083,7 +7090,7 @@ try {
   );
   gateOffProcess.kill("SIGTERM");
   gateOffProcess = undefined;
-  await page.navigate(baseUrl);
+  await page.navigate(dashboardPageUrl(port));
 
   // 13. Reset layout restores defaults.
   await runPalette("view.layout.reset");
@@ -11907,7 +11914,7 @@ try {
   extraServerProcess.stdout?.on("data", (chunk) => logWriter.write(chunk));
   extraServerProcess.stderr?.on("data", (chunk) => logWriter.write(chunk));
   await waitForHttp(runStateBase);
-  await devtools.send("Page.navigate", { url: runStateBase });
+  await devtools.send("Page.navigate", { url: dashboardPageUrl(runStatePort) });
   await page.wait(
     `location.port === "${runStatePort}" &&
       document.readyState === "complete" &&

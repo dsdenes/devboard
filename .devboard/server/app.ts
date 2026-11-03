@@ -202,6 +202,15 @@ export interface AppOptions {
    * tokenless; a test may omit it to construct the tokenless surface.
    */
   token?: string;
+  /**
+   * The document credential the launcher prints with the address. A request
+   * that presents it is served the page, so the operator's browser receives
+   * the HttpOnly cookie the mutating endpoints and the socket upgrade require;
+   * the value never admits those endpoints itself. `index.ts` always supplies
+   * one, and a test may omit it, in which case only the token opens the
+   * document.
+   */
+  bootstrap?: string;
   port: number;
   repoDir?: string;
   goalFile?: string;
@@ -2464,6 +2473,9 @@ export function createApp(options: AppOptions) {
   // Empty means this construction has no credential to compare, which only a
   // test uses: `index.ts` always resolves the token a running dashboard keeps.
   const dashboardToken = options.token?.trim() ?? "";
+  // Empty means this construction has no document handshake, which only a test
+  // uses: `index.ts` always resolves the value its launcher printed.
+  const bootstrapCredential = options.bootstrap?.trim() ?? "";
   const adrDir = resolve(options.adrDir);
   const repoDir = options.repoDir ?? dirname(adrDir);
   const project = projectLabel(repoDir);
@@ -7763,6 +7775,28 @@ export function createApp(options: AppOptions) {
   }
 
   /**
+   * The 401 for a document request that may not carry the page's credential,
+   * or null when it may. A request that presents the dashboard token, or the
+   * bootstrap value the launcher printed with the address, is admitted; the
+   * static fallback answers every other document request with this refusal, so
+   * the token guarding the mutating endpoints and the socket upgrade is never
+   * issued to a caller that presented no credential.
+   */
+  function documentRefusal(request: Request, url: URL, cookieName: string): Response | null {
+    if (dashboardToken.length === 0) return null;
+    if (credentialMatches(presentedCredential(request, cookieName), dashboardToken)) return null;
+    if (
+      bootstrapCredential.length > 0 &&
+      credentialMatches(url.searchParams.get("bootstrap"), bootstrapCredential)
+    ) {
+      return null;
+    }
+    return problemResponse(request, 401, "This page requires the dashboard credential.", {
+      "WWW-Authenticate": "Bearer",
+    });
+  }
+
+  /**
    * The page's own credential, attached to the HTML document it loads. The
    * token never reaches JavaScript: the HttpOnly, same-site cookie is what the
    * browser sends on the socket upgrade and the mutating fetches.
@@ -8017,6 +8051,14 @@ export function createApp(options: AppOptions) {
       const relative = staticRelativePath(url.pathname, pathname);
       if (relative === null) {
         return reply(problemResponse(request, 404, "The requested file was not found."));
+      }
+
+      // The document carries the page's credential, so only a request that
+      // presents it, or the launcher's bootstrap handshake, is served one.
+      // Every other file is inert and needs no credential.
+      if (/\.html?$/i.test(relative)) {
+        const refused = documentRefusal(request, url, cookieName);
+        if (refused !== null) return reply(refused);
       }
 
       // A filesystem failure while serving a static file answers like every
