@@ -2587,7 +2587,7 @@ a.code-chip--link:focus-visible {
 
 .discover-toggle input:focus-visible + .discover-toggle__track {
   outline: 2px solid var(--ring);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
 
 .discover-toggle input:disabled + .discover-toggle__track,
