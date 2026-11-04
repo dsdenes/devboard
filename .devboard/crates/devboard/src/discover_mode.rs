@@ -1902,6 +1902,19 @@ fn parse_yaml_sequence(lines: &[YamlLine], index: &mut usize, indent: usize) -> 
     Value::Array(out)
 }
 
+/// Parses one YAML document with the subset reader Discover's glossary uses.
+/// A damaged document yields `Value::Null` rather than an error, so a caller
+/// that only needs the record decides what an unusable document means.
+pub fn parse_yaml_document(text: &str) -> Value {
+    let lines = yaml_lines(text);
+    let mut index = 0;
+    if lines.is_empty() {
+        Value::Null
+    } else {
+        parse_yaml_value(&lines, &mut index, lines[0].indent)
+    }
+}
+
 pub fn parse_glossary(
     text: &str,
     source: &str,

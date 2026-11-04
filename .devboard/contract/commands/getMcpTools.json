@@ -336,7 +336,8 @@
                       "scout",
                       "design",
                       "dead-code",
-                      "single-responsibility"
+                      "single-responsibility",
+                      "consistent-naming"
                     ]
                   },
                   "seed": {

@@ -36,6 +36,7 @@ fn scratch(label: &str) -> PathBuf {
         "dead-code-removal.md",
         "api-standards.md",
         "single-responsibility.md",
+        "consistent-naming.md",
         "release-train.md",
     ] {
         std::fs::write(
@@ -184,6 +185,7 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
             "mcp-optimizer",
             "api-standards",
             "single-responsibility",
+            "consistent-naming",
             "release-train",
         ]
     );
@@ -222,12 +224,24 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
     assert_eq!(mcp["limits"]["maxPending"], 20);
     assert_eq!(mcp["detail"]["panel"], "cycles");
 
-    let release = &agents[7];
+    let naming = &agents[7];
+    assert_eq!(naming["label"], "Consistent Naming");
+    assert_eq!(
+        naming["description"],
+        "Audits the repository's vocabulary against the project naming skill and files one capped vocabulary issue per concept and violation."
+    );
+    assert_eq!(naming["scope"], "repository");
+    assert_eq!(naming["cadence"]["defaultMinutes"], 60);
+    assert_eq!(naming["limits"]["maxPerHour"], 10);
+    assert_eq!(naming["limits"]["maxPending"], 5);
+    assert_eq!(naming["detail"]["panel"], "activity");
+
+    let release = &agents[8];
     assert_eq!(release["cadence"]["minutes"], 10);
     assert_eq!(release["detail"]["scanId"], "idle:0");
 
     let prompts = find(&all, "agentPromptState");
-    assert_eq!(prompts.len(), 8);
+    assert_eq!(prompts.len(), 9);
     assert_eq!(prompts[0]["id"], "scout");
     assert_eq!(prompts[0]["prompt"]["absent"], false);
     assert!(prompts[0]["prompt"]["text"]

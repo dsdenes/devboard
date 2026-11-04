@@ -208,7 +208,7 @@ fn catalog() -> Vec<Value> {
                 json!({
                     "surface": json!({
                         "type": "string",
-                        "enum": json!(["scout", "design", "dead-code", "single-responsibility"]),
+                        "enum": json!(["scout", "design", "dead-code", "single-responsibility", "consistent-naming"]),
                     }),
                     "seed": string_schema(),
                 }),

@@ -5,6 +5,7 @@
 //! dashboard.
 
 pub mod api_standards;
+pub mod consistent_naming;
 pub mod dead_code;
 pub mod design;
 pub mod goal_draft;
@@ -128,6 +129,7 @@ async fn run_family(invocation: &WorkerInvocation) -> anyhow::Result<()> {
         "api-standards" => api_standards::run(invocation).await,
         "dead-code" => dead_code::run(invocation).await,
         "single-responsibility" => single_responsibility::run(invocation).await,
+        "consistent-naming" => consistent_naming::run(invocation).await,
         "mcp-optimizer" => mcp_optimizer::run(invocation).await,
         "release-train" => release_train::run(invocation).await,
         "watchdog" => watchdog::run(invocation).await,
@@ -145,6 +147,7 @@ pub fn known_family(family: &str) -> bool {
             | "api-standards"
             | "dead-code"
             | "single-responsibility"
+            | "consistent-naming"
             | "mcp-optimizer"
             | "release-train"
             | "watchdog"
