@@ -552,6 +552,80 @@ async fn start_spawns_the_rust_worker_argv_and_stop_writes_control() {
 }
 
 #[tokio::test]
+async fn a_slow_preflight_never_trips_the_state_publication_proof() {
+    let root = scratch("slow-preflight");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let child_pid = Arc::new(Mutex::new(None::<u32>));
+    let child_for_spawn = Arc::clone(&child_pid);
+    // The spawn answers at once and publishes no lock: a real worker's first
+    // tick writes it, and the proof must measure that publish, not the click.
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in worker");
+        let pid = child.id();
+        std::mem::forget(child);
+        *child_for_spawn.lock().expect("a pid") = Some(pid);
+        Some(pid)
+    });
+    // A forge preflight reads the repository and ensures its labels; on its own
+    // it outlasts the five second window the proof allows.
+    let preflight: devboard::agents_mode::PreflightCallback = Arc::new(|_request| {
+        Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_millis(5_400)).await;
+            Ok("owner/repository".to_string())
+        })
+    });
+    devboard::agents_mode::set_preflight(&app, "dead-code", preflight);
+    devboard::agents_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    assert!(
+        find(&all, "error").is_empty(),
+        "a slow preflight is not a start failure: {all:?}"
+    );
+    let pending = agent(&all, "dead-code").expect("a dead-code snapshot");
+    assert_eq!(pending["lifecycle"], "starting", "{all:?}");
+    assert_eq!(pending["error"], Value::Null, "{all:?}");
+
+    // The worker's own first publish then proves the start.
+    let pid = child_pid.lock().expect("a pid").expect("a pid");
+    write_lock(&repo, &state, pid);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let running = agent(&all, "dead-code").expect("a dead-code snapshot");
+    assert_eq!(running["lifecycle"], "running", "{all:?}");
+    assert_eq!(running["error"], Value::Null, "{all:?}");
+
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[tokio::test]
 async fn reconnect_replays_the_newest_scout_activity_and_sorted_issues() {
     let root = scratch("replay");
     let app = app_at(&root);

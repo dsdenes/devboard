@@ -3692,6 +3692,9 @@ impl RepoFamily {
                 mutable.starting = false;
                 mutable.starting_since = None;
             }
+            if !owners.is_empty() {
+                mutable.start_error = None;
+            }
             if mutable.starting {
                 if let Some(since) = mutable.starting_since {
                     if now - since > START_PROOF_MS {
@@ -4205,7 +4208,7 @@ impl RepoFamily {
         {
             let mut mutable = self.mutable.lock().expect("family state");
             mutable.starting = true;
-            mutable.starting_since = Some((self.now)());
+            mutable.starting_since = None;
             mutable.start_error = None;
             mutable.notice = None;
         }
@@ -4290,7 +4293,14 @@ impl RepoFamily {
         let spawn = self.spawn.lock().map(|slot| slot.clone()).ok();
         let pid = spawn.and_then(|spawn| spawn(&argv, environment));
         match pid {
-            Some(_) => AgentResult::ok(),
+            Some(_) => {
+                // The proof clock starts when the worker exists, never at the
+                // request: a forge preflight that reads the repository and
+                // ensures its labels outlasts the five second window.
+                let mut mutable = self.mutable.lock().expect("family state");
+                mutable.starting_since = Some((self.now)());
+                AgentResult::ok()
+            }
             None => {
                 let message = format!(
                     "the {} worker could not be started",
