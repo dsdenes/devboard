@@ -1002,12 +1002,18 @@ impl ForgeProjection {
                 error: None,
             };
         }
-        let Some(_last_success) = inner.last_success else {
+        let Some(last_success) = inner.last_success else {
             return AgentSync::stale();
         };
-        // An old successful read stays `ok`: the TypeScript projection reports
-        // staleness only for a failed or retried read, never for age alone.
-        let _ = (now, self.stale_after_ms);
+        // A known row goes stale once the staleness interval passes without a
+        // successful read; a fresh successful read is the only `ok`.
+        if now.saturating_sub(last_success) > self.stale_after_ms {
+            return AgentSync {
+                state: "stale".to_string(),
+                at,
+                error: None,
+            };
+        }
         AgentSync {
             state: "ok".to_string(),
             at,
@@ -1116,6 +1122,14 @@ impl ForgeProjection {
             || reason.contains("connection")
             || reason.contains("ECONN");
         inner.failures += 1;
+        if inner.failures >= 5 {
+            inner.last_failure = Some(format!(
+                "the forge read failed after {} attempts: {reason}",
+                inner.failures
+            ));
+            inner.next_attempt_at = None;
+            return;
+        }
         if transient {
             inner.last_failure = None;
             let delay = 1_000 * 2_i64.min(i64::from(inner.failures));

@@ -596,7 +596,7 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             if let Some(denied) = credential_refusal(&server, &headers, &cookie_name) {
                 return reply(denied);
             }
-            return reply(upgrade(server.clone(), request, &headers).await);
+            return reply(upgrade(server.clone(), request, &headers, flow_id.as_deref()).await);
         }
         _ => {}
     }
@@ -965,7 +965,12 @@ fn percent_decode(raw: &str) -> Option<String> {
 }
 
 /// The 426 for a request that could not be upgraded.
-async fn upgrade(server: Arc<Server>, request: Request, headers: &HeaderMap) -> Response {
+async fn upgrade(
+    server: Arc<Server>,
+    request: Request,
+    headers: &HeaderMap,
+    flow_id: Option<&str>,
+) -> Response {
     let (mut parts, _body) = request.into_parts();
     let upgraded = WebSocketUpgrade::from_request_parts(&mut parts, &()).await;
     let Ok(upgraded) = upgraded else {
@@ -976,7 +981,13 @@ async fn upgrade(server: Arc<Server>, request: Request, headers: &HeaderMap) -> 
             &[("Upgrade", "websocket")],
         );
     };
-    upgraded.on_upgrade(move |socket| run_socket(server, socket))
+    let mut answer = upgraded.on_upgrade(move |socket| run_socket(server, socket));
+    if let Some(flow_id) = flow_id {
+        if let Ok(value) = HeaderValue::from_str(flow_id) {
+            answer.headers_mut().insert(FLOW_ID_HEADER, value);
+        }
+    }
+    answer
 }
 
 /// One connected client's outbound queue.

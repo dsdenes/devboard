@@ -697,6 +697,14 @@ impl ModeGate for GoalRunGate {
     }
 }
 
+/// True while an implementation reset is under way. Every non-read-only
+/// command is refused in that window.
+pub fn reset_is_active(app: &Arc<App>) -> bool {
+    state_for(app)
+        .map(|owner| lock(&owner.inner).reset_active)
+        .unwrap_or(false)
+}
+
 /// Replays the frames a connecting client owes before its own replies.
 pub fn replay(app: &Arc<App>, conn: &Conn) {
     let Some(this) = state_for(app) else {

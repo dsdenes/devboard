@@ -335,7 +335,10 @@ fn owner_alive(owner: &LockOwner) -> bool {
     let recorded = epoch_millis(recorded);
     match process_started_at(owner.pid) {
         Some(actual) => (actual - recorded).abs() <= 2_000,
-        None => false,
+        // No `/proc` start time is available on this platform. The pid is
+        // alive, so the lock is live: reclaiming it would let two owners
+        // write the same state.
+        None => true,
     }
 }
 

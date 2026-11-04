@@ -1166,7 +1166,6 @@ fn input() -> IssueInput {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_gitea_origin_files_and_comments_through_the_rest_api() {
-    use axum::extract::Path as AxumPath;
     use axum::routing::{get, post};
     use axum::Json;
 

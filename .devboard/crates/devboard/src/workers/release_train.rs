@@ -2543,7 +2543,7 @@ async fn run_release_agent(
     let (connection, mut events) = connection;
     if let Some(pid) = connection.pid() {
         let argv = connection.argv();
-        let command = argv.first().cloned().unwrap_or_default();
+        let command = argv.join(" ");
         (input.register_peer)(ReleasePeer {
             command,
             pid,
@@ -2601,6 +2601,13 @@ async fn run_release_agent(
                     "the release agent did not finish within 60 minutes".to_string(),
                 );
                 break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                if (input.stopping)() {
+                    connection.close();
+                    agent_error = Some("stopped during the release run".to_string());
+                    break;
+                }
             }
         }
     }

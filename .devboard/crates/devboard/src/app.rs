@@ -492,6 +492,13 @@ impl App {
     }
 
     async fn dispatch(&self, conn: &Conn, command: Command) -> Result<(), String> {
+        if !command.is_read_only() && crate::goal_run::reset_is_active(&self.arc_self()) {
+            conn.send(json!({
+                "type": "error",
+                "message": "An implementation reset is active.",
+            }));
+            return Ok(());
+        }
         match command {
             Command::GetProject => {
                 conn.send(

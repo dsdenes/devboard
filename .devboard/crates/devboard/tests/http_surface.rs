@@ -251,7 +251,7 @@ async fn static_serving_refuses_control_characters_and_normalizes_paths() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
     }
 
-    let (status, headers, body) = send(
+    let (status, headers, _body) = send(
         Method::GET,
         &format!("{}/", instance.base),
         HeaderMap::new(),
@@ -565,5 +565,51 @@ async fn mutating_endpoints_refuse_a_misdirected_host() {
         assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "{path}");
         let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
         assert_eq!(parsed["title"], "Misdirected Request");
+    }
+}
+
+#[tokio::test]
+async fn an_unreadable_static_file_answers_500_and_journals() {
+    let instance = start("static-unreadable").await;
+    let path = instance.root.join("static/assets/secret.txt");
+    std::fs::write(&path, "secret\n").expect("a file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+            .expect("an unreadable file");
+    }
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/assets/secret.txt", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+    assert_eq!(parsed["title"], "Internal Server Error");
+    assert_eq!(parsed["detail"], "An internal error occurred.");
+    let journal = std::fs::read_to_string(
+        instance
+            .root
+            .join("state")
+            .join("journal")
+            .join(format!("{}.jsonl", "0".repeat(24))),
+    )
+    .or_else(|_| {
+        let directory = instance.root.join("state").join("journal");
+        let entry = std::fs::read_dir(directory)
+            .expect("the journal directory")
+            .filter_map(Result::ok)
+            .max_by_key(|entry| entry.file_name())
+            .expect("a journal file");
+        std::fs::read_to_string(entry.path())
+    })
+    .expect("the journal");
+    assert!(journal.contains("server-error"), "{journal}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
     }
 }
