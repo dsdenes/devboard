@@ -12,7 +12,15 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
@@ -254,6 +262,24 @@ function settle(value: unknown, now: string, later: string): unknown {
   return record;
 }
 
+/** Removes a warm-up's leftover lock and pending control files. */
+function clearWarmupLocks(family: Family, prepared: Prepared): void {
+  const directory =
+    family === "watchdog"
+      ? path.join(prepared.repoDir, ".devboard", ".tmp", "watchdog")
+      : family === "mcp-optimizer"
+        ? path.join(prepared.stateDir, "coach")
+        : family === "release-train"
+          ? path.join(prepared.stateDir, "release-train")
+          : path.join(prepared.repoDir, ".devboard", ".tmp", family);
+  if (!existsSync(directory)) return;
+  for (const entry of readdirSync(directory)) {
+    if (entry.startsWith("lock") || entry === "control") {
+      rmSync(path.join(directory, entry), { recursive: true, force: true });
+    }
+  }
+}
+
 /** Seeds every family far from its next cycle and clears warm-up noise. */
 function seedCadence(family: Family, prepared: Prepared): void {
   const root = familyRoot(family, prepared);
@@ -367,6 +393,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   for (const family of FAMILIES) {
     await warmUp(family, prepared);
     seedCadence(family, prepared);
+    clearWarmupLocks(family, prepared);
   }
   const dashboard = await startDashboard(prepared);
   return async () => {
