@@ -2534,7 +2534,7 @@ async fn run_release_and_verify(
             }
             ReleaseRunResult::Ok { version, url }
         }
-        ReleaseVerification::Failed { detail, .. } => {
+        ReleaseVerification::Failed { phase, detail, .. } => {
             let reported = result
                 .as_ref()
                 .filter(|value| value.get("ok").and_then(Value::as_bool) == Some(false))
@@ -2546,13 +2546,21 @@ async fn run_release_and_verify(
             if stopped {
                 parts.push("stopped during the release run".to_string());
             }
+            // A publish that failed withdraws the tag it created, so the tag
+            // phase then reads that withdrawal back as a missing tag. The
+            // publish error is the cause, and naming the tag phase beside it
+            // would report a phantom second failure. A GitHub or Gitea phase
+            // failure still says something the publish error did not.
+            let tags_withdrawn = agent_error.is_some();
             if let Some(error) = agent_error {
                 parts.push(error);
             }
             if let Some(report) = reported {
                 parts.push(report);
             }
-            parts.push(detail);
+            if phase != ReleaseVerificationPhase::Tag || !tags_withdrawn {
+                parts.push(detail);
+            }
             ReleaseRunResult::failed(parts.join("; "))
         }
     }

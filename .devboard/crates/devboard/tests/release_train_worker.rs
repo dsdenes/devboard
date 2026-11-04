@@ -1170,6 +1170,62 @@ async fn a_recovery_verifies_the_release_publish_actually_proved() {
     worker.stop().await;
 }
 
+/// A publish that failed withdraws the tag it created, so the verification's
+/// tag phase reads that withdrawal back as a missing tag. The recorded failure
+/// must name the publish error alone, never a phantom second failure beside it.
+#[tokio::test]
+async fn a_failed_publish_records_its_error_without_the_withdrawn_tag_phase() {
+    let workspace = workspace("withdrawn-tag");
+    let target = "c".repeat(40);
+    let clock = FakeClock::new(start_ms());
+    let mut options = ReleaseTrainWorkerOptions::new(&workspace.repo_dir, &workspace.state_dir);
+    options.harness_version = Some("test-version".to_string());
+    options.manual = true;
+    options.now = Some(clock.function());
+    options.gate = Some(gate_ok(unreleased(&target, "1.0.1")));
+    options.publish = Some(Arc::new(|_args: PublishArgs| -> PublishFuture {
+        Box::pin(async move {
+            Err(anyhow::anyhow!(
+                "the release workflow concluded failure: host failed at Create GitHub Release"
+            ))
+        })
+    }));
+    options.verify = Some(Arc::new(
+        |options: ReleaseVerificationOptions| -> Pin<
+            Box<dyn Future<Output = ReleaseVerification> + Send>,
+        > {
+            Box::pin(async move {
+                ReleaseVerification::Failed {
+                    phase: ReleaseVerificationPhase::Tag,
+                    version: options.version.clone(),
+                    detail: format!(
+                        "tag binding: no release tag names or contains {} for v{}",
+                        &options.target[..7],
+                        options.version
+                    ),
+                }
+            })
+        },
+    ));
+    options.log = Some(Arc::new(|_line: &str| {}));
+    let worker = ReleaseTrainWorker::new(options);
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+    let state = worker.current_state();
+    let failure = state.failure.clone().expect("a recorded failure");
+    assert_eq!(
+        failure.detail,
+        "the release workflow concluded failure: host failed at Create GitHub Release"
+    );
+    assert!(
+        !failure.detail.contains("tag binding:"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(state.runs[0].state, ReleaseTrainRunState::Failed);
+    worker.stop().await;
+}
+
 #[tokio::test]
 async fn release_history_reads_the_request_of_a_legacy_run() {
     let workspace = workspace("history");

@@ -1877,6 +1877,10 @@ component that dispatches it.
   applies to: `tag binding:` when no release tag names or contains the released commit, `GitHub
   assets:` when a platform archive or installer is missing, and `Gitea manifest:` when the release,
   its manifest, or a checksum is missing. A phase never reports another phase's wording.
+- A publish that failed withdrew the tag it created, so the tag phase cannot judge that run: its
+  failure detail names the publish error alone and never a `tag binding:` line the withdrawal
+  itself produced. A GitHub or Gitea phase failure is still appended, because it names something
+  the publish error did not.
 - A retry of a recorded failure runs `devboard publish` again. When `main` has moved past the
   failed version's tag, publish releases the range at the current tip; the worker then verifies
   the release publish actually proved and records that version, so a superseded version is never
