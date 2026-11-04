@@ -8,25 +8,22 @@
 //! `<state>/ask/<repository key>` so a replacement dashboard answers the next
 //! question from the same transcript.
 //!
-//! The TypeScript server runs each turn in a detached owner process, so a
-//! dashboard replacement re-attaches to the peer that is still answering.
-//! This port keeps the prompts, the frames, and the transcript file
-//! byte-identical, but the peer lives with the process: after a replacement
-//! the next question starts a fresh peer whose first prompt carries the
-//! earlier turns, exactly the prompt TypeScript sends to a replacement peer.
+//! Each turn runs in a detached owner process, so a dashboard replacement
+//! re-attaches to the peer that is still answering. The owner owns the ACP
+//! peer and its text journal; this module validates requests, streams the
+//! replayed answer through `askChunk`, and emits `askDone` exactly once when
+//! the turn settles.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
 
-use crate::acp::{AcpConnection, AcpConnectionOptions, AcpEvent, AcpResult, PermissionPolicy};
+use crate::acp::PermissionPolicy;
+use crate::detached_run::{DetachedPeer, DetachedPeerOptions, TextCallback};
 use crate::app::{App, Conn};
 use crate::protocol::Command;
 
@@ -247,13 +244,8 @@ fn ask_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
 struct Conversation {
     id: String,
     socket: Option<Conn>,
-    peer: Option<Arc<AcpConnection>>,
-    /// Identifies the peer that owns this turn's answer, so a late chunk of a
-    /// replaced or timed-out peer never joins a later answer.
-    peer_id: u64,
-    /// The peer's callback stream, held between turns so a follow-up keeps
-    /// the same session.
-    events: Option<mpsc::UnboundedReceiver<AcpEvent>>,
+    /// The detached owner of this conversation's peer.
+    peer: Option<Arc<DetachedPeer>>,
     /// Visible turns, replayed to a replacement peer.
     transcript: Vec<TranscriptEntry>,
     busy: bool,
@@ -271,8 +263,6 @@ impl Conversation {
             id,
             socket: None,
             peer: None,
-            peer_id: 0,
-            events: None,
             transcript: Vec::new(),
             busy: false,
             answer: String::new(),
@@ -328,7 +318,6 @@ impl Conversation {
 
 struct Inner {
     conversations: HashMap<String, Conversation>,
-    next_peer: u64,
 }
 
 /// Every conversation this dashboard serves.
@@ -336,6 +325,8 @@ pub struct AskMode {
     state_dir: PathBuf,
     repo_dir: PathBuf,
     command: String,
+    instance: String,
+    harness_version: Option<String>,
     turn_timeout: Duration,
     inner: Mutex<Inner>,
 }
@@ -412,11 +403,10 @@ impl AskMode {
             state_dir,
             repo_dir,
             command: config.agent_command.clone(),
+            instance: app.instance.clone(),
+            harness_version: app.running_version.clone(),
             turn_timeout: Duration::from_millis(ASK_TURN_TIMEOUT_MS.max(1)),
-            inner: Mutex::new(Inner {
-                conversations,
-                next_peer: 0,
-            }),
+            inner: Mutex::new(Inner { conversations }),
         }
     }
 
@@ -448,77 +438,55 @@ impl AskMode {
             .is_some_and(|conversation| conversation.live(turn, socket_id))
     }
 
-    /// Installs the peer this turn starts and returns its identity.
-    fn install_peer(&self, id: &str, peer: Arc<AcpConnection>) -> Option<u64> {
-        let mut state = lock(&self.inner);
-        state.next_peer += 1;
-        let peer_id = state.next_peer;
-        let conversation = state.conversations.get_mut(id)?;
-        if let Some(previous) = conversation.peer.take() {
-            previous.close();
-        }
-        conversation.peer = Some(peer);
-        conversation.peer_id = peer_id;
-        conversation.events = None;
-        Some(peer_id)
-    }
-
-    /// The live peer and its callback stream, taken for the turn.
-    fn take_peer(
-        &self,
+    /// Builds the detached handle for one conversation's peer.
+    fn detached(
+        self: &Arc<Self>,
+        socket: &Conn,
         id: &str,
-    ) -> Option<(Arc<AcpConnection>, mpsc::UnboundedReceiver<AcpEvent>)> {
-        let mut state = lock(&self.inner);
-        let conversation = state.conversations.get_mut(id)?;
-        let peer = conversation.peer.clone()?;
-        let events = conversation.events.take()?;
-        Some((peer, events))
-    }
-
-    fn peer_id_of(&self, id: &str) -> u64 {
-        let state = lock(&self.inner);
-        state
-            .conversations
-            .get(id)
-            .map(|conversation| conversation.peer_id)
-            .unwrap_or(0)
-    }
-
-    /// Returns the callback stream for the next turn on the same peer.
-    fn restore_events(&self, id: &str, peer_id: u64, events: mpsc::UnboundedReceiver<AcpEvent>) {
-        let mut state = lock(&self.inner);
-        if let Some(conversation) = state.conversations.get_mut(id) {
-            if conversation.peer_id == peer_id && conversation.peer.is_some() {
-                conversation.events = Some(events);
-                return;
-            }
-        }
-        drop(events);
-    }
-
-    /// Appends one assistant chunk and relays it to the conversation's socket.
-    fn apply_text(&self, id: &str, peer_id: u64, socket: &Conn, text: &str) {
-        let frame = {
-            let mut state = lock(&self.inner);
-            match state.conversations.get_mut(id) {
-                Some(conversation) if conversation.peer_id == peer_id && conversation.busy => {
-                    conversation.answer.push_str(text);
-                    Some(json!({
-                        "type": "askChunk",
-                        "conversationId": conversation.id,
-                        "text": text,
-                    }))
+        attach_only: bool,
+    ) -> Arc<DetachedPeer> {
+        let mode = Arc::clone(self);
+        let conversation_id = id.to_string();
+        let text_id = conversation_id.clone();
+        let text_socket = socket.clone();
+        let on_text: TextCallback = Arc::new(move |text: String| {
+            let frame = {
+                let mut state = lock(&mode.inner);
+                match state.conversations.get_mut(&text_id) {
+                    Some(conversation) if conversation.busy && !conversation.closed => {
+                        conversation.answer.push_str(&text);
+                        Some(json!({
+                            "type": "askChunk",
+                            "conversationId": conversation.id,
+                            "text": text,
+                        }))
+                    }
+                    _ => None,
                 }
-                _ => None,
+            };
+            if let Some(frame) = frame {
+                text_socket.send(frame);
             }
-        };
-        if let Some(frame) = frame {
-            socket.send(frame);
-        }
+        });
+        let mut options = DetachedPeerOptions::new(
+            self.repo_dir.clone(),
+            self.state_dir.clone(),
+            "ask",
+            conversation_id.clone(),
+            self.instance.clone(),
+            self.command.clone(),
+            self.repo_dir.to_string_lossy().into_owned(),
+        )
+        .permission(PermissionPolicy::Deny)
+        .multi(true)
+        .attach_only(attach_only)
+        .text(on_text);
+        options.harness_version = self.harness_version.clone();
+        DetachedPeer::new(options)
     }
 
     /// Opens one conversation turn: validates the request, admits it, and
-    /// starts the peer. Returns after the turn settles or the deadline ends it.
+    /// starts or attaches to its detached owner.
     async fn ask(
         self: &Arc<Self>,
         app: &Arc<App>,
@@ -559,7 +527,8 @@ impl AskMode {
             return;
         }
 
-        let (turn, first_turn, prompt) = {
+        // A replacement re-attaches to the turn that was already in flight.
+        let (attached_turn, attach) = {
             let mut state = lock(&self.inner);
             let conversation = state
                 .conversations
@@ -567,14 +536,44 @@ impl AskMode {
                 .or_insert_with(|| Conversation::new(id.clone()));
             conversation.socket = Some(socket.clone());
             conversation.closed = false;
-            // A conversation restored from disk holds no live turn in this
-            // process: the next question starts a peer that carries the
-            // earlier turns.
-            if conversation.peer.is_none() {
-                conversation.busy = false;
-                conversation.answer.clear();
+            let attach = conversation.busy
+                && conversation.last_prompt.is_some()
+                && conversation.peer.is_none();
+            (conversation.turn, attach)
+        };
+
+        if attach {
+            let peer = self.detached(socket, &id, true);
+            {
+                let mut state = lock(&self.inner);
+                if let Some(conversation) = state.conversations.get_mut(&id) {
+                    conversation.peer = Some(Arc::clone(&peer));
+                }
             }
-            let first_turn = conversation.peer.as_ref().is_none_or(|peer| peer.closed());
+            self.persist(&id);
+            // Attachment begins polling only through `run`; the owner already
+            // has the turn, so this settles with the run's own outcome.
+            if let Err(message) = peer.run("").await {
+                self.fail(&id, attached_turn, socket, &message);
+                return;
+            }
+            match peer.wait_turn(attached_turn).await {
+                Ok(()) => self.complete_attached(&id, attached_turn, socket),
+                Err(message) => self.fail(&id, attached_turn, socket, &message),
+            }
+            return;
+        }
+
+        let (turn, first_turn, prompt) = {
+            let mut state = lock(&self.inner);
+            let conversation = state
+                .conversations
+                .entry(id.clone())
+                .or_insert_with(|| Conversation::new(id.clone()));
+            let first_turn = conversation
+                .peer
+                .as_ref()
+                .is_none_or(|peer| peer.closed());
             conversation.turn += 1;
             let turn = conversation.turn;
             conversation.busy = true;
@@ -612,10 +611,10 @@ impl AskMode {
         }
     }
 
-    /// Starts or reuses the peer and sends one prompt, relaying its text while
-    /// the prompt is in flight.
+    /// Starts or reuses the detached peer and sends one prompt, relaying its
+    /// text while the prompt is in flight.
     async fn run_turn(
-        &self,
+        self: &Arc<Self>,
         app: &Arc<App>,
         socket: &Conn,
         id: &str,
@@ -623,85 +622,105 @@ impl AskMode {
         first_turn: bool,
         prompt: &str,
     ) -> TurnOutcome {
-        let (peer, mut events) = if first_turn {
-            let environment = match app.providers.select_environment().await {
-                Ok(environment) => environment,
-                Err(error) => return TurnOutcome::Failed(error.message),
+        if !first_turn {
+            let peer = {
+                let state = lock(&self.inner);
+                state
+                    .conversations
+                    .get(id)
+                    .and_then(|conversation| conversation.peer.clone())
             };
-            // A close, disconnect, or deadline during provider selection ends
-            // the turn without a process.
-            if !self.live(id, turn, socket.id()) {
-                return TurnOutcome::Dropped;
-            }
-            let environment: HashMap<String, String> = environment
-                .into_iter()
-                .filter_map(|(key, value)| value.map(|value| (key, value)))
-                .collect();
-            let options = AcpConnectionOptions::new(
-                self.command.clone(),
-                self.repo_dir.to_string_lossy().into_owned(),
-            )
-            .with_env(environment)
-            .with_permission_policy(PermissionPolicy::Deny);
-            let (connection, events) = match AcpConnection::connect(options).await {
-                Ok(pair) => pair,
-                Err(error) => return TurnOutcome::Failed(error.message),
-            };
-            let connection = Arc::new(connection);
-            if !self.live(id, turn, socket.id()) {
-                connection.close();
-                return TurnOutcome::Dropped;
-            }
-            // A close that lands between the guard and the install must still
-            // end with no live peer.
-            if self.install_peer(id, Arc::clone(&connection)).is_none() {
-                connection.close();
-                return TurnOutcome::Dropped;
-            }
-            (connection, events)
-        } else {
-            let Some(pair) = self.take_peer(id) else {
+            let Some(peer) = peer else {
                 return TurnOutcome::Failed("The agent process is not running.".to_string());
             };
-            pair
-        };
-
-        let peer_id = self.peer_id_of(id);
-        let mut prompt_future: Pin<Box<dyn Future<Output = AcpResult<Value>> + Send>> =
-            if first_turn {
-                Box::pin(peer.run(prompt))
-            } else {
-                Box::pin(peer.prompt(prompt))
+            return match peer.prompt(prompt).await {
+                Ok(()) => TurnOutcome::Done,
+                Err(message) => TurnOutcome::Failed(message),
             };
+        }
 
-        // The peer queues every assistant chunk before it answers the prompt,
-        // so draining the channel first (biased) keeps the answer in order and
-        // complete: a chunk is never lost to the completion that follows it.
-        let mut open = true;
-        let result = loop {
-            if !open {
-                break prompt_future.await;
-            }
-            tokio::select! {
-                biased;
-                event = events.recv() => match event {
-                    Some(AcpEvent::Text(text)) => self.apply_text(id, peer_id, socket, &text),
-                    Some(_) => {}
-                    None => open = false,
-                },
-                settled = &mut prompt_future => break settled,
-            }
+        let environment = match app.providers.select_environment().await {
+            Ok(environment) => environment,
+            Err(error) => return TurnOutcome::Failed(error.message),
         };
-        self.restore_events(id, peer_id, events);
-
-        match result {
+        // A close, disconnect, or deadline during provider selection ends the
+        // turn without a process.
+        if !self.live(id, turn, socket.id()) {
+            return TurnOutcome::Dropped;
+        }
+        let environment: HashMap<String, String> = environment
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|value| (key, value)))
+            .collect();
+        let mode = Arc::clone(self);
+        let text_id = id.to_string();
+        let text_socket = socket.clone();
+        let on_text: TextCallback = Arc::new(move |text: String| {
+            let frame = {
+                let mut state = lock(&mode.inner);
+                match state.conversations.get_mut(&text_id) {
+                    Some(conversation) if conversation.busy && !conversation.closed => {
+                        conversation.answer.push_str(&text);
+                        Some(json!({
+                            "type": "askChunk",
+                            "conversationId": conversation.id,
+                            "text": text,
+                        }))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(frame) = frame {
+                text_socket.send(frame);
+            }
+        });
+        let mut options = DetachedPeerOptions::new(
+            self.repo_dir.clone(),
+            self.state_dir.clone(),
+            "ask",
+            id.to_string(),
+            self.instance.clone(),
+            self.command.clone(),
+            self.repo_dir.to_string_lossy().into_owned(),
+        )
+        .permission(PermissionPolicy::Deny)
+        .multi(true)
+        .env(environment)
+        .text(on_text);
+        options.harness_version = self.harness_version.clone();
+        let created = DetachedPeer::new(options);
+        {
+            let mut state = lock(&self.inner);
+            match state.conversations.get_mut(id) {
+                Some(conversation) if conversation.live(turn, socket.id()) => {
+                    if let Some(previous) = conversation.peer.take() {
+                        previous.close();
+                    }
+                    conversation.peer = Some(Arc::clone(&created));
+                }
+                _ => {
+                    created.close();
+                    return TurnOutcome::Dropped;
+                }
+            }
+        }
+        match created.run(prompt).await {
             Ok(_) => TurnOutcome::Done,
-            Err(error) => TurnOutcome::Failed(error.message),
+            Err(message) => TurnOutcome::Failed(message),
         }
     }
 
     /// Settles a finished turn and appends the answer it streamed.
     fn complete(&self, id: &str, turn: u64, socket: &Conn) {
+        self.complete_turn(id, turn, socket, None)
+    }
+
+    /// Settles a turn a replacement dashboard re-attached to.
+    fn complete_attached(&self, id: &str, turn: u64, socket: &Conn) {
+        self.complete_turn(id, turn, socket, Some(turn))
+    }
+
+    fn complete_turn(&self, id: &str, turn: u64, socket: &Conn, _attached: Option<u64>) {
         let frame = {
             let mut state = lock(&self.inner);
             let Some(conversation) = state.conversations.get_mut(id) else {
@@ -744,8 +763,6 @@ impl AskMode {
                 if let Some(peer) = conversation.peer.take() {
                     peer.close();
                 }
-                conversation.peer_id = 0;
-                conversation.events = None;
             }
             json!({
                 "type": "askError",
@@ -773,8 +790,6 @@ impl AskMode {
             if let Some(peer) = conversation.peer.take() {
                 peer.close();
             }
-            conversation.peer_id = 0;
-            conversation.events = None;
             json!({
                 "type": "askError",
                 "conversationId": conversation.id,
@@ -809,7 +824,8 @@ impl AskMode {
         self.discard(id);
     }
 
-    /// Drops every conversation this connection owned.
+    /// Drops every conversation this connection owned. A replacement keeps
+    /// them, so the reconnected page re-attaches to the turn in flight.
     fn discard_owned_by(&self, socket: &Conn) {
         let owned: Vec<String> = {
             let state = lock(&self.inner);
@@ -825,8 +841,18 @@ impl AskMode {
                 .map(|conversation| conversation.id.clone())
                 .collect()
         };
+        let restarting = crate::detached_run::in_detached_handoff(&self.repo_dir, &self.instance);
         for id in owned {
-            self.discard(&id);
+            if restarting {
+                let mut state = lock(&self.inner);
+                if let Some(conversation) = state.conversations.get_mut(&id) {
+                    conversation.socket = None;
+                }
+                drop(state);
+                self.persist(&id);
+            } else {
+                self.discard(&id);
+            }
         }
     }
 
@@ -842,7 +868,6 @@ impl AskMode {
             conversation.answer.clear();
             conversation.transcript.clear();
             conversation.last_prompt = None;
-            conversation.events = None;
             if let Some(peer) = conversation.peer.take() {
                 peer.close();
             }

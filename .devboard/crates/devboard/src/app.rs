@@ -333,6 +333,8 @@ pub struct App {
     restart_hook: Mutex<Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>>,
     source_refresher: Mutex<Option<crate::source_refresh::SourceRefresher>>,
     restart_when_idle: Arc<std::sync::atomic::AtomicBool>,
+    /// ACP children the previous process recorded for its replacement to end.
+    restored_children: Mutex<Vec<crate::detached_run::RecordedChild>>,
 }
 
 impl App {
@@ -395,6 +397,7 @@ impl App {
             restart_hook: Mutex::new(None),
             source_refresher: Mutex::new(None),
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            restored_children: Mutex::new(Vec::new()),
         });
         {
             let weak = Arc::downgrade(&app);
@@ -412,7 +415,9 @@ impl App {
         crate::agents_mode::init(&app);
         crate::ask_mode::init(&app);
         app.register_restart_section();
+        app.register_children_section();
         app.shared.restore();
+        app.terminate_restored_children();
         app.start_lease_refresh();
         app
     }
@@ -701,23 +706,11 @@ impl App {
     /// Tells every page to wait for a replacement and hands detached runs
     /// over, before this process stops serving.
     pub fn prepare_replacement(&self) {
-        if let Err(error) = crate::detached_run::write_json(
-            &crate::detached_run::detached_run_handoff_path(
-                &self.config().state_dir,
-                &self.config().repo_dir,
-            ),
-            &serde_json::json!({
-                "at": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_millis() as u64)
-                    .unwrap_or(0),
-                "pid": std::process::id(),
-            }),
-        ) {
-            self.shared
-                .journal
-                .write("server-error", &format!("handoff: {error}"), None);
-        }
+        crate::detached_run::begin_detached_handoff(
+            &self.config().state_dir,
+            &self.config().repo_dir,
+            &self.instance,
+        );
         crate::goal_drafts::handoff_goal_draft_runs(
             &self.config().state_dir,
             &self.config().repo_dir,
@@ -811,6 +804,72 @@ impl App {
                 flag: Arc::clone(&self.restart_when_idle),
             }),
         );
+    }
+
+    /// Persists the ACP children this process owns so its replacement can
+    /// end any peer that outlives it.
+    fn register_children_section(self: &Arc<Self>) {
+        struct ChildrenSection {
+            app: std::sync::Weak<App>,
+        }
+        impl StateSection for ChildrenSection {
+            fn snapshot(&self) -> Option<Value> {
+                let app = self.app.upgrade()?;
+                let children: Vec<Value> = app
+                    .capture_children()
+                    .iter()
+                    .map(crate::detached_run::RecordedChild::to_json)
+                    .collect();
+                Some(Value::Array(children))
+            }
+
+            fn restore(&self, value: &Value) {
+                let Some(app) = self.app.upgrade() else {
+                    return;
+                };
+                let Some(entries) = value.as_array() else {
+                    return;
+                };
+                let children: Vec<crate::detached_run::RecordedChild> = entries
+                    .iter()
+                    .filter_map(|entry| {
+                        crate::detached_run::RecordedChild::parse(Some(entry))
+                    })
+                    .collect();
+                if let Ok(mut slot) = app.restored_children.lock() {
+                    *slot = children;
+                };
+            }
+        }
+        self.shared.register_section(
+            "children",
+            Arc::new(ChildrenSection {
+                app: Arc::downgrade(self),
+            }),
+        );
+    }
+
+    /// The ACP peers this process still holds directly: a detached run belongs
+    /// to its owner, which the replacement adopts.
+    pub fn capture_children(&self) -> Vec<crate::detached_run::RecordedChild> {
+        crate::flow_mode::capture_children(self.arc_self())
+    }
+
+    /// Ends the recorded peers the replaced process left behind.
+    fn terminate_restored_children(&self) {
+        let children = self
+            .restored_children
+            .lock()
+            .map(|mut slot| std::mem::take(&mut *slot))
+            .unwrap_or_default();
+        if children.is_empty() {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                crate::detached_run::terminate_recorded_children(&children, 5_000).await;
+            });
+        }
     }
 
     /// Whether a restart is waiting for live work to finish.
