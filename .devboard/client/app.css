@@ -1,6 +1,20 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/**
+ * Tailwind's automatic source detection walks every file under the project
+ * root, and the harness keeps generated trees there. `.tmp` alone reaches tens
+ * of gigabytes of recursive `verify-install-*` copies, so scanning it grows the
+ * build heap without bound and the client build never finishes. None of these
+ * trees is a client source.
+ */
+@source not "../.tmp";
+@source not "../.test-tmp";
+@source not "../target";
+@source not "../dist";
+@source not "../contract/.work";
+@source not "../contract/.test-work";
+
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
