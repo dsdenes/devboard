@@ -31,6 +31,9 @@ test("five start/stop cycles keep one ready dashboard and file nothing", async (
   await openDashboard(page);
 
   const before = await openIssues();
+  // The proof's precondition: the board is empty before the soak. A run that
+  // left an error notification behind has already failed this.
+  expect(before).toEqual([]);
   const errorsBefore = new Set(errorNotifications(before).map((issue) => issue.number));
 
   for (let cycle = 0; cycle < 5; cycle += 1) {

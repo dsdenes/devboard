@@ -12,6 +12,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -69,6 +70,50 @@ export interface SuiteState {
   goalFile: string;
   workerVersion: string;
   pid: number;
+}
+
+/** The state directory one family publishes and reads its controls under. */
+export function familyRuntimeRoot(
+  family: string,
+  state: Pick<SuiteState, "repoDir" | "stateDir">,
+): string {
+  if (family === "watchdog") {
+    return path.join(state.repoDir, ".devboard", ".tmp", "watchdog");
+  }
+  if (family === "mcp-optimizer") {
+    return path.join(state.stateDir, "coach");
+  }
+  if (family === "release-train") {
+    return path.join(state.stateDir, "release-train");
+  }
+  return path.join(state.stateDir, family);
+}
+
+function removeRuntimeEntries(directory: string): void {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const candidate = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "control") rmSync(candidate, { recursive: true, force: true });
+      else removeRuntimeEntries(candidate);
+      continue;
+    }
+    if (entry.name.startsWith("lock")) rmSync(candidate, { force: true });
+  }
+}
+
+/**
+ * Clears a family's leftovers before a Start: a Stop command a previously
+ * signalled worker never consumed would stop the next worker, and a killed
+ * worker's lock can name a recycled pid.
+ */
+export function clearFamilyRuntime(
+  family: string,
+  state: Pick<SuiteState, "repoDir" | "stateDir">,
+): void {
+  const root = familyRuntimeRoot(family, state);
+  if (existsSync(root)) removeRuntimeEntries(root);
+  const work = path.join(state.repoDir, ".devboard", ".tmp", family);
+  if (existsSync(work)) removeRuntimeEntries(work);
 }
 
 export function readState(): SuiteState {

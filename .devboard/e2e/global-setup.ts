@@ -13,11 +13,11 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -27,6 +27,7 @@ import path from "node:path";
 import {
   binary,
   FAMILIES,
+  clearFamilyRuntime,
   escapePattern,
   giteaToken,
   giteaUrl,
@@ -262,24 +263,6 @@ function settle(value: unknown, now: string, later: string): unknown {
   return record;
 }
 
-/** Removes a warm-up's leftover lock and pending control files. */
-function clearWarmupLocks(family: Family, prepared: Prepared): void {
-  const directory =
-    family === "watchdog"
-      ? path.join(prepared.repoDir, ".devboard", ".tmp", "watchdog")
-      : family === "mcp-optimizer"
-        ? path.join(prepared.stateDir, "coach")
-        : family === "release-train"
-          ? path.join(prepared.stateDir, "release-train")
-          : path.join(prepared.repoDir, ".devboard", ".tmp", family);
-  if (!existsSync(directory)) return;
-  for (const entry of readdirSync(directory)) {
-    if (entry.startsWith("lock") || entry === "control") {
-      rmSync(path.join(directory, entry), { recursive: true, force: true });
-    }
-  }
-}
-
 /** Seeds every family far from its next cycle and clears warm-up noise. */
 function seedCadence(family: Family, prepared: Prepared): void {
   const root = familyRoot(family, prepared);
@@ -330,9 +313,9 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
     ],
     { cwd: harnessDir, env, stdio: ["ignore", "ignore", "pipe"] },
   );
-  let stderr = "";
+  writeFileSync(log, "");
   child.stderr?.on("data", (chunk: Buffer) => {
-    stderr += chunk.toString();
+    appendFileSync(log, chunk);
   });
   const baseUrl = `http://127.0.0.1:${port}`;
   try {
@@ -348,10 +331,8 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
     );
   } catch (error) {
     child.kill("SIGKILL");
-    writeFileSync(log, stderr);
     throw error;
   }
-  writeFileSync(log, stderr);
   const state: SuiteState = {
     baseUrl,
     port,
@@ -393,7 +374,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   for (const family of FAMILIES) {
     await warmUp(family, prepared);
     seedCadence(family, prepared);
-    clearWarmupLocks(family, prepared);
+    clearFamilyRuntime(family, {
+      repoDir: prepared.repoDir,
+      stateDir: prepared.stateDir,
+    });
   }
   const dashboard = await startDashboard(prepared);
   return async () => {
