@@ -1,4 +1,5 @@
 import { notifications } from "./notifications.svelte";
+import { isInvalidFrameError, reloadOnceForStaleBundle } from "./stale-bundle";
 import type { VersionState } from "./types";
 
 type ConnectionState = "connecting" | "open" | "closed";
@@ -183,6 +184,18 @@ export class ConnectionStore {
       return;
     }
     if (message.type === "error" && typeof message.message === "string") {
+      // A frame the server cannot parse means this page was built against
+      // another revision, so the reload below loads the bundle it serves. A
+      // refusal after that reload is this bundle's own frame and stays visible.
+      if (
+        isInvalidFrameError(message) &&
+        reloadOnceForStaleBundle(
+          typeof sessionStorage === "undefined" ? null : sessionStorage,
+          () => location.reload(),
+        )
+      ) {
+        return;
+      }
       this.lastError = message.message;
       notifications.push("Server", "error", message.message);
       if (this.restarting) {
