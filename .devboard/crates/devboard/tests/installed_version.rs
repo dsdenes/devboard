@@ -67,6 +67,27 @@ fn running_harness_dir_resolves_an_installed_prefix_and_its_manifest() {
     let _ = std::fs::remove_dir_all(&host);
 }
 
+#[test]
+fn a_rebuilt_binary_resolves_to_the_path_the_rebuild_left() {
+    let host = fixture("deleted");
+    let path = host.join(".devboard/bin/devboard");
+    let linked = PathBuf::from(format!("{} (deleted)", path.display()));
+    assert_eq!(devboard::relaunch::live_path(&linked), path);
+    assert_eq!(
+        devboard::relaunch::live_path(&path),
+        path,
+        "a live link is returned unchanged"
+    );
+    let absent = host.join(".devboard/bin/absent");
+    let linked_absent = PathBuf::from(format!("{} (deleted)", absent.display()));
+    assert_eq!(
+        devboard::relaunch::live_path(&linked_absent),
+        linked_absent,
+        "a replaced path with nothing behind it is never renamed away"
+    );
+    let _ = std::fs::remove_dir_all(&host);
+}
+
 #[tokio::test]
 async fn devboard_status_names_the_installed_manifest_directory() {
     let host = fixture("status");

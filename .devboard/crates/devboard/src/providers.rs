@@ -942,7 +942,7 @@ pub const DEVBOARD_MCP_SERVER: &str = "devboard";
 
 /// The harness executable that answers this protocol's `mcp` subcommand.
 fn harness_executable() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("devboard"))
+    crate::relaunch::own_program()
 }
 
 /// The generated peer's MCP registration: this harness's own stdio server.

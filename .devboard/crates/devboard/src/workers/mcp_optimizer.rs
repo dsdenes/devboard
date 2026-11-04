@@ -6883,9 +6883,8 @@ impl Activity {
             self.start_error = Some(message.clone());
             return CommandResult::refused(message);
         }
-        let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("devboard"));
         let argv: Vec<String> = vec![
-            executable.to_string_lossy().into_owned(),
+            crate::relaunch::own_program().to_string_lossy().into_owned(),
             "worker".to_string(),
             "mcp-optimizer".to_string(),
             "--repo".to_string(),
