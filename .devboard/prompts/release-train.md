@@ -22,6 +22,9 @@ request is the whole unresolved range; never recompute a different one and never
 - Fetch canonical `main` once before publishing:
   `git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`. The publish path itself
   fast-forwards a clean integration checkout to that tip.
+- The run directory carries `env.sh`, the forge coordinates this worker was started with. Source
+  it in the same shell as the release command and never print it:
+  `set -a; . <run-dir>/env.sh; set +a`.
 - Release through the harness publish path only. From the repository root run `devboard publish
   --repo . --wait-timeout 1800`; in a source checkout where the binary is not on `PATH`, run
   `cargo run --manifest-path .devboard/Cargo.toml -p devboard -- publish --repo .

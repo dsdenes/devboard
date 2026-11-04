@@ -2488,6 +2488,11 @@ pub fn default_release_runner(
     })
 }
 
+/// One POSIX shell word, single-quoted with embedded quotes escaped.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// The production release path: one `omp acp` peer running
 /// `/release-train <run-dir>`, then the same independent verification.
 pub fn default_release_agent_runner(
@@ -2526,6 +2531,30 @@ async fn run_release_agent(
         "DEVBOARD_RELEASE_RUN_DIR".to_string(),
         input.run_dir.to_string_lossy().into_owned(),
     );
+    // The agent's tool shell may not inherit every variable the worker was
+    // started with, so the forge coordinates ride in a private file beside the
+    // request; the prompt sources it before running publish.
+    let env_path = input.run_dir.join("env.sh");
+    if std::fs::create_dir_all(&input.run_dir).is_ok() {
+        let mut script = String::new();
+        for key in [
+            "DEVBOARD_GITEA_URL",
+            "GITEA_URL",
+            "GITEA_TOKEN",
+            "DEVBOARD_GITEA_TOKEN",
+            "DEVBOARD_RELEASE_REPO",
+        ] {
+            if let Some(value) = peer_environment.get(key) {
+                script.push_str(&format!("export {key}={}\n", shell_quote(value)));
+            }
+        }
+        let _ = std::fs::write(&env_path, script);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
     let mcp_servers = crate::acp::session_mcp_servers(&peer_environment);
     let options = crate::acp::AcpConnectionOptions::new(
         input.agent_command.clone(),
