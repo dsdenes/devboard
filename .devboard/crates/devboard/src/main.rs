@@ -37,6 +37,7 @@ async fn run() -> anyhow::Result<()> {
         }
         Some("hooks") => hooks_command(&args),
         Some("preflight") => preflight_command(&args),
+        Some("forge-auth") => std::process::exit(devboard::forge_auth::main(&args[1..]).await),
         Some(other) => {
             anyhow::bail!("unknown command {other}; expected serve, install, doctor, or version")
         }

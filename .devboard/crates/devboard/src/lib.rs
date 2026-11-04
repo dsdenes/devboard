@@ -23,6 +23,7 @@ pub mod discover_mode;
 pub mod feedback;
 pub mod flow_mode;
 pub mod forge;
+pub mod forge_auth;
 pub mod git;
 pub mod gitea;
 pub mod goal;
