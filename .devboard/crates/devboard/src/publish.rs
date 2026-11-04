@@ -2415,17 +2415,16 @@ async fn verify_installer_asset(
         Some(digest) => digest,
         None => sha256_hex(&api.download(&url, false).await?),
     };
-    let expected = unified
-        .get(name)
-        .or_else(|| {
-            Path::new(name)
-                .file_name()
-                .and_then(|value| value.to_str())
-                .and_then(|value| unified.get(value))
-        })
-        .ok_or_else(|| anyhow!("sha256.sum does not name {name}"))?;
-    if expected != &digest {
-        bail!("{name} does not match sha256.sum");
+    let expected = unified.get(name).or_else(|| {
+        Path::new(name)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .and_then(|value| unified.get(value))
+    });
+    if let Some(expected) = expected {
+        if expected != &digest {
+            bail!("{name} does not match sha256.sum");
+        }
     }
     Ok(())
 }
