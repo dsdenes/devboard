@@ -30,9 +30,11 @@ use crate::providers::{
 };
 use crate::version::read_harness_version;
 
+use super::api_standards::run_peer_until_idle;
 use super::api_standards::{
     absolute, append_activity_line, default_connect, iso_from_millis, json_text, parse_iso_millis,
-    write_activity, write_atomic, Clock, ConnectFn, Peer, PeerCallbacks, PeerOptions,
+    write_activity, write_atomic, Clock, ConnectFn, CycleHeartbeat, Peer, PeerCallbacks,
+    PeerOptions,
 };
 use super::mcp_optimizer::now_iso;
 use super::watchdog::{
@@ -879,8 +881,13 @@ pub struct EntryPoint {
     pub seed: String,
 }
 
-pub const ENTRY_POINT_SURFACES: [&str; 4] =
-    ["scout", "design", "dead-code", "single-responsibility"];
+pub const ENTRY_POINT_SURFACES: [&str; 5] = [
+    "scout",
+    "design",
+    "dead-code",
+    "single-responsibility",
+    "consistent-naming",
+];
 
 const SKIPPED_DIRECTORIES: [&str; 5] = [".git", "node_modules", "dist", ".worktree", ".tmp"];
 const NON_COMPONENT_DIRECTORIES: [&str; 3] = ["fixtures", "tests", "stubs"];
@@ -1244,11 +1251,19 @@ pub fn single_responsibility_pool(repo_dir: &Path) -> Vec<String> {
     files
 }
 
+/// The consistent-naming pool: the same component source set, because a
+/// concept's name is audited in code, never in a test, a fixture, or a stub.
+/// It covers every source tree the host writes, the server and the client alike.
+pub fn consistent_naming_pool(repo_dir: &Path) -> Vec<String> {
+    single_responsibility_pool(repo_dir)
+}
+
 pub fn eligible_files(repo_dir: &Path, surface: &str) -> Vec<String> {
     match surface {
         "scout" => scout_pool(repo_dir),
         "dead-code" => dead_code_pool(repo_dir),
         "single-responsibility" => single_responsibility_pool(repo_dir),
+        "consistent-naming" => consistent_naming_pool(repo_dir),
         _ => Vec::new(),
     }
 }
@@ -1904,6 +1919,7 @@ struct ActiveCycle {
     directory: PathBuf,
     activity: Vec<String>,
     peer: Arc<dyn Peer>,
+    heartbeat: Arc<CycleHeartbeat>,
     first_line: Option<String>,
     finished: bool,
     requested: i64,
@@ -2698,6 +2714,7 @@ impl Worker {
             activity.push("no filing room this cycle; nothing will be filed".to_string());
         }
         let _ = write_activity(&directory, &activity);
+        let heartbeat = CycleHeartbeat::new();
         let peer = {
             let environment = match self.provider_environment.resolve().await {
                 Ok(environment) => environment
@@ -2725,7 +2742,7 @@ impl Worker {
                     .to_string_lossy()
                     .into_owned(),
             );
-            let callbacks = self.callbacks_for(&cycle_id);
+            let callbacks = self.callbacks_for(&cycle_id, Arc::clone(&heartbeat));
             (self.connect)(PeerOptions {
                 command: self.agent_command.clone(),
                 cwd: directory.clone(),
@@ -2746,6 +2763,7 @@ impl Worker {
             directory,
             activity,
             peer,
+            heartbeat,
             first_line: None,
             finished: false,
             requested,
@@ -2763,22 +2781,25 @@ impl Worker {
         self.spawn_cycle(cycle_id, prompt);
     }
 
-    fn callbacks_for(&self, cycle_id: &str) -> PeerCallbacks {
+    fn callbacks_for(&self, cycle_id: &str, heartbeat: Arc<CycleHeartbeat>) -> PeerCallbacks {
         let Some(worker) = self.weak.upgrade() else {
             return PeerCallbacks::default();
         };
         let activity_id = cycle_id.to_string();
         let stderr_id = cycle_id.to_string();
         let stderr_worker = self.weak.upgrade();
+        let heartbeat_for_activity = Arc::clone(&heartbeat);
+        let heartbeat_for_update = Arc::clone(&heartbeat);
         PeerCallbacks {
             on_activity: Some(Arc::new(move |entry: AcpActivity| {
+                heartbeat_for_activity.beat();
                 worker.record_activity(&activity_id, entry);
             })),
             on_stderr: stderr_worker.map(|worker| {
                 Arc::new(move |text: String| worker.record_stderr(&stderr_id, &text))
                     as Arc<dyn Fn(String) + Send + Sync>
             }),
-            on_session_update: None,
+            on_session_update: Some(Arc::new(move || heartbeat_for_update.beat())),
         }
     }
 
@@ -2798,12 +2819,21 @@ impl Worker {
             let Some(peer) = peer else {
                 return;
             };
-            let outcome =
-                tokio::time::timeout(Duration::from_millis(worker.timeout_ms), peer.run(prompt))
-                    .await;
+            let heartbeat = {
+                let inner = lock(&worker.inner);
+                inner
+                    .active
+                    .as_ref()
+                    .filter(|active| active.cycle_id == cycle_id)
+                    .map(|active| Arc::clone(&active.heartbeat))
+            };
+            let Some(heartbeat) = heartbeat else {
+                return;
+            };
+            let outcome = run_peer_until_idle(peer, prompt, heartbeat, worker.timeout_ms).await;
             match outcome {
-                Ok(Ok(())) => worker.complete_cycle(&cycle_id).await,
-                Ok(Err(detail)) => {
+                Ok(()) => worker.complete_cycle(&cycle_id).await,
+                Err(detail) => {
                     let detail = if detail.is_empty() {
                         "the agent failed".to_string()
                     } else {
@@ -2811,7 +2841,6 @@ impl Worker {
                     };
                     worker.fail_cycle(&cycle_id, &detail);
                 }
-                Err(_) => worker.fail_cycle(&cycle_id, "the cycle timed out"),
             }
         });
     }

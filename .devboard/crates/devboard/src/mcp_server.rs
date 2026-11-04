@@ -46,7 +46,7 @@ pub const VERIFICATION_PATH_MAX: usize = 50;
 pub const JOURNAL_SEARCH_MAX_RECORDS: usize = 200;
 pub const JOURNAL_SEARCH_MAX_BYTES: usize = 64 * 1024;
 
-const AGENT_IDS: [&str; 8] = [
+const AGENT_IDS: [&str; 9] = [
     "scout",
     "watchdog",
     "design",
@@ -54,6 +54,7 @@ const AGENT_IDS: [&str; 8] = [
     "mcp-optimizer",
     "api-standards",
     "single-responsibility",
+    "consistent-naming",
     "release-train",
 ];
 
@@ -76,7 +77,13 @@ const DISCOVER_SKILL_NAMES: [&str; 6] = [
     "discover-testing-strategy",
 ];
 
-const ENTRY_POINT_SURFACES: [&str; 4] = ["scout", "design", "dead-code", "single-responsibility"];
+const ENTRY_POINT_SURFACES: [&str; 5] = [
+    "scout",
+    "design",
+    "dead-code",
+    "single-responsibility",
+    "consistent-naming",
+];
 
 /// The MCP server's resolved roots. Every path argument is judged against
 /// them; nothing is read or written outside.
@@ -2766,6 +2773,7 @@ fn agent_descriptor(
         "mcp-optimizer" => ("MCP optimizer", "Reviews repeated agent mistakes and manual work and files one improvement issue per pattern.", "repository", 60, Some(10), Some(20), "cycles"),
         "api-standards" => ("API Standards", "Audits the dashboard HTTP API against the project REST skill and files capped conformance issues for every MUST or SHOULD violation.", "repository", 60, Some(10), Some(5), "activity"),
         "single-responsibility" => ("Single Responsibility", "Audits the repository source against the project Single Responsibility skill and files one capped issue per component and violation.", "repository", 60, Some(10), Some(5), "activity"),
+        "consistent-naming" => ("Consistent Naming", "Audits the repository's vocabulary against the project naming skill and files one capped vocabulary issue per concept and violation.", "repository", 60, Some(10), Some(5), "activity"),
         "release-train" => ("Release Train", "Releases every unreleased commit on main on its scheduled cadence, one version per collected range.", "repository", 10, None, None, "activity"),
         _ => return None,
     };
@@ -3148,6 +3156,12 @@ fn single_responsibility_pool(root: &Path) -> Vec<String> {
     files
 }
 
+/// The consistent-naming pool: the same component source set, because a
+/// concept's name is audited in code, never in a test, a fixture, or a stub.
+fn consistent_naming_pool(root: &Path) -> Vec<String> {
+    single_responsibility_pool(root)
+}
+
 fn design_pool(root: &Path, environment: &HashMap<String, String>) -> Result<Vec<String>, String> {
     let configured = |key: &str, fallback: &str| -> String {
         environment
@@ -3219,6 +3233,7 @@ fn eligible_files(
         "scout" => Ok(scout_pool(root)),
         "design" => design_pool(root, environment),
         "dead-code" => Ok(dead_code_pool(root)),
+        "consistent-naming" => Ok(consistent_naming_pool(root)),
         _ => Ok(single_responsibility_pool(root)),
     }
 }

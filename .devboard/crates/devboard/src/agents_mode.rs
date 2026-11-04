@@ -152,7 +152,7 @@ struct Descriptor {
     timer_unit: Option<&'static str>,
 }
 
-const DESCRIPTORS: [Descriptor; 8] = [
+const DESCRIPTORS: [Descriptor; 9] = [
     Descriptor {
         id: "scout",
         label: "Auto Scout",
@@ -245,6 +245,20 @@ const DESCRIPTORS: [Descriptor; 8] = [
         description: "Audits the repository source against the project Single Responsibility skill and files one capped issue per component and violation.",
         scope: "repository",
         prompt: PromptKind::File("single-responsibility.md"),
+        default_minutes: 60,
+        min_minutes: 1,
+        max_minutes: 1440,
+        max_per_hour: Some(10),
+        max_pending: Some(5),
+        panel: "activity",
+        timer_unit: None,
+    },
+    Descriptor {
+        id: "consistent-naming",
+        label: "Consistent Naming",
+        description: "Audits the repository's vocabulary against the project naming skill and files one capped vocabulary issue per concept and violation.",
+        scope: "repository",
+        prompt: PromptKind::File("consistent-naming.md"),
         default_minutes: 60,
         min_minutes: 1,
         max_minutes: 1440,
@@ -2283,6 +2297,7 @@ impl AgentsMode {
             RepoFlavor::DeadCode,
             RepoFlavor::ApiStandards,
             RepoFlavor::SingleResponsibility,
+            RepoFlavor::ConsistentNaming,
         ] {
             adapters.push(Adapter::Repo(RepoFamily::new(
                 flavor,
@@ -2299,7 +2314,7 @@ impl AgentsMode {
             )));
         }
         // Registry order: scout, watchdog, design, dead-code, mcp-optimizer,
-        // api-standards, single-responsibility, release-train.
+        // api-standards, single-responsibility, consistent-naming, release-train.
         let mut ordered = Vec::new();
         let mut indices: HashMap<&'static str, Adapter> = adapters
             .into_iter()
@@ -2333,6 +2348,11 @@ impl AgentsMode {
             indices
                 .remove("single-responsibility")
                 .expect("single-responsibility"),
+        );
+        ordered.push(
+            indices
+                .remove("consistent-naming")
+                .expect("consistent-naming"),
         );
         ordered.push(Adapter::Release(ReleaseFamily::new(
             &repo_dir,
@@ -2871,6 +2891,7 @@ enum RepoFlavor {
     DeadCode,
     ApiStandards,
     SingleResponsibility,
+    ConsistentNaming,
 }
 
 impl RepoFlavor {
@@ -2881,6 +2902,7 @@ impl RepoFlavor {
             Self::DeadCode => "dead-code",
             Self::ApiStandards => "api-standards",
             Self::SingleResponsibility => "single-responsibility",
+            Self::ConsistentNaming => "consistent-naming",
         }
     }
 
@@ -2899,6 +2921,7 @@ impl RepoFlavor {
             Self::DeadCode => "Dead Code",
             Self::ApiStandards => "API Standards",
             Self::SingleResponsibility => "Single Responsibility",
+            Self::ConsistentNaming => "Consistent Naming",
         }
     }
 
@@ -2928,7 +2951,11 @@ impl RepoFlavor {
     fn uses_forge(self) -> bool {
         matches!(
             self,
-            Self::Scout | Self::Design | Self::DeadCode | Self::SingleResponsibility
+            Self::Scout
+                | Self::Design
+                | Self::DeadCode
+                | Self::SingleResponsibility
+                | Self::ConsistentNaming
         )
     }
 
@@ -2947,7 +2974,7 @@ impl RepoFlavor {
                 "stopped" | "idle" | "auditing" | "releasing" | "failed"
             ),
             Self::DeadCode => matches!(value, "stopped" | "idle" | "detecting" | "failed"),
-            Self::ApiStandards | Self::SingleResponsibility => {
+            Self::ApiStandards | Self::SingleResponsibility | Self::ConsistentNaming => {
                 matches!(value, "stopped" | "idle" | "auditing" | "failed")
             }
         }
@@ -2955,7 +2982,7 @@ impl RepoFlavor {
 
     /// The control command name the worker consumes for one fresh read.
     fn refreshes_worker(self) -> bool {
-        matches!(self, Self::Scout | Self::DeadCode)
+        matches!(self, Self::Scout | Self::DeadCode | Self::ConsistentNaming)
     }
 }
 
@@ -3353,6 +3380,7 @@ impl RepoFamily {
             RepoFlavor::DeadCode => descriptor("dead-code"),
             RepoFlavor::ApiStandards => descriptor("api-standards"),
             RepoFlavor::SingleResponsibility => descriptor("single-responsibility"),
+            RepoFlavor::ConsistentNaming => descriptor("consistent-naming"),
         }
         .expect("a repository family descriptor");
         Self {
@@ -4354,6 +4382,7 @@ impl RepoFamily {
             RepoFlavor::DeadCode => self.preflight_dead_code().await,
             RepoFlavor::ApiStandards => self.preflight_api_standards().await,
             RepoFlavor::SingleResponsibility => self.preflight_single_responsibility().await,
+            RepoFlavor::ConsistentNaming => self.preflight_consistent_naming().await,
         }
     }
 
@@ -4372,6 +4401,7 @@ impl RepoFamily {
                     RepoFlavor::DeadCode => "the dead-code agent",
                     RepoFlavor::ApiStandards => "the API Standards agent",
                     RepoFlavor::SingleResponsibility => "the Single Responsibility agent",
+                    RepoFlavor::ConsistentNaming => "the Consistent Naming agent",
                     RepoFlavor::Design => "the design agent",
                 },
                 remote.host
@@ -4771,6 +4801,70 @@ impl RepoFamily {
             "single-responsibility",
             "0e8a16",
             "Single Responsibility violation proved against the project SRP skill",
+        )
+        .await?;
+        Ok(remote.project)
+    }
+
+    async fn preflight_consistent_naming(&self) -> Result<String, String> {
+        if let Some(problem) = root_problem(&self.repo_dir) {
+            return Err(problem);
+        }
+        let skill_document = ".omp/skills/devboard-consistent-naming/SKILL.md";
+        let skill_path = self.repo_dir.join(skill_document);
+        let metadata = match std::fs::symlink_metadata(&skill_path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                return Err(format!(
+                    "missing prerequisite: the skill {skill_document} is not readable"
+                ))
+            }
+        };
+        let skill_real = match std::fs::canonicalize(&skill_path) {
+            Ok(path) => path,
+            Err(_) => {
+                return Err(format!(
+                    "missing prerequisite: the skill {skill_document} is not readable"
+                ))
+            }
+        };
+        let repo_real =
+            std::fs::canonicalize(&self.repo_dir).unwrap_or_else(|_| self.repo_dir.clone());
+        if !skill_real.starts_with(&repo_real) {
+            return Err(format!(
+                "missing prerequisite: the skill {skill_document} resolves outside the repository"
+            ));
+        }
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(format!(
+                "missing prerequisite: the skill {skill_document} is not a regular file"
+            ));
+        }
+        crate::workers::consistent_naming::read_skill_directives(&self.repo_dir, skill_document)
+            .map_err(|detail| format!("missing prerequisite: the skill is unusable: {detail}"))?;
+        if !inside_or_equal(&self.repo_dir, &self.state_dir) {
+            return Err(format!(
+                "STATE_DIR {} is not inside REPO_DIR {}; the consistent-naming worker keeps its state beside the checkout",
+                self.state_dir.display(),
+                self.repo_dir.display()
+            ));
+        }
+        let remote = origin_forge(&self.repo_dir, &self.environment).ok_or_else(|| {
+            "the checkout's origin does not name a supported repository".to_string()
+        })?;
+        if remote.forge == "gitlab" {
+            return Err(format!(
+                "the Consistent Naming agent supports a GitHub or Gitea origin, not a GitLab one: {}",
+                remote.host
+            ));
+        }
+        self.require_installed_command("consistent-naming")?;
+        self.forge_write_access(&remote).await?;
+        self.ensure_label(
+            &remote,
+            "consistent-naming",
+            "1d76db",
+            "Consistent Naming vocabulary change proved against the project naming skill",
         )
         .await?;
         Ok(remote.project)

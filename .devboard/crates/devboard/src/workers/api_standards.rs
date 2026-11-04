@@ -2119,6 +2119,70 @@ pub trait Peer: Send + Sync {
     fn close(&self);
 }
 
+/// The progress beat one audit cycle shares between its peer callbacks and the
+/// idle deadline that ends it. A cycle that keeps emitting activity or session
+/// updates stays alive past the deadline; a peer that has emitted nothing for
+/// the whole deadline fails the cycle.
+pub struct CycleHeartbeat {
+    last: Mutex<std::time::Instant>,
+}
+
+impl CycleHeartbeat {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            last: Mutex::new(std::time::Instant::now()),
+        })
+    }
+
+    pub fn beat(&self) {
+        if let Ok(mut last) = self.last.lock() {
+            *last = std::time::Instant::now();
+        }
+    }
+
+    pub fn idle(&self) -> Duration {
+        self.last
+            .lock()
+            .map(|last| last.elapsed())
+            .unwrap_or_default()
+    }
+}
+
+/// Runs one turn until it finishes or stays silent for `timeout_ms`. Any
+/// activity or session update recorded on the shared heartbeat restarts the
+/// window, so a long turn that keeps reporting progress is never killed for
+/// taking long.
+pub async fn run_until_idle(
+    run: impl Future<Output = Result<(), String>>,
+    heartbeat: Arc<CycleHeartbeat>,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    let run = run;
+    tokio::pin!(run);
+    let poll = Duration::from_millis((timeout_ms / 8).clamp(10, 5_000));
+    let deadline = Duration::from_millis(timeout_ms.max(1));
+    loop {
+        tokio::select! {
+            outcome = &mut run => return outcome,
+            _ = tokio::time::sleep(poll) => {
+                if heartbeat.idle() >= deadline {
+                    return Err("the cycle timed out".to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Runs one peer until it finishes or stays silent for `timeout_ms`.
+pub async fn run_peer_until_idle(
+    peer: Arc<dyn Peer>,
+    prompt: String,
+    heartbeat: Arc<CycleHeartbeat>,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    run_until_idle(peer.run(prompt), heartbeat, timeout_ms).await
+}
+
 pub type PeerConnectFuture = Pin<Box<dyn Future<Output = Result<Arc<dyn Peer>, String>> + Send>>;
 pub type ConnectFn = Arc<dyn Fn(PeerOptions) -> PeerConnectFuture + Send + Sync>;
 
@@ -2233,6 +2297,7 @@ struct ActiveCycle {
     directory: PathBuf,
     activity: Vec<String>,
     peer: Arc<dyn Peer>,
+    heartbeat: Arc<CycleHeartbeat>,
     first_line: Option<String>,
     finished: bool,
     input: AuditInput,
@@ -3014,6 +3079,7 @@ impl Worker {
         let _ = request;
         let _ = write_activity(&directory, &initial_activity);
         self.settle_record(&directory, &initial_activity[0]);
+        let heartbeat = CycleHeartbeat::new();
         let peer = {
             let environment = match self.provider_environment.resolve().await {
                 Ok(environment) => environment
@@ -3043,7 +3109,7 @@ impl Worker {
             );
             let weakness = Arc::downgrade(&Arc::new(()));
             let _ = weakness;
-            let callbacks = self.callbacks_for(&cycle_id);
+            let callbacks = self.callbacks_for(&cycle_id, Arc::clone(&heartbeat));
             (self.connect)(PeerOptions {
                 command: self.agent_command.clone(),
                 cwd: directory.clone(),
@@ -3064,6 +3130,7 @@ impl Worker {
             directory: directory.clone(),
             activity: initial_activity,
             peer,
+            heartbeat,
             first_line: None,
             finished: false,
             input,
@@ -3081,7 +3148,7 @@ impl Worker {
         self.spawn_cycle(cycle_id, prompt);
     }
 
-    fn callbacks_for(&self, cycle_id: &str) -> PeerCallbacks {
+    fn callbacks_for(&self, cycle_id: &str, heartbeat: Arc<CycleHeartbeat>) -> PeerCallbacks {
         let activity_id = cycle_id.to_string();
         let activity_worker: Arc<dyn WorkerHandle> = match self.weak.upgrade() {
             Some(worker) => worker,
@@ -3092,14 +3159,17 @@ impl Worker {
             Some(worker) => worker,
             None => return PeerCallbacks::default(),
         };
+        let heartbeat_for_activity = Arc::clone(&heartbeat);
+        let heartbeat_for_update = Arc::clone(&heartbeat);
         PeerCallbacks {
             on_activity: Some(Arc::new(move |entry: AcpActivity| {
+                heartbeat_for_activity.beat();
                 activity_worker.record_activity(&activity_id, entry);
             })),
             on_stderr: Some(Arc::new(move |text: String| {
                 stderr_worker.record_stderr(&stderr_id, &text);
             })),
-            on_session_update: None,
+            on_session_update: Some(Arc::new(move || heartbeat_for_update.beat())),
         }
     }
 
@@ -3119,11 +3189,21 @@ impl Worker {
             let Some(peer) = peer else {
                 return;
             };
-            let timeout = Duration::from_millis(worker.timeout_ms);
-            let outcome = tokio::time::timeout(timeout, peer.run(prompt)).await;
+            let heartbeat = {
+                let inner = lock(&worker.inner);
+                inner
+                    .active
+                    .as_ref()
+                    .filter(|active| active.cycle_id == cycle_id)
+                    .map(|active| Arc::clone(&active.heartbeat))
+            };
+            let Some(heartbeat) = heartbeat else {
+                return;
+            };
+            let outcome = run_peer_until_idle(peer, prompt, heartbeat, worker.timeout_ms).await;
             match outcome {
-                Ok(Ok(())) => worker.complete_cycle(&cycle_id).await,
-                Ok(Err(detail)) => {
+                Ok(()) => worker.complete_cycle(&cycle_id).await,
+                Err(detail) => {
                     let detail = if detail.is_empty() {
                         "the agent failed".to_string()
                     } else {
@@ -3131,7 +3211,6 @@ impl Worker {
                     };
                     worker.fail_cycle(&cycle_id, &detail);
                 }
-                Err(_) => worker.fail_cycle(&cycle_id, "the audit timed out"),
             }
         });
     }

@@ -290,6 +290,45 @@
               "workers": []
             },
             {
+              "id": "consistent-naming",
+              "label": "Consistent Naming",
+              "description": "Audits the repository's vocabulary against the project naming skill and files one capped vocabulary issue per concept and violation.",
+              "scope": "repository",
+              "lifecycle": "stopped",
+              "paused": false,
+              "enabled": false,
+              "owned": false,
+              "attached": false,
+              "cadence": {
+                "minutes": 60,
+                "defaultMinutes": 60,
+                "lastRunAt": null,
+                "nextRunAt": null
+              },
+              "limits": {
+                "maxPerHour": 10,
+                "maxPending": 5
+              },
+              "issues": [],
+              "documentation": [],
+              "pending": 0,
+              "sync": {
+                "state": "ok",
+                "at": "2026-11-03T17:02:35.159Z",
+                "error": null
+              },
+              "detail": {
+                "panel": "activity",
+                "scanId": null,
+                "entries": []
+              },
+              "releases": [],
+              "notice": null,
+              "error": null,
+              "timer": null,
+              "workers": []
+            },
+            {
               "id": "release-train",
               "label": "Release Train",
               "description": "Releases every unreleased commit on main on its scheduled cadence, one version per collected range.",
@@ -504,6 +543,48 @@
             "id": "single-responsibility",
             "label": "Single Responsibility",
             "description": "Audits the repository source against the project Single Responsibility skill and files one capped issue per component and violation.",
+            "scope": "repository",
+            "lifecycle": "stopped",
+            "paused": false,
+            "enabled": false,
+            "owned": false,
+            "attached": false,
+            "cadence": {
+              "minutes": 60,
+              "defaultMinutes": 60,
+              "lastRunAt": null,
+              "nextRunAt": null
+            },
+            "limits": {
+              "maxPerHour": 10,
+              "maxPending": 5
+            },
+            "issues": [],
+            "documentation": [],
+            "pending": 0,
+            "sync": {
+              "state": "ok",
+              "at": "2026-11-03T17:02:35.159Z",
+              "error": null
+            },
+            "detail": {
+              "panel": "activity",
+              "scanId": null,
+              "entries": []
+            },
+            "releases": [],
+            "notice": null,
+            "error": null,
+            "timer": null,
+            "workers": []
+          }
+        },
+        {
+          "type": "agentState",
+          "agent": {
+            "id": "consistent-naming",
+            "label": "Consistent Naming",
+            "description": "Audits the repository's vocabulary against the project naming skill and files one capped vocabulary issue per concept and violation.",
             "scope": "repository",
             "lifecycle": "stopped",
             "paused": false,
