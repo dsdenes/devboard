@@ -4289,6 +4289,13 @@ cargo run -p devboard-shadow -- --report ../shadow-report.json --window 1800 --i
 bun run verify:dead-code
 ```
 
+The shadow router sends every mutating command to the TypeScript server once, then replays that
+command's recorded TypeScript answer, state tree, and repository tree against fresh Rust instances
+until the write reaches the comparison target. Reads are mirrored live against the untouched
+baseline. `--typescript <dir>` names the pre-cutover checkout that still supplies
+`contract/serve-typescript.ts` and `server/fixtures/stub-agent.ts`; it defaults to the harness root.
+`bench/shadow-report.json` is the last full 100-comparison soak.
+
 `verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and
 writes its screenshots under `.tmp/interface`. The other `verify:` scripts build fixture releases
 under `.devboard/.tmp`, install them into throwaway hosts, and assert the launcher, update, and

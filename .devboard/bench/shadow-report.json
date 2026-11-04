@@ -1,112 +1,112 @@
 {
-  "windowSeconds": 3600,
+  "windowSeconds": 7200,
   "commands": [
     {
       "command": "acceptFlowWidget",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "answer",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "answerDiscover",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "answerGoalDraft",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "answerIssues",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "ask",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "cancelFlowGoal",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "checkIssues",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "clearDiscoverRemote",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "closeAsk",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "closeFlowWidget",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "closeIssue",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "confirmGlossaryTerm",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "createFlowGoal",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "createGoal",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "deleteGoalDraft",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "deleteProvider",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "deleteSkill",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
@@ -118,31 +118,31 @@
     {
       "command": "discoverAgent",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "discoverProject",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "discoverRemote",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "dismissFlowBlocker",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "flowAnswer",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
@@ -244,223 +244,223 @@
     {
       "command": "markFlowPrReady",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "mergeFlowPr",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "openFlowWidget",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "pauseIssues",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "pauseLifecycle",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "prepareSkills",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "refreshAgent",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "refreshProviders",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "refuseFlowWidget",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "rejectGlossaryTerm",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "removeDiscoverRemote",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "resetImplementation",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "restartServer",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "resumeIssues",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "resumeLifecycle",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "retryFlowPr",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "reviseGoal",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "saveProvider",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "sendFlowConclusion",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "sendFlowConversation",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "sendFlowSteering",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "setAgentSettings",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "setInstalledSkillEnabled",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "setProviderEnabled",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "startAgent",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "startFlowImplementation",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "startGoalDraft",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "startIssues",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "startLifecycle",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "startRun",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "stopAgent",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "stopDiscover",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "stopFlowImplementation",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "stopGoalDraft",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "stopIssues",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "stopLifecycle",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     },
     {
       "command": "switchDiscoverRemote",
       "kind": "write",
-      "comparisons": 0,
+      "comparisons": 100,
       "divergences": []
     }
   ],
@@ -479,15 +479,31 @@
       "reason": "a timed background state push arrived between the request and its reply"
     },
     {
-      "command": "getMcpTools",
+      "command": "getGoal",
       "reason": "a timed background state push arrived between the request and its reply"
     },
     {
-      "command": "getVersion",
+      "command": "getGoalDraft",
       "reason": "a timed background state push arrived between the request and its reply"
     },
     {
-      "command": "getVersion",
+      "command": "getGoalDrafts",
+      "reason": "a timed background state push arrived between the request and its reply"
+    },
+    {
+      "command": "getInstalledSkills",
+      "reason": "a timed background state push arrived between the request and its reply"
+    },
+    {
+      "command": "getIssues",
+      "reason": "a timed background state push arrived between the request and its reply"
+    },
+    {
+      "command": "getIssuesRun",
+      "reason": "a timed background state push arrived between the request and its reply"
+    },
+    {
+      "command": "getProject",
       "reason": "a timed background state push arrived between the request and its reply"
     }
   ]

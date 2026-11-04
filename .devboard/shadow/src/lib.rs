@@ -3,8 +3,11 @@
 //! The TypeScript server is the only writer of durable state. This router
 //! forwards every mutating command to it, mirrors read commands to the Rust
 //! dashboard, compares each answer, and writes one divergence report per
-//! window. The Rust process always starts from a copied state directory; it
-//! never opens the live one for writing.
+//! window. A mutating command's recorded TypeScript answer, state tree, and
+//! repository tree are replayed against fresh Rust instances, so a write is
+//! compared without either server mutating the other's state. The Rust process
+//! always starts from a copied state directory; it never opens the live one for
+//! writing.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -535,7 +535,7 @@ impl Report {
 pub async fn replay_command(
     corpus: &Corpus,
     recording: &CommandRecording,
-    implemented: &dyn Fn(&str) -> bool,
+    implemented: &(dyn Fn(&str) -> bool + Sync),
     report: &mut Report,
 ) -> anyhow::Result<()> {
     if !implemented(&recording.command) {
@@ -926,7 +926,10 @@ pub fn dashboard_config(
 }
 
 /// The full replay over every recording.
-pub async fn replay_all(root: &Path, implemented: &dyn Fn(&str) -> bool) -> anyhow::Result<Report> {
+pub async fn replay_all(
+    root: &Path,
+    implemented: &(dyn Fn(&str) -> bool + Sync),
+) -> anyhow::Result<Report> {
     let corpus = Corpus::load(root)?;
     let mut report = Report::default();
     for recording in &corpus.commands {

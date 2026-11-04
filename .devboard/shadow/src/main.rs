@@ -2,13 +2,16 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use devboard_contract::{normalize, Corpus};
+use devboard_contract::{normalize, CommandRecording, Corpus};
 use devboard_shadow::{free_port, route, Route, ShadowLayout, WindowReport};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -19,8 +22,10 @@ struct Args {
     report: PathBuf,
     window_seconds: u64,
     corpus: PathBuf,
+    typescript: PathBuf,
     token: String,
     rust_bin: PathBuf,
+    contract_bin: PathBuf,
     iterations: u64,
     cutover: Option<PathBuf>,
     only: Vec<String>,
@@ -32,8 +37,10 @@ fn parse_args() -> anyhow::Result<Args> {
         report: harness.join("shadow-report.json"),
         window_seconds: 60,
         corpus: harness.join("contract"),
+        typescript: harness.clone(),
         token: "contract-token".to_string(),
         rust_bin: harness.join("target/debug/devboard"),
+        contract_bin: harness.join("target/debug/devboard-contract"),
         iterations: MIN_COMPARISONS,
         cutover: None,
         only: Vec::new(),
@@ -46,8 +53,14 @@ fn parse_args() -> anyhow::Result<Args> {
             "--report" => args.report = PathBuf::from(value.context("--report needs a path")?),
             "--window" => args.window_seconds = value.context("--window needs seconds")?.parse()?,
             "--corpus" => args.corpus = PathBuf::from(value.context("--corpus needs a path")?),
+            "--typescript" => {
+                args.typescript = PathBuf::from(value.context("--typescript needs a path")?)
+            }
             "--token" => args.token = value.context("--token needs a value")?,
             "--rust" => args.rust_bin = PathBuf::from(value.context("--rust needs a path")?),
+            "--contract" => {
+                args.contract_bin = PathBuf::from(value.context("--contract needs a path")?)
+            }
             "--iterations" => {
                 args.iterations = value.context("--iterations needs a count")?.parse()?
             }
@@ -67,7 +80,7 @@ fn parse_args() -> anyhow::Result<Args> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
-    let corpus = Corpus::load(&args.corpus)?;
+    let corpus = Arc::new(Corpus::load(&args.corpus)?);
     let work = args
         .report
         .parent()
@@ -78,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let layout = ShadowLayout::new(&work);
 
     let ts_port = free_port().await?;
-    let mut ts = spawn_typescript(&args.corpus, ts_port, &layout)?;
+    let mut ts = spawn_typescript(&args.typescript, ts_port, &layout)?;
     wait_ready(ts_port, Duration::from_secs(30)).await?;
     layout.prepare()?;
     let mut rust_port = free_port().await?;
@@ -102,7 +115,11 @@ async fn main() -> anyhow::Result<()> {
     };
     // Compare every read against the same untouched baseline first; a mutating
     // command then runs on the TypeScript server only, so its state effects
-    // cannot masquerade as a read divergence in the mirror.
+    // cannot masquerade as a read divergence in the mirror. Its recorded
+    // TypeScript answer and state tree are replayed against fresh Rust
+    // instances afterwards, which compares the write without letting either
+    // server mutate the other's state.
+    let mut write_recordings = Vec::new();
     let mut ordered: Vec<&devboard_contract::CommandRecording> = corpus
         .commands
         .iter()
@@ -162,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
             wait_ready(rust_port, Duration::from_secs(30)).await?;
             rust_socket = connect(rust_port, &args.token).await?;
             drain(&mut rust_socket).await;
+            write_recordings.push(recording.clone());
             continue;
         }
         if kind == Route::RustOnly {
@@ -220,6 +238,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if !write_recordings.is_empty() {
+        eprintln!(
+            "shadow: replaying {} write recording(s) against fresh Rust instances",
+            write_recordings.len()
+        );
+        let deadline = started + Duration::from_secs(args.window_seconds);
+        replay_writes(
+            Arc::clone(&corpus),
+            write_recordings,
+            args.iterations,
+            deadline,
+            &args.contract_bin,
+            &mut report,
+        )
+        .await?;
+    }
+
     let text = format!("{}\n", serde_json::to_string_pretty(&report.to_json())?);
     if let Some(parent) = args.report.parent() {
         std::fs::create_dir_all(parent)?;
@@ -236,9 +271,124 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_typescript(corpus: &Path, port: u16, layout: &ShadowLayout) -> anyhow::Result<Child> {
-    let script = corpus.join("../contract/serve-typescript.ts");
-    let stub = corpus.join("../server/fixtures/stub-agent.ts");
+/// One write command's replay counts and mismatches.
+struct WriteReplay {
+    command: String,
+    comparisons: u64,
+    divergences: Vec<String>,
+}
+
+/// Replays every write recording until the window's comparison target is met.
+/// Each replay starts a fresh Rust instance over the corpus fixture, so the
+/// TypeScript answer, state tree, and repository tree are compared without
+/// touching the live mirror.
+async fn replay_writes(
+    corpus: Arc<Corpus>,
+    recordings: Vec<CommandRecording>,
+    iterations: u64,
+    deadline: Instant,
+    contract_bin: &Path,
+    report: &mut WindowReport,
+) -> anyhow::Result<()> {
+    const CONCURRENT_REPLAYS: usize = 8;
+    let permits = Arc::new(Semaphore::new(CONCURRENT_REPLAYS));
+    let mut tasks = JoinSet::new();
+    for recording in recordings {
+        let permit = Arc::clone(&permits)
+            .acquire_owned()
+            .await
+            .context("the write replay permits are open")?;
+        let corpus = Arc::clone(&corpus);
+        let contract_bin = contract_bin.to_path_buf();
+        tasks.spawn(async move {
+            let _permit = permit;
+            replay_write(&corpus, &recording, iterations, deadline, &contract_bin).await
+        });
+    }
+    while let Some(joined) = tasks.join_next().await {
+        let outcome = joined.context("a write replay task panicked")??;
+        let entry = report
+            .commands
+            .get_mut(&outcome.command)
+            .with_context(|| format!("no report entry for {}", outcome.command))?;
+        entry.comparisons += outcome.comparisons;
+        for detail in outcome.divergences {
+            entry.divergences.push(detail.clone());
+            report.unexplained.push(detail);
+        }
+    }
+    Ok(())
+}
+
+async fn replay_write(
+    corpus: &Corpus,
+    recording: &CommandRecording,
+    iterations: u64,
+    deadline: Instant,
+    contract_bin: &Path,
+) -> anyhow::Result<WriteReplay> {
+    let mut comparisons = 0u64;
+    let mut divergences = Vec::new();
+    while comparisons < iterations {
+        // One child per replay gives the instance a fresh runtime and file
+        // handles; a leaked timer or background task cannot poison the next
+        // comparison.
+        let output = tokio::process::Command::new(contract_bin)
+            .args(["--corpus", &corpus.root.to_string_lossy()])
+            .args(["--play-command", &recording.command])
+            .args(["--token", &recording.token])
+            .output()
+            .await
+            .with_context(|| format!("replaying {}", recording.command))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let replay: Value = serde_json::from_str(stdout.trim()).with_context(|| {
+            format!(
+                "{} printed no replay report: {}",
+                recording.command,
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })?;
+        let compared = replay
+            .get("compared")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        if compared == 0 {
+            bail!("{} has no replayable scenario", recording.command);
+        }
+        comparisons += compared;
+        if let Some(mismatches) = replay.get("mismatches").and_then(Value::as_array) {
+            for mismatch in mismatches {
+                divergences.push(format!(
+                    "{}/{}: {}",
+                    mismatch
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
+                    mismatch
+                        .get("scenario")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
+                    mismatch
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
+                ));
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    Ok(WriteReplay {
+        command: recording.command.clone(),
+        comparisons,
+        divergences,
+    })
+}
+
+fn spawn_typescript(typescript: &Path, port: u16, layout: &ShadowLayout) -> anyhow::Result<Child> {
+    let script = typescript.join("contract/serve-typescript.ts");
+    let stub = typescript.join("server/fixtures/stub-agent.ts");
     Command::new("bun")
         .arg(script)
         .args(["--port", &port.to_string()])
