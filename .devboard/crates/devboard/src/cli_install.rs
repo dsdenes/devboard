@@ -213,12 +213,6 @@ pub fn install(host: Option<&Path>, force: bool) -> Result<InstallReport> {
 }
 
 fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
-    if !host.join(".devboard").is_dir() {
-        bail!(
-            "install: no .devboard directory in {}; install the harness there first",
-            host.display()
-        );
-    }
     let package = package();
     let omp = host.join(".omp");
     let mut conflicts: Vec<&str> = Vec::new();

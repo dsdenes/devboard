@@ -214,17 +214,16 @@ fn a_differing_unmarked_file_refuses_without_force() {
 }
 
 #[test]
-fn a_host_without_devboard_is_refused() {
+fn a_host_without_devboard_receives_a_clean_install() {
     let scratch = Scratch::new("no-harness");
     let host = scratch.host();
     fs::remove_dir_all(host.join(".devboard")).unwrap();
 
-    let error = cli_install::install(Some(host), false)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("no .devboard directory"), "{error}");
-    assert!(!host.join(".omp").exists());
-    assert!(!host.join("AGENTS.md").exists());
+    let report = cli_install::install(Some(host), false).expect("a clean host installs");
+    assert!(report.installed_files > 0);
+    assert!(host.join(".omp/skills").is_dir());
+    assert!(host.join("AGENTS.md").is_file());
+    assert!(cli_install::doctor(Some(host)).unwrap().ok());
 }
 
 #[test]
