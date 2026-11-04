@@ -1191,6 +1191,18 @@ impl Api {
         Ok(workflow_runs(&document))
     }
 
+    /// The jobs of one workflow run, each with its first failed step.
+    async fn github_jobs(&self, run_id: u64) -> Result<Vec<WorkflowJob>> {
+        let path = format!(
+            "/repos/{}/actions/runs/{run_id}/jobs?per_page=100",
+            github_repo_path(&self.github_repo)
+        );
+        let document = self
+            .github_json("GET", &path, None, "application/vnd.github+json")
+            .await?;
+        Ok(workflow_jobs(&document))
+    }
+
     async fn github_dispatch(&self, workflow: &str, reference: &str) -> Result<()> {
         if self.github_token.as_deref().unwrap_or("").is_empty() {
             bail!("GH_TOKEN is required to dispatch the release workflow");
@@ -1350,6 +1362,91 @@ pub fn choose_workflow_run(runs: &[WorkflowRun], commit: &str) -> Option<Workflo
         return Some((*success).clone());
     }
     matching.first().map(|run| (*run).clone())
+}
+
+/// One GitHub workflow job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowJob {
+    pub name: String,
+    pub conclusion: Option<String>,
+    /// The first step that failed, when a step did.
+    pub failed_step: Option<String>,
+}
+
+/// How many failing jobs one message names before it counts the rest.
+const FAILED_JOB_LIMIT: usize = 3;
+
+fn workflow_jobs(document: &Value) -> Vec<WorkflowJob> {
+    let Some(entries) = document.get("jobs").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut jobs = Vec::new();
+    for entry in entries {
+        let Some(name) = entry.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let failed_step = entry
+            .get("steps")
+            .and_then(Value::as_array)
+            .and_then(|steps| failed_step_name(steps));
+        jobs.push(WorkflowJob {
+            name: name.to_string(),
+            conclusion: entry
+                .get("conclusion")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            failed_step,
+        });
+    }
+    jobs
+}
+
+fn failed_step_name(steps: &[Value]) -> Option<String> {
+    steps.iter().find_map(|step| {
+        let conclusion = step.get("conclusion").and_then(Value::as_str)?;
+        if conclusion != "failure" && conclusion != "timed_out" && conclusion != "startup_failure" {
+            return None;
+        }
+        step.get("name").and_then(Value::as_str).map(str::to_string)
+    })
+}
+
+fn job_failed(job: &WorkflowJob) -> bool {
+    matches!(
+        job.conclusion.as_deref(),
+        Some("failure") | Some("timed_out") | Some("startup_failure") | Some("action_required")
+    )
+}
+
+/// Names the jobs that failed, so a cancelled or failed run reports its cause.
+///
+/// GitHub cancels the queued siblings of a failed matrix job and can settle the
+/// run's own conclusion as `cancelled`, which names no cause at all. The first
+/// `FAILED_JOB_LIMIT` failing jobs with the step that failed are the cause.
+fn failed_jobs_detail(jobs: &[WorkflowJob]) -> Option<String> {
+    let failed: Vec<String> = jobs
+        .iter()
+        .filter(|job| job_failed(job))
+        .map(|job| match &job.failed_step {
+            Some(step) => format!("{} failed at {step}", job.name),
+            None => format!("{} failed", job.name),
+        })
+        .collect();
+    if failed.is_empty() {
+        return None;
+    }
+    let shown = failed
+        .iter()
+        .take(FAILED_JOB_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
+    let rest = failed.len().saturating_sub(FAILED_JOB_LIMIT);
+    Some(match rest {
+        0 => shown,
+        1 => format!("{shown}; and 1 more job"),
+        rest => format!("{shown}; and {rest} more jobs"),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2280,14 +2377,21 @@ async fn dispatch_and_wait(
         .clone()
         .unwrap_or_else(|| workflow.status.clone());
     if concluded != "success" && workflow.status != "success" {
-        bail!(
-            "the release workflow concluded {}",
-            if concluded.is_empty() {
-                "no conclusion".to_string()
-            } else {
-                concluded
-            }
-        );
+        let concluded = if concluded.is_empty() {
+            "no conclusion".to_string()
+        } else {
+            concluded
+        };
+        // A failed matrix job cancels its queued siblings, and GitHub can then
+        // settle the run itself as `cancelled`, so the job detail is the only
+        // place the cause appears. A refused job read keeps the run verdict.
+        let jobs = api.github_jobs(workflow.id).await.unwrap_or_default();
+        return match failed_jobs_detail(&jobs) {
+            Some(detail) => Err(anyhow!(
+                "the release workflow concluded {concluded}: {detail}"
+            )),
+            None => Err(anyhow!("the release workflow concluded {concluded}")),
+        };
     }
     (log)(&format!("release workflow {} succeeded", workflow.id));
     Ok(workflow.id)
@@ -3168,5 +3272,44 @@ mod tests {
             "2.0.0"
         );
         assert_eq!(next_release_version(Some("1.2.3"), None), "1.2.3");
+    }
+
+    #[test]
+    fn the_failing_jobs_are_named_with_the_step_that_failed() {
+        let job = |name: &str, conclusion: &str, step: Option<&str>| WorkflowJob {
+            name: name.to_string(),
+            conclusion: Some(conclusion.to_string()),
+            failed_step: step.map(str::to_string),
+        };
+        assert_eq!(
+            failed_jobs_detail(&[
+                job("build", "success", None),
+                job("macos", "cancelled", None),
+            ]),
+            None
+        );
+        assert_eq!(
+            failed_jobs_detail(&[
+                job(
+                    "build-local-artifacts (x86_64-unknown-linux-gnu)",
+                    "failure",
+                    Some("enable windows longpaths")
+                ),
+                job("build-local-artifacts (aarch64-apple-darwin)", "cancelled", None),
+            ]),
+            Some(
+                "build-local-artifacts (x86_64-unknown-linux-gnu) failed at enable windows longpaths"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            failed_jobs_detail(&[
+                job("a", "failure", None),
+                job("b", "startup_failure", Some("Set up job")),
+                job("c", "failure", None),
+                job("d", "timed_out", None),
+            ]),
+            Some("a failed; b failed at Set up job; c failed; and 1 more job".to_string())
+        );
     }
 }

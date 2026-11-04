@@ -1864,7 +1864,8 @@ component that dispatches it.
   a Gitea release holding `devboard-manifest.json` and the checksums. A rerun on the same commit
   leaves the existing GitHub assets and Gitea release untouched.
 - A failing workflow conclusion, a missing GitHub asset, a missing Gitea manifest, or a rejected
-  derived version records the failure with its detail, ships nothing, and leaves the range
+  derived version records the failure with its detail — a failing workflow names the job and the
+  step that failed, so a cancelled run never hides its cause — ships nothing, and leaves the range
   unreleased. The next due tick starts a new run without operator action; a failed run is never
   recorded as released.
 - A tick that throws — an unreadable gate, a run-directory or request write that the state

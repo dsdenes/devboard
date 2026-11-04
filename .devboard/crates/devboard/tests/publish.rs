@@ -384,6 +384,10 @@ struct GithubData {
     dispatch_failures: VecDeque<u16>,
     assets: BTreeMap<String, Vec<u8>>,
     complete: bool,
+    /// The conclusion the dispatched run settles with.
+    settled_conclusion: String,
+    /// The jobs document the run's jobs route answers.
+    jobs: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -410,6 +414,8 @@ impl GithubStub {
             dispatch_failures: VecDeque::new(),
             assets,
             complete,
+            settled_conclusion: "success".to_string(),
+            jobs: None,
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
         let inner = state.clone();
@@ -438,6 +444,13 @@ impl GithubStub {
             .dispatch_failures
             .push_back(status);
     }
+
+    /// Settles the dispatched run with `conclusion` and answers its jobs.
+    fn settle_with(&self, conclusion: &str, jobs: Value) {
+        let mut data = self.state.lock().expect("github");
+        data.settled_conclusion = conclusion.to_string();
+        data.jobs = Some(jobs);
+    }
 }
 
 fn github_route(
@@ -457,12 +470,19 @@ fn github_route(
                 "id": 42,
                 "head_sha": sha.trim(),
                 "status": "completed",
-                "conclusion": "success",
+                "conclusion": data.settled_conclusion.clone(),
             })]
         } else {
             data.runs.clone()
         };
         return json_response(json!({"workflow_runs": runs}));
+    }
+    if request.method == "GET" && path == "/repos/dsdenes/devboard/actions/runs/42/jobs" {
+        let data = state.lock().expect("github");
+        return match &data.jobs {
+            Some(document) => json_response(document.clone()),
+            None => not_found(),
+        };
     }
     if request.method == "POST"
         && path == "/repos/dsdenes/devboard/actions/workflows/release.yml/dispatches"
@@ -1231,6 +1251,55 @@ async fn an_empty_workflow_wait_times_out() {
     assert!(
         format!("{error:#}").contains("no release workflow run"),
         "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_workflow_names_the_job_and_step_that_failed() {
+    let mut live = live("cancelled-run", release_assets()).await;
+    let github = GithubStub::start(live.seed.clone(), BTreeMap::new(), Vec::new(), true).await;
+    github.stub.settle_with(
+        "cancelled",
+        json!({
+            "total_count": 2,
+            "jobs": [
+                {
+                    "name": "build-local-artifacts (x86_64-unknown-linux-gnu)",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "steps": [
+                        {"name": "Set up job", "conclusion": "success"},
+                        {"name": "enable windows longpaths", "conclusion": "failure"},
+                    ],
+                },
+                {
+                    "name": "build-local-artifacts (aarch64-apple-darwin)",
+                    "status": "completed",
+                    "conclusion": "cancelled",
+                    "steps": [{"name": "checkout", "conclusion": "cancelled"}],
+                },
+            ],
+        }),
+    );
+    live.github_server = github.server;
+    live.github_stub = github.stub;
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.poll_interval = Duration::from_millis(10);
+    let error = publish(args)
+        .await
+        .expect_err("a cancelled run fails the release");
+    let message = format!("{error:#}");
+    assert!(message.contains("concluded cancelled"), "{message}");
+    assert!(
+        message.contains(
+            "build-local-artifacts (x86_64-unknown-linux-gnu) failed at enable windows longpaths"
+        ),
+        "{message}"
+    );
+    assert!(
+        !message.contains("aarch64-apple-darwin"),
+        "a cancelled sibling is not a cause: {message}"
     );
 }
 
