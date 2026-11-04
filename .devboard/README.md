@@ -2908,20 +2908,19 @@ holding a proposal pending, and byte-identical session and journal directories.
 
 `.devboard/omp/mcp.json` declares `mcpServers.devboard` with `type: "stdio"`. Its command and
 arguments contain no absolute path: a small `sh -c` probe resolves the harness from
-`DEVBOARD_HARNESS_DIR` when set, else the checkout's `.devboard`, else the installed prefix's
-`node_modules/@dsdenes/devboard`. `install.sh` copies the file to `<host>/.omp/mcp.json` and the
-launcher installs the same bytes on install and update. The package carries the server at
-`mcp/index.ts`; the launcher and `verify:install`/`verify:update` prove the installed command
-answers `initialize` and `tools/list`.
+`DEVBOARD_HARNESS_DIR` when set, else the checkout's `.devboard`, else the installed prefix. The
+harness serves the protocol itself as `devboard mcp`; `install.sh` copies the file to
+`<host>/.omp/mcp.json` and the launcher installs the same bytes on install and update.
 
 Every ACP peer the dashboard starts also receives an `mcp.json` beside its generated `config.yml`
-in `PI_CODING_AGENT_DIR`. That registration invokes a generated `devboard-mcp.ts` wrapper, so a
-peer whose cwd is a worktree or a temporary clone discovers the server without a project `.omp`
-directory. An ACP session ignores on-disk MCP discovery — the client owns the definitions — so the
-ACP client reads that `mcp.json` and sends every enabled stdio entry in the `session/new`
-`mcpServers` list, converting its `env` map to name/value pairs. A session opened without it has no
-Devboard tools at all, and a lifecycle prompt that reads or closes an issue fails at its first
-call. Model roles, provider selection, keys, and the peer environment are unchanged.
+in `PI_CODING_AGENT_DIR`. That registration names the running harness executable with the `mcp`
+argument, so a peer whose cwd is a worktree, a temporary clone, or a host directory starts the
+same stdio server with no project `.omp` directory and no module to resolve. An ACP session
+ignores on-disk MCP discovery — the client owns the definitions — so the ACP client reads that
+`mcp.json` and sends every enabled stdio entry in the `session/new` `mcpServers` list, converting
+its `env` map to name/value pairs. A session opened without it has no Devboard tools at all, and a
+lifecycle prompt that reads or closes an issue fails at its first call. Model roles, provider
+selection, keys, and the peer environment are unchanged.
 
 The server speaks newline-delimited JSON-RPC over stdio. Only JSON-RPC messages reach stdout;
 diagnostics go to stderr. It answers `initialize` (protocol version, `serverInfo.name`,

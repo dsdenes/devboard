@@ -3553,7 +3553,6 @@ pub fn read_synthesis_stub(
 /// led by the dashboard's published selection.
 pub fn open_code_peers(
     state_dir: &Path,
-    repo_dir: &Path,
     environment: &HashMap<String, String>,
 ) -> Result<Vec<crate::providers::PeerBinding>, String> {
     let loaded = crate::providers::load_subscriptions(state_dir);
@@ -3607,9 +3606,7 @@ pub fn open_code_peers(
         };
         binding.env =
             crate::providers::peer_environment(&base, &binding, &entry.key, fallback.as_deref());
-        let mcp = crate::providers::default_agent_mcp(
-            &crate::providers::devboard_harness_directory(repo_dir),
-        );
+        let mcp = crate::providers::default_agent_mcp();
         let config = crate::providers::generated_config(
             crate::providers::ProviderId::OpenCodeGo,
             &binding.model,
@@ -3789,7 +3786,7 @@ pub async fn synthesize_family(options: SynthesizeOptions) -> SynthesisResult {
             },
         };
     }
-    let peers = match open_code_peers(&options.state_dir, &options.repo_dir, &options.environment) {
+    let peers = match open_code_peers(&options.state_dir, &options.environment) {
         Ok(peers) => peers,
         Err(reason) => {
             return SynthesisResult {
