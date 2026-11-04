@@ -40,6 +40,7 @@ pub enum HeaderSpec {
     FlowId(&'static str),
     Gzip,
     TokenGzip,
+    EmptyHost,
 }
 
 /// One row's observed answer.
@@ -92,6 +93,17 @@ pub fn cases() -> Vec<Case> {
             expect_gzip: false,
             expect_cookie: false,
             expect_json: BodyExpectation::Problem(401),
+        },
+        Case {
+            name: "missing-host",
+            method: Method::GET,
+            path: "/ready",
+            headers: HeaderSpec::EmptyHost,
+            expect_status: 400,
+            expect_allow: None,
+            expect_gzip: false,
+            expect_cookie: false,
+            expect_json: BodyExpectation::Problem(400),
         },
         Case {
             name: "ready-authorized",
@@ -337,6 +349,9 @@ async fn run_case(
         }
         HeaderSpec::Gzip => {
             headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        }
+        HeaderSpec::EmptyHost => {
+            headers.insert(HOST, HeaderValue::from_static(""));
         }
         HeaderSpec::TokenGzip => {
             headers.insert(

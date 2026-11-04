@@ -745,24 +745,40 @@ impl App {
             None,
         );
         self.prepare_replacement();
-        let settings = crate::relaunch::RelaunchSettings::from_config(self.config());
-        match crate::relaunch::relaunch(&settings, Some(version)) {
-            Ok(()) => {
-                self.shared.shutdown.notify_waiters();
-                std::process::exit(0);
-            }
-            Err(error) => {
-                self.shared.journal.write(
-                    "update-error",
-                    &format!("could not replace the server with {version}: {error}"),
-                    None,
-                );
-                if let Ok(mut failure) = self.replacement_failure.lock() {
-                    *failure = Some(error.to_string());
+        let app = self.clone();
+        let version = version.to_string();
+        tokio::spawn(async move {
+            let settings = crate::relaunch::RelaunchSettings::from_config(app.config());
+            let ready_file = app
+                .config()
+                .state_dir
+                .join("replacement")
+                .join(format!("ready-{}.json", std::process::id()));
+            match crate::relaunch::relaunch_confirmed(
+                &settings,
+                &ready_file,
+                15_000,
+                Some(&version),
+            )
+            .await
+            {
+                Ok(()) => {
+                    app.shared.shutdown.notify_waiters();
+                    std::process::exit(0);
                 }
-                self.shared.broadcast(self.version_state());
+                Err(error) => {
+                    app.shared.journal.write(
+                        "update-error",
+                        &format!("could not replace the server with {version}: {error}"),
+                        None,
+                    );
+                    if let Ok(mut failure) = app.replacement_failure.lock() {
+                        *failure = Some(error);
+                    }
+                    app.shared.broadcast(app.version_state());
+                }
             }
-        }
+        });
     }
 
     /// Installs the process launcher a `restartServer` command uses.

@@ -613,3 +613,17 @@ async fn an_unreadable_static_file_answers_500_and_journals() {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
     }
 }
+
+#[tokio::test]
+async fn the_readiness_probe_presents_the_credential_and_checks_the_pid() {
+    let instance = start("ready-probe").await;
+    let port: u16 = instance
+        .base
+        .rsplit(':')
+        .next()
+        .and_then(|value| value.parse().ok())
+        .expect("the listener port");
+    assert!(devboard::relaunch::probe_ready(port, &instance.token, Some(std::process::id())).await);
+    assert!(!devboard::relaunch::probe_ready(port, "wrong-token", Some(std::process::id())).await);
+    assert!(!devboard::relaunch::probe_ready(port, &instance.token, Some(0)).await);
+}
