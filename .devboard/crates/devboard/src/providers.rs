@@ -2279,7 +2279,10 @@ mod tests {
         let parsed: Value =
             serde_json::from_str(&std::fs::read_to_string(directory.join("mcp.json")).unwrap())
                 .expect("mcp.json");
-        assert_eq!(parsed["mcpServers"][DEVBOARD_MCP_SERVER]["args"], json!(["mcp"]));
+        assert_eq!(
+            parsed["mcpServers"][DEVBOARD_MCP_SERVER]["args"],
+            json!(["mcp"])
+        );
         let _ = std::fs::remove_dir_all(&directory);
     }
 }

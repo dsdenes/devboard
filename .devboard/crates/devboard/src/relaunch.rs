@@ -107,10 +107,7 @@ pub fn replacement_stub_mode() -> String {
 }
 
 /// Starts a replacement and hands the listener over immediately.
-pub fn relaunch(
-    settings: &RelaunchSettings,
-    version: Option<&str>,
-) -> std::io::Result<()> {
+pub fn relaunch(settings: &RelaunchSettings, version: Option<&str>) -> std::io::Result<()> {
     if replacement_stub_mode() == "fail" {
         return Err(std::io::Error::other("stubbed replacement failure"));
     }

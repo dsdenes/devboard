@@ -2184,10 +2184,7 @@ async fn refresh_lockfile(
     let outcome = runner
         .run(CommandInvocation {
             program: "cargo".to_string(),
-            args: vec![
-                "metadata".to_string(),
-                "--format-version=1".to_string(),
-            ],
+            args: vec!["metadata".to_string(), "--format-version=1".to_string()],
             cwd: root.to_path_buf(),
             env: environment.clone(),
             timeout: Duration::from_secs(600),

@@ -2142,11 +2142,7 @@ pub async fn verify_shipped(options: ReleaseVerificationOptions) -> ReleaseVerif
             default_github_assets_reader(environment)
         });
     let retry = options.read_retry.unwrap_or_default();
-    let github_assets = match read_with_retries(retry, || {
-        read_github_assets(tag.clone())
-    })
-    .await
-    {
+    let github_assets = match read_with_retries(retry, || read_github_assets(tag.clone())).await {
         Ok(Some(assets)) => assets,
         Ok(None) => {
             return version_failed(
