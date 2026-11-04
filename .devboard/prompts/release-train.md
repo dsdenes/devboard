@@ -23,8 +23,9 @@ request is the whole unresolved range; never recompute a different one and never
   `git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`. The publish path itself
   fast-forwards a clean integration checkout to that tip.
 - Release through the harness publish path only. From the repository root run `devboard publish
-  --wait-timeout 1800`; in a source checkout where the binary is not on `PATH`, run the same
-  command from `.devboard` as `cargo run -p devboard -- publish --wait-timeout 1800`.
+  --repo . --wait-timeout 1800`; in a source checkout where the binary is not on `PATH`, run
+  `cargo run --manifest-path .devboard/Cargo.toml -p devboard -- publish --repo .
+  --wait-timeout 1800`. The `--repo .` names the checkout root, not the harness directory.
 
   Run it in the foreground with no output consumer and keep it alive until it exits. It runs the
   release suite before tagging, waits for the cargo-dist release workflow it dispatches for the
