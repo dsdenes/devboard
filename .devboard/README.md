@@ -4372,11 +4372,21 @@ bun install --frozen-lockfile
 bun run build
 bun run check
 bun test
+# The operator suite: one serial browser session against the built dashboard,
+# a throwaway fixture repository, and the live Gitea.
+set -a; . ../.env; set +a
+bunx playwright test --config e2e/playwright.config.ts
 ```
 
-The historical Playwright/browser `verify-*` suite is retired. It is not restored, no Playwright
-test or `verify-*.ts` script is added, and no browser-E2E gate blocks a change. Its coverage moved
-to the surfaces below, which run from the current tree with no Node or Bun runtime for the
+The browser suite under `e2e/` is an operator tool and a one-time proof, not a CI gate: no
+workflow and no release suite runs it. It starts the built `devboard serve` binary serving the
+built client bundle against a fixture repository under `.test-tmp/`, points at the live Gitea,
+and answers every agent prompt with `devboard acp-stub`. It proves, through the real controls,
+that each background family and the Issues worker start and stop without a surviving process,
+that a report filed through the overlay becomes a linked issue, and that five start/stop cycles
+leave the dashboard ready and the board unchanged. Its report and traces stay under `.tmp/e2e/`.
+
+The rest of the surfaces below run from the current tree with no Node or Bun runtime for the
 harness itself:
 
 - **Rust workspace tests** cover the dashboard, every worker family, the MCP server, install and
@@ -4395,5 +4405,6 @@ harness itself:
 - **The container gate** builds the image from `.devboard` and proves `GET /ready` with the
   dashboard token.
 
-Every fixture stays under `.devboard/.tmp` or `.devboard/.test-tmp`; no test uses the network or a
-real model unless the gate is the release transport check, which serves its own local stub.
+Every fixture stays under `.devboard/.tmp` or `.devboard/.test-tmp`; no Rust or client test uses
+the network or a real model, and the browser suite is the one surface that talks to the live
+Gitea, by design.

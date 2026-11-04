@@ -299,10 +299,12 @@ captured output, writes the complete output to the returned `log`, and returns `
 
 ## Verification checks
 
-The harness has no browser E2E suite: the historical Playwright and `verify-*` scripts are
-retired. Verification is the Rust workspace suite, the contract corpus, the client's build,
-typecheck, and unit tests, and the CLI and HTTP smoke checks below. Never add a browser test or a
-`verify-*` script back.
+Verification is the Rust workspace suite, the contract corpus, the client's build, typecheck,
+and unit tests, and the CLI and HTTP smoke checks below. Browser coverage lives in one operator
+suite under `.devboard/e2e/`, run by hand with
+`bunx playwright test --config e2e/playwright.config.ts` from `.devboard`; it is an operator tool,
+not a CI gate, and it is the only place a browser test belongs. Add no `verify-*` script and wire
+no browser step into a workflow.
 
 - The Rust checks have exact entry points through `verification_run`:
   `{"check": "rust:fmt"}` runs `cargo fmt --check --all`, `{"check": "rust:clippy"}` runs
