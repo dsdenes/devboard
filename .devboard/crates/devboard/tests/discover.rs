@@ -805,3 +805,327 @@ async fn a_remote_run_retains_its_published_snapshot() {
     assert!(payload["sheet"].is_object());
     assert_eq!(payload["retained"].as_array().unwrap().len(), 1);
 }
+
+fn write_state_file(state: &Path, repo: &Path, discover: Value) {
+    let mut value = devboard::state::default_state();
+    value["discover"] = discover.clone();
+    value["discoverInterrupted"] = json!(true);
+    let path = devboard::state::state_file(state, repo);
+    devboard::state::write_state_file(&path, &devboard::state::state_envelope(&value))
+        .expect("the restored state file");
+}
+
+fn failing_clone_runner() -> Arc<
+    dyn Fn(devboard::discover_mode::CloneRequest) -> devboard::discover_mode::CloneFuture
+        + Send
+        + Sync,
+> {
+    Arc::new(|_request| -> devboard::discover_mode::CloneFuture {
+        Box::pin(async move {
+            devboard::discover_mode::CloneResult {
+                code: 1,
+                stderr: "fatal: repository not found".to_string(),
+                timed_out: false,
+            }
+        })
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resumed_clone_failure_reports_and_removes_the_interrupted_staging() {
+    let _clone_guard = CLONE_LOCK.lock().await;
+    let scratch = Scratch::new("resume-clone");
+    let repo = fixture_repo(&scratch, "repo", true);
+    let state = repo.join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    provider(&state);
+    let interrupted = repo.join(".omp/discover/staging/run-interrupted");
+    write(&interrupted.join("sheet.json"), "{\"values\":{}}\n");
+    write_state_file(
+        &state,
+        &repo,
+        json!({
+            "runId": "run-interrupted",
+            "stagingDir": interrupted.to_string_lossy(),
+            "startedAt": "2026-01-01T00:00:00.000Z",
+            "agent": "discover-testing-strategy",
+            "activity": [],
+            "question": null,
+            "remote": {"url": "https://github.com/acme/fresh", "owner": "acme", "repo": "fresh"},
+        }),
+    );
+    devboard::discover_mode::set_clone_runner(Some(failing_clone_runner()));
+
+    let app = App::new(
+        config(&repo, &state, format!("{} --discover", stub_agent())),
+        Journal::open(&state, &repo, 0),
+    );
+    assert!(
+        !interrupted.exists(),
+        "restore removes the interrupted run's staging"
+    );
+    assert!(
+        !repo.join(".omp/discover/staging").exists(),
+        "an empty staging root goes too"
+    );
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let frames = frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverError"),
+        Duration::from_secs(30),
+    )
+    .await;
+    let error = by_type(&frames, "discoverError");
+    assert_eq!(error.len(), 1, "one clone failure frame: {frames:?}");
+    assert!(
+        error[0]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("The repository clone failed"),
+        "{error:?}"
+    );
+    devboard::discover_mode::set_clone_runner(None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resumed_provider_failure_reaches_the_page() {
+    let scratch = Scratch::new("resume-provider");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let state = repo.join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    let interrupted = repo.join(".omp/discover/staging/run-interrupted");
+    write(&interrupted.join("sheet.json"), "{\"values\":{}}\n");
+    write_state_file(
+        &state,
+        &repo,
+        json!({
+            "runId": "run-interrupted",
+            "stagingDir": interrupted.to_string_lossy(),
+            "startedAt": "2026-01-01T00:00:00.000Z",
+            "agent": "discover-testing-strategy",
+            "activity": [],
+            "question": null,
+            "remote": null,
+        }),
+    );
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let app = App::new(
+        config(&repo, &state, format!("{} --discover", stub_agent())),
+        Journal::open(&state, &repo, 0),
+    );
+    assert!(
+        !interrupted.exists(),
+        "restore removes the interrupted staging"
+    );
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let frames = frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverError"),
+        Duration::from_secs(30),
+    )
+    .await;
+    let error = by_type(&frames, "discoverError");
+    assert_eq!(error.len(), 1, "one provider failure frame: {frames:?}");
+    assert!(
+        error[0]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Could not start the Testing Strategy agent"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_graceful_shutdown_removes_the_active_staging() {
+    let scratch = Scratch::new("shutdown");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let state = repo.join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    provider(&state);
+    let command = format!("{} --discover --discover-delay-ms=30000", stub_agent());
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    app.command(
+        &conn,
+        Command::DiscoverAgent {
+            agent: Some(json!("discover-testing-strategy")),
+        },
+    )
+    .await;
+    let started = next_frame(&mut inbox, Duration::from_secs(30)).await;
+    assert_eq!(started["type"], json!("discoverStarted"));
+    let run_id = started["runId"].as_str().expect("a run id").to_string();
+    let staging = repo.join(".omp/discover/staging").join(&run_id);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !staging.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the run prepared its staging directory"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    app.shared.shutdown.notify_waiters();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while staging.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "shutdown removed the staging directory"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn usage_glossary() -> devboard::discover_mode::Glossary {
+    devboard::discover_mode::Glossary {
+        bounded_context: "orders".to_string(),
+        titles: Vec::new(),
+        concepts: vec![devboard::discover_mode::Concept {
+            id: "order-total".to_string(),
+            pref_labels: vec![devboard::discover_mode::Label {
+                language: "en".to_string(),
+                text: "order total".to_string(),
+            }],
+            alt_labels: Vec::new(),
+            hidden_labels: Vec::new(),
+            definitions: Vec::new(),
+            scope_note: None,
+            example: None,
+            history_note: None,
+            status: "confirmed".to_string(),
+            origin: "owner".to_string(),
+            standard_ref: None,
+            kind: "entity".to_string(),
+            grounding: Vec::new(),
+            broader: None,
+            related: Vec::new(),
+        }],
+    }
+}
+
+#[test]
+fn a_second_usage_analysis_reuses_the_cached_fingerprint() {
+    let scratch = Scratch::new("usage-cache");
+    let repo = scratch.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("a repository");
+    git(&repo, &["init", "-q"]);
+    write(&repo.join("src/order.ts"), "orderTotal\norderTotal\n");
+    let glossaries = vec![usage_glossary()];
+    let first = devboard::discover_mode::glossary_usage(&repo, &glossaries, "fingerprint-one");
+    assert_eq!(first["orders"]["order-total"]["count"], json!(2));
+
+    // The same fingerprint and glossary must not read the tree again.
+    write(
+        &repo.join("src/order.ts"),
+        "orderTotal\norderTotal\norderTotal\norderTotal\norderTotal\n",
+    );
+    let cached = devboard::discover_mode::glossary_usage(&repo, &glossaries, "fingerprint-one");
+    assert_eq!(cached, first, "the cached analysis is returned unchanged");
+
+    let fresh = devboard::discover_mode::glossary_usage(&repo, &glossaries, "fingerprint-two");
+    assert_eq!(fresh["orders"]["order-total"]["count"], json!(5));
+}
+
+#[test]
+fn symlinked_usage_files_are_counted() {
+    let scratch = Scratch::new("usage-symlink");
+    let repo = scratch.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).expect("a repository");
+    git(&repo, &["init", "-q"]);
+    let target = scratch.path().join("linked-source.ts");
+    write(&target, "orderTotal\n");
+    std::os::unix::fs::symlink("../../linked-source.ts", repo.join("src/order.ts"))
+        .expect("a symlink");
+
+    let usage =
+        devboard::discover_mode::glossary_usage(&repo, &[usage_glossary()], "fingerprint-symlink");
+    assert_eq!(usage["orders"]["order-total"]["files"], json!(1));
+    assert_eq!(usage["orders"]["order-total"]["count"], json!(1));
+    assert_eq!(
+        usage["orders"]["order-total"]["examples"],
+        json!(["orderTotal"])
+    );
+}
+
+#[test]
+fn overview_links_percent_encode_every_reserved_character() {
+    let scratch = Scratch::new("overview-encode");
+    let repo = scratch.path().join("repo");
+    write(&repo.join("src/a b!'()~.ts"), "export {};\n");
+    let sheet = json!({
+        "architecture": {"sharedKernels": {"value": ["src/a b!'()~.ts"]}},
+    });
+    let links = devboard::discover_mode::overview_path_links(&repo, Some(&sheet), true);
+    let href = links["src/a b!'()~.ts"]
+        .as_str()
+        .expect("the overview link");
+    assert!(href.starts_with("vscode://file/"));
+    for raw in [" ", "!", "'", "(", ")", "~"] {
+        assert!(!href.contains(raw), "{raw:?} stays encoded in {href}");
+    }
+    for encoded in ["%20", "%21", "%27", "%28", "%29", "%7E"] {
+        assert!(href.contains(encoded), "{encoded} in {href}");
+    }
+}
+
+#[test]
+fn an_unreadable_skill_fails_the_publishing_run() {
+    let scratch = Scratch::new("unreadable-skill");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let staging = scratch.path().join("staging");
+    std::fs::create_dir_all(staging.join("skills/discover-testing-strategy"))
+        .expect("a skill directory");
+    std::os::unix::fs::symlink(
+        staging.join("missing-skill-target.md"),
+        staging.join("skills/discover-testing-strategy/SKILL.md"),
+    )
+    .expect("a dangling skill link");
+
+    let facts = devboard::discover_mode::host_facts(&repo);
+    let error = match devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-unreadable",
+        &facts,
+        &staging,
+        "fixture",
+        "discover-testing-strategy",
+    ) {
+        Ok(_) => panic!("an unreadable skill stops publication"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("could not read skills/discover-testing-strategy/SKILL.md"),
+        "{error}"
+    );
+}
+
+#[test]
+fn usage_examples_order_case_insensitively() {
+    let scratch = Scratch::new("usage-order");
+    let repo = scratch.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("a repository");
+    git(&repo, &["init", "-q"]);
+    write(&repo.join("a.ts"), "const Zebra = 1;\n");
+    write(&repo.join("b.ts"), "const appleZebra = 2;\n");
+    let mut glossary = usage_glossary();
+    glossary.concepts[0].pref_labels[0].text = "zebra".to_string();
+    let usage = devboard::discover_mode::glossary_usage(&repo, &[glossary], "fingerprint-examples");
+    assert_eq!(
+        usage["orders"]["order-total"]["examples"],
+        json!(["appleZebra", "Zebra"])
+    );
+}

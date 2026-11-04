@@ -472,13 +472,16 @@ pub async fn serve_on(
     listener: tokio::net::TcpListener,
     server: Arc<Server>,
 ) -> std::io::Result<()> {
+    let app = Arc::clone(&server.app);
     let shared = server.app.shared.clone();
-    let app = axum::Router::new().fallback(handle).with_state(server);
-    axum::serve(listener, app)
+    let router = axum::Router::new().fallback(handle).with_state(server);
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             shared.shutdown.notified().await;
         })
-        .await
+        .await;
+    crate::discover_mode::shutdown(&app);
+    result
 }
 
 /// Starts serving one dashboard listener.

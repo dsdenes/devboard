@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use futures_util::future::{BoxFuture, FutureExt, Shared};
 use serde_json::{json, Map, Value};
 
 use crate::app::Conn;
@@ -1330,6 +1331,10 @@ struct Inner {
     usage: HashMap<String, UsageReport>,
 }
 
+/// One in-flight usage read, shared by every caller that asks for the same
+/// provider key while it runs.
+type UsageFuture = Shared<BoxFuture<'static, UsageReport>>;
+
 pub struct ProviderService {
     state_dir: PathBuf,
     repo_dir: PathBuf,
@@ -1340,6 +1345,8 @@ pub struct ProviderService {
     log: Log,
     broadcast: Mutex<Option<Broadcast>>,
     inner: Mutex<Inner>,
+    /// One in-flight fetch per provider key, whatever asks while it runs.
+    inflight: Mutex<HashMap<String, UsageFuture>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1433,6 +1440,7 @@ impl ProviderService {
                 subscriptions: loaded.subscriptions,
                 usage: HashMap::new(),
             }),
+            inflight: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1513,9 +1521,45 @@ impl ProviderService {
     }
 
     async fn fetch_usage_for(&self, provider: ProviderId, key: &str) -> UsageReport {
+        let shared = self.shared_usage(provider, key);
+        let report = shared.clone().await;
+        self.finish_usage(provider, key, &shared);
+        report
+    }
+
+    /// The one fetch every concurrent caller for this provider key waits on.
+    /// The future is created once and shared, so a second caller never opens a
+    /// second upstream request while the first is still pending.
+    fn shared_usage(&self, provider: ProviderId, key: &str) -> UsageFuture {
+        let id = format!("{}\u{0}{key}", provider.as_str());
+        let mut inflight = lock(&self.inflight);
+        if let Some(existing) = inflight.get(&id) {
+            return existing.clone();
+        }
         let base_url = self.base_url(provider);
+        let transport = Arc::clone(&self.transport);
         let now = (self.now_ms)();
-        fetch_usage(provider, key, &base_url, &self.transport, now).await
+        let owned_key = key.to_string();
+        let request: BoxFuture<'static, UsageReport> =
+            async move { fetch_usage(provider, &owned_key, &base_url, &transport, now).await }
+                .boxed();
+        let shared = request.shared();
+        inflight.insert(id, shared.clone());
+        shared
+    }
+
+    /// Drops the in-flight entry once its callers have the report. A newer
+    /// fetch for the same key is never removed by an older one.
+    fn finish_usage(&self, provider: ProviderId, key: &str, shared: &UsageFuture) {
+        let id = format!("{}\u{0}{key}", provider.as_str());
+        let mut inflight = lock(&self.inflight);
+        if inflight
+            .get(&id)
+            .map(|existing| existing.ptr_eq(shared))
+            .unwrap_or(false)
+        {
+            inflight.remove(&id);
+        }
     }
 
     /// Reads every subscription whose cached usage is older than the TTL, or
