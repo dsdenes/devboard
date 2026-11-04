@@ -2268,6 +2268,16 @@ fn release_asset_url(asset: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn asset_sha256(asset: &Value) -> Option<String> {
+    let digest = asset_field(asset, "digest")?;
+    let digest = digest.strip_prefix("sha256:")?;
+    if digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(digest.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
 fn release_assets(release: &Value) -> Vec<Value> {
     release
         .get("assets")
@@ -2374,8 +2384,10 @@ async fn verify_one_asset(
 ) -> Result<(String, String, Vec<u8>)> {
     let asset = find_asset(assets, name).ok_or_else(|| anyhow!("the release is missing {name}"))?;
     let url = release_asset_url(asset).ok_or_else(|| anyhow!("{name} has no download address"))?;
-    let bytes = api.download(&url, false).await?;
-    let digest = sha256_hex(&bytes);
+    let digest = match asset_sha256(asset) {
+        Some(digest) => digest,
+        None => sha256_hex(&api.download(&url, false).await?),
+    };
     let checksum_name = format!("{name}.sha256");
     let checksum_asset = find_asset(assets, &checksum_name)
         .ok_or_else(|| anyhow!("the release is missing {checksum_name}"))?;
@@ -2399,8 +2411,10 @@ async fn verify_installer_asset(
 ) -> Result<()> {
     let asset = find_asset(assets, name).ok_or_else(|| anyhow!("the release is missing {name}"))?;
     let url = release_asset_url(asset).ok_or_else(|| anyhow!("{name} has no download address"))?;
-    let bytes = api.download(&url, false).await?;
-    let digest = sha256_hex(&bytes);
+    let digest = match asset_sha256(asset) {
+        Some(digest) => digest,
+        None => sha256_hex(&api.download(&url, false).await?),
+    };
     let expected = unified
         .get(name)
         .or_else(|| {
