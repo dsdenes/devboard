@@ -393,6 +393,8 @@ struct GithubData {
     /// after the last poll.
     settle_after: Option<usize>,
     reads: usize,
+    /// Whether the GitHub release of the dispatched run exists.
+    release_published: bool,
 }
 
 #[derive(Clone)]
@@ -423,6 +425,7 @@ impl GithubStub {
             jobs: None,
             settle_after: None,
             reads: 0,
+            release_published: true,
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
         let inner = state.clone();
@@ -468,6 +471,11 @@ impl GithubStub {
         fixture.stub.state.lock().expect("github").settle_after = Some(after);
         fixture
     }
+
+    /// Whether the GitHub release exists for the tag the release reads.
+    fn release_exists(&self, exists: bool) {
+        self.state.lock().expect("github").release_published = exists;
+    }
 }
 
 fn github_route(
@@ -488,16 +496,17 @@ fn github_route(
         let runs = if settled || head_named {
             let sha = git_output(repo_dir, &["rev-parse", "HEAD"]);
             let sha = sha.trim();
+            let id = 42 + data.dispatched.saturating_sub(1) as u64;
             if settled {
                 vec![json!({
-                    "id": 42,
+                    "id": id,
                     "head_sha": sha,
                     "status": "completed",
                     "conclusion": data.settled_conclusion.clone(),
                 })]
             } else {
                 vec![json!({
-                    "id": 42,
+                    "id": id,
                     "head_sha": sha,
                     "status": "in_progress",
                     "conclusion": null,
@@ -537,6 +546,9 @@ fn github_route(
     if let Some(rest) = path.strip_prefix("/repos/dsdenes/devboard/releases/tags/") {
         let tag = percent_decode(rest);
         let data = state.lock().expect("github");
+        if !data.release_published {
+            return not_found();
+        }
         let base = base.lock().expect("base").clone();
         let assets: Vec<Value> = data
             .assets
@@ -1404,6 +1416,81 @@ async fn the_workflow_verdict_reads_the_run_once_more_at_the_deadline() {
         .expect("the run that settled after the last poll is followed");
     assert_eq!(report.workflow_run, Some(42));
     assert_eq!(live.github_stub.dispatch_count(), 0);
+}
+
+#[tokio::test]
+async fn a_failed_workflow_withdraws_the_tag_it_created() {
+    let live = live("withdraw", release_assets()).await;
+    live.github_stub.settle_with("cancelled", json!({}));
+    live.github_stub.release_exists(false);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.instances = Some(Vec::new());
+    args.wait_timeout = Duration::from_secs(5);
+    let error = publish(args)
+        .await
+        .expect_err("a cancelled run fails the release");
+    assert!(
+        format!("{error:#}").contains("concluded cancelled"),
+        "{error:#}"
+    );
+    assert!(
+        git_output(&live.seed, &["tag", "--list", "v1.1.0"]).is_empty(),
+        "the failed release leaves no tag in the checkout"
+    );
+    assert!(
+        git_output(&live.origin, &["tag", "--list", "v1.1.0"]).is_empty(),
+        "the failed release leaves no tag on the origin"
+    );
+    assert!(
+        git_output(&live.github, &["tag", "--list", "v1.1.0"]).is_empty(),
+        "the failed release leaves no tag on the mirror"
+    );
+}
+
+#[tokio::test]
+async fn a_withdrawn_release_reuses_the_committed_version_bump() {
+    let live = live("withdraw-retry", release_assets()).await;
+    live.github_stub.settle_with("cancelled", json!({}));
+    live.github_stub.release_exists(false);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.instances = Some(Vec::new());
+    args.wait_timeout = Duration::from_secs(5);
+    publish(args).await.expect_err("the first attempt fails");
+    let bumped = git_output(&live.seed, &["rev-parse", "HEAD"]);
+
+    live.github_stub.settle_with("success", json!({}));
+    live.github_stub.release_exists(true);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.instances = Some(Vec::new());
+    args.wait_timeout = Duration::from_secs(5);
+    let report = publish(args)
+        .await
+        .expect("the retry releases the withdrawn version");
+
+    assert_eq!(report.version, "1.1.0");
+    assert_eq!(report.tag, "v1.1.0");
+    assert!(report.published);
+    assert_eq!(
+        git_output(&live.seed, &["rev-parse", "HEAD"]),
+        bumped,
+        "the retry commits no second version bump"
+    );
+    let log = git_output(&live.seed, &["log", "--format=%s"]);
+    assert_eq!(
+        log.lines()
+            .filter(|line| *line == "chore(release): v1.1.0")
+            .count(),
+        1,
+        "{log}"
+    );
+    assert_eq!(
+        git_output(&live.seed, &["rev-parse", "v1.1.0^{commit}"]),
+        bumped
+    );
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        bumped
+    );
 }
 
 // ---------------------------------------------------------------------------

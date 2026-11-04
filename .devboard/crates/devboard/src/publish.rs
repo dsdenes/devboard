@@ -1670,39 +1670,50 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
 
         (log)(&format!("{tag} at {}", short_sha(&published_head)));
 
-        bump_workspace_version(&args.harness_root.join("Cargo.toml"), &version)?;
-        refresh_lockfile(git.runner, &args.environment, &args.harness_root).await?;
-        let manifest = relative_git_path(&args.repo_dir, &args.harness_root.join("Cargo.toml"));
-        let lock_path = args.harness_root.join("Cargo.lock");
-        let lock = relative_git_path(&args.repo_dir, &lock_path);
-        let commit_message = format!("chore(release): v{version}");
-        let mut commit_args: Vec<&str> = vec![
-            "-c",
-            "user.name=Devboard Release",
-            "-c",
-            "user.email=release@devboard.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--only",
-            "-m",
-            &commit_message,
-            "--",
-            &manifest,
-        ];
-        if lock_path.exists() {
-            commit_args.push(&lock);
-        }
-        let committed = git.run(&commit_args).await;
-        if committed.code != 0 {
-            bail!(
-                "could not commit the version bump: {}",
-                first_line(if committed.stderr.is_empty() {
-                    committed.stdout.as_str()
-                } else {
-                    committed.stderr.as_str()
-                })
-            );
+        let manifest_path = args.harness_root.join("Cargo.toml");
+        // An earlier attempt of this same version committed the bump and then
+        // withdrew its tag when the release did not ship, so main already
+        // carries the version: the retry tags the head it derived instead of
+        // committing an unchanged manifest.
+        if workspace_version(&manifest_path).as_deref() == Some(version.as_str()) {
+            (log)(&format!(
+                "{tag} reuses the version bump already committed on main"
+            ));
+        } else {
+            bump_workspace_version(&manifest_path, &version)?;
+            refresh_lockfile(git.runner, &args.environment, &args.harness_root).await?;
+            let manifest = relative_git_path(&args.repo_dir, &manifest_path);
+            let lock_path = args.harness_root.join("Cargo.lock");
+            let lock = relative_git_path(&args.repo_dir, &lock_path);
+            let commit_message = format!("chore(release): v{version}");
+            let mut commit_args: Vec<&str> = vec![
+                "-c",
+                "user.name=Devboard Release",
+                "-c",
+                "user.email=release@devboard.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--only",
+                "-m",
+                &commit_message,
+                "--",
+                &manifest,
+            ];
+            if lock_path.exists() {
+                commit_args.push(&lock);
+            }
+            let committed = git.run(&commit_args).await;
+            if committed.code != 0 {
+                bail!(
+                    "could not commit the version bump: {}",
+                    first_line(if committed.stderr.is_empty() {
+                        committed.stdout.as_str()
+                    } else {
+                        committed.stderr.as_str()
+                    })
+                );
+            }
         }
         let tag_created = git
             .run(&[
@@ -1752,58 +1763,72 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         );
     }
 
-    // The workflow lives on GitHub, so the mirror receives the tagged commit
-    // before the run can be selected or dispatched.
-    if preflight.remotes.iter().any(|remote| remote == "github") {
-        push_github_mirror(&git, &commit, &log).await?;
-    } else {
-        (log)("no github mirror remote; skipped");
-    }
-
-    let workflow_run =
-        dispatch_and_wait(&api, &clock, &sleeper, &args, &commit, &tag, &log).await?;
-
-    let verified =
-        verify_github_assets(&api, &clock, &sleeper, &args, &tag, &version, &log).await?;
-    let manifest_text = String::from_utf8_lossy(&verified.manifest).into_owned();
-
-    write_gitea_release(&api, &git, &version, &tag, &commit, &verified, &log).await?;
-
-    let mirror_state = if preflight.remotes.iter().any(|remote| remote == "github") {
-        Some(mirror_carries(&git, &commit).await)
-    } else {
-        None
-    };
-    if let Some((sha, carries)) = mirror_state {
-        if !carries {
-            bail!(
-                "the GitHub mirror main ({}) does not name {}",
-                if sha.is_empty() {
-                    "missing".to_string()
-                } else {
-                    short_sha(&sha)
-                },
-                short_sha(&commit)
-            );
+    // A release that fails before its GitHub release exists must not leave its
+    // tag behind: the gate derives the next version from the newest release
+    // tag, so a tag whose release never shipped would move the range past a
+    // version that has no artifacts at all.
+    let created_tag = !existing_at_head;
+    let shipped = async {
+        // The workflow lives on GitHub, so the mirror receives the tagged
+        // commit before the run can be selected or dispatched.
+        if preflight.remotes.iter().any(|remote| remote == "github") {
+            push_github_mirror(&git, &commit, &log).await?;
+        } else {
+            (log)("no github mirror remote; skipped");
         }
-        (log)(&format!("github/main carries {}", short_sha(&commit)));
-    }
 
-    let dist_dir = args.harness_root.join("dist");
-    let instances = args
-        .instances
-        .clone()
-        .unwrap_or_else(discover_dashboard_instances);
-    let source_refresh = deliver_source_refresh(SourceRefreshOptions {
-        repo_root: args.repo_dir.clone(),
-        harness_root: args.harness_root.clone(),
-        commit: commit.clone(),
-        version: version.clone(),
-        dist_dir,
-        instances,
-        requested_at: iso_from_millis(clock.now_millis()),
-    })
-    .await?;
+        let workflow_run =
+            dispatch_and_wait(&api, &clock, &sleeper, &args, &commit, &tag, &log).await?;
+
+        let verified =
+            verify_github_assets(&api, &clock, &sleeper, &args, &tag, &version, &log).await?;
+
+        write_gitea_release(&api, &git, &version, &tag, &commit, &verified, &log).await?;
+
+        if preflight.remotes.iter().any(|remote| remote == "github") {
+            let (sha, carries) = mirror_carries(&git, &commit).await;
+            if !carries {
+                bail!(
+                    "the GitHub mirror main ({}) does not name {}",
+                    if sha.is_empty() {
+                        "missing".to_string()
+                    } else {
+                        short_sha(&sha)
+                    },
+                    short_sha(&commit)
+                );
+            }
+            (log)(&format!("github/main carries {}", short_sha(&commit)));
+        }
+
+        let source_refresh = deliver_source_refresh(SourceRefreshOptions {
+            repo_root: args.repo_dir.clone(),
+            harness_root: args.harness_root.clone(),
+            commit: commit.clone(),
+            version: version.clone(),
+            dist_dir: args.harness_root.join("dist"),
+            instances: args
+                .instances
+                .clone()
+                .unwrap_or_else(discover_dashboard_instances),
+            requested_at: iso_from_millis(clock.now_millis()),
+        })
+        .await?;
+
+        Ok::<_, anyhow::Error>((workflow_run, verified, source_refresh))
+    }
+    .await;
+
+    let (workflow_run, verified, source_refresh) = match shipped {
+        Ok(shipped) => shipped,
+        Err(error) => {
+            if created_tag {
+                withdraw_unreleased_tag(&api, &git, &preflight, &tag, &log).await;
+            }
+            return Err(error);
+        }
+    };
+    let manifest_text = String::from_utf8_lossy(&verified.manifest).into_owned();
     for target in &source_refresh.written {
         (log)(&format!(
             "source refresh requested for {} (pid {}, port {})",
@@ -2182,6 +2207,30 @@ async fn refresh_lockfile(
     Ok(())
 }
 
+/// The version `[workspace.package]` declares, when the manifest carries one.
+fn workspace_version(path: &Path) -> Option<String> {
+    let source = std::fs::read_to_string(path).ok()?;
+    let line_pattern =
+        Regex::new(r#"^(\s*version\s*=\s*")([^"]*)(".*)$"#).expect("the workspace version line");
+    let mut in_section = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[workspace.package]" {
+            in_section = true;
+            continue;
+        }
+        if in_section && trimmed.starts_with('[') {
+            return None;
+        }
+        if in_section {
+            if let Some(captures) = line_pattern.captures(line) {
+                return captures.get(2).map(|value| value.as_str().to_string());
+            }
+        }
+    }
+    None
+}
+
 fn bump_workspace_version(path: &Path, version: &str) -> Result<()> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
@@ -2222,6 +2271,65 @@ fn bump_workspace_version(path: &Path, version: &str) -> Result<()> {
     std::fs::write(path, lines.concat())
         .with_context(|| format!("could not write {}", path.display()))?;
     Ok(())
+}
+
+/// Removes the tag of a release that did not ship.
+///
+/// The release gate derives the next version from the newest release tag, so a
+/// tag whose release never appeared would advance the range past a version
+/// that carries no artifacts. A tag whose release does exist is a real
+/// release and is never withdrawn.
+async fn withdraw_unreleased_tag(
+    api: &Api,
+    git: &Git<'_>,
+    preflight: &Preflight,
+    tag: &str,
+    log: &Arc<dyn Fn(&str) + Send + Sync>,
+) {
+    match api.github_release_by_tag(tag).await {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            (log)(&format!(
+                "keeping {tag}: its release exists although the run did not settle"
+            ));
+            return;
+        }
+        Err(error) => {
+            (log)(&format!(
+                "keeping {tag}: its release could not be read ({})",
+                first_line(&format!("{error:#}"))
+            ));
+            return;
+        }
+    }
+    for remote in &preflight.remotes {
+        let deleted = git
+            .run(&["push", remote.as_str(), &format!(":refs/tags/{tag}")])
+            .await;
+        if deleted.code != 0 {
+            (log)(&format!(
+                "could not withdraw {tag} from {remote}: {}",
+                first_line(if deleted.stderr.is_empty() {
+                    deleted.stdout.as_str()
+                } else {
+                    deleted.stderr.as_str()
+                })
+            ));
+        }
+    }
+    let local = git.run(&["tag", "-d", tag]).await;
+    if local.code != 0 {
+        (log)(&format!(
+            "could not withdraw the local {tag}: {}",
+            first_line(if local.stderr.is_empty() {
+                local.stdout.as_str()
+            } else {
+                local.stderr.as_str()
+            })
+        ));
+        return;
+    }
+    (log)(&format!("withdrew {tag}: the release did not ship"));
 }
 
 fn relative_git_path(repo_dir: &Path, path: &Path) -> String {
