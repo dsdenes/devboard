@@ -181,6 +181,37 @@ test("drops a Background agent page stored in Issues mode", () => {
   expect(store.activeTab.issues).toBe("overview");
 });
 
+test("drops a persisted Complexity page this revision never renders", () => {
+  const storage = installStorage();
+  storage.setItem(
+    LAYOUT_KEY,
+    JSON.stringify({
+      version: 1,
+      mode: "devboard",
+      theme: "dark",
+      tabs: {
+        devboard: [
+          {
+            id: "complexity",
+            kind: "devboard-complexity",
+            resourceId: "complexity",
+            title: "Complexity",
+          },
+        ],
+      },
+      activeTab: { devboard: "complexity" },
+    }),
+  );
+
+  const store = new LayoutStore();
+
+  expect(store.mode).toBe("devboard");
+  expect(store.tabs.devboard).toEqual([
+    { id: "tools", kind: "mcp-tools", resourceId: "tools", title: "MCP tools" },
+  ]);
+  expect(store.activeTab.devboard).toBe("tools");
+});
+
 test("the Issues indicator lands on Overview from another surface", () => {
   const store = new LayoutStore();
   store.openTab("issues", {

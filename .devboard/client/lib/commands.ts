@@ -1,5 +1,5 @@
 import { TABS } from "./discover-format";
-import { DEVBOARD_COMPLEXITY_TAB, DEVBOARD_SKILLS_TAB, DEVBOARD_TAB } from "./devboard.svelte";
+import { DEVBOARD_SKILLS_TAB, DEVBOARD_TAB } from "./devboard.svelte";
 import type { GoalStore } from "./goal.svelte";
 import type { FlowStore } from "./flow.svelte";
 import type { DiscoverStore } from "./discover.svelte";
@@ -261,14 +261,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "Devboard",
     keywords: "installed skills enabled exclusion omp",
     run: () => ctx.openTab("devboard", DEVBOARD_SKILLS_TAB),
-  });
-
-  add({
-    id: "devboard.tab.complexity",
-    title: "Open Complexity",
-    group: "Devboard",
-    keywords: "complexity metrics cyclomatic maintainability history daily",
-    run: () => ctx.openTab("devboard", DEVBOARD_COMPLEXITY_TAB),
   });
 
   // Close commands mirror the close controls a surface renders itself.
