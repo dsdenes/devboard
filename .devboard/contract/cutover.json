@@ -6,6 +6,7 @@
     "getVersion": "rust",
     "getMcpTools": "rust",
     "getInstalledSkills": "rust",
+    "getComplexity": "rust",
     "setInstalledSkillEnabled": "rust",
     "getIssues": "rust",
     "getIssuesRun": "rust",
