@@ -1,0 +1,16 @@
+[
+  {
+    "path": "src/app.txt",
+    "status": "added",
+    "insertions": 1,
+    "deletions": 0,
+    "diff": "diff --git a/src/app.txt b/src/app.txt\nnew file mode 100644\nindex 0000000..83baae6\n--- /dev/null\n+++ b/src/app.txt\n@@ -0,0 +1 @@\n+version 1"
+  },
+  {
+    "path": "src/config.json",
+    "status": "added",
+    "insertions": 3,
+    "deletions": 0,
+    "diff": "diff --git a/src/config.json b/src/config.json\nnew file mode 100644\nindex 0000000..61a2092\n--- /dev/null\n+++ b/src/config.json\n@@ -0,0 +1,3 @@\n+{\n+  \"version\": 1\n+}"
+  }
+]
