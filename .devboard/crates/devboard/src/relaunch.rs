@@ -46,6 +46,7 @@ pub fn spawn_replacement(
 ) -> std::io::Result<Child> {
     let program = replacement_program()?;
     let mut command = Command::new(&program);
+    command.arg("serve");
     // Never start from a replaceable install directory: an update can rename
     // and delete it, and a child cannot start from a missing cwd.
     command
