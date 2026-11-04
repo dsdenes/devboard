@@ -106,11 +106,18 @@ pub fn replacement_stub_mode() -> String {
 }
 
 /// Starts a replacement and hands the listener over immediately.
-pub fn relaunch(settings: &RelaunchSettings) -> std::io::Result<()> {
+pub fn relaunch(
+    settings: &RelaunchSettings,
+    version: Option<&str>,
+) -> std::io::Result<()> {
     if replacement_stub_mode() == "fail" {
         return Err(std::io::Error::other("stubbed replacement failure"));
     }
-    let child = spawn_replacement(settings, &[])?;
+    let extra: Vec<(&str, String)> = version
+        .map(|version| ("DEVBOARD_RUNNING_VERSION", version.to_string()))
+        .into_iter()
+        .collect();
+    let child = spawn_replacement(settings, &extra)?;
     std::mem::forget(child);
     Ok(())
 }
@@ -122,13 +129,14 @@ pub async fn relaunch_confirmed(
     settings: &RelaunchSettings,
     ready_file: &Path,
     timeout_ms: u64,
+    version: Option<&str>,
 ) -> Result<(), String> {
     let stub = replacement_stub_mode();
     if stub == "fail" {
         return Err("stubbed replacement failure".to_string());
     }
     let _ = std::fs::remove_file(ready_file);
-    let extra: Vec<(&str, String)> = if stub == "never-ready" {
+    let mut extra: Vec<(&str, String)> = if stub == "never-ready" {
         Vec::new()
     } else {
         vec![(
@@ -136,6 +144,9 @@ pub async fn relaunch_confirmed(
             ready_file.to_string_lossy().into_owned(),
         )]
     };
+    if let Some(version) = version {
+        extra.push(("DEVBOARD_RUNNING_VERSION", version.to_string()));
+    }
     let mut child = spawn_replacement(settings, &extra).map_err(|error| error.to_string())?;
     let started = std::time::Instant::now();
     let mut ready = false;

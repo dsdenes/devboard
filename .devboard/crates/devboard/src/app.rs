@@ -719,7 +719,7 @@ impl App {
         );
         self.prepare_replacement();
         let settings = crate::relaunch::RelaunchSettings::from_config(self.config());
-        match crate::relaunch::relaunch(&settings) {
+        match crate::relaunch::relaunch(&settings, Some(version)) {
             Ok(()) => {
                 self.shared.shutdown.notify_waiters();
                 std::process::exit(0);

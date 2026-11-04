@@ -122,7 +122,7 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         let config = server.config.clone();
         server.app.set_restart_hook(std::sync::Arc::new(move || {
             let settings = devboard::relaunch::RelaunchSettings::from_config(&config);
-            devboard::relaunch::relaunch(&settings).map_err(|error| error.to_string())?;
+            devboard::relaunch::relaunch(&settings, None).map_err(|error| error.to_string())?;
             if let Some(app) = app.upgrade() {
                 app.shared.shutdown.notify_waiters();
             }

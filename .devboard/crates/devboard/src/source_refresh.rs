@@ -348,7 +348,7 @@ async fn check_once(app: &Arc<App>, dist: &Path) {
             .map(|duration| duration.as_millis())
             .unwrap_or(0)
     ));
-    match crate::relaunch::relaunch_confirmed(&settings, &ready_file, 10_000).await {
+    match crate::relaunch::relaunch_confirmed(&settings, &ready_file, 10_000, Some(&request.version)).await {
         Ok(()) => {
             let _ = write_applied_source_refresh(state_dir, &request);
             app.prepare_replacement();
