@@ -6,11 +6,10 @@
     "accept-encoding": "identity"
   },
   "requestBody": "",
-  "status": 200,
+  "status": 401,
   "headers": {
     "cache-control": "no-store",
-    "content-length": "0",
-    "content-type": "application/json;charset=utf-8",
+    "content-type": "application/problem+json",
     "vary": "Accept-Encoding"
   },
   "body": ""

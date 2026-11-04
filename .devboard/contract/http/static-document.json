@@ -6,14 +6,12 @@
     "accept-encoding": "identity"
   },
   "requestBody": "",
-  "status": 200,
+  "status": 401,
   "headers": {
-    "cache-control": "no-cache",
-    "content-length": "39",
-    "content-type": "text/html;charset=utf-8",
-    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
+    "cache-control": "no-store",
+    "content-type": "application/problem+json",
     "vary": "Accept-Encoding",
-    "set-cookie": "devboard_dashboard_39557=contract-token; Path=/; HttpOnly; SameSite=Strict"
+    "www-authenticate": "Bearer"
   },
-  "body": "<!doctype html><title>Contract</title>\n"
+  "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This page requires the dashboard credential.\"}"
 }

@@ -83,6 +83,7 @@ async fn start(label: &str) -> Fixture {
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
         token: TOKEN.to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: Some(FeedbackConfig {
             base_url: format!("http://127.0.0.1:{stub_port}"),
             repo: "dsdenes/devboard".to_string(),
@@ -157,6 +158,61 @@ async fn a_goal_proposal_writes_one_draft_and_answers_201() {
     let text = std::fs::read_to_string(&draft).expect("the draft text");
     assert!(text.starts_with("# Proposed goal: Make the header calm\n\n"));
     assert!(text.contains("## Captured UI context"));
+    assert!(
+        location.starts_with("http://") || location.starts_with("https://"),
+        "the draft link dereferences on the host that answered: {location}"
+    );
+
+    // The linked route serves the exact draft bytes, with no-store.
+    let response = client()
+        .get(&location)
+        .headers(bearer())
+        .send()
+        .await
+        .expect("the draft answer");
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let served = response.text().await.expect("the draft bytes");
+    assert_eq!(served, text);
+
+    let response = client()
+        .head(&location)
+        .headers(bearer())
+        .send()
+        .await
+        .expect("the HEAD answer");
+    assert_eq!(response.status(), 200);
+    let body = response.bytes().await.expect("a body");
+    assert!(body.is_empty(), "HEAD carries no draft bytes");
+
+    let response = client()
+        .put(&location)
+        .headers(bearer())
+        .send()
+        .await
+        .expect("the method answer");
+    assert_eq!(response.status(), 405);
+    assert_eq!(
+        response
+            .headers()
+            .get("allow")
+            .and_then(|value| value.to_str().ok()),
+        Some("GET, HEAD")
+    );
+
+    let response = client()
+        .get(format!("{}/goal-proposals/missing.md", fixture.base))
+        .headers(bearer())
+        .send()
+        .await
+        .expect("the absent answer");
+    assert_eq!(response.status(), 404);
 
     // A second submission with the same text takes the next free name.
     let response = client()

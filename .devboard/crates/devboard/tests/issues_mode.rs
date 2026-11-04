@@ -730,6 +730,7 @@ fn app_config(repo: &Path, state: &Path) -> Config {
         state_dir: state.to_path_buf(),
         allowed_hosts: Vec::new(),
         token: "contract-token".to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     }
 }

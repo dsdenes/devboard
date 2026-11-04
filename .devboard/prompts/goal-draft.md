@@ -34,13 +34,13 @@ blocker is reported.
   file in the harness repository (`dsdenes/devboard`) unless that repository is this checkout's
   `origin`.
 - Every tracker command goes through the harness forge-auth wrapper:
-  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts exec --host <host> --project <owner/repo> --required write -- <gh|glab args>`.
+  `devboard forge-auth exec --host <host> --project <owner/repo> --required write -- <gh|glab args>`.
   It selects the authenticated account with write access; never call `gh` directly. On Gitea,
   resolve the identity with `check` and use the API with `GITEA_TOKEN`.
 - Forge write access is a precondition, not a discovery step. When the session context already
   carries a `forge-auth` result with `canWrite: true` for the target project, use its `forge`,
   `host`, `project`, and `canWrite` and run no probe. Otherwise run
-  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts check --required write --json` at most once per
+  `devboard forge-auth check --required write --json` at most once per
   session, only when the context lacks that result, and keep its fields in context. Never repeat
   the check after a `canWrite: true` result or between successive tracker reads and writes.
 - Never enumerate the process environment or hunt for credential files:

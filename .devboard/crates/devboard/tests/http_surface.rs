@@ -48,6 +48,7 @@ async fn start(label: &str) -> Instance {
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
         token: TOKEN.to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let listener = devboard::http::bind(&config.hostname, 0)
@@ -126,7 +127,7 @@ async fn ready_answers_get_and_head_with_the_pid() {
     let (status, headers, body) = send(
         Method::GET,
         &format!("{}/ready", instance.base),
-        HeaderMap::new(),
+        bearer(&instance.token),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -142,7 +143,7 @@ async fn ready_answers_get_and_head_with_the_pid() {
     let (status, headers, body) = send(
         Method::HEAD,
         &format!("{}/ready", instance.base),
-        HeaderMap::new(),
+        bearer(&instance.token),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -162,7 +163,7 @@ async fn ready_refuses_other_methods_with_allow() {
         let (status, headers, body) = send(
             method.clone(),
             &format!("{}/ready", instance.base),
-            HeaderMap::new(),
+            bearer(&instance.token),
         )
         .await;
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{method}");
@@ -179,7 +180,7 @@ async fn ready_refuses_other_methods_with_allow() {
 #[tokio::test]
 async fn ready_negotiates_gzip() {
     let instance = start("ready-gzip").await;
-    let mut headers = HeaderMap::new();
+    let mut headers = bearer(&instance.token);
     headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
     let (status, headers, _body) =
         send(Method::GET, &format!("{}/ready", instance.base), headers).await;
@@ -214,7 +215,7 @@ async fn socket_guards_answer_method_host_origin_and_credential() {
     let mut headers = bearer(&instance.token);
     headers.insert(HOST, HeaderValue::from_static("evil.test"));
     let (status, _headers, _body) = send(Method::GET, &url, headers).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
 
     let mut headers = bearer(&instance.token);
     headers.insert(ORIGIN, HeaderValue::from_static("http://evil.test"));
@@ -256,6 +257,21 @@ async fn static_serving_refuses_control_characters_and_normalizes_paths() {
         HeaderMap::new(),
     )
     .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        headers
+            .get("www-authenticate")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer")
+    );
+    assert!(headers.get("set-cookie").is_none(), "no cookie before the credential");
+
+    let (status, headers, body) = send(
+        Method::GET,
+        &format!("{}/?bootstrap=test-bootstrap", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         headers
@@ -263,11 +279,22 @@ async fn static_serving_refuses_control_characters_and_normalizes_paths() {
             .and_then(|value| value.to_str().ok()),
         Some("no-cache")
     );
-    assert!(
-        headers.get("set-cookie").is_some(),
-        "the document carries the credential"
+    let cookie = headers
+        .get("set-cookie")
+        .and_then(|value| value.to_str().ok())
+        .expect("the document hands out its cookie")
+        .to_string();
+    assert!(cookie.contains("HttpOnly"));
+    assert!(!String::from_utf8_lossy(&body).contains(TOKEN));
+
+    let mut cookie_headers = HeaderMap::new();
+    cookie_headers.insert(
+        reqwest::header::COOKIE,
+        HeaderValue::from_str(cookie.split(';').next().expect("a cookie pair")).expect("a cookie"),
     );
-    assert!(!body.is_empty());
+    let (status, _headers, _body) =
+        send(Method::GET, &format!("{}/", instance.base), cookie_headers).await;
+    assert_eq!(status, StatusCode::OK);
 
     let (status, headers, _body) = send(
         Method::GET,
@@ -446,6 +473,7 @@ async fn the_embedded_client_serves_without_a_static_directory() {
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
         token: TOKEN.to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let listener = devboard::http::bind("127.0.0.1", 0)
@@ -460,7 +488,7 @@ async fn the_embedded_client_serves_without_a_static_directory() {
         let _ = devboard::http::serve_on(listener, server).await;
     });
     let base = format!("http://127.0.0.1:{port}");
-    let (status, headers, body) = send(Method::GET, &format!("{base}/"), HeaderMap::new()).await;
+    let (status, headers, body) = send(Method::GET, &format!("{base}/"), bearer(TOKEN)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         headers
@@ -477,4 +505,65 @@ async fn the_embedded_client_serves_without_a_static_directory() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_flow_id_is_echoed_on_endpoint_answers_and_never_on_a_static_asset() {
+    let instance = start("flow-echo").await;
+
+    let mut headers = bearer(&instance.token);
+    headers.insert("x-flow-id", HeaderValue::from_static("flow-42"));
+    let (_status, headers, _body) =
+        send(Method::GET, &format!("{}/ready", instance.base), headers).await;
+    assert_eq!(
+        headers
+            .get("x-flow-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("flow-42")
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-flow-id", HeaderValue::from_static("flow-42"));
+    let (status, headers, _body) = send(
+        Method::GET,
+        &format!("{}/assets/app-abc.css", instance.base),
+        headers,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers.get("x-flow-id").is_none(),
+        "a shared cache must not replay one client's flow id"
+    );
+
+    let mut headers = bearer(&instance.token);
+    headers.insert("x-flow-id", HeaderValue::from_static("flow-42"));
+    headers.insert(HOST, HeaderValue::from_static("evil.test"));
+    let (status, headers, _body) =
+        send(Method::GET, &format!("{}/ws", instance.base), headers).await;
+    assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+    assert_eq!(
+        headers
+            .get("x-flow-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("flow-42")
+    );
+}
+
+#[tokio::test]
+async fn mutating_endpoints_refuse_a_misdirected_host() {
+    let instance = start("endpoint-host").await;
+    for (method, path) in [
+        (Method::POST, "/feedback"),
+        (Method::POST, "/goal-proposals"),
+        (Method::GET, "/goal-proposals/missing.md"),
+    ] {
+        let mut headers = bearer(&instance.token);
+        headers.insert(HOST, HeaderValue::from_static("evil.test"));
+        let (status, _headers, body) =
+            send(method, &format!("{}{path}", instance.base), headers).await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "{path}");
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+        assert_eq!(parsed["title"], "Misdirected Request");
+    }
 }

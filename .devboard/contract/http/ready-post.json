@@ -6,14 +6,11 @@
     "accept-encoding": "identity"
   },
   "requestBody": "",
-  "status": 405,
+  "status": 401,
   "headers": {
-    "allow": "GET, HEAD",
     "cache-control": "no-store",
-    "content-length": "111",
     "content-type": "application/problem+json",
-    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
     "vary": "Accept-Encoding"
   },
-  "body": "{\"type\":\"about:blank\",\"title\":\"Method Not Allowed\",\"status\":405,\"detail\":\"This path serves GET and HEAD only.\"}"
+  "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
 }

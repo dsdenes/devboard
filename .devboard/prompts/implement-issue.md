@@ -42,7 +42,7 @@ context, but you never edit, comment on, close, or reopen another issue.
   `git remote get-url origin` or `git remote get-url github`, no `git config --get
   remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
   directory, no `env | grep`, and no
-  `cd <root> && … && bun .devboard/scripts/forge-auth.ts check` line. The `devboard_status`
+  `cd <root> && … && devboard forge-auth check` line. The `devboard_status`
   result covers the roots, and the session's auth result — already in context, otherwise the one
   `forge-auth.ts check` JSON line below — covers the forge, host, project, and identity; neither
   is re-derived to orient the run.
@@ -107,7 +107,7 @@ context, but you never edit, comment on, close, or reopen another issue.
   forge read or write, run verbatim from the repository root:
 
   ```sh
-  bun .devboard/scripts/forge-auth.ts check --required write --json
+  devboard forge-auth check --required write --json
   ```
 
   This is the only pre-write auth gate and the session's only auth invocation: a run whose
@@ -149,12 +149,11 @@ context, but you never edit, comment on, close, or reopen another issue.
   to learn the forge host, project, or credential state: it reports presence and resolution
   without exposing a value, so an environment sweep answers nothing it does not. Forge and
   registry configuration MUST be
-  resolved through `bun .devboard/scripts/forge-auth.ts check` and MUST NOT be discovered with
+  resolved through `devboard forge-auth check` and MUST NOT be discovered with
   an `env | grep` probe, `cat .env`, `cat ~/.npmrc`, `git config --get-regexp 'url\..*'`, or any
   other environment or credential-file sweep: never enumerate the process environment or hunt
   for credential files, and `.devboard/prompts/forge-auth.md` holds that rule in full. Never
-  read or grep `.devboard/scripts/forge-auth.ts` to rediscover its resolution order; read that
-  file only when the run changes it. `DEVBOARD_GITEA_URL` is supplied by the host at run time:
+  inspect the harness binary to rediscover its resolution order; run `devboard forge-auth --help` only when the run changes it. `DEVBOARD_GITEA_URL` is supplied by the host at run time:
   use it exactly as supplied, verbatim, with no derived or default port, so never hardcode it
   or fall back to a guessed base such as `http://localhost:2223`. Verify access only through
   the `check --json` call above; never probe a forge endpoint such as `/api/v1/version` to

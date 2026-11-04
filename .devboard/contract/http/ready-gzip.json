@@ -3,17 +3,16 @@
   "method": "GET",
   "path": "/ready",
   "requestHeaders": {
-    "accept-encoding": "gzip"
+    "accept-encoding": "gzip",
+    "authorization": "Bearer contract-token"
   },
   "requestBody": "",
   "status": 200,
   "headers": {
     "cache-control": "no-store",
-    "content-encoding": "gzip",
-    "content-length": "35",
     "content-type": "application/json;charset=utf-8",
-    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
-    "vary": "Accept-Encoding"
+    "vary": "Accept-Encoding",
+    "content-encoding": "gzip"
   },
-  "body": "{\"pid\":3627673}"
+  "body": "{\"pid\":0}"
 }

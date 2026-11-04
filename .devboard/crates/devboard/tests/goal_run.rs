@@ -147,6 +147,7 @@ fn config_at(scratch: &Scratch, command: String) -> Config {
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
         token: "fixture-token".to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     }
 }

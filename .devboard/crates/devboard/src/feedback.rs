@@ -42,6 +42,15 @@ impl RequestError {
             message: message.into(),
         }
     }
+
+    /// An unexpected failure: the client sees one fixed detail and the
+    /// exception line goes only to the journal.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: 500,
+            message: message.into(),
+        }
+    }
 }
 
 /// The JavaScript string length: UTF-16 code units.

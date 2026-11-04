@@ -8,13 +8,11 @@
     "accept-encoding": "identity"
   },
   "requestBody": "",
-  "status": 403,
+  "status": 421,
   "headers": {
     "cache-control": "no-store",
-    "content-length": "116",
     "content-type": "application/problem+json",
-    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
     "vary": "Accept-Encoding"
   },
-  "body": "{\"type\":\"about:blank\",\"title\":\"Forbidden\",\"status\":403,\"detail\":\"The request host is not served by this dashboard.\"}"
+  "body": "{\"type\":\"about:blank\",\"title\":\"Misdirected Request\",\"status\":421,\"detail\":\"The request host is not served by this dashboard.\"}"
 }

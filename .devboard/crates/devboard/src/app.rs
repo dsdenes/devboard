@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use url::Url;
 
 use crate::config::Config;
-use crate::http::{presented_credential, request_refusal, Replies, RequestRefusal};
+use crate::http::{presented_credential, request_refusal, Replies};
 use crate::journal::Journal;
 use crate::protocol::Command;
 
@@ -833,14 +833,10 @@ impl App {
             return Responses::disabled_reporting(headers);
         };
         if let Some(refusal) = request_refusal(headers, url, &self.shared.allowed_hostnames) {
-            return Replies::problem(
+            return crate::http::refusal_problem(
                 headers,
-                403,
-                match refusal {
-                    RequestRefusal::Host => "The request host is not served by this dashboard.",
-                    RequestRefusal::Origin => "Cross-origin feedback is refused.",
-                },
-                &[],
+                refusal,
+                "Cross-origin feedback is refused.",
             );
         }
         let Some((raw, too_large)) = read_report(headers, body).await else {
@@ -891,7 +887,16 @@ impl App {
                     .to_string();
                 Replies::json(headers, filed, 201, &[("Location", href.as_str())])
             }
-            Err(error) => Replies::problem(headers, error.status, &error.message, &[]),
+            Err(error) => {
+                if error.status == 502 || error.status == 504 {
+                    self.shared.journal.write(
+                        "server-error",
+                        &format!("POST /feedback: {}", error.message),
+                        flow_id,
+                    );
+                }
+                Replies::problem(headers, error.status, &error.message, &[])
+            }
         }
     }
 
@@ -901,7 +906,7 @@ impl App {
         method: &Method,
         headers: &HeaderMap,
         url: &Url,
-        _flow_id: Option<&str>,
+        flow_id: Option<&str>,
         body: axum::body::Body,
     ) -> axum::response::Response {
         if *method != Method::POST {
@@ -913,14 +918,10 @@ impl App {
             );
         }
         if let Some(refusal) = request_refusal(headers, url, &self.shared.allowed_hostnames) {
-            return Replies::problem(
+            return crate::http::refusal_problem(
                 headers,
-                403,
-                match refusal {
-                    RequestRefusal::Host => "The request host is not served by this dashboard.",
-                    RequestRefusal::Origin => "Cross-origin feedback is refused.",
-                },
-                &[],
+                refusal,
+                "Cross-origin feedback is refused.",
             );
         }
         let Some((raw, too_large)) = read_report(headers, body).await else {
@@ -946,20 +947,41 @@ impl App {
             Err(error) => return Replies::problem(headers, error.status, &error.message, &[]),
         };
         let repo_dir = self.config().repo_dir.clone();
+        let origin = url.origin().ascii_serialization();
         let outcome = self
             .idempotency
             .run("goal-proposal", key.as_deref(), || async {
-                crate::goal_proposal::write_goal_proposal(&submission, &repo_dir, None).await
+                crate::goal_proposal::write_goal_proposal(
+                    &submission,
+                    &repo_dir,
+                    None,
+                    Some(&origin),
+                )
+                .await
             })
             .await;
         match outcome {
             Ok(proposal) => {
+                // Every connected page sees the draft list the POST changed.
+                let drafts: Vec<Value> = crate::goal_drafts::list_goal_drafts(&repo_dir)
+                    .iter()
+                    .map(crate::goal_drafts::GoalDraftSummary::to_json)
+                    .collect();
+                self.broadcast(json!({"type": "issuesDrafts", "drafts": drafts}));
                 let href = proposal
                     .pointer("/links/draft/href")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
                 Replies::json(headers, proposal, 201, &[("Location", href.as_str())])
+            }
+            Err(error) if error.status >= 500 => {
+                self.shared.journal.write(
+                    "server-error",
+                    &format!("POST /goal-proposals: {}", error.message),
+                    flow_id,
+                );
+                Replies::problem(headers, 500, "An internal error occurred.", &[])
             }
             Err(error) => Replies::problem(headers, error.status, &error.message, &[]),
         }

@@ -72,6 +72,7 @@ fn app(repo: &Path) -> Arc<App> {
         state_dir: state_dir(),
         allowed_hosts: Vec::new(),
         token: "fixture-token".to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     std::fs::create_dir_all(repo.join("adrs")).expect("an adrs directory");

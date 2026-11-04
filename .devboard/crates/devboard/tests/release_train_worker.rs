@@ -1271,6 +1271,7 @@ async fn release_history_reads_the_request_of_a_legacy_run() {
             url: Some("https://forge.test/releases/tag/v1.0.0".to_string()),
             detail: None,
             commits: None,
+            peer: None,
         },
         ReleaseTrainRun {
             id: "failed".to_string(),
@@ -1283,6 +1284,7 @@ async fn release_history_reads_the_request_of_a_legacy_run() {
             url: None,
             detail: Some("no".to_string()),
             commits: None,
+            peer: None,
         },
     ];
     let rows = release_history(&directory, Some(&state));

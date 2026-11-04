@@ -18,6 +18,9 @@ pub struct Config {
     pub state_dir: PathBuf,
     pub allowed_hosts: Vec<String>,
     pub token: String,
+    /// The credential the launcher prints in the page address. It is distinct
+    /// from the dashboard token so the token never rides in a URL.
+    pub bootstrap: String,
     /// Harness reporting, enabled only by `DEVBOARD_GITEA_URL`.
     pub feedback: Option<FeedbackConfig>,
 }
@@ -99,6 +102,11 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(crate::config::generated_token);
+        let bootstrap = env::var("DEVBOARD_BOOTSTRAP_TOKEN")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(crate::config::generated_token);
         Self {
             hostname,
             port,
@@ -110,6 +118,7 @@ impl Config {
             state_dir,
             allowed_hosts,
             token,
+            bootstrap,
             feedback: FeedbackConfig::from_env(),
         }
     }

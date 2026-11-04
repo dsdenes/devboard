@@ -169,6 +169,7 @@ fn problem_title(status: u16) -> &'static str {
         404 => "Not Found",
         405 => "Method Not Allowed",
         413 => "Content Too Large",
+        421 => "Misdirected Request",
         426 => "Upgrade Required",
         500 => "Internal Server Error",
         502 => "Bad Gateway",
@@ -507,16 +508,39 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    let url = Url::parse(&format!(
+    let url = match Url::parse(&format!(
         "http://{}{}",
         host,
         uri.path_and_query()
             .map(|value| value.as_str())
             .unwrap_or("/")
-    ))
-    .or_else(|_| Url::parse(&format!("http://localhost{}", uri.path())))
-    .expect("a request URI parses against a placeholder host");
+    )) {
+        Ok(url) => url,
+        Err(_) => {
+            return reply(Replies::problem(
+                &headers,
+                400,
+                "The request carries no valid Host header.",
+                &[],
+            ))
+        }
+    };
     let cookie_name = format!("{DASHBOARD_COOKIE}_{}", local_port(&server));
+
+    // A Host this listener does not serve is misdirected, whether or not the
+    // caller presented a credential: the three request paths a browser opens
+    // directly never run against another site's name.
+    let guarded_path = matches!(
+        uri.path(),
+        "/ws" | "/feedback" | "/goal-proposals"
+    ) || uri.path().starts_with("/goal-proposals/");
+    if guarded_path {
+        if let Some(RequestRefusal::Host) =
+            request_refusal(&headers, &url, &server.allowed_hostnames)
+        {
+            return reply(refusal_answer(&headers, RequestRefusal::Host));
+        }
+    }
 
     match uri.path() {
         "/feedback" => {
@@ -531,7 +555,12 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             };
             return reply(denied);
         }
-        "/ready" => return reply(ready(&headers, &method)),
+        "/ready" => {
+            if let Some(denied) = credential_refusal(&server, &headers, &cookie_name) {
+                return reply(denied);
+            }
+            return reply(ready(&headers, &method));
+        }
         "/goal-proposals" => {
             let Some(denied) = credential_refusal(&server, &headers, &cookie_name) else {
                 let (_parts, body) = request.into_parts();
@@ -554,15 +583,7 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
                 ));
             }
             if let Some(refusal) = request_refusal(&headers, &url, &server.allowed_hostnames) {
-                return reply(Replies::problem(
-                    &headers,
-                    403,
-                    match refusal {
-                        RequestRefusal::Host => "The request host is not served by this dashboard.",
-                        RequestRefusal::Origin => "Cross-origin WebSocket upgrades are refused.",
-                    },
-                    &[],
-                ));
+                return reply(refusal_answer(&headers, refusal));
             }
             if let Some(denied) = credential_refusal(&server, &headers, &cookie_name) {
                 return reply(denied);
@@ -570,6 +591,13 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             return reply(upgrade(server.clone(), request, &headers).await);
         }
         _ => {}
+    }
+
+    if let Some(name) = uri.path().strip_prefix("/goal-proposals/") {
+        if let Some(denied) = credential_refusal(&server, &headers, &cookie_name) {
+            return reply(denied);
+        }
+        return reply(draft_answer(&server, name, &method, &headers));
     }
 
     let raw_pathname = uri.path();
@@ -602,13 +630,136 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             &[],
         ));
     };
-    reply(static_file(
-        &server,
-        &relative,
-        &method,
-        &headers,
-        &cookie_name,
+    // The document carries the page's credential, so only a request that
+    // presents it, or the launcher's bootstrap handshake, is served one.
+    if is_html(&relative) {
+        if let Some(refused) = document_refusal(&server, &headers, &url, &cookie_name) {
+            return reply(refused);
+        }
+    }
+    // A file answer is never correlated with the call that asked for it: a
+    // shared cache must not replay one client's flow id to another.
+    static_file(&server, &relative, &method, &headers, &cookie_name)
+}
+
+/// The 421 for a host this listener does not serve, or the 403 for a
+/// cross-origin browser request.
+pub fn refusal_problem(
+    headers: &HeaderMap,
+    refusal: RequestRefusal,
+    origin_detail: &str,
+) -> Response {
+    match refusal {
+        RequestRefusal::Host => Replies::problem(
+            headers,
+            421,
+            "The request host is not served by this dashboard.",
+            &[],
+        ),
+        RequestRefusal::Origin => Replies::problem(headers, 403, origin_detail, &[]),
+    }
+}
+
+fn refusal_answer(headers: &HeaderMap, refusal: RequestRefusal) -> Response {
+    refusal_problem(
+        headers,
+        refusal,
+        "Cross-origin WebSocket upgrades are refused.",
+    )
+}
+
+/// The 401 for a document request that may not carry the page's credential.
+fn document_refusal(
+    server: &Server,
+    headers: &HeaderMap,
+    url: &Url,
+    cookie_name: &str,
+) -> Option<Response> {
+    if server.token.is_empty() {
+        return None;
+    }
+    if credential_matches(presented_credential(headers, cookie_name).as_deref(), &server.token) {
+        return None;
+    }
+    let bootstrap = server.config.bootstrap.as_str();
+    if !bootstrap.is_empty()
+        && credential_matches(
+            url.query_pairs()
+                .find(|(name, _)| name == "bootstrap")
+                .map(|(_, value)| value.into_owned())
+                .as_deref(),
+            bootstrap,
+        )
+    {
+        return None;
+    }
+    Some(Replies::problem(
+        headers,
+        401,
+        "This page requires the dashboard credential.",
+        &[("WWW-Authenticate", "Bearer")],
     ))
+}
+
+/// One written draft, served where `POST /goal-proposals` linked it.
+fn draft_answer(
+    server: &Server,
+    raw_name: &str,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Response {
+    let name = percent_decode(raw_name).unwrap_or_default();
+    if name.is_empty() || name.contains('/') || !name.ends_with(".md") {
+        return Replies::problem(headers, 404, "The requested draft was not found.", &[]);
+    }
+    let directory = server
+        .config
+        .repo_dir
+        .join(crate::goal_drafts::GOAL_PROPOSALS_DIRECTORY);
+    let path = directory.join(&name);
+    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+        return Replies::problem(headers, 404, "The requested draft was not found.", &[]);
+    };
+    if !metadata.is_file() {
+        return Replies::problem(headers, 404, "The requested draft was not found.", &[]);
+    }
+    if *method != Method::GET && *method != Method::HEAD {
+        return Replies::problem(
+            headers,
+            405,
+            "This path serves GET and HEAD only.",
+            &[("Allow", "GET, HEAD")],
+        );
+    }
+    let Ok(body) = std::fs::read(&path) else {
+        return Replies::problem(headers, 500, "An internal error occurred.", &[]);
+    };
+    let gzip = accepts_gzip(
+        headers
+            .get(header::ACCEPT_ENCODING)
+            .and_then(|value| value.to_str().ok()),
+    );
+    let payload = if gzip {
+        gzip_bytes(&body)
+    } else {
+        body
+    };
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/markdown;charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::VARY, "Accept-Encoding");
+    if gzip {
+        builder = builder.header(header::CONTENT_ENCODING, "gzip");
+    }
+    let payload = if *method == Method::HEAD {
+        Vec::new()
+    } else {
+        payload
+    };
+    builder
+        .body(Body::from(payload))
+        .unwrap_or_else(|_| Replies::problem(headers, 500, "An internal error occurred.", &[]))
 }
 
 /// The listener's local port; the cookie name carries it.
@@ -668,7 +819,22 @@ fn static_file(
 ) -> Response {
     let served: Option<(Vec<u8>, Option<std::time::SystemTime>, u64)> =
         match &server.config.static_dir {
-            Some(root) => read_static_file(root, relative),
+            Some(root) => match read_static_file(root, relative) {
+                Ok(served) => served,
+                Err(detail) => {
+                    server
+                        .app
+                        .shared
+                        .journal
+                        .write("server-error", &format!("GET static: {detail}"), None);
+                    return Replies::problem(
+                        headers,
+                        500,
+                        "An internal error occurred.",
+                        &[],
+                    );
+                }
+            },
             None => crate::assets::lookup(relative)
                 .map(|bytes| (bytes.to_vec(), None, bytes.len() as u64)),
         };
@@ -729,18 +895,32 @@ fn static_file(
 fn read_static_file(
     root: &Path,
     relative: &str,
-) -> Option<(Vec<u8>, Option<std::time::SystemTime>, u64)> {
-    let canonical_root = root.canonicalize().ok()?;
-    let canonical_file = root.join(relative).canonicalize().ok()?;
+) -> Result<Option<(Vec<u8>, Option<std::time::SystemTime>, u64)>, String> {
+    let canonical_root = match root.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let canonical_file = match root.join(relative).canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
     if !canonical_file.starts_with(&canonical_root) {
-        return None;
+        return Ok(None);
     }
-    let metadata = std::fs::metadata(&canonical_file).ok()?;
+    let metadata = match std::fs::metadata(&canonical_file) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
     if !metadata.is_file() {
-        return None;
+        return Ok(None);
     }
-    let body = std::fs::read(&canonical_file).ok()?;
-    Some((body, metadata.modified().ok(), metadata.len()))
+    match std::fs::read(&canonical_file) {
+        Ok(body) => Ok(Some((body, metadata.modified().ok(), metadata.len()))),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Whether a static path is an HTML document, which carries the credential.

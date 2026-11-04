@@ -476,6 +476,19 @@ pub struct ReleaseTrainRun {
     pub detail: Option<String>,
     /// Non-merge commits in the range; null when the gate carried no list.
     pub commits: Option<i64>,
+    /// The release agent this run started, when it started one.
+    #[serde(default)]
+    pub peer: Option<ReleasePeer>,
+}
+
+/// The release agent a run owns: the process Stop ends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleasePeer {
+    pub command: String,
+    pub pid: u32,
+    pub argv: Vec<String>,
+    pub started_at: String,
 }
 
 /// The Release Train's shared, durable record.
@@ -585,6 +598,16 @@ fn parse_gate_record(value: &Value) -> Option<ReleaseTrainGateRecord> {
     })
 }
 
+fn parse_release_peer(value: Option<&Value>) -> Option<ReleasePeer> {
+    let object = value?.as_object()?;
+    Some(ReleasePeer {
+        command: object.get("command")?.as_str()?.to_string(),
+        pid: object.get("pid")?.as_u64()? as u32,
+        argv: string_list(object.get("argv"))?,
+        started_at: object.get("startedAt")?.as_str()?.to_string(),
+    })
+}
+
 fn parse_run_state(text: &str) -> Option<ReleaseTrainRunState> {
     Some(match text {
         "running" => ReleaseTrainRunState::Running,
@@ -638,6 +661,7 @@ fn parse_run(value: &Value) -> Option<ReleaseTrainRun> {
             .and_then(Value::as_str)
             .map(str::to_string),
         commits,
+        peer: parse_release_peer(object.get("peer")),
     })
 }
 
@@ -2410,6 +2434,9 @@ pub struct ReleaseRunInput {
     pub state_dir: PathBuf,
     /// The command the default release path names in its diagnostics.
     pub agent_command: String,
+    /// Records the peer this run started, so the state names it and Stop can
+    /// close it.
+    pub register_peer: Arc<dyn Fn(ReleasePeer) + Send + Sync>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2459,6 +2486,179 @@ pub fn default_release_runner(
         let environment = environment.clone();
         Box::pin(async move { run_release_and_verify(input, verify, publish, environment).await })
     })
+}
+
+/// The production release path: one `omp acp` peer running
+/// `/release-train <run-dir>`, then the same independent verification.
+pub fn default_release_agent_runner(
+    verify: VerifyFn,
+    environment: HashMap<String, String>,
+) -> RunReleaseFn {
+    Arc::new(move |input: ReleaseRunInput| {
+        let verify = verify.clone();
+        let environment = environment.clone();
+        Box::pin(async move { run_release_agent(input, verify, environment).await })
+    })
+}
+
+async fn run_release_agent(
+    input: ReleaseRunInput,
+    verify: VerifyFn,
+    environment: HashMap<String, String>,
+) -> ReleaseRunResult {
+    if (input.stopping)() {
+        return ReleaseRunResult::failed("stopped before the release agent started");
+    }
+    (input.activity)(&format!(
+        "starting {} for {}",
+        input.agent_command, input.request.range
+    ));
+    let mut peer_environment = environment.clone();
+    peer_environment.insert(
+        "REPO_DIR".to_string(),
+        input.repo_dir.to_string_lossy().into_owned(),
+    );
+    peer_environment.insert(
+        "STATE_DIR".to_string(),
+        input.state_dir.to_string_lossy().into_owned(),
+    );
+    peer_environment.insert(
+        "DEVBOARD_RELEASE_RUN_DIR".to_string(),
+        input.run_dir.to_string_lossy().into_owned(),
+    );
+    let mcp_servers = crate::acp::session_mcp_servers(&peer_environment);
+    let options = crate::acp::AcpConnectionOptions::new(
+        input.agent_command.clone(),
+        input.repo_dir.to_string_lossy().into_owned(),
+    )
+    .with_env(peer_environment)
+    .with_mcp_servers(mcp_servers)
+    .with_permission_policy(crate::acp::PermissionPolicy::Deny);
+    let connection = match crate::acp::AcpConnection::connect(options).await {
+        Ok((connection, events)) => (connection, events),
+        Err(error) => {
+            return ReleaseRunResult::failed(format!("could not start the release agent: {error}"))
+        }
+    };
+    let (connection, mut events) = connection;
+    if let Some(pid) = connection.pid() {
+        let argv = connection.argv();
+        let command = argv.first().cloned().unwrap_or_default();
+        (input.register_peer)(ReleasePeer {
+            command,
+            pid,
+            argv,
+            started_at: crate::journal::now_iso8601(),
+        });
+    }
+    let prompt = format!("/release-train {}", input.run_dir.to_string_lossy());
+    let future = connection.run(&prompt);
+    tokio::pin!(future);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(RUN_TIMEOUT_MS);
+    let mut agent_error: Option<String> = None;
+    let mut text = String::new();
+    loop {
+        if (input.stopping)() {
+            connection.close();
+            agent_error = Some("stopped during the release run".to_string());
+            break;
+        }
+        tokio::select! {
+            result = &mut future => {
+                match result {
+                    Ok(_) => {}
+                    Err(error) => agent_error = Some(error.to_string()),
+                }
+                break;
+            }
+            event = events.recv() => {
+                match event {
+                    Some(crate::acp::AcpEvent::Text(chunk)) => text.push_str(&chunk),
+                    Some(crate::acp::AcpEvent::Question(question)) => {
+                        if let Some(choice) = question
+                            .options
+                            .iter()
+                            .find(|option| option.recommended)
+                            .or_else(|| question.options.first())
+                        {
+                            let _ = connection.answer(&question.id, &choice.label).await;
+                        }
+                    }
+                    Some(crate::acp::AcpEvent::Stderr(chunk)) => {
+                        if let Some(line) = chunk.lines().map(str::trim).find(|line| !line.is_empty()) {
+                            if line != "no diagnostic" {
+                                (input.activity)(line);
+                            }
+                        }
+                    }
+                    Some(_) => {}
+                    None => {}
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                connection.close();
+                agent_error = Some(
+                    "the release agent did not finish within 60 minutes".to_string(),
+                );
+                break;
+            }
+        }
+    }
+    connection.close();
+    let _ = text;
+    let stopped = (input.stopping)();
+    if stopped {
+        (input.activity)("stopped during the release run; verifying what it shipped");
+    }
+    let target = input.request.target.clone();
+    let version = input.request.version.clone();
+    let result = read_result(&input.run_dir);
+    let verified = verify(ReleaseVerificationOptions {
+        repo_dir: input.repo_dir.clone(),
+        target,
+        version,
+        environment,
+        activity: input.activity.clone(),
+        refresh: None,
+        read_github_assets: None,
+        read_release: None,
+        read_retry: None,
+    })
+    .await;
+    match verified {
+        ReleaseVerification::Ok { version, url } => {
+            if let Some(error) = agent_error {
+                (input.activity)(&format!(
+                    "the agent ended with: {error}; the release is verified"
+                ));
+            }
+            ReleaseRunResult::Ok { version, url }
+        }
+        ReleaseVerification::Failed { phase, detail, .. } => {
+            let reported = result
+                .as_ref()
+                .filter(|value| value.get("ok").and_then(Value::as_bool) == Some(false))
+                .and_then(|value| value.get("detail").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|detail| !detail.is_empty())
+                .map(str::to_string);
+            let mut parts: Vec<String> = Vec::new();
+            if stopped {
+                parts.push("stopped during the release run".to_string());
+            }
+            let tags_withdrawn = agent_error.is_some();
+            if let Some(error) = agent_error {
+                parts.push(error);
+            }
+            if let Some(report) = reported {
+                parts.push(report);
+            }
+            if phase != ReleaseVerificationPhase::Tag || !tags_withdrawn {
+                parts.push(detail);
+            }
+            ReleaseRunResult::failed(parts.join("; "))
+        }
+    }
 }
 
 async fn run_release_and_verify(
@@ -2699,13 +2899,18 @@ impl ReleaseTrainWorker {
         let verify: VerifyFn = options.verify.unwrap_or_else(|| {
             Arc::new(|options: ReleaseVerificationOptions| Box::pin(verify_shipped(options)))
         });
+        let uses_publish = options.publish.is_some();
         let publish: PublishFn = options.publish.unwrap_or_else(|| {
             Arc::new(|args: crate::publish::PublishArgs| {
                 Box::pin(crate::publish::publish(args)) as PublishFuture
             })
         });
         let run_release = options.run_release.unwrap_or_else(|| {
-            default_release_runner(verify.clone(), publish, environment.clone())
+            if uses_publish {
+                default_release_runner(verify.clone(), publish, environment.clone())
+            } else {
+                default_release_agent_runner(verify.clone(), environment.clone())
+            }
         });
         let gate = options.gate.unwrap_or_else(|| {
             Arc::new(|repo_dir: &Path| {
@@ -2724,7 +2929,7 @@ impl ReleaseTrainWorker {
             environment,
             agent_command: options
                 .agent_command
-                .unwrap_or_else(|| "devboard publish".to_string()),
+                .unwrap_or_else(|| "omp acp".to_string()),
             tick_ms: options.tick_ms.unwrap_or(TICK_MS).max(20),
             manual: options.manual,
             clock,
@@ -3043,6 +3248,7 @@ impl ReleaseTrainWorker {
             url: None,
             detail: None,
             commits: None,
+            peer: None,
         };
         {
             let mut inner = lock_unpoisoned(&self.inner);
@@ -3146,6 +3352,7 @@ impl ReleaseTrainWorker {
             } else {
                 Some(release_commits.len() as i64)
             },
+            peer: None,
         };
         {
             let mut inner = lock_unpoisoned(&self.inner);
@@ -3209,6 +3416,24 @@ impl ReleaseTrainWorker {
             repo_dir: self.repo_dir.clone(),
             state_dir: self.state_dir.clone(),
             agent_command: self.agent_command.clone(),
+            register_peer: {
+                let inner = self.inner.clone();
+                let run_id = run_id.clone();
+                Arc::new(move |peer: ReleasePeer| {
+                    let mut guard = lock_unpoisoned(&inner);
+                    let updated = {
+                        let Some(active) = guard.active_run.as_mut() else {
+                            return;
+                        };
+                        if active.id != run_id {
+                            return;
+                        }
+                        active.peer = Some(peer);
+                        active.clone()
+                    };
+                    guard.shared.runs = record_run(&guard.shared.runs, updated);
+                })
+            },
         };
         let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.run_release)(input)
@@ -3216,6 +3441,11 @@ impl ReleaseTrainWorker {
             Ok(future) => future.await,
             Err(_) => ReleaseRunResult::failed("the release agent panicked"),
         };
+        let mut run = run;
+        run.peer = lock_unpoisoned(&self.inner)
+            .active_run
+            .as_ref()
+            .and_then(|active| active.peer.clone());
         self.settle(run, result, &target, &range, Some(version), now);
     }
 

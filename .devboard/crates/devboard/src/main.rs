@@ -85,6 +85,11 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             "DEVBOARD_DASHBOARD_TOKEN must carry RFC 6750 characters only: no whitespace, ';', or ','."
         );
     }
+    if !devboard::config::valid_token(&config.bootstrap) {
+        anyhow::bail!(
+            "DEVBOARD_BOOTSTRAP_TOKEN must carry RFC 6750 characters only: no whitespace, ';', or ','."
+        );
+    }
     if !config.repo_dir.is_dir() {
         anyhow::bail!(
             "the repository directory {} does not exist",
@@ -134,8 +139,8 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     }
     server.app.start_updater();
     println!(
-        "ADR interface listening on http://{}:{}",
-        config.hostname, config.port
+        "ADR interface listening on http://{}:{}/?bootstrap={}",
+        config.hostname, config.port, config.bootstrap
     );
     devboard::http::serve_on(listener, server)
         .await

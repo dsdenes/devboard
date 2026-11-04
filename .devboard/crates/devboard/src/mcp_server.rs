@@ -1306,7 +1306,7 @@ fn valid_goal_title(value: Option<&Value>) -> Result<String, String> {
     if title.contains('\n') || title.contains('\r') {
         return Err("The title must be one line.".to_string());
     }
-    if title.chars().count() > GOAL_TITLE_MAX {
+    if title.encode_utf16().count() > GOAL_TITLE_MAX {
         return Err(format!(
             "The title must be at most {GOAL_TITLE_MAX} characters."
         ));
@@ -2086,6 +2086,7 @@ fn design_release_request(
 // ---------------------------------------------------------------------------
 
 const DEDUP_RECORD_FILE: &str = "dedup-records.jsonl";
+const DEDUP_READ_FILE: &str = "dedup-reads.jsonl";
 
 fn dedup_run_directory(context: &McpContext) -> Option<PathBuf> {
     let configured =
@@ -2254,6 +2255,12 @@ async fn list_issues(context: &McpContext, args: &Map<String, Value>) -> Result<
         .map_err(|error| error.message)?;
     let truncated = issues.len() > limit;
     let rows: Vec<Value> = issues.iter().take(limit).map(issue_row).collect();
+    if let Some(directory) = dedup_run_directory(context) {
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let record = json!({"count": rows.len(), "at": now_iso()});
+        append_line(&directory.join(DEDUP_READ_FILE), &record)
+            .map_err(|error| error.to_string())?;
+    }
     Ok(json!({"issues": rows, "truncated": truncated}))
 }
 
@@ -2402,12 +2409,17 @@ async fn create_issue(context: &McpContext, args: &Map<String, Value>) -> Result
             "single-responsibility finding",
             "A single-responsibility title must be at most 200 characters.",
         ),
+        (
+            "consistent-naming",
+            "consistent-naming finding",
+            "A consistent-naming title must be at most 200 characters.",
+        ),
     ] {
         let (label, noun, title_error) = guarded;
         if !labels.iter().any(|entry| entry == label) {
             continue;
         }
-        if title.chars().count() > 200 {
+        if title.encode_utf16().count() > 200 {
             return Err(title_error.to_string());
         }
         let mut known: HashSet<String> = HashSet::new();

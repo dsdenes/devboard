@@ -39,6 +39,7 @@ pub enum HeaderSpec {
     TokenOrigin(&'static str),
     FlowId(&'static str),
     Gzip,
+    TokenGzip,
 }
 
 /// One row's observed answer.
@@ -64,18 +65,18 @@ pub fn cases() -> Vec<Case> {
             method: Method::GET,
             path: "/ready",
             headers: HeaderSpec::None,
-            expect_status: 200,
+            expect_status: 401,
             expect_allow: None,
             expect_gzip: false,
             expect_cookie: false,
-            expect_json: BodyExpectation::ReadyPid,
+            expect_json: BodyExpectation::Problem(401),
         },
         Case {
             name: "ready-head",
             method: Method::HEAD,
             path: "/ready",
             headers: HeaderSpec::None,
-            expect_status: 200,
+            expect_status: 401,
             expect_allow: None,
             expect_gzip: false,
             expect_cookie: false,
@@ -86,6 +87,28 @@ pub fn cases() -> Vec<Case> {
             method: Method::POST,
             path: "/ready",
             headers: HeaderSpec::None,
+            expect_status: 401,
+            expect_allow: None,
+            expect_gzip: false,
+            expect_cookie: false,
+            expect_json: BodyExpectation::Problem(401),
+        },
+        Case {
+            name: "ready-authorized",
+            method: Method::GET,
+            path: "/ready",
+            headers: HeaderSpec::Token,
+            expect_status: 200,
+            expect_allow: None,
+            expect_gzip: false,
+            expect_cookie: false,
+            expect_json: BodyExpectation::ReadyPid,
+        },
+        Case {
+            name: "ready-post-authorized",
+            method: Method::POST,
+            path: "/ready",
+            headers: HeaderSpec::Token,
             expect_status: 405,
             expect_allow: Some("GET, HEAD"),
             expect_gzip: false,
@@ -108,11 +131,11 @@ pub fn cases() -> Vec<Case> {
             method: Method::GET,
             path: "/ws",
             headers: HeaderSpec::TokenHost("evil.test"),
-            expect_status: 403,
+            expect_status: 421,
             expect_allow: None,
             expect_gzip: false,
             expect_cookie: false,
-            expect_json: BodyExpectation::Problem(403),
+            expect_json: BodyExpectation::Problem(421),
         },
         Case {
             name: "ws-refused-origin",
@@ -151,6 +174,17 @@ pub fn cases() -> Vec<Case> {
             name: "static-document",
             method: Method::GET,
             path: "/",
+            headers: HeaderSpec::None,
+            expect_status: 401,
+            expect_allow: None,
+            expect_gzip: false,
+            expect_cookie: false,
+            expect_json: BodyExpectation::Problem(401),
+        },
+        Case {
+            name: "static-document-bootstrap",
+            method: Method::GET,
+            path: "/?bootstrap=contract-bootstrap",
             headers: HeaderSpec::None,
             expect_status: 200,
             expect_allow: None,
@@ -239,7 +273,7 @@ pub fn cases() -> Vec<Case> {
             name: "ready-gzip",
             method: Method::GET,
             path: "/ready",
-            headers: HeaderSpec::Gzip,
+            headers: HeaderSpec::TokenGzip,
             expect_status: 200,
             expect_allow: None,
             expect_gzip: true,
@@ -302,6 +336,14 @@ async fn run_case(
             );
         }
         HeaderSpec::Gzip => {
+            headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        }
+        HeaderSpec::TokenGzip => {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}"))
+                    .map_err(|error| error.to_string())?,
+            );
             headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
         }
     }

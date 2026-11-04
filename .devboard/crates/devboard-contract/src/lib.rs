@@ -921,6 +921,7 @@ pub fn dashboard_config(
         state_dir: state_dir.to_path_buf(),
         allowed_hosts: Vec::new(),
         token: token.to_string(),
+        bootstrap: "contract-bootstrap".to_string(),
         feedback: None,
     }
 }
