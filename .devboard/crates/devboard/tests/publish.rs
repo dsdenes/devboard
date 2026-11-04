@@ -4,7 +4,7 @@
 //! bytes, and the shared release lock. Nothing here reaches a network, a real
 //! tag, or a real push.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -380,6 +380,8 @@ fn gitea_route(
 struct GithubData {
     runs: Vec<Value>,
     dispatched: usize,
+    dispatch_attempts: usize,
+    dispatch_failures: VecDeque<u16>,
     assets: BTreeMap<String, Vec<u8>>,
     complete: bool,
 }
@@ -404,6 +406,8 @@ impl GithubStub {
         let state = Arc::new(Mutex::new(GithubData {
             runs,
             dispatched: 0,
+            dispatch_attempts: 0,
+            dispatch_failures: VecDeque::new(),
             assets,
             complete,
         }));
@@ -421,6 +425,18 @@ impl GithubStub {
 
     fn dispatch_count(&self) -> usize {
         self.state.lock().expect("github").dispatched
+    }
+
+    fn dispatch_attempts(&self) -> usize {
+        self.state.lock().expect("github").dispatch_attempts
+    }
+
+    fn fail_next_dispatch(&self, status: u16) {
+        self.state
+            .lock()
+            .expect("github")
+            .dispatch_failures
+            .push_back(status);
     }
 }
 
@@ -451,7 +467,16 @@ fn github_route(
     if request.method == "POST"
         && path == "/repos/dsdenes/devboard/actions/workflows/release.yml/dispatches"
     {
-        state.lock().expect("github").dispatched += 1;
+        let mut data = state.lock().expect("github");
+        data.dispatch_attempts += 1;
+        if let Some(status) = data.dispatch_failures.pop_front() {
+            return StubResponse {
+                status,
+                headers: vec![],
+                body: Vec::new(),
+            };
+        }
+        data.dispatched += 1;
         return StubResponse {
             status: 204,
             headers: vec![],
@@ -1207,6 +1232,54 @@ async fn an_empty_workflow_wait_times_out() {
         format!("{error:#}").contains("no release workflow run"),
         "{error:#}"
     );
+}
+
+#[tokio::test]
+async fn a_transient_dispatch_refusal_is_retried_within_the_wait() {
+    let live = live("dispatch-retry", release_assets()).await;
+    live.github_stub.fail_next_dispatch(500);
+    live.github_stub.fail_next_dispatch(502);
+    let clock = FakeClock::new(0);
+    let sleeper = Arc::new(FakeSleeper {
+        clock: clock.clone(),
+        step: 50,
+    });
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.instances = Some(Vec::new());
+    args.wait_timeout = Duration::from_secs(10);
+    args.poll_interval = Duration::from_millis(50);
+    args.clock = Some(clock);
+    args.sleeper = Some(sleeper);
+    let report = publish(args)
+        .await
+        .expect("a transient dispatch refusal is retried");
+    assert_eq!(report.workflow_run, Some(42));
+    assert_eq!(live.github_stub.dispatch_attempts(), 3);
+    assert_eq!(live.github_stub.dispatch_count(), 1);
+}
+
+#[tokio::test]
+async fn a_refused_dispatch_fails_without_retrying() {
+    let live = live("dispatch-refused", release_assets()).await;
+    live.github_stub.fail_next_dispatch(404);
+    let clock = FakeClock::new(0);
+    let sleeper = Arc::new(FakeSleeper {
+        clock: clock.clone(),
+        step: 50,
+    });
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.instances = Some(Vec::new());
+    args.wait_timeout = Duration::from_secs(10);
+    args.poll_interval = Duration::from_millis(50);
+    args.clock = Some(clock);
+    args.sleeper = Some(sleeper);
+    let error = publish(args)
+        .await
+        .expect_err("a refused dispatch fails the run");
+    let message = format!("{error:#}");
+    assert!(message.contains("HTTP 404"), "{message}");
+    assert_eq!(live.github_stub.dispatch_attempts(), 1);
+    assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
 // ---------------------------------------------------------------------------

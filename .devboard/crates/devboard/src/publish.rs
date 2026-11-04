@@ -1209,13 +1209,11 @@ impl Api {
             )
             .await?;
         if !(200..300).contains(&response.status) {
-            bail!(
-                "POST {}{} failed (HTTP {}): {}",
-                self.github_base.trim_end_matches('/'),
-                path,
-                response.status,
-                failure_message(&response)
-            );
+            return Err(anyhow::Error::new(GithubDispatchError {
+                status: response.status,
+                url: format!("{}{}", self.github_base.trim_end_matches('/'), path),
+                message: failure_message(&response),
+            }));
         }
         Ok(())
     }
@@ -2138,6 +2136,36 @@ fn relative_git_path(repo_dir: &Path, path: &Path) -> String {
 // ---------------------------------------------------------------------------
 // GitHub workflow selection and waiting
 
+/// One refused `workflow_dispatch`, typed so a transient refusal can be
+/// retried while a permanent one fails the run immediately.
+#[derive(Debug)]
+struct GithubDispatchError {
+    status: u16,
+    url: String,
+    message: String,
+}
+
+impl std::fmt::Display for GithubDispatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "POST {} failed (HTTP {}): {}",
+            self.url, self.status, self.message
+        )
+    }
+}
+
+impl std::error::Error for GithubDispatchError {}
+
+/// A dispatch the same request may succeed at: GitHub answered a rate limit
+/// or a server-side failure rather than refusing the request itself.
+fn transient_dispatch(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<GithubDispatchError>()
+        .map(|error| error.status == 429 || (500..600).contains(&error.status))
+        .unwrap_or(false)
+}
+
 struct DispatchAttempt {
     dispatched: bool,
     previous_ids: HashSet<u64>,
@@ -2198,8 +2226,21 @@ async fn dispatch_and_wait(
         "waiting for the release workflow of {}",
         short_sha(commit)
     ));
-    let attempt = dispatch_release_when_needed(api, commit, tag, log).await?;
     let deadline = clock.now_millis() + args.wait_timeout.as_millis() as i64;
+    let attempt = loop {
+        match dispatch_release_when_needed(api, commit, tag, log).await {
+            Ok(attempt) => break attempt,
+            Err(error) => {
+                if !transient_dispatch(&error) || clock.now_millis() >= deadline {
+                    return Err(error);
+                }
+                (log)(&format!(
+                    "the release workflow dispatch is temporarily refused ({error:#}); retrying"
+                ));
+                sleeper.sleep(args.poll_interval).await;
+            }
+        }
+    };
     let mut selected: Option<WorkflowRun> = None;
     loop {
         if clock.now_millis() >= deadline {
