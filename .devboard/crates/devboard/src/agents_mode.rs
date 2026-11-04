@@ -4782,7 +4782,7 @@ impl RepoFamily {
     }
 
     async fn preflight_api_standards(&self) -> Result<String, String> {
-        let source_dir = ".devboard/server";
+        let source_dir = crate::workers::api_standards::DEFAULT_API_SOURCE_DIRECTORY;
         let skill_dir = ".omp/skills/devboard-restful-api-implementation";
         let skill_document = format!("{skill_dir}/SKILL.md");
         let rules_document = format!("{skill_dir}/references/zalando-rest-rules.md");

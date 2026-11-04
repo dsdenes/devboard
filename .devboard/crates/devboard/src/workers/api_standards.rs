@@ -64,7 +64,7 @@ pub const API_STANDARDS_LABEL: &str = "api-standards";
 pub const LABEL_COLOR: &str = "0e8a16";
 pub const LABEL_DESCRIPTION: &str = "HTTP API deviation from the project REST standard";
 
-pub const DEFAULT_API_SOURCE_DIRECTORY: &str = ".devboard/server";
+pub const DEFAULT_API_SOURCE_DIRECTORY: &str = ".devboard/crates/devboard/src";
 pub const DEFAULT_SKILL_DIRECTORY: &str = ".omp/skills/devboard-restful-api-implementation";
 pub const SKILL_FILE: &str = "SKILL.md";
 pub const RULES_FILE: &str = "references/zalando-rest-rules.md";
@@ -1203,10 +1203,14 @@ fn line_count(text: &str) -> usize {
     }
 }
 
-fn is_api_source(name: &str) -> bool {
-    name.ends_with(".ts") && !name.ends_with(".test.ts") && !name.ends_with(".spec.ts")
+/// A Rust file belongs to the dashboard's HTTP surface when it names axum's
+/// request types or dispatches on the request path.
+fn is_api_source(text: &str) -> bool {
+    text.contains("axum::") || text.contains("HeaderMap") || text.contains("match uri.path()")
 }
 
+/// The audit walks the crate's Rust modules; `is_api_source` selects the
+/// surface from their text.
 fn walk_sources(directory: &Path, found: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
@@ -1221,30 +1225,78 @@ fn walk_sources(directory: &Path, found: &mut Vec<PathBuf>) {
             continue;
         };
         if metadata.is_dir() {
-            if name == "fixtures" || name == "node_modules" {
+            if name == "fixtures" || name == "node_modules" || name == "target" || name == "tests" {
                 continue;
             }
             walk_sources(&child, found);
             continue;
         }
-        if !metadata.is_file() || !is_api_source(name) {
+        if !metadata.is_file() || !name.ends_with(".rs") {
             continue;
         }
         found.push(child);
     }
 }
 
+/// One function definition inside an audited source.
+#[derive(Clone, Copy, Debug)]
+struct HandlerSpan {
+    source: usize,
+    start: usize,
+    end: usize,
+}
+
+fn function_name(line: &str) -> Option<&str> {
+    static FUNCTION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^\s*(?:pub )?(?:async )?fn ([a-z][a-z0-9_]*)\s*\(")
+            .expect("a function pattern")
+    });
+    FUNCTION
+        .captures(line)
+        .and_then(|capture| capture.get(1))
+        .map(|value| value.as_str())
+}
+
+fn handler_index(sources: &[AuditFile]) -> HashMap<String, HandlerSpan> {
+    let mut handlers = HashMap::new();
+    for (source, file) in sources.iter().enumerate() {
+        let lines: Vec<&str> = file.text.split('\n').collect();
+        let starts: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| function_name(line).is_some())
+            .map(|(index, _)| index)
+            .collect();
+        for (position, start) in starts.iter().enumerate() {
+            let Some(name) = function_name(lines[*start]) else {
+                continue;
+            };
+            let end = starts.get(position + 1).copied().unwrap_or(lines.len());
+            handlers.entry(name.to_string()).or_insert(HandlerSpan {
+                source,
+                start: *start,
+                end,
+            });
+        }
+    }
+    handlers
+}
+
+/// The methods a route answers, from its `Method::` comparisons and its
+/// `Allow` headers.
 fn methods_in(branch: &str) -> Vec<String> {
     static REQUEST_METHOD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"request\.method\s*===\s*"([A-Z]+)""#)
-            .expect("a request-method pattern")
+        regex::Regex::new(r"Method::([A-Z]+)").expect("a request-method pattern")
     });
-    static METHOD_SET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"METHODS?\s*=\s*\[([^\]]*)\]"#).expect("a method-set pattern")
+    static ALLOW_METHOD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"\("Allow", "([A-Z]+)"\)"#).expect("an allow-header pattern")
     });
     let mut methods: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for capture in REQUEST_METHOD.captures_iter(branch) {
+    for capture in REQUEST_METHOD
+        .captures_iter(branch)
+        .chain(ALLOW_METHOD.captures_iter(branch))
+    {
         if let Some(method) = capture.get(1) {
             let method = method.as_str().to_string();
             if seen.insert(method.clone()) {
@@ -1252,76 +1304,167 @@ fn methods_in(branch: &str) -> Vec<String> {
             }
         }
     }
-    if let Some(declared) = METHOD_SET.captures(branch) {
-        if let Some(inner) = declared.get(1) {
-            for part in inner.as_str().split(',') {
-                let method: String = part
-                    .trim()
-                    .trim_matches(|character| {
-                        character == '"' || character == '\'' || character == '`'
-                    })
-                    .to_string();
-                if !method.is_empty()
-                    && method
-                        .chars()
-                        .all(|character| character.is_ascii_uppercase())
-                    && seen.insert(method.clone())
-                {
-                    methods.push(method);
-                }
-            }
-        }
-    }
     methods
 }
 
-fn route_path_of(line: &str) -> Option<String> {
-    static ROUTE_PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"\.pathname\s*===\s*["'`]([^"'`]+)["'`]"#)
-            .expect("a route-path pattern")
+/// The braces one line opens and closes, ignoring string literals and a
+/// trailing line comment.
+fn brace_delta(line: &str) -> (i32, i32) {
+    let mut opens = 0i32;
+    let mut closes = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '/' if characters.peek() == Some(&'/') => break,
+            '{' => opens += 1,
+            '}' => closes += 1,
+            _ => {}
+        }
+    }
+    (opens, closes)
+}
+
+/// One `match uri.path()` block: the last line it covers and its arms.
+fn dispatch_block(lines: &[&str], start: usize) -> Option<(usize, Vec<(usize, String)>)> {
+    static ARM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"^\s*"([^"]+)"\s*=>"#).expect("an arm pattern")
     });
-    ROUTE_PATH
-        .captures(line)
+    let mut depth = 0i32;
+    let mut opened = false;
+    let mut arms = Vec::new();
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        if opened && depth == 1 && !line.trim_start().starts_with("//") {
+            if let Some(capture) = ARM.captures(line) {
+                if let Some(path) = capture.get(1) {
+                    arms.push((index, path.as_str().to_string()));
+                }
+            }
+        }
+        let (opens, closes) = brace_delta(line);
+        depth += opens - closes;
+        if opens > 0 {
+            opened = true;
+        }
+        if opened && depth <= 0 {
+            return Some((index, arms));
+        }
+    }
+    None
+}
+
+/// Each dispatcher arm: its line, its path, and the line its branch ends on.
+fn dispatcher_arms(lines: &[&str]) -> Vec<(usize, String, usize)> {
+    let mut routes = Vec::new();
+    for (start, line) in lines.iter().enumerate() {
+        if !line.contains("match uri.path()") {
+            continue;
+        }
+        let Some((end, arms)) = dispatch_block(lines, start) else {
+            continue;
+        };
+        for (position, (index, path)) in arms.iter().enumerate() {
+            let stop = arms.get(position + 1).map(|(next, _)| *next).unwrap_or(end);
+            routes.push((*index, path.clone(), stop));
+        }
+    }
+    routes
+}
+
+/// Each `uri.path().strip_prefix("<prefix>")` route: its line, its path, and
+/// the line its branch ends on.
+fn prefix_routes(lines: &[&str]) -> Vec<(usize, String, usize)> {
+    static PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"uri\.path\(\)\.strip_prefix\("([^"]+)"\)"#)
+            .expect("a prefix-route pattern")
+    });
+    let mut routes = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(capture) = PREFIX.captures(line) else {
+            continue;
+        };
+        let Some(prefix) = capture.get(1) else {
+            continue;
+        };
+        let end = lines[index + 1..]
+            .iter()
+            .position(|line| function_name(line).is_some())
+            .map(|offset| index + 1 + offset)
+            .unwrap_or(lines.len())
+            .min(index + 60);
+        routes.push((index, format!("{}{{name}}", prefix.as_str()), end));
+    }
+    routes
+}
+
+/// The handler one route branch forwards to.
+fn forwarded_handler(span: &str) -> Option<String> {
+    static APP_CALL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\.app\s*\.\s*([a-z][a-z0-9_]*)\s*\(").expect("an app-call pattern")
+    });
+    static REPLY_CALL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"reply\(\s*([a-z][a-z0-9_]*)\s*\(").expect("a reply-call pattern")
+    });
+    APP_CALL
+        .captures(span)
+        .or_else(|| REPLY_CALL.captures(span))
         .and_then(|capture| capture.get(1))
         .map(|value| value.as_str().to_string())
 }
 
-/// Every `pathname === "<path>"` branch is a route; the branch body up to the
-/// next route names its methods.
+/// The route's own branch names its methods; an arm that forwards to a handler
+/// takes them from that handler's body.
+fn route_methods(
+    span: &str,
+    sources: &[AuditFile],
+    handlers: &HashMap<String, HandlerSpan>,
+) -> Vec<String> {
+    let methods = methods_in(span);
+    if !methods.is_empty() {
+        return methods;
+    }
+    let Some(name) = forwarded_handler(span) else {
+        return methods;
+    };
+    let Some(handler) = handlers.get(&name) else {
+        return methods;
+    };
+    let lines: Vec<&str> = sources[handler.source].text.split('\n').collect();
+    methods_in(&lines[handler.start..handler.end.min(lines.len())].join("\n"))
+}
+
+/// Every `match uri.path()` arm and every `uri.path().strip_prefix(...)` route
+/// is one route; the branch body up to the next route names its methods.
 pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
+    let handlers = handler_index(sources);
     let mut routes = Vec::new();
     let mut serves_files = false;
     for source in sources {
-        if source.text.contains("Bun.file(")
-            || source.text.contains("createReadStream(")
-            || source.text.contains("serveStatic(")
-        {
+        if source.text.contains("static_file(") {
             serves_files = true;
         }
         let lines: Vec<&str> = source.text.split('\n').collect();
-        let mut starts: Vec<usize> = Vec::new();
-        for (index, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
-                continue;
-            }
-            if route_path_of(line).is_some() {
-                starts.push(index);
-            }
-        }
-        for (position, start) in starts.iter().enumerate() {
-            let end = starts
-                .get(position + 1)
-                .copied()
-                .unwrap_or((*start + 60).min(lines.len()));
-            let Some(path) = route_path_of(lines[*start]) else {
-                continue;
-            };
-            let branch = lines[*start..end.min(*start + 60)].join("\n");
+        let mut found = dispatcher_arms(&lines);
+        found.extend(prefix_routes(&lines));
+        found.sort_by_key(|(start, _, _)| *start);
+        for (start, path, end) in found {
+            let span = lines[start..end.min(lines.len())].join("\n");
             let kind = if path == "/ws" { "upgrade" } else { "endpoint" };
             routes.push(RouteEntry {
                 path,
-                methods: methods_in(&branch),
+                methods: route_methods(&span, sources, &handlers),
                 kind: kind.to_string(),
                 source: source.path.clone(),
                 line: start + 1,
@@ -1329,9 +1472,17 @@ pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
         }
     }
     if serves_files {
+        let methods = handlers
+            .get("static_file")
+            .map(|handler| {
+                let lines: Vec<&str> = sources[handler.source].text.split('\n').collect();
+                methods_in(&lines[handler.start..handler.end.min(lines.len())].join("\n"))
+            })
+            .filter(|methods| !methods.is_empty())
+            .unwrap_or_else(|| vec!["GET".to_string(), "HEAD".to_string()]);
         routes.push(RouteEntry {
             path: "*".to_string(),
-            methods: vec!["GET".to_string(), "HEAD".to_string()],
+            methods,
             kind: "static-fallback".to_string(),
             source: sources
                 .first()
@@ -1363,12 +1514,6 @@ pub fn read_audit_input(repo_dir: &Path, config: &Config) -> Result<AuditInput, 
     }
     let mut files = Vec::new();
     walk_sources(&source_root, &mut files);
-    if files.is_empty() {
-        return Err(format!(
-            "{} carries no API source file; a cycle cannot audit an empty surface",
-            config.source_dir
-        ));
-    }
     let mut sources = Vec::new();
     for absolute_path in files {
         let relative = absolute_path
@@ -1377,11 +1522,20 @@ pub fn read_audit_input(repo_dir: &Path, config: &Config) -> Result<AuditInput, 
             .unwrap_or_else(|_| absolute_path.to_string_lossy().into_owned());
         let text = std::fs::read_to_string(&absolute_path)
             .map_err(|_| format!("{relative} is not readable"))?;
+        if !is_api_source(&text) {
+            continue;
+        }
         sources.push(AuditFile {
             path: relative,
             lines: line_count(&text),
             text,
         });
+    }
+    if sources.is_empty() {
+        return Err(format!(
+            "{} carries no API source file; a cycle cannot audit an empty surface",
+            config.source_dir
+        ));
     }
     let skill = read_rest_skill(&root, config)?;
     Ok(AuditInput {

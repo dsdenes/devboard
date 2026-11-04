@@ -63,21 +63,63 @@ impl Fixture {
 
     fn api_inputs(&self) {
         self.write(
-            ".devboard/server/app.ts",
+            ".devboard/crates/devboard/src/http.rs",
             concat!(
-                "export function handle(request: Request, url: URL): Response {\n",
-                "  if (url.pathname === \"/api/ready\") {\n",
-                "    return Response.json({ pid: 1 });\n",
-                "  }\n",
-                "  if (url.pathname === \"/ws\") {\n",
-                "    if (request.method === \"GET\") return new Response(null, { status: 426 });\n",
-                "    return new Response(\"Bad Request\", { status: 400 });\n",
-                "  }\n",
-                "  return new Response(Bun.file(\"dist/index.html\"));\n",
+                "use axum::http::{HeaderMap, Method};\n",
+                "\n",
+                "async fn handle(server: Arc<Server>, uri: Uri, method: Method) -> Response {\n",
+                "    match uri.path() {\n",
+                "        \"/api/ready\" => {\n",
+                "            if *method != Method::GET && *method != Method::HEAD {\n",
+                "                return reply(Replies::problem(&headers, 405, \"GET only.\", &[(\"Allow\", \"GET\")]));\n",
+                "            }\n",
+                "            return reply(ready(&headers, &method));\n",
+                "        }\n",
+                "        \"/feedback\" => {\n",
+                "            return reply(server.app.feedback(&method, &headers).await);\n",
+                "        }\n",
+                "        \"/ws\" => {\n",
+                "            if method != Method::GET {\n",
+                "                return reply(Replies::problem(&headers, 405, \"GET only.\", &[(\"Allow\", \"GET\")]));\n",
+                "            }\n",
+                "            return reply(upgrade(server.clone()).await);\n",
+                "        }\n",
+                "        _ => {}\n",
+                "    }\n",
+                "    if let Some(name) = uri.path().strip_prefix(\"/api/ready/\") {\n",
+                "        return reply(draft_answer(&server, name, &method, &headers));\n",
+                "    }\n",
+                "    static_file(&server, &relative, &method, &headers)\n",
+                "}\n",
+                "\n",
+                "fn draft_answer(server: &Arc<Server>, name: &str, method: &Method, headers: &HeaderMap) -> Response {\n",
+                "    if *method != Method::GET && *method != Method::HEAD {\n",
+                "        return Replies::problem(headers, 405, \"GET only.\", &[(\"Allow\", \"GET\")]);\n",
+                "    }\n",
+                "    Replies::json(headers, Value::Null, 200, &[])\n",
                 "}\n",
             ),
         );
-        self.write(".devboard/server/app.test.ts", "export {};\n");
+        self.write(
+            ".devboard/crates/devboard/src/app.rs",
+            concat!(
+                "use axum::http::{HeaderMap, Method};\n",
+                "\n",
+                "impl App {\n",
+                "    /// `POST /feedback`.\n",
+                "    pub async fn feedback(&self, method: &Method, headers: &HeaderMap) -> Response {\n",
+                "        if *method != Method::POST {\n",
+                "            return Replies::problem(headers, 405, \"POST only.\", &[(\"Allow\", \"POST\")]);\n",
+                "        }\n",
+                "        Replies::json(headers, Value::Null, 201, &[])\n",
+                "    }\n",
+                "}\n",
+            ),
+        );
+        self.write(
+            ".devboard/crates/devboard/src/journal.rs",
+            "pub fn write(text: &str) {\n    let _ = text;\n}\n",
+        );
         self.write(
             ".omp/skills/devboard-restful-api-implementation/SKILL.md",
             "# RESTful API Implementation\n\nAudit the HTTP API.\n",
@@ -440,7 +482,7 @@ async fn api_standards_runs_one_cycle_and_files_a_must_finding() {
             )
             .expect("request JSON");
             assert_eq!(request["issueRoom"], 5);
-            assert_eq!(request["sourceDir"], ".devboard/server");
+            assert_eq!(request["sourceDir"], ".devboard/crates/devboard/src");
             assert!(request["knownTitles"].is_array());
             let finding = json!({
                 "title": "POST /api/ready ignores the method",
@@ -450,9 +492,9 @@ async fn api_standards_runs_one_cycle_and_files_a_must_finding() {
                 "directive": "Use HTTP methods according to RFC 9110.",
                 "endpoints": [{"method": "POST", "path": "/api/ready"}],
                 "evidence": [{
-                    "path": ".devboard/server/app.ts",
-                    "lines": "2-4",
-                    "quote": "if (url.pathname === \"/api/ready\") {\n    return Response.json({ pid: 1 });",
+                    "path": ".devboard/crates/devboard/src/http.rs",
+                    "lines": "5-9",
+                    "quote": "if *method != Method::GET && *method != Method::HEAD {",
                 }],
                 "proposedChange": "Answer a non-GET request with 405.",
                 "acceptanceCriteria": ["POST /api/ready answers 405."],
@@ -615,7 +657,7 @@ async fn api_standards_settings_command_resumes_filing() {
                     "chapter": "HTTP requests",
                     "directive": "Use HTTP methods according to RFC 9110.",
                     "endpoints": [{"method": "GET", "path": "/api/ready"}],
-                    "evidence": [{"path": ".devboard/server/app.ts", "lines": "3", "quote": "return Response.json({ pid: 1 });"}],
+                    "evidence": [{"path": ".devboard/crates/devboard/src/http.rs", "lines": "6", "quote": "if *method != Method::GET && *method != Method::HEAD {"}],
                     "proposedChange": "Keep GET.",
                     "acceptanceCriteria": ["GET /api/ready answers 200."],
                     "decision": "filed",
@@ -717,11 +759,11 @@ async fn api_standards_preflight_refusals_name_the_missing_fact() {
         state_dir: fixture.state_dir.clone(),
         ..api::PreflightOptions::default()
     };
-    std::fs::remove_dir_all(fixture.repo.join(".devboard").join("server")).expect("remove");
+    std::fs::remove_dir_all(fixture.repo.join(".devboard").join("crates")).expect("remove");
     let message = api::preflight_api_standards(&options)
         .await
         .expect_err("a refusal");
-    assert!(message.contains(".devboard/server"));
+    assert!(message.contains(".devboard/crates/devboard/src"));
     assert!(message.contains("installed npm prefix"));
 
     fixture.api_inputs();
@@ -759,6 +801,48 @@ async fn api_standards_preflight_refusals_name_the_missing_fact() {
         .await
         .expect_err("a refusal");
     assert!(message.contains("not inside REPO_DIR"));
+}
+
+#[test]
+fn api_standards_inventory_reads_the_rust_http_surface() {
+    let fixture = Fixture::new("api-inventory");
+    fixture.api_inputs();
+    let input =
+        api::read_audit_input(&fixture.repo, &api::Config::default()).expect("an audit input");
+    assert_eq!(input.source_dir, api::DEFAULT_API_SOURCE_DIRECTORY);
+    let routes: Vec<(&str, Vec<&str>, &str)> = input
+        .routes
+        .iter()
+        .map(|route| {
+            (
+                route.path.as_str(),
+                route.methods.iter().map(String::as_str).collect(),
+                route.kind.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            ("*", vec!["GET", "HEAD"], "static-fallback"),
+            ("/api/ready", vec!["GET", "HEAD"], "endpoint"),
+            ("/api/ready/{name}", vec!["GET", "HEAD"], "endpoint"),
+            ("/feedback", vec!["POST"], "endpoint"),
+            ("/ws", vec!["GET"], "upgrade"),
+        ]
+    );
+    let sources: Vec<&str> = input
+        .sources
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    assert_eq!(
+        sources,
+        vec![
+            ".devboard/crates/devboard/src/app.rs",
+            ".devboard/crates/devboard/src/http.rs",
+        ]
+    );
 }
 
 /* ------------------------------------------------------------------------ */

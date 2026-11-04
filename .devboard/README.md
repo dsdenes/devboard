@@ -2354,10 +2354,14 @@ A cycle audits the HTTP surface the dashboard server exposes: every route the se
 currently `POST /feedback`, `/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
 HEAD` for every other method, `POST /goal-proposals`, the `/ws` upgrade
 with its refusal and method handling, and the static-file fallback, together with any route added
-later. The audit input carries every TypeScript file under `<REPO_DIR>/.devboard/server` that
-defines routing, request parsing, or responses (tests and fixtures excluded), so a route added to
-that directory appears in the next cycle with no engine change. The WebSocket messages carried
-after an upgrade, the MCP tool contract, and the static asset contents are not audited.
+later. The audit input carries every Rust module under
+`<REPO_DIR>/.devboard/crates/devboard/src` that names axum's request types or dispatches on the
+request path — `http.rs` and `app.rs` today — with tests, fixtures, `target`, and `node_modules`
+excluded. The route inventory is read from the dispatcher's `match uri.path()` arms and its
+`uri.path().strip_prefix(...)` routes, and an arm that forwards to a handler takes its methods
+from that handler, so a route added to the dispatcher appears in the next cycle with no engine
+change. The WebSocket messages carried after an upgrade, the MCP tool contract, and the static
+asset contents are not audited.
 
 A finding is filed only when the HTTP surface violates a MUST- or SHOULD-level rule. MAY-level
 rules, stylistic preferences, and deviations outside the HTTP surface are recorded in activity
