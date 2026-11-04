@@ -12,7 +12,7 @@
 //! `.devboard/.tmp/consistent-naming/` carries the repository lock, the
 //! cross-version cycle lease, and one directory per cycle.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -1951,27 +1951,12 @@ impl ForgeClient for RealForge {
     fn list_issues(&self) -> ForgeFuture<'_, Vec<ForgeIssue>> {
         let client = Arc::clone(&self.client);
         Box::pin(async move {
-            let rows = client
-                .list_all(crate::forge::IssueQueryState::All)
+            let documents = client
+                .list_labelled(crate::forge::IssueQueryState::All, CONSISTENT_NAMING_LABEL)
                 .await
                 .map_err(|error| error.message)?;
             let mut issues = Vec::new();
-            let mut seen: HashSet<i64> = HashSet::new();
-            for row in rows {
-                if !seen.insert(row.number) {
-                    continue;
-                }
-                let document = client
-                    .get(row.number)
-                    .await
-                    .map_err(|error| error.message)?;
-                if !document
-                    .labels
-                    .iter()
-                    .any(|label| label == CONSISTENT_NAMING_LABEL)
-                {
-                    continue;
-                }
+            for document in documents {
                 issues.push(ForgeIssue {
                     number: document.number,
                     title: document.title,

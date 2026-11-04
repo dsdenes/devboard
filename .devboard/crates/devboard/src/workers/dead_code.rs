@@ -1121,12 +1121,19 @@ fn ignored_by_rules(root: &Path, relative: &str) -> bool {
     false
 }
 
+/// Whether git itself excludes this path.
+///
+/// A tracked path is repository content even when a broad ignore rule such as
+/// `/.devboard` matches its text, so the check deliberately omits
+/// `--no-index`: `git check-ignore` never reports a tracked path, and a keyed
+/// entry point is never refused for matching the pattern that keeps a host's
+/// installed copy untracked.
 fn is_ignored_path(root: &Path, relative: &str) -> bool {
     if git_work_tree(root) {
         let status = std::process::Command::new("git")
             .arg("-C")
             .arg(root)
-            .args(["check-ignore", "-q", "--no-index", "--", relative])
+            .args(["check-ignore", "-q", "--", relative])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1712,23 +1719,12 @@ impl ForgeClient for RealForge {
     fn list_issues(&self) -> ForgeFuture<'_, Vec<ForgeIssue>> {
         let client = Arc::clone(&self.issues);
         Box::pin(async move {
-            let rows = client
-                .list_all(crate::forge::IssueQueryState::All)
+            let documents = client
+                .list_labelled(crate::forge::IssueQueryState::All, DEAD_CODE_LABEL)
                 .await
                 .map_err(|error| error.message)?;
             let mut issues = Vec::new();
-            let mut seen: HashSet<i64> = HashSet::new();
-            for row in rows {
-                if !seen.insert(row.number) {
-                    continue;
-                }
-                let document = client
-                    .get(row.number)
-                    .await
-                    .map_err(|error| error.message)?;
-                if !document.labels.iter().any(|label| label == DEAD_CODE_LABEL) {
-                    continue;
-                }
+            for document in documents {
                 issues.push(ForgeIssue {
                     number: document.number,
                     title: document.title,

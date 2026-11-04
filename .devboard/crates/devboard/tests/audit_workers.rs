@@ -1384,6 +1384,41 @@ fn git_init(fixture: &Fixture) {
 }
 
 #[test]
+fn a_tracked_entry_point_is_not_excluded_by_an_ignore_rule() {
+    let fixture = Fixture::new("tracked-entry-point");
+    git_init(&fixture);
+    // A host pattern that keeps an installed copy untracked also matches the
+    // tracked harness tree. The entry-point pool is built from tracked files,
+    // so the file is repository content and must stay eligible.
+    fixture.write(".gitignore", "/.devboard\n");
+    fixture.write(
+        ".devboard/src/module.rs",
+        "pub fn run() {\n    let value = 1;\n    let _ = value;\n}\n",
+    );
+    git_command(
+        &fixture,
+        &["add", "-f", ".gitignore", ".devboard/src/module.rs"],
+    );
+    git_command(&fixture, &["commit", "-q", "-m", "tracked entry point"]);
+
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&fixture.repo)
+        .args(["check-ignore", "-q", "--", ".devboard/src/module.rs"])
+        .status()
+        .expect("git runs");
+    assert!(
+        !status.success(),
+        "git itself never ignores a tracked path"
+    );
+
+    let entry = dead::pick_entry_point(&fixture.repo, "dead-code", Some("seed"))
+        .expect("the tracked entry point is eligible");
+    assert_eq!(entry.path, ".devboard/src/module.rs");
+    assert!(entry.line >= 1);
+}
+
+#[test]
 fn worker_exits_two_without_an_origin_and_zero_when_already_running() {
     let fixture = Fixture::new("cli");
     git_init(&fixture);

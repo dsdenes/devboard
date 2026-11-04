@@ -1634,7 +1634,11 @@ fn git_paths(root: &Path, args: &[&str]) -> Option<Vec<String>> {
     )
 }
 
-/// The paths among `paths` that any of the root's ignore rules matches.
+/// The paths among `paths` that git itself excludes.
+///
+/// A tracked path is repository content even when a broad ignore rule matches
+/// its text, so the check omits `--no-index`; only an untracked match is an
+/// exclusion.
 fn git_ignored_among(root: &Path, paths: &[String]) -> Option<HashSet<String>> {
     if paths.is_empty() {
         return Some(HashSet::new());
@@ -1644,7 +1648,7 @@ fn git_ignored_among(root: &Path, paths: &[String]) -> Option<HashSet<String>> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["check-ignore", "-z", "--no-index", "--stdin"])
+        .args(["check-ignore", "-z", "--stdin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

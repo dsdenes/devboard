@@ -271,6 +271,53 @@ pub fn gitea_base_url(remote: Option<&ForgeRemote>, environment: &Environment) -
         .and_then(|remote| remote.origin_url.clone())
 }
 
+/// One checkout's Gitea HTTP git credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GiteaGitCredential {
+    /// The HTTP(S) repository URL, without credentials.
+    pub url: String,
+    /// The origin URL this credential replaces, exactly as git has it.
+    pub remote_url: String,
+    /// The Gitea origin the header is scoped to, without a trailing slash.
+    pub base_url: String,
+    /// The `Authorization` header value Gitea accepts.
+    pub header: String,
+}
+
+/// The Gitea HTTP credential an SSH origin's `git fetch` needs.
+///
+/// A detached worker holds no SSH agent, so fetching an SSH origin fails with
+/// `Permission denied (publickey)`. The configured Gitea address and token
+/// read the same repository over HTTP. An HTTP(S) origin, a non-Gitea forge,
+/// a local path, or a missing address or token yields `None`, and the caller
+/// keeps the plain remote fetch.
+pub fn gitea_git_credential(
+    repo_dir: &Path,
+    environment: &Environment,
+) -> Option<GiteaGitCredential> {
+    let origin = origin_remote_url(repo_dir)?;
+    if origin.starts_with("http://") || origin.starts_with("https://") {
+        return None;
+    }
+    let remote = parse_forge_remote(&origin, environment)?;
+    if remote.forge != Forge::Gitea {
+        return None;
+    }
+    let base_url = configured_gitea_url(environment)?
+        .trim_end_matches('/')
+        .to_string();
+    if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+        return None;
+    }
+    let token = configured_gitea_token(environment)?;
+    Some(GiteaGitCredential {
+        url: format!("{base_url}/{}.git", remote.project),
+        remote_url: origin,
+        base_url,
+        header: format!("Authorization: {}", gitea_authorization(&token)),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Git checkout facts
 
@@ -4800,6 +4847,27 @@ impl ForgeIssuesClient {
         let parsed = serde_json::from_str::<Value>(&outcome.stdout)
             .map_err(|_| ForgeIssueError::new("gh issue view returned invalid JSON"))?;
         github_document(&parsed)
+    }
+
+    /// Every issue in `state` carrying `label`, with its body.
+    ///
+    /// The list rows already carry their labels, so only a matching issue is
+    /// read individually. Reading every issue's body one request at a time
+    /// turned one periodic read into thousands of requests and starved the
+    /// forge until the read deadline expired.
+    pub async fn list_labelled(
+        &self,
+        state: IssueQueryState,
+        label: &str,
+    ) -> Result<Vec<ForgeIssueDocument>, ForgeIssueError> {
+        let mut documents = Vec::new();
+        for row in self.list_all(state).await? {
+            if !row.labels.iter().any(|value| value == label) {
+                continue;
+            }
+            documents.push(self.get(row.number).await?);
+        }
+        Ok(documents)
     }
 
     pub async fn ensure_label(&self, name: &str) -> Result<(), ForgeIssueError> {
