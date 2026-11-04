@@ -1291,3 +1291,16 @@ fn filing_from_a_subdirectory_refuses_instead_of_using_the_parent_origin() {
     .expect("a subdirectory refuses");
     assert!(error.contains("at this root"), "{error}");
 }
+
+#[test]
+fn a_watchdog_title_counts_utf16_units() {
+    let line = "😀".repeat(40);
+    let title = devboard::workers::watchdog::watchdog_title("rule", &line);
+    assert!(devboard::feedback::js_len(&title) <= 80, "{title}");
+    assert!(title.ends_with('…'), "{title}");
+    let expected = format!(
+        "{}…",
+        devboard::feedback::js_truncate(&format!("[watchdog] rule: {line}"), 79).trim_end()
+    );
+    assert_eq!(title, expected);
+}

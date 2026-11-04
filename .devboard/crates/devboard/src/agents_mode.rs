@@ -35,6 +35,9 @@ const ISSUE_STATES: [&str; 3] = ["pending", "implemented", "unknown"];
 const POLL_MS: u64 = 250;
 /// How long a spawned worker may take to publish its state before Start fails.
 const START_PROOF_MS: i64 = 5_000;
+/// Wall-clock bound for a family's Start preflight. A preflight that never
+/// settles must answer with a refusal instead of leaving the family starting.
+const AGENT_PREFLIGHT_TIMEOUT_MS: u64 = 20_000;
 /// The command's grace before the table's proof signals a worker.
 const STOP_PROOF_MS: u64 = 3_000;
 /// How long a proven worker gets after SIGTERM before SIGKILL.
@@ -923,7 +926,7 @@ struct ForgeInner {
     last_success: Option<i64>,
     last_failure: Option<String>,
     next_attempt_at: Option<i64>,
-    failures: u32,
+    retry: crate::forge::ForgeReadRetry,
     reading: bool,
 }
 
@@ -945,7 +948,7 @@ impl ForgeProjection {
             last_success: None,
             last_failure: None,
             next_attempt_at: None,
-            failures: 0,
+            retry: crate::forge::ForgeReadRetry::new(),
             reading: false,
         };
         for fact in seed {
@@ -1009,7 +1012,7 @@ impl ForgeProjection {
                 error: Some(error),
             };
         }
-        if inner.failures > 0 {
+        if inner.retry.failures() > 0 {
             return AgentSync {
                 state: "stale".to_string(),
                 at,
@@ -1059,7 +1062,7 @@ impl ForgeProjection {
         inner.last_success = Some(now);
         inner.last_failure = None;
         inner.next_attempt_at = None;
-        inner.failures = 0;
+        inner.retry.succeed();
         inner.reading = false;
     }
 
@@ -1120,7 +1123,7 @@ impl ForgeProjection {
         inner.last_success = Some(now);
         inner.last_failure = None;
         inner.next_attempt_at = None;
-        inner.failures = 0;
+        inner.retry.succeed();
         inner.reading = false;
     }
 
@@ -1130,27 +1133,19 @@ impl ForgeProjection {
         };
         inner.reading = false;
         let reason = first_line(&detail).unwrap_or_else(|| "no diagnostic".to_string());
-        let transient = reason.contains("timeout")
-            || reason.contains("timed out")
-            || reason.contains("rate limit")
-            || reason.contains("connection")
-            || reason.contains("ECONN");
-        inner.failures += 1;
-        if inner.failures >= 5 {
-            inner.last_failure = Some(format!(
-                "the forge read failed after {} attempts: {reason}",
-                inner.failures
-            ));
-            inner.next_attempt_at = None;
-            return;
-        }
-        if transient {
-            inner.last_failure = None;
-            let delay = 1_000 * 2_i64.min(i64::from(inner.failures));
-            inner.next_attempt_at = Some(now + delay);
-        } else {
-            inner.last_failure = Some(reason);
-            inner.next_attempt_at = None;
+        let kind = crate::forge::classify_forge_read_failure(&detail);
+        let delay = inner.retry.record(kind);
+        match delay {
+            // A transient failure below the cap is a retry window, not an
+            // alert: the last rows and read time stay.
+            Some(delay) if kind == crate::forge::ForgeReadFailureKind::Transient => {
+                inner.last_failure = None;
+                inner.next_attempt_at = Some(now + delay as i64);
+            }
+            _ => {
+                inner.last_failure = Some(reason);
+                inner.next_attempt_at = None;
+            }
         }
     }
 }
@@ -1483,6 +1478,8 @@ impl crate::forge::ClosingCommitClient for GiteaCommitClient {
 struct PromptController {
     repo_dir: PathBuf,
     state_dir: PathBuf,
+    /// The latest fresh open-issue read, shared by every generated template.
+    open_issues: Arc<Mutex<Option<Vec<Value>>>>,
 }
 
 impl PromptController {
@@ -1554,7 +1551,36 @@ impl PromptController {
         }
         let directory = crate::agents_mode::mcp_optimizer_directory(&self.state_dir);
         let settings = read_mcp_settings(&directory);
-        Ok(mcp_optimizer_prompt_template(&settings, None))
+        let open_issues = self
+            .open_issues
+            .lock()
+            .ok()
+            .and_then(|issues| issues.clone());
+        Ok(mcp_optimizer_prompt_template(
+            &settings,
+            open_issues.as_deref(),
+        ))
+    }
+
+    /// Republishes every generated template after a read its text depends on
+    /// changed. It sends the same frame a connect sends and touches nothing
+    /// else.
+    fn publish_templates(&self, shared: &Shared) {
+        for descriptor in DESCRIPTORS.iter() {
+            if !matches!(descriptor.prompt, PromptKind::Template(_)) {
+                continue;
+            }
+            if let Some(prompt) = self.snapshot(descriptor.id) {
+                shared.send_all(
+                    json!({
+                        "type": "agentPromptState",
+                        "id": descriptor.id,
+                        "prompt": prompt,
+                    }),
+                    None,
+                );
+            }
+        }
     }
 
     fn replay(&self, conn: &Conn) {
@@ -2123,6 +2149,15 @@ impl Adapter {
         }
     }
 
+    fn preflight_timeout_cell(&self) -> Option<Arc<AtomicU64>> {
+        match self {
+            Adapter::Repo(family) => Some(family.preflight_timeout_cell()),
+            Adapter::Watchdog(family) => Some(family.preflight_timeout_cell()),
+            Adapter::Mcp(family) => Some(family.preflight_timeout_cell()),
+            Adapter::Release(_) => None,
+        }
+    }
+
     fn request_sync(&self) {
         match self {
             Adapter::Repo(family) => family.request_sync(),
@@ -2367,6 +2402,7 @@ impl AgentsMode {
             prompts: PromptController {
                 repo_dir: repo_dir.clone(),
                 state_dir: state_dir.clone(),
+                open_issues: Arc::new(Mutex::new(None)),
             },
             shared,
             adapters: ordered,
@@ -2818,6 +2854,22 @@ pub fn set_preflight(app: &Arc<App>, family: &str, callback: PreflightCallback) 
     }
 }
 
+/// Replaces the wall-clock bound a family's Start gives its preflight. Tests
+/// use it so a hanging preflight answers in milliseconds instead of the 20
+/// second production bound.
+pub fn set_preflight_timeout(app: &Arc<App>, family: &str, timeout_ms: u64) {
+    if let Some(mode) = mode_for(app) {
+        for adapter in &mode.adapters {
+            if adapter.id() != family {
+                continue;
+            }
+            if let Some(cell) = adapter.preflight_timeout_cell() {
+                cell.store(timeout_ms.max(1), Ordering::SeqCst);
+            }
+        }
+    }
+}
+
 /// Replaces the provider environment a repo family's Start resolves. Tests use
 /// it where no subscription is configured.
 pub fn set_agent_environment(
@@ -2846,6 +2898,18 @@ pub fn init(app: &Arc<App>) {
         modes.insert(mode_key(app), Arc::clone(&mode));
     }
     mode.begin();
+}
+
+/// Replaces the open issues every generated template is built from and
+/// republishes those templates. Called after a fresh open-issue read.
+pub fn publish_prompt_templates(app: &Arc<App>, open_issues: Vec<Value>) {
+    let Some(mode) = mode_for(app) else {
+        return;
+    };
+    if let Ok(mut issues) = mode.prompts.open_issues.lock() {
+        *issues = Some(open_issues);
+    }
+    mode.prompts.publish_templates(&mode.shared);
 }
 
 /// Replays the frames a connecting client owes before its own replies.
@@ -2982,7 +3046,13 @@ impl RepoFlavor {
 
     /// The control command name the worker consumes for one fresh read.
     fn refreshes_worker(self) -> bool {
-        matches!(self, Self::Scout | Self::DeadCode | Self::ConsistentNaming)
+        matches!(
+            self,
+            Self::Scout
+                | Self::DeadCode
+                | Self::SingleResponsibility
+                | Self::ConsistentNaming
+        )
     }
 }
 
@@ -3352,6 +3422,7 @@ struct RepoFamily {
     environment: HashMap<String, String>,
     spawn: SharedSpawn,
     preflight_override: SharedPreflight,
+    preflight_timeout_ms: Arc<AtomicU64>,
     agent_environment: Arc<Mutex<Arc<AgentEnvironment>>>,
     forge: ForgeProjection,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -3394,6 +3465,7 @@ impl RepoFamily {
             environment: environment.clone(),
             spawn,
             preflight_override,
+            preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
             agent_environment,
             forge: ForgeProjection::new(forge_reader, Vec::new()),
             now,
@@ -3412,6 +3484,10 @@ impl RepoFamily {
             })),
             start_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    fn preflight_timeout_cell(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.preflight_timeout_ms)
     }
 
     fn repo_state_directory(&self) -> PathBuf {
@@ -4148,9 +4224,17 @@ impl RepoFamily {
             .lock()
             .ok()
             .and_then(|slot| slot.clone());
-        let result = match override_preflight {
-            Some(callback) => callback(request).await,
-            None => self.real_preflight().await,
+        let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
+        let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
+            match override_preflight {
+                Some(callback) => callback(request),
+                None => Box::pin(self.real_preflight()),
+            };
+        let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
+            Some(result) => result,
+            None => Err(format!(
+                "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
+            )),
         };
         match result {
             Ok(_) => self.spawn_worker().await,
@@ -5567,6 +5651,7 @@ struct WatchdogFamily {
     environment: HashMap<String, String>,
     spawn: SharedSpawn,
     preflight_override: SharedPreflight,
+    preflight_timeout_ms: Arc<AtomicU64>,
     forge: ForgeProjection,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     mutable: Arc<Mutex<WatchdogMutable>>,
@@ -5593,6 +5678,7 @@ impl WatchdogFamily {
             environment: environment.clone(),
             spawn,
             preflight_override,
+            preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
             forge: ForgeProjection::new(forge_reader, Vec::new()),
             now,
             mutable: Arc::new(Mutex::new(WatchdogMutable {
@@ -5617,6 +5703,10 @@ impl WatchdogFamily {
 
     fn lock_path(&self) -> PathBuf {
         self.directory.join("lock")
+    }
+
+    fn preflight_timeout_cell(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.preflight_timeout_ms)
     }
 
     fn versioned_worker_directory(&self, version: Option<&str>) -> PathBuf {
@@ -6131,9 +6221,17 @@ impl WatchdogFamily {
             .lock()
             .ok()
             .and_then(|slot| slot.clone());
-        let result = match override_preflight {
-            Some(callback) => callback(request).await,
-            None => self.preflight_watchdog().await,
+        let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
+        let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
+            match override_preflight {
+                Some(callback) => callback(request),
+                None => Box::pin(self.preflight_watchdog()),
+            };
+        let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
+            Some(result) => result,
+            None => Err(format!(
+                "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
+            )),
         };
         let cancelled = self
             .mutable
@@ -6707,6 +6805,7 @@ struct McpFamily {
     environment: HashMap<String, String>,
     spawn: SharedSpawn,
     preflight_override: SharedPreflight,
+    preflight_timeout_ms: Arc<AtomicU64>,
     forge: ForgeProjection,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     mutable: Arc<Mutex<McpMutable>>,
@@ -6753,6 +6852,7 @@ impl McpFamily {
             environment: environment.clone(),
             spawn,
             preflight_override,
+            preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
             forge: ForgeProjection::new(forge_reader, seed),
             now,
             mutable: Arc::new(Mutex::new(McpMutable {
@@ -6771,6 +6871,10 @@ impl McpFamily {
 
     fn lock_path(&self) -> PathBuf {
         self.directory.join("lock")
+    }
+
+    fn preflight_timeout_cell(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.preflight_timeout_ms)
     }
 
     fn owners(&self) -> Vec<LockOwner> {
@@ -7079,9 +7183,17 @@ impl McpFamily {
             .lock()
             .ok()
             .and_then(|slot| slot.clone());
-        let result = match override_preflight {
-            Some(callback) => callback(request).await,
-            None => self.preflight_mcp().await,
+        let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
+        let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
+            match override_preflight {
+                Some(callback) => callback(request),
+                None => Box::pin(self.preflight_mcp()),
+            };
+        let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
+            Some(result) => result,
+            None => Err(format!(
+                "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
+            )),
         };
         if let Err(message) = result {
             let mut mutable = self.mutable.lock().expect("mcp state");
@@ -7965,5 +8077,65 @@ impl ReleaseFamily {
                 failures.join("; ")
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod forge_tests {
+    use super::*;
+
+    fn projection(seed: Vec<ForgeFact>) -> ForgeProjection {
+        ForgeProjection::new(None, seed)
+    }
+
+    fn fact(url: &str) -> ForgeFact {
+        ForgeFact {
+            url: url.to_string(),
+            state: "pending".to_string(),
+            version: None,
+        }
+    }
+
+    #[test]
+    fn a_seeded_row_is_never_ok_before_a_completed_read() {
+        let projection = projection(vec![fact("https://example.test/1")]);
+        let sync = projection.sync(1_000);
+        assert_eq!(sync.state, "stale");
+        assert_eq!(sync.at, None);
+    }
+
+    #[test]
+    fn a_known_row_turns_stale_after_the_interval_without_a_read() {
+        let mut projection = projection(vec![fact("https://example.test/1")]);
+        projection.stale_after_ms = 2_000;
+        projection.apply(
+            vec!["https://example.test/1".to_string()],
+            vec![fact("https://example.test/1")],
+            10_000,
+        );
+        assert_eq!(projection.sync(11_000).state, "ok");
+        assert_eq!(projection.sync(12_001).state, "stale");
+    }
+
+    #[test]
+    fn a_transient_failure_stays_stale_until_the_fifth_attempt() {
+        let projection = projection(Vec::new());
+        for attempt in 1..=4 {
+            projection.fail("timed out".to_string(), 1_000 * attempt);
+            assert_eq!(projection.sync(1_000 * attempt).state, "stale");
+        }
+        projection.fail("timed out".to_string(), 5_000);
+        let sync = projection.sync(5_000);
+        assert_eq!(sync.state, "error");
+        assert_eq!(sync.error.as_deref(), Some("timed out"));
+    }
+
+    #[test]
+    fn a_permanent_failure_surfaces_on_the_first_attempt() {
+        let projection = projection(Vec::new());
+        projection.fail("bad credentials".to_string(), 1_000);
+        let sync = projection.sync(1_000);
+        assert_eq!(sync.state, "error");
+        assert_eq!(sync.error.as_deref(), Some("bad credentials"));
     }
 }
