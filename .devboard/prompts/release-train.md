@@ -22,11 +22,9 @@ request is the whole unresolved range; never recompute a different one and never
 - Fetch canonical `main` once before publishing:
   `git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`. The publish path itself
   fast-forwards a clean integration checkout to that tip.
-- Release through the harness publish path only, from the repository's `.devboard` directory:
-
-  ```bash
-  devboard publish --wait-timeout 1800
-  ```
+- Release through the harness publish path only. From the repository root run `devboard publish
+  --wait-timeout 1800`; in a source checkout where the binary is not on `PATH`, run the same
+  command from `.devboard` as `cargo run -p devboard -- publish --wait-timeout 1800`.
 
   Run it in the foreground with no output consumer and keep it alive until it exits. It runs the
   release suite before tagging, waits for the cargo-dist release workflow it dispatches for the
