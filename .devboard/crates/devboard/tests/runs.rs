@@ -103,7 +103,10 @@ fn fixture_repo(scratch: &Scratch) -> PathBuf {
         "discover-architecture-boundaries.md",
         "discover-glossary.md",
     ] {
-        write(&repo.join(".devboard/prompts").join(name), "Fixture prompt.\n");
+        write(
+            &repo.join(".devboard/prompts").join(name),
+            "Fixture prompt.\n",
+        );
     }
     repo
 }
@@ -408,7 +411,12 @@ async fn discover_runs_survive_a_replacement_and_stop() {
         let _ = tokio::time::timeout(Duration::from_millis(50), socket_a.next()).await;
     }
     send(&mut socket_a, json!({"type": "discoverProject"})).await;
-    let started = frames_until(&mut socket_a, |frame| frame["type"] == "discoverStarted", Duration::from_secs(20)).await;
+    let started = frames_until(
+        &mut socket_a,
+        |frame| frame["type"] == "discoverStarted",
+        Duration::from_secs(20),
+    )
+    .await;
     let started = started
         .iter()
         .find(|frame| frame["type"] == "discoverStarted")
@@ -489,7 +497,11 @@ async fn discover_runs_survive_a_replacement_and_stop() {
         .expect("a question")
         .clone();
     let question_id = question["id"].clone();
-    assert_eq!(owner_pid(&scratch), owner, "the replacement adopts the owner");
+    assert_eq!(
+        owner_pid(&scratch),
+        owner,
+        "the replacement adopts the owner"
+    );
 
     // The answer reaches the same run, and the operator's Stop ends it.
     send(
@@ -520,13 +532,13 @@ async fn discover_runs_survive_a_replacement_and_stop() {
         "the answer reached the same run",
     )
     .await;
+    wait_until(|| !alive(owner), Duration::from_secs(20), "the owner ended").await;
     wait_until(
-        || !alive(owner),
+        || !alive(peer),
         Duration::from_secs(20),
-        "the owner ended",
+        "the ACP peer ended",
     )
     .await;
-    wait_until(|| !alive(peer), Duration::from_secs(20), "the ACP peer ended").await;
     wait_until(
         || children_naming(&log).is_empty(),
         Duration::from_secs(20),
@@ -543,8 +555,7 @@ async fn discover_runs_survive_a_replacement_and_stop() {
     assert!(activity.contains("Reading the host for sheet"));
 
     // End the replacement dashboard itself.
-    if let Some(lease) = devboard::detached_run::read_detached_lease(&state_path(&scratch), &repo)
-    {
+    if let Some(lease) = devboard::detached_run::read_detached_lease(&state_path(&scratch), &repo) {
         unsafe {
             libc::kill(lease.pid as libc::pid_t, libc::SIGTERM);
         }
@@ -589,9 +600,8 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
     // is the same state a replacement would find.
     wait_until(
         || {
-            current_run_state(&scratch).is_some_and(|state| {
-                state["peer"].is_object() && state["turnSeq"] == json!(0)
-            })
+            current_run_state(&scratch)
+                .is_some_and(|state| state["peer"].is_object() && state["turnSeq"] == json!(0))
         },
         Duration::from_secs(30),
         "the ask owner recorded its peer",
@@ -641,7 +651,11 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
         .into_iter()
         .filter_map(|frame| frame["text"].as_str())
         .collect();
-    assert_eq!(answer, streamed(ANSWER_ONE), "the streamed answer arrives once");
+    assert_eq!(
+        answer,
+        streamed(ANSWER_ONE),
+        "the streamed answer arrives once"
+    );
 
     let conversation = std::fs::read_to_string(
         state
@@ -655,7 +669,11 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
     .expect("the transcript exists");
     let transcript: Value = serde_json::from_str(&conversation).expect("JSON");
     let entries = transcript["transcript"].as_array().expect("entries");
-    assert_eq!(entries.len(), 2, "one question and one answer: {transcript}");
+    assert_eq!(
+        entries.len(),
+        2,
+        "one question and one answer: {transcript}"
+    );
     assert_eq!(entries[0]["role"], "developer");
     assert_eq!(entries[1]["role"], "agent");
     assert_eq!(entries[1]["text"], json!(streamed(ANSWER_ONE)));
@@ -680,10 +698,17 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
         let owner = value["owner"]["pid"].as_u64().expect("the owner pid") as u32;
         let peer = value["peer"]["pid"].as_u64().expect("the peer pid") as u32;
         assert!(alive(owner));
-        assert!(alive(peer), "the peer survives until the conversation closes");
+        assert!(
+            alive(peer),
+            "the peer survives until the conversation closes"
+        );
         owner
     };
-    send(&mut socket_b, json!({"type": "closeAsk", "conversationId": "conversation-1"})).await;
+    send(
+        &mut socket_b,
+        json!({"type": "closeAsk", "conversationId": "conversation-1"}),
+    )
+    .await;
     wait_until(
         || !alive(owner),
         Duration::from_secs(20),

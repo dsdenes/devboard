@@ -91,7 +91,6 @@ fn install_writes_real_files_and_one_gitignore_line_per_skill() {
     for relative in [
         "commands/adr-resolve.md",
         "extensions/implement-goal-issue.ts",
-        "config.yml",
         "mcp.json",
     ] {
         assert_real_file(&omp.join(relative));
@@ -214,7 +213,7 @@ fn an_unmarked_host_skill_is_never_read_or_deleted() {
 fn a_differing_unmarked_file_refuses_without_force() {
     let scratch = Scratch::new("conflict");
     let host = scratch.host();
-    let target = host.join(".omp/config.yml");
+    let target = host.join(".omp/mcp.json");
     fs::create_dir_all(target.parent().unwrap()).unwrap();
     fs::write(&target, b"host: config\n").unwrap();
 
@@ -225,7 +224,7 @@ fn a_differing_unmarked_file_refuses_without_force() {
         error.contains("install: refusing to overwrite differing files"),
         "{error}"
     );
-    assert!(error.contains("config.yml"), "{error}");
+    assert!(error.contains("mcp.json"), "{error}");
     assert!(
         error.contains("install: rerun with --force to replace them"),
         "{error}"
@@ -235,7 +234,7 @@ fn a_differing_unmarked_file_refuses_without_force() {
 
     let report = cli_install::install(Some(host), true).unwrap();
     assert!(report.installed_files > 0);
-    let shipped = fs::read(package_dir().join("omp/config.yml")).unwrap();
+    let shipped = fs::read(package_dir().join("omp/mcp.json")).unwrap();
     assert_eq!(fs::read(&target).unwrap(), shipped);
     assert!(cli_install::doctor(Some(host)).unwrap().ok());
 }

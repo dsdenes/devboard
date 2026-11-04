@@ -1759,7 +1759,10 @@ pub fn capture_children(app: Arc<App>) -> Vec<crate::detached_run::RecordedChild
         .conversation
         .as_ref()
         .and_then(|conversation| conversation.agent.as_ref());
-    let analyst = inner.analyst.as_ref().and_then(|analyst| analyst.agent.as_ref());
+    let analyst = inner
+        .analyst
+        .as_ref()
+        .and_then(|analyst| analyst.agent.as_ref());
     for agent in [conversation, analyst].into_iter().flatten() {
         let Some(pid) = agent.pid() else {
             continue;
@@ -2165,7 +2168,9 @@ impl FlowMode {
     }
 
     fn instance(&self) -> String {
-        self.app().map(|app| app.instance.clone()).unwrap_or_default()
+        self.app()
+            .map(|app| app.instance.clone())
+            .unwrap_or_default()
     }
 
     fn harness_version(&self) -> Option<String> {
@@ -3027,8 +3032,8 @@ impl FlowMode {
             None => return,
         };
         let mode = Arc::clone(self);
-        let on_activity: crate::detached_run::ActivityCallback = Arc::new(
-            move |activity: crate::acp::AcpActivity| {
+        let on_activity: crate::detached_run::ActivityCallback =
+            Arc::new(move |activity: crate::acp::AcpActivity| {
                 let append = {
                     let mut inner = mode.lock();
                     let Some(creation) = inner.goal_creation.as_mut() else {
@@ -3052,8 +3057,7 @@ impl FlowMode {
                     "text": activity.text,
                     "append": append,
                 }));
-            },
-        );
+            });
         let question_mode = Arc::clone(self);
         let on_question: crate::detached_run::QuestionCallback =
             Arc::new(move |question: AcpQuestion| {
@@ -3070,11 +3074,9 @@ impl FlowMode {
                 };
                 if accepted {
                     if let Some(app) = question_mode.app() {
-                        app.shared.journal.write(
-                            "question",
-                            &question.message,
-                            Some("flow:goal"),
-                        );
+                        app.shared
+                            .journal
+                            .write("question", &question.message, Some("flow:goal"));
                     }
                     question_mode.broadcast(json!({
                         "type": "flowQuestion",
@@ -3373,8 +3375,8 @@ impl FlowMode {
             return;
         };
         let mode = Arc::clone(self);
-        let on_activity: crate::detached_run::ActivityCallback = Arc::new(
-            move |activity: crate::acp::AcpActivity| {
+        let on_activity: crate::detached_run::ActivityCallback =
+            Arc::new(move |activity: crate::acp::AcpActivity| {
                 let (append, markers) = {
                     let mut inner = mode.lock();
                     let Some(implementation) = inner.implementation.as_mut() else {
@@ -3395,9 +3397,8 @@ impl FlowMode {
                     if activity.text.contains(BLOCKER_MARKER) {
                         for line in implementation.activity.iter() {
                             if let Some(index) = line.find(BLOCKER_MARKER) {
-                                markers.push(
-                                    line[index + BLOCKER_MARKER.len()..].trim().to_string(),
-                                );
+                                markers
+                                    .push(line[index + BLOCKER_MARKER.len()..].trim().to_string());
                             }
                         }
                     }
@@ -3411,8 +3412,7 @@ impl FlowMode {
                 for marker in markers {
                     mode.add_blocker(&marker);
                 }
-            },
-        );
+            });
         let question_mode = Arc::clone(self);
         let on_question: crate::detached_run::QuestionCallback =
             Arc::new(move |question: AcpQuestion| {

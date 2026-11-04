@@ -3590,14 +3590,8 @@ pub fn create_watchdog_delivery_with(
             gh,
         ))),
         crate::forge::Forge::Gitea => {
-            let target = crate::forge::gitea_target(
-                Some(&remote),
-                None,
-                None,
-                None,
-                environment,
-            )
-            .map_err(|error| error.message)?;
+            let target = crate::forge::gitea_target(Some(&remote), None, None, None, environment)
+                .map_err(|error| error.message)?;
             Ok(Arc::new(GiteaDelivery::new(
                 crate::gitea::GiteaTarget {
                     base_url: target.base_url,
@@ -3649,7 +3643,11 @@ impl GiteaDelivery {
         if parsed.host_str()?.to_lowercase() != expected.host_str()?.to_lowercase() {
             return None;
         }
-        let segments: Vec<&str> = parsed.path().split('/').filter(|part| !part.is_empty()).collect();
+        let segments: Vec<&str> = parsed
+            .path()
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
         let number = segments.last()?;
         if segments.len() < 2 || segments[segments.len() - 2] != "issues" {
             return None;
@@ -3699,9 +3697,9 @@ impl WatchdogDelivery for GiteaDelivery {
     fn state(&self, url: &str) -> Option<IssueState> {
         let number = self.issue_number(url)?;
         let target = self.target.clone();
-        match block_on_gitea(async move {
-            crate::gitea::issue_state(&target, number, 60_000).await
-        })
+        match block_on_gitea(
+            async move { crate::gitea::issue_state(&target, number, 60_000).await },
+        )
         .ok()
         .flatten()
         {

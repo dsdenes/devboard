@@ -541,10 +541,8 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
     // A Host this listener does not serve is misdirected, whether or not the
     // caller presented a credential: the three request paths a browser opens
     // directly never run against another site's name.
-    let guarded_path = matches!(
-        uri.path(),
-        "/ws" | "/feedback" | "/goal-proposals"
-    ) || uri.path().starts_with("/goal-proposals/");
+    let guarded_path = matches!(uri.path(), "/ws" | "/feedback" | "/goal-proposals")
+        || uri.path().starts_with("/goal-proposals/");
     if guarded_path {
         if let Some(RequestRefusal::Host) =
             request_refusal(&headers, &url, &server.allowed_hostnames)
@@ -689,7 +687,10 @@ fn document_refusal(
     if server.token.is_empty() {
         return None;
     }
-    if credential_matches(presented_credential(headers, cookie_name).as_deref(), &server.token) {
+    if credential_matches(
+        presented_credential(headers, cookie_name).as_deref(),
+        &server.token,
+    ) {
         return None;
     }
     let bootstrap = server.config.bootstrap.as_str();
@@ -713,12 +714,7 @@ fn document_refusal(
 }
 
 /// One written draft, served where `POST /goal-proposals` linked it.
-fn draft_answer(
-    server: &Server,
-    raw_name: &str,
-    method: &Method,
-    headers: &HeaderMap,
-) -> Response {
+fn draft_answer(server: &Server, raw_name: &str, method: &Method, headers: &HeaderMap) -> Response {
     let name = percent_decode(raw_name).unwrap_or_default();
     if name.is_empty() || name.contains('/') || !name.ends_with(".md") {
         return Replies::problem(headers, 404, "The requested draft was not found.", &[]);
@@ -750,11 +746,7 @@ fn draft_answer(
             .get(header::ACCEPT_ENCODING)
             .and_then(|value| value.to_str().ok()),
     );
-    let payload = if gzip {
-        gzip_bytes(&body)
-    } else {
-        body
-    };
+    let payload = if gzip { gzip_bytes(&body) } else { body };
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/markdown;charset=utf-8")
@@ -833,17 +825,12 @@ fn static_file(
             Some(root) => match read_static_file(root, relative) {
                 Ok(served) => served,
                 Err(detail) => {
-                    server
-                        .app
-                        .shared
-                        .journal
-                        .write("server-error", &format!("GET static: {detail}"), None);
-                    return Replies::problem(
-                        headers,
-                        500,
-                        "An internal error occurred.",
-                        &[],
+                    server.app.shared.journal.write(
+                        "server-error",
+                        &format!("GET static: {detail}"),
+                        None,
                     );
+                    return Replies::problem(headers, 500, "An internal error occurred.", &[]);
                 }
             },
             None => crate::assets::lookup(relative)

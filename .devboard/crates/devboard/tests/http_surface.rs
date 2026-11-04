@@ -264,7 +264,10 @@ async fn static_serving_refuses_control_characters_and_normalizes_paths() {
             .and_then(|value| value.to_str().ok()),
         Some("Bearer")
     );
-    assert!(headers.get("set-cookie").is_none(), "no cookie before the credential");
+    assert!(
+        headers.get("set-cookie").is_none(),
+        "no cookie before the credential"
+    );
 
     let (status, headers, body) = send(
         Method::GET,

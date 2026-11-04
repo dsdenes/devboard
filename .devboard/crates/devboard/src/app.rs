@@ -832,9 +832,7 @@ impl App {
                 };
                 let children: Vec<crate::detached_run::RecordedChild> = entries
                     .iter()
-                    .filter_map(|entry| {
-                        crate::detached_run::RecordedChild::parse(Some(entry))
-                    })
+                    .filter_map(|entry| crate::detached_run::RecordedChild::parse(Some(entry)))
                     .collect();
                 if let Ok(mut slot) = app.restored_children.lock() {
                     *slot = children;

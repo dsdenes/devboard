@@ -15,8 +15,8 @@ use time::macros::format_description;
 use time::OffsetDateTime;
 
 use crate::acp::{AcpId, AcpQuestion};
-use crate::detached_run::{DetachedPeer, DetachedPeerOptions, DetachedRunOutcome};
 use crate::app::{App, Conn, StateSection};
+use crate::detached_run::{DetachedPeer, DetachedPeerOptions, DetachedRunOutcome};
 use crate::protocol::Command;
 
 /// One of the seven Discover agents, in sidebar order.
@@ -8614,11 +8614,7 @@ async fn run_agent(
         Arc::new(move |activity: crate::acp::AcpActivity| {
             let frame = {
                 let mut state = lock(&activity_mode.state);
-                let Some(run) = state
-                    .run
-                    .as_mut()
-                    .filter(|run| run.run_id == activity_run)
-                else {
+                let Some(run) = state.run.as_mut().filter(|run| run.run_id == activity_run) else {
                     return;
                 };
                 activity_app
@@ -8646,11 +8642,7 @@ async fn run_agent(
         Arc::new(move |question: AcpQuestion| {
             let frame = {
                 let mut state = lock(&question_mode.state);
-                let Some(run) = state
-                    .run
-                    .as_mut()
-                    .filter(|run| run.run_id == question_run)
-                else {
+                let Some(run) = state.run.as_mut().filter(|run| run.run_id == question_run) else {
                     return;
                 };
                 question_app

@@ -3048,10 +3048,7 @@ impl RepoFlavor {
     fn refreshes_worker(self) -> bool {
         matches!(
             self,
-            Self::Scout
-                | Self::DeadCode
-                | Self::SingleResponsibility
-                | Self::ConsistentNaming
+            Self::Scout | Self::DeadCode | Self::SingleResponsibility | Self::ConsistentNaming
         )
     }
 }

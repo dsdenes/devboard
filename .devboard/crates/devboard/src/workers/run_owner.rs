@@ -15,11 +15,11 @@ use anyhow::{Context, Result};
 use crate::acp::{AcpConnection, AcpConnectionOptions, AcpEvent, PermissionPolicy};
 use crate::detached_run::{
     append_detached_run_activity, append_detached_run_text, detached_run_control_directory,
-    detached_run_directory, detached_run_prompt_path, read_detached_handoff,
-    read_detached_lease, read_detached_run_state, recorded_child_alive, self_child,
-    take_detached_run_commands, write_detached_run_state, DetachedRunActivity,
-    DetachedRunCommand, DetachedRunState, DetachedRunStatus, DetachedTurnStatus, RecordedChild,
-    DETACHED_HANDOFF_GRACE_MS, DETACHED_RUN_INTERRUPTED,
+    detached_run_directory, detached_run_prompt_path, read_detached_handoff, read_detached_lease,
+    read_detached_run_state, recorded_child_alive, self_child, take_detached_run_commands,
+    write_detached_run_state, DetachedRunActivity, DetachedRunCommand, DetachedRunState,
+    DetachedRunStatus, DetachedTurnStatus, RecordedChild, DETACHED_HANDOFF_GRACE_MS,
+    DETACHED_RUN_INTERRUPTED,
 };
 use crate::workers::WorkerInvocation;
 
@@ -106,7 +106,10 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
         done: false,
         turn: None,
     };
-    owner.launcher_pid = owner.state.launcher_pid.or_else(|| owner.state.owner.as_ref().map(|owner| owner.pid));
+    owner.launcher_pid = owner
+        .state
+        .launcher_pid
+        .or_else(|| owner.state.owner.as_ref().map(|owner| owner.pid));
     owner.state.owner = Some(owner.owner.clone());
     if owner.state.harness_version.is_none() {
         owner.state.harness_version = harness_version;
@@ -437,7 +440,9 @@ impl Owner {
     /// from its replacement and a handoff marker decide the run.
     fn check_supervisor(&mut self) -> bool {
         let lease = read_detached_lease(&self.state_dir, &self.repo_dir);
-        if let Some(launcher) = self.launcher_pid.filter(|pid| crate::supervision::live_process(*pid))
+        if let Some(launcher) = self
+            .launcher_pid
+            .filter(|pid| crate::supervision::live_process(*pid))
         {
             // A successor dashboard in this same process takes the lease and
             // adopts the run without a handoff.
@@ -569,4 +574,3 @@ async fn close_peer(peer: Option<Arc<AcpConnection>>, child: Option<RecordedChil
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
-

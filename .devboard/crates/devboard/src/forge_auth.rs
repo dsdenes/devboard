@@ -121,11 +121,7 @@ pub fn configured_gitea_host(environment: &Environment) -> Option<String> {
 
 /// Parses the wrapper's arguments, resolving a missing host or project from the
 /// origin remote and the configured Gitea address.
-pub fn parse(
-    args: &[String],
-    cwd: &Path,
-    environment: &Environment,
-) -> Result<Start, UsageError> {
+pub fn parse(args: &[String], cwd: &Path, environment: &Environment) -> Result<Start, UsageError> {
     let Some(action) = args.first() else {
         return Ok(Start::Help);
     };

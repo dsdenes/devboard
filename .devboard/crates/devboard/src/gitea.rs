@@ -147,7 +147,6 @@ pub async fn create_issue(
     }
 }
 
-
 /// Adds one comment to an existing issue.
 pub async fn comment_issue(
     target: &GiteaTarget,

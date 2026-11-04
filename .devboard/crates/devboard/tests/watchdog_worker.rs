@@ -1133,10 +1133,7 @@ fn the_cli_exits_two_for_missing_prerequisites_and_bad_flags() {
 
 fn git_init_with_origin(root: &Path, origin: &str) {
     std::fs::create_dir_all(root).expect("a fixture root");
-    for args in [
-        vec!["init", "-q"],
-        vec!["remote", "add", "origin", origin],
-    ] {
+    for args in [vec!["init", "-q"], vec!["remote", "add", "origin", origin]] {
         let status = std::process::Command::new("git")
             .arg("-C")
             .arg(root)
@@ -1179,24 +1176,28 @@ async fn a_gitea_origin_files_and_comments_through_the_rest_api() {
         let app = axum::Router::new()
             .route(
                 "/api/v1/repos/owner/name/issues",
-                post(|axum::extract::State(calls): axum::extract::State<Arc<Mutex<Vec<Value>>>>,
-                      Json(body): Json<Value>| async move {
-                    calls.lock().unwrap().push(body);
-                    Json(json!({
-                        "number": 7,
-                        "title": "filed",
-                        "html_url": format!("http://127.0.0.1:{}/owner/name/issues/7", 0),
-                        "state": "open",
-                    }))
-                }),
+                post(
+                    |axum::extract::State(calls): axum::extract::State<Arc<Mutex<Vec<Value>>>>,
+                     Json(body): Json<Value>| async move {
+                        calls.lock().unwrap().push(body);
+                        Json(json!({
+                            "number": 7,
+                            "title": "filed",
+                            "html_url": format!("http://127.0.0.1:{}/owner/name/issues/7", 0),
+                            "state": "open",
+                        }))
+                    },
+                ),
             )
             .route(
                 "/api/v1/repos/owner/name/issues/7/comments",
-                post(|axum::extract::State(calls): axum::extract::State<Arc<Mutex<Vec<Value>>>>,
-                      Json(body): Json<Value>| async move {
-                    calls.lock().unwrap().push(body);
-                    Json(json!({"id": 1}))
-                }),
+                post(
+                    |axum::extract::State(calls): axum::extract::State<Arc<Mutex<Vec<Value>>>>,
+                     Json(body): Json<Value>| async move {
+                        calls.lock().unwrap().push(body);
+                        Json(json!({"id": 1}))
+                    },
+                ),
             )
             .route(
                 "/api/v1/repos/owner/name/issues/7",
@@ -1228,7 +1229,10 @@ async fn a_gitea_origin_files_and_comments_through_the_rest_api() {
         other => panic!("gitea create failed: {other:?}"),
     };
     assert!(delivery.owns(&url));
-    assert!(matches!(delivery.comment(&url, &input()), CommentResult::Ok));
+    assert!(matches!(
+        delivery.comment(&url, &input()),
+        CommentResult::Ok
+    ));
     assert_eq!(delivery.state(&url), Some(IssueState::Closed));
     let recorded = calls.lock().unwrap();
     assert_eq!(recorded.len(), 2);

@@ -248,6 +248,10 @@ async fn send(app: &Arc<App>, conn: &Conn, command: Command) {
     app.command(conn, command).await;
 }
 
+/// The fixture writes process-wide environment variables, so its tests run one
+/// at a time.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn session_directory(fixture: &Fixture, session_id: &str) -> PathBuf {
     fixture
         .state
@@ -258,6 +262,7 @@ fn session_directory(fixture: &Fixture, session_id: &str) -> PathBuf {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_goal_widgets_steering_and_conversation_round_trip() {
+    let _env = ENV_LOCK.lock().await;
     let fixture = fixture("round-trip");
     let app = fixture.app.clone();
     let mut client = Client::connect(&app).await;
@@ -867,6 +872,7 @@ async fn socket_frames_after(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_flow_refusal_frames_reach_a_fresh_socket() {
+    let _env = ENV_LOCK.lock().await;
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -949,6 +955,7 @@ async fn the_flow_refusal_frames_reach_a_fresh_socket() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_steering_write_surfaces_a_flow_error() {
+    let _env = ENV_LOCK.lock().await;
     let fixture = fixture("steering-write");
     let app = fixture.app.clone();
     let mut client = Client::connect(&app).await;

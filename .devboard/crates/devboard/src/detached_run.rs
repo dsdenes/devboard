@@ -385,12 +385,7 @@ pub fn detached_runs_root(state_dir: &Path, repo_dir: &Path) -> PathBuf {
 }
 
 /// One run's directory; a kind and key never become a path segment directly.
-pub fn detached_run_directory(
-    state_dir: &Path,
-    repo_dir: &Path,
-    kind: &str,
-    key: &str,
-) -> PathBuf {
+pub fn detached_run_directory(state_dir: &Path, repo_dir: &Path, kind: &str, key: &str) -> PathBuf {
     let mut hasher = Sha256::new();
     hasher.update(kind.as_bytes());
     hasher.update([0u8]);
@@ -625,7 +620,10 @@ pub fn read_detached_run_text_since(
     let (lines, from_start, dropped) =
         read_journal_append(&detached_run_text_path(directory), cursor);
     DetachedRunJournalRead {
-        entries: lines.iter().filter_map(|line| parse_text_line(line)).collect(),
+        entries: lines
+            .iter()
+            .filter_map(|line| parse_text_line(line))
+            .collect(),
         from_start,
         dropped,
     }
@@ -657,7 +655,10 @@ pub fn read_detached_run_activity_since(
 pub fn append_detached_run_text(directory: &Path, text: &str) {
     let _ = std::fs::create_dir_all(directory);
     let path = detached_run_text_path(directory);
-    let line = format!("{}\n", crate::jsjson::stringify(&Value::String(text.to_string())));
+    let line = format!(
+        "{}\n",
+        crate::jsjson::stringify(&Value::String(text.to_string()))
+    );
     let append_ok = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -911,7 +912,6 @@ fn now_millis() -> i64 {
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
 }
-
 
 // ---------------------------------------------------------------------------
 // Handoff bookkeeping on the dashboard side
@@ -1192,8 +1192,12 @@ pub struct DetachedPeer {
 impl DetachedPeer {
     /// Creates one handle and starts observing its state directory.
     pub fn new(options: DetachedPeerOptions) -> Arc<Self> {
-        let directory =
-            detached_run_directory(&options.state_dir, &options.repo_dir, &options.kind, &options.key);
+        let directory = detached_run_directory(
+            &options.state_dir,
+            &options.repo_dir,
+            &options.kind,
+            &options.key,
+        );
         let control = detached_run_control_directory(&directory);
         let inner = Arc::new(PeerInner {
             options,
@@ -1345,7 +1349,9 @@ impl DetachedPeer {
         let state = self.state();
         if let Some(state) = state {
             if state.turn_status == Some(DetachedTurnStatus::Failed) {
-                return Err(state.turn_error.unwrap_or_else(|| "the turn failed".to_string()));
+                return Err(state
+                    .turn_error
+                    .unwrap_or_else(|| "the turn failed".to_string()));
             }
         }
         Ok(())
@@ -1500,11 +1506,8 @@ impl DetachedPeer {
         if state.launcher_pid == Some(std::process::id()) {
             return true;
         }
-        read_detached_handoff(
-            &self.inner.options.state_dir,
-            &self.inner.options.repo_dir,
-        )
-        .is_some_and(|handoff| now_millis() < handoff.at + DETACHED_HANDOFF_GRACE_MS)
+        read_detached_handoff(&self.inner.options.state_dir, &self.inner.options.repo_dir)
+            .is_some_and(|handoff| now_millis() < handoff.at + DETACHED_HANDOFF_GRACE_MS)
     }
 
     fn start(&self, prompt: &str) -> Result<(), String> {
@@ -1517,7 +1520,9 @@ impl DetachedPeer {
             kind: self.inner.options.kind.clone(),
             key: self.inner.options.key.clone(),
             repo: absolute(&self.inner.options.repo_dir).display().to_string(),
-            state_dir: absolute(&self.inner.options.state_dir).display().to_string(),
+            state_dir: absolute(&self.inner.options.state_dir)
+                .display()
+                .to_string(),
             harness_version: self.inner.options.harness_version.clone(),
             instance: self.inner.options.instance.clone(),
             launcher_pid: Some(std::process::id()),
@@ -1562,7 +1567,9 @@ impl DetachedPeer {
             "--repo".to_string(),
             absolute(&self.inner.options.repo_dir).display().to_string(),
             "--state-dir".to_string(),
-            absolute(&self.inner.options.state_dir).display().to_string(),
+            absolute(&self.inner.options.state_dir)
+                .display()
+                .to_string(),
             "--kind".to_string(),
             self.inner.options.kind.clone(),
             "--key".to_string(),
@@ -1640,7 +1647,9 @@ impl DetachedPeer {
         };
         if self.inner.options.multi
             && state.turn_seq.unwrap_or(0) >= 1
-            && state.turn_status.is_some_and(|status| status != DetachedTurnStatus::Running)
+            && state
+                .turn_status
+                .is_some_and(|status| status != DetachedTurnStatus::Running)
         {
             return if state.turn_status == Some(DetachedTurnStatus::Failed) {
                 Err(state
@@ -1653,9 +1662,9 @@ impl DetachedPeer {
         match state.status {
             DetachedRunStatus::Succeeded => Ok(DetachedRunOutcome::Completed),
             DetachedRunStatus::Stopped => Ok(DetachedRunOutcome::Stopped),
-            DetachedRunStatus::Failed => Err(state
-                .error
-                .unwrap_or_else(|| "the run failed".to_string())),
+            DetachedRunStatus::Failed => {
+                Err(state.error.unwrap_or_else(|| "the run failed".to_string()))
+            }
             DetachedRunStatus::Starting | DetachedRunStatus::Running => {
                 Err("The run owner exited before the run finished.".to_string())
             }
@@ -1808,9 +1817,12 @@ impl DetachedPeer {
             if state.multi {
                 if let Some(peer) = &state.peer {
                     if !crate::supervision::live_process(peer.pid) {
-                        self.fail(state.error.clone().unwrap_or_else(|| {
-                            "The ask agent exited.".to_string()
-                        }));
+                        self.fail(
+                            state
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| "The ask agent exited.".to_string()),
+                        );
                         return;
                     }
                 }
@@ -1819,12 +1831,9 @@ impl DetachedPeer {
                 if !crate::supervision::live_process(owner.pid)
                     && state.status != DetachedRunStatus::Starting
                 {
-                    self.fail(
-                        state
-                            .error
-                            .clone()
-                            .unwrap_or_else(|| "The run owner exited before the run finished.".to_string()),
-                    );
+                    self.fail(state.error.clone().unwrap_or_else(|| {
+                        "The run owner exited before the run finished.".to_string()
+                    }));
                     return;
                 }
             }
@@ -1845,18 +1854,19 @@ impl DetachedPeer {
 
 fn turn_settled(state: &DetachedRunState, seq: u64) -> bool {
     state.turn_seq.unwrap_or(0) >= seq
-        && state.turn_status.is_some_and(|status| status != DetachedTurnStatus::Running)
+        && state
+            .turn_status
+            .is_some_and(|status| status != DetachedTurnStatus::Running)
 }
 
 /// Drops the entries this peer already delivered. `seen` counts every entry
 /// the run ever appended; the journal's header re-bases that count onto the
 /// file its bound rewrote.
-fn consume<T: Clone>(
-    read: DetachedRunJournalRead<T>,
-    seen: usize,
-) -> (Vec<T>, usize) {
+fn consume<T: Clone>(read: DetachedRunJournalRead<T>, seen: usize) -> (Vec<T>, usize) {
     if read.from_start {
-        let base = seen.saturating_sub(read.dropped as usize).min(read.entries.len());
+        let base = seen
+            .saturating_sub(read.dropped as usize)
+            .min(read.entries.len());
         (
             read.entries[base..].to_vec(),
             read.dropped as usize + read.entries.len(),
@@ -1984,7 +1994,10 @@ pub fn recorded_child_alive(child: &RecordedChild) -> bool {
 
 /// Ends every recorded child whose process table entry proves it is the peer
 /// the killed process left behind, and waits until it is gone.
-pub async fn terminate_recorded_children(children: &[RecordedChild], timeout_ms: u64) -> Vec<RecordedChild> {
+pub async fn terminate_recorded_children(
+    children: &[RecordedChild],
+    timeout_ms: u64,
+) -> Vec<RecordedChild> {
     let proven: Vec<RecordedChild> = children
         .iter()
         .filter(|child| recorded_child_alive(child))
@@ -1996,9 +2009,7 @@ pub async fn terminate_recorded_children(children: &[RecordedChild], timeout_ms:
         }
     }
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline
-        && proven.iter().any(recorded_child_alive)
-    {
+    while std::time::Instant::now() < deadline && proven.iter().any(recorded_child_alive) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     proven

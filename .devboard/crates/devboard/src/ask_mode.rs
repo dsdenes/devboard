@@ -23,8 +23,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::acp::PermissionPolicy;
-use crate::detached_run::{DetachedPeer, DetachedPeerOptions, TextCallback};
 use crate::app::{App, Conn};
+use crate::detached_run::{DetachedPeer, DetachedPeerOptions, TextCallback};
 use crate::protocol::Command;
 
 /// The longest conversation id a client may name.
@@ -439,12 +439,7 @@ impl AskMode {
     }
 
     /// Builds the detached handle for one conversation's peer.
-    fn detached(
-        self: &Arc<Self>,
-        socket: &Conn,
-        id: &str,
-        attach_only: bool,
-    ) -> Arc<DetachedPeer> {
+    fn detached(self: &Arc<Self>, socket: &Conn, id: &str, attach_only: bool) -> Arc<DetachedPeer> {
         let mode = Arc::clone(self);
         let conversation_id = id.to_string();
         let text_id = conversation_id.clone();
@@ -570,10 +565,7 @@ impl AskMode {
                 .conversations
                 .entry(id.clone())
                 .or_insert_with(|| Conversation::new(id.clone()));
-            let first_turn = conversation
-                .peer
-                .as_ref()
-                .is_none_or(|peer| peer.closed());
+            let first_turn = conversation.peer.as_ref().is_none_or(|peer| peer.closed());
             conversation.turn += 1;
             let turn = conversation.turn;
             conversation.busy = true;

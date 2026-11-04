@@ -177,16 +177,18 @@ fn git_repo(label: &str, remote: Option<&str>) -> PathBuf {
 /// An `Exec` seam that answers every probe as unavailable, so the fallback
 /// chain reaches Gitea without a real `gh` or `glab`.
 fn unavailable_exec() -> Exec {
-    Arc::new(|command: String, _args: Vec<String>, _options: ExecOptions| {
-        Box::pin(async move {
-            ExecResult {
-                stdout: String::new(),
-                stderr: format!("{command}: unavailable"),
-                code: 1,
-                killed: false,
-            }
-        })
-    })
+    Arc::new(
+        |command: String, _args: Vec<String>, _options: ExecOptions| {
+            Box::pin(async move {
+                ExecResult {
+                    stdout: String::new(),
+                    stderr: format!("{command}: unavailable"),
+                    code: 1,
+                    killed: false,
+                }
+            })
+        },
+    )
 }
 
 /// An `Exec` seam answering the three `gh` calls a GitHub resolution makes.
@@ -238,11 +240,7 @@ fn github_exec(permissions: Value) -> (Exec, Arc<Mutex<Vec<Vec<String>>>>) {
                         ..ExecResult::default()
                     };
                 }
-                if first == "api"
-                    && args
-                        .iter()
-                        .any(|argument| argument.starts_with("repos/"))
-                {
+                if first == "api" && args.iter().any(|argument| argument.starts_with("repos/")) {
                     return ExecResult {
                         stdout: permissions.to_string(),
                         code: 0,
@@ -295,10 +293,7 @@ async fn check_defaults_to_the_origin_and_reports_the_identity_as_json() {
         "alice",
     ))
     .await;
-    let repo = git_repo(
-        "origin",
-        Some("https://gitea.test/owner/name.git"),
-    );
+    let repo = git_repo("origin", Some("https://gitea.test/owner/name.git"));
     let environment = forge::environment(&[
         ("GITEA_TOKEN", "gitea-secret-value"),
         ("DEVBOARD_GITEA_URL", server.base.as_str()),
@@ -372,11 +367,8 @@ async fn check_defaults_to_the_origin_and_reports_the_identity_as_json() {
 
 #[tokio::test]
 async fn forge_gitea_defaults_the_host_to_the_configured_gitea_address() {
-    let server = StubServer::start(gitea_handler(
-        json!({"pull": true, "push": true}),
-        "alice",
-    ))
-    .await;
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
     let root = git_repo("configured-host", None);
     let environment = forge::environment(&[
         ("GITEA_TOKEN", "configured-secret"),
@@ -389,7 +381,14 @@ async fn forge_gitea_defaults_the_host_to_the_configured_gitea_address() {
     };
 
     let parsed = parsed_of(
-        &["check", "--forge", "gitea", "--project", "owner/name", "--json"],
+        &[
+            "check",
+            "--forge",
+            "gitea",
+            "--project",
+            "owner/name",
+            "--json",
+        ],
         &root,
         &context.environment,
     );
@@ -408,11 +407,8 @@ async fn forge_gitea_defaults_the_host_to_the_configured_gitea_address() {
 
 #[tokio::test]
 async fn gitea_token_precedence_follows_the_configured_order() {
-    let server = StubServer::start(gitea_handler(
-        json!({"pull": true, "push": true}),
-        "alice",
-    ))
-    .await;
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
     let root = git_repo("token-order", None);
     let environment = forge::environment(&[
         ("GITEA_TOKEN", "preferred-token"),
@@ -426,7 +422,14 @@ async fn gitea_token_precedence_follows_the_configured_order() {
     };
 
     let parsed = parsed_of(
-        &["check", "--forge", "gitea", "--project", "owner/name", "--json"],
+        &[
+            "check",
+            "--forge",
+            "gitea",
+            "--project",
+            "owner/name",
+            "--json",
+        ],
         &root,
         &context.environment,
     );
@@ -440,11 +443,8 @@ async fn gitea_token_precedence_follows_the_configured_order() {
     assert_no_token(&outcome, "preferred-token");
     assert_no_token(&outcome, "fallback-token");
 
-    let fallback_server = StubServer::start(gitea_handler(
-        json!({"pull": true, "push": true}),
-        "alice",
-    ))
-    .await;
+    let fallback_server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
     let fallback_environment = forge::environment(&[
         ("DEVBOARD_GITEA_TOKEN", "fallback-token"),
         ("DEVBOARD_GITEA_URL", fallback_server.base.as_str()),
@@ -456,7 +456,14 @@ async fn gitea_token_precedence_follows_the_configured_order() {
     };
     let fallback = forge_auth::execute(
         &parsed_of(
-            &["check", "--forge", "gitea", "--project", "owner/name", "--json"],
+            &[
+                "check",
+                "--forge",
+                "gitea",
+                "--project",
+                "owner/name",
+                "--json",
+            ],
             &root,
             &fallback_context.environment,
         ),
@@ -475,11 +482,8 @@ async fn gitea_token_precedence_follows_the_configured_order() {
 
 #[tokio::test]
 async fn a_public_repository_reports_an_anonymous_read_identity() {
-    let server = StubServer::start(gitea_handler(
-        json!({"pull": true, "push": false}),
-        "alice",
-    ))
-    .await;
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": false}), "alice")).await;
     let root = git_repo("anonymous", None);
     let environment = forge::environment(&[("DEVBOARD_GITEA_URL", server.base.as_str())]);
     let context = Context {
@@ -489,7 +493,14 @@ async fn a_public_repository_reports_an_anonymous_read_identity() {
     };
 
     let parsed = parsed_of(
-        &["check", "--forge", "gitea", "--project", "owner/name", "--json"],
+        &[
+            "check",
+            "--forge",
+            "gitea",
+            "--project",
+            "owner/name",
+            "--json",
+        ],
         &root,
         &context.environment,
     );
@@ -753,22 +764,22 @@ fn usage_errors_name_the_flag_and_never_run_a_probe() {
         "--host is required when neither DEVBOARD_GITEA_URL nor the origin remote names one"
     );
 
-    let project = parse(&["check", "--host", "gitea.test"], &root, &environment)
-        .expect_err("no project");
+    let project =
+        parse(&["check", "--host", "gitea.test"], &root, &environment).expect_err("no project");
     assert_eq!(
         project.message,
         "--project is required when the origin remote does not name a repository"
     );
 
-    let forge = parse(&["check", "--forge", "bitbucket"], &root, &environment)
-        .expect_err("bad forge");
+    let forge =
+        parse(&["check", "--forge", "bitbucket"], &root, &environment).expect_err("bad forge");
     assert_eq!(
         forge.message,
         "--forge must be github, gitlab, or gitea, got: bitbucket"
     );
 
-    let required = parse(&["check", "--required", "admin"], &root, &environment)
-        .expect_err("bad access");
+    let required =
+        parse(&["check", "--required", "admin"], &root, &environment).expect_err("bad access");
     assert_eq!(
         required.message,
         "--required must be read or write, got: admin"
@@ -857,10 +868,7 @@ async fn the_binary_exits_with_the_check_verdict_and_prints_no_token() {
         "alice",
     ))
     .await;
-    let repo = git_repo(
-        "binary",
-        Some("https://gitea.test/owner/name.git"),
-    );
+    let repo = git_repo("binary", Some("https://gitea.test/owner/name.git"));
     let path = placeholder_cli_path(&repo);
     let binary = env!("CARGO_BIN_EXE_devboard");
 

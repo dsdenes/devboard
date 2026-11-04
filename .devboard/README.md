@@ -699,10 +699,9 @@ operator's inherited `OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then add
 selected keys (a Go peer also receives an OpenRouter key when one exists, for its fallback
 chain).
 
-`omp/config.yml` is still installed as `<host>/.omp/config.yml`, but it no longer pins
-`modelRoles`: a project-level pin would override the per-peer selection. The interactive agent
-started in the repository keeps OMP's configured default. Editing `omp/config.yml` here and
-rerunning `install.sh` changes the installed copy.
+The installer writes no project-level `omp/config.yml`, because any `modelRoles` pin there would
+override the per-peer selection. The interactive agent started in the repository keeps OMP's
+configured default, and every generated peer directory owns its own `config.yml`.
 
 `bun run verify:providers` proves the selection matrix, the 1% boundary, unknown-usage ranking,
 OpenRouter fallback, refusal, masking, environment and argv hygiene, generated roles,
