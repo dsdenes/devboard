@@ -483,6 +483,22 @@ checkout's released source version on a source checkout. The status bar labels t
 `installed` or `source` accordingly; the reload control appears only when a replacement could not
 start.
 
+### Release suite
+
+`devboard publish` runs the workspace suite before it tags, pushes, or dispatches the release
+workflow, and refuses the release while the suite exits nonzero. The same step runs alone as
+`devboard release-suite [--dir <workspace>]`, defaulting to the harness workspace. It retries the
+whole suite up to nine times and stops at the first attempt with no failing test; a test that
+fails three consecutive attempts is skipped for the rest of that run, and the remaining attempts
+run only the other test names through `cargo test --exact`. No tracked file is rewritten, so
+`git status --porcelain` is empty afterwards and the tree is byte-identical.
+
+Each skipped test files one Gitea issue whose title names the exact test and whose body names the
+file, the failed attempt output, the released commit, and the workflow run; a later run comments on
+the open issue instead of filing a second one. Filing failure prints one line and never changes the
+exit code. A suite that cannot compile, or whose output names no test, is structural: it exits
+nonzero, files nothing, and prints the first concrete error line.
+
 ### Publish-only source refresh
 
 A canonical source checkout never installs a released binary and never replaces itself on an

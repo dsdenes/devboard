@@ -264,7 +264,7 @@ mod cutover_tests {
     #[test]
     fn a_flip_is_configuration_only() {
         let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.test-tmp")
+            .join("../.test-tmp")
             .join(format!("cutover-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("a scratch directory");
         let path = directory.join("cutover.json");
@@ -281,6 +281,7 @@ mod cutover_tests {
         std::fs::write(&path, r#"{"commands":{"getGoal":"typescript"}}"#).expect("a flip");
         let flipped = Cutover::load(&path).expect("the allowlist loads");
         assert_eq!(flipped.backend("getGoal"), Backend::TypeScript);
+        std::fs::remove_dir_all(&directory).expect("the scratch directory is removed");
     }
 }
 

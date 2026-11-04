@@ -2112,6 +2112,14 @@ impl FlowMode {
             .join(crate::journal::journal_key(&app.config().repo_dir))
     }
 
+    /// The flow root while the server that owns the state directory is still
+    /// alive. A torn-down mode has no root to write under, and its empty
+    /// [`Self::flow_root`] must never become the process working directory.
+    fn live_flow_root(&self) -> Option<PathBuf> {
+        self.app()?;
+        Some(self.flow_root())
+    }
+
     fn repo_dir(&self) -> PathBuf {
         self.app()
             .map(|app| app.config().repo_dir.clone())
@@ -2124,7 +2132,7 @@ impl FlowMode {
             .session
             .as_ref()
             .map(|session| session.id.clone())?;
-        Some(self.flow_root().join(id))
+        Some(self.live_flow_root()?.join(id))
     }
 
     fn path(&self, name: &str) -> Result<PathBuf, String> {
@@ -2401,6 +2409,9 @@ impl FlowMode {
     // -------------------------------------------------------- persistence
 
     fn persist(&self) {
+        let Some(root) = self.live_flow_root() else {
+            return;
+        };
         let mut inner = self.lock();
         let Some(session) = inner.session.as_mut() else {
             return;
@@ -2410,7 +2421,7 @@ impl FlowMode {
             version: 1,
             session,
         };
-        let directory = self.flow_root().join(session.id.clone());
+        let directory = root.join(session.id.clone());
         let path = directory.join("session.json");
         let value = match serde_json::to_value(&file) {
             Ok(value) => value,
@@ -2430,13 +2441,16 @@ impl FlowMode {
 
     /// Writes the reviewable artifacts beside the session's machine state.
     fn persist_artifacts(&self) {
+        let Some(root) = self.live_flow_root() else {
+            return;
+        };
         let (directory, session, goal_creation_active, persisted_goal) = {
             let inner = self.lock();
             let Some(session) = inner.session.clone() else {
                 return;
             };
             (
-                self.flow_root().join(session.id.clone()),
+                root.join(session.id.clone()),
                 session,
                 inner.goal_creation.is_some(),
                 inner.persisted_goal.clone(),
@@ -2778,7 +2792,9 @@ impl FlowMode {
     }
 
     fn new_session(&self) {
-        let root = self.flow_root();
+        let Some(root) = self.live_flow_root() else {
+            return;
+        };
         if std::fs::create_dir_all(&root).is_err() {
             return;
         }
