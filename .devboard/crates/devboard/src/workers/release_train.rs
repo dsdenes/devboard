@@ -2392,6 +2392,9 @@ pub type ActivityFn = Arc<dyn Fn(&str) + Send + Sync>;
 pub type StopFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 pub type RunFuture = Pin<Box<dyn Future<Output = ReleaseRunResult> + Send>>;
 pub type RunReleaseFn = Arc<dyn Fn(ReleaseRunInput) -> RunFuture + Send + Sync>;
+pub type PublishFuture =
+    Pin<Box<dyn Future<Output = anyhow::Result<crate::publish::PublishReport>> + Send>>;
+pub type PublishFn = Arc<dyn Fn(crate::publish::PublishArgs) -> PublishFuture + Send + Sync>;
 pub type VerifyFn = Arc<
     dyn Fn(ReleaseVerificationOptions) -> Pin<Box<dyn Future<Output = ReleaseVerification> + Send>>
         + Send
@@ -2446,23 +2449,26 @@ fn write_run_activity(run_dir: &Path, lines: &[String]) {
     }
 }
 
-/// The default release path: the native binary's `publish` command, then
-/// independent release verification. The parent wires `publish.rs` here by
-/// replacing the worker's `run_release` option; this is the single call site.
+/// The default release path: the native binary's `publish` command, then an
+/// independent read of the release it proved. The tests replace the `publish`
+/// and `verify` options; production keeps both defaults.
 pub fn default_release_runner(
     verify: VerifyFn,
+    publish: PublishFn,
     environment: HashMap<String, String>,
 ) -> RunReleaseFn {
     Arc::new(move |input: ReleaseRunInput| {
         let verify = verify.clone();
+        let publish = publish.clone();
         let environment = environment.clone();
-        Box::pin(async move { run_release_and_verify(input, verify, environment).await })
+        Box::pin(async move { run_release_and_verify(input, verify, publish, environment).await })
     })
 }
 
 async fn run_release_and_verify(
     input: ReleaseRunInput,
     verify: VerifyFn,
+    publish: PublishFn,
     environment: HashMap<String, String>,
 ) -> ReleaseRunResult {
     if (input.stopping)() {
@@ -2480,17 +2486,13 @@ async fn run_release_and_verify(
         Some(Arc::new(move |line: &str| activity(line)) as Arc<dyn Fn(&str) + Send + Sync>)
     };
     let mut agent_error: Option<String> = None;
-    match tokio::time::timeout(
-        Duration::from_millis(RUN_TIMEOUT_MS),
-        crate::publish::publish(publish_args),
-    )
-    .await
-    {
+    let mut published = None;
+    match tokio::time::timeout(Duration::from_millis(RUN_TIMEOUT_MS), publish(publish_args)).await {
         Err(_) => {
             agent_error = Some("the release agent did not finish within 60 minutes".to_string())
         }
         Ok(Err(error)) => agent_error = Some(format!("{error:#}")),
-        Ok(Ok(_report)) => {}
+        Ok(Ok(report)) => published = Some(report),
     }
     // A stop or drain never skips the verification: the agent may already have
     // published, so the record must say whether the release actually shipped.
@@ -2498,11 +2500,27 @@ async fn run_release_and_verify(
     if stopped {
         (input.activity)("stopped during the release run; verifying what it shipped");
     }
+    // Verify the release publish actually proved, not the version this run was
+    // handed. A retry whose tag was superseded releases the newer range at the
+    // integration tip; verifying the handed version instead would fail after a
+    // successful release and repeat that failure on every tick.
+    let (target, version) = match &published {
+        Some(report) => {
+            if report.version != input.request.version {
+                (input.activity)(&format!(
+                    "publish released v{} instead of the requested v{}; verifying the published release",
+                    report.version, input.request.version
+                ));
+            }
+            (report.commit.clone(), report.version.clone())
+        }
+        None => (input.request.target.clone(), input.request.version.clone()),
+    };
     let result = read_result(&input.run_dir);
     let verified = verify(ReleaseVerificationOptions {
         repo_dir: input.repo_dir.clone(),
-        target: input.request.target.clone(),
-        version: input.request.version.clone(),
+        target,
+        version,
         environment,
         activity: input.activity.clone(),
         refresh: None,
@@ -2602,6 +2620,7 @@ pub struct ReleaseTrainWorkerOptions {
     pub now: Option<Clock>,
     pub gate: Option<Arc<dyn Fn(&Path) -> Result<ReleaseTrainGate, String> + Send + Sync>>,
     pub run_release: Option<RunReleaseFn>,
+    pub publish: Option<PublishFn>,
     pub verify: Option<VerifyFn>,
     pub log: Option<LogFn>,
 }
@@ -2620,6 +2639,7 @@ impl ReleaseTrainWorkerOptions {
             now: None,
             gate: None,
             run_release: None,
+            publish: None,
             verify: None,
             log: None,
         }
@@ -2675,9 +2695,14 @@ impl ReleaseTrainWorker {
         let verify: VerifyFn = options.verify.unwrap_or_else(|| {
             Arc::new(|options: ReleaseVerificationOptions| Box::pin(verify_shipped(options)))
         });
-        let run_release = options
-            .run_release
-            .unwrap_or_else(|| default_release_runner(verify.clone(), environment.clone()));
+        let publish: PublishFn = options.publish.unwrap_or_else(|| {
+            Arc::new(|args: crate::publish::PublishArgs| {
+                Box::pin(crate::publish::publish(args)) as PublishFuture
+            })
+        });
+        let run_release = options.run_release.unwrap_or_else(|| {
+            default_release_runner(verify.clone(), publish, environment.clone())
+        });
         let gate = options.gate.unwrap_or_else(|| {
             Arc::new(|repo_dir: &Path| {
                 Ok(check_release_train(

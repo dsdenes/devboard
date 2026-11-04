@@ -159,8 +159,10 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   `devboard-manifest.json` and the checksums, and one tag naming the released commit.
 - **Retry.** A failing workflow conclusion, a missing GitHub release artifact, a missing Gitea
   manifest, or a rejected derived version records the failure with its detail, ships nothing, and
-  leaves the range unreleased. The next due tick starts a new run without operator action. A failed run is
-  never recorded as released.
+  leaves the range unreleased. The next due tick starts a new run without operator action. When
+  `main` has moved past the failed version's tag, that retry releases the range at the current tip
+  and verifies the release publish actually proved, so a superseded version is never re-reported
+  as a failure after a successful release. A failed run is never recorded as released.
 - **Agent.** `.devboard/prompts/release-train.md` instructs one run to fetch canonical `main`,
   release it through `devboard publish` from the integration checkout, verify the GitHub assets
   and the Gitea manifest, and report the version and release URL. `devboard publish` dispatches

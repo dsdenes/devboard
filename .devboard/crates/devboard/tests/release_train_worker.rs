@@ -11,7 +11,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use devboard::publish::{MANIFEST_CHECKSUM_ASSET, RELEASE_INSTALLERS, RELEASE_TARGETS};
+use devboard::publish::{
+    PublishArgs, PublishReport, SourceRefreshReport, SourceRefreshRequest, MANIFEST_CHECKSUM_ASSET,
+    RELEASE_INSTALLERS, RELEASE_TARGETS,
+};
 use devboard::release::MANIFEST_ASSET;
 use devboard::workers::release_train::{
     activity_path, check_release_train, empty_state, parse_iso_millis, read_result, read_settings,
@@ -19,7 +22,7 @@ use devboard::workers::release_train::{
     release_train_worker_states, request_path, run_directory, runs_directory, state_path,
     verify_shipped, versioned_control_directory, versioned_lock_path, versioned_worker_state_path,
     write_command, write_state, AgentLifecycle, Clock, ForgeRelease, GateGit, GitOutcome,
-    ReleaseRunInput, ReleaseRunResult, ReleaseTrainCommand, ReleaseTrainCommit,
+    PublishFuture, ReleaseRunInput, ReleaseRunResult, ReleaseTrainCommand, ReleaseTrainCommit,
     ReleaseTrainFailure, ReleaseTrainGate, ReleaseTrainGateOptions, ReleaseTrainRequest,
     ReleaseTrainRun, ReleaseTrainRunState, ReleaseTrainTag, ReleaseTrainWorker,
     ReleaseTrainWorkerOptions, ReleaseVerification, ReleaseVerificationOptions,
@@ -1020,6 +1023,150 @@ async fn a_recorded_failure_whose_tag_now_exists_is_verified_not_re_released() {
     );
     assert!(state.failure.is_none());
     assert_eq!(state.runs[0].state, ReleaseTrainRunState::Released);
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_recovery_verifies_the_release_publish_actually_proved() {
+    let workspace = workspace("recovery-version");
+    let repo = &workspace.repo_dir;
+    git(repo, &["init", "-q"]);
+    git(
+        repo,
+        &["commit", "--allow-empty", "-q", "-m", "fix: the release"],
+    );
+    let first = git(repo, &["rev-parse", "HEAD"]);
+    git(
+        repo,
+        &[
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "fix: the next change",
+        ],
+    );
+    let tip = git(repo, &["rev-parse", "HEAD"]);
+    git(repo, &["tag", "v1.0.1", &first]);
+    git(repo, &["tag", "v1.0.2", &tip]);
+    let directory = release_train_directory(&workspace.state_dir);
+    let mut state = empty_state("", repo.to_str().expect("a path"), start_ms());
+    state.failure = Some(ReleaseTrainFailure {
+        at: "2026-11-02T09:00:00.000Z".to_string(),
+        detail: "GitHub assets: the release v1.0.1 does not exist".to_string(),
+        sha: first.clone(),
+        range: format!("v1.0.0..{first}"),
+        version: Some("1.0.1".to_string()),
+    });
+    write_state(&directory, &state).expect("the seeded state");
+
+    let clock = FakeClock::new(start_ms());
+    let publishes = Arc::new(AtomicUsize::new(0));
+    let verified = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let mut options = ReleaseTrainWorkerOptions::new(repo, &workspace.state_dir);
+    options.harness_version = Some("test-version".to_string());
+    options.manual = true;
+    options.now = Some(clock.function());
+    options.gate = Some(gate_ok(ReleaseTrainGate::Nothing {
+        target: tip.clone(),
+        previous: Some(ReleaseTrainTag {
+            tag: "v1.0.2".to_string(),
+            version: "1.0.2".to_string(),
+        }),
+        range: format!("v1.0.2..{tip}"),
+    }));
+    options.publish = Some({
+        let publishes = publishes.clone();
+        let commit = tip.clone();
+        Arc::new(move |_args: PublishArgs| -> PublishFuture {
+            publishes.fetch_add(1, Ordering::SeqCst);
+            let commit = commit.clone();
+            Box::pin(async move {
+                Ok(PublishReport {
+                    version: "1.0.2".to_string(),
+                    tag: "v1.0.2".to_string(),
+                    commit,
+                    published: true,
+                    workflow_run: None,
+                    github_assets: Vec::new(),
+                    manifest: String::new(),
+                    source_refresh: SourceRefreshReport {
+                        request: SourceRefreshRequest {
+                            schema: 1,
+                            commit: String::new(),
+                            version: String::new(),
+                            dist_digest: String::new(),
+                            requested_at: String::new(),
+                        },
+                        written: Vec::new(),
+                        applied: Vec::new(),
+                        failed: Vec::new(),
+                    },
+                })
+            })
+        })
+    });
+    options.verify = Some({
+        let verified = verified.clone();
+        Arc::new(move |options: ReleaseVerificationOptions| -> Pin<
+            Box<dyn Future<Output = ReleaseVerification> + Send>,
+        > {
+            verified
+                .lock()
+                .expect("the verifications")
+                .push((options.target.clone(), options.version.clone()));
+            Box::pin(async move {
+                if options.version == "1.0.1" {
+                    ReleaseVerification::Failed {
+                        phase: ReleaseVerificationPhase::Github,
+                        version: options.version.clone(),
+                        detail: "GitHub assets: the release v1.0.1 does not exist".to_string(),
+                    }
+                } else {
+                    ReleaseVerification::Ok {
+                        version: options.version.clone(),
+                        url: format!("https://forge.test/releases/tag/v{}", options.version),
+                    }
+                }
+            })
+        }) as VerifyFn
+    });
+    options.log = Some(Arc::new(|_line: &str| {}));
+    let worker = ReleaseTrainWorker::new(options);
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+
+    assert_eq!(publishes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        verified.lock().expect("the verifications").clone(),
+        vec![
+            (first.clone(), "1.0.1".to_string()),
+            (tip.clone(), "1.0.2".to_string())
+        ],
+        "the recovery verifies the published release, never the handed version"
+    );
+    let state = worker.current_state();
+    assert_eq!(
+        state
+            .release
+            .as_ref()
+            .map(|release| release.version.as_str()),
+        Some("1.0.2")
+    );
+    assert!(state.failure.is_none(), "the recovery clears the failure");
+    assert!(
+        state
+            .runs
+            .iter()
+            .any(|run| run.state == ReleaseTrainRunState::Released),
+        "the recovery settles as a release"
+    );
+    assert!(
+        state.activity.iter().any(|line| line
+            == "publish released v1.0.2 instead of the requested v1.0.1; verifying the published release"),
+        "{:?}",
+        state.activity
+    );
     worker.stop().await;
 }
 
