@@ -11,6 +11,7 @@ pub mod goal_draft;
 pub mod issues;
 pub mod mcp_optimizer;
 pub mod release_train;
+pub mod run_owner;
 pub mod scout;
 pub mod single_responsibility;
 pub mod watchdog;
@@ -122,6 +123,7 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
 async fn run_family(invocation: &WorkerInvocation) -> anyhow::Result<()> {
     match invocation.family.as_str() {
         "goal-draft" => goal_draft::run(invocation).await,
+        "run-owner" => run_owner::run(invocation).await,
         "issues" => issues::run(invocation).await,
         "scout" => scout::run(invocation).await,
         "design" => design::run(invocation).await,

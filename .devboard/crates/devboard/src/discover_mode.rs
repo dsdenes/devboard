@@ -14,7 +14,8 @@ use time::format_description::FormatItem;
 use time::macros::format_description;
 use time::OffsetDateTime;
 
-use crate::acp::{AcpConnection, AcpConnectionOptions, AcpEvent, AcpId, AcpQuestion};
+use crate::acp::{AcpId, AcpQuestion};
+use crate::detached_run::{DetachedPeer, DetachedPeerOptions, DetachedRunOutcome};
 use crate::app::{App, Conn, StateSection};
 use crate::protocol::Command;
 
@@ -7228,7 +7229,7 @@ struct Run {
     activity: Vec<String>,
     question: Option<AcpQuestion>,
     remote: Option<RemoteRepository>,
-    peer: Option<Arc<AcpConnection>>,
+    peer: Option<Arc<DetachedPeer>>,
 }
 
 struct ModeState {
@@ -7257,9 +7258,12 @@ struct ModeState {
 
 #[derive(Clone)]
 struct StoredDiscover {
+    run_id: String,
+    staging_dir: String,
     started_at: String,
     agent: String,
     activity: Vec<String>,
+    question: Option<AcpQuestion>,
     remote: Option<RemoteRepository>,
 }
 
@@ -7870,10 +7874,30 @@ impl StateSection for ModeSection {
             SectionPart::Run => {
                 let stored = parse_stored_discover(value);
                 let mut state = lock(&self.mode.state);
-                state.restored = stored;
-                if state.restored.is_some() {
+                if let Some(stored) = &stored {
+                    // Build the run the reconnecting page owes before the
+                    // asynchronous attach runs; its owner's journals then
+                    // extend the same activity stream.
+                    state.run = Some(Run {
+                        run_id: stored.run_id.clone(),
+                        staging_dir: PathBuf::from(&stored.staging_dir),
+                        cwd: self
+                            .mode
+                            .app
+                            .upgrade()
+                            .map(|app| app.config().repo_dir.clone())
+                            .unwrap_or_default(),
+                        started_at: stored.started_at.clone(),
+                        agent: stored.agent.clone(),
+                        mode: "single",
+                        activity: stored.activity.clone(),
+                        question: stored.question.clone(),
+                        remote: stored.remote.clone(),
+                        peer: None,
+                    });
                     state.interrupted = true;
                 }
+                state.restored = stored;
             }
             SectionPart::Interrupted => {
                 lock(&self.mode.state).interrupted = value.as_bool().unwrap_or(false);
@@ -7928,6 +7952,7 @@ fn stored_discover_json(run: &Run) -> Value {
     json!({
         "runId": run.run_id,
         "stagingDir": run.staging_dir.to_string_lossy(),
+        "stagingDir": run.staging_dir.to_string_lossy(),
         "startedAt": run.started_at,
         "agent": run.agent,
         "activity": run.activity,
@@ -7977,7 +8002,7 @@ fn parse_question(value: &Value) -> Option<AcpQuestion> {
 }
 
 fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
-    let _run_id = value.get("runId")?.as_str()?.to_string();
+    let run_id = value.get("runId")?.as_str()?.to_string();
     let staging_dir = value.get("stagingDir")?.as_str()?.to_string();
     let started_at = value.get("startedAt")?.as_str()?.to_string();
     let activity: Vec<String> = value
@@ -7997,11 +8022,17 @@ fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
         }
         Some(remote) => Some(parse_stored_target(remote)?),
     };
-    let _ = value.get("question").and_then(parse_question);
+    let question = match value.get("question") {
+        None | Some(Value::Null) => None,
+        Some(question) => Some(parse_question(question)?),
+    };
     Some(StoredDiscover {
+        run_id,
+        staging_dir,
         started_at,
         agent,
         activity,
+        question,
         remote,
     })
 }
@@ -8289,72 +8320,6 @@ fn append_activity(run: &mut Run, text: &str, append: bool) {
     run.activity.push(text.to_string());
 }
 
-fn spawn_event_pump(
-    app: &Arc<App>,
-    mode: &Arc<Mode>,
-    run_id: &str,
-    mut events: tokio::sync::mpsc::UnboundedReceiver<AcpEvent>,
-) {
-    let app = Arc::clone(app);
-    let mode = Arc::clone(mode);
-    let run_id = run_id.to_string();
-    tokio::spawn(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                AcpEvent::Activity(activity) => {
-                    let frame = {
-                        let mut state = lock(&mode.state);
-                        let Some(run) = state.run.as_mut().filter(|run| run.run_id == run_id)
-                        else {
-                            continue;
-                        };
-                        app.shared.journal.write("activity", &activity.text, None);
-                        let append = activity.append && !run.activity.is_empty();
-                        append_activity(run, &activity.text, append);
-                        let mut frame = json!({
-                            "type": "discoverActivity",
-                            "agent": run.agent,
-                            "text": activity.text,
-                        });
-                        if append {
-                            frame["append"] = Value::Bool(true);
-                        }
-                        frame
-                    };
-                    app.shared.send_all(frame, None);
-                }
-                AcpEvent::Question(question) => {
-                    let frame = {
-                        let mut state = lock(&mode.state);
-                        let Some(run) = state.run.as_mut().filter(|run| run.run_id == run_id)
-                        else {
-                            continue;
-                        };
-                        app.shared
-                            .journal
-                            .write("question", &question.message, Some("discover"));
-                        run.question = Some(question.clone());
-                        json!({
-                            "type": "discoverQuestion",
-                            "agent": run.agent,
-                            "id": acp_id_json(&question.id),
-                            "message": question.message,
-                            "options": serde_json::to_value(&question.options)
-                                .unwrap_or(Value::Array(Vec::new())),
-                        })
-                    };
-                    app.shared.send_all(frame, None);
-                }
-                AcpEvent::Stderr(text) => {
-                    app.shared.journal.write("acp-stderr", &text, None);
-                    eprint!("{text}");
-                }
-                AcpEvent::Text(_) | AcpEvent::SessionUpdate => {}
-            }
-        }
-    });
-}
-
 /// True while this run is still the one the mode owns.
 fn still_current(mode: &Arc<Mode>, run_id: &str, request: u64) -> bool {
     let state = lock(&mode.state);
@@ -8366,6 +8331,9 @@ fn still_current(mode: &Arc<Mode>, run_id: &str, request: u64) -> bool {
             .unwrap_or(false)
 }
 
+/// Runs exactly one agent against one root: one detached owner, one staging
+/// directory, one validated slice, one publication. Returns true only when the
+/// slice was published; a failure or a stop reports itself and returns false.
 async fn run_agent(
     app: &Arc<App>,
     mode: &Arc<Mode>,
@@ -8374,6 +8342,7 @@ async fn run_agent(
     run_mode: &'static str,
     target: &DiscoverTarget,
     resumed: Option<&StoredDiscover>,
+    attach: bool,
 ) -> bool {
     let Some(descriptor) = discover_agent(agent) else {
         notify_discover_failure(conn, &format!("Unknown Discover agent: {agent}."));
@@ -8381,9 +8350,22 @@ async fn run_agent(
     };
     let repo_dir = app.config().repo_dir.clone();
     let facts_before = host_facts(&target.root);
-    let run_id = new_run_id();
-    let staging_dir = staging_directory(&target.root, &run_id);
-    {
+    let run_id = if attach {
+        resumed
+            .map(|stored| stored.run_id.clone())
+            .unwrap_or_else(new_run_id)
+    } else {
+        new_run_id()
+    };
+    let staging_dir = if attach {
+        resumed
+            .map(|stored| stored.staging_dir.clone())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| staging_directory(&target.root, &run_id))
+    } else {
+        staging_directory(&target.root, &run_id)
+    };
+    if !attach {
         if let Err(error) = fs::create_dir_all(&staging_dir) {
             notify_discover_failure(
                 conn,
@@ -8471,52 +8453,141 @@ async fn run_agent(
     if !still_current(mode, &run_id, request) {
         return false;
     }
-    let command = format!("{} --no-skills", app.config().agent_command);
-    let options = AcpConnectionOptions::new(command, target.root.to_string_lossy().into_owned())
-        .with_env(environment);
-    let (connection, events) = match AcpConnection::connect(options).await {
-        Ok(connection) => connection,
-        Err(error) => {
+
+    let activity_run = run_id.clone();
+    let activity_app = Arc::clone(app);
+    let activity_mode = Arc::clone(mode);
+    let on_activity: crate::detached_run::ActivityCallback =
+        Arc::new(move |activity: crate::acp::AcpActivity| {
+            let frame = {
+                let mut state = lock(&activity_mode.state);
+                let Some(run) = state
+                    .run
+                    .as_mut()
+                    .filter(|run| run.run_id == activity_run)
+                else {
+                    return;
+                };
+                activity_app
+                    .shared
+                    .journal
+                    .write("activity", &activity.text, None);
+                let append = activity.append && !run.activity.is_empty();
+                append_activity(run, &activity.text, append);
+                let mut frame = json!({
+                    "type": "discoverActivity",
+                    "agent": run.agent,
+                    "text": activity.text,
+                });
+                if append {
+                    frame["append"] = Value::Bool(true);
+                }
+                frame
+            };
+            activity_app.shared.send_all(frame, None);
+        });
+    let question_run = run_id.clone();
+    let question_app = Arc::clone(app);
+    let question_mode = Arc::clone(mode);
+    let on_question: crate::detached_run::QuestionCallback =
+        Arc::new(move |question: AcpQuestion| {
+            let frame = {
+                let mut state = lock(&question_mode.state);
+                let Some(run) = state
+                    .run
+                    .as_mut()
+                    .filter(|run| run.run_id == question_run)
+                else {
+                    return;
+                };
+                question_app
+                    .shared
+                    .journal
+                    .write("question", &question.message, Some("discover"));
+                run.question = Some(question.clone());
+                json!({
+                    "type": "discoverQuestion",
+                    "agent": run.agent,
+                    "id": acp_id_json(&question.id),
+                    "message": question.message,
+                    "options": serde_json::to_value(&question.options)
+                        .unwrap_or(Value::Array(Vec::new())),
+                })
+            };
+            question_app.shared.send_all(frame, None);
+        });
+    let stderr_app = Arc::clone(app);
+    let on_stderr: crate::detached_run::StderrCallback = Arc::new(move |text: String| {
+        stderr_app.shared.journal.write("acp-stderr", &text, None);
+        eprint!("{text}");
+    });
+
+    let skip_activity = lock(&mode.state)
+        .run
+        .as_ref()
+        .filter(|run| run.run_id == run_id)
+        .map(|run| run.activity.len())
+        .unwrap_or(0);
+    let mut options = DetachedPeerOptions::new(
+        repo_dir.clone(),
+        app.config().state_dir.clone(),
+        "discover",
+        run_id.clone(),
+        app.instance.clone(),
+        format!("{} --no-skills", app.config().agent_command),
+        target.root.to_string_lossy().into_owned(),
+    )
+    .env(environment)
+    .skip_activity(skip_activity)
+    .attach_only(attach)
+    .activity(on_activity)
+    .question(on_question)
+    .stderr(on_stderr);
+    options.harness_version = app.running_version.clone();
+    let peer = DetachedPeer::new(options);
+    {
+        let mut state = lock(&mode.state);
+        match state.run.as_mut().filter(|run| run.run_id == run_id) {
+            Some(run) => {
+                if attach {
+                    if let Some(stored) = peer.state() {
+                        if let Some(question) = stored.question {
+                            run.question = Some(question);
+                        }
+                    }
+                }
+                run.peer = Some(Arc::clone(&peer));
+            }
+            None => {
+                peer.close();
+                return false;
+            }
+        }
+    }
+    if attach {
+        push_state(app, mode);
+    }
+
+    let prompt = format!("{} {}", descriptor.command, staging_dir.display());
+    let outcome = peer.run(&prompt).await;
+    if !still_current(mode, &run_id, request) {
+        return false;
+    }
+    match outcome {
+        Ok(DetachedRunOutcome::Completed) | Ok(DetachedRunOutcome::Attached) => {}
+        Ok(DetachedRunOutcome::Stopped) | Ok(DetachedRunOutcome::Preserved) => return false,
+        Err(message) => {
             let run = lock(&mode.state).run.clone();
             if let Some(run) = run.filter(|run| still_current(mode, &run.run_id, request)) {
                 fail_discover(
                     app,
                     mode,
                     &run,
-                    &format!("Could not start the {} agent: {error}", descriptor.label),
+                    &format!("The {} run failed: {message}", descriptor.label),
                 );
             }
             return false;
         }
-    };
-    if !still_current(mode, &run_id, request) {
-        connection.close();
-        return false;
-    }
-    let peer = Arc::new(connection);
-    {
-        let mut state = lock(&mode.state);
-        if let Some(run) = state.run.as_mut().filter(|run| run.run_id == run_id) {
-            run.peer = Some(Arc::clone(&peer));
-        }
-    }
-    spawn_event_pump(app, mode, &run_id, events);
-
-    let prompt = format!("{} {}", descriptor.command, staging_dir.display());
-    if let Err(error) = peer.run(&prompt).await {
-        let run = lock(&mode.state).run.clone();
-        if let Some(run) = run.filter(|run| still_current(mode, &run.run_id, request)) {
-            fail_discover(
-                app,
-                mode,
-                &run,
-                &format!("The {} run failed: {error}", descriptor.label),
-            );
-        }
-        return false;
-    }
-    if !still_current(mode, &run_id, request) {
-        return false;
     }
     let published = (|| -> Result<(), String> {
         if !target.root.is_dir() {
@@ -8790,7 +8861,7 @@ async fn start_all(app: &Arc<App>, mode: &Arc<Mode>, conn: Option<&Conn>, claime
     let mut last = DISCOVER_RUN_ORDER[0];
     for id in DISCOVER_RUN_ORDER {
         last = id;
-        let published = run_agent(app, mode, conn, id, "all", &target, None).await;
+        let published = run_agent(app, mode, conn, id, "all", &target, None, false).await;
         if !published {
             return;
         }
@@ -8813,7 +8884,7 @@ async fn start_agent(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn, agent: &Valu
     let Some(target) = resolve_discover_root(app, mode, Some(conn)).await else {
         return;
     };
-    let published = run_agent(app, mode, Some(conn), id, "single", &target, None).await;
+    let published = run_agent(app, mode, Some(conn), id, "single", &target, None, false).await;
     if !published {
         return;
     }
@@ -9038,6 +9109,7 @@ async fn start_remote(
             "single",
             &target,
             Some(&resumed),
+            false,
         )
         .await;
         if published {
@@ -9053,10 +9125,25 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
     if discover_agent(&stored.agent).is_none() {
         return;
     }
+    let config = app.config();
+    let attach = crate::detached_run::detached_run_live(
+        &config.state_dir,
+        &config.repo_dir,
+        "discover",
+        &stored.run_id,
+        &app.instance,
+    );
+    if !attach {
+        let staging = PathBuf::from(&stored.staging_dir);
+        let _ = fs::remove_dir_all(&staging);
+        if let Some(parent) = staging.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
     if stored.remote.is_none() {
         {
             let state = lock(&mode.state);
-            if state.cloning.is_some() || discover_active(&state) {
+            if state.cloning.is_some() || state.all_active || state.starting {
                 return;
             }
         }
@@ -9077,6 +9164,7 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
             "single",
             &target,
             Some(&stored),
+            attach,
         )
         .await;
         if published {
@@ -9107,8 +9195,20 @@ fn stop_discover(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn) {
         let run = state.run.take();
         state.all_active = false;
         if let Some(run) = &run {
-            if let Some(peer) = &run.peer {
-                peer.close();
+            match &run.peer {
+                Some(peer) => peer.close(),
+                None => {
+                    let directory = crate::detached_run::detached_run_directory(
+                        &app.config().state_dir,
+                        &app.config().repo_dir,
+                        "discover",
+                        &run.run_id,
+                    );
+                    crate::detached_run::write_detached_run_command(
+                        &crate::detached_run::detached_run_control_directory(&directory),
+                        &crate::detached_run::DetachedRunCommand::Stop,
+                    );
+                }
             }
             remove_staging(&run.cwd, &run.run_id);
             let started = state
@@ -9183,7 +9283,7 @@ async fn answer_discover(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn, id: &Val
         notify_discover_failure(Some(conn), "The Discover question is no longer pending.");
         return;
     };
-    let answered = peer.answer(&question.id, value_text).await;
+    let answered = peer.answer(&question.id, value_text);
     if !answered {
         notify_discover_failure(Some(conn), "The Discover question is no longer pending.");
         return;

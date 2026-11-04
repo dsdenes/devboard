@@ -28,6 +28,7 @@ use crate::acp::{
     PermissionPolicy,
 };
 use crate::app::{App, Conn};
+use crate::detached_run::{DetachedPeer, DetachedPeerOptions, DetachedRunOutcome};
 use crate::git::{run_git, GitResult};
 use crate::protocol::Command;
 
@@ -1637,14 +1638,14 @@ struct GoalCreation {
     token: u64,
     activity: Vec<String>,
     question: Option<FlowQuestion>,
-    agent: Option<Arc<AcpConnection>>,
+    agent: Option<Arc<DetachedPeer>>,
     restore: GoalCreationRestore,
 }
 
 struct Implementation {
     token: u64,
     activity: Vec<String>,
-    agent: Option<Arc<AcpConnection>>,
+    agent: Option<Arc<DetachedPeer>>,
     #[allow(dead_code)]
     finished: bool,
 }
@@ -1662,6 +1663,7 @@ struct Conversation {
 
 struct Analyst {
     token: u64,
+    agent: Option<Arc<AcpConnection>>,
 }
 
 /// Why the checkout is unavailable: the mode that owns it, the subject it is
@@ -1743,6 +1745,32 @@ pub fn controller(app: &Arc<App>) -> Option<Arc<FlowMode>> {
 
 fn next_token() -> u64 {
     NEXT_TOKEN.fetch_add(1, Ordering::SeqCst)
+}
+
+/// The ACP peers this controller still holds directly. A detached goal or
+/// implementation run belongs to its owner, which the replacement adopts.
+pub fn capture_children(app: Arc<App>) -> Vec<crate::detached_run::RecordedChild> {
+    let Some(mode) = controller(&app) else {
+        return Vec::new();
+    };
+    let inner = mode.lock();
+    let mut children = Vec::new();
+    let conversation = inner
+        .conversation
+        .as_ref()
+        .and_then(|conversation| conversation.agent.as_ref());
+    let analyst = inner.analyst.as_ref().and_then(|analyst| analyst.agent.as_ref());
+    for agent in [conversation, analyst].into_iter().flatten() {
+        let Some(pid) = agent.pid() else {
+            continue;
+        };
+        children.push(crate::detached_run::RecordedChild {
+            pid,
+            argv: agent.argv(),
+            cwd: mode.repo_dir().display().to_string(),
+        });
+    }
+    children
 }
 
 // ---------------------------------------------------------------------------
@@ -2062,7 +2090,11 @@ impl FlowMode {
                 agent.close();
             }
         }
-        inner.analyst = None;
+        if let Some(analyst) = inner.analyst.take() {
+            if let Some(agent) = &analyst.agent {
+                agent.close();
+            }
+        }
     }
 
     fn refuse_checkout_blocked(&self, action: &str) -> bool {
@@ -2116,6 +2148,20 @@ impl FlowMode {
         self.app()
             .map(|app| app.config().repo_dir.clone())
             .unwrap_or_default()
+    }
+
+    fn state_dir(&self) -> PathBuf {
+        self.app()
+            .map(|app| app.config().state_dir.clone())
+            .unwrap_or_default()
+    }
+
+    fn instance(&self) -> String {
+        self.app().map(|app| app.instance.clone()).unwrap_or_default()
+    }
+
+    fn harness_version(&self) -> Option<String> {
+        self.app().and_then(|app| app.running_version.clone())
     }
 
     fn session_dir(&self) -> Option<PathBuf> {
@@ -2652,9 +2698,17 @@ impl FlowMode {
         }
 
         let was_running = session.status == "running";
-        // An implementation owner lives inside this process in this port, so a
-        // restored running session has no owner left to adopt.
-        let adopted = false;
+        // A detached implementation owner outlives the dashboard. Attaching to
+        // it keeps the same run, worktree, and peer; only a run with no live
+        // owner stopped.
+        let adopted = was_running
+            && crate::detached_run::detached_run_live(
+                &self.state_dir(),
+                &self.repo_dir(),
+                "flow-implement",
+                &session.id,
+                &self.instance(),
+            );
         if was_running && !adopted {
             session.status = "stopped".to_string();
         }
@@ -2667,6 +2721,35 @@ impl FlowMode {
             inner.persisted_goal = missing_goal;
         }
         self.persist();
+
+        if adopted {
+            let activity: Vec<String> = Vec::new();
+            let token = next_token();
+            {
+                let mut inner = self.lock();
+                inner.implementation = Some(Implementation {
+                    token,
+                    activity: activity.clone(),
+                    agent: None,
+                    finished: false,
+                });
+            }
+            self.broadcast(json!({
+                "type": "flowImplementationStarted",
+                "sessionId": session_snapshot.id,
+                "worktree": session_snapshot.worktree,
+                "branch": session_snapshot.branch,
+                "baseRevision": session_snapshot.base_revision,
+            }));
+            self.publish();
+            let mode = Arc::clone(self);
+            let adopted_session = session_snapshot.clone();
+            let directory = directory.clone();
+            tokio::spawn(async move {
+                mode.run_implementation_peers(adopted_session, token, directory, true)
+                    .await;
+            });
+        }
 
         if was_running && !adopted {
             let message = "The server restarted, so the Flow implementation stopped. Start it again to resume.";
@@ -2928,24 +3011,94 @@ impl FlowMode {
             Some(command) => command,
             None => return,
         };
-        let options = AcpConnectionOptions::new(command, repo_dir.to_string_lossy().into_owned())
-            .with_env(environment);
-        let connected = AcpConnection::connect(options).await;
-        let (connection, events) = match connected {
-            Ok(connected) => connected,
-            Err(error) => {
-                if self.goal_creation_current(token) {
-                    self.error(&error.to_string());
-                    self.finish_goal_creation(false);
+        let mode = Arc::clone(self);
+        let on_activity: crate::detached_run::ActivityCallback = Arc::new(
+            move |activity: crate::acp::AcpActivity| {
+                let append = {
+                    let mut inner = mode.lock();
+                    let Some(creation) = inner.goal_creation.as_mut() else {
+                        return;
+                    };
+                    if creation.token != token {
+                        return;
+                    }
+                    let append = activity.append && !creation.activity.is_empty();
+                    if append {
+                        if let Some(last) = creation.activity.last_mut() {
+                            last.push_str(&activity.text);
+                        }
+                    } else {
+                        creation.activity.push(activity.text.clone());
+                    }
+                    append
+                };
+                mode.broadcast(json!({
+                    "type": "flowActivity",
+                    "text": activity.text,
+                    "append": append,
+                }));
+            },
+        );
+        let question_mode = Arc::clone(self);
+        let on_question: crate::detached_run::QuestionCallback =
+            Arc::new(move |question: AcpQuestion| {
+                let accepted = {
+                    let mut inner = question_mode.lock();
+                    let Some(creation) = inner.goal_creation.as_mut() else {
+                        return;
+                    };
+                    if creation.token != token {
+                        return;
+                    }
+                    creation.question = Some(flow_question(&question));
+                    true
+                };
+                if accepted {
+                    if let Some(app) = question_mode.app() {
+                        app.shared.journal.write(
+                            "question",
+                            &question.message,
+                            Some("flow:goal"),
+                        );
+                    }
+                    question_mode.broadcast(json!({
+                        "type": "flowQuestion",
+                        "target": "goal",
+                        "id": question.id,
+                        "message": question.message,
+                        "options": question.options,
+                    }));
                 }
-                return;
+            });
+        let stderr_mode = Arc::clone(self);
+        let on_stderr: crate::detached_run::StderrCallback = Arc::new(move |text: String| {
+            if let Some(app) = stderr_mode.app() {
+                app.shared.journal.write("acp-stderr", &text, None);
             }
-        };
-        if !self.goal_creation_current(token) {
-            connection.close();
-            return;
-        }
-        let agent = Arc::new(connection);
+        });
+        let skip_activity = self
+            .lock()
+            .goal_creation
+            .as_ref()
+            .filter(|creation| creation.token == token)
+            .map(|creation| creation.activity.len())
+            .unwrap_or(0);
+        let mut options = DetachedPeerOptions::new(
+            repo_dir.clone(),
+            self.state_dir(),
+            "flow-goal",
+            "goal",
+            self.instance(),
+            command,
+            repo_dir.to_string_lossy().into_owned(),
+        )
+        .env(environment)
+        .skip_activity(skip_activity)
+        .activity(on_activity)
+        .question(on_question)
+        .stderr(on_stderr);
+        options.harness_version = self.harness_version();
+        let agent = DetachedPeer::new(options);
         {
             let mut inner = self.lock();
             match inner.goal_creation.as_mut() {
@@ -2959,7 +3112,6 @@ impl FlowMode {
                 }
             }
         }
-        self.spawn_goal_events(token, Arc::clone(&agent), events);
 
         // The interview runs until the agent finishes, fails, or the operator
         // cancels it; no wall-clock limit ends it.
@@ -2969,9 +3121,13 @@ impl FlowMode {
             return;
         }
         match outcome {
-            Ok(_) => self.finish_goal_creation(true),
+            Ok(DetachedRunOutcome::Completed) => self.finish_goal_creation(true),
+            Ok(DetachedRunOutcome::Preserved) => {}
+            Ok(DetachedRunOutcome::Attached) | Ok(DetachedRunOutcome::Stopped) => {
+                self.finish_goal_creation(false);
+            }
             Err(error) => {
-                self.error(&error.to_string());
+                self.error(&error);
                 self.finish_goal_creation(false);
             }
         }
@@ -2982,89 +3138,6 @@ impl FlowMode {
             .goal_creation
             .as_ref()
             .is_some_and(|creation| creation.token == token)
-    }
-
-    fn spawn_goal_events(
-        self: &Arc<Self>,
-        token: u64,
-        agent: Arc<AcpConnection>,
-        mut events: mpsc::UnboundedReceiver<AcpEvent>,
-    ) {
-        let mode = Arc::clone(self);
-        tokio::spawn(async move {
-            while let Some(event) = events.recv().await {
-                match event {
-                    AcpEvent::Activity(activity) => {
-                        let append = {
-                            let mut inner = mode.lock();
-                            let Some(creation) = inner.goal_creation.as_mut() else {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            };
-                            if creation.token != token {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            }
-                            let append = activity.append && !creation.activity.is_empty();
-                            if append {
-                                if let Some(last) = creation.activity.last_mut() {
-                                    last.push_str(&activity.text);
-                                }
-                            } else {
-                                creation.activity.push(activity.text.clone());
-                            }
-                            append
-                        };
-                        mode.broadcast(json!({
-                            "type": "flowActivity",
-                            "text": activity.text,
-                            "append": append,
-                        }));
-                    }
-                    AcpEvent::Question(question) => {
-                        let accepted = {
-                            let mut inner = mode.lock();
-                            let Some(creation) = inner.goal_creation.as_mut() else {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            };
-                            if creation.token != token {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            }
-                            creation.question = Some(flow_question(&question));
-                            true
-                        };
-                        if accepted {
-                            if let Some(app) = mode.app() {
-                                app.shared.journal.write(
-                                    "question",
-                                    &question.message,
-                                    Some("flow:goal"),
-                                );
-                            }
-                            mode.broadcast(json!({
-                                "type": "flowQuestion",
-                                "target": "goal",
-                                "id": question.id,
-                                "message": question.message,
-                                "options": question.options,
-                            }));
-                        }
-                    }
-                    AcpEvent::Stderr(text) => {
-                        if let Some(app) = mode.app() {
-                            app.shared.journal.write("acp-stderr", &text, None);
-                        }
-                    }
-                    AcpEvent::Text(_) | AcpEvent::SessionUpdate => {}
-                }
-            }
-        });
     }
 
     fn finish_goal_creation(&self, read_file: bool) {
@@ -3284,27 +3357,117 @@ impl FlowMode {
         let Some(command) = self.agent_command() else {
             return;
         };
-        let options =
-            AcpConnectionOptions::new(command, session.worktree.clone()).with_env(environment);
-        let connected = AcpConnection::connect(options).await;
-        let (connection, events) = match connected {
-            Ok(connected) => connected,
-            Err(error) => {
-                if !self.implementation_current(token) {
-                    return;
+        let mode = Arc::clone(self);
+        let on_activity: crate::detached_run::ActivityCallback = Arc::new(
+            move |activity: crate::acp::AcpActivity| {
+                let (append, markers) = {
+                    let mut inner = mode.lock();
+                    let Some(implementation) = inner.implementation.as_mut() else {
+                        return;
+                    };
+                    if implementation.token != token {
+                        return;
+                    }
+                    let append = activity.append && !implementation.activity.is_empty();
+                    if append {
+                        if let Some(last) = implementation.activity.last_mut() {
+                            last.push_str(&activity.text);
+                        }
+                    } else {
+                        implementation.activity.push(activity.text.clone());
+                    }
+                    let mut markers: Vec<String> = Vec::new();
+                    if activity.text.contains(BLOCKER_MARKER) {
+                        for line in implementation.activity.iter() {
+                            if let Some(index) = line.find(BLOCKER_MARKER) {
+                                markers.push(
+                                    line[index + BLOCKER_MARKER.len()..].trim().to_string(),
+                                );
+                            }
+                        }
+                    }
+                    (append, markers)
+                };
+                mode.broadcast(json!({
+                    "type": "flowActivity",
+                    "text": activity.text,
+                    "append": append,
+                }));
+                for marker in markers {
+                    mode.add_blocker(&marker);
                 }
-                self.error(&error.to_string());
-                self.finish_implementation();
-                return;
+            },
+        );
+        let question_mode = Arc::clone(self);
+        let on_question: crate::detached_run::QuestionCallback =
+            Arc::new(move |question: AcpQuestion| {
+                let accepted = {
+                    let mut inner = question_mode.lock();
+                    let Some(implementation) = inner.implementation.as_ref() else {
+                        return;
+                    };
+                    if implementation.token != token {
+                        return;
+                    }
+                    let Some(session) = inner.session.as_mut() else {
+                        return;
+                    };
+                    session.question = Some(flow_question(&question));
+                    true
+                };
+                if accepted {
+                    question_mode.persist();
+                    question_mode.broadcast(json!({
+                        "type": "flowQuestion",
+                        "target": "implementation",
+                        "id": question.id,
+                        "message": question.message,
+                        "options": question.options,
+                    }));
+                }
+            });
+        let stderr_mode = Arc::clone(self);
+        let on_stderr: crate::detached_run::StderrCallback = Arc::new(move |text: String| {
+            if let Some(app) = stderr_mode.app() {
+                app.shared.journal.write("acp-stderr", &text, None);
             }
+        });
+        let skip_activity = self
+            .lock()
+            .implementation
+            .as_ref()
+            .filter(|implementation| implementation.token == token)
+            .map(|implementation| implementation.activity.len())
+            .unwrap_or(0);
+        let mut options = DetachedPeerOptions::new(
+            self.repo_dir(),
+            self.state_dir(),
+            "flow-implement",
+            session.id.clone(),
+            self.instance(),
+            command,
+            session.worktree.clone(),
+        )
+        .env(environment)
+        .skip_activity(skip_activity)
+        .attach_only(attach)
+        .activity(on_activity)
+        .question(on_question)
+        .stderr(on_stderr);
+        options.harness_version = self.harness_version();
+        let agent = DetachedPeer::new(options);
+        let attached_question = if attach {
+            agent.state().and_then(|state| state.question)
+        } else {
+            None
         };
-        if !self.implementation_current(token) {
-            connection.close();
-            return;
-        }
-        let agent = Arc::new(connection);
         {
             let mut inner = self.lock();
+            if let Some(question) = attached_question {
+                if let Some(session) = inner.session.as_mut() {
+                    session.question = Some(flow_question(&question));
+                }
+            }
             match inner.implementation.as_mut() {
                 Some(implementation) if implementation.token == token => {
                     implementation.agent = Some(Arc::clone(&agent));
@@ -3316,7 +3479,9 @@ impl FlowMode {
                 }
             }
         }
-        self.spawn_implementation_events(token, Arc::clone(&agent), events);
+        if attach {
+            self.persist();
+        }
 
         let prompt = if attach {
             String::new()
@@ -3329,14 +3494,18 @@ impl FlowMode {
             return;
         }
         match outcome {
-            Ok(_) => {
+            Ok(DetachedRunOutcome::Completed) => {
                 if let Some(implementation) = self.lock().implementation.as_mut() {
                     implementation.finished = true;
                 }
                 self.finish_implementation();
             }
+            Ok(DetachedRunOutcome::Preserved) => {}
+            Ok(DetachedRunOutcome::Attached) | Ok(DetachedRunOutcome::Stopped) => {
+                self.finish_implementation();
+            }
             Err(error) => {
-                self.error(&error.to_string());
+                self.error(&error);
                 self.finish_implementation();
             }
         }
@@ -3347,101 +3516,6 @@ impl FlowMode {
             .implementation
             .as_ref()
             .is_some_and(|implementation| implementation.token == token)
-    }
-
-    fn spawn_implementation_events(
-        self: &Arc<Self>,
-        token: u64,
-        agent: Arc<AcpConnection>,
-        mut events: mpsc::UnboundedReceiver<AcpEvent>,
-    ) {
-        let mode = Arc::clone(self);
-        tokio::spawn(async move {
-            while let Some(event) = events.recv().await {
-                match event {
-                    AcpEvent::Activity(activity) => {
-                        let (append, markers) = {
-                            let mut inner = mode.lock();
-                            let Some(implementation) = inner.implementation.as_mut() else {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            };
-                            if implementation.token != token {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            }
-                            let append = activity.append && !implementation.activity.is_empty();
-                            if append {
-                                if let Some(last) = implementation.activity.last_mut() {
-                                    last.push_str(&activity.text);
-                                }
-                            } else {
-                                implementation.activity.push(activity.text.clone());
-                            }
-                            let mut markers: Vec<String> = Vec::new();
-                            if activity.text.contains(BLOCKER_MARKER) {
-                                for line in implementation.activity.iter() {
-                                    if let Some(index) = line.find(BLOCKER_MARKER) {
-                                        markers.push(
-                                            line[index + BLOCKER_MARKER.len()..].trim().to_string(),
-                                        );
-                                    }
-                                }
-                            }
-                            (append, markers)
-                        };
-                        mode.broadcast(json!({
-                            "type": "flowActivity",
-                            "text": activity.text,
-                            "append": append,
-                        }));
-                        for marker in markers {
-                            mode.add_blocker(&marker);
-                        }
-                    }
-                    AcpEvent::Question(question) => {
-                        let accepted = {
-                            let mut inner = mode.lock();
-                            let Some(implementation) = inner.implementation.as_ref() else {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            };
-                            if implementation.token != token {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            }
-                            let Some(session) = inner.session.as_mut() else {
-                                drop(inner);
-                                agent.close();
-                                break;
-                            };
-                            session.question = Some(flow_question(&question));
-                            true
-                        };
-                        if accepted {
-                            mode.persist();
-                            mode.broadcast(json!({
-                                "type": "flowQuestion",
-                                "target": "implementation",
-                                "id": question.id,
-                                "message": question.message,
-                                "options": question.options,
-                            }));
-                        }
-                    }
-                    AcpEvent::Stderr(text) => {
-                        if let Some(app) = mode.app() {
-                            app.shared.journal.write("acp-stderr", &text, None);
-                        }
-                    }
-                    AcpEvent::Text(_) | AcpEvent::SessionUpdate => {}
-                }
-            }
-        });
     }
 
     fn finish_implementation(self: &Arc<Self>) {
@@ -3887,7 +3961,10 @@ impl FlowMode {
                             Ok((connection, events)) => {
                                 let connection = Arc::new(connection);
                                 agent = Some(Arc::clone(&connection));
-                                self.lock().analyst = Some(Analyst { token });
+                                self.lock().analyst = Some(Analyst {
+                                    token,
+                                    agent: Some(Arc::clone(&connection)),
+                                });
                                 self.spawn_analyst_events(Arc::clone(&connection), events);
                             }
                             Err(error) => binding_failure = Some(error.to_string()),
@@ -5654,7 +5731,7 @@ impl FlowMode {
                 self.error("No pending Flow goal question with that id.");
                 return;
             };
-            if !agent.answer(&question.id, &value).await {
+            if !agent.answer(&question.id, &value) {
                 self.error("No pending Flow goal question with that id.");
                 return;
             }
@@ -5689,7 +5766,7 @@ impl FlowMode {
             self.error("No pending Flow question with that id.");
             return;
         };
-        if question.id.as_key() != wanted || !agent.answer(&question.id, &value).await {
+        if question.id.as_key() != wanted || !agent.answer(&question.id, &value) {
             self.error("No pending Flow question with that id.");
             return;
         }

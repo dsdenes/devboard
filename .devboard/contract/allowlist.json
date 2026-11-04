@@ -116,10 +116,6 @@
   ],
   "statePrefixes": [
     {
-      "prefix": "runs/",
-      "reason": "the detached-run lease is compared once the run supervisor is ported"
-    },
-    {
       "prefix": "coach/",
       "reason": "the MCP optimizer projection is compared once its worker family is ported"
     }
