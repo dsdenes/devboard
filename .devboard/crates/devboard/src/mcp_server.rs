@@ -3480,18 +3480,44 @@ async fn run_verification_with(
     else {
         return Err("A check name is required.".to_string());
     };
-    let available = package_scripts(context)?;
-    let argv: Vec<String> = if check == "test" {
+    // The Rust checks run the harness's own toolchain from the harness
+    // directory. They need no `package.json`, so they are resolved before the
+    // client scripts are read.
+    let rust_argv: Option<Vec<String>> = match check {
+        "rust:fmt" => Some(vec![
+            "cargo".into(),
+            "fmt".into(),
+            "--check".into(),
+            "--all".into(),
+        ]),
+        "rust:clippy" => Some(vec![
+            "cargo".into(),
+            "clippy".into(),
+            "--workspace".into(),
+            "--all-targets".into(),
+            "--".into(),
+            "-D".into(),
+            "warnings".into(),
+        ]),
+        "rust:test" => Some(vec!["cargo".into(), "test".into(), "--workspace".into()]),
+        _ => None,
+    };
+    let argv: Vec<String> = if let Some(argv) = rust_argv {
+        argv
+    } else if check == "test" {
+        package_scripts(context)?;
         let mut argv = vec!["bun".to_string(), "test".to_string()];
         argv.extend(test_paths(context, args.get("paths"))?);
         argv
     } else if check == "typecheck" {
+        let available = package_scripts(context)?;
         if available.contains_key("typecheck") {
             vec!["bun".into(), "run".into(), "typecheck".into()]
         } else {
             vec!["bunx".into(), "tsc".into(), "--noEmit".into()]
         }
     } else if check == "check" || check == "build" {
+        let available = package_scripts(context)?;
         let Some(Value::String(script)) = available.get(check) else {
             return Err(format!(".devboard/package.json has no \"{check}\" script."));
         };
@@ -3502,13 +3528,14 @@ async fn run_verification_with(
         if name.is_empty() {
             return Err(format!(".devboard/package.json has no \"{check}\" script."));
         }
+        let available = package_scripts(context)?;
         let Some(Value::String(script)) = available.get(check) else {
             return Err(format!(".devboard/package.json has no \"{check}\" script."));
         };
         vec!["sh".into(), "-c".into(), script.clone()]
     } else {
         return Err(format!(
-            "Unknown check: {check}. Allowed checks: test, check, build, typecheck, verify:<name>."
+            "Unknown check: {check}. Allowed checks: test, check, build, typecheck, verify:<name>, rust:fmt, rust:clippy, rust:test."
         ));
     };
     let cwd = resolve_path(&context.harness_dir);

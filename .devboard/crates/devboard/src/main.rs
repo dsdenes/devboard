@@ -23,8 +23,11 @@ async fn run() -> anyhow::Result<()> {
             println!("devboard {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Some("install") => install_command(&args),
+        Some("install") => install_command(&args).await,
+        Some("update") => update_command(&args).await,
         Some("doctor") => doctor_command(&args),
+        Some("cleanup") => cleanup_command(&args),
+        Some("watchdog") => watchdog_command(&args),
         Some("worker") => worker_command(&args).await,
         Some("acp-stub") => devboard::acp_stub::run_stub(&args[1..]),
         Some("mcp") => devboard::mcp_server::run_server().await,
@@ -39,18 +42,32 @@ async fn run() -> anyhow::Result<()> {
         Some("hooks") => hooks_command(&args),
         Some("preflight") => preflight_command(&args),
         Some("forge-auth") => std::process::exit(devboard::forge_auth::main(&args[1..]).await),
-        Some(other) => {
-            anyhow::bail!("unknown command {other}; expected serve, install, doctor, or version")
-        }
+        Some(other) => anyhow::bail!(
+            "unknown command {other}; expected serve, version, install, update, doctor, cleanup, watchdog, worker, acp-stub, mcp, bench, publish, release-suite, check-runtime, gate-prepush, hooks, preflight, or forge-auth"
+        ),
     }
 }
 
 async fn serve_command(args: &[String]) -> anyhow::Result<()> {
-    let harness_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let harness_dir = devboard::version::running_harness_dir();
+    // Discovery runs for the repository this dashboard will serve, never for
+    // the launcher's working directory.
+    let repo_for_discovery = args
+        .iter()
+        .position(|arg| arg == "--repo-dir")
+        .and_then(|index| args.get(index + 1))
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("REPO_DIR").ok().map(PathBuf::from))
+        .or_else(|| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    discover_source_gitea(&repo_for_discovery).await;
     let mut config = Config::from_env(&harness_dir);
     let mut index = 1;
     while index < args.len() {
@@ -99,6 +116,9 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         );
     }
     std::fs::create_dir_all(&config.state_dir).context("creating the state directory")?;
+    // One orphan-reaping pass before this process serves. It never signals a
+    // live recorded child and journals the pass and every kill.
+    devboard::workers::watchdog::reap_on_startup(&config.state_dir, &config.repo_dir);
     if let Ok(ready_file) = std::env::var("DEVBOARD_REPLACEMENT_READY_FILE") {
         if !ready_file.is_empty() {
             let _ = devboard::relaunch::write_ready_marker(std::path::Path::new(&ready_file));
@@ -122,6 +142,19 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         .local_addr()
         .map(|address| address.port())
         .unwrap_or(config.port);
+    let running_version =
+        devboard::version::read_harness_version(&devboard::version::running_harness_dir())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let version_marker = serde_json::json!({
+        "running": running_version,
+        "pid": std::process::id(),
+        "port": config.port,
+    });
+    let marker_path = config.state_dir.join("version.json");
+    let _ = devboard::state::write_file_atomically_sync(
+        &marker_path,
+        &format!("{}\n", serde_json::to_string(&version_marker)?),
+    );
     let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
     let server = Server::new(config.clone(), journal);
     {
@@ -156,15 +189,100 @@ async fn worker_command(args: &[String]) -> anyhow::Result<()> {
     devboard::workers::run(&invocation).await
 }
 
-/// `devboard install [--force] [host]`.
-fn install_command(args: &[String]) -> anyhow::Result<()> {
-    let force = args.iter().any(|arg| arg == "--force");
-    let host = args
-        .iter()
-        .skip(1)
-        .find(|arg| !arg.starts_with('-'))
-        .map(PathBuf::from);
-    let report = devboard::cli_install::install(host.as_deref(), force)?;
+/// Discovers the loopback Gitea origin of a canonical source checkout whose
+/// remote is loopback and whose address is not configured. An explicit
+/// `DEVBOARD_GITEA_URL` or `GITEA_URL` wins, and an installed prefix never
+/// probes.
+async fn discover_source_gitea(repo_dir: &std::path::Path) {
+    if std::env::var("DEVBOARD_GITEA_URL")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+        || std::env::var("GITEA_URL")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return;
+    }
+    let options = devboard::forge::SourceCheckoutGiteaOptions {
+        repo_dir: repo_dir.to_path_buf(),
+        environment: std::env::vars().collect(),
+        source_checkout: None,
+        ports: None,
+        timeout_ms: None,
+        transport: None,
+    };
+    if let Some(url) = devboard::forge::source_checkout_gitea_url(&options).await {
+        std::env::set_var("DEVBOARD_GITEA_URL", url);
+    }
+}
+
+/// The parsed `install`/`update` arguments.
+struct InstallOptions {
+    host: Option<PathBuf>,
+    port: Option<u16>,
+    force: bool,
+}
+
+/// Parses `[host] [--port N] [--force]` without ever treating an option value
+/// as the host path.
+fn parse_install_options(args: &[String], usage: &str) -> anyhow::Result<InstallOptions> {
+    let mut options = InstallOptions {
+        host: None,
+        port: None,
+        force: false,
+    };
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--port" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--port needs a number"))?;
+                options.port = Some(value.parse::<u16>()?);
+                index += 2;
+            }
+            "--host" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--host needs a path"))?;
+                if options.host.is_some() {
+                    anyhow::bail!("the host path is given twice; usage: {usage}");
+                }
+                options.host = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--force" => {
+                options.force = true;
+                index += 1;
+            }
+            "--help" | "-h" => {
+                println!("{usage}");
+                std::process::exit(0);
+            }
+            other if other.starts_with('-') => {
+                anyhow::bail!("unknown option {other}; usage: {usage}")
+            }
+            other => {
+                if options.host.is_some() {
+                    anyhow::bail!("unexpected argument {other}; usage: {usage}");
+                }
+                options.host = Some(PathBuf::from(other));
+                index += 1;
+            }
+        }
+    }
+    Ok(options)
+}
+
+/// `devboard install [host] [--port N] [--force]`.
+///
+/// Without `--port` the install writes the host tree and prints the serve
+/// command; with `--port` it also starts one dashboard on that port,
+/// replacing any previous dashboard for the same host.
+async fn install_command(args: &[String]) -> anyhow::Result<()> {
+    let options =
+        parse_install_options(args, "usage: devboard install [host] [--port N] [--force]")?;
+    let report = devboard::cli_install::install(options.host.as_deref(), options.force)?;
     println!(
         "installed {} files for {} at {}",
         report.installed_files,
@@ -174,7 +292,309 @@ fn install_command(args: &[String]) -> anyhow::Result<()> {
     for line in &report.gitignore_added {
         println!("gitignore: {line}");
     }
+    for line in &report.drift {
+        println!("drift: {line} (tracked; left unchanged)");
+    }
+    if report.removed > 0 {
+        println!("removed {} stale file(s)", report.removed);
+    }
+    match options.port {
+        Some(port) => start_dashboard(&report.host, port)?,
+        None => println!(
+            "run: devboard serve --repo-dir {} --port 8080",
+            report.host.display()
+        ),
+    }
     Ok(())
+}
+
+/// `devboard update [host] [--port N]`.
+///
+/// Installs the newest release into `<host>/.devboard` without a browser
+/// click, then leaves one dashboard serving. An already-live dashboard
+/// replaces itself from the installed version through its own updater; when
+/// none is live, this command starts one.
+async fn update_command(args: &[String]) -> anyhow::Result<()> {
+    let options = parse_install_options(args, "usage: devboard update [host] [--port N]")?;
+    let host = devboard::cli_install::resolve_host(options.host.as_deref())?;
+    let source = devboard::updates::manifest_source_from_env(&host.join(".devboard/.tmp"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "update: set DEVBOARD_GITEA_URL or DEVBOARD_RELEASE_URL so a release can be read"
+            )
+        })?;
+    let release = devboard::release::latest_manifest(&source)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let prefix = host.join(".devboard");
+    let installed = devboard::release::installed_version(&prefix);
+    if devboard::release::is_newer_version(&release.version, installed.as_deref()) {
+        let version = devboard::release::install_release(
+            &source,
+            &release,
+            &prefix,
+            &host.join(".devboard/.tmp"),
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+        println!("update: installed {version}");
+    } else {
+        println!(
+            "update: {} is current",
+            installed.as_deref().unwrap_or("unknown")
+        );
+    }
+    let report = devboard::cli_install::install(Some(&host), false)?;
+    for line in &report.drift {
+        println!("drift: {line} (tracked; left unchanged)");
+    }
+    let marker = host.join(".devboard").join(".tmp").join("version.json");
+    let recorded_live = std::fs::read_to_string(&marker)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get("pid").and_then(|value| value.as_u64()))
+        .is_some_and(|pid| devboard::supervision::live_process(pid as u32));
+    let live = devboard::mcp_server::discover_dashboards(&host);
+    if recorded_live {
+        println!("update: the dashboard is already serving; it replaces itself from the installed version");
+    } else if live.is_empty() {
+        let port = options.port.unwrap_or(8080);
+        start_dashboard(&host, port)?;
+    } else {
+        println!(
+            "update: {} dashboard(s) already serving; they replace themselves from the installed version",
+            live.len()
+        );
+    }
+    Ok(())
+}
+
+/// Starts exactly one dashboard for `host` on `port`, replacing a previous
+/// dashboard for the same host.
+fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
+    use std::process::{Command, Stdio};
+
+    // The dashboard's own version marker is the exact record for this host,
+    // including a fixture path the `/proc` discovery deliberately ignores.
+    let marker = host.join(".devboard").join(".tmp").join("version.json");
+    if let Ok(text) = std::fs::read_to_string(&marker) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            let pid = value
+                .get("pid")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as u32;
+            let recorded_port = value
+                .get("port")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as u16;
+            if pid != 0 && devboard::supervision::live_process(pid) {
+                if recorded_port == port {
+                    println!(
+                        "devboard: dashboard already serving http://127.0.0.1:{port} (pid {pid})"
+                    );
+                    return Ok(());
+                }
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while devboard::supervision::live_process(pid)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
+    for dashboard in devboard::mcp_server::discover_dashboards(host) {
+        if dashboard.port == port {
+            println!(
+                "devboard: dashboard already serving http://127.0.0.1:{port} (pid {})",
+                dashboard.pid
+            );
+            return Ok(());
+        }
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(dashboard.pid as i32, libc::SIGTERM);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while devboard::supervision::live_process(dashboard.pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    let program = host.join(".devboard").join("bin").join("devboard");
+    let program = if program.is_file() {
+        program
+    } else {
+        std::env::current_exe()?
+    };
+    let mut command = Command::new(&program);
+    command
+        .arg("serve")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--repo-dir")
+        .arg(host)
+        .env("REPO_DIR", host)
+        .env("PORT", port.to_string())
+        .env("STATE_DIR", host.join(".devboard").join(".tmp"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let child = command
+        .spawn()
+        .map_err(|error| anyhow::anyhow!("could not start the dashboard: {error}"))?;
+    println!(
+        "devboard: dashboard on http://127.0.0.1:{port} (pid {})",
+        child.id()
+    );
+    Ok(())
+}
+
+/// `devboard cleanup [--dry-run] [--once] [--root <dir>] [--json]`.
+///
+/// Sweeps every covered state directory with the documented retention
+/// exceptions. `--dry-run` prints candidates and changes nothing; `--once`
+/// deletes them.
+fn cleanup_command(args: &[String]) -> anyhow::Result<()> {
+    let mut dry_run = false;
+    let mut once = false;
+    let mut json = false;
+    let mut root: Option<PathBuf> = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            "--once" => {
+                once = true;
+                index += 1;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--root" => {
+                root =
+                    Some(PathBuf::from(args.get(index + 1).ok_or_else(|| {
+                        anyhow::anyhow!("--root needs a directory")
+                    })?));
+                index += 2;
+            }
+            "--help" | "-h" => {
+                println!("usage: devboard cleanup [--dry-run] [--once] [--root <dir>] [--json]");
+                return Ok(());
+            }
+            other => anyhow::bail!("unknown cleanup option {other}"),
+        }
+    }
+    if !dry_run && !once {
+        anyhow::bail!("cleanup needs --dry-run or --once");
+    }
+    if dry_run && once {
+        anyhow::bail!("--dry-run and --once are exclusive");
+    }
+    let root = match root {
+        Some(path) => std::fs::canonicalize(&path)
+            .map_err(|_| anyhow::anyhow!("cleanup: {} does not exist", path.display()))?,
+        None => {
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .output()?;
+            if !output.status.success() {
+                anyhow::bail!("cleanup: run inside a git checkout or pass --root");
+            }
+            PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+        }
+    };
+    let instances = devboard::workers::watchdog::discover_instances();
+    let report = devboard::workers::watchdog::run_cleanup(
+        &root,
+        devboard::workers::watchdog::epoch_ms(),
+        dry_run,
+        &instances,
+        None,
+        None,
+    );
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&devboard::workers::watchdog::cleanup_report_json(
+                &report
+            ))
+            .unwrap_or_default()
+        );
+        return Ok(());
+    }
+    for entry in &report.roots {
+        for candidate in &entry.candidates {
+            println!(
+                "cleanup: {} {} ({} byte(s))",
+                if dry_run { "would remove" } else { "removed" },
+                candidate.path.display(),
+                candidate.bytes
+            );
+        }
+        for candidate in &entry.removed {
+            if dry_run {
+                continue;
+            }
+            println!(
+                "cleanup: removed {} ({} byte(s))",
+                candidate.path.display(),
+                candidate.bytes
+            );
+        }
+        for error in &entry.errors {
+            eprintln!("cleanup: {}: {error}", entry.state_dir.display());
+        }
+    }
+    let roots = report.roots.len();
+    let files: u64 = report.roots.iter().map(|entry| entry.files).sum();
+    let bytes: u64 = report.roots.iter().map(|entry| entry.bytes).sum();
+    println!(
+        "cleanup: {roots} state director{} · {files} file(s) · {bytes} byte(s){}",
+        if roots == 1 { "y" } else { "ies" },
+        if dry_run { " (dry run)" } else { "" }
+    );
+    Ok(())
+}
+
+/// `devboard watchdog uninstall`: stop, disable, and remove the legacy
+/// systemd unit and timer. Repository files are never touched.
+fn watchdog_command(args: &[String]) -> anyhow::Result<()> {
+    match args.get(1).map(String::as_str) {
+        Some("uninstall") => {
+            if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+                println!("usage: devboard watchdog uninstall");
+                return Ok(());
+            }
+            devboard::workers::watchdog::uninstall_legacy_units();
+            Ok(())
+        }
+        Some(other) => anyhow::bail!("unknown watchdog command {other}; expected uninstall"),
+        None => anyhow::bail!("usage: devboard watchdog uninstall"),
+    }
 }
 
 /// `devboard doctor [host]`.
@@ -237,6 +657,23 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
             report.version
         );
     }
+    for dashboard in &report.dashboards {
+        println!(
+            "dashboard: host={} port={} pid={} running={} installed={} stale={}",
+            dashboard.host.display(),
+            dashboard.port,
+            dashboard.pid,
+            dashboard.running.as_deref().unwrap_or("unknown"),
+            dashboard.installed.as_deref().unwrap_or("unknown"),
+            dashboard.stale
+        );
+    }
+    println!(
+        "dashboards: {} live; source-refresh written {}; failed {}",
+        report.dashboards.len(),
+        report.source_refresh.written.len(),
+        report.source_refresh.failed.len()
+    );
     if !report.source_refresh.failed.is_empty() {
         for failure in &report.source_refresh.failed {
             eprintln!(

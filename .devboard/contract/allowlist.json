@@ -114,10 +114,5 @@
       "reason": "an ENOENT diagnostic naming an absolute fixture path"
     }
   ],
-  "statePrefixes": [
-    {
-      "prefix": "coach/",
-      "reason": "the MCP optimizer projection is compared once its worker family is ported"
-    }
-  ]
+  "statePrefixes": []
 }

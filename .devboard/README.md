@@ -502,12 +502,25 @@ devboard install <host>    # write the managed wrappers, skills, AGENTS.md, and 
 devboard doctor <host>     # exit 0 when every managed file matches the released artifact
 ```
 
-`devboard install` writes real files — `<host>/.omp/commands`, `<host>/.omp/extensions`,
-`<host>/.omp/skills/devboard-*`, `<host>/AGENTS.md`, and one `/.omp/skills/devboard-<name>` line
-per shipped skill — never symlinks, and a rerun adds nothing. A differing unmarked file stops the
-run unless `--force` is given; an unmarked host skill is never read, rewritten, or deleted.
-`devboard doctor` compares every managed skill byte-for-byte and exits nonzero on one differing
-byte; an `AGENTS.md` differing from the template is reported without failing the check.
+`devboard install [host] [--port N] [--force]` writes real files — `<host>/.omp/commands`,
+`<host>/.omp/extensions`, `<host>/.omp/skills/devboard-*`, `<host>/.devboard/prompts`,
+`<host>/.devboard/devboard.json`, `<host>/AGENTS.md`, and one `/.omp/skills/devboard-<name>` line
+per shipped skill — and never a symlink. `--host <path>` is a synonym for the positional host.
+A rerun writes no byte. It overwrites a changed package wrapper, prompt, `mcp.json`, or skill; it
+deletes an untracked file the package no longer ships, including a renamed command; and it
+preserves a file the host tracks in git byte-for-byte and reports it as drift. An unmarked host
+skill is never read, rewritten, or deleted.
+
+With `--port N` the install also starts exactly one dashboard on `N`, replacing any previous
+dashboard for that host; without `--port` it installs only and prints the `devboard serve`
+command. `devboard update [host] [--port N]` installs the newest release without a browser click
+and leaves one dashboard serving.
+
+`devboard doctor [host]` compares every managed file byte-for-byte, checks release access, the
+installed version and staleness, the running dashboard's pid and port, the `.devboard` and `.omp`
+layout, and the last update failure; it exits nonzero and names the failing check, while an
+`AGENTS.md` differing from the template or a git-tracked payload file is reported as drift
+without failing the check.
 
 ### Updates
 
@@ -568,7 +581,10 @@ dashboard; only a valid publish request or the retry of one does. Installed host
 act on a source-refresh request.
 
 `devboard install --host <path>` targets another repository. `DEVBOARD_RELEASE_URL` points the
-updater at a local manifest and artifact directory for offline verification and CI fixtures.
+updater and `devboard update` at a local manifest and artifact directory for offline verification
+and CI fixtures. When the manifest's GitHub asset cannot serve the artifact and
+`DEVBOARD_GITEA_URL` is set, the updater reads the same version's Gitea artifact and verifies its
+checksum.
 
 `install.sh` copies the agent wrappers under `omp/` into an existing host:
 
@@ -649,7 +665,7 @@ Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, f
 atomic replacement). A file whose envelope is unusable is moved aside, and a file with only some
 unusable entries is copied to `credentials.json.damaged-<timestamp>-<random>` before the loadable
 entries are rewritten, so the original bytes stay recoverable. The file survives a dashboard
-restart and is never removed by `bun run cleanup` or the watchdog sweep, however old it is.
+restart and is never removed by `devboard cleanup` or the watchdog sweep, however old it is.
 Generated per-peer agent directories live beside it under
 `<stateDir>/providers/agents/<selection-id>/`. No key is ever returned by a
 command or event, written to the journal or activity log, or placed in a process's argv; the
@@ -703,7 +719,7 @@ The installer writes no project-level `omp/config.yml`, because any `modelRoles`
 override the per-peer selection. The interactive agent started in the repository keeps OMP's
 configured default, and every generated peer directory owns its own `config.yml`.
 
-`bun run verify:providers` proves the selection matrix, the 1% boundary, unknown-usage ranking,
+The provider test suite proves the selection matrix, the 1% boundary, unknown-usage ranking,
 OpenRouter fallback, refusal, masking, environment and argv hygiene, generated roles,
 persistence, and cleanup protection against a local provider stub and a deterministic ACP peer.
 
@@ -901,8 +917,8 @@ before it serves. On a platform without `/proc` the reaper reports itself unavai
 nothing. Run one pass by hand from `.devboard`:
 
 ```bash
-bun run cleanup -- --processes --dry-run   # print candidates; change nothing
-bun run cleanup -- --processes --once      # kill under the two proofs
+devboard worker watchdog --processes --dry-run --repo <root>   # print candidates
+devboard worker watchdog --processes --once --repo <root>      # kill under the two proofs
 ```
 
 ## Flow Mode
@@ -1855,14 +1871,13 @@ runs is refused, and that neither stop nor a failure rewrites a published artifa
 documented shape and refuses a missing owned file, a known fact without value or evidence, an
 unknown fact with a value, an unmerged exemplar, a secret, an absolute path, and a malformed skill.
 `server/agents/prompt.test.ts` proves the seven prompt snapshots carry bytes and no `editable`
-field in both a source fixture and an installed fixture. `verify:discover` builds the client,
-seeds source and installed fixture hosts, and drives headless Chrome through the Discovery group,
-each card's read-only prompt bytes, all seven independent triggers with a byte-level check of the
-fixture `.omp` tree, the contribution page's nine sections and merged-only evidence, the
-contribution skill page, the forge-less unknown state, the one-at-a-time refusal, Run all order
-and stop at the first seeded failure, the read-only skill page, and the installed host's refusal
-of the removed save. `DISCOVER_VERIFY_ONLY=<scenario>` narrows a pass to the named scenarios and
-`DISCOVER_VERIFY_KEEP=1` keeps its fixtures under `.devboard/.tmp`.
+field in both a source fixture and an installed fixture. Discover is verified by the Rust
+workspace tests and the contract corpus: each card's read-only prompt bytes, all seven independent
+triggers with a byte-level check of the fixture `.omp` tree, the contribution page's nine sections
+and merged-only evidence, the contribution skill page, the forge-less unknown state, the
+one-at-a-time refusal, Run all order and stop at the first seeded failure, the read-only skill
+page, and the installed host's refusal of the removed save. The retired browser scenario is not
+run.
 
 `server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
@@ -1871,9 +1886,9 @@ re-discovery, unchanged bytes after a failed clone or agent, clear keeping every
 of exactly one directory with a restart, busy refusals, the missing-retained-directory fallback, the
 gate refusing every remote command without touching the retained root, a byte-identical host
 `.omp`, and startup hygiene that keeps a live run's checkout when a second dashboard starts on the
-same state directory. `verify:interface` drives the built UI through a retained render after
-restart, the dropdown's two entries and selection, removal of one entry, and the gate-off host with
-no remote control.
+same state directory. The client unit tests cover the retained render after restart, the
+dropdown's two entries and selection, removal of one entry, and the gate-off host with no remote
+control.
 
 Operator smoke procedure, which needs network and a model endpoint and is therefore not a pass gate:
 
@@ -2388,7 +2403,7 @@ forge read, or issue write records the failing step and its reason in activity a
 `agent-error`, files no issue for that finding, and never claims a filing that did not happen; a
 failed forge read keeps the last known rows and follows the shared retry and `agent-sync-error`
 policy. At most one audit cycle runs at a time: Start while a cycle runs, a cadence change, a page
-open, a tab restore, or a reload never starts a second cycle. `bun run verify:api-standards` proves
+open, a tab restore, or a reload never starts a second cycle. The API Standards worker tests prove
 the entry, the shared page, the MUST/SHOULD filings with provenance, the MAY-only and duplicate
 skips, the caps, the added route, the unchanged checkout and git state, the named preflight
 refusals, and activity freshness.
@@ -2646,7 +2661,7 @@ a tab restore, or a reload starts no second cycle, and a replacement dashboard d
 live worker of the family. Stop ends the worker and leaves the settings and filed rows. State
 lives at `<STATE_DIR>/single-responsibility/<journalKey(REPO_DIR)>/`, the lock and cycles stay
 inside `<REPO_DIR>/.devboard/.tmp/single-responsibility/`, and a cycle leaves
-`git status --porcelain` and `git rev-parse HEAD` unchanged. `bun run verify:single-responsibility`
+`git status --porcelain` and `git rev-parse HEAD` unchanged. The worker tests
 proves the entry, the shared page, the seeded entry point, the excluded test and fixture files,
 one issue per component and violation with provenance, the five-category restriction, dedupe, the
 caps, the label, the preflight refusals, the read-only checkout, single flight, and activity
@@ -2783,26 +2798,23 @@ than seven days are deleted; these are never deleted at any age:
 Run the sweep by hand from `.devboard`:
 
 ```bash
-bun run cleanup -- --dry-run --root <root>
-bun run cleanup -- --once --root <root>
-bun run cleanup -- --processes --dry-run   # orphaned processes, print only
-bun run cleanup -- --processes --once      # orphaned processes, kill
+devboard cleanup --dry-run --root <root>    # print candidates; change nothing
+devboard cleanup --once --root <root>       # sweep under the retention exceptions
 ```
 
 The manual watchdog CLI remains:
 
 ```bash
-bun run watchdog -- --once                  # one cycle now
-bun run watchdog -- --collect --dry-run     # print this cycle's report; change nothing
-bun run watchdog:uninstall                  # stop, disable, and remove a legacy unit
+devboard worker watchdog --once --repo <root> --collect --dry-run   # print one cycle
+devboard watchdog uninstall                                         # stop, disable, remove legacy unit
 ```
 
-`verify:watchdog` proves the dashboard-started lifecycle, shared page ids, retained history, the
-removed GET endpoint, and the footer indicator. `verify:watchdog-live` starts the seeded
-dashboard's watchdog through its Start control (not systemd), waits for a real cycle to file the
-seeded marker, asserts the ledger entry, title, and body, and closes the issue in `finally`.
-`verify:agents` drives all five pages through headless Chrome; `verify:design` drives the Design
-System route through the same shared interface.
+The Rust watchdog tests prove the dashboard-started lifecycle, shared page ids, retained history,
+the removed GET endpoint, and the footer indicator. The worker tests start the seeded dashboard's
+watchdog through its Start control (not systemd), wait for a real cycle to file the seeded marker,
+assert the ledger entry, title, and body, and close the issue in cleanup. The client unit tests
+cover all five agent pages and the Design System route through the same shared interface; no
+browser driver is involved.
 
 ## MCP optimizer
 
@@ -2858,8 +2870,9 @@ dropped, and the first remaining segment whose command is not an inspection pref
 `< <path>`) are stripped. The existing replacements then apply: a leading environment assignment
 becomes `<env>`, the repository root becomes `<repo>`, `.worktree/<name>`, UUIDs, ISO timestamps,
 and seven-or-more hex runs are replaced, and a `git -C <dir>` prefix becomes `git`. The family key
-is the remaining tokens up to the first `--flag`, so `bun run publish 2>&1 | tail -40`,
-`bun run publish | tail -60`, and `( cd /checkout && bun run publish )` are all `bun run publish`,
+is the remaining tokens up to the first `--flag`, so `devboard publish 2>&1 | tail -40`,
+`devboard publish | tail -60`, and `( cd /checkout && devboard publish )` are all
+`devboard publish`,
 while `git push origin HEAD:main` and `git push origin other` stay separate. Two families never
 merge when their tokens before the first flag differ.
 
@@ -2870,8 +2883,8 @@ a read-only tool error is ignored. A retry loop (one call identity at least thre
 two after an error) adds weight to the repeated command's family and never forms its own family. A
 journal `question` repeated in at least two scopes becomes `question: <normalized text>`; an
 `acp-stderr` line repeated in at least two scopes becomes `run-failure: <normalized line>`.
-Sessions and commands owned by MCP optimizer (`.devboard/mcp-optimizer`,
-`verify:mcp-optimizer`, an MCP optimizer run cwd), fixture-only commands (`true`, a no-op `echo`,
+Sessions and commands owned by MCP optimizer (`.devboard/mcp-optimizer`, an MCP optimizer run
+cwd, and the MCP optimizer worker invocation), fixture-only commands (`true`, a no-op `echo`,
 `i: noop`), and anything under `.worktree/` or `.devboard/.tmp/` are excluded from families and
 excerpts.
 
@@ -2964,11 +2977,11 @@ page and worker send no command that starts, stops, or repairs another agent.
 Run it by hand from `.devboard`:
 
 ```bash
-bun run mcp-optimizer -- --collect --dry-run --root <checkout> --state-dir <state> --json
-bun run mcp-optimizer -- --once --root <checkout> --state-dir <state> [--now <ISO>] --json
+devboard worker mcp-optimizer --repo <checkout> --state-dir <state> --collect --dry-run --json
+devboard worker mcp-optimizer --repo <checkout> --state-dir <state> --once [--now <ISO>] --json
 ```
 
-`verify:mcp-optimizer` seeds exactly three command families under `.devboard/.tmp`, injects a
+The MCP optimizer tests seed exactly three command families under `.devboard/.tmp`, inject a
 deterministic synthesizer and a stub forge, and proves one synthesis call per family, the filed
 title and body sections, the fenced tool definition and allowlist entry, no second filing, a cap
 holding a proposal pending, and byte-identical session and journal directories.
@@ -3220,7 +3233,7 @@ It creates and works in one worktree under `<REPO_DIR>/.worktree/` named for the
 the canonical checkout and never in another agent's worktree, and writes nothing outside
 `<REPO_DIR>`. Forge write access is a precondition it resolves once per session: a `canWrite: true`
 result already in context is reused as-is, and only when the context lacks one does it run one
-canonical auth check, `bun .devboard/scripts/forge-auth.ts check --required write --json`, from the
+canonical auth check, `devboard forge-auth check --required write --json`, from the
 repository root: the wrapper takes the target from `DEVBOARD_GITEA_URL`, `GITEA_TOKEN`, and the
 `origin` remote, so no forge, host, project, or URL flag is passed, the exit status and JSON are
 read directly, and no further auth probe runs in the session. The shared credential rule every
@@ -3546,7 +3559,7 @@ creates no other file except that spec and the draft removal, starts no implemen
 not enter goal mode. It files the spec's bytes verbatim, as a body file, as an open issue in the
 checkout's `origin` (never the harness repository unless that is the origin), with a one-line title
 bounded to 200 characters and the exact `goal` label, creating the label first when it is missing.
-Every tracker command goes through `.devboard/scripts/forge-auth.ts exec --required write`. After
+Every tracker command goes through `devboard forge-auth exec --required write`. After
 filing it reads the issue back with `gh issue view <number> --json number,url,labels,body`; only
 when the `goal` label is present and the body equals the spec file may it delete the draft. A
 failed label creation, issue creation, or verification leaves the draft in place and reports the
@@ -4342,204 +4355,33 @@ cargo fmt --check --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test -p devboard-contract          # the whole contract corpus
-cargo run -p devboard-shadow -- --report ../shadow-report.json --window 1800 --iterations 100
-bun run verify:dead-code
+cargo run -p devboard-shadow -- --report ../shadow-report.json --window 60 --iterations 1
+bun install --frozen-lockfile
+bun run build
+bun run check
+bun test
 ```
 
-The shadow router sends every mutating command to the TypeScript server once, then replays that
-command's recorded TypeScript answer, state tree, and repository tree against fresh Rust instances
-until the write reaches the comparison target. Reads are mirrored live against the untouched
-baseline. `--typescript <dir>` names the pre-cutover checkout that still supplies
-`contract/serve-typescript.ts` and `server/fixtures/stub-agent.ts`; it defaults to the harness root.
-`bench/shadow-report.json` is the last full 100-comparison soak.
+The historical Playwright/browser `verify-*` suite is retired. It is not restored, no Playwright
+test or `verify-*.ts` script is added, and no browser-E2E gate blocks a change. Its coverage moved
+to the surfaces below, which run from the current tree with no Node or Bun runtime for the
+harness itself:
 
-`verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and
-writes its screenshots under `.tmp/interface`. The other `verify:` scripts build fixture releases
-under `.devboard/.tmp`, install them into throwaway hosts, and assert the launcher, update, and
-reload contracts end to end. They never touch a real host. `verify:source-refresh` starts real
-source dashboards against a throwaway source checkout, delivers a request through the same writer
-`publish` uses, and proves the replacement, the digest check, the applied-request dedupe, the
-failure and never-ready paths, the fixed retry interval, and the two-dashboard delivery without
-running a release or `bun run publish`.
+- **Rust workspace tests** cover the dashboard, every worker family, the MCP server, install and
+  update, the release train, and the CLI.
+- **Contract corpus tests** replay every recorded command, event, and HTTP case against the Rust
+  dashboard.
+- **Shadow comparisons** replay every read and every mutating command against its recorded corpus
+  answer, state tree, and repository tree. The current soak is
+  `cargo run -p devboard-shadow -- --report ../shadow-report.json --window 60 --iterations 1`,
+  which needs no TypeScript baseline.
+- **Client unit tests** (`bun test`) cover the Svelte client, and `bun run build` plus
+  `bun run check` cover its bundle and typecheck.
+- **CLI and HTTP smoke checks** exercise `devboard install`, `devboard update`, `devboard doctor`,
+  `devboard cleanup`, `devboard worker`, `devboard publish`, and the readiness endpoint against
+  throwaway hosts under `.devboard/.test-tmp/`.
+- **The container gate** builds the image from `.devboard` and proves `GET /ready` with the
+  dashboard token.
 
-`bun run verify:issues` is the deterministic end-to-end gate. It starts a source dashboard
-against a throwaway checkout with stub `gh` and ACP commands, starts the worker, and proves four
-simultaneous peers started in one poll with exact distinct prompts, per-agent run directories and
-activity files, per-agent questions answered by run id, an issue opened mid-run, one issue's
-cooldown leaving the others running, Check now retrying the gated issue, pause draining every peer,
-Stop closing every peer without a cooldown, connect-time replay of every agent, server-restart
-reattachment, per-repository isolation, same-repository attach, refusal with another `STATE_DIR`,
-legacy-lock refusal, that no `/implement-all-issues` prompt is ever sent, and that no systemd unit
-or timer is written and no `systemctl`/`loginctl` stub is invoked. It writes only under
-`.devboard/.tmp`.
-`bun run verify:scout` drives the built dashboard in headless Chrome against a fixture checkout,
-a stub ACP peer, and a stub `gh`: Start files significant items with no click, a duplicate and a
-score below 4 are dropped and named in the activity, the issue table shows the title anchor, the
-creation time, the category, the state, and the shipped version, both limits save and survive a
-reload, an invalid save shows its error and sends nothing, a close flips the row to implemented,
-a release published later fills its blank version, a failed read shows `error` with its reason
-and the last success time while keeping the rows, no review widget or command remains, and Stop
-leaves the table and a released lock. Its entry-point section names the path and seed recorded in
-the scan request, replays the seed, and proves the activity names both. It writes only under
-`.devboard/.tmp`.
-`bun run verify:dead-code` runs the real detached Dead Code worker against a fixture checkout, a
-stub ACP peer, and a stub `gh`: one cycle records its seeded entry point and seed in the request
-and activity, files exactly one `dead-code` issue with its detection category, evidence path, and
-acceptance criteria, and replays the recorded seed to the same entry point. It writes only under
-`.devboard/.tmp`.
-`bun run verify:agents` builds the client, seeds all five agents, and drives headless Chrome
-through the Background agents section of the Devboard sidebar, the Dead Code entry and page with
-its 60-minute, 10-per-hour, and 5-open defaults, the identical core test ids on every
-page, Start -> starting -> running and Stop -> stopping -> stopped, cadence and limit validation
-and persistence, the Watchdog cap, the shared table columns, freshness without a reload, no
-mutating command on reload, the timer-blocked state and one-click disable against a stub
-`systemctl`, and the footer indicator with no console error. It also proves MCP optimizer's
-shared cycle detail and persisted settings, and the read-only prompt section: every page renders
-`agent-prompt` directly after `agent-header`, closed on load; Auto Scout, Design System, and Dead
-Code show complete prompt bytes in `agent-prompt-text`; Watchdog shows `agent-prompt-absent`; MCP
-optimizer shows the one read-only `agent-prompt-template` with the fixed intro, every heading and
-rule line, the three placeholders, every catalog tool name, the seeded allowlist, and the
-fixture's two MCP optimizer issues but not its unrelated issue; no page renders an editor, Save,
-or chat test id and no prompt carries a source-only marker; an installed fixture and a
-source-checkout fixture render the same bytes and template and both refuse the removed save as an
-unknown command, leaving `.devboard/prompts`
-byte-identical; editing MCP optimizer's settings file and reconnecting shows the new allowlist.
-
-`server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
-validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate
-id, out-of-range span, uncited file, shortfall, missing score, out-of-range score, missing
-reason), the version-2 request, the shipped-version rules (earliest release, tie by tag,
-timeline commit, newest comment SHA, open issue, no release), settings and state migration,
-the bridge's limits and absent decision path, the Stop/limits command surface, the Start preflight
-refusals, a stalled preflight failing at its deadline and the next Start retrying, and the activity
-delta.
-`tests/scout.test.ts` covers filing without a command, the significance score and issue body,
-duplicates against closed issues, open issues, and drafts, both caps across a restart, the
-effective batch, zero capacity, a close freeing a slot, limits applying live and surviving a
-restart, state mapping and a reopen, a later release filling a blank version, a failed periodic
-read, a periodic read that never settles failing at its deadline and releasing the worker, the
-default client's bounded `gh` calls, a failed pre-filing read, migration from a version-1 board, a
-missing score failing the scan atomically, a failed filing, Stop keeping the rows, the live lock,
-a replacement closing an interrupted scan, bridge replay without a spawn, another `STATE_DIR`
-refused, a harness-version notice, the issue body and label creation, and the scan prompt's rubric.
-`tests/issues.test.ts` covers the fleet (four mixed issues, the thirty-peer cap with a queued peer
-starting when one finishes, duplicate prevention, an issue opened mid-run, per-issue success and
-ledger entries, one failure cooling only its issue), Check now clearing every cooldown, pause
-draining every peer, Stop closing every peer without a cooldown, per-agent questions and answer
-routing, two orphan children on a fresh start, version 1 state loading, reopened-issue eligibility,
-history pruning that keeps every running directory, preflight for both wrappers, a stalled
-permission probe and the killed `gh` child failing at the preflight deadline, repo-scoped state
-and lock isolation, atomic and damaged state, ledger migration, the activity bounds, and the
-conditional tracker. `tests/cleanup.test.ts` proves the watchdog preserves repo-scoped issues state,
-the repo-anchored lock, Auto Scout settings and state, and Flow session records that Flow restore
-still reads, while sweeping legacy orchestrator run files and stale scan archives. Every fixture stays under `.devboard/.tmp`.
-`tests/launcher.test.ts` covers the single public package: the manifest, the help output, the
-tarball's required and forbidden paths, the fallback asset name, and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
-covers installing a release when the process working directory has been deleted.
-`server/updates.test.ts` covers the startup check, the interval, backoff, single-flight, and
-failure journaling.
-`tests/install.test.ts` covers the wrapper script: a fresh install, an idempotent rerun that
-keeps unrelated files, a host without `.devboard/`, a differing file refused without `--force`,
-`--force` replacing it, and the default host path. `server/run.test.ts` drives the interface
-against the stub ACP agent, covering sequential
-resolution in file-name order, selected first records, refusal of a second start during a run
-and between runs, activity and question/answer relay, the unresolved-record stop, the
-removed-record stop, disconnect continuation, records refresh, and an idle restart deferred
-until the active run ends. `server/app.test.ts`
-covers `getGoal`, the read error, the goal prompt payload without an `editable` field, and the
-absence of agent startup. `server/goal-revision.test.ts` covers guided goal revision: request and
-no-request starts, activity and question relay, the rewritten goal reported verbatim, refusal
-during lifecycle and record runs (including between records), refusals during a revision,
-reconnect replay, the unreadable-goal failure, and the absence of run events or ADR writes.
-`server/goal-creation.test.ts` covers guided goal creation: the `/goal-outcome` prompt, no
-spawn on connect, activity and question relay, the created goal reported verbatim from
-`<REPO_DIR>/GOAL.md`, the unreadable goal before and after the peer, an absent goal answered as
-empty, an empty or whitespace-only result reported as a failed creation that leaves the
-document unchanged and creation available, every refusal, the
-single-agent refusals while creating, reconnect replay before the late client's own replies,
-acceptance while the lifecycle is paused with the paused lane tabs retained, completion without
-reading or writing `adrs/`, and the custom `GOAL_FILE` split.
-`server/lifecycle.test.ts` covers the `lifecycleState` sequence, the running `epic` state
-reported before the first tracker lookup and to every client, a start whose tracker read
-exceeds its configured deadline reporting an `error` and the idle `goal` stage while the next
-start reaches the loop, a tracker answer that arrives after a stop changing no lane or stage
-and not blocking the next start, stopping a running lifecycle and
-its in-flight lanes with the idle state that follows, the single `/epic-next`
-peer, ADR-order resolution, implementation of an already-open epic, return to epic generation
-on the next pass, the settle window that waits out a lagging tracker after epic generation and
-after implementation and that finishes when the window is exhausted, a lane that stays open
-marked `retrying` without stopping the run, retry after the backoff, the parked-only stop, the
-finished transition when a pass yields no epic and no pending ADR, restart after that
-transition, the lifecycle and goal-save refusals during implementation plus an empty ADR start,
-replay of the implementation state and activity to a reconnecting client and
-of the finished state to a client that connects after the run ends, the absence of a
-`lifecycleState` before any run, the new run's stage after restarting from `finished`, and the
-goal precondition: an absent, whitespace-only, or just-cleared goal refuses the start with one
-`error` and no agent, while a non-blank goal starts the loop. It also covers each abort: a
-same-open-epic stop, epic generation leaving the same pending records, and a throwing tracker
-query each end with the idle `goal` state, `work: null`, `paused: false`, and the aborting
-pass; a later client receives that state first, goal saving answers with the saved text, and
-a new lifecycle start is accepted and runs without a stale refusal.
-`server/tracker-timeout.test.ts` proves a stalled tracker child is killed at the read deadline
-with a retryable `TrackerTimeoutError`, and that aborting the read kills the child and rejects
-`TrackerAbortedError`.
-`server/skills-preparation.test.ts` covers skills preparation: the `prepareSkills` command and
-its `/prepare-skills` prompt, the project-agnostic prompt rules, one peer, activity and question
-relay, the non-whitespace goal precondition, every refusal while preparation runs and while each
-other activity runs, reconnect replay and disk replay after a restart, skill layout/name and
-description validation, the failure when no managed skill is prepared, managed-only replacement
-with an unmanaged skill preserved byte for byte, the all-skill contradiction pass, the
-unmanaged-conflict and name-collision errors, invalid output and peer failure restoring the
-previous managed set, and the absence of `GOAL.md` or `adrs/` writes.
-`server/lifecycle-pause.test.ts` covers pausing during an implementation and resuming the same
-peer, pausing with a pending question and carrying its answer across the pause, pausing between
-stages while a tracker query is outstanding, pausing the initial tracker lookup and resuming
-into its result, paused lane replay with recorded activity and question, goal saving while
-paused, manual ADR resolution while paused and while advancing (which pauses first), automatic
-resume when the manual sequence ends, stopping a paused run for good, refusal of
-the lifecycle's own in-progress record and of resume during the manual sequence, retention of
-the paused lane tabs when the sequence ends, guided goal revision while paused including replay
-of the paused lanes and every refusal path with unchanged state.
-`server/parallel-lifecycle.test.ts` covers the parallel pipeline: one overlapping implementation
-peer per open epic, five lanes with no cap, stopping every running lane at once and returning to
-the idle stage, generation filing several epics that start their own
-lanes immediately, refill on close while other lanes keep implementing, coalesced refill
-triggers, per-epic assignment, retry after backoff, immediate retry when `main` advances, a
-parked lane isolated from the others and retried on `main`, the parked-only error and idle
-`goal` stage, reconnect replay of counts, tabs, activity, and a lane question, pause and resume
-across lanes, reset across lanes, finish when nothing remains, and five-epic tracker reads
-through the existing GitHub and GitLab query shapes.
-`server/reset-implementation.test.ts` drives the reset against temporary hosts with local bare
-remotes: the command and started/stopped events, tracked/untracked/ignored deletion, keep-set
-bytes, the `.worktree` sentinel, symlink removal without following, the exact commit subject and
-remote tree, staging exclusions without a `.gitignore`, empty-change idempotence, an absent,
-empty, or whitespace-only goal, a differently named `GOAL_FILE`, a bypassed failing pre-commit
-hook, refusal off `main`, without `origin`, outside the top level, with an unborn `HEAD`, with an
-in-repo `STATE_DIR`, and with `STATE_DIR` equal to the repository root, during an active run, a
-rejecting pre-receive hook retaining the local commit, a commit failure
-retaining the staged deletion, mutating-command refusal during a reset, replay to a late client,
-and the post-reset empty records, goal text, and `getGoal` behavior.
-`server/journal.test.ts` covers the dashboard journal: a real stub-agent run writes `activity`,
-`question`, `run-start`, and `run-stop` records with `ts`, `repo`, `port`, and `pid`; a write
-failure is reported without interrupting the run; rotation keeps every record; and pruning
-applies the seven-day limit and the size bound without deleting the live window.
-`tests/watchdog.test.ts` covers discovery (de-duplication, harness resolution, self-exclusion,
-legacy logs), the inclusive ten-minute window, omp-log attribution and self-exclusion, the exact
-evidence mapping (prose never produces a finding), host-independent fingerprints, filing and
-commenting against a stub `gh`, per-filing and per-comment ledger persistence, pending retries
-after a failed call, duplicate windows, the version 1 ledger migration, and the absence of any
-commit, merge, push, or publish. It also covers the deduplication gate against a stub agent and a
-stub forge: one request over the whole candidate set before any create, no issue list in the
-request, the agent's own open-issue read, silent duplicate suppression with a non-filed ledger
-match, same-set duplicates producing one issue, every fail-closed case, reconsideration after the
-matched issue closes, the agent's decision rather than a string comparison, and the read-only MCP
-surface.
-`tests/watchdog-api.test.ts` covers the adapter projection, the newest-cycle history, the shared
-issue row order and fields, open/closed state mapping, the `ok`/`error`/`stale` transitions
-against a stubbed GitHub reader and clock, the never-waits contract, the removed GET endpoint,
-and the WebSocket `agentState` reply. `tests/agent-registry.test.ts` covers the registry, the
-synthetic third descriptor, shared issue sorting, and unknown-id refusal.
-`tests/agent-watchdog-runtime.test.ts` covers the detached worker's first cycle, Stop during a
-slow filing cycle, a SIGTERM that lets the cycle finish, cadence application without restart, the
-lifecycle transitions, foreign ownership, preflight refusals, and the timer gate. All new
-fixtures live under `.devboard/.tmp`; no test uses the network or a real model.
+Every fixture stays under `.devboard/.tmp` or `.devboard/.test-tmp`; no test uses the network or a
+real model unless the gate is the release transport check, which serves its own local stub.

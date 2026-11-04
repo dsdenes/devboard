@@ -71,24 +71,56 @@ impl ReleaseInfo {
         })
     }
 
-    /// The artifact this machine installs.
-    pub fn asset_for_this_platform(&self) -> Option<&ReleaseAsset> {
-        let target = current_target();
-        // A musl host still runs a gnu artifact only when the libc matches;
-        // this platform names exactly one target, so there is no fallback.
-        self.assets.iter().find(|asset| asset.target == target)
+    /// The artifact this machine installs, or the named error when the
+    /// platform is unsupported.
+    pub fn asset_for_this_platform(&self) -> Result<Option<&ReleaseAsset>, String> {
+        let target = current_target()?;
+        // A musl host never falls back to a gnu artifact: the libc differs,
+        // so this platform names exactly one target.
+        Ok(self.assets.iter().find(|asset| asset.target == target))
     }
 }
 
-/// The cargo-dist target name for the running platform.
-pub fn current_target() -> &'static str {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("macos", "x86_64") => "x86_64-apple-darwin",
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        _ => "unsupported",
+/// The target environment this binary was built for.
+pub fn current_target_env() -> &'static str {
+    if cfg!(target_env = "musl") {
+        "musl"
+    } else if cfg!(target_env = "gnu") {
+        "gnu"
+    } else {
+        ""
     }
+}
+
+/// The cargo-dist target name for one platform, when the release carries one.
+pub fn platform_target(os: &str, arch: &str, env: &str) -> Option<&'static str> {
+    match (os, arch, env) {
+        ("linux", "x86_64", "musl") => Some("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64", "musl") => Some("aarch64-unknown-linux-musl"),
+        ("linux", "x86_64", "gnu") => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64", "gnu") => Some("aarch64-unknown-linux-gnu"),
+        ("macos", "x86_64", _) => Some("x86_64-apple-darwin"),
+        ("macos", "aarch64", _) => Some("aarch64-apple-darwin"),
+        _ => None,
+    }
+}
+
+/// The cargo-dist target name for the running platform, or the one named
+/// error an unsupported platform produces.
+pub fn current_target() -> Result<&'static str, String> {
+    platform_target(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        current_target_env(),
+    )
+    .ok_or_else(|| {
+        format!(
+            "unsupported platform: {}-{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            current_target_env()
+        )
+    })
 }
 
 /// Whether `candidate` is a newer release than `installed`, by numeric parts.
@@ -122,6 +154,10 @@ pub struct ManifestSource {
     pub repository: String,
     pub token: Option<String>,
     pub timeout_ms: u64,
+    /// A local directory that carries `devboard-manifest.json` and its
+    /// artifacts, for offline verification. When set, every read is a local
+    /// file read.
+    pub local_dir: Option<PathBuf>,
 }
 
 impl ManifestSource {
@@ -157,8 +193,18 @@ impl ManifestSource {
     }
 }
 
-/// Reads the newest release's manifest from Gitea.
+/// Reads the newest release's manifest from Gitea, or from a local release
+/// directory when `DEVBOARD_RELEASE_URL` names one.
 pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
+    if let Some(directory) = &source.local_dir {
+        let path = directory.join(MANIFEST_ASSET);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let manifest: Value = serde_json::from_str(&text)
+            .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?;
+        return ReleaseInfo::from_manifest(&manifest)
+            .ok_or_else(|| format!("{} is not a release manifest", path.display()));
+    }
     let client = source.client();
     let url = source.api(&format!("{}/releases/latest", source.repo_path()));
     let mut request = client.get(&url).header("Accept", "application/json");
@@ -268,6 +314,148 @@ pub fn verify_sha256(bytes: &[u8], expected: &str) -> bool {
     digest.eq_ignore_ascii_case(expected.trim())
 }
 
+/// The last path segment of a download address.
+fn asset_name(url: &str) -> String {
+    url.split('?')
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(url)
+        .to_string()
+}
+
+/// Downloads one artifact, falling back to the same version's Gitea artifact
+/// when the manifest's GitHub address cannot serve it.
+///
+/// A local release directory serves its own files. Otherwise the GitHub asset
+/// is tried first; when that read fails and `DEVBOARD_GITEA_URL` is configured,
+/// the release's Gitea assets are listed and the matching artifact is read
+/// with the same credentials. Both failures are reported together so a journal
+/// names the transport that failed.
+async fn download_release_asset(
+    source: &ManifestSource,
+    release: &ReleaseInfo,
+    asset: &ReleaseAsset,
+) -> Result<Vec<u8>, String> {
+    if let Some(directory) = &source.local_dir {
+        let name = asset_name(&asset.url);
+        let path = directory.join(&name);
+        let path = if path.is_file() {
+            path
+        } else {
+            directory.join(format!("devboard-{}.tar.xz", asset.target))
+        };
+        return std::fs::read(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()));
+    }
+    let client = source.client();
+    let github_error = match client.get(&asset.url).send().await {
+        Ok(response) if response.status().is_success() => match response.bytes().await {
+            Ok(bytes) if verify_sha256(&bytes, &asset.sha256) => return Ok(bytes.to_vec()),
+            Ok(_) => "the downloaded artifact does not match its manifest digest".to_string(),
+            Err(error) => error.to_string(),
+        },
+        Ok(response) => format!("HTTP {}", response.status().as_u16()),
+        Err(error) => error.to_string(),
+    };
+    let Some(base_url) = std::env::var("DEVBOARD_GITEA_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(format!(
+            "GET {} failed ({github_error}); DEVBOARD_GITEA_URL is not set",
+            asset.url
+        ));
+    };
+    let fallback = ManifestSource {
+        base_url,
+        repository: source.repository.clone(),
+        token: source.token.clone(),
+        timeout_ms: source.timeout_ms,
+        local_dir: None,
+    };
+    let bytes = match gitea_asset_bytes(&fallback, release, asset).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Err(format!(
+                "GET {} failed ({github_error}); Gitea fallback failed: {error}",
+                asset.url
+            ))
+        }
+    };
+    if !verify_sha256(&bytes, &asset.sha256) {
+        return Err("the Gitea artifact does not match the manifest digest".to_string());
+    }
+    Ok(bytes)
+}
+
+/// Reads one release artifact from Gitea by tag and asset name.
+async fn gitea_asset_bytes(
+    source: &ManifestSource,
+    release: &ReleaseInfo,
+    asset: &ReleaseAsset,
+) -> Result<Vec<u8>, String> {
+    let client = source.client();
+    let url = source.api(&format!(
+        "{}/releases/tags/{}",
+        source.repo_path(),
+        release.tag
+    ));
+    let mut request = client.get(&url).header("Accept", "application/json");
+    if let Some(token) = source.token.as_deref().filter(|token| !token.is_empty()) {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "GET {url} failed (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
+    let document: Value = response.json().await.map_err(|error| error.to_string())?;
+    let name = asset_name(&asset.url);
+    let target_name = format!("devboard-{}.tar.xz", asset.target);
+    let asset_url = document
+        .get("assets")
+        .and_then(Value::as_array)
+        .and_then(|assets| {
+            assets.iter().find(|entry| {
+                entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|entry| entry == name || entry == target_name)
+            })
+        })
+        .and_then(|entry| {
+            entry
+                .get("browser_download_url")
+                .and_then(Value::as_str)
+                .or_else(|| entry.get("url").and_then(Value::as_str))
+        })
+        .ok_or_else(|| format!("the Gitea release carries no {target_name}"))?;
+    let mut request = client
+        .get(asset_url)
+        .header("Accept", "application/octet-stream");
+    if let Some(token) = source.token.as_deref().filter(|token| !token.is_empty()) {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "GET {asset_url} failed (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
+    Ok(response
+        .bytes()
+        .await
+        .map_err(|error| error.to_string())?
+        .to_vec())
+}
+
 /// Installs one release into a prefix, returning the installed version.
 ///
 /// The archive is verified before anything is unpacked, the binary is staged
@@ -279,29 +467,14 @@ pub async fn install_release(
     prefix: &Path,
     state_dir: &Path,
 ) -> Result<String, String> {
+    let target = current_target()?;
     let asset = release
-        .asset_for_this_platform()
-        .ok_or_else(|| format!("the release carries no artifact for {}", current_target()))?;
-    let client = source.client();
-    let response = client
-        .get(&asset.url)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "GET {} failed (HTTP {})",
-            asset.url,
-            response.status().as_u16()
-        ));
-    }
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    if !verify_sha256(&bytes, &asset.sha256) {
-        return Err("the downloaded artifact does not match its manifest digest".to_string());
-    }
+        .asset_for_this_platform()?
+        .ok_or_else(|| format!("the release carries no artifact for {target}"))?;
+    let bytes = download_release_asset(source, release, asset).await?;
     std::fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
     std::fs::create_dir_all(prefix.join("bin")).map_err(|error| error.to_string())?;
-    let archive = state_dir.join(format!("devboard-{}.tar.gz", release.version));
+    let archive = state_dir.join(format!("devboard-{}.archive", release.version));
     std::fs::write(&archive, &bytes).map_err(|error| error.to_string())?;
     let unpacked = unpack_binary(&archive, state_dir)?;
     let destination = prefix.join("bin").join("devboard");
@@ -321,11 +494,29 @@ pub async fn install_release(
     Ok(release.version.clone())
 }
 
-/// Extracts the `devboard` binary from a `.tar.gz` release archive.
+/// Extracts the `devboard` binary from a release archive.
+///
+/// cargo-dist publishes `.tar.xz`; older fixtures carry `.tar.gz`. The
+/// decoder is chosen by magic bytes, so both work without a name guess.
 fn unpack_binary(archive: &Path, staging: &Path) -> Result<PathBuf, String> {
-    let file = std::fs::File::open(archive).map_err(|error| error.to_string())?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut tar = tar::Archive::new(decoder);
+    let bytes = std::fs::read(archive).map_err(|error| error.to_string())?;
+    let cursor = std::io::Cursor::new(bytes);
+    if cursor
+        .get_ref()
+        .starts_with(&[0xFD, b'7', b'z', b'X', b'Z', 0x00])
+    {
+        let decoder = xz2::read::XzDecoder::new(cursor);
+        return unpack_tar(tar::Archive::new(decoder), staging);
+    }
+    let decoder = flate2::read::GzDecoder::new(cursor);
+    unpack_tar(tar::Archive::new(decoder), staging)
+}
+
+/// Extracts the `devboard` binary from one decoded tar stream.
+fn unpack_tar<R: std::io::Read>(
+    mut tar: tar::Archive<R>,
+    staging: &Path,
+) -> Result<PathBuf, String> {
     let target = staging.join(format!("unpack-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&target);
     let entries = tar.entries().map_err(|error| error.to_string())?;

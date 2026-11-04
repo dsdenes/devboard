@@ -87,17 +87,13 @@ pub fn default_supervision_state_directory() -> PathBuf {
     harness_directory().join(".tmp")
 }
 
-/// The harness directory this build belongs to, mirroring the TypeScript
-/// module's `dirname(import.meta.dir)/..`.
+/// The harness directory this build belongs to, resolved from the executable
+/// so an installed binary never names its compile-time checkout.
 fn harness_directory() -> PathBuf {
     if let Some(value) = environment_value("DEVBOARD_RUNNING_HARNESS_DIR") {
         return absolute(Path::new(&value));
     }
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+    crate::version::running_harness_dir()
 }
 
 /// A trimmed, non-empty environment value.

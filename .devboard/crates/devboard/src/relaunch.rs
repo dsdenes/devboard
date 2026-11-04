@@ -37,13 +37,21 @@ impl RelaunchSettings {
     }
 }
 
-/// The executable a replacement runs: this binary, which carries the client.
-pub fn replacement_program() -> std::io::Result<PathBuf> {
+/// The executable a replacement runs.
+///
+/// An installed host starts `<host>/.devboard/bin/devboard`, the binary the
+/// update just wrote, even when this process was started from somewhere else.
+/// A source checkout, which has no installed `bin/devboard`, starts this
+/// process's own executable; a rebuilt checkout replaces it on disk, so the
+/// link can read "... (deleted)" and the path without that suffix is the one
+/// to start.
+pub fn replacement_program(repo_dir: &Path) -> std::io::Result<PathBuf> {
+    let installed = repo_dir.join(".devboard").join("bin").join("devboard");
+    if installed.is_file() {
+        return Ok(installed);
+    }
     let current = std::env::current_exe()?;
     let text = current.to_string_lossy();
-    // A rebuilt checkout replaces the running binary on disk, so this process's
-    // executable link can read "... (deleted)". The path without the suffix is
-    // the one a replacement must start.
     if let Some(path) = text.strip_suffix(" (deleted)") {
         let path = PathBuf::from(path);
         if path.exists() {
@@ -58,7 +66,7 @@ pub fn spawn_replacement(
     settings: &RelaunchSettings,
     extra_env: &[(&str, String)],
 ) -> std::io::Result<Child> {
-    let program = replacement_program()?;
+    let program = replacement_program(&settings.repo_dir)?;
     let mut command = Command::new(&program);
     command.arg("serve");
     // Never start from a replaceable install directory: an update can rename

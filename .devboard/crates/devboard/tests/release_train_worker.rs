@@ -1102,6 +1102,7 @@ async fn a_recovery_verifies_the_release_publish_actually_proved() {
                         applied: Vec::new(),
                         failed: Vec::new(),
                     },
+                    dashboards: Vec::new(),
                 })
             })
         })

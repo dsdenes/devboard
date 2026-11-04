@@ -533,13 +533,10 @@ pub async fn gate_prepush() -> Result<i32> {
 // ---------------------------------------------------------------------------
 // Hook installation
 
-/// The harness that compiled this binary: `<checkout>/.devboard`.
+/// The harness directory this binary belongs to: `<checkout>/.devboard` in a
+/// source checkout, the installed prefix on a host.
 pub fn source_harness_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(".devboard"))
+    crate::version::running_harness_dir()
 }
 
 /// The checked-in hook this installer copies.

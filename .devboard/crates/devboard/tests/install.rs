@@ -90,7 +90,8 @@ fn install_writes_real_files_and_one_gitignore_line_per_skill() {
     let omp = host.join(".omp");
     for relative in [
         "commands/adr-resolve.md",
-        "extensions/implement-goal-issue.ts",
+        "commands/implement-goal-issue.md",
+        "commands/implement-next-epic.md",
         "mcp.json",
     ] {
         assert_real_file(&omp.join(relative));
@@ -119,12 +120,25 @@ fn install_writes_real_files_and_one_gitignore_line_per_skill() {
         prompt_files += 1;
     }
     assert!(prompt_files > 0);
-    for name in ["implement-goal-issue.ts", "implement-next-epic.ts"] {
+    let mut command_files = 0usize;
+    for entry in fs::read_dir(package_dir().join("omp/commands")).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
         assert_eq!(
-            fs::read(host.join(".devboard/extensions").join(name)).unwrap(),
-            fs::read(package_dir().join("extensions").join(name)).unwrap()
+            fs::read(host.join(".omp/commands").join(&name)).unwrap(),
+            fs::read(entry.path()).unwrap(),
+            "{name:?}"
         );
+        command_files += 1;
     }
+    assert!(command_files > 0);
+    assert!(
+        !host.join(".devboard/extensions").exists()
+            || fs::read_dir(host.join(".devboard/extensions"))
+                .unwrap()
+                .next()
+                .is_none()
+    );
 
     let template = fs::read(package_dir().join("templates/host-AGENTS.md")).unwrap();
     assert_eq!(fs::read(host.join("AGENTS.md")).unwrap(), template);
@@ -210,33 +224,40 @@ fn an_unmarked_host_skill_is_never_read_or_deleted() {
 }
 
 #[test]
-fn a_differing_unmarked_file_refuses_without_force() {
+fn a_changed_untracked_package_file_is_overwritten_and_a_tracked_one_is_preserved() {
     let scratch = Scratch::new("conflict");
     let host = scratch.host();
     let target = host.join(".omp/mcp.json");
     fs::create_dir_all(target.parent().unwrap()).unwrap();
     fs::write(&target, b"host: config\n").unwrap();
 
-    let error = cli_install::install(Some(host), false)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("install: refusing to overwrite differing files"),
-        "{error}"
-    );
-    assert!(error.contains("mcp.json"), "{error}");
-    assert!(
-        error.contains("install: rerun with --force to replace them"),
-        "{error}"
-    );
-    assert_eq!(fs::read(&target).unwrap(), b"host: config\n");
-    assert!(!host.join(".omp/commands").exists());
-
-    let report = cli_install::install(Some(host), true).unwrap();
+    let report = cli_install::install(Some(host), false).unwrap();
     assert!(report.installed_files > 0);
     let shipped = fs::read(package_dir().join("omp/mcp.json")).unwrap();
     assert_eq!(fs::read(&target).unwrap(), shipped);
     assert!(cli_install::doctor(Some(host)).unwrap().ok());
+
+    // A host that tracks the file keeps its bytes and sees the drift.
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["init", "--quiet"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(&target, b"host: tracked\n").unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["add", "-f", ".omp/mcp.json"])
+        .status()
+        .unwrap();
+    let report = cli_install::install(Some(host), false).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"host: tracked\n");
+    assert!(report
+        .drift
+        .iter()
+        .any(|entry| entry.contains(".omp/mcp.json")));
 }
 
 #[test]
@@ -288,23 +309,16 @@ fn doctor_names_a_missing_or_changed_prompt_and_extension() {
         report.failures
     );
 
-    // Reinstall restores it, then a changed extension byte is drift too.
+    // Reinstall restores it, and a stale runtime extension is removed.
     cli_install::install(Some(host), false).unwrap();
     assert!(cli_install::doctor(Some(host)).unwrap().ok());
     let extension = host.join(".devboard/extensions/implement-next-epic.ts");
-    let mut bytes = fs::read(&extension).unwrap();
-    bytes[0] ^= 0x01;
-    fs::write(&extension, &bytes).unwrap();
-    let report = cli_install::doctor(Some(host)).unwrap();
-    assert!(!report.ok());
-    assert!(
-        report
-            .failures
-            .iter()
-            .any(|failure| failure.contains(".devboard/extensions/implement-next-epic.ts")),
-        "{:?}",
-        report.failures
-    );
+    fs::create_dir_all(extension.parent().unwrap()).unwrap();
+    fs::write(&extension, b"stale runtime\n").unwrap();
+    let report = cli_install::install(Some(host), false).unwrap();
+    assert!(!extension.exists());
+    assert_eq!(report.removed, 1);
+    assert!(cli_install::doctor(Some(host)).unwrap().ok());
 }
 
 #[test]
@@ -357,29 +371,26 @@ fn every_installed_reference_resolves() {
     }
     assert!(prompt_references > 0, "the commands name prompt files");
 
-    let mut extension_references = 0usize;
-    for entry in fs::read_dir(host.join(".omp/extensions")).unwrap() {
-        let entry = entry.unwrap();
-        let text = fs::read_to_string(entry.path()).unwrap();
-        for token in text.split(|character: char| {
-            !(character.is_ascii_alphanumeric()
-                || matches!(character, '.' | '/' | '-' | '_' | '"' | '\''))
-        }) {
-            let token = token.trim_matches(|character: char| {
-                matches!(character, '"' | '\'' | ';' | ',' | ')' | '(')
-            });
-            if let Some(rest) = token.strip_prefix("../../.devboard/") {
-                assert!(
-                    host.join(".devboard").join(rest).is_file(),
-                    "{} imports a missing file {token}",
+    for directory in [
+        host.join(".omp/extensions"),
+        host.join(".devboard/extensions"),
+    ] {
+        if let Ok(entries) = fs::read_dir(&directory) {
+            for entry in entries {
+                let entry = entry.unwrap();
+                assert_ne!(
+                    entry.path().extension().and_then(|value| value.to_str()),
+                    Some("ts"),
+                    "{} is a runtime TypeScript file",
                     entry.path().display()
                 );
-                extension_references += 1;
             }
         }
     }
     assert!(
-        extension_references > 0,
-        "the extension wrappers re-export the payload"
+        !fs::read_to_string(host.join(".omp/commands/implement-next-epic.md"))
+            .unwrap()
+            .contains(".ts"),
+        "the command carries no TypeScript import"
     );
 }

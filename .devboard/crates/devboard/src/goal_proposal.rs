@@ -160,10 +160,78 @@ pub fn goal_proposal_body(submission: &GoalProposalSubmission) -> String {
     lines.join("\n")
 }
 
+/// How long the one naming turn may take.
+const NAME_TURN_TIMEOUT_MS: u64 = 30_000;
+/// How much of the report the naming turn reads.
+const NAME_TURN_REPORT_MAX: usize = 4_000;
+
+/// Asks one bounded, read-only ACP naming turn for a slug.
+///
+/// The turn gets the report and a single instruction; a timeout, an exit, a
+/// question, or an answer with no usable slug all return `None`, so the caller
+/// uses the deterministic first-line slug.
+async fn naming_turn_slug(report: &str, repo_dir: &Path, agent_command: &str) -> Option<String> {
+    if agent_command.trim().is_empty() {
+        return None;
+    }
+    let excerpt = crate::feedback::js_truncate(report, NAME_TURN_REPORT_MAX);
+    let prompt = format!(
+        "Suggest a lowercase kebab-case slug of at most six words for the goal report below. Reply with only the slug.\n\n{excerpt}"
+    );
+    let options = crate::acp::AcpConnectionOptions::new(
+        agent_command.trim().to_string(),
+        repo_dir.display().to_string(),
+    )
+    .with_permission_policy(crate::acp::PermissionPolicy::ReadOnly);
+    let text = tokio::time::timeout(
+        std::time::Duration::from_millis(NAME_TURN_TIMEOUT_MS),
+        async move {
+            let (peer, mut events) = crate::acp::AcpConnection::connect(options).await.ok()?;
+            let peer = std::sync::Arc::new(peer);
+            let run_peer = std::sync::Arc::clone(&peer);
+            let run_prompt = prompt.clone();
+            let mut run = tokio::spawn(async move { run_peer.run(&run_prompt).await });
+            let mut text = String::new();
+            loop {
+                tokio::select! {
+                    event = events.recv() => match event {
+                        Some(crate::acp::AcpEvent::Text(chunk)) => text.push_str(&chunk),
+                        Some(crate::acp::AcpEvent::Question(_)) => {
+                            run.abort();
+                            peer.close();
+                            return None;
+                        }
+                        Some(_) => {}
+                        None => break,
+                    },
+                    outcome = &mut run => {
+                        let _ = outcome;
+                        // The reply can settle after its text frames were
+                        // queued; drain what arrived so the slug is not lost.
+                        while let Ok(event) = events.try_recv() {
+                            if let crate::acp::AcpEvent::Text(chunk) = event {
+                                text.push_str(&chunk);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            peer.close();
+            Some(text)
+        },
+    )
+    .await
+    .ok()
+    .flatten()?;
+    normalize_goal_slug(&text)
+}
+
 /// Writes one draft under `<repo_dir>/.devboard/goal-proposals/`.
 pub async fn write_goal_proposal(
     submission: &GoalProposalSubmission,
     repo_dir: &Path,
+    agent_command: &str,
     suggested_name: Option<String>,
     origin: Option<&str>,
 ) -> Result<Value, RequestError> {
@@ -171,7 +239,11 @@ pub async fn write_goal_proposal(
     std::fs::create_dir_all(&directory).map_err(|error| {
         RequestError::internal(format!("could not write the goal proposal: {error}"))
     })?;
-    let name = suggested_name
+    let suggested = match suggested_name {
+        Some(name) => Some(name),
+        None => naming_turn_slug(&submission.report, repo_dir, agent_command).await,
+    };
+    let name = suggested
         .as_deref()
         .and_then(normalize_goal_slug)
         .unwrap_or_else(|| goal_proposal_name(&submission.report));

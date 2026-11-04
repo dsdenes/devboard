@@ -23,9 +23,6 @@ static OMP: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../omp");
 /// The agent-facing prompt tree the host's `.devboard/prompts/` receives.
 static PROMPTS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../prompts");
 
-/// The agent-facing extension tree the host's `.devboard/extensions/` receives.
-static EXTENSIONS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../extensions");
-
 /// The root-document template `syncAgents` copies to `<host>/AGENTS.md`.
 static HOST_AGENTS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -77,6 +74,10 @@ pub struct InstallReport {
     pub agents: AgentsOutcome,
     /// The `.gitignore` entries this run appended.
     pub gitignore_added: Vec<String>,
+    /// Git-tracked host files the package left byte-identical.
+    pub drift: Vec<String>,
+    /// Package files the host no longer receives.
+    pub removed: usize,
 }
 
 /// What one doctor run found.
@@ -218,39 +219,23 @@ pub fn install(host: Option<&Path>, force: bool) -> Result<InstallReport> {
     install_into(&host, force)
 }
 
-fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
+fn install_into(host: &Path, _force: bool) -> Result<InstallReport> {
     let package = package();
     let omp = host.join(".omp");
-    let mut conflicts: Vec<&str> = Vec::new();
-    for (relative, contents) in &package.files {
-        let destination = omp.join(relative.as_str());
-        match fs::symlink_metadata(&destination) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("install: probing {}", destination.display()))
-            }
-            Ok(meta) if meta.is_file() && fs::read(&destination)?.as_slice() == *contents => {}
-            Ok(_) => conflicts.push(relative.as_str()),
-        }
-    }
-    if !conflicts.is_empty() && !force {
-        let mut message = format!(
-            "install: refusing to overwrite differing files in {}:",
-            omp.display()
-        );
-        for relative in &conflicts {
-            message.push_str("\n  ");
-            message.push_str(relative);
-        }
-        message.push_str("\ninstall: rerun with --force to replace them");
-        bail!("{message}");
-    }
+    let _ = _force;
+    let mut drift: Vec<String> = Vec::new();
 
     let mut installed_files = 0usize;
     for (relative, contents) in &package.files {
         let destination = omp.join(relative.as_str());
         if is_identical_file(&destination, contents)? {
+            continue;
+        }
+        let label = format!(".omp/{relative}");
+        if is_git_tracked(host, &label) {
+            // A host-tracked file belongs to the host: leave its bytes and
+            // report the drift instead of silently overwriting it.
+            drift.push(label);
             continue;
         }
         if let Ok(meta) = fs::symlink_metadata(&destination) {
@@ -304,8 +289,36 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
         }
     }
 
-    installed_files += install_payload(&PROMPTS, &host.join(".devboard/prompts"))?;
-    installed_files += install_payload(&EXTENSIONS, &host.join(".devboard/extensions"))?;
+    installed_files += install_payload(
+        &PROMPTS,
+        &host.join(".devboard/prompts"),
+        host,
+        ".devboard/prompts",
+        &mut drift,
+    )?;
+    let mut removed = 0usize;
+    for (prefix, directory) in [
+        ("commands/", omp.join("commands")),
+        ("extensions/", omp.join("extensions")),
+    ] {
+        ensure_real_dir(&directory)?;
+        removed += remove_stale_package_files(host, &omp, prefix, &directory, &mut drift)?;
+    }
+    // The harness no longer ships runtime extensions: every installed file
+    // under `.devboard/extensions` is stale unless the host tracks it.
+    let extensions_dir = host.join(".devboard/extensions");
+    ensure_real_dir(&extensions_dir)?;
+    let mut stale = Vec::new();
+    collect_entries(&extensions_dir, "", &mut stale)?;
+    for relative in stale {
+        let label = format!(".devboard/extensions/{relative}");
+        if is_git_tracked(host, &label) {
+            drift.push(label);
+            continue;
+        }
+        remove_entry(&extensions_dir.join(&relative))?;
+        removed += 1;
+    }
 
     let agents_target = host.join("AGENTS.md");
     let agents = match fs::symlink_metadata(&agents_target) {
@@ -335,6 +348,7 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
         }
     };
 
+    install_manifest(host)?;
     let gitignore_added = ensure_gitignore(host, &package.names)?;
 
     Ok(InstallReport {
@@ -344,18 +358,33 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
         skills: package.names.clone(),
         agents,
         gitignore_added,
+        drift,
+        removed,
     })
 }
 
-/// Copies one embedded payload tree as real files, writing only the files whose
-/// bytes differ. Returns the number of files written.
-fn install_payload(dir: &Dir<'static>, target: &Path) -> Result<usize> {
+/// Copies one embedded payload tree as real files, writing the files whose
+/// bytes differ, preserving a git-tracked host file, and deleting an untracked
+/// file the package no longer ships. Returns the number of files written.
+fn install_payload(
+    dir: &Dir<'static>,
+    target: &Path,
+    host: &Path,
+    label: &str,
+    drift: &mut Vec<String>,
+) -> Result<usize> {
     let mut files = Vec::new();
     collect_files(dir, &mut files);
+    let shipped: BTreeSet<String> = files.iter().map(|(relative, _)| relative.clone()).collect();
     let mut written = 0usize;
-    for (relative, contents) in files {
+    for (relative, contents) in &files {
         let destination = target.join(relative.as_str());
         if is_identical_file(&destination, contents)? {
+            continue;
+        }
+        let relative_label = format!("{label}/{relative}");
+        if is_git_tracked(host, &relative_label) {
+            drift.push(relative_label);
             continue;
         }
         if let Ok(meta) = fs::symlink_metadata(&destination) {
@@ -369,7 +398,104 @@ fn install_payload(dir: &Dir<'static>, target: &Path) -> Result<usize> {
             .with_context(|| format!("install: writing {}", destination.display()))?;
         written += 1;
     }
+    let mut existing = Vec::new();
+    collect_entries(target, "", &mut existing)?;
+    for relative in existing {
+        if shipped.contains(&relative) {
+            continue;
+        }
+        let path = target.join(&relative);
+        let relative_label = format!("{label}/{relative}");
+        if is_git_tracked(host, &relative_label) {
+            drift.push(relative_label);
+            continue;
+        }
+        remove_entry(&path)?;
+        written += 0;
+    }
     Ok(written)
+}
+
+/// Deletes every untracked file under one `.omp` prefix that the package no
+/// longer ships; a git-tracked file is preserved and reported as drift.
+fn remove_stale_package_files(
+    host: &Path,
+    omp: &Path,
+    prefix: &str,
+    directory: &Path,
+    drift: &mut Vec<String>,
+) -> Result<usize> {
+    let package = package();
+    let shipped: BTreeSet<&str> = package
+        .files
+        .iter()
+        .filter_map(|(relative, _)| relative.strip_prefix(prefix))
+        .collect();
+    let mut existing = Vec::new();
+    collect_entries(directory, "", &mut existing)?;
+    let mut removed = 0usize;
+    for relative in existing {
+        if shipped.contains(relative.as_str()) {
+            continue;
+        }
+        let label = format!(".omp/{prefix}{relative}");
+        if is_git_tracked(host, &label) {
+            drift.push(label);
+            continue;
+        }
+        remove_entry(&directory.join(&relative))?;
+        removed += 1;
+    }
+    let _ = omp;
+    Ok(removed)
+}
+
+/// Whether `relative` is a file in the host's git index. A host without git,
+/// or outside a work tree, tracks nothing.
+fn is_git_tracked(host: &Path, relative: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["ls-files", "--error-unmatch", "--", relative])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Records the installed version in `<host>/.devboard/devboard.json`.
+///
+/// A source checkout keeps its checked-in `package.json` marker instead; the
+/// manifest is written only when no source marker is present, so a canonical
+/// checkout is never mistaken for an installed prefix.
+fn install_manifest(host: &Path) -> Result<()> {
+    let prefix = host.join(".devboard");
+    if prefix.join("package.json").is_file() {
+        return Ok(());
+    }
+    let path = prefix.join("devboard.json");
+    let text = format!(
+        "{}\n",
+        crate::jsjson::stringify(&serde_json::json!({
+            "name": "@dsdenes/devboard",
+            "version": env!("CARGO_PKG_VERSION"),
+        }))
+    );
+    // A release install already wrote the version it installed; a source-tree
+    // install must never downgrade it.
+    if fs::symlink_metadata(&path)
+        .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
+    {
+        return Ok(());
+    }
+    ensure_real_dir(&prefix)?;
+    if let Ok(meta) = fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() || meta.is_dir() {
+            remove_entry(&path)?;
+        }
+    }
+    fs::write(&path, text).with_context(|| format!("install: writing {}", path.display()))
 }
 
 /// The host ignore lines the installed tree needs. `/.devboard` covers the
@@ -498,10 +624,7 @@ pub fn doctor(host: Option<&Path>) -> Result<DoctorReport> {
         compare_tree(label, &expected, &actual, &mut report.failures)?;
     }
 
-    for (label, dir, relative) in [
-        (".devboard/prompts", &PROMPTS, "prompts"),
-        (".devboard/extensions", &EXTENSIONS, "extensions"),
-    ] {
+    for (label, dir, relative) in [(".devboard/prompts", &PROMPTS, "prompts")] {
         let mut expected = Vec::new();
         collect_files(dir, &mut expected);
         expected.sort_by(|left, right| left.0.cmp(&right.0));
@@ -553,6 +676,31 @@ pub fn doctor(host: Option<&Path>) -> Result<DoctorReport> {
         }
     }
 
+    doctor_layout(&host, &mut report);
+    doctor_release(&mut report);
+    doctor_version(&host, &mut report);
+    doctor_dashboard(&host, &mut report);
+    doctor_update_failure(&host, &mut report);
+
+    // No runtime extension is shipped, so any entry left under
+    // `.devboard/extensions` is stale.
+    let legacy_extensions = host.join(".devboard/extensions");
+    if let Ok(meta) = fs::symlink_metadata(&legacy_extensions) {
+        if meta.file_type().is_symlink() {
+            report
+                .failures
+                .push(".devboard/extensions is a symlink".to_string());
+        } else if meta.is_dir() {
+            let mut entries = Vec::new();
+            collect_entries(&legacy_extensions, "", &mut entries)?;
+            for relative in entries {
+                report.failures.push(format!(
+                    ".devboard/extensions/{relative} is not shipped by the package"
+                ));
+            }
+        }
+    }
+
     let agents = host.join("AGENTS.md");
     match fs::symlink_metadata(&agents) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -583,6 +731,189 @@ pub fn doctor(host: Option<&Path>) -> Result<DoctorReport> {
     }
 
     Ok(report)
+}
+
+/// `.devboard` and `.omp` must be real directories, never symlinks into a
+/// checkout.
+fn doctor_layout(host: &Path, report: &mut DoctorReport) {
+    for name in [".devboard", ".omp"] {
+        let path = host.join(name);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                report.failures.push(format!("layout: {name} is missing"));
+            }
+            Err(error) => {
+                report
+                    .failures
+                    .push(format!("layout: cannot read {name}: {error}"));
+            }
+            Ok(meta) if meta.file_type().is_symlink() => {
+                report.failures.push(format!("layout: {name} is a symlink"));
+            }
+            Ok(meta) if !meta.is_dir() => {
+                report
+                    .failures
+                    .push(format!("layout: {name} is not a real directory"));
+            }
+            Ok(_) => {}
+        }
+    }
+}
+
+/// Checks that a configured release source answers with a readable manifest.
+/// No source configured means the check is skipped.
+fn doctor_release(report: &mut DoctorReport) {
+    let local = std::env::var("DEVBOARD_RELEASE_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(local) = local {
+        let path = PathBuf::from(local.strip_prefix("file://").unwrap_or(&local))
+            .join(crate::release::MANIFEST_ASSET);
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                if serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .and_then(|value| crate::release::ReleaseInfo::from_manifest(&value))
+                    .is_none()
+                {
+                    report.failures.push(format!(
+                        "release: {} is not a release manifest",
+                        path.display()
+                    ));
+                }
+            }
+            Err(error) => report
+                .failures
+                .push(format!("release: cannot read {}: {error}", path.display())),
+        }
+        return;
+    }
+    if std::env::var("DEVBOARD_GITEA_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return;
+    }
+    let source = crate::updates::manifest_source_from_env(Path::new("."));
+    let Some(source) = source else {
+        return;
+    };
+    let outcome = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok();
+        runtime.map(|runtime| runtime.block_on(crate::release::latest_manifest(&source)))
+    })
+    .join()
+    .ok()
+    .flatten();
+    match outcome {
+        Some(Ok(_)) => {}
+        Some(Err(error)) => report.failures.push(format!("release: {error}")),
+        None => report
+            .failures
+            .push("release: cannot start the release check".to_string()),
+    }
+}
+
+/// The version recorded beside the installed binary, and whether the recorded
+/// dashboard runs it.
+fn doctor_version(host: &Path, report: &mut DoctorReport) {
+    let prefix = host.join(".devboard");
+    if prefix.join("package.json").is_file() {
+        // A source checkout records its version in the checked-in marker.
+        return;
+    }
+    let installed = crate::release::installed_version(&prefix);
+    let Some(installed) = installed else {
+        report
+            .failures
+            .push("installed version: .devboard/devboard.json is missing; run install".to_string());
+        return;
+    };
+    let state_dir = host.join(".devboard").join(".tmp");
+    let Ok(text) = fs::read_to_string(state_dir.join("version.json")) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        report
+            .failures
+            .push("installed version: .devboard/.tmp/version.json is invalid".to_string());
+        return;
+    };
+    let running = value.get("running").and_then(|value| value.as_str());
+    if let Some(running) = running {
+        if running != installed {
+            report.failures.push(format!(
+                "stale: the dashboard runs {running} but {installed} is installed"
+            ));
+        }
+    }
+}
+
+/// A recorded dashboard must have a live pid and an answering port.
+fn doctor_dashboard(host: &Path, report: &mut DoctorReport) {
+    let state_dir = host.join(".devboard").join(".tmp");
+    let Ok(text) = fs::read_to_string(state_dir.join("version.json")) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    if let Some(pid) = value.get("pid").and_then(|value| value.as_u64()) {
+        let pid = pid as u32;
+        if !crate::supervision::live_process(pid) {
+            report
+                .failures
+                .push(format!("dashboard: recorded pid {pid} is not running"));
+            return;
+        }
+    }
+    if let Some(port) = value.get("port").and_then(|value| value.as_u64()) {
+        let port = port as u16;
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        if std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500))
+            .is_err()
+        {
+            report
+                .failures
+                .push(format!("dashboard: nothing answers on port {port}"));
+        }
+    }
+}
+
+/// The most recent update outcome in this host's journal. A trailing failure
+/// fails doctor; a later success clears it.
+fn doctor_update_failure(host: &Path, report: &mut DoctorReport) {
+    let state_dir = host.join(".devboard").join(".tmp");
+    let path = crate::journal::journal_file(&state_dir, host);
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let mut last: Option<String> = None;
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match value.get("kind").and_then(|value| value.as_str()) {
+            Some("update") => last = Some("update".to_string()),
+            Some("update-error") => {
+                last = value
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .or_else(|| Some("update-error".to_string()));
+            }
+            _ => {}
+        }
+    }
+    if let Some(failure) = last.filter(|text| text != "update") {
+        report.failures.push(format!("update: {failure}"));
+    }
 }
 
 /// Record every expected file that is missing, differing, or not a real file,

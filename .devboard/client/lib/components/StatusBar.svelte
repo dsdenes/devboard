@@ -147,7 +147,7 @@
         <span class="mono">{connection.version?.installed ?? "unknown"}</span>
       </span>
     </span>
-    {#if connection.version?.replacement != null || connection.version?.stale === true}
+    {#if connection.version?.replacement != null}
       <CommandButton
         bare
         label="Reload"

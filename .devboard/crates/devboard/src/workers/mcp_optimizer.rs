@@ -5826,12 +5826,7 @@ fn worker_harness_version() -> Option<String> {
             return Some(version);
         }
     }
-    let harness_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    crate::version::read_harness_version(&harness_dir)
+    crate::version::read_harness_version(&crate::version::running_harness_dir())
 }
 
 /// Runs one detached worker until Stop, Drain, or a signal ends it. Returns the
@@ -7226,6 +7221,75 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
         .option("owner-state-dir")
         .map(PathBuf::from)
         .unwrap_or_else(|| state_dir.clone());
+    let once = invocation.rest.iter().any(|flag| flag == "--once");
+    let collect = invocation.rest.iter().any(|flag| flag == "--collect");
+    let dry_run = invocation.rest.iter().any(|flag| flag == "--dry-run");
+    let json = invocation.rest.iter().any(|flag| flag == "--json");
+    if once || collect || dry_run {
+        if collect && !dry_run {
+            eprintln!("mcp-optimizer: --collect runs with --dry-run");
+            std::process::exit(2);
+        }
+        if once && (collect || dry_run) {
+            eprintln!("mcp-optimizer: --once and --dry-run are exclusive");
+            std::process::exit(2);
+        }
+        let now = match invocation.option("--now") {
+            Some(text) => match parse_instant(text) {
+                Some(instant) => instant,
+                None => {
+                    eprintln!("mcp-optimizer: --now needs an ISO-8601 instant");
+                    std::process::exit(2);
+                }
+            },
+            None => OffsetDateTime::now_utc(),
+        };
+        let mut options = CycleOptions::new(root.clone(), state_dir.clone());
+        options.now = Some(now);
+        options.dry_run = dry_run || collect;
+        options.environment = invocation_environment(invocation);
+        let directory = mcp_optimizer_directory(&state_dir);
+        let details = LockDetails {
+            repo: root.to_string_lossy().into_owned(),
+            state_dir: owner_state_dir.to_string_lossy().into_owned(),
+            harness_version: worker_harness_version(),
+            argv: invocation.raw.clone(),
+        };
+        // A dry run changes nothing, so it takes no lock and creates no
+        // directory; only a real cycle needs the cross-version lease.
+        let lock = if options.dry_run {
+            None
+        } else {
+            match acquire_lock(&cycle_lock_path(&directory), &details) {
+                Ok(guard) => Some(guard),
+                Err(owner) => {
+                    println!(
+                        "mcp-optimizer: a cycle is already running{}",
+                        owner
+                            .map(|owner| format!(" (pid {})", owner.pid))
+                            .unwrap_or_default()
+                    );
+                    return Ok(());
+                }
+            }
+        };
+        let result = run_cycle(options).await?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result.report.to_json()).unwrap_or_default()
+            );
+        } else {
+            println!("{}", describe_cycle(&result));
+        }
+        if let Some(lock) = lock {
+            lock.release();
+        }
+        if result.exit_code != 0 {
+            std::process::exit(result.exit_code);
+        }
+        return Ok(());
+    }
     let mut options = WorkerOptions::new(root, state_dir);
     options.owner_state_dir = Some(owner_state_dir);
     let code = run_worker(options).await?;
@@ -7233,4 +7297,9 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
         anyhow::bail!("mcp-optimizer worker exited with code {code}");
     }
     Ok(())
+}
+
+/// The environment one manual cycle reads, from this process.
+fn invocation_environment(_invocation: &WorkerInvocation) -> HashMap<String, String> {
+    std::env::vars().collect()
 }

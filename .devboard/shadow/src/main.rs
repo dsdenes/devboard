@@ -156,12 +156,24 @@ async fn main() -> anyhow::Result<()> {
         );
         eprintln!("shadow: {}/{label}", recording.command);
         if kind != Route::Mirror {
-            // A cut-over or mutating command is served by Rust alone; the
-            // corpus replay proves its answer and state.
-            rust_socket
-                .send(Message::Text(scenario.send.clone().into()))
-                .await?;
-            drain(&mut rust_socket).await;
+            // A cut-over or mutating command is compared against its recorded
+            // corpus answer, state tree, and repository tree on a fresh Rust
+            // instance, so a write can never contaminate another comparison.
+            let mut replay = devboard_contract::Report::default();
+            devboard_contract::replay_command(&corpus, recording, &|_| true, &mut replay).await?;
+            let entry = report
+                .commands
+                .get_mut(&recording.command)
+                .expect("the command is registered");
+            entry.comparisons += replay.compared.max(1) as u64;
+            for mismatch in &replay.mismatches {
+                let detail = format!(
+                    "{}: {}: {}",
+                    recording.command, mismatch.scenario, mismatch.detail
+                );
+                entry.divergences.push(detail.clone());
+                report.unexplained.push(detail);
+            }
             continue;
         }
         let baseline: Vec<Value> = scenario
@@ -256,9 +268,22 @@ fn spawn_rust(args: &Args, port: u16, layout: &ShadowLayout) -> anyhow::Result<C
         .args(["--token", &args.token])
         .env("DEVBOARD_UPDATE_INTERVAL_MS", "3600000")
         .env("DEVBOARD_RUNNING_VERSION", "0.0.0-contract")
+        // The baseline recorded a clean machine: no forge feedback, no host
+        // skills, and no update source from this checkout.
+        .env("HOME", {
+            let home = layout
+                .rust_state_dir()
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("home");
+            let _ = std::fs::create_dir_all(&home);
+            home
+        })
         .env_remove("DEVBOARD_GITEA_URL")
         .env_remove("GITEA_TOKEN")
         .env_remove("DEVBOARD_GITEA_TOKEN")
+        .env_remove("DEVBOARD_RELEASE_URL")
+        .env_remove("DEVBOARD_FEEDBACK_TIMEOUT_MS")
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()

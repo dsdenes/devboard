@@ -100,6 +100,22 @@ for payload in prompts extensions; do
   done < <(find "$source_payload" -type f -print0)
 done
 
+# An installed host records its version beside the payload. A source checkout
+# keeps its checked-in package.json marker instead.
+if [ ! -f "$host/.devboard/package.json" ]; then
+  version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' "$source_dir/Cargo.toml" | head -n 1)"
+  if [ -n "$version" ]; then
+    printf '{"name":"@dsdenes/devboard","version":"%s"}\n' "$version" \
+      > "$host/.devboard/devboard.json"
+  fi
+fi
+mkdir -p -- "$host/.omp/extensions" "$host/.devboard/extensions"
+# The harness no longer ships runtime extensions: remove the retired
+# TypeScript wrappers an older install left behind.
+for retired in "$host/.omp/extensions" "$host/.devboard/extensions"; do
+  find "$retired" -type f -name '*.ts' -delete
+done
+
 # The fixed wrapper files keep the refuse-unless---force rule; the marked
 # skills are collected separately because the package owns them outright.
 regular_paths=()

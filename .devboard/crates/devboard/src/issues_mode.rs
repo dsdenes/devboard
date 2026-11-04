@@ -2297,18 +2297,6 @@ fn omp_command_paths(repo_dir: &Path, environment: &HashMap<String, String>) -> 
     ]
 }
 
-fn omp_extension_paths(repo_dir: &Path, environment: &HashMap<String, String>) -> Vec<PathBuf> {
-    let home = environment
-        .get("HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_default();
-    vec![
-        repo_dir.join(".omp").join("extensions"),
-        home.join(".omp").join("extensions"),
-    ]
-}
-
 /// Everything Start must prove before it spawns a worker.
 async fn production_preflight(request: PreflightRequest) -> PreflightResult {
     if let Some(problem) = crate::forge::root_problem(&request.repo_dir) {
@@ -2362,15 +2350,15 @@ async fn production_preflight(request: PreflightRequest) -> PreflightResult {
             ),
         };
     }
-    let extensions: Vec<PathBuf> = omp_extension_paths(&request.repo_dir, &request.environment)
+    let goal_commands: Vec<PathBuf> = omp_command_paths(&request.repo_dir, &request.environment)
         .into_iter()
-        .map(|directory| directory.join("implement-goal-issue.ts"))
+        .map(|directory| directory.join("implement-goal-issue.md"))
         .collect();
-    if !extensions.iter().any(|path| path.exists()) {
+    if !goal_commands.iter().any(|path| path.exists()) {
         return PreflightResult::Refused {
             message: format!(
-                "missing prerequisite: the /implement-goal-issue extension is not installed for omp (looked in {}); install the harness wrappers with .devboard/install.sh",
-                extensions
+                "missing prerequisite: the /implement-goal-issue command is not installed for omp (looked in {}); install the harness wrappers with .devboard/install.sh",
+                goal_commands
                     .iter()
                     .map(|path| path.display().to_string())
                     .collect::<Vec<_>>()

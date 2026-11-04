@@ -1,11 +1,11 @@
 ---
-description: Resolve the forge host, project, and token scope through forge-auth.ts, never by enumerating the environment or reading credential files.
+description: Resolve the forge host, project, and token scope through devboard forge-auth, never by enumerating the environment or reading credential files.
 ---
 
 ## Manifesto
 
 Your goal is to use the forge identity this checkout is authorized for, and the observable result
-is every tracker read and write authenticated through `forge-auth.ts` with the correct scope.
+is every tracker read and write authenticated through `devboard forge-auth` with the correct scope.
 
 # Forge identity
 

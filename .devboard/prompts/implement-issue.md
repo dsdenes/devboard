@@ -44,7 +44,7 @@ context, but you never edit, comment on, close, or reopen another issue.
   directory, no `env | grep`, and no
   `cd <root> && … && devboard forge-auth check` line. The `devboard_status`
   result covers the roots, and the session's auth result — already in context, otherwise the one
-  `forge-auth.ts check` JSON line below — covers the forge, host, project, and identity; neither
+  `devboard forge-auth check` JSON line below — covers the forge, host, project, and identity; neither
   is re-derived to orient the run.
 - Fall back to a shell probe only for a field neither the `devboard_status` result nor the auth
   gate reports, and then at most one probe, run alone: never a chained discovery line, never
@@ -61,7 +61,8 @@ context, but you never edit, comment on, close, or reopen another issue.
   `<REPO_DIR>` — no temporary file, log, cache, or build output elsewhere, and never `/tmp/x`.
 - Scratch files and command logs live under `<REPO_DIR>/.devboard/.tmp/` and nowhere else. Create
   that directory once per session with a standalone `mkdir -p .devboard/.tmp` from the repository
-  root; every log redirect names it, for example `> .devboard/.tmp/verify-interface.log 2>&1`.
+  root; a scratch log that has to be kept names it, for example
+  `> .devboard/.tmp/check.log 2>&1`.
   Never create or use a repo-root `.tmp`: no `mkdir -p .tmp` prefix, no
   `ls -d .tmp || mkdir -p .tmp` guard, and no `> .tmp/<name>.log 2>&1` redirect.
 - The worktree cut is the whole worktree sync: `git worktree add --track -b issue-<number>
@@ -120,7 +121,7 @@ context, but you never edit, comment on, close, or reopen another issue.
   never derive the values with `sed`, `git remote get-url`, or any other shell substitution. When
   the `origin` remote cannot name the forge, stop and report that as the blocker.
 
-  A session following this prompt issues at most one call matching `forge-auth.ts check` in
+  A session following this prompt issues at most one call matching `devboard forge-auth check` in
   total, and none once its context carries `canWrite: true`; that call has no `cd`, no `--forge`,
   and no `--host` in its command text. Invoke that one line alone: never prefix it with
   `cd <absolute repository path> &&` (the `cd /home/... &&` shape) or
@@ -262,13 +263,12 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
   Never re-run it to re-inspect output a consumer truncated. Run a build or test gate only when the
   change touches it.
 - `verification_run` runs one allowlisted check from the `.devboard/` that the `devboard_status`
-  result reports as `harnessDirectory`, and it is the preferred entry point for every check the
-  catalog covers: `bun run build` as `{"check": "build"}`, `bun test` as `{"check": "test"}`,
-  `bunx tsc --noEmit` as `{"check": "typecheck"}`, and `bun run verify:interface` as
-  `{"check": "verify:interface"}`. Its result carries `exitCode`, `output`, and the complete `log`
-  in one read. When it resolves the canonical package root while you work in a worktree, it checks
-  the pre-change revision; run the changed revision once from `<worktree>/.devboard/` as
-  *Typecheck* and *Interface verification* below require.
+  result reports as `harnessDirectory`, and it is the preferred entry point for every check:
+  `{"check": "build"}`, `{"check": "check"}`, `{"check": "typecheck"}`, `{"check": "test"}`,
+  `{"check": "rust:fmt"}`, `{"check": "rust:clippy"}`, and `{"check": "rust:test"}`. Its result
+  carries `exitCode`, `output`, and the complete `log` in one read. When it resolves the
+  canonical package root while you work in a worktree, it checks the pre-change revision; run the
+  changed revision once from `<worktree>/.devboard/` as *Verification checks* below requires.
 - Run the build, the typecheck, the tests, and each verification check as separate invocations,
   never chained into one command, never behind a `mkdir -p .tmp` prefix, and never behind a
   `> .tmp/<name>.log 2>&1` redirect, as *Shell calls* states. When one fails, name the failing
@@ -297,131 +297,38 @@ captured output, writes the complete output to the returned `log`, and returns `
   the build produces, and `{"check": "test", "paths": [...]}` for the tests whose subject the
   change touched. Never run more than one gate in a single command.
 
-## Interface verification
+## Verification checks
 
-`bun run verify:interface` builds the client, starts a source dashboard, drives headless Chrome,
-and throws the whole assertion message plus its JSON evidence object on the first failure. A lost
-assertion therefore costs a full rerun, so interface verification has its own rule.
+The harness has no browser E2E suite: the historical Playwright and `verify-*` scripts are
+retired. Verification is the Rust workspace suite, the contract corpus, the client's build,
+typecheck, and unit tests, and the CLI and HTTP smoke checks below. Never add a browser test or a
+`verify-*` script back.
 
-Interface verification has exactly one entry point: the `verification_run` MCP tool with
-`{"check": "verify:interface"}`. The tool executes the `verify:interface` script from
-`.devboard/package.json` with the resolved `harnessDirectory` as its working directory, kills the
-check's whole process group at its 900-second bound, and returns `check`, `exitCode`, `output`,
-`truncated`, and `log` in one result. Apart from the worktree fallback below, a bare
-`bun run verify:interface` and a log an earlier run wrote are never a verdict, and a
-`tail`/`head`/`grep` pipe never replaces one.
-
-Every direct invocation of `bun run verify:interface` — the worktree fallback below, and any run
-the tool cannot replace — happens in the foreground, exactly as written. It MUST NOT be redirected
-into `.devboard/.tmp/*.log` or any other file: the redirect replaces the failing assertion with
-`(no output)`, so read the diagnostic from the command output instead.
-
-- Use `repositoryRoot` and `harnessDirectory` from the `devboard_status` call above, not a second
-  call. When `harnessDirectory` is the `.devboard/` you changed,
-  the tool verifies the changed revision and is the only way to run the check: never invoke
-  `bun run verify:interface` from a shell in that case, because the tool result is the whole
-  verdict and the shell form only repeats the same run.
-- Only when that same result reports the canonical `<REPO_DIR>/.devboard` while you work in a
-  worktree does the tool verify the pre-change revision. Then run the changed revision once from
-  `<worktree>/.devboard` in two separate commands. First run `bun run build` alone in the
-  foreground with its output unredirected, and read that output. Second, run only the verifier
-  in the foreground with no deadline — `timeout: 0` — as the bare command
-  `bun run verify:interface`, with its output visible in the command result: when the harness
-  backgrounds the long run, the job's completion follow-up carries it. Never redirect that command
-  to `.devboard/.tmp/verify-interface.log` or any other file, and never chain the build and the
-  verifier into one command: the redirect turns a real failure into `(no output)`, and the chained
-  form reports only `exit code 1`, hiding which stage failed. Its exit status is the verdict, so
-  never append a status echo. Say in the final response that the tool's resolved
-  `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
-- Interface verification needs no scratch directory: the verifier creates every `.tmp` directory
-  it writes to. When some other command's output genuinely has to be captured for later diffing,
-  write the log under `.devboard/.tmp/` as *Inputs and paths* states — never joined to the
-  command with `&&` and never re-probed with `ls` — and echo the tail of the log in the same tool
-  result so a failure never arrives as `(no output)`.
-- The `verification_run` tool writes the complete output of its own run to a log unique to that
-  invocation and returns that path in `log`; when the run settles it also publishes the same
-  complete output to `.devboard`'s `.tmp/verify-interface.log`. Read the returned path whole on
-  failure — never `tail`, `head`, `grep`, or `2>&1 | tee` it — so the failing check message and its
-  evidence JSON survive instead of a fixed number of trailing lines. Never take a verdict from a
-  log an earlier run wrote: each invocation starts its own empty log.
-- Never kill or restart `verify:interface`: a killed job loses the assertion. The
-  `verification_run` call itself is never backgrounded; it returns the verdict in one result. For
-  the shell fallback, a job status line such as `Backgrounded as job bg_N` is never a failure
-  detail: read the job's completion follow-up and its exit status before concluding anything.
-- On a nonzero exit, surface the first error line in the turn that reads the result: quote the
-  first line the run printed — the `verify:interface: <assertion>: <evidence>` line, or the first
-  stderr line from a step that crashed before the assertion — in the session transcript. Never
-  report `(no output)`, a bare exit code, or a paraphrase as the failure detail, and never answer
-  a silent failure with an unchanged re-run.
-- `truncated: true` means the 16 KiB bound cut the returned `output`; the `log` file still holds the
-  complete output. `exitCode` is still the verdict, and a truncated result is never a pass. A result
-  ending `[timed out after 900000 ms]` is a failed verification, not a reason to background the
-  check.
-- On failure, read the complete `verify:interface: <assertion>: <evidence>` line before editing —
-  from the tool's `log` or from the fallback job's output: the assertion names the control, and
-  the evidence object carries the measured and expected values it compared. A partial read hides
-  which side mismatched.
-- A minified client runtime error such as `undefined is not an object (evaluating 'ne.cancelled')`
-  is not a diagnosis, and a stale bundle is only a hypothesis until it is checked. The verifier
-  builds the client before it starts the dashboard, so confirm the bundle matches the source by
-  running the `build` check through `verification_run` — or, for a worktree revision the tool
-  cannot reach, `bun run build` alone from `<worktree>/.devboard` — and rerunning the verifier
-  once. Report the minified message only when it reproduces after that build, and never present it
-  as the failing assertion.
-- Reproduce a failure once at the base revision before you touch code, and classify it. In a
-  worktree session whose tool run used the canonical `.devboard/`, that tool result is the base run
-  and the fallback shell run is the changed revision; when both print the same assertion and
-  evidence, the defect is a pre-existing baseline failure — do not fix it in this run, record its
-  exact message, and continue. When no base run is available, say so and classify from the diff,
-  never by stashing, reverting, or rewriting the task worktree.
-- Never run an identical failing `verify:interface` invocation more than twice: once for the
-  changed revision and once for the base revision.
-- Report the exact assertion line, its evidence JSON, and the `exitCode` in the final response.
-  Never answer a failure with a bare exit code, a paraphrase, or a re-run.
+- The Rust checks have exact entry points through `verification_run`:
+  `{"check": "rust:fmt"}` runs `cargo fmt --check --all`, `{"check": "rust:clippy"}` runs
+  `cargo clippy --workspace --all-targets -- -D warnings`, and `{"check": "rust:test"}` runs
+  `cargo test --workspace`, all from the resolved `harnessDirectory`.
+- The client checks keep their existing entry points: `{"check": "build"}` runs the client build,
+  `{"check": "check"}` runs its typecheck, `{"check": "typecheck"}` is the raw typecheck, and
+  `{"check": "test"}` runs the client unit suite (optionally with `paths`).
+- `{"check": "verify:<name>"}` runs only a `verify:<name>` script that `.devboard/package.json`
+  actually declares; the current package declares none, so do not name one.
+- Run each check as its own invocation. Never chain a build, check, test, or Rust gate into one
+  shell command, and never redirect a check's output to a file: the tool returns the complete
+  output and its `log` path, and a result is never taken from a log an earlier run wrote.
+- `truncated: true` means the 16 KiB bound cut the returned `output`; the `log` file still holds
+  the complete output, and `exitCode` is still the verdict. A result ending
+  `[timed out after 900000 ms]` is a failed verification.
+- Run the gates the change can break: `rust:fmt` and `rust:clippy` for Rust edits, `rust:test` for
+  behavior changes, and `build`, `check`, and `test` for client edits. When one fails, quote its
+  first error line and the failing command in the session transcript; a bare exit code or an empty
+  `(no output)` is never a report.
+- Reproduce a failure once before you touch code, name the failing check, and fix the cause. Never
+  rerun an identical failing check more than twice: once for the changed revision and once for the
+  base revision when one is needed to classify a pre-existing failure.
 - When `verification_run` itself errors, report the tool's error text verbatim together with the
-  `exitCode`, `output`, and `log` it returned, and never answer it with `bun run verify:interface`
-  from a shell, a retry in another directory, or a redirected log. A tool error is evidence to
-  report, not a reason to rerun the same check.
-
-## Discovery verification
-
-`bun run verify:discover` runs at most once per change, with the package root `.devboard/` as its
-working directory, and its output is always captured to the one log
-`.devboard/.tmp/verify-discover.log` (repository-relative). The redirect below is relative to that
-working directory, so it lands in `.devboard/.tmp/`; never run this command from the repository
-root and never create a repo-root `.tmp`:
-
-```sh
-bun run verify:discover > .tmp/verify-discover.log 2>&1; echo "EXIT:$?"
-```
-
-Read that log whole — never through `tail`, `head`, or `grep` — together with the recorded
-`EXIT:` line, and report its `PASS` lines and, on failure, the `verify:discover:` message. Keep one
-log name per task: never mint a `-base`, `-2`, or `-3` variant, and never rerun the suite to
-re-confirm a result the log already holds.
-
-- A nonzero `EXIT:` names its failing scenario in the log: the last `PASS` line is the last
-  scenario that held, and the `verify:discover:` message names what the failing one expected.
-  Rerun only that scenario, with its fixtures kept:
-
-  ```sh
-  DISCOVER_VERIFY_KEEP=1 DISCOVER_VERIFY_ONLY=<scenario> bun run verify:discover \
-    > .tmp/verify-discover.log 2>&1; echo "EXIT:$?"
-  ```
-
-  `<scenario>` is one of the names the `PASS` lines carry: `discovery-group`, `per-agent-prompts`,
-  `run-all-order`, `per-agent-publication`, `one-at-a-time`, `run-all-halt`, `prompt-chat`,
-  `prompt-save`, `installed-read-only`. An unknown name exits nonzero and lists them; a narrowed
-  pass prints `verify:discover: ran only <scenario>`, and `DISCOVER_VERIFY_KEEP=1` keeps its
-  fixtures under `.devboard/.tmp/verify-discover-*` for inspection.
-- Never rerun the whole suite to re-confirm a failure: the same scenario set fails until the cause
-  is fixed, so a second full run adds no information and burns another scenario timeout.
-- A failure surfaced at the `while (Date.now() < deadline)` poll —
-  `scripts/verification.ts:194-195`, the frame a `verify:discover` trace shows — is a scenario
-  publication bug, not an unknown failure: the `timed out waiting for <description>` line names the
-  state that never appeared, and the kept fixture directory holds that scenario's dashboard, ACP
-  peer, and browser logs. Read those logs, fix the publication that never happened, and rerun only
-  that scenario.
+  `exitCode`, `output`, and `log` it returned. A tool error is evidence to report, not a reason to
+  retry the same check unchanged.
 
 ## Prerequisites
 
@@ -471,13 +378,10 @@ the prerequisite in another agent's place.
   stand in for either with `cd <root> && true`.
 - Keep a worktree, branch, stash, or remote-tip probe in one command and accept its nonzero exit as
   the answer. Do not pad it with a guard tail.
-- Run build, test, and verify commands bare: `bun run build`, `bun test`,
-  `bun run verify:interface`, and every `verification_run` check, with no `mkdir -p .tmp` prefix and
-  no `> .tmp/<name>.log 2>&1` redirect. The harness already returns the failing output inline; a
-  redirect replaces it with `(no output)` or a bare `exit code 1` and forces the same command to be
-  re-run instead of read. `bun run verify:discover` is the one exception, and it follows *Discovery
-  verification* instead: it runs once, captured to `.devboard/.tmp/verify-discover.log` with its
-  `EXIT:` recorded, and that log is read whole.
+- Run build, test, and Rust gates bare through `verification_run`, with no `mkdir -p .tmp` prefix
+  and no `> .tmp/<name>.log 2>&1` redirect. The harness already returns the failing output inline;
+  a redirect replaces it with `(no output)` or a bare `exit code 1` and forces the same command to
+  be re-run instead of read.
 
 ## Contract
 
@@ -732,7 +636,7 @@ branch.
 ## CI waits
 
 CI waiting in this run covers only the checks the change itself needs: the one sanctioned
-foreground `verification_run` per check, and one long-lived background watcher for a local `verify`
+foreground `verification_run` per check, and one long-lived background watcher for a local check
 process, started with `async: true` and `timeout: 0`. After it starts, end the turn.
 
 Never wait for the release workflow: this run releases nothing, and the Release Train dispatches

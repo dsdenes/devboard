@@ -109,10 +109,32 @@ pub fn is_harness_source_checkout(repo_dir: &Path) -> bool {
     is_harness_source(&prefix) && !installed_harness_dir(&prefix).join("devboard").exists()
 }
 
-/// The checkout that contains this binary's source code, when it has one.
+/// The harness directory this process belongs to.
+///
+/// An installed binary resolves it from its own executable: the installed
+/// layout is `<host>/.devboard/bin/devboard` with the manifest beside `bin`,
+/// so the harness is the parent of the executable's directory. A source build
+/// resolves from an ancestor named `.devboard` that carries the source
+/// manifest. The environment override wins. The compile-time path is only the
+/// last resort for a binary moved somewhere unrecognizable, never the primary
+/// answer.
 pub fn running_harness_dir() -> PathBuf {
     if let Ok(value) = std::env::var("DEVBOARD_RUNNING_HARNESS_DIR") {
-        return PathBuf::from(value);
+        let path = PathBuf::from(value);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    if let Ok(current) = std::env::current_exe() {
+        let text = current.to_string_lossy();
+        let current = match text.strip_suffix(" (deleted)") {
+            Some(path) => PathBuf::from(path),
+            None => current.clone(),
+        };
+        let current = current.canonicalize().unwrap_or(current);
+        if let Some(harness) = harness_dir_from_executable(&current) {
+            return harness;
+        }
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -121,12 +143,49 @@ pub fn running_harness_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// The harness directory an executable path implies, if it names one.
+fn harness_dir_from_executable(executable: &Path) -> Option<PathBuf> {
+    // Installed layout: `<prefix>/bin/devboard`, manifest at `<prefix>`.
+    if let Some(parent) = executable.parent() {
+        if parent.file_name().and_then(|name| name.to_str()) == Some("bin") {
+            if let Some(prefix) = parent.parent() {
+                if read_manifest(prefix).is_some() || prefix.join("Cargo.toml").exists() {
+                    return Some(prefix.to_path_buf());
+                }
+            }
+        }
+    }
+    // Build-tree layout: any ancestor named `.devboard` that carries a
+    // manifest. A built binary sits under `.devboard/target/<profile>/`.
+    for ancestor in executable.ancestors() {
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some(".devboard")
+            && (read_manifest(ancestor).is_some() || ancestor.join("Cargo.toml").exists())
+        {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
+}
+
+/// Whether the host carries an installed harness prefix (a binary and its
+/// manifest), as opposed to a bare checkout the updater must not populate.
+pub fn is_installed_host(repo_dir: &Path) -> bool {
+    let prefix = repo_dir.join(".devboard");
+    installed_harness_dir(&prefix).join("devboard").is_file()
+        && prefix.join(release_manifest_name()).is_file()
+}
+
+fn release_manifest_name() -> &'static str {
+    "devboard.json"
+}
+
 /// The harness a host would start next.
 pub fn host_harness_dir(repo_dir: &Path) -> PathBuf {
     let prefix = repo_dir.join(".devboard");
-    let installed = installed_harness_dir(&prefix);
-    if installed.join("devboard").exists() {
-        return installed;
+    if installed_harness_dir(&prefix).join("devboard").exists() {
+        // The harness is the prefix that carries the manifest and the binary;
+        // `<prefix>/bin` is only where the binary lives.
+        return prefix;
     }
     if is_harness_source(&prefix) || prefix.join("Cargo.toml").exists() {
         return prefix;

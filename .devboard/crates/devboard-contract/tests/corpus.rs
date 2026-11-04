@@ -50,6 +50,23 @@ fn every_recorded_event_type_has_one_corpus_entry() {
             "{} names an exemplar frame",
             path.display()
         );
+        if value.get("type").and_then(serde_json::Value::as_str) == Some("versionState") {
+            let names: Vec<&str> = value
+                .get("scenarios")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|scenario| scenario.get("name").and_then(|name| name.as_str()))
+                .collect();
+            assert!(
+                names.contains(&"source"),
+                "versionState records a source host"
+            );
+            assert!(
+                names.contains(&"installed"),
+                "versionState records an installed host"
+            );
+        }
     }
     let observed = corpus.event_types();
     assert_eq!(

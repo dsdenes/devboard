@@ -1,15 +1,17 @@
-# Harness benchmark (TypeScript baseline and Rust)
+# Harness benchmark (Rust)
 
-Reproduce with: `bash .devboard/bench/run.sh --typescript "bun contract/serve-typescript.ts" --rust "target/debug/devboard"`
+Baseline: archived TypeScript baseline at eb4d4e22 (bench/report.md history).
 
-| Measurement | TypeScript | Rust |
-| --- | --- | --- |
-| p95 read latency (ms) | 0.41 | 0.18 |
-| p50 read latency (ms) | 0.09 | 0.13 |
-| idle RSS (KiB) | 64100 | 34120 |
-| loaded RSS (KiB) | 66096 | 35900 |
-| cold start to /ready (ms) | 157 | 41 |
-| full suite wall time | 483016 ms | 199949 ms |
-| release path wall time | 4611 ms | 102288 ms |
+Reproduce with: `bash .devboard/bench/run.sh --rust "target/debug/devboard" --out bench/report.md`
+
+| Measurement | Rust |
+| --- | --- |
+| p95 read latency (ms) | 0.15 |
+| p50 read latency (ms) | 0.12 |
+| idle RSS (KiB) | 44464 |
+| loaded RSS (KiB) | 44508 |
+| cold start to /ready (ms) | 190 |
+| full suite wall time | 253582 ms |
+| release path wall time | 85609 ms |
 
 No threshold is a pass/fail condition; the report is the deliverable.

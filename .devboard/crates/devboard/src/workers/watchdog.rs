@@ -4179,6 +4179,61 @@ fn is_filed(entry: Option<&LedgerEntry>) -> bool {
     entry.is_some_and(|entry| entry.disposition.starts_with("filed:"))
 }
 
+/// The JSON one cleanup report renders, for the manual CLI.
+pub fn cleanup_report_json(report: &CleanupReport) -> Value {
+    cleanup_json(report)
+}
+
+/// Stops, disables, and removes the legacy systemd unit and timer.
+///
+/// The unit directory is the user systemd directory, or
+/// `DEVBOARD_SYSTEMD_USER_DIR` when a fixture supplies one. Nothing inside a
+/// repository is read or written.
+pub fn uninstall_legacy_units() {
+    const UNITS: [&str; 2] = ["devboard-watchdog.timer", "devboard-watchdog.service"];
+    let directory = std::env::var_os("DEVBOARD_SYSTEMD_USER_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|home| std::path::PathBuf::from(home).join(".config"))
+                })
+                .map(|base| base.join("systemd").join("user"))
+        });
+    for unit in UNITS {
+        for (verb, args) in [
+            ("stop", ["--user", "stop", unit]),
+            ("disable", ["--user", "disable", unit]),
+        ] {
+            let status = std::process::Command::new("systemctl")
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if status.map(|status| status.success()).unwrap_or(false) {
+                println!("watchdog: {verb} {unit}");
+            }
+        }
+        if let Some(directory) = &directory {
+            let path = directory.join(unit);
+            if path.exists() {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => println!("watchdog: removed {}", path.display()),
+                    Err(error) => eprintln!("watchdog: cannot remove {}: {error}", path.display()),
+                }
+            }
+        }
+    }
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    println!("watchdog: legacy unit and timer removed");
+}
+
 fn cleanup_json(report: &CleanupReport) -> Value {
     let candidate_json = |candidate: &CleanupCandidate| {
         json!({
@@ -5334,6 +5389,37 @@ fn log_decisions(state_dir: &Path, decisions: &[ReapDecision]) {
         text.push('\n');
     }
     let _ = append_line(&path, &text);
+}
+
+/// Performs the one reaping pass every dashboard start runs before serving.
+///
+/// The pass covers this dashboard's state directory, its checkout, and the
+/// other covered directories; every kill and the pass itself are journaled
+/// under `<STATE_DIR>/supervision/reaped.jsonl`. A live recorded child is
+/// protected by the reaper's own proof and is never signalled.
+pub fn reap_on_startup(state_dir: &Path, repo_dir: &Path) -> ReapReport {
+    let mut options = OrphanReaperRunOptions::new(repo_dir);
+    options.state_dir = Some(state_dir.to_path_buf());
+    let report = run_orphan_reaper(options);
+    log_startup_pass(state_dir, &report);
+    report
+}
+
+/// Appends one pass record, so a start with nothing to kill is still visible.
+fn log_startup_pass(state_dir: &Path, report: &ReapReport) {
+    let directory = supervision_directory(state_dir);
+    if std::fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    let text = crate::jsjson::stringify(&json!({
+        "ts": now_iso(),
+        "pass": "startup",
+        "available": report.available,
+        "decisions": report.decisions.len(),
+        "killed": report.killed,
+        "removedRecords": report.removed_records,
+    }));
+    let _ = append_line(&directory.join("reaped.jsonl"), &format!("{text}\n"));
 }
 
 /// One reaping pass over every covered state directory.

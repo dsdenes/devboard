@@ -342,9 +342,43 @@ pub fn sanitize_text(text: &str, root: &Path) -> String {
         None => replaced,
     };
     let replaced = strip_run_ids(&replaced);
+    let replaced = strip_loopback_origins(&replaced);
     let replaced = strip_uuids(&replaced);
     let replaced = strip_hex24(&replaced);
     strip_flow_session_ids(&replaced)
+}
+
+/// Replaces a loopback dashboard origin, whose port differs per run, with
+/// `{{ORIGIN}}`. A URL embedded in a recorded body then compares exactly.
+fn strip_loopback_origins(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find("http://") {
+        let (before, candidate) = rest.split_at(index);
+        out.push_str(before);
+        let schemes = ["http://127.0.0.1:", "http://localhost:", "http://[::1]:"];
+        let mut replaced = false;
+        for prefix in schemes {
+            if let Some(after) = candidate.strip_prefix(prefix) {
+                let digits: String = after
+                    .chars()
+                    .take_while(|character| character.is_ascii_digit())
+                    .collect();
+                if !digits.is_empty() {
+                    out.push_str("{{ORIGIN}}");
+                    rest = &after[digits.len()..];
+                    replaced = true;
+                }
+                break;
+            }
+        }
+        if !replaced {
+            out.push_str("http://");
+            rest = &candidate["http://".len()..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Replaces the generated 8-hex session directory under `flow/<key>/`.

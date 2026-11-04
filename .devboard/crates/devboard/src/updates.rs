@@ -68,14 +68,32 @@ fn positive_number(value: Option<String>, fallback: u64) -> u64 {
         .unwrap_or(fallback)
 }
 
-/// Resolves the manifest source from the environment, or `None` when no Gitea
-/// instance is configured.
+/// Resolves the manifest source from the environment, or `None` when neither a
+/// Gitea instance nor a local release directory is configured.
+///
+/// `DEVBOARD_RELEASE_URL` names a local directory that carries
+/// `devboard-manifest.json` and its artifacts; it wins, and makes every read a
+/// local file read for offline verification.
 pub fn manifest_source_from_env(state_dir: &std::path::Path) -> Option<ManifestSource> {
+    let _ = state_dir;
+    if let Some(local) = std::env::var("DEVBOARD_RELEASE_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        let path = std::path::PathBuf::from(local.strip_prefix("file://").unwrap_or(&local));
+        return Some(ManifestSource {
+            base_url: String::new(),
+            repository: release::RELEASE_REPOSITORY.to_string(),
+            token: None,
+            timeout_ms: 30_000,
+            local_dir: Some(path),
+        });
+    }
     let base_url = std::env::var("DEVBOARD_GITEA_URL").ok()?.trim().to_string();
     if base_url.is_empty() {
         return None;
     }
-    let _ = state_dir;
     let token = std::env::var("GITEA_TOKEN")
         .ok()
         .or_else(|| std::env::var("DEVBOARD_GITEA_TOKEN").ok())
@@ -87,6 +105,7 @@ pub fn manifest_source_from_env(state_dir: &std::path::Path) -> Option<ManifestS
             .unwrap_or_else(|_| release::RELEASE_REPOSITORY.to_string()),
         token,
         timeout_ms: 30_000,
+        local_dir: None,
     })
 }
 
@@ -138,6 +157,15 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
     // only a publish-written source-refresh request may replace it.
     let source_checkout = crate::version::is_harness_source_checkout(&app.config().repo_dir);
     if !source_checkout {
+        // Only an installed prefix is synchronized. A bare checkout or a
+        // fixture is never populated by an update check.
+        if crate::version::is_installed_host(&app.config().repo_dir) {
+            // Every check retries the host sync, so a failed write is journaled
+            // once per attempt and repaired on the next check.
+            if let Err(error) = app.sync_host_copies() {
+                app.journal_error("update-error", &format!("host sync failed: {error}"));
+            }
+        }
         if let Some(installed) = release::installed_version(&prefix) {
             if release::is_newer_version(&installed, app.running_version.as_deref()) {
                 app.replace_with_installed(&installed);

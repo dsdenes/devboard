@@ -662,6 +662,52 @@ pub struct PublishReport {
     /// The exact `devboard-manifest.json` bytes the Gitea release carries.
     pub manifest: String,
     pub source_refresh: SourceRefreshReport,
+    /// One row per live dashboard, for the CLI inventory.
+    pub dashboards: Vec<DashboardInventory>,
+}
+
+/// One live dashboard as the publish inventory prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DashboardInventory {
+    pub host: PathBuf,
+    pub port: u16,
+    pub pid: u32,
+    pub running: Option<String>,
+    pub installed: Option<String>,
+    pub stale: bool,
+}
+
+/// Builds the inventory rows for the live dashboards.
+pub fn dashboard_inventory(instances: &[DashboardInstance]) -> Vec<DashboardInventory> {
+    instances
+        .iter()
+        .map(|instance| {
+            let host = instance.repo_dir.clone();
+            let installed = crate::release::installed_version(&host.join(".devboard"))
+                .or_else(|| crate::version::read_harness_version(&host.join(".devboard")));
+            let running = std::fs::read_to_string(instance.state_dir.join("version.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|value| {
+                    value
+                        .get("running")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+            let stale = match (&running, &installed) {
+                (Some(running), Some(installed)) => running != installed,
+                _ => false,
+            };
+            DashboardInventory {
+                host,
+                port: instance.port,
+                pid: instance.pid,
+                running,
+                installed,
+                stale,
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1864,25 +1910,27 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             (log)(&format!("github/main carries {}", short_sha(&commit)));
         }
 
+        let instances = args
+            .instances
+            .clone()
+            .unwrap_or_else(discover_dashboard_instances);
         let source_refresh = deliver_source_refresh(SourceRefreshOptions {
             repo_root: args.repo_dir.clone(),
             harness_root: args.harness_root.clone(),
             commit: commit.clone(),
             version: version.clone(),
             dist_dir: args.harness_root.join("dist"),
-            instances: args
-                .instances
-                .clone()
-                .unwrap_or_else(discover_dashboard_instances),
+            instances: instances.clone(),
             requested_at: iso_from_millis(clock.now_millis()),
         })
         .await?;
+        let inventory = dashboard_inventory(&instances);
 
-        Ok::<_, anyhow::Error>((workflow_run, verified, source_refresh))
+        Ok::<_, anyhow::Error>((workflow_run, verified, source_refresh, inventory))
     }
     .await;
 
-    let (workflow_run, verified, source_refresh) = match shipped {
+    let (workflow_run, verified, source_refresh, dashboards) = match shipped {
         Ok(shipped) => shipped,
         Err(error) => {
             if created_tag {
@@ -1927,6 +1975,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         github_assets: verified.names,
         manifest: manifest_text,
         source_refresh,
+        dashboards,
     })
 }
 
@@ -1955,6 +2004,7 @@ fn not_published(version: &str, tag: &str, commit: &str) -> PublishReport {
         github_assets: Vec::new(),
         manifest: String::new(),
         source_refresh: empty_refresh_report(),
+        dashboards: Vec::new(),
     }
 }
 

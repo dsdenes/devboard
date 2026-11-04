@@ -9,6 +9,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY shadow ./shadow
 COPY omp ./omp
+COPY prompts ./prompts
 COPY templates ./templates
 RUN cargo build --release -p devboard
 

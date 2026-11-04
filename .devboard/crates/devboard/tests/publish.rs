@@ -1727,3 +1727,52 @@ async fn the_workflow_choice_prefers_an_active_run_then_a_success() {
         Some(5)
     );
 }
+
+#[test]
+fn two_live_dashboards_render_one_inventory_row_each() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("publish-inventory-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut instances = Vec::new();
+    for (index, (running, installed)) in [("1.0.0", "1.1.0"), ("2.0.0", "2.0.0")]
+        .into_iter()
+        .enumerate()
+    {
+        let host = root.join(format!("host-{index}"));
+        let state = host.join(".devboard/.tmp");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            host.join(".devboard/devboard.json"),
+            format!("{{\"name\":\"@dsdenes/devboard\",\"version\":\"{installed}\"}}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            state.join("version.json"),
+            format!(
+                "{{\"running\":\"{running}\",\"pid\":{},\"port\":{}}}",
+                100 + index,
+                9000 + index
+            ),
+        )
+        .unwrap();
+        instances.push(devboard::publish::DashboardInstance {
+            pid: 100 + index as u32,
+            port: 9000 + index as u16,
+            repo_dir: host.clone(),
+            harness: host.join(".devboard"),
+            state_dir: state,
+        });
+    }
+    let inventory = devboard::publish::dashboard_inventory(&instances);
+    assert_eq!(inventory.len(), 2);
+    assert_eq!(inventory[0].port, 9000);
+    assert_eq!(inventory[0].running.as_deref(), Some("1.0.0"));
+    assert_eq!(inventory[0].installed.as_deref(), Some("1.1.0"));
+    assert!(inventory[0].stale);
+    assert_eq!(inventory[1].running.as_deref(), Some("2.0.0"));
+    assert_eq!(inventory[1].installed.as_deref(), Some("2.0.0"));
+    assert!(!inventory[1].stale);
+    let _ = std::fs::remove_dir_all(&root);
+}

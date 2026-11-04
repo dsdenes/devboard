@@ -1,32 +1,24 @@
 # Harness benchmark and shadow reports
 
-`report.md` is the committed two-column benchmark. It was produced with:
+`report.md` is the committed benchmark. Reproduce it from the current tree:
 
 ```bash
-bash .devboard/bench/run.sh \
-  --typescript "bun contract/serve-typescript.ts" \
-  --rust "target/debug/devboard"
+bash .devboard/bench/run.sh --rust target/debug/devboard --out bench/report.md
 ```
 
-The TypeScript column comes from the pre-cutover tree, which this branch no
-longer carries. Reproduce it from the last TypeScript commit without touching
-this checkout:
+The baseline is named in the generated report: the archived TypeScript baseline at
+`eb4d4e22`, whose measurements the committed two-column report carries. The command never needs
+`contract/serve-typescript.ts`, the retired TypeScript server, or a second checkout. Passing
+`--typescript "<command>"` measures a live baseline beside Rust when an archived tree is
+available; otherwise the report is the Rust column.
+
+The shadow soak compares every read live and every mutating command against its recorded corpus
+answer, state tree, and repository tree. Reproduce it with:
 
 ```bash
-git worktree add .devboard/.bench-baseline eb4d4e22
-ln -s "$PWD/.devboard/node_modules" .devboard/.bench-baseline/node_modules
-bash .devboard/bench/run.sh \
-  --typescript "bun .devboard/.bench-baseline/contract/serve-typescript.ts" \
-  --rust "target/debug/devboard"
+cd .devboard
+cargo run -p devboard-shadow -- --report ../shadow-report.json --window 60 --iterations 1
 ```
 
-The shadow soak report was produced the same way with the baseline tree.
-`shadow-report.json` records 100 comparisons for every read command and no
-unexplained divergence; the soak is meaningful only while the TypeScript
-baseline exists, so reproduction checks out the same baseline commit and runs:
-
-```bash
-cargo run -p devboard-shadow -- --report shadow-report.json --window 1800 --iterations 100
-```
-
-with the baseline script path supplied by the checkout.
+`shadow-report.json` is regenerated from that run. It records one entry per command, at least one
+comparison per command, and `unexplained: []`; it needs no TypeScript baseline.

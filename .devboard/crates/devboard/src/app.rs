@@ -365,6 +365,22 @@ impl App {
             broadcast_hooks: Mutex::new(Vec::new()),
             persist_lock: Mutex::new(()),
         });
+        // The MCP optimizer page reads one projection file even before its
+        // first cycle. Publish the empty, successful projection once; a later
+        // cycle replaces it with the forge state it read.
+        let coach =
+            crate::workers::mcp_optimizer::mcp_optimizer_directory(&config_state_dir(&shared));
+        if !crate::workers::mcp_optimizer::projection_path(&coach).exists() {
+            let _ = crate::workers::mcp_optimizer::write_projection(
+                &coach,
+                &crate::workers::mcp_optimizer::Projection {
+                    state: "ok".to_string(),
+                    at: Some(crate::journal::now_iso8601()),
+                    error: None,
+                    issues: Vec::new(),
+                },
+            );
+        }
         let running_version = std::env::var("DEVBOARD_RUNNING_VERSION")
             .ok()
             .filter(|value| !value.is_empty())
@@ -699,6 +715,13 @@ impl App {
             self.shared
                 .journal
                 .write("update", "AGENTS.md differs from the template", None);
+        }
+        for line in &report.drift {
+            self.shared.journal.write(
+                "update",
+                &format!("{line} is tracked by the host; left unchanged"),
+                None,
+            );
         }
         Ok(())
     }
@@ -1047,6 +1070,7 @@ impl App {
             Err(error) => return Replies::problem(headers, error.status, &error.message, &[]),
         };
         let repo_dir = self.config().repo_dir.clone();
+        let agent_command = self.config().agent_command.clone();
         let origin = url.origin().ascii_serialization();
         let outcome = self
             .idempotency
@@ -1054,6 +1078,7 @@ impl App {
                 crate::goal_proposal::write_goal_proposal(
                     &submission,
                     &repo_dir,
+                    &agent_command,
                     None,
                     Some(&origin),
                 )
