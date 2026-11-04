@@ -381,8 +381,16 @@ scrollback, and expose their full buffer to assistive technology.
 Server errors and notices appear in the notification region (`data-testid="notifications"`) with
 severity, the subsystem or the exact agent label that raised them, text, and dismissal. Each card
 closes itself after five seconds; every entry stays in the history opened from the status bar.
-Every error and warning card also carries `File issue`: it files that notification's text and card
-context as a UI issue through `/feedback` at once, then replaces itself with the issue URL.
+An error card files one UI issue by itself through `/feedback`, with no operator click: the issue
+carries the notification's text, severity, source, raise time, the card context, and the fixed
+instruction `Investigate this error and fix it if it is needed.`, and the card links to it as
+`Open issue`. The filing is keyed by the notification's severity, source, and text, so a repeat in
+the same page session, a second window, and a later raise of the identical error inside the
+server's 24-hour key retention all link to the issue already filed and file nothing. Warning
+notifications keep the `File issue` button and file one issue per click. When automatic filing
+fails, or reporting is disabled because `DEVBOARD_GITEA_URL` is absent, the card reads
+`Issue not filed:` with the reason and reveals the `File issue` button again, so a retry files
+the issue and replaces the message with the issue link.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's

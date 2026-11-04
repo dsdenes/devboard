@@ -5,6 +5,7 @@ import {
   MAX_NOTIFICATION_REPORT,
   NotificationFiler,
   notificationFingerprint,
+  notificationIdempotencyKey,
   notificationIssueRequest,
   notificationReport,
   type NotificationContext,
@@ -226,6 +227,53 @@ describe("automatic notification filing", () => {
     expect(notificationFingerprint(notification({ source: "Server" }))).not.toBe(
       notificationFingerprint(notification()),
     );
+  });
+
+  test("two page sessions send the same idempotency key for one error", async () => {
+    const keys: string[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      keys.push(headers["idempotency-key"] ?? "");
+      return created();
+    }) as typeof fetch;
+
+    await new NotificationFiler().autoFile(notification({ id: 5 }), () => context, fetchImpl);
+    await new NotificationFiler().autoFile(
+      notification({ id: 7, at: "2026-10-28T11:29:47.000Z" }),
+      () => context,
+      fetchImpl,
+    );
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).toMatch(/^notification-error:[0-9a-f]{16}$/);
+    expect(keys[0]).toBe(notificationIdempotencyKey(notification()));
+  });
+
+  test("a different severity, source, or text sends a different key", () => {
+    const keys = new Set([
+      notificationIdempotencyKey(notification()),
+      notificationIdempotencyKey(notification({ source: "Issues" })),
+      notificationIdempotencyKey(notification({ text: "Another failure." })),
+      notificationIdempotencyKey(notification({ severity: "warning" })),
+    ]);
+    expect(keys.size).toBe(4);
+  });
+
+  test("a manual warning filing sends no idempotency key", async () => {
+    const filer = new NotificationFiler();
+    const headers: Array<Record<string, string>> = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      headers.push(init?.headers as Record<string, string>);
+      return created();
+    }) as typeof fetch;
+    const warning = notification({ severity: "warning", source: "Connection" });
+
+    await filer.submit(warning, () => context, fetchImpl);
+
+    expect(headers).toHaveLength(1);
+    expect(headers[0]).not.toHaveProperty("idempotency-key");
+    expect(headers[0]).toMatchObject({ "content-type": "application/json" });
   });
 });
 

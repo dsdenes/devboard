@@ -302,7 +302,16 @@ async fn a_repeated_idempotency_key_files_one_issue() {
     let second = client()
         .post(format!("{}/feedback", fixture.base))
         .headers(headers)
-        .json(&json!({"report": "One report"}))
+        .json(&json!({
+            "report": "One report\n\nRaised at: 2026-11-04T20:42:38.858Z",
+            "route": "/",
+            "url": "http://127.0.0.1:8081/",
+            "selector": ".notification",
+            "dom_excerpt": "<div class=\"notification\"></div>",
+            "visible_text": "error · Flow",
+            "viewport": "1365x768 @1.25x",
+            "captured_at": "2026-11-04T20:42:39.000Z"
+        }))
         .send()
         .await
         .expect("an answer");
