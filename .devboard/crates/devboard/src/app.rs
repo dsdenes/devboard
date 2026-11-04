@@ -325,6 +325,8 @@ pub struct App {
     updater: Mutex<Option<crate::updates::Updater>>,
     /// The operator's provider credentials and the per-peer selection.
     pub providers: crate::providers::ProviderService,
+    /// The daily complexity snapshot controller for this dashboard.
+    pub complexity: Arc<crate::complexity::ComplexitySnapshots>,
     /// The dashboard's own handle, for modes that hold a shared reference.
     weak_self: std::sync::Weak<App>,
     /// Replaces this process; absent means the dashboard has no launcher.
@@ -372,6 +374,12 @@ impl App {
             config_repo_dir(&shared),
             |line| eprintln!("{line}"),
         );
+        let complexity = Arc::new(crate::complexity::ComplexitySnapshots::new(
+            crate::complexity::ComplexityOptions::production(
+                config_state_dir(&shared),
+                config_repo_dir(&shared),
+            ),
+        ));
         let app = Arc::new_cyclic(|weak| Self {
             weak_self: weak.clone(),
             shared,
@@ -383,6 +391,7 @@ impl App {
             attempted_replacement: Mutex::new(None),
             updater: Mutex::new(None),
             providers,
+            complexity,
             restart_hook: Mutex::new(None),
             source_refresher: Mutex::new(None),
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -471,6 +480,7 @@ impl App {
     }
 
     pub async fn close(&self, conn: &Conn) {
+        self.complexity.unsubscribe(conn.id());
         crate::ask_mode::disconnect(&self.arc_self(), conn);
     }
 
@@ -554,6 +564,11 @@ impl App {
                     crate::installed_skills::installed_skills_payload(&self.config().repo_dir)
                         .await,
                 );
+                Ok(())
+            }
+            Command::GetComplexity => {
+                self.complexity.subscribe(conn);
+                conn.send(self.complexity.state_event());
                 Ok(())
             }
             Command::SetInstalledSkillEnabled { name, enabled } => {
@@ -645,6 +660,11 @@ impl App {
         if let Ok(mut slot) = self.updater.lock() {
             *slot = Some(updater);
         }
+    }
+
+    /// Starts the daily complexity snapshot check for this process.
+    pub fn start_complexity(self: &Arc<Self>) {
+        self.complexity.begin();
     }
 
     /// Records the newest release a check has seen.
@@ -1085,6 +1105,7 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "checkIssues",
     "closeIssue",
     "getInstalledSkills",
+    "getComplexity",
     "getIssues",
     "getIssuesRun",
     "pauseIssues",

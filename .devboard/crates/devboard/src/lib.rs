@@ -16,6 +16,7 @@ pub mod assets;
 pub mod bench;
 pub mod cli_install;
 pub mod commit_gate;
+pub mod complexity;
 pub mod config;
 pub mod deadline;
 pub mod detached_run;

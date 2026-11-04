@@ -1,0 +1,10 @@
+{
+  "type": "complexityState",
+  "frame": {
+    "type": "complexityState",
+    "state": {
+      "snapshots": [],
+      "latest": null
+    }
+  }
+}

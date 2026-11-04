@@ -133,6 +133,7 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         server.app.start_source_refresh();
     }
     server.app.start_updater();
+    server.app.start_complexity();
     println!(
         "ADR interface listening on http://{}:{}",
         config.hostname, config.port

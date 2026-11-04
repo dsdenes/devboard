@@ -4,6 +4,7 @@ getProject
 getVersion
 getMcpTools
 getInstalledSkills
+getComplexity
 setInstalledSkillEnabled
 getIssues
 getIssuesRun

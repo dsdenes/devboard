@@ -590,3 +590,17 @@ test("a checkpoint badge names its verification tone", async () => {
   );
   expect(tones).toEqual(["warning", "success", "error"]);
 });
+
+test("the Devboard group lists Complexity directly after Skills", async () => {
+  layout.mode = "devboard";
+  mount();
+  await tick();
+  const labels = [
+    ...document.querySelectorAll('[data-testid="devboard-tab"] .sidebar-item__label'),
+  ].map((entry) => entry.textContent?.trim());
+  expect(labels.slice(0, 3)).toEqual(["MCP tools", "Skills", "Complexity"]);
+  const entry = document.querySelector(
+    '[data-testid="devboard-tab"][data-command="devboard.tab.complexity"]',
+  );
+  expect(entry).not.toBeNull();
+});
