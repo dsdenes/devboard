@@ -1888,22 +1888,20 @@ fn owner_executable() -> PathBuf {
     {
         return path;
     }
-    if let Ok(current) = std::env::current_exe() {
-        if current.file_name().is_some_and(|name| name == "devboard") {
-            return current;
-        }
-        if let Some(sibling) = current
-            .parent()
-            .and_then(Path::parent)
-            .map(|parent| parent.join("devboard"))
-        {
-            if sibling.is_file() {
-                return sibling;
-            }
-        }
+    let current = crate::relaunch::own_program();
+    if current.file_name().is_some_and(|name| name == "devboard") {
         return current;
     }
-    PathBuf::from("devboard")
+    if let Some(sibling) = current
+        .parent()
+        .and_then(Path::parent)
+        .map(|parent| parent.join("devboard"))
+    {
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    current
 }
 
 /// Starts one detached owner in its own session with ignored stdio.

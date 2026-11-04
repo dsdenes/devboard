@@ -432,7 +432,7 @@ fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
     let program = if program.is_file() {
         program
     } else {
-        std::env::current_exe()?
+        devboard::relaunch::own_program()
     };
     let mut command = Command::new(&program);
     command

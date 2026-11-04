@@ -2768,9 +2768,8 @@ fn default_spawn(argv: &[String], environment: HashMap<String, String>) -> Optio
 }
 
 fn harness_argv(family: &str, flags: &[(&str, &Path)]) -> Vec<String> {
-    let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("devboard"));
     let mut argv = vec![
-        executable.to_string_lossy().into_owned(),
+        crate::relaunch::own_program().to_string_lossy().into_owned(),
         "worker".to_string(),
         family.to_string(),
     ];

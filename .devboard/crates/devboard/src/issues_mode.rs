@@ -2566,11 +2566,8 @@ async fn run_forge_close(
 
 /// The detached worker's argv: this binary's own worker entry point.
 fn worker_argv(repo_dir: &Path, state_dir: &Path) -> Vec<String> {
-    let program = std::env::current_exe()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| "devboard".to_string());
     vec![
-        program,
+        crate::relaunch::own_program().display().to_string(),
         "worker".to_string(),
         "issues".to_string(),
         "--repo".to_string(),

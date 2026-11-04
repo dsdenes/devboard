@@ -37,28 +37,49 @@ impl RelaunchSettings {
     }
 }
 
+/// This process's own executable, ready to run again.
+///
+/// A rebuild replaces the binary on disk while the old one still runs, so the
+/// kernel link reads "... (deleted)" and starting that name fails. The path
+/// without the suffix, which a rebuild put there, is the one to start. Every
+/// child that runs the harness again — a background worker, a run owner, a
+/// goal-draft owner, a peer's MCP server — names its program through here.
+pub fn own_program() -> PathBuf {
+    let Ok(current) = std::env::current_exe() else {
+        return PathBuf::from("devboard");
+    };
+    live_path(&current)
+}
+
+/// The on-disk path behind an executable link a rebuild may have replaced.
+///
+/// `/proc/self/exe` reads "... (deleted)" while the old binary still runs, and
+/// starting that name fails with ENOENT. A rebuild leaves the suffixless path
+/// on disk, which is the one to start; when nothing is there, the link stands
+/// as the only name left.
+pub fn live_path(linked: &Path) -> PathBuf {
+    let text = linked.to_string_lossy();
+    if let Some(path) = text.strip_suffix(" (deleted)") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return path;
+        }
+    }
+    linked.to_path_buf()
+}
+
 /// The executable a replacement runs.
 ///
 /// An installed host starts `<host>/.devboard/bin/devboard`, the binary the
 /// update just wrote, even when this process was started from somewhere else.
 /// A source checkout, which has no installed `bin/devboard`, starts this
-/// process's own executable; a rebuilt checkout replaces it on disk, so the
-/// link can read "... (deleted)" and the path without that suffix is the one
-/// to start.
+/// process's own executable, resolved through [`own_program`].
 pub fn replacement_program(repo_dir: &Path) -> std::io::Result<PathBuf> {
     let installed = repo_dir.join(".devboard").join("bin").join("devboard");
     if installed.is_file() {
         return Ok(installed);
     }
-    let current = std::env::current_exe()?;
-    let text = current.to_string_lossy();
-    if let Some(path) = text.strip_suffix(" (deleted)") {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-    Ok(current)
+    Ok(own_program())
 }
 
 /// Starts one replacement process in its own session.

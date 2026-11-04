@@ -125,16 +125,10 @@ pub fn running_harness_dir() -> PathBuf {
             return path;
         }
     }
-    if let Ok(current) = std::env::current_exe() {
-        let text = current.to_string_lossy();
-        let current = match text.strip_suffix(" (deleted)") {
-            Some(path) => PathBuf::from(path),
-            None => current.clone(),
-        };
-        let current = current.canonicalize().unwrap_or(current);
-        if let Some(harness) = harness_dir_from_executable(&current) {
-            return harness;
-        }
+    let current = crate::relaunch::own_program();
+    let current = current.canonicalize().unwrap_or(current);
+    if let Some(harness) = harness_dir_from_executable(&current) {
+        return harness;
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

@@ -973,8 +973,7 @@ impl DraftWatcher {
             .ok()
             .map(PathBuf::from)
             .filter(|path| !path.as_os_str().is_empty())
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| PathBuf::from("devboard"));
+            .unwrap_or_else(crate::relaunch::own_program);
         Self {
             repo_dir,
             state_dir,
