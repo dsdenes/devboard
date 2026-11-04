@@ -2474,12 +2474,10 @@ impl FlowMode {
         }
     }
 
-    fn append_steering(&self, note: &FlowSteeringNote) {
-        let path = match self.path("steering.jsonl") {
-            Ok(path) => path,
-            Err(_) => return,
-        };
-        let _ = append_line(&path, &serde_json::to_value(note).unwrap_or(Value::Null));
+    fn append_steering(&self, note: &FlowSteeringNote) -> Result<(), String> {
+        let path = self.path("steering.jsonl")?;
+        append_line(&path, &serde_json::to_value(note).unwrap_or(Value::Null))
+            .map_err(|error| error.to_string())?;
         if let Some(app) = self.app() {
             let text: String = note.text.chars().take(200).collect();
             app.shared.journal.write(
@@ -2488,6 +2486,7 @@ impl FlowMode {
                 None,
             );
         }
+        Ok(())
     }
 
     fn register_history(&self) {
@@ -4757,7 +4756,9 @@ impl FlowMode {
             };
             session.steering.push(note.clone());
         }
-        self.append_steering(&note);
+        if let Err(error) = self.append_steering(&note) {
+            self.error(&format!("Could not record the steering note: {error}"));
+        }
         self.persist();
         let notes = self
             .session_by_id(&session_id)

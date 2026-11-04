@@ -944,3 +944,48 @@ async fn the_flow_refusal_frames_reach_a_fresh_socket() {
     let _ = socket.close(None).await;
     task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_steering_write_surfaces_a_flow_error() {
+    let fixture = fixture("steering-write");
+    let app = fixture.app.clone();
+    let mut client = Client::connect(&app).await;
+
+    send(&app, &client.conn, Command::CreateFlowGoal).await;
+    let snapshot = client
+        .wait_for("a session snapshot", |frame| {
+            frame["type"] == "flowSnapshot" && frame["sessionId"].is_string()
+        })
+        .await;
+    let session_id = snapshot["sessionId"]
+        .as_str()
+        .expect("a session id")
+        .to_string();
+    let directory = session_directory(&fixture, &session_id);
+    // A directory where the steering log belongs makes the append fail.
+    std::fs::create_dir(directory.join("steering.jsonl")).expect("an unwritable steering path");
+
+    send(
+        &app,
+        &client.conn,
+        Command::SendFlowSteering {
+            text: Some(json!("prefer a smaller configuration")),
+        },
+    )
+    .await;
+    let error = client
+        .wait_for("the failed steering write", |frame| {
+            frame["type"] == "flowError"
+                && frame["message"].as_str().is_some_and(|message| {
+                    message.starts_with("Could not record the steering note: ")
+                })
+        })
+        .await;
+    assert!(
+        error["message"]
+            .as_str()
+            .expect("a message")
+            .starts_with("Could not record the steering note: "),
+        "{error}"
+    );
+}

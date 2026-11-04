@@ -1,6 +1,6 @@
 //! Discover Mode: the project sheet, glossary, skill, and contribution crawl.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -160,7 +160,33 @@ fn significance_path(repo_dir: &Path) -> PathBuf {
 
 fn remove_staging(repo_dir: &Path, run_id: &str) {
     let _ = fs::remove_dir_all(staging_directory(repo_dir, run_id));
-    let _ = fs::remove_dir_all(staging_root(repo_dir));
+    remove_staging_root_if_empty(repo_dir);
+}
+
+/// Removes the staging a restored run left behind. The run is always restarted
+/// with a fresh staging directory, so the interrupted one never outlives the
+/// restore.
+fn remove_interrupted_staging(staging_dir: &Path) {
+    if staging_dir.as_os_str().is_empty() {
+        return;
+    }
+    let _ = fs::remove_dir_all(staging_dir);
+    if let Some(parent) = staging_dir.parent() {
+        if let Ok(mut entries) = fs::read_dir(parent) {
+            if entries.next().is_none() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
+}
+
+fn remove_staging_root_if_empty(repo_dir: &Path) {
+    let root = staging_root(repo_dir);
+    if let Ok(mut entries) = fs::read_dir(&root) {
+        if entries.next().is_none() {
+            let _ = fs::remove_dir(&root);
+        }
+    }
 }
 
 // --------------------------------------------------------------- utility
@@ -7066,7 +7092,9 @@ fn usage_files(repo_dir: &Path) -> Vec<(String, String)> {
     let mut files = Vec::new();
     for path in host_files(repo_dir) {
         let absolute = repo_dir.join(&path);
-        let Ok(metadata) = fs::symlink_metadata(&absolute) else {
+        // `metadata` follows a symlink: a tracked link to a readable file is
+        // host documentation and counts, exactly as the crawl reads it.
+        let Ok(metadata) = fs::metadata(&absolute) else {
             continue;
         };
         if !metadata.is_file() || metadata.len() > 512 * 1024 {
@@ -7083,6 +7111,45 @@ fn usage_files(repo_dir: &Path) -> Vec<(String, String)> {
     files
 }
 
+/// How many usage analyses stay cached, keyed by host revision and glossary
+/// shape.
+const USAGE_CACHE_MAX: usize = 8;
+
+static USAGE_CACHE: LazyLock<Mutex<VecDeque<(String, Value)>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+
+/// The cache key: the repository, the fingerprint, and every concept's id,
+/// labels, and grounding. A second publish of an unchanged host with the same
+/// glossary reuses the analysis instead of walking the tree again.
+fn usage_key(repo_dir: &Path, fingerprint: &str, glossaries: &[Glossary]) -> String {
+    let shape: Vec<Value> = glossaries
+        .iter()
+        .map(|glossary| {
+            json!({
+                "context": glossary.bounded_context,
+                "concepts": glossary.concepts.iter().map(|concept| {
+                    json!({
+                        "id": concept.id,
+                        "labels": concept
+                            .pref_labels
+                            .iter()
+                            .chain(concept.alt_labels.iter())
+                            .map(|label| label.text.clone())
+                            .collect::<Vec<_>>(),
+                        "grounding": concept.grounding,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let digest = format!(
+        "{}\u{0}{fingerprint}\u{0}{}",
+        repo_dir.to_string_lossy(),
+        crate::jsjson::stringify(&Value::Array(shape))
+    );
+    sha256_hex(digest.as_bytes())
+}
+
 fn identifier_pattern() -> &'static Regex {
     static PATTERN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"[A-Za-z_$][A-Za-z0-9_$]*").expect("an identifier"));
@@ -7090,7 +7157,17 @@ fn identifier_pattern() -> &'static Regex {
 }
 
 pub fn glossary_usage(repo_dir: &Path, glossaries: &[Glossary], fingerprint: &str) -> Value {
-    let _ = fingerprint;
+    let key = usage_key(repo_dir, fingerprint, glossaries);
+    let cached = {
+        let cache = lock(&USAGE_CACHE);
+        cache
+            .iter()
+            .find(|(existing, _)| existing == &key)
+            .map(|(_, value)| value.clone())
+    };
+    if let Some(cached) = cached {
+        return cached;
+    }
     let files = usage_files(repo_dir);
     let mut usage = Map::new();
     for glossary in glossaries {
@@ -7167,7 +7244,12 @@ pub fn glossary_usage(repo_dir: &Path, glossaries: &[Glossary], fingerprint: &st
                     .2
                     .cmp(&left.2)
                     .then_with(|| right.1.cmp(&left.1))
-                    .then_with(|| left.0.cmp(&right.0))
+                    .then_with(|| {
+                        left.0
+                            .to_lowercase()
+                            .cmp(&right.0.to_lowercase())
+                            .then_with(|| left.0.cmp(&right.0))
+                    })
             });
             let examples: Vec<Value> = ranked
                 .into_iter()
@@ -7181,7 +7263,17 @@ pub fn glossary_usage(repo_dir: &Path, glossaries: &[Glossary], fingerprint: &st
         }
         usage.insert(glossary.bounded_context.clone(), Value::Object(contexts));
     }
-    Value::Object(usage)
+    let usage = Value::Object(usage);
+    {
+        let mut cache = lock(&USAGE_CACHE);
+        if !cache.iter().any(|(existing, _)| existing == &key) {
+            cache.push_back((key, usage.clone()));
+        }
+        while cache.len() > USAGE_CACHE_MAX {
+            cache.pop_front();
+        }
+    }
+    usage
 }
 // ------------------------------------------------------------- mode state
 
@@ -7215,6 +7307,7 @@ struct Checkout {
 struct Cloning {
     url: String,
     target: RemoteRepository,
+    staging: PathBuf,
 }
 
 #[derive(Clone)]
@@ -7228,6 +7321,7 @@ struct Run {
     activity: Vec<String>,
     question: Option<AcpQuestion>,
     remote: Option<RemoteRepository>,
+    resumed: bool,
     peer: Option<Arc<AcpConnection>>,
 }
 
@@ -7258,6 +7352,7 @@ struct ModeState {
 #[derive(Clone)]
 struct StoredDiscover {
     started_at: String,
+    staging_dir: PathBuf,
     agent: String,
     activity: Vec<String>,
     remote: Option<RemoteRepository>,
@@ -7826,6 +7921,19 @@ fn notify_discover_failure(conn: Option<&Conn>, message: &str) {
     }
 }
 
+/// Reports a failure the restore path raised before any page was attached.
+/// The frame goes to every connected page and stays queued for the first page
+/// that connects afterwards, so a resumed run's refusal is never silent.
+fn report_discover_failure(app: &Arc<App>, mode: &Arc<Mode>, conn: Option<&Conn>, message: &str) {
+    if let Some(conn) = conn {
+        notify_discover_failure(Some(conn), message);
+        return;
+    }
+    lock(&mode.state).notice = Some(message.to_string());
+    app.shared
+        .broadcast(json!({"type": "discoverError", "message": message}));
+}
+
 // ------------------------------------------------------------ state parts
 
 enum SectionPart {
@@ -7869,6 +7977,9 @@ impl StateSection for ModeSection {
         match self.part {
             SectionPart::Run => {
                 let stored = parse_stored_discover(value);
+                if let Some(stored) = &stored {
+                    remove_interrupted_staging(&stored.staging_dir);
+                }
                 let mut state = lock(&self.mode.state);
                 state.restored = stored;
                 if state.restored.is_some() {
@@ -7978,7 +8089,7 @@ fn parse_question(value: &Value) -> Option<AcpQuestion> {
 
 fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
     let _run_id = value.get("runId")?.as_str()?.to_string();
-    let staging_dir = value.get("stagingDir")?.as_str()?.to_string();
+    let staging_dir = PathBuf::from(value.get("stagingDir")?.as_str()?);
     let started_at = value.get("startedAt")?.as_str()?.to_string();
     let activity: Vec<String> = value
         .get("activity")?
@@ -7990,7 +8101,7 @@ fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
     discover_agent(&agent)?;
     let remote = match value.get("remote") {
         None | Some(Value::Null) => {
-            if staging_dir.contains("/discover-remote/") {
+            if staging_dir.to_string_lossy().contains("/discover-remote/") {
                 return None;
             }
             None
@@ -8000,6 +8111,7 @@ fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
     let _ = value.get("question").and_then(parse_question);
     Some(StoredDiscover {
         started_at,
+        staging_dir,
         agent,
         activity,
         remote,
@@ -8073,6 +8185,21 @@ pub fn init(app: &Arc<App>) {
             part: SectionPart::Target,
         }),
     );
+    {
+        // A graceful stop leaves no run's staging behind. The watcher owns only
+        // the shared signal; a dropped app simply skips its cleanup.
+        let weak = Arc::downgrade(app);
+        let shared = Arc::clone(&app.shared);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                shared.shutdown.notified().await;
+                drop(shared);
+                if let Some(app) = weak.upgrade() {
+                    shutdown(&app);
+                }
+            });
+        }
+    }
 }
 
 /// Replays the frames a connecting client owes before its own replies.
@@ -8249,6 +8376,9 @@ fn fail_discover(app: &Arc<App>, mode: &Arc<Mode>, run: &Run, message: &str) {
         if let Some(peer) = &run.peer {
             peer.close();
         }
+        if run.resumed {
+            state.notice = Some(message.to_string());
+        }
         remove_staging(&run.cwd, &run.run_id);
         let started = state
             .status(&run.agent)
@@ -8376,7 +8506,12 @@ async fn run_agent(
     resumed: Option<&StoredDiscover>,
 ) -> bool {
     let Some(descriptor) = discover_agent(agent) else {
-        notify_discover_failure(conn, &format!("Unknown Discover agent: {agent}."));
+        report_discover_failure(
+            app,
+            mode,
+            conn,
+            &format!("Unknown Discover agent: {agent}."),
+        );
         return false;
     };
     let repo_dir = app.config().repo_dir.clone();
@@ -8385,7 +8520,9 @@ async fn run_agent(
     let staging_dir = staging_directory(&target.root, &run_id);
     {
         if let Err(error) = fs::create_dir_all(&staging_dir) {
-            notify_discover_failure(
+            report_discover_failure(
+                app,
+                mode,
                 conn,
                 &format!(
                     "Could not prepare the {} staging directory: {error}",
@@ -8432,6 +8569,7 @@ async fn run_agent(
             activity,
             question: None,
             remote: target.remote.clone(),
+            resumed: resumed.is_some(),
             peer: None,
         });
         state.starting = false;
@@ -8659,14 +8797,18 @@ async fn clone_remote_project(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     if let Err(error) = fs::create_dir_all(&remote_root) {
-        notify_discover_failure(
+        report_discover_failure(
+            app,
+            mode,
             conn,
             &format!("Could not prepare the Discover scratch root: {error}"),
         );
         return false;
     }
     if !claim_scratch_entry(&remote_root, &staging_name) {
-        notify_discover_failure(
+        report_discover_failure(
+            app,
+            mode,
             conn,
             &format!(
                 "Could not prepare the Discover scratch root: the scratch root is not writable: {}",
@@ -8680,6 +8822,7 @@ async fn clone_remote_project(
         state.cloning = Some(Cloning {
             url: target.url.clone(),
             target: target.clone(),
+            staging: staging.clone(),
         });
     }
     app.shared
@@ -8698,7 +8841,7 @@ async fn clone_remote_project(
         }
         let _ = fs::remove_dir_all(&staging);
         release_scratch_entry(&remote_root, &staging_name);
-        notify_discover_failure(conn, &message);
+        report_discover_failure(app, mode, conn, &message);
         push_state(app, mode);
         false
     };
@@ -8989,23 +9132,30 @@ async fn start_remote(
         let state = lock(&mode.state);
         if state.cloning.is_some() {
             drop(state);
-            notify_discover_failure(conn, "A repository clone is already active.");
+            report_discover_failure(app, mode, conn, "A repository clone is already active.");
             return;
         }
         if discover_active(&state) {
             drop(state);
-            notify_discover_failure(conn, "A Discover run is already active.");
+            report_discover_failure(app, mode, conn, "A Discover run is already active.");
             return;
         }
     }
     if let Some(busy) = busy_reason(app) {
-        notify_discover_failure(conn, &format!("A repository clone cannot start: {busy}"));
+        report_discover_failure(
+            app,
+            mode,
+            conn,
+            &format!("A repository clone cannot start: {busy}"),
+        );
         return;
     }
     let repo_dir = app.config().repo_dir.clone();
     let remote_root = lock(&mode.state).remote_root.clone();
     if !is_inside_repository(&repo_dir, &remote_root) {
-        notify_discover_failure(
+        report_discover_failure(
+            app,
+            mode,
             conn,
             "The Discover scratch root is outside the repository. STATE_DIR must name a directory inside the repository.",
         );
@@ -9014,7 +9164,12 @@ async fn start_remote(
     let parsed = match parse_remote_url(url) {
         Ok(parsed) => parsed,
         Err(reason) => {
-            notify_discover_failure(conn, &format!("Could not clone the repository: {reason}."));
+            report_discover_failure(
+                app,
+                mode,
+                conn,
+                &format!("Could not clone the repository: {reason}."),
+            );
             return;
         }
     };
@@ -9086,6 +9241,15 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
         return;
     }
     if !lock(&mode.state).remote_available {
+        report_discover_failure(
+            &app,
+            &mode,
+            None,
+            &format!(
+                "The Discover run started at {} was interrupted when the server restarted, and a remote run cannot be resumed in this installation.",
+                stored.started_at
+            ),
+        );
         push_state(&app, &mode);
         return;
     }
@@ -9093,6 +9257,48 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
         return;
     };
     start_remote(&app, &mode, None, &remote.url, Some(stored)).await;
+}
+
+/// Ends the work a graceful stop would abandon. The run's peer closes, its
+/// staging goes, and a clone or checkout no successor owns is released. This
+/// is a filesystem cleanup only: a stopping dashboard publishes nothing.
+pub fn shutdown(app: &Arc<App>) {
+    let mode = mode_for(app);
+    let (run, checkout, cloning, remote_root) = {
+        let mut state = lock(&mode.state);
+        state.request += 1;
+        let run = state.run.take();
+        let checkout = state.checkout.take();
+        let cloning = state.cloning.take();
+        state.all_active = false;
+        state.starting = false;
+        let remote_root = state.remote_root.clone();
+        (run, checkout, cloning, remote_root)
+    };
+    if let Some(run) = run {
+        if let Some(peer) = &run.peer {
+            peer.close();
+        }
+        remove_staging(&run.cwd, &run.run_id);
+    }
+    if let Some(cloning) = cloning {
+        let _ = fs::remove_dir_all(&cloning.staging);
+        let name = cloning
+            .staging
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        release_scratch_entry(&remote_root, &name);
+    }
+    if let Some(checkout) = checkout {
+        let _ = fs::remove_dir_all(&checkout.dir);
+        let name = checkout
+            .dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        release_scratch_entry(&remote_root, &name);
+    }
 }
 
 fn stop_discover(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn) {
