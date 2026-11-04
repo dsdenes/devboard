@@ -36,7 +36,18 @@ impl RelaunchSettings {
 
 /// The executable a replacement runs: this binary, which carries the client.
 pub fn replacement_program() -> std::io::Result<PathBuf> {
-    std::env::current_exe()
+    let current = std::env::current_exe()?;
+    let text = current.to_string_lossy();
+    // A rebuilt checkout replaces the running binary on disk, so this process's
+    // executable link can read "... (deleted)". The path without the suffix is
+    // the one a replacement must start.
+    if let Some(path) = text.strip_suffix(" (deleted)") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    Ok(current)
 }
 
 /// Starts one replacement process in its own session.
