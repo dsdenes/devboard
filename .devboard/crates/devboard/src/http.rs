@@ -504,10 +504,18 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         }
         answer
     };
-    let host = headers
+    let Some(host) = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return reply(Replies::problem(
+            &headers,
+            400,
+            "The request carries no valid Host header.",
+            &[],
+        ));
+    };
     let url = match Url::parse(&format!(
         "http://{}{}",
         host,

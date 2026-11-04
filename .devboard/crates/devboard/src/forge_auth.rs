@@ -429,36 +429,33 @@ pub async fn execute(parsed: &Parsed, context: &Context) -> RunOutcome {
 }
 
 async fn exec(parsed: &Parsed, auth: &ResolvedAuth, context: &Context) -> RunOutcome {
-    if auth.forge == Forge::Gitea {
-        return RunOutcome::refusal(
-            2,
-            "forge-auth: Gitea writes use its HTTP API; run 'check' for the selected identity\n"
-                .to_string(),
-        );
-    }
-    let expected = if auth.forge == Forge::GitHub {
-        "gh"
-    } else {
-        "glab"
-    };
-    let executable = parsed.command.first().cloned().unwrap_or_default();
-    let name = Path::new(&executable)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
-    if name != expected {
-        let got = if executable.is_empty() {
-            "nothing".to_string()
+    // A Gitea identity reaches the API through `GITEA_TOKEN`, so any child is
+    // admissible; GitHub and GitLab are only ever driven by their CLIs.
+    if auth.forge != Forge::Gitea {
+        let expected = if auth.forge == Forge::GitHub {
+            "gh"
         } else {
-            executable
+            "glab"
         };
-        return RunOutcome::refusal(
-            2,
-            format!(
-                "forge-auth: {} requires {expected}, got {got}\n",
-                auth.forge.as_str()
-            ),
-        );
+        let executable = parsed.command.first().cloned().unwrap_or_default();
+        let name = Path::new(&executable)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        if name != expected {
+            let got = if executable.is_empty() {
+                "nothing".to_string()
+            } else {
+                executable
+            };
+            return RunOutcome::refusal(
+                2,
+                format!(
+                    "forge-auth: {} requires {expected}, got {got}\n",
+                    auth.forge.as_str()
+                ),
+            );
+        }
     }
 
     let mut announcement = String::new();
