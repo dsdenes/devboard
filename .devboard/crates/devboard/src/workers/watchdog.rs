@@ -3221,20 +3221,20 @@ fn collapse(value: &str) -> String {
 
 fn truncate(value: &str, limit: usize) -> String {
     let single = collapse(value);
-    if single.chars().count() <= limit {
+    if crate::feedback::js_len(&single) <= limit {
         return single;
     }
-    let kept: String = single.chars().take(limit.saturating_sub(1)).collect();
+    let kept = crate::feedback::js_truncate(&single, limit.saturating_sub(1));
     format!("{}…", kept.trim_end())
 }
 
 /// `[watchdog] <category>: <line>`, one line, never longer than 80 characters.
 pub fn watchdog_title(category: &str, line: &str) -> String {
     let title = format!("[watchdog] {category}: {}", collapse(line));
-    if title.chars().count() <= TITLE_MAX {
+    if crate::feedback::js_len(&title) <= TITLE_MAX {
         return title;
     }
-    let kept: String = title.chars().take(TITLE_MAX - 1).collect();
+    let kept = crate::feedback::js_truncate(&title, TITLE_MAX - 1);
     format!("{}…", kept.trim_end())
 }
 

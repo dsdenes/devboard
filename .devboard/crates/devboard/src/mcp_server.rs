@@ -1306,7 +1306,7 @@ fn valid_goal_title(value: Option<&Value>) -> Result<String, String> {
     if title.contains('\n') || title.contains('\r') {
         return Err("The title must be one line.".to_string());
     }
-    if title.chars().count() > GOAL_TITLE_MAX {
+    if crate::feedback::js_len(&title) > GOAL_TITLE_MAX {
         return Err(format!(
             "The title must be at most {GOAL_TITLE_MAX} characters."
         ));
@@ -3637,5 +3637,20 @@ async fn read_pipe<R>(
         if kept < read {
             state.overflowed = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn the_goal_title_cap_counts_utf16_units() {
+        let too_long = Value::String("😀".repeat(101));
+        assert!(valid_goal_title(Some(&too_long)).is_err());
+        let at_cap = Value::String("😀".repeat(100));
+        assert!(valid_goal_title(Some(&at_cap)).is_ok());
+        let plain = Value::String("a".repeat(200));
+        assert!(valid_goal_title(Some(&plain)).is_ok());
     }
 }

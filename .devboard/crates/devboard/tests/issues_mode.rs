@@ -167,6 +167,7 @@ fn options(repo: &Path, state: &Path, hooks: IssuesHooks, sink: Sink) -> IssuesO
         poll_ms: 50,
         sync_ms: 30_000,
         preflight_timeout_ms: 2_000,
+        on_open_issues: Arc::new(|_issues| {}),
     }
 }
 
@@ -802,4 +803,49 @@ async fn the_dispatch_refuses_with_the_typescript_wording() {
     assert_eq!(frame["present"], false);
     assert_eq!(frame["lifecycle"], "stopped");
     let _ = app;
+}
+
+#[tokio::test]
+async fn a_fresh_open_issue_read_publishes_the_issue_hook() {
+    let (repo, state) = scratch("open-issue-hook");
+    write_state(&repo, &state, &state_document(&repo, "idle", json!([])));
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let seen: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_for_hook = Arc::clone(&seen);
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    );
+    settings.on_open_issues = Arc::new(move |issues| {
+        seen_for_hook
+            .lock()
+            .expect("seen")
+            .push(issues.iter().map(|issue| issue.number).collect());
+    });
+    settings.hooks.tracker_read = Arc::new(|_request: TrackerReadRequest| {
+        Box::pin(async {
+            PollResult::Issues {
+                issues: vec![Issue {
+                    number: 4,
+                    title: "Changed".into(),
+                    url: "https://example.test/4".into(),
+                    created_at: "2026-01-01T00:00:00.000Z".into(),
+                    labels: Vec::new(),
+                    body: Some("body".into()),
+                }],
+                etag: Some("etag".into()),
+            }
+        })
+    });
+    let bridge = IssuesBridge::new(settings);
+    bridge.sync_now().await;
+    assert_eq!(*seen.lock().expect("seen"), vec![vec![4]]);
 }

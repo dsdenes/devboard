@@ -1126,3 +1126,16 @@ fn the_cli_exits_two_for_missing_prerequisites_and_bad_flags() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("--collect runs with --dry-run"));
 }
+
+#[test]
+fn a_watchdog_title_counts_utf16_units() {
+    let line = "😀".repeat(40);
+    let title = devboard::workers::watchdog::watchdog_title("rule", &line);
+    assert!(devboard::feedback::js_len(&title) <= 80, "{title}");
+    assert!(title.ends_with('…'), "{title}");
+    let expected = format!(
+        "{}…",
+        devboard::feedback::js_truncate(&format!("[watchdog] rule: {line}"), 79).trim_end()
+    );
+    assert_eq!(title, expected);
+}

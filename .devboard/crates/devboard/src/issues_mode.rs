@@ -29,6 +29,11 @@ const ACTIVITY_MAX_ENTRIES: usize = 1000;
 const ACTIVITY_MAX_BYTES: usize = 1024 * 1024;
 const ACTIVITY_TRIMMED_MARKER: &str = "Earlier activity was trimmed.";
 
+/// A goal issue carries the one label the goal lifecycle claims.
+fn is_goal_issue(issue: &Issue) -> bool {
+    issue.labels.iter().any(|label| label == GOAL_LABEL)
+}
+
 /// The command's grace, after which a worker the table proves is signalled.
 const STOP_PROOF_MS: u64 = 3_000;
 /// How long a proven worker gets to exit after SIGTERM before SIGKILL.
@@ -297,6 +302,38 @@ fn pid_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// The platform facts a lock owner's liveness depends on.
+///
+/// A lock records the owner's pid and start instant. A pid alone cannot prove
+/// identity: the OS recycles pids. `/proc` supplies the start instant, and a
+/// platform without it can only prove the pid is alive. Keeping the two probes
+/// behind one trait makes that rule explicit and lets a test run it where
+/// `/proc` is unavailable.
+trait LockProbe: Send + Sync {
+    fn pid_alive(&self, pid: u32) -> bool;
+    /// The instant `pid` started, in epoch milliseconds, when the platform
+    /// reports it.
+    fn process_started_at(&self, pid: u32) -> Option<i64>;
+    /// Whether this platform has a process table that reports start instants.
+    fn reports_process_start(&self) -> bool;
+}
+
+struct SystemLockProbe;
+
+impl LockProbe for SystemLockProbe {
+    fn pid_alive(&self, pid: u32) -> bool {
+        pid_alive(pid)
+    }
+
+    fn process_started_at(&self, pid: u32) -> Option<i64> {
+        process_started_at(pid)
+    }
+
+    fn reports_process_start(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+}
+
 /// The instant a live process started, from `/proc/<pid>/stat` and uptime.
 fn process_started_at(pid: u32) -> Option<i64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -325,18 +362,26 @@ fn own_started_at() -> String {
     iso_from_millis(started)
 }
 
-fn owner_alive(owner: &LockOwner) -> bool {
-    if !pid_alive(owner.pid) {
+/// True when the live pid belongs to the lock's owner and not to a recycled
+/// pid. A start instant the platform reports must match the recorded one; a
+/// platform that reports none treats a live pid as the owner, which is the only
+/// proof available there.
+fn owner_alive_with(owner: &LockOwner, probe: &dyn LockProbe) -> bool {
+    if !probe.pid_alive(owner.pid) {
         return false;
     }
     let Some(recorded) = parse_iso(&owner.started_at) else {
         return false;
     };
     let recorded = epoch_millis(recorded);
-    match process_started_at(owner.pid) {
+    match probe.process_started_at(owner.pid) {
         Some(actual) => (actual - recorded).abs() <= 2_000,
-        None => false,
+        None => !probe.reports_process_start(),
     }
+}
+
+fn owner_alive(owner: &LockOwner) -> bool {
+    owner_alive_with(owner, &SystemLockProbe)
 }
 
 fn parse_lock(text: &str) -> Option<LockOwner> {
@@ -1648,10 +1693,12 @@ fn list_run_directories(state_dir: &Path, repo_dir: &Path) -> Vec<String> {
 /* ------------------------------------------------------------------------ */
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-struct HandledIssue {
-    number: u64,
-    run_id: String,
-    at: String,
+#[serde(rename_all = "camelCase")]
+pub struct HandledIssue {
+    pub number: u64,
+    #[serde(alias = "run_id")]
+    pub run_id: String,
+    pub at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1706,6 +1753,66 @@ fn load_ledger(state_dir: &Path, repo_dir: &Path) -> Ledger {
             Ledger::empty()
         }
     }
+}
+
+/// The removed systemd orchestrator's records, read only for migration.
+fn legacy_directory(state_dir: &Path) -> PathBuf {
+    state_dir.join("orchestrator")
+}
+
+fn legacy_state_path(state_dir: &Path) -> PathBuf {
+    legacy_directory(state_dir).join("state.json")
+}
+
+fn legacy_ledger_path(state_dir: &Path) -> PathBuf {
+    legacy_directory(state_dir).join("ledger.json")
+}
+
+fn legacy_root_matches(state_dir: &Path, repo_dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(legacy_state_path(state_dir)) else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    let Some(root) = parsed.get("root").and_then(Value::as_str) else {
+        return false;
+    };
+    absolute(Path::new(root)) == absolute(repo_dir)
+}
+
+/// Copies the legacy handled numbers into the repository-keyed ledger, but only
+/// when that ledger does not exist yet, the legacy state parses, and its root
+/// names this checkout. Missing, damaged, or mismatched legacy files are
+/// ignored; the legacy bytes are never rewritten.
+pub fn migrate_legacy_ledger(
+    state_dir: &Path,
+    repo_dir: &Path,
+    now: &str,
+) -> Option<Vec<HandledIssue>> {
+    if ledger_path(state_dir, repo_dir).exists() {
+        return None;
+    }
+    if !legacy_root_matches(state_dir, repo_dir) {
+        return None;
+    }
+    let text = std::fs::read_to_string(legacy_ledger_path(state_dir)).ok()?;
+    let ledger = parse_ledger(&text)?;
+    Some(
+        ledger
+            .handled
+            .into_values()
+            .map(|entry| HandledIssue {
+                number: entry.number,
+                run_id: entry.run_id,
+                at: if entry.at.is_empty() {
+                    now.to_string()
+                } else {
+                    entry.at
+                },
+            })
+            .collect(),
+    )
 }
 
 fn write_ledger(state_dir: &Path, repo_dir: &Path, ledger: &Ledger) -> std::io::Result<()> {
@@ -2545,6 +2652,8 @@ pub struct IssuesOptions {
     pub poll_ms: u64,
     pub sync_ms: u64,
     pub preflight_timeout_ms: u64,
+    /// Called after each fresh open-issue read, never on a failure.
+    pub on_open_issues: Arc<dyn Fn(Vec<Issue>) + Send + Sync>,
 }
 
 impl IssuesOptions {
@@ -2601,6 +2710,7 @@ pub struct IssuesBridge {
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
     poll_ms: u64,
     preflight_timeout_ms: u64,
+    on_open_issues: Arc<dyn Fn(Vec<Issue>) + Send + Sync>,
     tracker: TrackerSync,
     repository_cache: Arc<Mutex<Option<(Option<String>, std::time::Instant)>>>,
     inner: Mutex<BridgeInner>,
@@ -2681,6 +2791,7 @@ impl IssuesBridge {
             has_clients: options.has_clients,
             poll_ms: options.poll_ms.max(50),
             preflight_timeout_ms: options.preflight_timeout_ms.max(1),
+            on_open_issues: options.on_open_issues,
             tracker,
             repository_cache: cache,
             inner: Mutex::new(BridgeInner::default()),
@@ -3572,6 +3683,9 @@ impl IssuesBridge {
                     self.stop_closed_runs(&open, epoch_millis(started));
                 }
             }
+            if let Some(issues) = &result.issues {
+                (self.on_open_issues)(issues.clone());
+            }
         }
         self.refresh();
     }
@@ -3914,6 +4028,26 @@ pub fn init(app: &Arc<App>) {
         poll_ms: DASHBOARD_POLL_MS,
         sync_ms,
         preflight_timeout_ms: ISSUES_PREFLIGHT_TIMEOUT_MS,
+        on_open_issues: {
+            let weak_app = Arc::downgrade(app);
+            Arc::new(move |issues: Vec<Issue>| {
+                let Some(app) = weak_app.upgrade() else {
+                    return;
+                };
+                let rows = issues
+                    .into_iter()
+                    .map(|issue| {
+                        json!({
+                            "number": issue.number,
+                            "title": issue.title,
+                            "url": issue.url,
+                            "body": issue.body.unwrap_or_default(),
+                        })
+                    })
+                    .collect();
+                crate::agents_mode::publish_prompt_templates(&app, rows);
+            })
+        },
     };
     let bridge = IssuesBridge::new(options);
     {
@@ -4132,7 +4266,13 @@ impl FirstLine {
             return;
         }
         if self.buffer.len() > FIRST_LINE_MAX * 8 {
-            let start = self.buffer.len() - FIRST_LINE_MAX;
+            // The cut is a byte budget, so move it forward until it lands on a
+            // code point boundary: a multibyte character straddling the budget
+            // must not panic the worker.
+            let mut start = self.buffer.len() - FIRST_LINE_MAX;
+            while start < self.buffer.len() && !self.buffer.is_char_boundary(start) {
+                start += 1;
+            }
             self.buffer = self.buffer[start..].to_string();
         }
     }
@@ -4179,6 +4319,11 @@ struct RunEntry {
     directory: PathBuf,
 }
 
+type IssueStateFn = Arc<dyn Fn(u64) -> IssueStateFuture + Send + Sync>;
+type ProcessingFn = Arc<
+    dyn Fn(u64, bool) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
+>;
+
 struct IssuesWorker {
     repo_dir: PathBuf,
     state_dir: PathBuf,
@@ -4188,6 +4333,9 @@ struct IssuesWorker {
     harness_version: Option<String>,
     state: IssuesState,
     ledger: Ledger,
+    /// Numbers this worker pruned on the current poll; a shared ledger write
+    /// must not resurrect them.
+    pruned: HashSet<u64>,
     active: HashMap<u64, WorkerActive>,
     dismissed: HashMap<u64, std::time::Instant>,
     claiming: HashSet<u64>,
@@ -4202,6 +4350,10 @@ struct IssuesWorker {
     events: tokio::sync::mpsc::UnboundedSender<WorkerEvent>,
     receptor: tokio::sync::mpsc::UnboundedReceiver<WorkerEvent>,
     list_issues: TrackerRead,
+    /// Test seams. Production leaves both empty and reads the tracker and the
+    /// forge through their real paths.
+    issue_state_override: Option<IssueStateFn>,
+    processing_override: Option<ProcessingFn>,
 }
 
 impl IssuesWorker {
@@ -4225,6 +4377,7 @@ impl IssuesWorker {
             harness_version,
             state: empty_state("", "", 10_000, "stopped"),
             ledger: Ledger::empty(),
+            pruned: HashSet::new(),
             active: HashMap::new(),
             dismissed: HashMap::new(),
             claiming: HashSet::new(),
@@ -4239,6 +4392,8 @@ impl IssuesWorker {
             events,
             receptor,
             list_issues: tracker,
+            issue_state_override: None,
+            processing_override: None,
         }
     }
 
@@ -4298,6 +4453,21 @@ impl IssuesWorker {
         let (loaded, text) = load_state_with_text(&source);
         let (previous_children, previous_runs) = previous_records(text.as_deref());
         self.ledger = load_ledger(&self.state_dir, &self.repo_dir);
+        let mut migration_error: Option<String> = None;
+        if let Some(migrated) = migrate_legacy_ledger(&self.state_dir, &self.repo_dir, &iso_now()) {
+            if !migrated.is_empty() {
+                for entry in migrated {
+                    self.ledger.handled.insert(entry.number.to_string(), entry);
+                }
+                if let Err(error) = self.persist_ledger() {
+                    migration_error = Some(error);
+                }
+                eprintln!(
+                    "issues: migrated handled issues from the legacy orchestrator for {}",
+                    self.repo_dir.display()
+                );
+            }
+        }
         self.runs = load_runs(&self.state_dir, &self.repo_dir)
             .into_iter()
             .map(|(run, directory, _activity)| RunEntry { run, directory })
@@ -4343,6 +4513,9 @@ impl IssuesWorker {
         state.updated_at = now;
         if loaded.is_none() { /* a fresh state is published below */ }
         self.state = state;
+        if let Some(error) = migration_error {
+            self.state.last_error = Some(error);
+        }
         self.next_poll_due = std::time::Instant::now();
         self.publish();
         true
@@ -4539,22 +4712,20 @@ impl IssuesWorker {
                 self.publish();
             }
             IssuesCommand::Abandon { number } => {
-                let Some(mut active) = self.active.remove(&number) else {
+                // The run may have ended between the dashboard's read and this
+                // command; a missing run is not an error.
+                let Some(active) = self.active.get(&number) else {
                     return;
                 };
                 let notice =
                     format!("Issue #{number} was closed on the tracker; its run was stopped.");
-                active.finished = true;
-                if let Some(peer) = &active.peer {
-                    peer.close();
+                // A dashboard read is one observation, so a goal issue settles
+                // only on a close the tracker proves.
+                if is_goal_issue(&active.issue) {
+                    self.settle_dropped_goal(number, notice).await;
+                } else {
+                    self.abandon_run(number, notice).await;
                 }
-                let run_id = active.run_id.clone();
-                let directory = active.directory.clone();
-                self.update_run(&run_id, &directory, "stopped", &iso_now(), None, None);
-                self.forget(number, &run_id).await;
-                self.refresh_queue();
-                self.state.notice = Some(notice);
-                self.settle(None, None, iso_now());
             }
             IssuesCommand::Stop => {
                 self.stop().await;
@@ -4743,15 +4914,20 @@ impl IssuesWorker {
     }
 
     async fn set_processing(&self, number: u64, active: bool) -> bool {
-        match write_processing(
-            &self.repo_dir,
-            &self.state.repo,
-            &self.environment,
-            number,
-            active,
-        )
-        .await
-        {
+        let outcome = match &self.processing_override {
+            Some(write) => write(number, active).await,
+            None => {
+                write_processing(
+                    &self.repo_dir,
+                    &self.state.repo,
+                    &self.environment,
+                    number,
+                    active,
+                )
+                .await
+            }
+        };
+        match outcome {
             Ok(()) => true,
             Err(detail) => {
                 eprintln!(
@@ -4764,15 +4940,47 @@ impl IssuesWorker {
         }
     }
 
+    /// Persists this worker's ledger without erasing another version's work.
+    /// Another live worker shares the repository ledger, so the disk copy is
+    /// merged: every entry it holds for an issue still open and not pruned by
+    /// this pass survives, and this worker's own entry wins a collision.
+    fn persist_ledger(&mut self) -> Result<(), String> {
+        let disk = load_ledger(&self.state_dir, &self.repo_dir);
+        let open: HashSet<u64> = self.state.queue.iter().map(|issue| issue.number).collect();
+        let pruned = std::mem::take(&mut self.pruned);
+        let mut handled = BTreeMap::new();
+        for (key, entry) in disk.handled {
+            if open.contains(&entry.number) && !pruned.contains(&entry.number) {
+                handled.insert(key, entry);
+            }
+        }
+        for (key, entry) in &self.ledger.handled {
+            handled.insert(key.clone(), entry.clone());
+        }
+        self.ledger = Ledger {
+            version: LEDGER_VERSION,
+            handled,
+        };
+        write_ledger(&self.state_dir, &self.repo_dir, &self.ledger)
+            .map_err(|error| format!("could not write the ledger: {error}"))
+    }
+
     async fn apply_issues(&mut self, issues: Vec<Issue>) {
         let open: HashSet<u64> = issues.iter().map(|issue| issue.number).collect();
         let now = std::time::Instant::now();
         self.dismissed
             .retain(|number, until| open.contains(number) && *until > now);
         if let Some(pruned) = prune_ledger(&self.ledger, &open) {
+            for key in self.ledger.handled.keys() {
+                if !pruned.handled.contains_key(key) {
+                    if let Ok(number) = key.parse::<u64>() {
+                        self.pruned.insert(number);
+                    }
+                }
+            }
             self.ledger = pruned;
-            if let Err(error) = write_ledger(&self.state_dir, &self.repo_dir, &self.ledger) {
-                self.state.last_error = Some(format!("could not write the ledger: {error}"));
+            if let Err(error) = self.persist_ledger() {
+                self.state.last_error = Some(error);
             }
         }
         self.state.cooldowns.retain(|key, _| {
@@ -5315,6 +5523,9 @@ impl IssuesWorker {
 
     /// A one-shot future resolving the issue's tracker state.
     fn issue_state_future(&self, number: u64) -> IssueStateFuture {
+        if let Some(read) = &self.issue_state_override {
+            return read(number);
+        }
         let repo_dir = self.repo_dir.clone();
         let repository = self.state.repo.clone();
         let environment = self.environment.clone();
@@ -5427,8 +5638,8 @@ impl IssuesWorker {
         self.forget(number, &run_id).await;
         self.refresh_queue();
         self.settle(Some(0), None, finished_at);
-        if let Err(error) = write_ledger(&self.state_dir, &self.repo_dir, &self.ledger) {
-            self.state.last_error = Some(format!("could not write the ledger: {error}"));
+        if let Err(error) = self.persist_ledger() {
+            self.state.last_error = Some(error);
             self.publish();
         }
     }
@@ -5491,11 +5702,79 @@ impl IssuesWorker {
             if open.contains(&number) {
                 continue;
             }
-            self.abandon_run(
-                number,
-                format!("Issue #{number} was closed on the tracker; its run was stopped."),
-            )
-            .await;
+            let notice = format!("Issue #{number} was closed on the tracker; its run was stopped.");
+            // A goal issue's run records one goal. A poll that dropped it is one
+            // observation, so a goal the tracker still lists as open fails with
+            // a cooldown instead of ending without a verdict.
+            let goal = self
+                .active
+                .get(&number)
+                .map(|active| is_goal_issue(&active.issue))
+                .unwrap_or(false);
+            if goal {
+                self.settle_dropped_goal(number, notice).await;
+            } else {
+                self.abandon_run(number, notice).await;
+            }
+        }
+    }
+
+    /// Settles a goal-issue run the poll no longer lists. A close the tracker
+    /// proves is the operator's cancellation and keeps the `stopped` record; an
+    /// issue still open at the tracker fails the run with a detail naming it.
+    async fn settle_dropped_goal(&mut self, number: u64, notice: String) {
+        let Some(active) = self.active.get(&number) else {
+            return;
+        };
+        if active.finished || active.settling {
+            return;
+        }
+        if closed_by_run(&self.state_dir, &self.repo_dir, number).as_deref()
+            == Some(active.run_id.as_str())
+        {
+            return;
+        }
+        if let Some(active) = self.active.get_mut(&number) {
+            active.settling = true;
+        }
+        let result = self.issue_state_future(number).await;
+        if self.stopping {
+            return;
+        }
+        let Some(active) = self.active.get(&number) else {
+            return;
+        };
+        if active.finished {
+            return;
+        }
+        match result {
+            IssueStateResult::State { closed: true } => {
+                if let Some(active) = self.active.get_mut(&number) {
+                    active.settling = false;
+                }
+                self.abandon_run(number, notice).await;
+            }
+            result => {
+                self.close_peer(number);
+                if let Some(active) = self.active.get_mut(&number) {
+                    active.first_line.finish();
+                }
+                let detail = match result {
+                    IssueStateResult::Error { detail } => {
+                        format!("could not verify issue #{number}: {detail}")
+                    }
+                    _ => format!(
+                        "the tracker dropped issue #{number} from its open list while it is still open"
+                    ),
+                };
+                let detail = self.active[&number]
+                    .first_line
+                    .value
+                    .clone()
+                    .map(|stderr| format!("{detail}; agent stderr: {stderr}"))
+                    .unwrap_or(detail);
+                self.record_failed(number, detail).await;
+            }
         }
     }
 
@@ -5957,6 +6236,328 @@ pub async fn run_worker(args: &[String]) -> anyhow::Result<()> {
         if worker.stopping {
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit_root(label: &str) -> (PathBuf, PathBuf) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("issues-unit-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        let state = root.join("state");
+        std::fs::create_dir_all(repo.join(".devboard").join(".tmp")).expect("a repo");
+        std::fs::create_dir_all(&state).expect("a state directory");
+        (repo, state)
+    }
+
+    fn issue(number: u64, labels: &[&str]) -> Issue {
+        Issue {
+            number,
+            title: format!("Issue {number}"),
+            url: format!("https://example.test/issues/{number}"),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            labels: labels.iter().map(|label| label.to_string()).collect(),
+            body: None,
+        }
+    }
+
+    fn worker(repo: &Path, state: &Path) -> IssuesWorker {
+        let mut worker = IssuesWorker::new(
+            repo.to_path_buf(),
+            state.to_path_buf(),
+            100,
+            "omp acp".to_string(),
+            HashMap::new(),
+            Some("1.2.3".to_string()),
+        );
+        worker.state.repo = "acme/app".to_string();
+        worker.state.enabled = true;
+        worker.processing_override = Some(Arc::new(|_, _| Box::pin(async { Ok(()) })));
+        worker
+    }
+
+    fn attach(worker: &mut IssuesWorker, issue: Issue) {
+        let active = worker.open_run(&issue).expect("a run");
+        worker.state.queue = vec![worker.queued(&issue)];
+        worker.active.insert(issue.number, active);
+    }
+
+    fn entry(number: u64, run_id: &str) -> HandledIssue {
+        HandledIssue {
+            number,
+            run_id: run_id.to_string(),
+            at: "2026-01-01T00:00:00.000Z".to_string(),
+        }
+    }
+
+    struct NoProcProbe {
+        alive: bool,
+    }
+
+    impl LockProbe for NoProcProbe {
+        fn pid_alive(&self, _pid: u32) -> bool {
+            self.alive
+        }
+
+        fn process_started_at(&self, _pid: u32) -> Option<i64> {
+            None
+        }
+
+        fn reports_process_start(&self) -> bool {
+            false
+        }
+    }
+
+    fn owner() -> LockOwner {
+        LockOwner {
+            pid: 4242,
+            started_at: "2026-01-01T00:00:00.000Z".to_string(),
+            repo: "repo".to_string(),
+            state_dir: "state".to_string(),
+            harness_version: None,
+            argv: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_live_owner_on_a_platform_without_proc_is_live() {
+        assert!(owner_alive_with(&owner(), &NoProcProbe { alive: true }));
+        assert!(!owner_alive_with(&owner(), &NoProcProbe { alive: false }));
+    }
+
+    #[test]
+    fn a_lock_whose_owner_is_gone_is_reclaimed() {
+        let (repo, state) = unit_root("lock-reclaim");
+        let path = versioned_lock_path(&repo, None);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("a lock directory");
+        let dead = LockOwner {
+            pid: 999_999,
+            started_at: iso_now(),
+            repo: repo.display().to_string(),
+            state_dir: state.display().to_string(),
+            harness_version: None,
+            argv: Vec::new(),
+        };
+        std::fs::write(&path, crate::jsjson::stringify(&dead.to_json())).expect("a stale lock");
+        let acquired = acquire_lock(
+            &path,
+            (
+                &repo,
+                &state,
+                None,
+                vec!["devboard".to_string(), "worker".to_string()],
+            ),
+        );
+        assert!(acquired.is_ok(), "the stale lock was not reclaimed");
+        let owner = read_lock(&path).expect("the new lock");
+        assert_eq!(owner.pid, std::process::id());
+    }
+
+    #[test]
+    fn a_truncated_multibyte_line_never_panics() {
+        let mut line = FirstLine::new();
+        // Each U+2003 is three bytes and whitespace, so no line is found and
+        // the 400-byte tail cut lands inside a character.
+        let text = "\u{2003}".repeat(1067);
+        assert_eq!(text.len(), 3201);
+        line.push(&text);
+        assert!(!line.found);
+        assert!(line.buffer.is_char_boundary(0));
+        line.finish();
+        assert!(line.value.is_none());
+    }
+
+    #[test]
+    fn a_ledger_write_merges_another_versions_entries() {
+        let (repo, state) = unit_root("ledger-merge");
+        let mut worker = worker(&repo, &state);
+        write_ledger(
+            &state,
+            &repo,
+            &Ledger {
+                version: LEDGER_VERSION,
+                handled: BTreeMap::from([("1".to_string(), entry(1, "run-a"))]),
+            },
+        )
+        .expect("version A's ledger");
+        worker.state.queue = vec![
+            QueuedIssue::from_issue(&issue(1, &[]), None, None),
+            QueuedIssue::from_issue(&issue(2, &[]), None, None),
+        ];
+        worker.ledger = Ledger {
+            version: LEDGER_VERSION,
+            handled: BTreeMap::from([("2".to_string(), entry(2, "run-b"))]),
+        };
+        worker.persist_ledger().expect("the merged ledger");
+        let read = load_ledger(&state, &repo);
+        let mut numbers: Vec<u64> = read.handled.values().map(|entry| entry.number).collect();
+        numbers.sort();
+        assert_eq!(numbers, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_pruned_entry_is_not_resurrected_by_another_worker() {
+        let (repo, state) = unit_root("ledger-pruned");
+        let mut worker = worker(&repo, &state);
+        write_ledger(
+            &state,
+            &repo,
+            &Ledger {
+                version: LEDGER_VERSION,
+                handled: BTreeMap::from([
+                    ("1".to_string(), entry(1, "run-a")),
+                    ("3".to_string(), entry(3, "run-c")),
+                ]),
+            },
+        )
+        .expect("the shared ledger");
+        worker.state.queue = vec![QueuedIssue::from_issue(&issue(1, &[]), None, None)];
+        worker.pruned.insert(3);
+        worker.persist_ledger().expect("the ledger");
+        let read = load_ledger(&state, &repo);
+        assert!(read.handled.contains_key("1"));
+        assert!(!read.handled.contains_key("3"));
+    }
+
+    #[test]
+    fn a_legacy_ledger_is_imported_once_for_matching_root() {
+        let (repo, state) = unit_root("legacy-ledger");
+        let legacy = state.join("orchestrator");
+        std::fs::create_dir_all(&legacy).expect("legacy state");
+        std::fs::write(
+            legacy.join("state.json"),
+            json!({"root": repo.display().to_string()}).to_string(),
+        )
+        .expect("legacy state");
+        std::fs::write(
+            legacy.join("ledger.json"),
+            json!({
+                "version": 1,
+                "handled": {
+                    "7": {"number": 7, "runId": "legacy-run", "at": ""}
+                }
+            })
+            .to_string(),
+        )
+        .expect("legacy ledger");
+        let migrated = migrate_legacy_ledger(&state, &repo, "2026-02-02T00:00:00.000Z")
+            .expect("the migrated entries");
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0].number, 7);
+        assert_eq!(migrated[0].run_id, "legacy-run");
+        assert_eq!(migrated[0].at, "2026-02-02T00:00:00.000Z");
+        // The worker's startup write is what makes the import one-time.
+        let mut imported = Ledger::empty();
+        for entry in migrated {
+            imported.handled.insert(entry.number.to_string(), entry);
+        }
+        write_ledger(&state, &repo, &imported).expect("the target ledger");
+        assert!(migrate_legacy_ledger(&state, &repo, "2026-02-02T00:00:00.000Z").is_none());
+        assert!(load_ledger(&state, &repo).handled.contains_key("7"));
+    }
+
+    #[test]
+    fn a_legacy_ledger_from_another_root_is_ignored() {
+        let (repo, state) = unit_root("legacy-mismatch");
+        let legacy = state.join("orchestrator");
+        std::fs::create_dir_all(&legacy).expect("legacy state");
+        std::fs::write(
+            legacy.join("state.json"),
+            json!({"root": "/somewhere/else"}).to_string(),
+        )
+        .expect("legacy state");
+        std::fs::write(
+            legacy.join("ledger.json"),
+            json!({"version": 1, "handled": {"7": {"number": 7, "runId": "r", "at": "x"}}})
+                .to_string(),
+        )
+        .expect("legacy ledger");
+        assert!(migrate_legacy_ledger(&state, &repo, "2026-02-02T00:00:00.000Z").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_open_goal_issue_fails_with_a_cooldown() {
+        let (repo, state) = unit_root("dropped-open");
+        let mut worker = worker(&repo, &state);
+        attach(&mut worker, issue(5, &[GOAL_LABEL]));
+        worker.issue_state_override = Some(Arc::new(|_| {
+            Box::pin(async { IssueStateResult::State { closed: false } })
+        }));
+        worker.apply_issues(vec![issue(99, &[])]).await;
+        assert!(worker.active.is_empty());
+        assert!(worker.state.cooldowns.contains_key("5"));
+        assert!(worker
+            .state
+            .last_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("the tracker dropped issue #5 from its open list while it is still open"));
+        let run = worker.runs.first().expect("the run");
+        assert_eq!(run.run.status, "failed");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_closed_goal_issue_settles_without_a_failure() {
+        let (repo, state) = unit_root("dropped-closed");
+        let mut worker = worker(&repo, &state);
+        attach(&mut worker, issue(6, &[GOAL_LABEL]));
+        worker.issue_state_override = Some(Arc::new(|_| {
+            Box::pin(async { IssueStateResult::State { closed: true } })
+        }));
+        worker.apply_issues(Vec::new()).await;
+        assert!(worker.active.is_empty());
+        assert!(!worker.state.cooldowns.contains_key("6"));
+        assert_eq!(worker.state.last_exit_code, None);
+        assert!(worker.dismissed.contains_key(&6));
+        let run = worker.runs.first().expect("the run");
+        assert_eq!(run.run.status, "stopped");
+    }
+
+    #[tokio::test]
+    async fn abandon_refuses_a_run_that_closed_its_own_issue() {
+        let (repo, state) = unit_root("abandon-self-closed");
+        let mut worker = worker(&repo, &state);
+        attach(&mut worker, issue(8, &[GOAL_LABEL]));
+        let run_id = worker.active[&8].run_id.clone();
+        record_closed_by_run(&state, &repo, 8, &run_id);
+        worker.apply(IssuesCommand::Abandon { number: 8 }).await;
+        assert!(worker.active.contains_key(&8));
+        assert!(!worker.dismissed.contains_key(&8));
+    }
+
+    #[tokio::test]
+    async fn abandon_verifies_a_goal_issue_before_settling() {
+        let (repo, state) = unit_root("abandon-goal");
+        let mut worker = worker(&repo, &state);
+        attach(&mut worker, issue(9, &[GOAL_LABEL]));
+        worker.issue_state_override = Some(Arc::new(|_| {
+            Box::pin(async { IssueStateResult::State { closed: true } })
+        }));
+        worker.apply(IssuesCommand::Abandon { number: 9 }).await;
+        assert!(worker.active.is_empty());
+        assert!(worker.dismissed.contains_key(&9));
+        let run = worker.runs.first().expect("the run");
+        assert_eq!(run.run.status, "stopped");
+    }
+
+    #[tokio::test]
+    async fn a_dismissed_issue_is_not_queued_again() {
+        let (repo, state) = unit_root("abandon-dismissed");
+        let mut worker = worker(&repo, &state);
+        attach(&mut worker, issue(10, &[]));
+        worker.issue_state_override = Some(Arc::new(|_| {
+            Box::pin(async { IssueStateResult::State { closed: true } })
+        }));
+        worker.apply(IssuesCommand::Abandon { number: 10 }).await;
+        assert!(worker.dismissed.contains_key(&10));
+        let until = worker.dismissed[&10];
+        assert!(until > std::time::Instant::now());
     }
 }
 
