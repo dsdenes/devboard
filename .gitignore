@@ -37,3 +37,7 @@ dist/
 /.omp/skills/devboard-restful-api-implementation
 /.omp/skills/devboard-single-responsibility-principle
 /.omp/skills/devboard-ui-ux
+/.devboard
+/.omp/commands
+/.omp/extensions
+/.omp/mcp.json
