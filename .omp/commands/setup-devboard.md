@@ -3,22 +3,28 @@ description: Install or refresh the Devboard harness in this session's working d
 argument-hint: "[host path] [--port N]"
 ---
 
-Install Devboard for this session by running the launcher once from the host repository:
+Install Devboard for this session with the native release installer from the host repository:
 
 ```bash
-npx --yes @dsdenes/devboard@latest install $ARGUMENTS
+curl -fsSL https://github.com/dsdenes/devboard/releases/latest/download/devboard-installer.sh | sh
+devboard install $ARGUMENTS
 ```
 
-The launcher resolves the newest private harness release, installs it as a real npm prefix at
-`<host>/.devboard`, replaces any legacy harness symlinks in `.devboard`, `.omp/commands`, and
-`.omp/extensions` with real directories, copies the wrappers and `AGENTS.md`, records the three
-ignored paths, and leaves exactly one dashboard running from the installed package. It never
-symlinks a host to a canonical checkout.
+`devboard install` writes the host tree as real files: `.omp/commands`, `.omp/extensions`,
+`.omp/skills/devboard-*`, `.devboard/prompts`, `.devboard/extensions`, `.devboard/devboard.json`,
+the root `.gitignore` entries, and `AGENTS.md`. It never symlinks a host to a canonical checkout,
+is idempotent, preserves files the host tracks in git, and reports drift instead of overwriting
+them.
 
-A running dashboard checks for newer releases by itself and shows a reload control while the
-installed version differs from the loaded one. Do not start a second server, restart one by
-hand, or copy harness files into the host; use `npx @dsdenes/devboard update` to install a
-release without a restart, and the reload control to restart one.
+- With no `--port`, the install writes the tree and prints the `devboard serve` command. Start
+  exactly that one dashboard; do not start a second server, restart one by hand, or copy harness
+  files into the host.
+- With `--port N`, the install starts exactly one dashboard on `N` and replaces any previous
+  dashboard for the same host.
+- To install a newer release without a browser click, run `devboard update $ARGUMENTS`; it exits
+  0 and leaves one dashboard serving. A live dashboard also replaces itself from the installed
+  version through its own updater.
 
-Report the launcher's final `devboard:` line verbatim. On a nonzero exit, report its stderr and
-stop. Do not create, copy, or edit harness or host files yourself; the launcher owns the install.
+Report the installer's final `devboard:` line verbatim. On a nonzero exit, report its stderr and
+stop. Do not create, copy, or edit harness or host files yourself; `devboard install` owns the
+install.
