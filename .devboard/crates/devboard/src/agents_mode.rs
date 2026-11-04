@@ -3397,6 +3397,9 @@ struct RepoMutable {
     preview_starting: bool,
     starting: bool,
     starting_since: Option<i64>,
+    /// The pid the last Start spawned, while that worker is the one being
+    /// waited on. A live process proves the start; the lock proves attachment.
+    started_pid: Option<u32>,
     stop_requested: bool,
     start_error: Option<String>,
     notice: Option<String>,
@@ -3469,6 +3472,7 @@ impl RepoFamily {
                 preview_starting: false,
                 starting: false,
                 starting_since: None,
+                started_pid: None,
                 stop_requested: false,
                 start_error: None,
                 notice: None,
@@ -3695,7 +3699,7 @@ impl RepoFamily {
             if !owners.is_empty() {
                 mutable.start_error = None;
             }
-            if mutable.starting {
+            if mutable.starting && !mutable.started_pid.is_some_and(pid_alive) {
                 if let Some(since) = mutable.starting_since {
                     if now - since > START_PROOF_MS {
                         mutable.starting = false;
@@ -4209,6 +4213,7 @@ impl RepoFamily {
             let mut mutable = self.mutable.lock().expect("family state");
             mutable.starting = true;
             mutable.starting_since = None;
+            mutable.started_pid = None;
             mutable.start_error = None;
             mutable.notice = None;
         }
@@ -4293,11 +4298,13 @@ impl RepoFamily {
         let spawn = self.spawn.lock().map(|slot| slot.clone()).ok();
         let pid = spawn.and_then(|spawn| spawn(&argv, environment));
         match pid {
-            Some(_) => {
+            Some(spawn_pid) => {
                 // The proof clock starts when the worker exists, never at the
                 // request: a forge preflight that reads the repository and
-                // ensures its labels outlasts the five second window.
+                // ensures its labels outlasts the five second window. The live
+                // pid is the proof; the lock only proves attachment.
                 let mut mutable = self.mutable.lock().expect("family state");
+                mutable.started_pid = Some(spawn_pid);
                 mutable.starting_since = Some((self.now)());
                 AgentResult::ok()
             }

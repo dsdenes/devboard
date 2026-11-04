@@ -142,12 +142,18 @@ fn dead_code_state(_root: &Path, repo: &Path, state_dir: &Path, pid: u32) -> Val
 }
 
 fn write_lock(repo: &Path, state_dir: &Path, pid: u32) {
+    write_lock_started_at(repo, state_dir, pid, &devboard::journal::now_iso8601());
+}
+
+/// A lock whose `startedAt` matches when the stand-in worker actually started:
+/// the publish may land late, but the process it names did not.
+fn write_lock_started_at(repo: &Path, state_dir: &Path, pid: u32, started_at: &str) {
     let path = repo.join(".devboard/.tmp/dead-code/lock");
     write_json(
         &path,
         json!({
             "pid": pid,
-            "startedAt": devboard::journal::now_iso8601(),
+            "startedAt": started_at,
             "repo": repo.to_string_lossy(),
             "stateDir": state_dir.to_string_lossy(),
             "harnessVersion": null,
@@ -559,6 +565,8 @@ async fn a_slow_preflight_never_trips_the_state_publication_proof() {
     let state = root.join("state");
     let child_pid = Arc::new(Mutex::new(None::<u32>));
     let child_for_spawn = Arc::clone(&child_pid);
+    let started_at = Arc::new(Mutex::new(String::new()));
+    let started_at_for_spawn = Arc::clone(&started_at);
     // The spawn answers at once and publishes no lock: a real worker's first
     // tick writes it, and the proof must measure that publish, not the click.
     devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
@@ -572,6 +580,7 @@ async fn a_slow_preflight_never_trips_the_state_publication_proof() {
         let pid = child.id();
         std::mem::forget(child);
         *child_for_spawn.lock().expect("a pid") = Some(pid);
+        *started_at_for_spawn.lock().expect("a start time") = devboard::journal::now_iso8601();
         Some(pid)
     });
     // A forge preflight reads the repository and ensures its labels; on its own
@@ -603,9 +612,28 @@ async fn a_slow_preflight_never_trips_the_state_publication_proof() {
     assert_eq!(pending["lifecycle"], "starting", "{all:?}");
     assert_eq!(pending["error"], Value::Null, "{all:?}");
 
-    // The worker's own first publish then proves the start.
+    // A live worker that has not published yet is not a failure, however long
+    // the publish takes: the process is the proof, the lock only proves
+    // attachment.
     let pid = child_pid.lock().expect("a pid").expect("a pid");
-    write_lock(&repo, &state, pid);
+    tokio::time::sleep(std::time::Duration::from_millis(5_400)).await;
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let quiet = agent(&all, "dead-code").expect("a dead-code snapshot");
+    assert_eq!(quiet["lifecycle"], "starting", "{all:?}");
+    assert_eq!(quiet["error"], Value::Null, "{all:?}");
+
+    // The worker's own first publish then proves the start.
+    let started = started_at.lock().expect("a start time").clone();
+    write_lock_started_at(&repo, &state, pid, &started);
     let (conn, mut inbox) = connection_for(&app).await;
     devboard::agents_mode::handle(
         &app,
@@ -623,6 +651,63 @@ async fn a_slow_preflight_never_trips_the_state_publication_proof() {
     unsafe {
         libc::kill(pid as i32, libc::SIGKILL);
     }
+}
+
+#[tokio::test]
+async fn a_worker_that_dies_without_publishing_reports_the_proof_failure() {
+    let root = scratch("dead-worker");
+    let app = app_at(&root);
+    let dead_pid = Arc::new(Mutex::new(None::<u32>));
+    let dead_for_spawn = Arc::clone(&dead_pid);
+    // The spawn answers with a pid that has already exited and never writes a
+    // lock: the honest failure the proof exists for.
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let mut child = std::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in worker");
+        let pid = child.id();
+        let _ = child.wait();
+        *dead_for_spawn.lock().expect("a pid") = Some(pid);
+        Some(pid)
+    });
+    let preflight: devboard::agents_mode::PreflightCallback =
+        Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+    devboard::agents_mode::set_preflight(&app, "dead-code", preflight);
+    devboard::agents_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    assert!(find(&all, "error").is_empty(), "start refused: {all:?}");
+
+    tokio::time::sleep(std::time::Duration::from_millis(5_400)).await;
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let failed = agent(&all, "dead-code").expect("a dead-code snapshot");
+    assert_eq!(
+        failed["error"],
+        json!("the Dead Code worker did not publish its state within 5 seconds"),
+        "{all:?}"
+    );
+    assert_eq!(failed["lifecycle"], "stopped", "{all:?}");
 }
 
 #[tokio::test]
