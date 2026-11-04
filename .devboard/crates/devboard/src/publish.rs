@@ -27,6 +27,7 @@ pub use crate::forge::Environment;
 use crate::gitea::{self, GiteaTarget};
 use crate::jsjson;
 use crate::release::{MANIFEST_ASSET, RELEASE_REPOSITORY};
+use crate::release_suite;
 
 /// The workflow cargo-dist generates for the GitHub release host.
 pub const RELEASE_WORKFLOW: &str = "release.yml";
@@ -612,6 +613,11 @@ pub struct PublishArgs {
     pub sleeper: Option<Arc<dyn Sleeper>>,
     /// Every dashboard to consider; discovered from `/proc` when absent.
     pub instances: Option<Vec<DashboardInstance>>,
+    /// The workspace whose release suite must pass before tagging; `None`
+    /// skips the gate.
+    pub release_suite_dir: Option<PathBuf>,
+    /// The release-suite gate; the production gate when absent.
+    pub release_suite: Option<Arc<dyn release_suite::ReleaseSuiteGate>>,
     /// Receives each progress line; stderr when absent.
     pub log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 }
@@ -622,6 +628,7 @@ impl PublishArgs {
     pub fn new(repo_dir: impl Into<PathBuf>) -> Self {
         let repo_dir = repo_dir.into();
         let harness_root = repo_dir.join(".devboard");
+        let release_suite_dir = Some(harness_root.clone());
         Self {
             repo_dir,
             harness_root,
@@ -634,6 +641,8 @@ impl PublishArgs {
             clock: None,
             sleeper: None,
             instances: None,
+            release_suite_dir,
+            release_suite: None,
             log: None,
         }
     }
@@ -1465,6 +1474,50 @@ struct VerifiedAssets {
 // ---------------------------------------------------------------------------
 // Publish
 
+/// Runs the release suite and refuses a publish the suite does not pass. The
+/// gate runs before the version bump, the tag, the push, and the workflow
+/// dispatch, so a failing suite can never ship a release.
+async fn run_release_suite_gate(
+    args: &PublishArgs,
+    log: &Arc<dyn Fn(&str) + Send + Sync>,
+    runner: Arc<dyn CommandRunner>,
+    suite_dir: PathBuf,
+) -> Result<()> {
+    let gate: Arc<dyn release_suite::ReleaseSuiteGate> = args
+        .release_suite
+        .clone()
+        .unwrap_or_else(|| Arc::new(release_suite::ProcessSuiteGate));
+    (log)("release suite: the workspace suite runs before the tag");
+    let report = gate
+        .run(release_suite::ReleaseSuiteOptions {
+            dir: suite_dir,
+            forge_dir: Some(args.repo_dir.clone()),
+            environment: args.environment.clone(),
+            runner: Some(runner),
+            transport: None,
+            log: Some(log.clone()),
+            max_attempts: release_suite::RELEASE_SUITE_MAX_ATTEMPTS,
+            consecutive_failures: release_suite::RELEASE_SUITE_CONSECUTIVE_FAILURES,
+            file_issues: true,
+            attempt_timeout: Duration::from_secs(3_600),
+        })
+        .await?;
+    if report.code != 0 {
+        let reason = report
+            .error_line
+            .clone()
+            .or_else(|| report.structural.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "the suite still failed after {} attempt(s)",
+                    report.attempts
+                )
+            });
+        bail!("the release suite did not pass; nothing was tagged or dispatched: {reason}");
+    }
+    Ok(())
+}
+
 /// Publishes one release from the integration checkout.
 ///
 /// The returned report is `Ok` once the release itself shipped. Source-refresh
@@ -1604,6 +1657,10 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             "{tag} already names {}; verifying the existing release",
             short_sha(&published_head)
         ));
+        // Nothing is pushed or dispatched before the suite passes.
+        if let Some(suite_dir) = args.release_suite_dir.clone() {
+            run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
+        }
         published_head.clone()
     } else {
         // The tag must name this commit or contain it. A tag made for an
@@ -1669,6 +1726,12 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         }
 
         (log)(&format!("{tag} at {}", short_sha(&published_head)));
+
+        // Nothing is bumped, tagged, pushed, or dispatched before the suite
+        // passes.
+        if let Some(suite_dir) = args.release_suite_dir.clone() {
+            run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
+        }
 
         let manifest_path = args.harness_root.join("Cargo.toml");
         // An earlier attempt of this same version committed the bump and then
