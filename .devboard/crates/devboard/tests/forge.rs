@@ -1570,30 +1570,31 @@ async fn list_labelled_reads_only_the_matching_issues() {
             "labels": labels,
         })
     };
-    let server = StubServer::start(move |request| {
-        match (request.method.as_str(), request.path.as_str()) {
-            ("GET", "/api/v1/repos/owner/name") => json_response(json!({
-                "permissions": {"pull": true, "push": true, "admin": false},
-            })),
-            ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
-            ("GET", "/api/v1/repos/owner/name/issues") => {
-                if request.query.contains("page=1") {
-                    json_response(json!([
-                        labelled(7, json!([{"name": "dead-code"}])),
-                        labelled(8, json!([{"name": "scout"}])),
-                        labelled(9, json!([])),
-                    ]))
-                } else {
-                    json_response(json!([]))
+    let server =
+        StubServer::start(
+            move |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                    "permissions": {"pull": true, "push": true, "admin": false},
+                })),
+                ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+                ("GET", "/api/v1/repos/owner/name/issues") => {
+                    if request.query.contains("page=1") {
+                        json_response(json!([
+                            labelled(7, json!([{"name": "dead-code"}])),
+                            labelled(8, json!([{"name": "scout"}])),
+                            labelled(9, json!([])),
+                        ]))
+                    } else {
+                        json_response(json!([]))
+                    }
                 }
-            }
-            ("GET", "/api/v1/repos/owner/name/issues/7") => {
-                json_response(labelled(7, json!([{"name": "dead-code"}])))
-            }
-            _ => text_response(500, "unexpected"),
-        }
-    })
-    .await;
+                ("GET", "/api/v1/repos/owner/name/issues/7") => {
+                    json_response(labelled(7, json!([{"name": "dead-code"}])))
+                }
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
     let repo = git_repo("list-labelled", "git@localhost:owner/name.git");
     let client = ForgeIssuesClient::new(ForgeIssuesOptions {
         repo_dir: repo,

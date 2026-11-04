@@ -56,8 +56,7 @@ pub struct PreflightBudget {
 impl PreflightBudget {
     pub fn new(timeout_ms: u64) -> Self {
         Self {
-            deadline: tokio::time::Instant::now()
-                + Duration::from_millis(timeout_ms.max(1)),
+            deadline: tokio::time::Instant::now() + Duration::from_millis(timeout_ms.max(1)),
         }
     }
 
@@ -66,9 +65,7 @@ impl PreflightBudget {
         let left = self
             .deadline
             .saturating_duration_since(tokio::time::Instant::now());
-        u64::try_from(left.as_millis())
-            .unwrap_or(u64::MAX)
-            .max(1)
+        u64::try_from(left.as_millis()).unwrap_or(u64::MAX).max(1)
     }
 
     /// Runs one step under the remaining budget, naming the step on expiry.
@@ -2817,7 +2814,9 @@ fn default_spawn(argv: &[String], environment: HashMap<String, String>) -> Optio
 
 fn harness_argv(family: &str, flags: &[(&str, &Path)]) -> Vec<String> {
     let mut argv = vec![
-        crate::relaunch::own_program().to_string_lossy().into_owned(),
+        crate::relaunch::own_program()
+            .to_string_lossy()
+            .into_owned(),
         "worker".to_string(),
         family.to_string(),
     ];
@@ -4283,17 +4282,15 @@ impl RepoFamily {
                 Some(callback) => callback(request),
                 None => Box::pin(self.real_preflight(budget)),
             };
-        let result = match crate::deadline::within_deadline(
-            pending,
-            timeout_ms + PREFLIGHT_BUDGET_GRACE_MS,
-        )
-        .await
-        {
-            Some(result) => result,
-            None => Err(format!(
+        let result =
+            match crate::deadline::within_deadline(pending, timeout_ms + PREFLIGHT_BUDGET_GRACE_MS)
+                .await
+            {
+                Some(result) => result,
+                None => Err(format!(
                 "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
             )),
-        };
+            };
         match result {
             Ok(_) => self.spawn_worker().await,
             Err(message) => {
@@ -4532,9 +4529,7 @@ impl RepoFamily {
             RepoFlavor::Design => self.preflight_design(budget).await,
             RepoFlavor::DeadCode => self.preflight_dead_code(budget).await,
             RepoFlavor::ApiStandards => self.preflight_api_standards(budget).await,
-            RepoFlavor::SingleResponsibility => {
-                self.preflight_single_responsibility(budget).await
-            }
+            RepoFlavor::SingleResponsibility => self.preflight_single_responsibility(budget).await,
             RepoFlavor::ConsistentNaming => self.preflight_consistent_naming(budget).await,
         }
     }
@@ -4930,7 +4925,10 @@ impl RepoFamily {
         Ok(remote.project)
     }
 
-    async fn preflight_single_responsibility(&self, budget: PreflightBudget) -> Result<String, String> {
+    async fn preflight_single_responsibility(
+        &self,
+        budget: PreflightBudget,
+    ) -> Result<String, String> {
         if let Some(problem) = root_problem(&self.repo_dir) {
             return Err(problem);
         }

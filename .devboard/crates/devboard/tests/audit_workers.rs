@@ -1407,10 +1407,7 @@ fn a_tracked_entry_point_is_not_excluded_by_an_ignore_rule() {
         .args(["check-ignore", "-q", "--", ".devboard/src/module.rs"])
         .status()
         .expect("git runs");
-    assert!(
-        !status.success(),
-        "git itself never ignores a tracked path"
-    );
+    assert!(!status.success(), "git itself never ignores a tracked path");
 
     let entry = dead::pick_entry_point(&fixture.repo, "dead-code", Some("seed"))
         .expect("the tracked entry point is eligible");
