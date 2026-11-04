@@ -21,7 +21,7 @@ process.env.PLAYWRIGHT_BROWSERS_PATH ??= path.join(
  */
 export default defineConfig({
   testDir: import.meta.dirname,
-  testMatch: "*.spec.ts",
+  testMatch: "*.e2e.ts",
   fullyParallel: false,
   workers: 1,
   retries: 0,

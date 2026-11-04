@@ -22,7 +22,7 @@
   const pending = createCommandBusy({
     label: () => label,
     evidence: () => evidence(),
-    scope: scope === undefined ? undefined : () => scope(),
+    scope: () => scope?.(),
   });
 
   function activate(): void {
