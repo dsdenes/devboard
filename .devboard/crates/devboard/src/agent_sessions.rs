@@ -376,6 +376,7 @@ fn first_user_line(records: &[Value]) -> String {
     String::new()
 }
 
+#[derive(Clone)]
 struct ParsedSession {
     session: Option<Value>,
     malformed: usize,
@@ -735,6 +736,42 @@ struct SessionHeader {
     started_at: String,
 }
 
+/// How often this process parsed a header or a transcript. A repeat read of an
+/// unchanged file changes neither count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionCacheStats {
+    pub headers_parsed: u64,
+    pub transcripts_parsed: u64,
+}
+
+#[derive(Default)]
+struct SessionCache {
+    headers: std::collections::HashMap<PathBuf, (i64, Option<SessionHeader>)>,
+    transcripts: std::collections::HashMap<PathBuf, (i64, ParsedSession)>,
+    stats: SessionCacheStats,
+}
+
+fn session_cache() -> &'static std::sync::Mutex<SessionCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<SessionCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(SessionCache::default()))
+}
+
+/// The parse counters, for a test that proves an unchanged transcript is not
+/// read twice.
+pub fn session_cache_stats() -> SessionCacheStats {
+    session_cache()
+        .lock()
+        .map(|cache| cache.stats)
+        .unwrap_or_default()
+}
+
+/// Empties the cache and its counters.
+pub fn reset_session_cache() {
+    if let Ok(mut cache) = session_cache().lock() {
+        *cache = SessionCache::default();
+    }
+}
+
 fn byte_order(left: &str, right: &str) -> std::cmp::Ordering {
     left.cmp(right)
 }
@@ -837,21 +874,49 @@ fn parse_session_header_text(text: &str) -> Option<SessionHeader> {
 
 fn read_header(meta: &SessionFileMeta) -> Option<SessionHeader> {
     use std::io::Read;
+    if let Ok(cache) = session_cache().lock() {
+        if let Some((mtime, header)) = cache.headers.get(&meta.path) {
+            if *mtime == meta.mtime_ms {
+                return header.clone();
+            }
+        }
+    }
     let mut file = std::fs::File::open(&meta.path).ok()?;
     let mut buffer = vec![0u8; HEADER_SCAN_BYTES as usize];
     let read = file.read(&mut buffer).ok()?;
     let text = String::from_utf8_lossy(&buffer[..read]);
-    parse_session_header_text(&text)
+    let header = parse_session_header_text(&text);
+    if let Ok(mut cache) = session_cache().lock() {
+        cache
+            .headers
+            .insert(meta.path.clone(), (meta.mtime_ms, header.clone()));
+        cache.stats.headers_parsed += 1;
+    }
+    header
 }
 
 fn read_transcript(meta: &SessionFileMeta, state_dir: &Path, repo_dir: &Path) -> ParsedSession {
-    match std::fs::read_to_string(&meta.path) {
+    if let Ok(cache) = session_cache().lock() {
+        if let Some((mtime, parsed)) = cache.transcripts.get(&meta.path) {
+            if *mtime == meta.mtime_ms {
+                return parsed.clone();
+            }
+        }
+    }
+    let parsed = match std::fs::read_to_string(&meta.path) {
         Ok(text) => parse_session_transcript(&text, &meta.path, state_dir, repo_dir),
         Err(_) => ParsedSession {
             session: None,
             malformed: 0,
         },
+    };
+    if let Ok(mut cache) = session_cache().lock() {
+        cache
+            .transcripts
+            .insert(meta.path.clone(), (meta.mtime_ms, parsed.clone()));
+        cache.stats.transcripts_parsed += 1;
     }
+    parsed
 }
 
 struct SelectedTranscript {

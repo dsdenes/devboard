@@ -1,0 +1,18 @@
+{
+  "name": "feedback-refused-host",
+  "method": "POST",
+  "path": "/feedback",
+  "requestHeaders": {
+    "authorization": "Bearer contract-token",
+    "host": "evil.test",
+    "accept-encoding": "identity"
+  },
+  "requestBody": "{}",
+  "status": 403,
+  "headers": {
+    "cache-control": "no-store",
+    "content-type": "application/problem+json",
+    "vary": "Accept-Encoding"
+  },
+  "body": "{\"type\":\"about:blank\",\"title\":\"Forbidden\",\"status\":403,\"detail\":\"The request host is not served by this dashboard.\"}"
+}

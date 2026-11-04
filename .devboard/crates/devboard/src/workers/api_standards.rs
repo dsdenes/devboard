@@ -64,7 +64,7 @@ pub const API_STANDARDS_LABEL: &str = "api-standards";
 pub const LABEL_COLOR: &str = "0e8a16";
 pub const LABEL_DESCRIPTION: &str = "HTTP API deviation from the project REST standard";
 
-pub const DEFAULT_API_SOURCE_DIRECTORY: &str = ".devboard/server";
+pub const DEFAULT_API_SOURCE_DIRECTORY: &str = ".devboard/crates/devboard/src";
 pub const DEFAULT_SKILL_DIRECTORY: &str = ".omp/skills/devboard-restful-api-implementation";
 pub const SKILL_FILE: &str = "SKILL.md";
 pub const RULES_FILE: &str = "references/zalando-rest-rules.md";
@@ -1203,8 +1203,16 @@ fn line_count(text: &str) -> usize {
     }
 }
 
+/// True for a file the audit reads: a TypeScript module or a Rust module,
+/// never a test file.
 fn is_api_source(name: &str) -> bool {
-    name.ends_with(".ts") && !name.ends_with(".test.ts") && !name.ends_with(".spec.ts")
+    let test_file = name.ends_with(".test.ts")
+        || name.ends_with(".spec.ts")
+        || name.ends_with("_test.rs")
+        || name.ends_with("_tests.rs")
+        || name.ends_with(".test.rs")
+        || name.ends_with(".spec.rs");
+    !test_file && (name.ends_with(".ts") || name.ends_with(".rs"))
 }
 
 fn walk_sources(directory: &Path, found: &mut Vec<PathBuf>) {
@@ -1221,7 +1229,7 @@ fn walk_sources(directory: &Path, found: &mut Vec<PathBuf>) {
             continue;
         };
         if metadata.is_dir() {
-            if name == "fixtures" || name == "node_modules" {
+            if matches!(name, "fixtures" | "node_modules" | "tests" | "target") {
                 continue;
             }
             walk_sources(&child, found);
@@ -1276,18 +1284,124 @@ fn methods_in(branch: &str) -> Vec<String> {
 }
 
 fn route_path_of(line: &str) -> Option<String> {
-    static ROUTE_PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    static TYPESCRIPT_ROUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r#"\.pathname\s*===\s*["'`]([^"'`]+)["'`]"#)
             .expect("a route-path pattern")
     });
-    ROUTE_PATH
+    static RUST_ROUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"^\s*"(/[^"]*)"\s*=>"#).expect("a Rust route arm")
+    });
+    TYPESCRIPT_ROUTE
         .captures(line)
+        .or_else(|| RUST_ROUTE.captures(line))
         .and_then(|capture| capture.get(1))
         .map(|value| value.as_str().to_string())
 }
 
-/// Every `pathname === "<path>"` branch is a route; the branch body up to the
-/// next route names its methods.
+/// The methods a Rust branch allows. A `method != Method::X` comparison in a
+/// guard names an allowed method; a bare `Method::X` reference names one too.
+fn rust_methods_in(branch: &str) -> Vec<String> {
+    static EXCLUSION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"!\s*=\s*Method::([A-Z]+)"#).expect("a Rust method guard")
+    });
+    static MENTION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"Method::([A-Z]+)"#).expect("a Rust method reference")
+    });
+    let mut methods: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let excluded: Vec<String> = EXCLUSION
+        .captures_iter(branch)
+        .filter_map(|capture| capture.get(1))
+        .map(|value| value.as_str().to_string())
+        .collect();
+    let source = if excluded.is_empty() {
+        MENTION
+            .captures_iter(branch)
+            .filter_map(|capture| capture.get(1))
+            .map(|value| value.as_str().to_string())
+            .collect()
+    } else {
+        excluded
+    };
+    for method in source {
+        if seen.insert(method.clone()) {
+            methods.push(method);
+        }
+    }
+    methods
+}
+
+/// One handler function's body, found by its signature in any audited source.
+fn function_body(sources: &[AuditFile], name: &str) -> Option<String> {
+    let signature = format!("fn {name}(");
+    for source in sources {
+        let lines: Vec<&str> = source.text.split('\n').collect();
+        for (index, line) in lines.iter().enumerate() {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                continue;
+            }
+            let trimmed = line.trim_end();
+            let matches = trimmed.starts_with(&signature)
+                || trimmed.starts_with(&format!("pub {signature}"))
+                || trimmed.starts_with(&format!("async {signature}"))
+                || trimmed.starts_with(&format!("pub async {signature}"));
+            if !matches {
+                continue;
+            }
+            let end = lines[index..]
+                .iter()
+                .position(|candidate| *candidate == "}")
+                .map(|offset| index + offset + 1)
+                .unwrap_or((index + 120).min(lines.len()));
+            return Some(lines[index..end].join("\n"));
+        }
+    }
+    None
+}
+
+/// The methods a route arm allows, including the handlers it calls.
+fn rust_route_methods(branch: &str, sources: &[AuditFile]) -> Vec<String> {
+    static CALL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"\b([a-z_][a-z0-9_]*)\s*\("#).expect("a Rust call")
+    });
+    let mut methods = rust_methods_in(branch);
+    let mut seen: HashSet<String> = methods.iter().cloned().collect();
+    if methods.is_empty() {
+        for capture in CALL.captures_iter(branch) {
+            let Some(name) = capture.get(1) else { continue };
+            let name = name.as_str();
+            if matches!(name, "if" | "match" | "for" | "while" | "loop" | "fn") {
+                continue;
+            }
+            let Some(body) = function_body(sources, name) else {
+                continue;
+            };
+            for method in rust_methods_in(&body) {
+                if seen.insert(method.clone()) {
+                    methods.push(method);
+                }
+            }
+        }
+    }
+    methods
+}
+
+/// The line after one Rust match arm's closing brace, at the arm's indent.
+fn rust_arm_end(lines: &[&str], start: usize) -> usize {
+    let indent: String = lines[start]
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .collect();
+    for (offset, line) in lines.iter().enumerate().skip(start + 1) {
+        if line.starts_with(&indent) && line.trim() == "}" {
+            return offset + 1;
+        }
+    }
+    (start + 60).min(lines.len())
+}
+
+/// Every `pathname === "<path>"` branch and every Rust `"/path" =>` arm is a
+/// route; the branch body up to the next route names its methods.
 pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
     let mut routes = Vec::new();
     let mut serves_files = false;
@@ -1295,6 +1409,7 @@ pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
         if source.text.contains("Bun.file(")
             || source.text.contains("createReadStream(")
             || source.text.contains("serveStatic(")
+            || source.text.contains("static_relative_path(")
         {
             serves_files = true;
         }
@@ -1310,18 +1425,28 @@ pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
             }
         }
         for (position, start) in starts.iter().enumerate() {
-            let end = starts
-                .get(position + 1)
-                .copied()
-                .unwrap_or((*start + 60).min(lines.len()));
+            let rust_arm = lines[*start].trim_start().starts_with('"');
+            let end = if rust_arm {
+                rust_arm_end(&lines, *start)
+            } else {
+                starts
+                    .get(position + 1)
+                    .copied()
+                    .unwrap_or((*start + 60).min(lines.len()))
+            };
             let Some(path) = route_path_of(lines[*start]) else {
                 continue;
             };
             let branch = lines[*start..end.min(*start + 60)].join("\n");
             let kind = if path == "/ws" { "upgrade" } else { "endpoint" };
+            let methods = if rust_arm {
+                rust_route_methods(&branch, sources)
+            } else {
+                methods_in(&branch)
+            };
             routes.push(RouteEntry {
                 path,
-                methods: methods_in(&branch),
+                methods,
                 kind: kind.to_string(),
                 source: source.path.clone(),
                 line: start + 1,
@@ -2476,6 +2601,17 @@ impl Worker {
     pub fn is_stopped(&self) -> bool {
         let inner = lock(&self.inner);
         inner.stopping || !inner.state.enabled
+    }
+
+    /// True when no cycle is starting, running, or settling.
+    pub fn is_settled(&self) -> bool {
+        let inner = lock(&self.inner);
+        !inner.starting && !inner.cycling && inner.active.is_none()
+    }
+
+    /// The bound one cycle may take before its peer is closed.
+    pub fn cycle_timeout_ms(&self) -> u64 {
+        self.timeout_ms
     }
 
     fn now(&self) -> i64 {
@@ -3716,12 +3852,13 @@ pub fn is_forge_rate_limited(text: &str) -> bool {
 /* CLI                                                                       */
 /* ------------------------------------------------------------------------ */
 
-fn parse_arguments(invocation: &WorkerInvocation) -> Option<(PathBuf, PathBuf, Option<u64>)> {
+fn parse_arguments(invocation: &WorkerInvocation) -> Option<(PathBuf, PathBuf, Option<u64>, bool)> {
     let repo_dir =
         (!invocation.repo_dir.as_os_str().is_empty()).then(|| invocation.repo_dir.clone())?;
     let state_dir =
         (!invocation.state_dir.as_os_str().is_empty()).then(|| invocation.state_dir.clone())?;
     let mut sync_ms = None;
+    let mut once = false;
     let mut index = 0;
     while index < invocation.rest.len() {
         let argument = invocation.rest[index].as_str();
@@ -3735,15 +3872,22 @@ fn parse_arguments(invocation: &WorkerInvocation) -> Option<(PathBuf, PathBuf, O
             }
             continue;
         }
+        if argument == "--once" {
+            once = true;
+            index += 1;
+            continue;
+        }
         index += 1;
     }
-    Some((absolute(&repo_dir), absolute(&state_dir), sync_ms))
+    Some((absolute(&repo_dir), absolute(&state_dir), sync_ms, once))
 }
 
 /// Runs one API Standards worker until Stop or drain.
 pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
-    let Some((repo_dir, state_dir, sync_ms)) = parse_arguments(invocation) else {
-        eprintln!("usage: worker.ts --repo <checkout> --state-dir <dir> [--sync <ms>]");
+    let Some((repo_dir, state_dir, sync_ms, once)) = parse_arguments(invocation) else {
+        eprintln!(
+            "usage: devboard worker api-standards --repo <checkout> --state-dir <dir> [--sync <ms>] [--once]"
+        );
         std::process::exit(2);
     };
     let environment = crate::forge::process_environment();
@@ -3777,11 +3921,23 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
     let mut options = WorkerOptions::new(&repo_dir, &state_dir);
     options.harness_version = harness_version;
     options.sync_ms = sync_ms;
-    options.manual_cycles = false;
+    options.manual_cycles = once;
     options.log = Some(Arc::new(|line: String| eprintln!("api-standards: {line}")));
     let worker = Worker::new(options);
     if !worker.start(&repository) {
         std::process::exit(0);
+    }
+    if once {
+        // One cycle, settled before the process exits: `request.json` and the
+        // filed issues are on disk when `--once` returns.
+        worker.run_once().await;
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(worker.cycle_timeout_ms() + 10_000);
+        while !worker.is_settled() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        worker.shutdown().await;
+        return Ok(());
     }
     let mut ticker = tokio::time::interval(Duration::from_millis(worker.tick_ms()));
     loop {
@@ -4080,4 +4236,35 @@ async fn preflight_gitea(
         }
     }
     Ok(repository.to_string())
+}
+
+#[cfg(test)]
+mod length_tests {
+    use super::*;
+
+    fn title_problem(title: &str) -> String {
+        let rules: Vec<RestRule> = Vec::new();
+        let sources: HashMap<String, String> = HashMap::new();
+        let context = FindingContext {
+            rules: &rules,
+            sources: &sources,
+        };
+        match validate_finding(&json!({"title": title}), &context) {
+            FindingProblem::Problem { detail, .. } => detail,
+            FindingProblem::Ok(_) => String::new(),
+        }
+    }
+
+    #[test]
+    fn the_finding_title_cap_counts_code_points() {
+        let emoji_at_cap = "😀".repeat(TITLE_MAX);
+        assert_eq!(emoji_at_cap.chars().count(), TITLE_MAX);
+        assert!(!title_problem(&emoji_at_cap).contains("title must be"));
+        let emoji_over = "😀".repeat(TITLE_MAX + 1);
+        assert!(title_problem(&emoji_over).contains("title must be"));
+        let plain_at_cap = "a".repeat(TITLE_MAX);
+        assert!(!title_problem(&plain_at_cap).contains("title must be"));
+        let plain_over = "a".repeat(TITLE_MAX + 1);
+        assert!(title_problem(&plain_over).contains("title must be"));
+    }
 }

@@ -6147,7 +6147,9 @@ fn worker_arguments(args: &[String]) -> Option<(PathBuf, PathBuf, Option<u64>)> 
 /// Runs the detached Issues worker for exactly one repository.
 pub async fn run_worker(args: &[String]) -> anyhow::Result<()> {
     let Some((repo_dir, state_dir, interval)) = worker_arguments(args) else {
-        anyhow::bail!("usage: worker issues --repo <checkout> --state-dir <dir> [--interval <ms>]");
+        anyhow::bail!(
+            "usage: devboard worker issues --repo <checkout> --state-dir <dir> [--interval <ms>]"
+        );
     };
     let environment = crate::forge::process_environment();
     let repository = crate::forge::origin_repository_with(&repo_dir, &environment);

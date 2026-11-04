@@ -499,7 +499,7 @@ fn catalog() -> Vec<Value> {
         tool(
             "verification_run",
             "Run a verification check",
-            "Runs one allowlisted check from `.devboard/package.json` with a 900-second timeout and at most 16 KiB of captured output. The check's complete output is written to a log unique to that invocation and that path is returned as `log`; when the run settles the same output is published to `<stateDir>/<check>.log`.",
+            "Runs one allowlisted check from `.devboard/package.json` with a 900-second timeout and at most 16 KiB of captured output. The Rust checks `rust:fmt`, `rust:clippy`, and `rust:test` run their exact cargo argv from the harness directory. The check's complete output is written to a log unique to that invocation and that path is returned as `log`; when the run settles the same output is published to `<stateDir>/<check>.log`.",
             object_schema(
                 json!({
                     "check": string_schema(),
@@ -512,6 +512,12 @@ fn catalog() -> Vec<Value> {
                 "bun run check",
                 "bun run build",
                 "bunx tsc --noEmit",
+                "cargo fmt --check --all",
+                "cargo clippy --workspace --all-targets -- -D warnings",
+                "cargo test --workspace",
+                "rust:fmt",
+                "rust:clippy",
+                "rust:test",
             ]),
         ),
         tool(

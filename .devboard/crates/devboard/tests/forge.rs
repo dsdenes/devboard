@@ -1628,3 +1628,85 @@ async fn forge_issue_client_reads_closes_and_caches_its_credential() {
         r#"{"state":"closed"}"#
     );
 }
+
+// ---------------------------------------------------------------------------
+// Shipped resolution against a real checkout
+
+fn git_in(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-c")
+        .arg("user.name=Forge Fixture")
+        .arg("-c")
+        .arg("user.email=fixture@example.test")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn commit_naming(repo: &std::path::Path, message: &str) -> String {
+    std::fs::write(repo.join("file.txt"), message.as_bytes()).unwrap();
+    git_in(repo, &["add", "file.txt"]);
+    git_in(repo, &["commit", "-q", "-m", message]);
+    git_in(repo, &["rev-parse", "HEAD"])
+}
+
+#[tokio::test]
+async fn a_non_release_tag_and_an_unlanded_commit_never_settle_an_issue() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("forge-shipped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
+    git_in(&repo, &["init", "-q"]);
+    let released = commit_naming(&repo, "feat: first");
+    git_in(&repo, &["tag", "v1.0.0"]);
+    let candidate = commit_naming(&repo, "feat: candidate");
+    git_in(&repo, &["tag", "v1.5.0-rc.1"]);
+    // A merge commit keeps the released tag reachable from HEAD.
+    git_in(&repo, &["merge", "-q", "--no-ff", "-m", "merge", &released]);
+    let landed = commit_naming(&repo, "fix: the issue (#2)");
+
+    let client = RepositoryGitHub::new(RepositoryGitHubOptions {
+        repository: "acme/fixture".to_string(),
+        repo_dir: repo.clone(),
+        run: Arc::new(|_argv, _environment| {
+            Box::pin(async { panic!("a local containment read never asks gh") })
+        }),
+        environment: Environment::new(),
+    });
+    let releases = vec![GitHubRelease {
+        tag: "v1.0.0".to_string(),
+        published_at: "2024-01-01T00:00:00Z".to_string(),
+    }];
+    assert!(
+        client.landed_commits(2).contains(&landed),
+        "the landed commit is read from HEAD"
+    );
+    let contained = client
+        .containing_release_tags(&landed, &releases)
+        .await
+        .expect("a local containment read");
+    assert!(
+        contained.is_empty(),
+        "only the published release tag counts, not the rc tag: {contained:?}"
+    );
+    let unlanded = client
+        .containing_release_tags(&candidate, &releases)
+        .await
+        .expect("a local containment read");
+    assert!(
+        unlanded.is_empty(),
+        "a commit outside every published release never settles: {unlanded:?}"
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}

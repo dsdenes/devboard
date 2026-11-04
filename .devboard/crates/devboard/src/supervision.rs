@@ -655,6 +655,9 @@ fn matches_record(record: &SupervisionRecord) -> bool {
 /// by design, so "reparented" proves nothing for one. Its own record, written
 /// by the helper, is the proof that ends it once its owner is gone.
 pub fn is_supervised_surface(cmdline: &str) -> bool {
+    if rust_harness_command(cmdline, &["serve", "worker", "acp-stub"]) {
+        return true;
+    }
     if !cmdline.contains(".devboard") {
         return false;
     }
@@ -664,6 +667,24 @@ pub fn is_supervised_surface(cmdline: &str) -> bool {
             || fixture_surface(token)
             || ends_with_segment(token, "worker.ts")
     })
+}
+
+/// True when the command line runs the Rust harness binary with one of
+/// `subcommands` as its first argument: `devboard serve`, `devboard worker
+/// <family>`, `devboard worker run-owner`, `devboard acp-stub`.
+fn rust_harness_command(cmdline: &str, subcommands: &[&str]) -> bool {
+    let tokens: Vec<&str> = cmdline.split_whitespace().collect();
+    for (index, token) in tokens.iter().enumerate() {
+        if !ends_with_segment(token, "devboard") && !ends_with_segment(token, "devboard.exe") {
+            continue;
+        }
+        if let Some(subcommand) = tokens.get(index + 1) {
+            if subcommands.contains(subcommand) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// True when `needle` occurs in `text` at the start or after a `/`, which is
@@ -682,7 +703,7 @@ fn contains_with_boundary(text: &str, needle: &str) -> bool {
 
 /// True when a whitespace-free token ends with exactly `segment` as a whole
 /// path segment, which is the TypeScript end anchor `(?:\s|$)`.
-fn ends_with_segment(token: &str, segment: &str) -> bool {
+pub fn ends_with_segment(token: &str, segment: &str) -> bool {
     match token.strip_suffix(segment) {
         Some(prefix) => prefix.is_empty() || prefix.ends_with('/'),
         None => false,
@@ -729,6 +750,9 @@ fn verify_script_token(token: &str) -> bool {
 /// never a candidate; the job runner's own subreaper is not one, so a job's
 /// orphaned grandchildren stay candidates.
 fn is_harness_supervisor(cmdline: &str) -> bool {
+    if rust_harness_command(cmdline, &["serve", "worker"]) {
+        return true;
+    }
     let tokens: Vec<&str> = cmdline.split_whitespace().collect();
     for (index, token) in tokens.iter().enumerate() {
         if ends_with_segment(token, "server/index.ts")
@@ -1244,6 +1268,51 @@ where
     }
 }
 
+/// Ends every live harness descendant of `owner`: a `devboard worker`, a
+/// `devboard acp-stub`, or an `omp acp` peer. The pass sends `SIGTERM`, waits
+/// up to `timeout_ms`, and kills whatever still runs.
+pub async fn terminate_harness_descendants(owner: u32, timeout_ms: u64) -> Vec<u32> {
+    #[cfg(unix)]
+    {
+        let targets: Vec<u32> = process_table()
+            .into_iter()
+            .filter(|process| {
+                process.pid != owner
+                    && process.ancestors.contains(&owner)
+                    && is_harness_descendant_surface(&process.cmdline)
+            })
+            .map(|process| process.pid)
+            .collect();
+        for pid in &targets {
+            unsafe {
+                libc::kill(*pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while std::time::Instant::now() < deadline && targets.iter().any(|pid| live_process(*pid)) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        for pid in targets.iter().filter(|pid| live_process(**pid)) {
+            unsafe {
+                libc::kill(*pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+        targets
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (owner, timeout_ms);
+        Vec::new()
+    }
+}
+
+/// True for a process the harness spawns as a child surface.
+fn is_harness_descendant_surface(cmdline: &str) -> bool {
+    rust_harness_command(cmdline, &["worker", "acp-stub"])
+        || cmdline.contains("omp acp")
+        || cmdline.contains(".devboard/server/fixtures/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1317,7 +1386,32 @@ mod tests {
             "/usr/bin/bun /w/.devboard/server/fixtures/stub-agent.ts"
         ));
         assert!(is_supervised_surface("/usr/bin/bun /w/.devboard/worker.ts"));
+        assert!(is_supervised_surface(
+            "/home/ds/devboard/.devboard/bin/devboard worker watchdog --repo /w"
+        ));
+        assert!(is_supervised_surface(
+            "/home/ds/devboard/.devboard/bin/devboard worker run-owner"
+        ));
+        assert!(is_supervised_surface(
+            "/home/ds/devboard/.devboard/bin/devboard worker goal-draft"
+        ));
+        assert!(is_supervised_surface(
+            "/home/ds/devboard/.devboard/bin/devboard acp-stub --repo /w"
+        ));
+        assert!(is_supervised_surface(
+            "/home/ds/devboard/.devboard/bin/devboard serve --port 8080"
+        ));
         assert!(!is_supervised_surface("/usr/bin/bun /w/server/index.ts"));
+        assert!(!is_supervised_surface("/usr/bin/devboard version"));
+        assert!(is_harness_supervisor(
+            "/home/ds/devboard/.devboard/bin/devboard serve --port 8080"
+        ));
+        assert!(is_harness_supervisor(
+            "/home/ds/devboard/.devboard/bin/devboard worker watchdog"
+        ));
+        assert!(!is_harness_supervisor(
+            "/home/ds/devboard/.devboard/bin/devboard acp-stub"
+        ));
         assert!(is_harness_supervisor(
             "/usr/bin/bun /w/.devboard/server/index.ts"
         ));

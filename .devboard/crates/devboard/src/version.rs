@@ -109,6 +109,21 @@ pub fn is_harness_source_checkout(repo_dir: &Path) -> bool {
     is_harness_source(&prefix) && !installed_harness_dir(&prefix).join("devboard").exists()
 }
 
+/// True when `harness_dir` is exactly the source harness of `repo_dir`. A
+/// dashboard serving a repository through some other harness never refreshes
+/// itself from that repository's source tree.
+pub fn is_own_checkout_harness(repo_dir: &Path, harness_dir: &Path) -> bool {
+    let expected = repo_dir.join(".devboard");
+    let expected = std::fs::canonicalize(&expected).unwrap_or(expected);
+    let running = std::fs::canonicalize(harness_dir).unwrap_or_else(|_| harness_dir.to_path_buf());
+    expected == running && is_harness_source_checkout(repo_dir)
+}
+
+/// True when this process runs the source harness of the repository it serves.
+pub fn serves_own_harness(repo_dir: &Path) -> bool {
+    is_own_checkout_harness(repo_dir, &running_harness_dir())
+}
+
 /// The harness directory this process belongs to.
 ///
 /// An installed binary resolves it from its own executable: the installed

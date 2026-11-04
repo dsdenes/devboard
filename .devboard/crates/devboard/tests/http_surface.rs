@@ -565,16 +565,35 @@ async fn mutating_endpoints_refuse_a_misdirected_host() {
         headers.insert(HOST, HeaderValue::from_static("evil.test"));
         let (status, _headers, body) =
             send(method, &format!("{}{path}", instance.base), headers).await;
-        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "{path}");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
         let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
-        assert_eq!(parsed["title"], "Misdirected Request");
+        assert_eq!(parsed["title"], "Forbidden");
+        assert_eq!(
+            parsed["detail"],
+            "The request host is not served by this dashboard."
+        );
     }
+    // The socket keeps its 421 for the same misdirected Host.
+    let mut headers = bearer(&instance.token);
+    headers.insert(HOST, HeaderValue::from_static("evil.test"));
+    let (status, _headers, _body) =
+        send(Method::GET, &format!("{}/ws", instance.base), headers).await;
+    assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
 }
 
 #[tokio::test]
 async fn an_unreadable_static_file_answers_500_and_journals() {
     let instance = start("static-unreadable").await;
-    let path = instance.root.join("static/assets/secret.txt");
+    // The running server reads its immutable snapshot, never the source
+    // bundle; the unreadable file therefore belongs in the snapshot.
+    let serving = instance.root.join("state").join("serving");
+    let snapshot = std::fs::read_dir(&serving)
+        .expect("the serving directory")
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .expect("a snapshot")
+        .path();
+    let path = snapshot.join("assets/secret.txt");
     std::fs::write(&path, "secret\n").expect("a file");
     #[cfg(unix)]
     {
@@ -615,6 +634,46 @@ async fn an_unreadable_static_file_answers_500_and_journals() {
         use std::os::unix::fs::PermissionsExt as _;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
     }
+}
+
+#[tokio::test]
+async fn a_static_directory_is_served_from_an_immutable_snapshot() {
+    let instance = start("static-snapshot").await;
+    let (status, _, first) = send(
+        Method::GET,
+        &format!("{}/", instance.base),
+        bearer(&instance.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let serving = instance.root.join("state").join("serving");
+    let snapshot = std::fs::read_dir(&serving)
+        .expect("the serving directory")
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .expect("a snapshot")
+        .path();
+    let name = snapshot
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a snapshot name");
+    assert!(
+        name.starts_with(&std::process::id().to_string()),
+        "{name} names the running pid"
+    );
+    std::fs::write(
+        instance.root.join("static/index.html"),
+        "<!doctype html><title>replaced</title>\n",
+    )
+    .expect("a replaced bundle");
+    let (status, _, second) = send(
+        Method::GET,
+        &format!("{}/", instance.base),
+        bearer(&instance.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first, second, "a rebuild never changes the served bytes");
 }
 
 #[tokio::test]

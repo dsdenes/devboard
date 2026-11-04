@@ -17,6 +17,13 @@ fn host(label: &str) -> PathBuf {
         .join(format!("doctor-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join(".devboard")).unwrap();
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["init", "--quiet"])
+        .status()
+        .unwrap();
+    assert!(status.success(), "the fixture host is a git checkout");
     devboard::cli_install::install(Some(&root), false).unwrap();
     root
 }
@@ -25,12 +32,43 @@ fn failures(report: &devboard::cli_install::DoctorReport) -> Vec<String> {
     report.failures.clone()
 }
 
+/// A local release a doctor run can read and verify without a network.
+fn local_release(root: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let release = root.join("release");
+    std::fs::create_dir_all(&release).unwrap();
+    let target = devboard::release::current_target().expect("a platform target");
+    let bytes = b"the platform artifact";
+    let digest: String = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    std::fs::write(release.join(format!("devboard-{target}.tar.xz")), bytes).unwrap();
+    std::fs::write(
+        release.join("devboard-manifest.json"),
+        serde_json::to_string(&serde_json::json!({
+            "version": "0.1.0",
+            "tag": "v0.1.0",
+            "assets": [{
+                "target": target,
+                "url": format!("https://github.test/devboard-{target}.tar.xz"),
+                "sha256": digest,
+            }],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    release
+}
+
 #[test]
 fn a_healthy_host_passes() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let root = host("healthy");
-    std::env::remove_var("DEVBOARD_RELEASE_URL");
+    let release = local_release(&root);
+    std::env::set_var("DEVBOARD_RELEASE_URL", &release);
     let report = devboard::cli_install::doctor(Some(&root)).unwrap();
+    std::env::remove_var("DEVBOARD_RELEASE_URL");
     assert!(report.ok(), "{:?}", report.failures);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -122,6 +160,85 @@ fn a_recorded_update_failure_names_the_update_check() {
         failures(&report)
             .iter()
             .any(|failure| failure.starts_with("update: checksum mismatch")),
+        "{:?}",
+        report.failures
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_tracked_package_file_differs_as_drift_not_failure() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let root = host("tracked-drift");
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["init", "--quiet"])
+        .status()
+        .unwrap();
+    let file = root.join(".omp/commands/setup-devboard.md");
+    std::fs::write(&file, b"host edit\n").unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["add", "-f", ".omp/commands/setup-devboard.md"])
+        .status()
+        .unwrap();
+    let report = devboard::cli_install::doctor(Some(&root)).unwrap();
+    assert!(
+        report
+            .drift
+            .iter()
+            .any(|entry| entry.contains(".omp/commands/setup-devboard.md")),
+        "{:?}",
+        report.drift
+    );
+    assert!(
+        !report
+            .failures
+            .iter()
+            .any(|failure| failure.contains("setup-devboard.md")),
+        "{:?}",
+        report.failures
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_missing_omp_or_git_names_its_check() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let root = host("missing-tools");
+    let path = std::env::var("PATH").unwrap_or_default();
+    std::env::set_var("PATH", "/nonexistent-devboard-doctor");
+    let report = devboard::cli_install::doctor(Some(&root)).unwrap();
+    std::env::set_var("PATH", &path);
+    let failures = failures(&report).join("\n");
+    assert!(failures.contains("omp --version"), "{failures}");
+    assert!(failures.contains("git:"), "{failures}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_local_release_artifact_is_downloaded_and_its_digest_checked() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let root = host("release-artifact");
+    let release = local_release(&root);
+    let target = devboard::release::current_target().expect("a platform target");
+    std::env::set_var("DEVBOARD_RELEASE_URL", &release);
+    let report = devboard::cli_install::doctor(Some(&root)).unwrap();
+    assert!(report.ok(), "{:?}", report.failures);
+
+    std::fs::write(
+        release.join(format!("devboard-{target}.tar.xz")),
+        b"tampered",
+    )
+    .unwrap();
+    let report = devboard::cli_install::doctor(Some(&root)).unwrap();
+    std::env::remove_var("DEVBOARD_RELEASE_URL");
+    assert!(
+        failures(&report)
+            .iter()
+            .any(|failure| failure.starts_with("release artifact:")),
         "{:?}",
         report.failures
     );

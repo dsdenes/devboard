@@ -2051,7 +2051,7 @@ version that tag just published.
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
 |`STATIC_DIR`|unset|Client directory to serve; unset serves the client embedded in the binary.|
-|`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
+|`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `devboard acp-stub` is a deterministic substitute for tests and local verification.|
 |`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
@@ -2354,9 +2354,10 @@ A cycle audits the HTTP surface the dashboard server exposes: every route the se
 currently `POST /feedback`, `/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
 HEAD` for every other method, `POST /goal-proposals`, the `/ws` upgrade
 with its refusal and method handling, and the static-file fallback, together with any route added
-later. The audit input carries every TypeScript file under `<REPO_DIR>/.devboard/server` that
-defines routing, request parsing, or responses (tests and fixtures excluded), so a route added to
-that directory appears in the next cycle with no engine change. The WebSocket messages carried
+later. The audit input carries every Rust module under
+`<REPO_DIR>/.devboard/crates/devboard/src` that defines routing, request parsing, or responses
+(test files and fixtures excluded), so a route added to that directory appears in the next cycle
+with no engine change. The WebSocket messages carried
 after an upgrade, the MCP tool contract, and the static asset contents are not audited.
 
 A finding is filed only when the HTTP surface violates a MUST- or SHOULD-level rule. MAY-level

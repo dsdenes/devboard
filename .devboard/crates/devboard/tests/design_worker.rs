@@ -14,9 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use devboard::workers::design::{
-    capacity_for, design_config, release_documents, versioned_control_directory,
+    capacity_for, design_config, preflight_design, release_documents, versioned_control_directory,
     versioned_lock_path, versioned_state_path, write_command, AuditSignal, AuditTurn,
-    DesignCommand, DesignForge, DesignForgeIssue, DesignLimits, DesignSyncState, DesignWorker,
+    DesignCommand, DesignConfig, DesignForge, DesignForgeIssue, DesignLimits,
+    DesignPreflightOptions, DesignPreflightResult, DesignSyncState, DesignWorker,
     DesignWorkerOptions, ForgeFuture, ForgeIssueState, ForgeRelease, ReleaseDocument,
     ReleaseFuture, ReleaseInput, ReleaseOk, ReleaseResult,
 };
@@ -782,6 +783,111 @@ fn the_fixture_configuration_is_the_default_design_layout() {
     assert_eq!(config.source_dir, ".devboard/client");
     assert_eq!(config.design_document, "DESIGN.md");
     assert_eq!(config.token_document, "design/tokens.json");
+}
+
+#[tokio::test]
+async fn design_preflight_needs_only_git_and_gh_and_keeps_its_refusals() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = scratch_root("preflight");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).expect("a fixture checkout");
+    git(&repo, &["init", "--quiet"]);
+    let write = |relative: &str, text: &str| {
+        let path = repo.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("a directory");
+        std::fs::write(path, text).expect("a file");
+    };
+    write(".devboard/client/index.html", "<!doctype html>\n");
+    write("DESIGN.md", "# Design\n");
+    write("design/tokens.json", "{}\n");
+
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("a bin directory");
+    let git_path = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .map(|directory| Path::new(directory).join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("git on the fixture PATH");
+    std::os::unix::fs::symlink(git_path, bin.join("git")).expect("a git link");
+    let gh = bin.join("gh");
+    std::fs::write(
+        &gh,
+        "#!/bin/sh\ncase \"$*\" in\n  *\"/labels/\"*) echo design ;;\n  *.permissions.push*) echo true ;;\n  *\"label create\"*) echo design ;;\n  *) echo \"\" ;;\nesac\n",
+    )
+    .expect("a gh stub");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    let mut environment = HashMap::new();
+    environment.insert("PATH".to_string(), bin.to_string_lossy().into_owned());
+
+    let options = |origin: Option<devboard::forge::ForgeRemote>| DesignPreflightOptions {
+        repo_dir: repo.clone(),
+        state_dir: repo.join(".devboard").join(".tmp"),
+        config: DesignConfig::default(),
+        environment: environment.clone(),
+        origin,
+    };
+    let github = devboard::forge::ForgeRemote {
+        forge: devboard::forge::Forge::GitHub,
+        host: "github.test".to_string(),
+        project: "acme/fixture".to_string(),
+        origin_url: None,
+    };
+    match preflight_design(options(Some(github.clone()))).await {
+        DesignPreflightResult::Ok { repository } => assert_eq!(repository, "acme/fixture"),
+        DesignPreflightResult::Refused { message } => panic!("refused: {message}"),
+    }
+
+    std::fs::remove_file(repo.join("design/tokens.json")).expect("remove");
+    match preflight_design(options(Some(github.clone()))).await {
+        DesignPreflightResult::Refused { message } => {
+            assert!(message.contains("design/tokens.json"), "{message}")
+        }
+        DesignPreflightResult::Ok { .. } => panic!("a missing token document is accepted"),
+    }
+    write("design/tokens.json", "{}\n");
+
+    std::fs::remove_file(repo.join("DESIGN.md")).expect("remove");
+    match preflight_design(options(Some(github.clone()))).await {
+        DesignPreflightResult::Refused { message } => {
+            assert!(message.contains("DESIGN.md"), "{message}")
+        }
+        DesignPreflightResult::Ok { .. } => panic!("a missing design document is accepted"),
+    }
+    write("DESIGN.md", "# Design\n");
+
+    std::fs::remove_file(repo.join(".devboard/client/index.html")).expect("remove");
+    match preflight_design(options(Some(github.clone()))).await {
+        DesignPreflightResult::Refused { message } => {
+            assert!(message.contains("index.html"), "{message}")
+        }
+        DesignPreflightResult::Ok { .. } => panic!("a missing client entry is accepted"),
+    }
+    write(".devboard/client/index.html", "<!doctype html>\n");
+
+    std::fs::remove_dir_all(repo.join(".devboard/client")).expect("remove");
+    match preflight_design(options(Some(github.clone()))).await {
+        DesignPreflightResult::Refused { message } => {
+            assert!(message.contains(".devboard/client"), "{message}")
+        }
+        DesignPreflightResult::Ok { .. } => panic!("a missing client is accepted"),
+    }
+    write(".devboard/client/index.html", "<!doctype html>\n");
+
+    let gitlab = devboard::forge::ForgeRemote {
+        forge: devboard::forge::Forge::GitLab,
+        host: "gitlab.test".to_string(),
+        project: "acme/fixture".to_string(),
+        origin_url: None,
+    };
+    match preflight_design(options(Some(gitlab))).await {
+        DesignPreflightResult::Refused { message } => {
+            assert!(message.contains("GitLab"), "{message}")
+        }
+        DesignPreflightResult::Ok { .. } => panic!("a GitLab origin is accepted"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

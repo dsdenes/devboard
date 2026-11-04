@@ -769,7 +769,40 @@ fn normalization_keeps_output_handling_out_of_the_family() {
         "git status"
     );
     assert!(mcp::is_trivial_command("bunx tsc"));
+    assert!(mcp::is_trivial_command("cargo fmt --check --all"));
+    assert!(mcp::is_trivial_command(
+        "cargo clippy --workspace --all-targets -- -D warnings"
+    ));
+    assert!(mcp::is_trivial_command("cargo test --workspace"));
     assert!(!mcp::is_trivial_command("bun run publish"));
+}
+
+#[test]
+fn a_cargo_test_evidence_row_produces_no_family() {
+    let fixture = Fixture::new("cargo-families");
+    write_transcript(
+        &fixture.state_dir,
+        &fixture.repo_dir,
+        "a1",
+        &[
+            ("cargo test --workspace", true),
+            (
+                "cargo clippy --workspace --all-targets -- -D warnings",
+                false,
+            ),
+            ("cargo fmt --check --all", false),
+        ],
+    );
+    let selection = select_sessions(&fixture.state_dir, &fixture.repo_dir, None, None);
+    assert_eq!(selection.sessions.len(), 1);
+    let families = build_families(
+        &selection.sessions,
+        &[],
+        mcp::parse_instant_millis(START_TEXT).expect("the window start"),
+        fixed_ms(),
+        &fixture.repo_dir,
+    );
+    assert!(families.families.is_empty(), "{:?}", families.families);
 }
 
 #[test]

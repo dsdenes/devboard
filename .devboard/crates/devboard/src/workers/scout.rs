@@ -4821,13 +4821,13 @@ impl SignalListener {
 /// Runs one cycle of this family's engine from the worker CLI.
 pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
     let repo_dir = if invocation.repo_dir.as_os_str().is_empty() {
-        eprintln!("usage: worker.ts --repo <checkout> --state-dir <dir> [--sync <ms>]");
+        eprintln!("usage: devboard worker scout --repo <checkout> --state-dir <dir> [--sync <ms>]");
         std::process::exit(2);
     } else {
         absolute(&invocation.repo_dir)
     };
     if invocation.state_dir.as_os_str().is_empty() {
-        eprintln!("usage: worker.ts --repo <checkout> --state-dir <dir> [--sync <ms>]");
+        eprintln!("usage: devboard worker scout --repo <checkout> --state-dir <dir> [--sync <ms>]");
         std::process::exit(2);
     }
     let state_dir = absolute(&invocation.state_dir);

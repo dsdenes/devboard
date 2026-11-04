@@ -63,6 +63,72 @@ fn a_dry_run_reports_and_a_real_pass_sweeps_with_retention_exceptions() {
 }
 
 #[test]
+fn complexity_and_worker_state_survive_every_sweep() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let directory = root("durable");
+    let state = directory.join("state");
+    let repo = directory.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let key = "0123456789abcdef01234567";
+    let ancient = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86_400);
+    let mut retained = Vec::new();
+    for name in [
+        "complexity",
+        "api-standards",
+        "dead-code",
+        "single-responsibility",
+        "consistent-naming",
+        "mcp-optimizer",
+        "release-train",
+    ] {
+        let file = state.join(name).join(key).join("2026-01-01.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"{}").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(ancient)
+            .unwrap();
+        retained.push(file);
+    }
+    let covered = [devboard::workers::watchdog::CoveredStateDir {
+        state_dir: state.clone(),
+        source: devboard::workers::watchdog::CleanupSource::Canonical,
+    }];
+    let dry = devboard::workers::watchdog::run_cleanup(
+        &repo,
+        1_800_000_000_000,
+        true,
+        &[],
+        Some(&covered),
+        None,
+    );
+    for file in &retained {
+        assert!(
+            !dry.roots[0]
+                .candidates
+                .iter()
+                .any(|candidate| &candidate.path == file),
+            "{} is a cleanup candidate",
+            file.display()
+        );
+    }
+    devboard::workers::watchdog::run_cleanup(
+        &repo,
+        1_800_000_000_000,
+        false,
+        &[],
+        Some(&covered),
+        None,
+    );
+    for file in &retained {
+        assert!(file.exists(), "{} was swept", file.display());
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
 fn uninstall_removes_the_legacy_unit_and_timer() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let directory = root("units");

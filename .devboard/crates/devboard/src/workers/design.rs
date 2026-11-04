@@ -4718,7 +4718,7 @@ pub async fn preflight_design(options: DesignPreflightOptions) -> DesignPrefligh
             remote.host
         ));
     }
-    for tool in ["git", "bun", "npm"] {
+    for tool in ["git"] {
         if crate::forge::find_on_path(tool, &environment).is_none() {
             return preflight_refused(format!("missing prerequisite: {tool} is not on PATH"));
         }
@@ -4879,7 +4879,9 @@ pub async fn preflight_design(options: DesignPreflightOptions) -> DesignPrefligh
 /// `devboard worker design --repo <checkout> --state-dir <dir> [--sync <ms>]`.
 pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
     if invocation.repo_dir.as_os_str().is_empty() || invocation.state_dir.as_os_str().is_empty() {
-        eprintln!("usage: worker design --repo <checkout> --state-dir <dir> [--sync <ms>]");
+        eprintln!(
+            "usage: devboard worker design --repo <checkout> --state-dir <dir> [--sync <ms>]"
+        );
         std::process::exit(2);
     }
     let repo_dir = resolve(&invocation.repo_dir);

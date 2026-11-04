@@ -126,3 +126,48 @@ async fn devboard_status_names_the_installed_manifest_directory() {
     );
     let _ = std::fs::remove_dir_all(&host);
 }
+
+#[test]
+fn only_the_served_checkout_own_harness_starts_source_refresh() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("own-harness-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let repo = root.join("repo");
+    let own = repo.join(".devboard");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(
+        own.join("devboard.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"0.0.0-source\"}\n",
+    )
+    .unwrap();
+    assert!(devboard::version::is_own_checkout_harness(&repo, &own));
+    assert!(devboard::version::is_harness_source_checkout(&repo));
+
+    let other = root.join("other/.devboard");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        other.join("devboard.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"0.0.0-source\"}\n",
+    )
+    .unwrap();
+    assert!(
+        !devboard::version::is_own_checkout_harness(&repo, &other),
+        "another harness never refreshes this checkout"
+    );
+
+    let installed = repo.join("installed/.devboard");
+    std::fs::create_dir_all(installed.join("bin")).unwrap();
+    std::fs::write(
+        installed.join("devboard.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"1.0.0\"}\n",
+    )
+    .unwrap();
+    std::fs::write(installed.join("bin/devboard"), b"binary").unwrap();
+    assert!(
+        !devboard::version::is_own_checkout_harness(&repo, &installed),
+        "an installed prefix is not a source checkout"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

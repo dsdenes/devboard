@@ -3250,7 +3250,9 @@ fn environment_millis(name: &str, minimum: u64) -> Option<u64> {
 /// Runs one Dead Code worker until Stop or drain.
 pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
     let Some((repo_dir, state_dir, sync_ms)) = parse_arguments(invocation) else {
-        eprintln!("usage: worker.ts --repo <checkout> --state-dir <dir> [--sync <ms>]");
+        eprintln!(
+            "usage: devboard worker dead-code --repo <checkout> --state-dir <dir> [--sync <ms>]"
+        );
         std::process::exit(2);
     };
     let environment = crate::forge::process_environment();

@@ -18,9 +18,9 @@ use axum::extract::State;
 use devboard::jsjson;
 use devboard::publish::{
     acquire_release_lock, commit_level, deliver_source_refresh, dist_digest, next_release_version,
-    parse_subject, publish, subject_rule, Clock, CommitRecord, DashboardInstance, PublishArgs,
-    ReleaseLevel, ReleaseLockOptions, Sleeper, SourceRefreshOptions, RELEASE_INSTALLERS,
-    RELEASE_TARGETS,
+    parse_subject, publish, subject_rule, verify_release_bundle, Clock, CommitRecord,
+    DashboardInstance, PublishArgs, ReleaseLevel, ReleaseLockOptions, Sleeper,
+    SourceRefreshOptions, RELEASE_INSTALLERS, RELEASE_TARGETS,
 };
 use devboard::release_suite::{
     BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport,
@@ -1775,4 +1775,105 @@ fn two_live_dashboards_render_one_inventory_row_each() {
     assert_eq!(inventory[1].installed.as_deref(), Some("2.0.0"));
     assert!(!inventory[1].stale);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+fn bundle_root(label: &str) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("publish-bundle-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("client")).unwrap();
+    std::fs::write(root.join("client/App.svelte"), "<script></script>\n").unwrap();
+    std::fs::create_dir_all(root.join("dist/assets")).unwrap();
+    std::fs::write(
+        root.join("dist/index.html"),
+        "<!doctype html><script src=\"/assets/app.js\"></script>\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("dist/assets/app.js"), "console.log(1);\n").unwrap();
+    root
+}
+
+#[test]
+fn the_bundle_preflight_refuses_every_damaged_input() {
+    let root = bundle_root("refusals");
+    verify_release_bundle(&root).expect("a fresh bundle passes");
+
+    // A source newer than the bundle.
+    std::thread::sleep(Duration::from_millis(10));
+    std::fs::write(root.join("client/Row.svelte"), "<p></p>\n").unwrap();
+    let error = verify_release_bundle(&root).expect_err("a stale bundle is refused");
+    assert!(
+        error.to_string().contains("older than its sources"),
+        "{error}"
+    );
+    std::fs::remove_file(root.join("client/Row.svelte")).unwrap();
+
+    // An index reference with no file behind it.
+    std::fs::write(
+        root.join("dist/index.html"),
+        "<!doctype html><script src=\"/assets/missing.js\"></script>\n",
+    )
+    .unwrap();
+    let error = verify_release_bundle(&root).expect_err("a missing asset is refused");
+    assert!(error.to_string().contains("/assets/missing.js"), "{error}");
+    std::fs::write(
+        root.join("dist/index.html"),
+        "<!doctype html><script src=\"/assets/app.js\"></script>\n",
+    )
+    .unwrap();
+
+    // A staged manifest with no checksum, then a wrong one.
+    let manifest = serde_json::json!({
+        "version": "1.2.3",
+        "tag": "v1.2.3",
+        "assets": [],
+    });
+    let bytes = serde_json::to_vec(&manifest).unwrap();
+    std::fs::write(root.join("devboard-manifest.json"), &bytes).unwrap();
+    let error = verify_release_bundle(&root).expect_err("a missing checksum is refused");
+    assert!(
+        error.to_string().contains("devboard-manifest.json.sha256"),
+        "{error}"
+    );
+    std::fs::write(
+        root.join("devboard-manifest.json.sha256"),
+        "0000000000000000000000000000000000000000000000000000000000000000  devboard-manifest.json\n",
+    )
+    .unwrap();
+    let error = verify_release_bundle(&root).expect_err("a wrong checksum is refused");
+    assert!(error.to_string().contains("does not match"), "{error}");
+    let digest = bundle_sha256_hex(&bytes);
+    std::fs::write(
+        root.join("devboard-manifest.json.sha256"),
+        format!("{digest}  devboard-manifest.json\n"),
+    )
+    .unwrap();
+
+    // A manifest whose version and tag disagree.
+    let mismatched = serde_json::json!({
+        "version": "1.2.3",
+        "tag": "v9.9.9",
+        "assets": [],
+    });
+    let bytes = serde_json::to_vec(&mismatched).unwrap();
+    std::fs::write(root.join("devboard-manifest.json"), &bytes).unwrap();
+    let digest = bundle_sha256_hex(&bytes);
+    std::fs::write(
+        root.join("devboard-manifest.json.sha256"),
+        format!("{digest}  devboard-manifest.json\n"),
+    )
+    .unwrap();
+    let error = verify_release_bundle(&root).expect_err("a version/tag mismatch is refused");
+    assert!(
+        error.to_string().contains("differs from its tag"),
+        "{error}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn bundle_sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }

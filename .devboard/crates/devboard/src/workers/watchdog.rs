@@ -1427,6 +1427,73 @@ pub fn instances_from_processes(
     processes: &[ProcessSnapshot],
     self_pids: &HashSet<u32>,
 ) -> Vec<Instance> {
+    instances_from_processes_including(processes, self_pids, None)
+}
+
+/// One `devboard serve` command line's own arguments.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ServeArguments {
+    repo_dir: Option<String>,
+    port: Option<u32>,
+    state_dir: Option<String>,
+}
+
+/// The arguments of a `devboard serve` command line, or `None` when the
+/// process is not one.
+fn rust_serve_arguments(cmdline: &str) -> Option<ServeArguments> {
+    let tokens: Vec<&str> = cmdline.split_whitespace().collect();
+    let binary = tokens.iter().position(|token| {
+        crate::supervision::ends_with_segment(token, "devboard")
+            || crate::supervision::ends_with_segment(token, "devboard.exe")
+    })?;
+    if tokens.get(binary + 1) != Some(&"serve") {
+        return None;
+    }
+    let mut arguments = ServeArguments::default();
+    let mut index = binary + 2;
+    while index < tokens.len() {
+        match tokens[index] {
+            "--repo-dir" => {
+                arguments.repo_dir = tokens.get(index + 1).map(|value| value.to_string());
+                index += 2;
+            }
+            "--port" => {
+                arguments.port = tokens
+                    .get(index + 1)
+                    .and_then(|value| value.parse::<u32>().ok());
+                index += 2;
+            }
+            "--state-dir" => {
+                arguments.state_dir = tokens.get(index + 1).map(|value| value.to_string());
+                index += 2;
+            }
+            "--adrs-dir" | "--static-dir" | "--token" => index += 2,
+            _ => index += 1,
+        }
+    }
+    Some(arguments)
+}
+
+/// The harness tree a `devboard` program path sits in: `<prefix>/bin/devboard`
+/// or `<checkout>/.devboard/target/<profile>/devboard`.
+fn program_harness(cmdline: &str) -> Option<PathBuf> {
+    let program = cmdline.split_whitespace().next()?;
+    let path = Path::new(program);
+    for ancestor in path.ancestors() {
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some(".devboard") {
+            return real_path(ancestor);
+        }
+    }
+    None
+}
+
+/// Builds instances from a process table, keeping a verification fixture when
+/// it serves `include_repo` exactly.
+pub fn instances_from_processes_including(
+    processes: &[ProcessSnapshot],
+    self_pids: &HashSet<u32>,
+    include_repo: Option<&Path>,
+) -> Vec<Instance> {
     let mut ordered: Vec<&ProcessSnapshot> = processes.iter().collect();
     ordered.sort_by_key(|process| process.pid);
     let mut seen = HashSet::new();
@@ -1435,44 +1502,64 @@ pub fn instances_from_processes(
         if self_pids.contains(&process.pid) {
             continue;
         }
-        if process
-            .ancestors
-            .iter()
-            .any(|ancestor| self_pids.contains(ancestor))
-        {
+        // Only a dashboard counts; a worker descendant never matches the
+        // `serve` command line, so a dashboard started by this process (a test
+        // launcher, a replacement) is still discovered.
+        let serve = rust_serve_arguments(&process.cmdline);
+        if serve.is_none() && !process.cmdline.contains("server/index.ts") {
             continue;
         }
-        if !process.cmdline.contains("server/index.ts") {
-            continue;
-        }
-        let Some(repo_dir) = process.env.get("REPO_DIR") else {
+        let serve = serve.unwrap_or_default();
+        let Some(repo_dir) = serve
+            .repo_dir
+            .or_else(|| process.env.get("REPO_DIR").cloned())
+        else {
             continue;
         };
-        let Some(port) = process.env.get("PORT").and_then(|value| number(value)) else {
-            continue;
+        let port = match serve.port {
+            Some(port) => port as f64,
+            None => {
+                let Some(port) = process.env.get("PORT").and_then(|value| number(value)) else {
+                    continue;
+                };
+                port
+            }
         };
-        if port.fract() != 0.0 || port <= 0.0 {
-            continue;
-        }
-        if is_verification_fixture(repo_dir, &process.env)
+        let included =
+            include_repo.is_some_and(|root| real_path(root) == real_path(Path::new(&repo_dir)));
+        if is_verification_fixture(&repo_dir, &process.env)
             && process.env.get(WATCHDOG_FIXTURE_ENV).map(String::as_str) != Some("1")
+            && !included
         {
             continue;
         }
-        let Some(harness) = serving_harness(process) else {
+        let Some(harness) = program_harness(&process.cmdline).or_else(|| serving_harness(process))
+        else {
             continue;
         };
         let key = format!("{}\u{0}{}", repo_dir, port as u32);
         if !seen.insert(key) {
             continue;
         }
-        let state_dir = process
-            .env
-            .get("STATE_DIR")
+        let state_dir = serve
+            .state_dir
             .map(PathBuf::from)
+            .or_else(|| process.env.get("STATE_DIR").map(PathBuf::from))
             .unwrap_or_else(|| harness.join(".tmp"));
-        let journal = journal_file(&state_dir, Path::new(repo_dir));
-        let legacy = legacy_log_path(&harness, repo_dir);
+        // A dashboard started with an ephemeral port records the bound one in
+        // its own marker; the command line still names `0`.
+        let port = if port == 0.0 {
+            marker_port(&state_dir, process.pid)
+                .map(f64::from)
+                .unwrap_or(0.0)
+        } else {
+            port
+        };
+        if port.fract() != 0.0 || port <= 0.0 {
+            continue;
+        }
+        let journal = journal_file(&state_dir, Path::new(&repo_dir));
+        let legacy = legacy_log_path(&harness, &repo_dir);
         instances.push(Instance {
             pid: process.pid,
             port: port as u32,
@@ -1499,10 +1586,31 @@ pub fn instances_from_processes(
     instances
 }
 
+/// The port one dashboard's own version marker records for `pid`.
+fn marker_port(state_dir: &Path, pid: u32) -> Option<u16> {
+    let text = std::fs::read_to_string(state_dir.join("version.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    if value.get("pid").and_then(Value::as_u64) != Some(pid as u64) {
+        return None;
+    }
+    value
+        .get("port")
+        .and_then(Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port > 0)
+}
+
 /// Every dashboard on the machine, read from `/proc`.
 pub fn discover_instances() -> Vec<Instance> {
     let self_pids = HashSet::from([std::process::id()]);
     instances_from_processes(&process_table(), &self_pids)
+}
+
+/// Every dashboard on the machine, plus the one serving `root` even when that
+/// repository is a verification fixture.
+pub fn discover_instances_for(root: &Path) -> Vec<Instance> {
+    let self_pids = HashSet::from([std::process::id()]);
+    instances_from_processes_including(&process_table(), &self_pids, Some(root))
 }
 
 // ---------------------------------------------------------------------------
@@ -1934,6 +2042,27 @@ fn is_protected(directory: &Path, path: &Path, watchdog_run_dir: Option<&Path>) 
         if let Some(first) = rest.components().next() {
             if is_repo_state_directory_name(&first.as_os_str().to_string_lossy()) {
                 return true;
+            }
+        }
+    }
+    // The daily complexity snapshots and every background worker's own state
+    // are durable per-repository records; no age makes them cleanup
+    // candidates.
+    for durable in [
+        "complexity",
+        "api-standards",
+        "dead-code",
+        "single-responsibility",
+        "consistent-naming",
+        "mcp-optimizer",
+        "release-train",
+    ] {
+        let root = directory.join(durable);
+        if let Ok(rest) = path.strip_prefix(&root) {
+            if let Some(first) = rest.components().next() {
+                if is_repo_state_directory_name(&first.as_os_str().to_string_lossy()) {
+                    return true;
+                }
             }
         }
     }
@@ -3951,21 +4080,50 @@ fn append_line(path: &Path, text: &str) -> io::Result<()> {
     file.write_all(text.as_bytes())
 }
 
-/// The production deduplication turn: one `omp acp` peer, given the shipped
-/// watchdog-dedup prompt and the run directory its MCP tools append to.
+/// The production deduplication turn: one `omp acp` peer per enabled
+/// OpenCode Go subscription, given the shipped watchdog-dedup prompt and the
+/// run directory its MCP tools append to. A key the model provider rejects
+/// rotates to the next subscription; the peer never inherits
+/// `PI_CODING_AGENT_DIR`.
 pub struct AcpDedup {
     pub command: String,
     pub repo_dir: PathBuf,
     pub environment: HashMap<String, String>,
     pub timeout_ms: u64,
+    /// The dashboard STATE_DIR holding `providers/`; `None` uses the base
+    /// environment as one attempt.
+    pub provider_state_dir: Option<PathBuf>,
 }
 
 const WATCHDOG_DEDUP_PROMPT: &str = include_str!("../../../../prompts/watchdog-dedup.md");
 
-impl DedupRunner for AcpDedup {
-    fn run(&self, request: &DedupRequest, run_dir: &Path) -> Result<String, String> {
-        std::fs::create_dir_all(run_dir)
-            .map_err(|error| format!("the dedup run directory: {error}"))?;
+/// The default peer deadline: four minutes.
+pub const DEDUP_PEER_TIMEOUT_MS: u64 = 240_000;
+
+/// A provider message that means the key was rejected.
+fn credential_rejection(text: &str) -> bool {
+    static PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)invalid credential|invalid api key|unauthorized|\b401\b")
+            .expect("a credential regex")
+    });
+    PATTERN.is_match(text)
+}
+
+impl AcpDedup {
+    /// The environment one attempt runs with. A generated agent directory is
+    /// always this turn's own; nothing inherited is kept.
+    fn attempt_environment(&self, base: &HashMap<String, String>) -> HashMap<String, String> {
+        let mut environment = base.clone();
+        environment.remove("PI_CODING_AGENT_DIR");
+        environment
+    }
+
+    fn run_with_environment(
+        &self,
+        environment: HashMap<String, String>,
+        request: &DedupRequest,
+        run_dir: &Path,
+    ) -> Result<String, String> {
         let candidates = request.to_json()["candidates"].clone();
         let prompt = WATCHDOG_DEDUP_PROMPT
             .replace("{{repository}}", &request.repository)
@@ -3974,7 +4132,7 @@ impl DedupRunner for AcpDedup {
                 &serde_json::to_string_pretty(&candidates).unwrap_or_default(),
             )
             .replace("{{filingRoom}}", &request.filing_room.to_string());
-        let mut environment = self.environment.clone();
+        let mut environment = environment;
         environment.insert(
             "DEVBOARD_DEDUP_RUN_DIR".to_string(),
             run_dir.to_string_lossy().into_owned(),
@@ -4004,17 +4162,39 @@ impl DedupRunner for AcpDedup {
                 let deadline =
                     tokio::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
                 let mut text = String::new();
+                let mut stderr = String::new();
                 loop {
                     tokio::select! {
                         result = &mut future => {
                             connection.close();
-                            return result
-                                .map(|_| text)
-                                .map_err(|error| error.to_string());
+                            return match result {
+                                Ok(_) => Ok(text),
+                                Err(error) => {
+                                    let detail = stderr
+                                        .split('\n')
+                                        .map(str::trim)
+                                        .find(|line| !line.is_empty());
+                                    Err(match detail {
+                                        Some(detail) => format!("{error} ({detail})"),
+                                        None => error.to_string(),
+                                    })
+                                }
+                            };
                         }
                         event = events.recv() => {
                             match event {
                                 Some(crate::acp::AcpEvent::Text(chunk)) => text.push_str(&chunk),
+                                Some(crate::acp::AcpEvent::Stderr(chunk)) => {
+                                    stderr.push_str(&chunk);
+                                    if stderr.len() > 2_000 {
+                                        let cut = stderr.len() - 2_000;
+                                        let boundary = (0..=cut)
+                                            .rev()
+                                            .find(|index| stderr.is_char_boundary(*index))
+                                            .unwrap_or(0);
+                                        stderr = stderr[boundary..].to_string();
+                                    }
+                                }
                                 Some(crate::acp::AcpEvent::Question(_)) => {
                                     connection.close();
                                     return Err("the dedup peer asked a question; refusing".to_string());
@@ -4035,6 +4215,57 @@ impl DedupRunner for AcpDedup {
         })
         .join()
         .map_err(|_| "the dedup peer panicked".to_string())?
+    }
+}
+
+/// Runs one attempt per binding in order. A rejected credential rotates to
+/// the next binding; any other failure, or the last binding, ends the turn.
+pub fn rotate_dedup_attempts<F>(
+    peers: &[crate::providers::PeerBinding],
+    mut attempt: F,
+) -> Result<String, String>
+where
+    F: FnMut(&crate::providers::PeerBinding) -> Result<String, String>,
+{
+    let mut last: Option<String> = None;
+    for (index, binding) in peers.iter().enumerate() {
+        match attempt(binding) {
+            Ok(text) => return Ok(text),
+            Err(error) => {
+                let rejected = credential_rejection(&error);
+                let last_peer = index == peers.len() - 1;
+                last = Some(error);
+                if !rejected || last_peer {
+                    break;
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| "the dedup peer returned no answer".to_string()))
+}
+
+impl DedupRunner for AcpDedup {
+    fn run(&self, request: &DedupRequest, run_dir: &Path) -> Result<String, String> {
+        std::fs::create_dir_all(run_dir)
+            .map_err(|error| format!("the dedup run directory: {error}"))?;
+        let peers = match self.provider_state_dir.as_deref() {
+            Some(state_dir) => {
+                crate::workers::mcp_optimizer::open_code_peers(state_dir, &self.environment)?
+            }
+            None => Vec::new(),
+        };
+        if peers.is_empty() {
+            let environment = self.attempt_environment(&self.environment);
+            return self.run_with_environment(environment, request, run_dir);
+        }
+        rotate_dedup_attempts(&peers, |binding| {
+            let environment: HashMap<String, String> = binding
+                .env
+                .iter()
+                .filter_map(|(key, value)| value.clone().map(|value| (key.clone(), value)))
+                .collect();
+            self.run_with_environment(environment, request, run_dir)
+        })
     }
 }
 
@@ -4102,7 +4333,7 @@ impl CycleDeps {
     /// The production wiring: `/proc` discovery, journal collection, and `gh`.
     pub fn production() -> Self {
         Self {
-            discover: Arc::new(|_root: &Path| discover_instances()),
+            discover: Arc::new(|root: &Path| discover_instances_for(root)),
             collect: Arc::new(|root: &Path, instances: &[Instance], window: Window| {
                 let self_pids = HashSet::from([std::process::id()]);
                 collect_evidence(root, instances, window, &self_pids, None, None)
@@ -4670,7 +4901,8 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                             command,
                             repo_dir: options.root.clone(),
                             environment: options.environment.clone(),
-                            timeout_ms: 10 * 60_000,
+                            timeout_ms: DEDUP_PEER_TIMEOUT_MS,
+                            provider_state_dir: options.provider_state_dir.clone(),
                         })
                     }
                 },

@@ -63,21 +63,67 @@ impl Fixture {
 
     fn api_inputs(&self) {
         self.write(
-            ".devboard/server/app.ts",
+            ".devboard/crates/devboard/src/http.rs",
             concat!(
-                "export function handle(request: Request, url: URL): Response {\n",
-                "  if (url.pathname === \"/api/ready\") {\n",
-                "    return Response.json({ pid: 1 });\n",
-                "  }\n",
-                "  if (url.pathname === \"/ws\") {\n",
-                "    if (request.method === \"GET\") return new Response(null, { status: 426 });\n",
-                "    return new Response(\"Bad Request\", { status: 400 });\n",
-                "  }\n",
-                "  return new Response(Bun.file(\"dist/index.html\"));\n",
+                "pub async fn handle(uri: &str, method: &Method) -> Response {\n",
+                "    match uri {\n",
+                "        \"/feedback\" => {\n",
+                "            return app.feedback(&method).await;\n",
+                "        }\n",
+                "        \"/ready\" => {\n",
+                "            return ready(&method);\n",
+                "        }\n",
+                "        \"/goal-proposals\" => {\n",
+                "            return app.goal_proposals(&method).await;\n",
+                "        }\n",
+                "        \"/ws\" => {\n",
+                "            if method != Method::GET {\n",
+                "                return problem();\n",
+                "            }\n",
+                "            return upgrade().await;\n",
+                "        }\n",
+                "        _ => {}\n",
+                "    }\n",
+                "    if let Some(relative) = static_relative_path(uri) {\n",
+                "        return static_file(&relative, &method);\n",
+                "    }\n",
+                "    problem()\n",
+                "}\n",
+                "\n",
+                "fn ready(method: &Method) -> Response {\n",
+                "    if *method != Method::GET && *method != Method::HEAD {\n",
+                "        return problem();\n",
+                "    }\n",
+                "    json()\n",
                 "}\n",
             ),
         );
-        self.write(".devboard/server/app.test.ts", "export {};\n");
+        self.write(
+            ".devboard/crates/devboard/src/app.rs",
+            concat!(
+                "pub async fn feedback(&self, method: &Method) -> Response {\n",
+                "    if *method != Method::POST {\n",
+                "        return problem();\n",
+                "    }\n",
+                "    accepted()\n",
+                "}\n",
+                "\n",
+                "pub async fn goal_proposals(&self, method: &Method) -> Response {\n",
+                "    if *method != Method::POST {\n",
+                "        return problem();\n",
+                "    }\n",
+                "    accepted()\n",
+                "}\n",
+            ),
+        );
+        self.write(
+            ".devboard/crates/devboard/src/app_test.rs",
+            "fn fixture_test() {}\n",
+        );
+        self.write(
+            ".devboard/crates/devboard/src/tests/ignored.rs",
+            "fn ignored_test() {}\n",
+        );
         self.write(
             ".omp/skills/devboard-restful-api-implementation/SKILL.md",
             "# RESTful API Implementation\n\nAudit the HTTP API.\n",
@@ -440,22 +486,49 @@ async fn api_standards_runs_one_cycle_and_files_a_must_finding() {
             )
             .expect("request JSON");
             assert_eq!(request["issueRoom"], 5);
-            assert_eq!(request["sourceDir"], ".devboard/server");
+            assert_eq!(request["sourceDir"], ".devboard/crates/devboard/src");
             assert!(request["knownTitles"].is_array());
+            let sources = request["sources"].as_array().expect("sources");
+            assert!(!sources.is_empty());
+            for entry in sources {
+                let path = entry["path"].as_str().expect("a source path");
+                assert!(path.ends_with(".rs"), "{path} is not a Rust source");
+                assert!(!path.contains("_test.rs"), "{path} is a test file");
+                assert!(!path.contains("/tests/"), "{path} is a test file");
+            }
+            let routes = request["routes"].as_array().expect("routes");
+            let route = |path: &str, method: &str| {
+                routes.iter().any(|entry| {
+                    entry["path"] == path
+                        && entry["methods"]
+                            .as_array()
+                            .is_some_and(|methods| methods.iter().any(|item| item == method))
+                })
+            };
+            assert!(route("/feedback", "POST"));
+            assert!(route("/ready", "GET"));
+            assert!(route("/ready", "HEAD"));
+            assert!(route("/goal-proposals", "POST"));
+            assert!(routes.iter().any(|entry| entry["path"] == "/ws"
+                && entry["kind"] == "upgrade"
+                && entry["methods"] == json!(["GET"])));
+            assert!(routes
+                .iter()
+                .any(|entry| entry["kind"] == "static-fallback"));
             let finding = json!({
-                "title": "POST /api/ready ignores the method",
+                "title": "POST /feedback ignores the method",
                 "ruleId": "148",
                 "level": "MUST",
                 "chapter": "HTTP requests",
                 "directive": "Use HTTP methods according to RFC 9110.",
-                "endpoints": [{"method": "POST", "path": "/api/ready"}],
+                "endpoints": [{"method": "POST", "path": "/feedback"}],
                 "evidence": [{
-                    "path": ".devboard/server/app.ts",
-                    "lines": "2-4",
-                    "quote": "if (url.pathname === \"/api/ready\") {\n    return Response.json({ pid: 1 });",
+                    "path": ".devboard/crates/devboard/src/app.rs",
+                    "lines": "2",
+                    "quote": "if *method != Method::POST {",
                 }],
-                "proposedChange": "Answer a non-GET request with 405.",
-                "acceptanceCriteria": ["POST /api/ready answers 405."],
+                "proposedChange": "Answer a non-POST request with 405.",
+                "acceptanceCriteria": ["GET /feedback answers 405."],
                 "decision": "filed",
                 "issueNumber": 7,
                 "issueUrl": "https://forge.test/acme/fixture/issues/7",
@@ -465,14 +538,14 @@ async fn api_standards_runs_one_cycle_and_files_a_must_finding() {
                 format!("{}\n", json!({"version": 1, "findings": [finding]})),
             )
             .expect("findings");
-            write_tool_record(&directory, 7, "POST /api/ready ignores the method");
+            write_tool_record(&directory, 7, "POST /feedback ignores the method");
             forge
                 .issues
                 .lock()
                 .expect("the fake")
                 .push(api::ForgeIssue {
                     number: 7,
-                    title: "POST /api/ready ignores the method".to_string(),
+                    title: "POST /feedback ignores the method".to_string(),
                     url: "https://forge.test/acme/fixture/issues/7".to_string(),
                     state: "open".to_string(),
                     created_at: "2026-01-01T00:00:00.000Z".to_string(),
@@ -614,10 +687,10 @@ async fn api_standards_settings_command_resumes_filing() {
                     "level": "MUST",
                     "chapter": "HTTP requests",
                     "directive": "Use HTTP methods according to RFC 9110.",
-                    "endpoints": [{"method": "GET", "path": "/api/ready"}],
-                    "evidence": [{"path": ".devboard/server/app.ts", "lines": "3", "quote": "return Response.json({ pid: 1 });"}],
+                    "endpoints": [{"method": "GET", "path": "/ready"}],
+                    "evidence": [{"path": ".devboard/crates/devboard/src/http.rs", "lines": "27", "quote": "if *method != Method::GET && *method != Method::HEAD {"}],
                     "proposedChange": "Keep GET.",
-                    "acceptanceCriteria": ["GET /api/ready answers 200."],
+                    "acceptanceCriteria": ["GET /ready answers 200."],
                     "decision": "filed",
                     "issueNumber": 9,
                 })]
@@ -717,11 +790,19 @@ async fn api_standards_preflight_refusals_name_the_missing_fact() {
         state_dir: fixture.state_dir.clone(),
         ..api::PreflightOptions::default()
     };
-    std::fs::remove_dir_all(fixture.repo.join(".devboard").join("server")).expect("remove");
+    std::fs::remove_dir_all(
+        fixture
+            .repo
+            .join(".devboard")
+            .join("crates")
+            .join("devboard")
+            .join("src"),
+    )
+    .expect("remove");
     let message = api::preflight_api_standards(&options)
         .await
         .expect_err("a refusal");
-    assert!(message.contains(".devboard/server"));
+    assert!(message.contains(".devboard/crates/devboard/src"));
     assert!(message.contains("installed npm prefix"));
 
     fixture.api_inputs();

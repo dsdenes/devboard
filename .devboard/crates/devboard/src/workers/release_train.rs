@@ -3860,7 +3860,7 @@ pub fn release_history(
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage: release-train --root <checkout> [--state-dir <state>] [--once] [--check] [--json]"
+        "usage: devboard worker release-train --root <checkout> [--state-dir <state>] [--once] [--check] [--json]"
     )
 }
 

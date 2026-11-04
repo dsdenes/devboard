@@ -1,4 +1,4 @@
-//! Issues worker engine (being ported).
+//! Issues worker engine: one detached run owns the issue sync and filing.
 
 use super::WorkerInvocation;
 

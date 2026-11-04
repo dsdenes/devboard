@@ -74,10 +74,16 @@ fn positive_number(value: Option<String>, fallback: u64) -> u64 {
 /// `DEVBOARD_RELEASE_URL` names a local directory that carries
 /// `devboard-manifest.json` and its artifacts; it wins, and makes every read a
 /// local file read for offline verification.
-pub fn manifest_source_from_env(state_dir: &std::path::Path) -> Option<ManifestSource> {
-    let _ = state_dir;
-    if let Some(local) = std::env::var("DEVBOARD_RELEASE_URL")
-        .ok()
+pub fn manifest_source_from_env(_state_dir: &std::path::Path) -> Option<ManifestSource> {
+    manifest_source(&std::env::vars().collect())
+}
+
+/// The release source one explicit environment names.
+pub fn manifest_source(
+    environment: &std::collections::HashMap<String, String>,
+) -> Option<ManifestSource> {
+    if let Some(local) = environment
+        .get("DEVBOARD_RELEASE_URL")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
     {
@@ -90,23 +96,42 @@ pub fn manifest_source_from_env(state_dir: &std::path::Path) -> Option<ManifestS
             local_dir: Some(path),
         });
     }
-    let base_url = std::env::var("DEVBOARD_GITEA_URL").ok()?.trim().to_string();
-    if base_url.is_empty() {
-        return None;
-    }
-    let token = std::env::var("GITEA_TOKEN")
-        .ok()
-        .or_else(|| std::env::var("DEVBOARD_GITEA_TOKEN").ok())
+    let base_url = gitea_base(environment)?;
+    let token = environment
+        .get("GITEA_TOKEN")
+        .or_else(|| environment.get("DEVBOARD_GITEA_TOKEN"))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     Some(ManifestSource {
         base_url: base_url.trim_end_matches('/').to_string(),
-        repository: std::env::var("DEVBOARD_RELEASE_REPO")
-            .unwrap_or_else(|_| release::RELEASE_REPOSITORY.to_string()),
+        repository: environment
+            .get("DEVBOARD_RELEASE_REPO")
+            .cloned()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| release::RELEASE_REPOSITORY.to_string()),
         token,
         timeout_ms: 30_000,
         local_dir: None,
     })
+}
+
+/// The Gitea HTTP origin for a release read: `DEVBOARD_GITEA_URL`, then the
+/// host's own `GITEA_URL`.
+pub fn gitea_base_from_env() -> Option<String> {
+    gitea_base(&std::env::vars().collect())
+}
+
+fn gitea_base(environment: &std::collections::HashMap<String, String>) -> Option<String> {
+    for key in ["DEVBOARD_GITEA_URL", "GITEA_URL"] {
+        let Some(raw) = environment.get(key) else {
+            continue;
+        };
+        let value = raw.trim().trim_end_matches('/').to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// Starts the updater for one dashboard process.
@@ -179,7 +204,17 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
     let release = match release::latest_manifest(&source).await {
         Ok(release) => release,
         Err(error) => {
-            app.journal_error("update-error", &format!("update check failed: {error}"));
+            // An offline or rate-limited check is a transient condition, not a
+            // failed update: `activity` names it, `update-error` does not.
+            if is_transient_update_failure(&error) {
+                app.shared.journal.write(
+                    "activity",
+                    &format!("update check delayed: {error}"),
+                    None,
+                );
+            } else {
+                app.journal_error("update-error", &format!("update check failed: {error}"));
+            }
             return UpdateOutcome::Failed;
         }
     };
@@ -204,6 +239,31 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
             UpdateOutcome::Failed
         }
     }
+}
+
+/// True for a check failure an unreachable or rate-limited forge causes: the
+/// next interval retries it and the journal records only activity.
+pub fn is_transient_update_failure(error: &str) -> bool {
+    let text = error.to_ascii_lowercase();
+    [
+        "http 429",
+        "http 403",
+        "rate limit",
+        "too many requests",
+        "error sending request",
+        "connection refused",
+        "connection reset",
+        "timed out",
+        "timeout",
+        "dns",
+        "enotfound",
+        "econnrefused",
+        "network",
+        "unreachable",
+        "cannot reach",
+    ]
+    .iter()
+    .any(|token| text.contains(token))
 }
 
 /// The installed version a restart would load, read from the running binary's

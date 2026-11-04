@@ -219,10 +219,180 @@ pub fn install(host: Option<&Path>, force: bool) -> Result<InstallReport> {
     install_into(&host, force)
 }
 
-fn install_into(host: &Path, _force: bool) -> Result<InstallReport> {
+/// Runs the installed binary's own `install` so an update writes the host's
+/// commands, extensions, prompts, and skills from the released payload before
+/// it reports. A host without an installed binary, or one that fails, falls
+/// back to this binary's embedded payload.
+pub fn sync_from_installed_binary(host: &Path) -> Option<std::process::ExitStatus> {
+    let program = host.join(".devboard").join("bin").join("devboard");
+    if !program.is_file() {
+        return None;
+    }
+    // A concurrent fork in this process can briefly hold the freshly written
+    // binary open, which makes the first exec fail with ETXTBSY; retry it.
+    for _ in 0..20 {
+        match std::process::Command::new(&program)
+            .arg("install")
+            .arg(host)
+            .arg("--force")
+            .status()
+        {
+            Ok(status) => return Some(status),
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// `update` rewrites the installed prefix through the ordinary installer; a
+/// symlinked prefix must be repaired with `install` first.
+pub fn refuse_symlinked_prefix(host: &Path) -> Result<()> {
+    let prefix = host.join(".devboard");
+    if fs::symlink_metadata(&prefix).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        bail!(
+            "update: {} is a symlink; run install to repair the prefix first",
+            prefix.display()
+        );
+    }
+    Ok(())
+}
+
+/// True when `host/.devboard` is the canonical harness source checkout. Such a
+/// checkout is never an install target: installing over it would rewrite the
+/// source tree itself.
+fn is_canonical_checkout(host: &Path) -> bool {
+    let prefix = host.join(".devboard");
+    // The canonical checkout keeps its checked-in `package.json`; an installed
+    // prefix records `devboard.json` instead, even under the same package name.
+    prefix.join("package.json").is_file()
+}
+
+/// Replaces a symlinked `.devboard` prefix with a real directory, moving every
+/// entry the target holds into it. The `.tmp` journal, locks, run state, and
+/// `source-refresh/applied.json` therefore survive the repair.
+fn repair_prefix_symlink(host: &Path) -> Result<()> {
+    let prefix = host.join(".devboard");
+    let Ok(meta) = fs::symlink_metadata(&prefix) else {
+        return Ok(());
+    };
+    if !meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    let target =
+        fs::read_link(&prefix).with_context(|| format!("install: reading {}", prefix.display()))?;
+    let target = if target.is_absolute() {
+        target
+    } else {
+        host.join(target)
+    };
+    let target = fs::canonicalize(&target)
+        .with_context(|| format!("install: the {} symlink does not resolve", prefix.display()))?;
+    if crate::version::is_harness_source_checkout(host) {
+        bail!(
+            "install: {} resolves to the canonical source checkout; it is never an install target",
+            prefix.display()
+        );
+    }
+    let staging = host.join(format!(".devboard.repair-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging)
+        .with_context(|| format!("install: creating {}", staging.display()))?;
+    let entries =
+        fs::read_dir(&target).with_context(|| format!("install: reading {}", target.display()))?;
+    for entry in entries.flatten() {
+        let destination = staging.join(entry.file_name());
+        let _ = fs::remove_dir_all(&destination);
+        let _ = fs::remove_file(&destination);
+        move_entry(&entry.path(), &destination)
+            .with_context(|| format!("install: preserving {}", entry.path().display()))?;
+    }
+    fs::remove_file(&prefix)
+        .with_context(|| format!("install: replacing the {} symlink", prefix.display()))?;
+    fs::rename(&staging, &prefix)
+        .with_context(|| format!("install: publishing {}", prefix.display()))?;
+    Ok(())
+}
+
+/// Renames one entry, falling back to a copy when the two are on different
+/// filesystems.
+fn move_entry(source: &Path, destination: &Path) -> Result<()> {
+    if fs::rename(source, destination).is_ok() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(source)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, destination)?;
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)?.flatten() {
+            move_entry(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+    } else {
+        fs::copy(source, destination)?;
+    }
+    Ok(())
+}
+
+/// Every file under one path the host's git index tracks. A host outside a
+/// work tree tracks nothing; a `git ls-files` failure refuses the install.
+fn tracked_files_under(host: &Path, path: &str) -> Result<Vec<String>> {
+    let work_tree = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output();
+    match work_tree {
+        Ok(output) if output.status.success() => {
+            if String::from_utf8_lossy(&output.stdout).trim() != "true" {
+                return Ok(Vec::new());
+            }
+        }
+        _ => return Ok(Vec::new()),
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["ls-files", "--", path])
+        .output()
+        .map_err(|error| anyhow!("install: git ls-files failed: {error}"))?;
+    if !output.status.success() {
+        bail!(
+            "install: git ls-files -- {path} refused: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
+    if is_canonical_checkout(host) {
+        bail!(
+            "install: {} is the canonical harness source checkout; install into a host, never into the harness itself",
+            host.display()
+        );
+    }
+    let tracked = tracked_files_under(host, ".devboard")?;
+    if let Some(first) = tracked.first() {
+        bail!(
+            "install: {} tracks its .devboard tree ({first}); install into a host that keeps it untracked",
+            host.display()
+        );
+    }
+    repair_prefix_symlink(host)?;
     let package = package();
     let omp = host.join(".omp");
-    let _ = _force;
     let mut drift: Vec<String> = Vec::new();
 
     let mut installed_files = 0usize;
@@ -237,6 +407,13 @@ fn install_into(host: &Path, _force: bool) -> Result<InstallReport> {
             // report the drift instead of silently overwriting it.
             drift.push(label);
             continue;
+        }
+        let wrapper = relative.starts_with("commands/") || relative.starts_with("extensions/");
+        if wrapper && !force && fs::symlink_metadata(&destination).is_ok_and(|meta| !meta.is_dir())
+        {
+            bail!(
+                "install: {label} differs from the shipped wrapper; rerun with --force to replace it"
+            );
         }
         if let Ok(meta) = fs::symlink_metadata(&destination) {
             if meta.is_dir() {
@@ -323,9 +500,16 @@ fn install_into(host: &Path, _force: bool) -> Result<InstallReport> {
     let agents_target = host.join("AGENTS.md");
     let agents = match fs::symlink_metadata(&agents_target) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::write(&agents_target, HOST_AGENTS)
-                .with_context(|| format!("install: writing {}", agents_target.display()))?;
-            AgentsOutcome::Installed
+            // A tracked AGENTS.md the host deleted is the host's decision: it
+            // stays absent and is reported as drift instead of being restored.
+            if is_git_tracked(host, "AGENTS.md") {
+                drift.push("AGENTS.md is tracked by the host; left deleted".to_string());
+                AgentsOutcome::Drift
+            } else {
+                fs::write(&agents_target, HOST_AGENTS)
+                    .with_context(|| format!("install: writing {}", agents_target.display()))?;
+                AgentsOutcome::Installed
+            }
         }
         Err(error) => {
             return Err(error)
@@ -556,6 +740,15 @@ fn ensure_gitignore(host: &Path, names: &[String]) -> Result<Vec<String>> {
 /// differing byte, an extra entry, or a symlink is a failure; a skill the
 /// package does not ship is never inspected.
 pub fn doctor(host: Option<&Path>) -> Result<DoctorReport> {
+    doctor_with_env(host, &std::env::vars().collect())
+}
+
+/// Doctor against one explicit environment. Tests use it so an inherited
+/// forge address cannot change what a fixture proves.
+pub fn doctor_with_env(
+    host: Option<&Path>,
+    environment: &std::collections::HashMap<String, String>,
+) -> Result<DoctorReport> {
     let host = resolve_host(host)?;
     let package = package();
     let omp = host.join(".omp");
@@ -677,8 +870,14 @@ pub fn doctor(host: Option<&Path>) -> Result<DoctorReport> {
     }
 
     doctor_layout(&host, &mut report);
-    doctor_release(&mut report);
-    doctor_version(&host, &mut report);
+    doctor_git_root(&host, &mut report);
+    doctor_omp(&mut report);
+    let release = doctor_release(environment, &mut report);
+    doctor_version(
+        &host,
+        release.as_ref().map(|release| release.version.as_str()),
+        &mut report,
+    );
     doctor_dashboard(&host, &mut report);
     doctor_update_failure(&host, &mut report);
 
@@ -704,9 +903,15 @@ pub fn doctor(host: Option<&Path>) -> Result<DoctorReport> {
     let agents = host.join("AGENTS.md");
     match fs::symlink_metadata(&agents) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            report
-                .failures
-                .push("AGENTS.md is missing; run install".to_string());
+            if is_git_tracked(&host, "AGENTS.md") {
+                report
+                    .drift
+                    .push("AGENTS.md is tracked by the host; left deleted".to_string());
+            } else {
+                report
+                    .failures
+                    .push("AGENTS.md is missing; run install".to_string());
+            }
         }
         Err(error) => {
             return Err(error).with_context(|| format!("doctor: probing {}", agents.display()))
@@ -730,6 +935,21 @@ pub fn doctor(host: Option<&Path>) -> Result<DoctorReport> {
         }
     }
 
+    // A differing package file the host tracks is the host's content, not an
+    // install failure: it is reported as drift, exactly like AGENTS.md.
+    let mut failures = Vec::new();
+    for failure in std::mem::take(&mut report.failures) {
+        if let Some(label) = failure.strip_suffix(" differs from the installed copy") {
+            if is_git_tracked(&host, label) {
+                report
+                    .drift
+                    .push(format!("{label} is tracked by the host; left unchanged"));
+                continue;
+            }
+        }
+        failures.push(failure);
+    }
+    report.failures = failures;
     Ok(report)
 }
 
@@ -760,11 +980,63 @@ fn doctor_layout(host: &Path, report: &mut DoctorReport) {
     }
 }
 
-/// Checks that a configured release source answers with a readable manifest.
-/// No source configured means the check is skipped.
-fn doctor_release(report: &mut DoctorReport) {
-    let local = std::env::var("DEVBOARD_RELEASE_URL")
-        .ok()
+/// The host must be a git checkout root.
+fn doctor_git_root(host: &Path, report: &mut DoctorReport) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["rev-parse", "--show-toplevel"])
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let top = fs::canonicalize(&top).unwrap_or_else(|_| PathBuf::from(&top));
+            if top != host {
+                report.failures.push(format!(
+                    "git: {} is not the checkout root ({} is)",
+                    host.display(),
+                    top.display()
+                ));
+            }
+        }
+        Ok(output) => report.failures.push(format!(
+            "git: {} is not a git checkout root: {}",
+            host.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+        Err(error) => report.failures.push(format!("git: {error}")),
+    }
+}
+
+/// The `omp` CLI the installed commands need: a version and a readable usage
+/// summary.
+fn doctor_omp(report: &mut DoctorReport) {
+    for (label, args) in [
+        ("omp --version", vec!["--version"]),
+        ("omp usage", vec!["usage"]),
+    ] {
+        let output = std::process::Command::new("omp").args(&args).output();
+        match output {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let first = detail.lines().next().unwrap_or("no diagnostic").to_string();
+                report.failures.push(format!("{label}: {first}"));
+            }
+            Err(error) => report.failures.push(format!("{label}: {error}")),
+        }
+    }
+}
+
+/// Checks that a configured release source answers with a readable manifest
+/// and an artifact that matches its SHA-256. No source configured means the
+/// check is skipped.
+fn doctor_release(
+    environment: &std::collections::HashMap<String, String>,
+    report: &mut DoctorReport,
+) -> Option<crate::release::ReleaseInfo> {
+    let local = environment
+        .get("DEVBOARD_RELEASE_URL")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     if let Some(local) = local {
@@ -772,35 +1044,27 @@ fn doctor_release(report: &mut DoctorReport) {
             .join(crate::release::MANIFEST_ASSET);
         match fs::read_to_string(&path) {
             Ok(text) => {
-                if serde_json::from_str::<serde_json::Value>(&text)
+                let parsed = serde_json::from_str::<serde_json::Value>(&text)
                     .ok()
-                    .and_then(|value| crate::release::ReleaseInfo::from_manifest(&value))
-                    .is_none()
-                {
-                    report.failures.push(format!(
+                    .and_then(|value| crate::release::ReleaseInfo::from_manifest(&value));
+                match parsed {
+                    Some(release) => {
+                        doctor_release_artifact(environment, report, &release);
+                        return Some(release);
+                    }
+                    None => report.failures.push(format!(
                         "release: {} is not a release manifest",
                         path.display()
-                    ));
+                    )),
                 }
             }
             Err(error) => report
                 .failures
                 .push(format!("release: cannot read {}: {error}", path.display())),
         }
-        return;
+        return None;
     }
-    if std::env::var("DEVBOARD_GITEA_URL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .is_none()
-    {
-        return;
-    }
-    let source = crate::updates::manifest_source_from_env(Path::new("."));
-    let Some(source) = source else {
-        return;
-    };
+    let source = crate::updates::manifest_source(environment)?;
     let outcome = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -812,17 +1076,80 @@ fn doctor_release(report: &mut DoctorReport) {
     .ok()
     .flatten();
     match outcome {
-        Some(Ok(_)) => {}
-        Some(Err(error)) => report.failures.push(format!("release: {error}")),
+        Some(Ok(release)) => {
+            doctor_release_artifact(environment, report, &release);
+            Some(release)
+        }
+        Some(Err(error)) => {
+            report.failures.push(format!("release: {error}"));
+            None
+        }
+        None => {
+            report
+                .failures
+                .push("release: cannot start the release check".to_string());
+            None
+        }
+    }
+}
+
+/// Downloads the platform artifact and proves its digest.
+fn doctor_release_artifact(
+    environment: &std::collections::HashMap<String, String>,
+    report: &mut DoctorReport,
+    release: &crate::release::ReleaseInfo,
+) {
+    let Some(source) = crate::updates::manifest_source(environment) else {
+        return;
+    };
+    let asset = match release.asset_for_this_platform() {
+        Ok(Some(asset)) => asset.clone(),
+        Ok(None) => {
+            report.failures.push(format!(
+                "release artifact: {} carries no artifact for this platform",
+                release.version
+            ));
+            return;
+        }
+        Err(error) => {
+            report.failures.push(format!("release artifact: {error}"));
+            return;
+        }
+    };
+    let expected = asset.sha256.clone();
+    let release = release.clone();
+    let outcome = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok();
+        runtime.map(|runtime| {
+            runtime.block_on(crate::release::download_release_asset(
+                &source, &release, &asset,
+            ))
+        })
+    })
+    .join()
+    .ok()
+    .flatten();
+    match outcome {
+        Some(Ok(bytes)) => {
+            if !crate::release::verify_sha256(&bytes, &expected) {
+                report.failures.push(
+                    "release artifact: the downloaded bytes do not match their SHA-256".to_string(),
+                );
+            }
+        }
+        Some(Err(error)) => report.failures.push(format!("release artifact: {error}")),
         None => report
             .failures
-            .push("release: cannot start the release check".to_string()),
+            .push("release artifact: cannot start the download".to_string()),
     }
 }
 
 /// The version recorded beside the installed binary, and whether the recorded
 /// dashboard runs it.
-fn doctor_version(host: &Path, report: &mut DoctorReport) {
+fn doctor_version(host: &Path, latest: Option<&str>, report: &mut DoctorReport) {
     let prefix = host.join(".devboard");
     if prefix.join("package.json").is_file() {
         // A source checkout records its version in the checked-in marker.
@@ -835,6 +1162,13 @@ fn doctor_version(host: &Path, report: &mut DoctorReport) {
             .push("installed version: .devboard/devboard.json is missing; run install".to_string());
         return;
     };
+    if let Some(latest) = latest {
+        if crate::release::is_newer_version(latest, Some(installed.as_str())) {
+            report.failures.push(format!(
+                "version: installed {installed} is older than the latest release {latest}"
+            ));
+        }
+    }
     let state_dir = host.join(".devboard").join(".tmp");
     let Ok(text) = fs::read_to_string(state_dir.join("version.json")) else {
         return;

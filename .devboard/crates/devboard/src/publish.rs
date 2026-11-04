@@ -1573,6 +1573,9 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     if args.wait_timeout.is_zero() {
         bail!("--wait-timeout needs positive seconds");
     }
+    // The bundle, the staged manifest, and the tag are proven before anything
+    // is tagged, pushed, or written.
+    verify_release_bundle(&args.harness_root)?;
     let runner: Arc<dyn CommandRunner> = args
         .runner
         .clone()
@@ -3495,6 +3498,156 @@ fn pid_alive(pid: u32) -> bool {
         false
     }
 }
+
+/// Proves the release bundle before the publish writes anything.
+///
+/// The client bundle must be newer than its sources, every `/assets/...`
+/// reference in `dist/index.html` must exist, and a staged manifest must carry
+/// a matching `devboard-manifest.json.sha256` whose version matches its tag.
+pub fn verify_release_bundle(harness_root: &Path) -> Result<()> {
+    let dist = harness_root.join("dist");
+    if !dist.is_dir() {
+        bail!(
+            "the release bundle is missing: {} does not exist",
+            dist.display()
+        );
+    }
+    let newest_source = newest_source_mtime(harness_root)?;
+    let newest_dist = newest_mtime(&dist);
+    if newest_source > newest_dist {
+        bail!(
+            "dist is older than its sources: {} was built before the newest source file; rebuild the client before publishing",
+            dist.display()
+        );
+    }
+    verify_index_assets(&dist)?;
+
+    let manifest = harness_root.join(MANIFEST_ASSET_NAME);
+    let checksum = harness_root.join(MANIFEST_CHECKSUM_ASSET);
+    if manifest.is_file() || checksum.is_file() {
+        let bytes = std::fs::read(&manifest).map_err(|error| {
+            anyhow!(
+                "the staged {} could not be read: {error}",
+                manifest.display()
+            )
+        })?;
+        let text = std::fs::read_to_string(&checksum).map_err(|error| {
+            anyhow!("the staged manifest has no matching {MANIFEST_CHECKSUM_ASSET}: {error}")
+        })?;
+        let expected = parse_checksum(&text)
+            .ok_or_else(|| anyhow!("{} names no SHA-256 digest", checksum.display()))?;
+        if expected != sha256_hex(&bytes) {
+            bail!("{MANIFEST_CHECKSUM_ASSET} does not match the staged manifest's SHA-256");
+        }
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| anyhow!("the staged manifest is not valid JSON: {error}"))?;
+        let version = value
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let tag = value
+            .get("tag")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if version.is_empty() || tag != format!("v{version}") {
+            bail!("the staged manifest version {version} differs from its tag {tag}");
+        }
+    }
+    Ok(())
+}
+
+/// The newest modification time below `directory`.
+fn newest_mtime(directory: &Path) -> std::time::SystemTime {
+    let mut newest = std::time::SystemTime::UNIX_EPOCH;
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return newest;
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if kind.is_dir() {
+            newest = newest.max(newest_mtime(&path));
+            continue;
+        }
+        if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
+            newest = newest.max(modified);
+        }
+    }
+    newest
+}
+
+/// The newest source file below the harness, ignoring build output and state.
+fn newest_source_mtime(harness_root: &Path) -> Result<std::time::SystemTime> {
+    fn visit(directory: &Path, newest: &mut std::time::SystemTime) -> Result<()> {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matches!(
+                name.as_str(),
+                "dist"
+                    | "target"
+                    | ".git"
+                    | "node_modules"
+                    | ".tmp"
+                    | ".test-tmp"
+                    | ".worktree"
+                    | "Cargo.toml"
+                    | "Cargo.lock"
+                    | "package.json"
+                    | "bun.lock"
+                    | "devboard-manifest.json"
+                    | "devboard-manifest.json.sha256"
+            ) {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                visit(&path, newest)?;
+                continue;
+            }
+            if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
+                *newest = (*newest).max(modified);
+            }
+        }
+        Ok(())
+    }
+    let mut newest = std::time::SystemTime::UNIX_EPOCH;
+    visit(harness_root, &mut newest)?;
+    Ok(newest)
+}
+
+/// Every `/assets/...` reference `dist/index.html` names must exist.
+fn verify_index_assets(dist: &Path) -> Result<()> {
+    static ASSET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?:src|href)="(/assets/[^"?#]+)""#).expect("an asset reference")
+    });
+    let index = dist.join("index.html");
+    let text = std::fs::read_to_string(&index)
+        .map_err(|error| anyhow!("{} could not be read: {error}", index.display()))?;
+    for capture in ASSET.captures_iter(&text) {
+        let Some(reference) = capture.get(1) else {
+            continue;
+        };
+        let relative = reference.as_str().trim_start_matches('/');
+        if !dist.join(relative).is_file() {
+            bail!(
+                "{} references the missing asset {}",
+                index.display(),
+                reference.as_str()
+            );
+        }
+    }
+    Ok(())
+}
+
+const MANIFEST_ASSET_NAME: &str = "devboard-manifest.json";
 
 #[cfg(test)]
 mod tests {

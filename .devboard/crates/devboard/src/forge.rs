@@ -644,6 +644,8 @@ fn truncate_300(value: &str) -> String {
 
 /// The most candidates one issue may resolve, so a verbose thread stays bounded.
 pub const COMMIT_CANDIDATE_LIMIT: usize = 12;
+/// The newest HEAD commits `landed_commits` reads.
+pub const LANDED_HISTORY_LIMIT: usize = 1_000;
 
 pub fn is_sha(value: &str) -> bool {
     (7..=40).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -4137,7 +4139,10 @@ pub fn landed_commits(repo_dir: &Path, issue_number: i64) -> Vec<String> {
         return Vec::new();
     }
     let marker = format!("(#{issue_number})");
-    let result = git(repo_dir, &["log", "HEAD", "--format=%H%x09%s"]);
+    // A bounded HEAD history: an arbitrary far-past commit never settles a
+    // freshly closed issue, and the read stays cheap on a long repository.
+    let limit = format!("--max-count={LANDED_HISTORY_LIMIT}");
+    let result = git(repo_dir, &["log", &limit, "HEAD", "--format=%H%x09%s"]);
     if result.code != 0 {
         return Vec::new();
     }

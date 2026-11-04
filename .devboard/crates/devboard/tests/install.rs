@@ -1,6 +1,6 @@
 //! Install and doctor behavior against a scratch host.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,13 @@ impl Scratch {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".devboard")).unwrap();
         let root = fs::canonicalize(&root).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap();
+        assert!(status.success(), "the fixture host is a git checkout");
         Self { root }
     }
 
@@ -34,6 +41,22 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+/// Doctor with the inherited forge configuration removed: a fixture proves
+/// its own checks, never the developer's network.
+fn doctor(host: &Path) -> anyhow::Result<devboard::cli_install::DoctorReport> {
+    let mut environment: HashMap<String, String> = std::env::vars().collect();
+    for key in [
+        "DEVBOARD_GITEA_URL",
+        "GITEA_URL",
+        "DEVBOARD_RELEASE_URL",
+        "GITEA_TOKEN",
+        "DEVBOARD_GITEA_TOKEN",
+    ] {
+        environment.remove(key);
+    }
+    devboard::cli_install::doctor_with_env(Some(host), &environment)
 }
 
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -180,7 +203,7 @@ fn doctor_passes_then_fails_on_a_one_byte_managed_skill_edit() {
     let scratch = Scratch::new("doctor");
     let host = scratch.host();
     cli_install::install(Some(host), false).unwrap();
-    let clean = cli_install::doctor(Some(host)).unwrap();
+    let clean = doctor(host).unwrap();
     assert!(clean.ok(), "{:?}", clean.failures);
     assert!(clean.drift.is_empty(), "{:?}", clean.drift);
 
@@ -190,7 +213,7 @@ fn doctor_passes_then_fails_on_a_one_byte_managed_skill_edit() {
     bytes[0] ^= 0x01;
     fs::write(&target, &bytes).unwrap();
 
-    let report = cli_install::doctor(Some(host)).unwrap();
+    let report = doctor(host).unwrap();
     assert!(!report.ok());
     let expected = format!(".omp/skills/{name}/SKILL.md");
     assert!(
@@ -220,7 +243,7 @@ fn an_unmarked_host_skill_is_never_read_or_deleted() {
     assert!(!gitignore_lines(host)
         .iter()
         .any(|line| line.contains("my-notes")));
-    assert!(cli_install::doctor(Some(host)).unwrap().ok());
+    assert!(doctor(host).unwrap().ok());
 }
 
 #[test]
@@ -235,7 +258,7 @@ fn a_changed_untracked_package_file_is_overwritten_and_a_tracked_one_is_preserve
     assert!(report.installed_files > 0);
     let shipped = fs::read(package_dir().join("omp/mcp.json")).unwrap();
     assert_eq!(fs::read(&target).unwrap(), shipped);
-    assert!(cli_install::doctor(Some(host)).unwrap().ok());
+    assert!(doctor(host).unwrap().ok());
 
     // A host that tracks the file keeps its bytes and sees the drift.
     let status = std::process::Command::new("git")
@@ -270,7 +293,7 @@ fn a_host_without_devboard_receives_a_clean_install() {
     assert!(report.installed_files > 0);
     assert!(host.join(".omp/skills").is_dir());
     assert!(host.join("AGENTS.md").is_file());
-    assert!(cli_install::doctor(Some(host)).unwrap().ok());
+    assert!(doctor(host).unwrap().ok());
 }
 
 #[test]
@@ -284,9 +307,41 @@ fn agents_md_drift_is_reported_without_failing() {
     assert_eq!(report.agents, AgentsOutcome::Drift);
     assert_eq!(fs::read(host.join("AGENTS.md")).unwrap(), b"host content\n");
 
-    let doctor = cli_install::doctor(Some(host)).unwrap();
+    let doctor = doctor(host).unwrap();
     assert!(doctor.ok(), "{:?}", doctor.failures);
     assert!(doctor.drift.iter().any(|entry| entry.contains("AGENTS.md")));
+}
+
+#[test]
+fn a_tracked_deleted_agents_md_stays_absent_and_is_drift() {
+    let scratch = Scratch::new("agents-deleted");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+    let tracked = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["add", "--", "AGENTS.md"])
+        .status()
+        .unwrap();
+    assert!(tracked.success(), "the fixture tracks AGENTS.md");
+    fs::remove_file(host.join("AGENTS.md")).unwrap();
+
+    let report = cli_install::install(Some(host), false).unwrap();
+    assert_eq!(report.agents, AgentsOutcome::Drift);
+    assert!(!host.join("AGENTS.md").exists(), "install restored it");
+    assert!(report.drift.iter().any(|entry| entry.contains("AGENTS.md")));
+
+    let doctor = doctor(host).unwrap();
+    assert!(doctor.ok(), "{:?}", doctor.failures);
+    assert!(doctor.drift.iter().any(|entry| entry.contains("AGENTS.md")));
+    assert!(
+        !doctor
+            .failures
+            .iter()
+            .any(|failure| failure.contains("AGENTS.md")),
+        "{:?}",
+        doctor.failures
+    );
 }
 
 #[test]
@@ -294,11 +349,11 @@ fn doctor_names_a_missing_or_changed_prompt_and_extension() {
     let scratch = Scratch::new("doctor-payload");
     let host = scratch.host();
     cli_install::install(Some(host), false).unwrap();
-    assert!(cli_install::doctor(Some(host)).unwrap().ok());
+    assert!(doctor(host).unwrap().ok());
 
     let prompt = host.join(".devboard/prompts/forge-auth.md");
     fs::remove_file(&prompt).unwrap();
-    let report = cli_install::doctor(Some(host)).unwrap();
+    let report = doctor(host).unwrap();
     assert!(!report.ok());
     assert!(
         report
@@ -311,14 +366,14 @@ fn doctor_names_a_missing_or_changed_prompt_and_extension() {
 
     // Reinstall restores it, and a stale runtime extension is removed.
     cli_install::install(Some(host), false).unwrap();
-    assert!(cli_install::doctor(Some(host)).unwrap().ok());
+    assert!(doctor(host).unwrap().ok());
     let extension = host.join(".devboard/extensions/implement-next-epic.ts");
     fs::create_dir_all(extension.parent().unwrap()).unwrap();
     fs::write(&extension, b"stale runtime\n").unwrap();
     let report = cli_install::install(Some(host), false).unwrap();
     assert!(!extension.exists());
     assert_eq!(report.removed, 1);
-    assert!(cli_install::doctor(Some(host)).unwrap().ok());
+    assert!(doctor(host).unwrap().ok());
 }
 
 #[test]
@@ -393,4 +448,142 @@ fn every_installed_reference_resolves() {
             .contains(".ts"),
         "the command carries no TypeScript import"
     );
+}
+
+fn git(host: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {}", args.join(" "));
+}
+
+#[test]
+fn the_canonical_source_checkout_is_never_an_install_target() {
+    let scratch = Scratch::new("canonical");
+    let host = scratch.host();
+    fs::write(
+        host.join(".devboard/package.json"),
+        r#"{"name":"@dsdenes/devboard","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    let before = snapshot(host);
+    let error = cli_install::install(Some(host), false).expect_err("the checkout is refused");
+    assert!(error.to_string().contains("canonical"), "{error}");
+    assert_eq!(snapshot(host), before, "a refused install changes no byte");
+}
+
+#[test]
+fn a_host_that_tracks_its_devboard_tree_is_refused() {
+    let scratch = Scratch::new("tracked-tree");
+    let host = scratch.host();
+    fs::write(host.join(".devboard/keep"), b"tracked").unwrap();
+    git(host, &["add", "-f", ".devboard/keep"]);
+    let error = cli_install::install(Some(host), false).expect_err("a tracked tree is refused");
+    assert!(
+        error.to_string().contains("tracks its .devboard"),
+        "{error}"
+    );
+    assert_eq!(fs::read(host.join(".devboard/keep")).unwrap(), b"tracked");
+}
+
+#[test]
+fn a_symlinked_prefix_is_repaired_and_keeps_its_state() {
+    let scratch = Scratch::new("prefix");
+    let host = scratch.host();
+    let target = host.join("prefix-target");
+    let _ = fs::remove_dir_all(&target);
+    fs::create_dir_all(target.join(".tmp/journal")).unwrap();
+    fs::create_dir_all(target.join(".tmp/source-refresh")).unwrap();
+    fs::create_dir_all(target.join(".tmp/locks")).unwrap();
+    fs::write(target.join(".tmp/journal/abc.jsonl"), b"{}\n").unwrap();
+    fs::write(
+        target.join(".tmp/source-refresh/applied.json"),
+        b"{\"commit\":\"x\"}",
+    )
+    .unwrap();
+    fs::write(target.join(".tmp/locks/one.lock"), b"owner").unwrap();
+    fs::remove_dir_all(host.join(".devboard")).unwrap();
+    std::os::unix::fs::symlink(&target, host.join(".devboard")).unwrap();
+    assert!(cli_install::refuse_symlinked_prefix(host).is_err());
+
+    cli_install::install(Some(host), false).expect("the prefix is repaired");
+    assert!(!fs::symlink_metadata(host.join(".devboard"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(host.join(".devboard/.tmp/journal/abc.jsonl").is_file());
+    assert!(host
+        .join(".devboard/.tmp/source-refresh/applied.json")
+        .is_file());
+    assert!(host.join(".devboard/.tmp/locks/one.lock").is_file());
+    assert!(host.join(".omp/commands").is_dir());
+    cli_install::refuse_symlinked_prefix(host).expect("the repaired prefix is a real directory");
+    let _ = fs::remove_dir_all(&target);
+}
+
+#[test]
+fn a_differing_wrapper_needs_force() {
+    let scratch = Scratch::new("wrapper");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+    let target = host.join(".omp/commands/setup-devboard.md");
+    fs::write(&target, b"host edit\n").unwrap();
+    let error = cli_install::install(Some(host), false).expect_err("the wrapper is refused");
+    assert!(error.to_string().contains("--force"), "{error}");
+    assert_eq!(fs::read(&target).unwrap(), b"host edit\n");
+    cli_install::install(Some(host), true).expect("force replaces the wrapper");
+    assert_ne!(fs::read(&target).unwrap(), b"host edit\n");
+}
+
+#[test]
+fn a_git_ls_files_failure_refuses_the_install() {
+    let scratch = Scratch::new("ls-files");
+    let host = scratch.host();
+    fs::write(host.join(".git/index"), b"not an index").unwrap();
+    let error = cli_install::install(Some(host), false).expect_err("a failed read is refused");
+    assert!(error.to_string().contains("git ls-files"), "{error}");
+    assert!(!host.join(".omp").exists());
+}
+
+#[test]
+fn a_tracked_agents_md_deleted_by_the_host_stays_absent() {
+    let scratch = Scratch::new("agents-deleted-tracked");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+    git(host, &["add", "-f", "AGENTS.md"]);
+    fs::remove_file(host.join("AGENTS.md")).unwrap();
+    let report = cli_install::install(Some(host), false).unwrap();
+    assert!(!host.join("AGENTS.md").exists(), "the deletion stands");
+    assert_eq!(report.agents, AgentsOutcome::Drift);
+    assert!(report.drift.iter().any(|entry| entry.contains("AGENTS.md")));
+}
+
+#[test]
+fn an_update_syncs_from_the_installed_binary_first() {
+    let scratch = Scratch::new("installed-sync");
+    let host = scratch.host();
+    let marker = host.join("installed-binary-ran");
+    let program = host.join(".devboard/bin/devboard");
+    fs::create_dir_all(program.parent().unwrap()).unwrap();
+    fs::write(
+        &program,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let status = cli_install::sync_from_installed_binary(host).expect("the installed binary runs");
+    assert!(status.success());
+    assert!(marker.is_file(), "the installed binary synced the host");
+    // The host still receives the wrappers from this binary afterward.
+    let report = cli_install::install(Some(host), true).unwrap();
+    assert!(report.installed_files > 0);
+    assert!(host.join(".omp/commands/setup-devboard.md").is_file());
+    let _ = fs::remove_file(&marker);
 }

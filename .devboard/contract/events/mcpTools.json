@@ -889,7 +889,7 @@
       {
         "name": "verification_run",
         "title": "Run a verification check",
-        "description": "Runs one allowlisted check from `.devboard/package.json` with a 900-second timeout and at most 16 KiB of captured output. The check's complete output is written to a log unique to that invocation and that path is returned as `log`; when the run settles the same output is published to `<stateDir>/<check>.log`.",
+        "description": "Runs one allowlisted check from `.devboard/package.json` with a 900-second timeout and at most 16 KiB of captured output. The Rust checks `rust:fmt`, `rust:clippy`, and `rust:test` run their exact cargo argv from the harness directory. The check's complete output is written to a log unique to that invocation and that path is returned as `log`; when the run settles the same output is published to `<stateDir>/<check>.log`.",
         "inputSchema": {
           "type": "object",
           "additionalProperties": false,
@@ -914,19 +914,12 @@
           "bun run check",
           "bun run build",
           "bunx tsc --noEmit",
-          "bun run verify:agents",
-          "bun run verify:mcp-optimizer",
-          "bun run verify:install",
-          "bun run verify:interface",
-          "bun run verify:issues",
-          "bun run verify:mcp",
-          "bun run verify:providers",
-          "bun run verify:scout",
-          "bun run verify:single-responsibility",
-          "bun run verify:dead-code",
-          "bun run verify:ui",
-          "bun run verify:update",
-          "bun run verify:watchdog"
+          "cargo fmt --check --all",
+          "cargo clippy --workspace --all-targets -- -D warnings",
+          "cargo test --workspace",
+          "rust:fmt",
+          "rust:clippy",
+          "rust:test"
         ]
       },
       {

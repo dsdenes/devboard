@@ -334,7 +334,7 @@ fn asset_name(url: &str) -> String {
 /// the release's Gitea assets are listed and the matching artifact is read
 /// with the same credentials. Both failures are reported together so a journal
 /// names the transport that failed.
-async fn download_release_asset(
+pub(crate) async fn download_release_asset(
     source: &ManifestSource,
     release: &ReleaseInfo,
     asset: &ReleaseAsset,

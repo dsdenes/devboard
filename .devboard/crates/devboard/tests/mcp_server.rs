@@ -195,7 +195,12 @@ async fn the_stdio_server_answers_initialize_list_and_the_core_tools() {
         std::fs::read_to_string(context.repo_dir.join(".devboard/goals/the-objective.md"))
             .expect("the written spec");
     assert!(written.starts_with("## Objective\n\nThe objective\n\n"));
-    assert!(written.contains("## Stop conditions\n\nWhen it passes\n\n"));
+    assert!(written.contains("## Stop conditions\n\nWhen it passes\n"));
+    assert!(written.ends_with("When it passes\n"), "{written:?}");
+    assert!(
+        !written.ends_with("\n\n"),
+        "exactly one newline ends the file"
+    );
 
     let journal = tool_result(&frames, 6);
     assert_eq!(journal["total"], 1);

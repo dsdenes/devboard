@@ -48,6 +48,86 @@ async fn run() -> anyhow::Result<()> {
     }
 }
 
+/// Publishes a generated dashboard credential into this process's own
+/// environment, once.
+///
+/// `/proc/<pid>/environ` is the initial environment block, so a `setenv` after
+/// start never appears there. The process re-executes itself with both
+/// credentials set, which is also what makes the watchdog's discovery and an
+/// MCP control tool see the same token the listener enforces.
+fn publish_dashboard_credentials(config: &Config) -> anyhow::Result<()> {
+    if std::env::var("DEVBOARD_TOKEN_PUBLISHED").as_deref() == Ok("1") {
+        return Ok(());
+    }
+    let token = std::env::var("DEVBOARD_DASHBOARD_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let bootstrap = std::env::var("DEVBOARD_BOOTSTRAP_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    if token.as_deref() == Some(config.token.as_str())
+        && bootstrap.as_deref() == Some(config.bootstrap.as_str())
+    {
+        return Ok(());
+    }
+    let program = devboard::relaunch::own_program();
+    let mut command = std::process::Command::new(program);
+    command
+        .args(std::env::args_os().skip(1))
+        .env("DEVBOARD_DASHBOARD_TOKEN", &config.token)
+        .env("DEVBOARD_BOOTSTRAP_TOKEN", &config.bootstrap)
+        .env("DEVBOARD_TOKEN_PUBLISHED", "1");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let error = command.exec();
+        anyhow::bail!("republishing the dashboard credential: {error}");
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+/// A stopping dashboard ends its children, its Discover staging, and its
+/// state file before the process goes away.
+fn install_signal_shutdown(server: &std::sync::Arc<Server>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let app = std::sync::Arc::clone(&server.app);
+        tokio::spawn(async move {
+            let mut terminate = signal(SignalKind::terminate()).ok();
+            let mut interrupt = signal(SignalKind::interrupt()).ok();
+            let wait = async {
+                match (&mut terminate, &mut interrupt) {
+                    (Some(terminate), Some(interrupt)) => {
+                        tokio::select! {
+                            _ = terminate.recv() => {}
+                            _ = interrupt.recv() => {}
+                        }
+                    }
+                    (Some(terminate), None) => {
+                        terminate.recv().await;
+                    }
+                    (None, Some(interrupt)) => {
+                        interrupt.recv().await;
+                    }
+                    (None, None) => std::future::pending::<()>().await,
+                }
+            };
+            wait.await;
+            devboard::app::graceful_shutdown(&app).await;
+            std::process::exit(0);
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = server;
+    }
+}
+
 async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     let harness_dir = devboard::version::running_harness_dir();
     // Discovery runs for the repository this dashboard will serve, never for
@@ -115,6 +195,7 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             config.repo_dir.display()
         );
     }
+    publish_dashboard_credentials(&config)?;
     std::fs::create_dir_all(&config.state_dir).context("creating the state directory")?;
     // One orphan-reaping pass before this process serves. It never signals a
     // live recorded child and journals the pass and every kill.
@@ -169,7 +250,8 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             std::process::exit(0);
         }));
     }
-    if devboard::version::is_harness_source_checkout(&server.config.repo_dir) {
+    install_signal_shutdown(&server);
+    if devboard::version::serves_own_harness(&server.config.repo_dir) {
         server.app.start_source_refresh();
     }
     server.app.start_updater();
@@ -317,10 +399,11 @@ async fn install_command(args: &[String]) -> anyhow::Result<()> {
 async fn update_command(args: &[String]) -> anyhow::Result<()> {
     let options = parse_install_options(args, "usage: devboard update [host] [--port N]")?;
     let host = devboard::cli_install::resolve_host(options.host.as_deref())?;
+    devboard::cli_install::refuse_symlinked_prefix(&host)?;
     let source = devboard::updates::manifest_source_from_env(&host.join(".devboard/.tmp"))
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "update: set DEVBOARD_GITEA_URL or DEVBOARD_RELEASE_URL so a release can be read"
+                "update: set DEVBOARD_GITEA_URL, GITEA_URL, or DEVBOARD_RELEASE_URL so a release can be read"
             )
         })?;
     let release = devboard::release::latest_manifest(&source)
@@ -344,7 +427,16 @@ async fn update_command(args: &[String]) -> anyhow::Result<()> {
             installed.as_deref().unwrap_or("unknown")
         );
     }
-    let report = devboard::cli_install::install(Some(&host), false)?;
+    // The installed binary carries the released payload; it writes the host's
+    // commands, extensions, prompts, and skills before this command reports.
+    match devboard::cli_install::sync_from_installed_binary(&host) {
+        Some(status) if status.success() => {}
+        Some(status) => eprintln!(
+            "update: the installed binary's install exited with {status}; falling back to this binary's payload"
+        ),
+        None => {}
+    }
+    let report = devboard::cli_install::install(Some(&host), true)?;
     for line in &report.drift {
         println!("drift: {line} (tracked; left unchanged)");
     }
@@ -374,9 +466,12 @@ async fn update_command(args: &[String]) -> anyhow::Result<()> {
 fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
 
+    let state_dir = host.join(".devboard").join(".tmp");
+    std::fs::create_dir_all(&state_dir).context("creating the state directory")?;
+    let credentials = load_or_create_credentials(&state_dir.join("credentials.json"))?;
     // The dashboard's own version marker is the exact record for this host,
     // including a fixture path the `/proc` discovery deliberately ignores.
-    let marker = host.join(".devboard").join(".tmp").join("version.json");
+    let marker = state_dir.join("version.json");
     if let Ok(text) = std::fs::read_to_string(&marker) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
             let pid = value
@@ -388,44 +483,28 @@ fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
                 .and_then(|value| value.as_u64())
                 .unwrap_or(0) as u16;
             if pid != 0 && devboard::supervision::live_process(pid) {
-                if recorded_port == port {
+                if recorded_port == port && ready_once(recorded_port, &credentials.token) {
                     println!(
-                        "devboard: dashboard already serving http://127.0.0.1:{port} (pid {pid})"
+                        "devboard: dashboard on {} (pid {pid})",
+                        bootstrap_url(recorded_port, &credentials.bootstrap)
                     );
                     return Ok(());
                 }
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                while devboard::supervision::live_process(pid)
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
+                terminate_dashboard(pid);
             }
         }
     }
 
     for dashboard in devboard::mcp_server::discover_dashboards(host) {
-        if dashboard.port == port {
+        if dashboard.port == port && ready_once(port, &credentials.token) {
             println!(
-                "devboard: dashboard already serving http://127.0.0.1:{port} (pid {})",
-                dashboard.pid
+                "devboard: dashboard on {} (pid {pid})",
+                bootstrap_url(port, &credentials.bootstrap),
+                pid = dashboard.pid
             );
             return Ok(());
         }
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(dashboard.pid as i32, libc::SIGTERM);
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while devboard::supervision::live_process(dashboard.pid)
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        terminate_dashboard(dashboard.pid);
     }
 
     let program = host.join(".devboard").join("bin").join("devboard");
@@ -434,6 +513,8 @@ fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
     } else {
         devboard::relaunch::own_program()
     };
+    let log_path = state_dir.join("dashboard.log");
+    let log = std::fs::File::create(&log_path).context("creating the dashboard log")?;
     let mut command = Command::new(&program);
     command
         .arg("serve")
@@ -443,10 +524,13 @@ fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
         .arg(host)
         .env("REPO_DIR", host)
         .env("PORT", port.to_string())
-        .env("STATE_DIR", host.join(".devboard").join(".tmp"))
+        .env("STATE_DIR", &state_dir)
+        .env("DEVBOARD_DASHBOARD_TOKEN", &credentials.token)
+        .env("DEVBOARD_BOOTSTRAP_TOKEN", &credentials.bootstrap)
+        .env("DEVBOARD_TOKEN_PUBLISHED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(log));
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -459,14 +543,139 @@ fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
             });
         }
     }
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|error| anyhow::anyhow!("could not start the dashboard: {error}"))?;
-    println!(
-        "devboard: dashboard on http://127.0.0.1:{port} (pid {})",
-        child.id()
+    let pid = child.id();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut listening = port;
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            let detail = tail_of(&log_path);
+            anyhow::bail!(
+                "the dashboard exited with {status} before it served port {port}: {detail}"
+            );
+        }
+        if let Ok(text) = std::fs::read_to_string(&marker) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                let recorded = value
+                    .get("pid")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0) as u32;
+                if recorded == pid {
+                    if let Some(actual) = value.get("port").and_then(|value| value.as_u64()) {
+                        listening = actual as u16;
+                    }
+                }
+            }
+        }
+        if ready_once(listening, &credentials.token) {
+            println!(
+                "devboard: dashboard on {} (pid {pid})",
+                bootstrap_url(listening, &credentials.bootstrap)
+            );
+            println!("devboard: dashboard token {}", credentials.token);
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let detail = tail_of(&log_path);
+            anyhow::bail!("the dashboard did not serve port {port} in time: {detail}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+struct DashboardCredentials {
+    token: String,
+    bootstrap: String,
+}
+
+/// The host's dashboard credential, created once and reused by every later
+/// start so a printed bootstrap URL keeps working.
+fn load_or_create_credentials(path: &std::path::Path) -> anyhow::Result<DashboardCredentials> {
+    if let Ok(text) = std::fs::read_to_string(path) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            let token = value.get("token").and_then(|value| value.as_str());
+            let bootstrap = value.get("bootstrap").and_then(|value| value.as_str());
+            if let (Some(token), Some(bootstrap)) = (token, bootstrap) {
+                if !token.is_empty() && !bootstrap.is_empty() {
+                    return Ok(DashboardCredentials {
+                        token: token.to_string(),
+                        bootstrap: bootstrap.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    let credentials = DashboardCredentials {
+        token: devboard::config::generated_token(),
+        bootstrap: devboard::config::generated_token(),
+    };
+    let text = format!(
+        "{}\n",
+        serde_json::json!({"token": credentials.token, "bootstrap": credentials.bootstrap})
     );
-    Ok(())
+    devboard::state::write_file_atomically_sync(path, &text)
+        .context("writing the dashboard credential")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(credentials)
+}
+
+fn bootstrap_url(port: u16, bootstrap: &str) -> String {
+    format!("http://127.0.0.1:{port}/?bootstrap={bootstrap}")
+}
+
+/// One `GET /ready` against a loopback listener with the dashboard credential.
+fn ready_once(port: u16, token: &str) -> bool {
+    use std::io::{Read, Write};
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) =
+        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300))
+    else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1_000)));
+    let request = format!(
+        "GET /ready HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    answer
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "))
+}
+
+fn tail_of(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .rev()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "no diagnostic".to_string())
+}
+
+fn terminate_dashboard(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while devboard::supervision::live_process(pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// `devboard cleanup [--dry-run] [--once] [--root <dir>] [--json]`.
@@ -527,7 +736,7 @@ fn cleanup_command(args: &[String]) -> anyhow::Result<()> {
             PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
         }
     };
-    let instances = devboard::workers::watchdog::discover_instances();
+    let instances = devboard::workers::watchdog::discover_instances_for(&root);
     let report = devboard::workers::watchdog::run_cleanup(
         &root,
         devboard::workers::watchdog::epoch_ms(),

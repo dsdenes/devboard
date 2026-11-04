@@ -21,6 +21,8 @@ pub struct RelaunchSettings {
     pub state_dir: PathBuf,
     /// The credential a readiness probe must present.
     pub token: String,
+    /// The launcher credential a page opens with.
+    pub bootstrap: String,
 }
 
 impl RelaunchSettings {
@@ -33,6 +35,7 @@ impl RelaunchSettings {
             goal_file: config.goal_file.clone(),
             state_dir: config.state_dir.clone(),
             token: config.token.clone(),
+            bootstrap: config.bootstrap.clone(),
         }
     }
 }
@@ -101,6 +104,7 @@ pub fn spawn_replacement(
         .env("GOAL_FILE", &settings.goal_file)
         .env("STATE_DIR", &settings.state_dir)
         .env("DEVBOARD_DASHBOARD_TOKEN", &settings.token)
+        .env("DEVBOARD_BOOTSTRAP_TOKEN", &settings.bootstrap)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

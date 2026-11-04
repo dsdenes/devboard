@@ -31,7 +31,7 @@ fn changed_wrappers_are_written_and_stale_untracked_files_are_removed() {
     let stale = root.join(".omp/commands/renamed-away.md");
     std::fs::write(&stale, b"stale command\n").unwrap();
 
-    let report = devboard::cli_install::install(Some(&root), false).unwrap();
+    let report = devboard::cli_install::install(Some(&root), true).unwrap();
     assert_eq!(
         std::fs::read(&command).unwrap(),
         std::fs::read(shipped_command()).unwrap()
@@ -52,25 +52,25 @@ fn a_tracked_payload_file_is_preserved_and_reported_as_drift() {
         .status()
         .unwrap()
         .success());
-    let prompt = root.join(".devboard/prompts/forge-auth.md");
-    let original = std::fs::read(&prompt).unwrap();
+    // A tracked wrapper belongs to the host: the install leaves it and reports
+    // the drift instead of refusing or replacing it.
+    let command = root.join(".omp/commands/implement-issue.md");
+    let original = std::fs::read(&command).unwrap();
     assert!(std::process::Command::new("git")
         .arg("-C")
         .arg(&root)
-        .args(["add", "-f", ".devboard/prompts/forge-auth.md"])
+        .args(["add", "-f", ".omp/commands/implement-issue.md"])
         .status()
         .unwrap()
         .success());
 
-    // Change the package copy by changing the host copy: the next install
-    // sees a differing tracked file and leaves the bytes alone.
-    std::fs::write(&prompt, b"host tracked content\n").unwrap();
+    std::fs::write(&command, b"host tracked content\n").unwrap();
     let report = devboard::cli_install::install(Some(&root), false).unwrap();
-    assert_eq!(std::fs::read(&prompt).unwrap(), b"host tracked content\n");
+    assert_eq!(std::fs::read(&command).unwrap(), b"host tracked content\n");
     assert!(report
         .drift
         .iter()
-        .any(|entry| entry.contains(".devboard/prompts/forge-auth.md")));
-    assert_ne!(std::fs::read(&prompt).unwrap(), original);
+        .any(|entry| entry.contains(".omp/commands/implement-issue.md")));
+    assert_ne!(std::fs::read(&command).unwrap(), original);
     let _ = std::fs::remove_dir_all(&root);
 }

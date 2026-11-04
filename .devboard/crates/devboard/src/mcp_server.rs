@@ -182,7 +182,7 @@ fn real_path(path: &Path) -> PathBuf {
 /// Every live dashboard serving exactly this repository.
 pub fn discover_dashboards(repo_dir: &Path) -> Vec<LiveDashboard> {
     let target = real_path(repo_dir);
-    let mut found: Vec<LiveDashboard> = crate::workers::watchdog::discover_instances()
+    let mut found: Vec<LiveDashboard> = crate::workers::watchdog::discover_instances_for(repo_dir)
         .into_iter()
         .filter(|instance| real_path(Path::new(&instance.repo_dir)) == target)
         .map(|instance| LiveDashboard {
@@ -1286,10 +1286,12 @@ fn write_goal_spec(context: &McpContext, args: &Map<String, Value>) -> Result<Va
     std::fs::create_dir_all(&goals_dir)
         .map_err(|_| "The goal spec directory could not be created.".to_string())?;
     let slug = free_slug(&goals_dir, &requested);
-    let mut content = String::new();
-    for (index, heading) in GOAL_SECTION_HEADINGS.iter().enumerate() {
-        content.push_str(&format!("## {heading}\n\n{}\n\n", bodies[index].trim_end()));
-    }
+    let sections: Vec<String> = GOAL_SECTION_HEADINGS
+        .iter()
+        .enumerate()
+        .map(|(index, heading)| format!("## {heading}\n\n{}", bodies[index].trim_end()))
+        .collect();
+    let content = format!("{}\n", sections.join("\n\n"));
     let path = goals_dir.join(format!("{slug}.md"));
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
@@ -2344,7 +2346,7 @@ fn issue_labels(value: Option<&Value>) -> Result<Vec<String>, String> {
             return Err("labels must be a list of non-empty label names.".to_string());
         }
         let label = text.trim().to_string();
-        if label.chars().count() > 100 {
+        if crate::feedback::js_len(&label) > 100 {
             return Err("A label name is longer than 100 characters.".to_string());
         }
         if !labels.contains(&label) {
@@ -2754,65 +2756,6 @@ async fn flow_control(context: &McpContext, args: &Map<String, Value>) -> Result
 // Background agent reads
 // ---------------------------------------------------------------------------
 
-fn agent_descriptor(
-    id: &str,
-) -> Option<(
-    &'static str,
-    &'static str,
-    &'static str,
-    u32,
-    Option<u32>,
-    Option<u32>,
-    &'static str,
-)> {
-    let entry = match id {
-        "scout" => ("Auto Scout", "Scans the repository and files significant findings as issues.", "repository", 1, Some(10), Some(5), "activity"),
-        "watchdog" => ("Watchdog", "Watches dashboard evidence and files significant machine findings as issues.", "machine", 10, None, None, "cycles"),
-        "design" => ("Design System", "Audits the interface against its documented design system and files capped issues for every divergence.", "repository", 60, Some(10), Some(5), "activity"),
-        "dead-code" => ("Dead Code", "Proves dead code from a seeded entry point and files capped removal issues for every finding.", "repository", 60, Some(10), Some(5), "activity"),
-        "mcp-optimizer" => ("MCP optimizer", "Reviews repeated agent mistakes and manual work and files one improvement issue per pattern.", "repository", 60, Some(10), Some(20), "cycles"),
-        "api-standards" => ("API Standards", "Audits the dashboard HTTP API against the project REST skill and files capped conformance issues for every MUST or SHOULD violation.", "repository", 60, Some(10), Some(5), "activity"),
-        "single-responsibility" => ("Single Responsibility", "Audits the repository source against the project Single Responsibility skill and files one capped issue per component and violation.", "repository", 60, Some(10), Some(5), "activity"),
-        "consistent-naming" => ("Consistent Naming", "Audits the repository's vocabulary against the project naming skill and files one capped vocabulary issue per concept and violation.", "repository", 60, Some(10), Some(5), "activity"),
-        "release-train" => ("Release Train", "Releases every unreleased commit on main on its scheduled cadence, one version per collected range.", "repository", 10, None, None, "activity"),
-        _ => return None,
-    };
-    Some(entry)
-}
-
-fn persisted_agent(id: &str) -> Option<Value> {
-    let (label, description, scope, minutes, max_per_hour, max_pending, panel) =
-        agent_descriptor(id)?;
-    Some(json!({
-        "id": id,
-        "label": label,
-        "description": description,
-        "scope": scope,
-        "lifecycle": "stopped",
-        "paused": false,
-        "enabled": false,
-        "owned": false,
-        "attached": false,
-        "cadence": {
-            "minutes": minutes,
-            "defaultMinutes": minutes,
-            "lastRunAt": null,
-            "nextRunAt": null,
-        },
-        "limits": {"maxPerHour": max_per_hour, "maxPending": max_pending},
-        "issues": [],
-        "documentation": [],
-        "releases": [],
-        "pending": 0,
-        "sync": {"state": "stale", "at": null, "error": null},
-        "detail": {"panel": panel},
-        "notice": null,
-        "error": null,
-        "timer": null,
-        "workers": [],
-    }))
-}
-
 async fn background_agents_list(context: &McpContext) -> Result<Value, String> {
     let dashboards = dashboards_for(context);
     if dashboards.len() == 1 {
@@ -2829,12 +2772,10 @@ async fn background_agents_list(context: &McpContext) -> Result<Value, String> {
             }
         }
     }
-    Ok(Value::Array(
-        AGENT_IDS
-            .iter()
-            .filter_map(|id| persisted_agent(id))
-            .collect(),
-    ))
+    Ok(Value::Array(crate::agents_mode::persisted_snapshots(
+        &context.state_dir,
+        &context.repo_dir,
+    )))
 }
 
 async fn background_agent_get(context: &McpContext, id: &str) -> Result<Value, String> {
@@ -2863,7 +2804,10 @@ async fn background_agent_get(context: &McpContext, id: &str) -> Result<Value, S
             return Ok(reply.get("agent").cloned().unwrap_or(Value::Null));
         }
     }
-    persisted_agent(id).ok_or_else(|| format!("Unknown background agent: {id}."))
+    crate::agents_mode::persisted_snapshots(&context.state_dir, &context.repo_dir)
+        .into_iter()
+        .find(|agent| agent.get("id").and_then(Value::as_str) == Some(id))
+        .ok_or_else(|| format!("Unknown background agent: {id}."))
 }
 
 // ---------------------------------------------------------------------------
@@ -3706,5 +3650,17 @@ mod title_tests {
         assert!(valid_goal_title(Some(&at_cap)).is_ok());
         let plain = Value::String("a".repeat(200));
         assert!(valid_goal_title(Some(&plain)).is_ok());
+    }
+
+    #[test]
+    fn the_label_cap_counts_utf16_units() {
+        let emoji_over = Value::Array(vec![Value::String("😀".repeat(51))]);
+        assert!(issue_labels(Some(&emoji_over)).is_err());
+        let emoji_at_cap = Value::Array(vec![Value::String("😀".repeat(50))]);
+        assert!(issue_labels(Some(&emoji_at_cap)).is_ok());
+        let plain_at_cap = Value::Array(vec![Value::String("a".repeat(100))]);
+        assert!(issue_labels(Some(&plain_at_cap)).is_ok());
+        let plain_over = Value::Array(vec![Value::String("a".repeat(101))]);
+        assert!(issue_labels(Some(&plain_over)).is_err());
     }
 }

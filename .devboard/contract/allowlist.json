@@ -114,5 +114,10 @@
       "reason": "an ENOENT diagnostic naming an absolute fixture path"
     }
   ],
-  "statePrefixes": []
+  "statePrefixes": [
+    {
+      "prefix": "serving/",
+      "reason": "the immutable static snapshot directory is named after the running pid and the harness version, so two runs never compare it"
+    }
+  ]
 }

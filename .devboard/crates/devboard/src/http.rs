@@ -277,6 +277,18 @@ impl StaticCache {
 impl Server {
     /// Builds one dashboard server from its configuration and journal.
     pub fn new(config: Config, journal: crate::journal::Journal) -> Arc<Self> {
+        let mut config = config;
+        if let Some(source) = config.static_dir.clone() {
+            let version =
+                crate::version::read_harness_version(&crate::version::running_harness_dir())
+                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+            match crate::assets::snapshot_static(&source, &config.state_dir, &version) {
+                Ok(snapshot) => config.static_dir = Some(snapshot),
+                Err(error) => {
+                    journal.write("server-error", &format!("static snapshot: {error}"), None)
+                }
+            }
+        }
         let allowed_hostnames = allowed_request_hostnames(&config.hostname, &config.allowed_hosts);
         let token = config.token.clone();
         let app = App::new(config.clone(), journal);
@@ -547,7 +559,16 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         if let Some(RequestRefusal::Host) =
             request_refusal(&headers, &url, &server.allowed_hostnames)
         {
-            return reply(refusal_answer(&headers, RequestRefusal::Host));
+            // The socket keeps 421; a mutation answers 403, naming the host.
+            if uri.path() == "/ws" {
+                return reply(refusal_answer(&headers, RequestRefusal::Host));
+            }
+            return reply(Replies::problem(
+                &headers,
+                403,
+                "The request host is not served by this dashboard.",
+                &[],
+            ));
         }
     }
 

@@ -1308,3 +1308,51 @@ fn a_watchdog_title_counts_utf16_units() {
     );
     assert_eq!(title, expected);
 }
+
+#[test]
+fn a_rejected_dedup_key_rotates_and_other_failures_stop() {
+    use devboard::providers::{PeerBinding, ProviderId};
+
+    let binding = |id: &str| PeerBinding {
+        provider: ProviderId::OpenCodeGo,
+        provider_name: "opencode-go",
+        subscription_id: id.to_string(),
+        subscription_label: id.to_string(),
+        model: "opencode-go/deepseek-v4.1-flash".to_string(),
+        remaining_fraction: None,
+        agent_dir: PathBuf::from(format!("/state/providers/agents/{id}")),
+        env: HashMap::new(),
+    };
+    let peers = vec![binding("first"), binding("second")];
+    let mut tried = Vec::new();
+    let answer = rotate_dedup_attempts(&peers, |peer| {
+        tried.push(peer.subscription_id.clone());
+        if peer.subscription_id == "first" {
+            Err("HTTP 401 Unauthorized".to_string())
+        } else {
+            Ok("deduplicated".to_string())
+        }
+    })
+    .expect("the second binding answers");
+    assert_eq!(answer, "deduplicated");
+    assert_eq!(tried, ["first", "second"]);
+
+    let mut tried = Vec::new();
+    let error = rotate_dedup_attempts(&peers, |peer| {
+        tried.push(peer.subscription_id.clone());
+        Err("the peer exited with 2".to_string())
+    })
+    .expect_err("a non-credential failure stops");
+    assert_eq!(error, "the peer exited with 2");
+    assert_eq!(tried, ["first"], "a non-credential failure never rotates");
+
+    let mut tried = Vec::new();
+    let error = rotate_dedup_attempts(&peers, |peer| {
+        tried.push(peer.subscription_id.clone());
+        Err("invalid api key".to_string())
+    })
+    .expect_err("every binding can reject its key");
+    assert_eq!(error, "invalid api key");
+    assert_eq!(tried, ["first", "second"]);
+    assert_eq!(DEDUP_PEER_TIMEOUT_MS, 240_000);
+}

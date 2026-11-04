@@ -97,6 +97,8 @@ pub struct Shared {
     /// Serializes whole-state writes; the TypeScript event loop was
     /// single-threaded, so two broadcasts never interleaved.
     persist_lock: Mutex<()>,
+    /// The damaged-state detail a new client is owed, once.
+    restore_error: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -243,6 +245,11 @@ impl Shared {
                 };
                 self.journal
                     .write("server-error", &format!("state: {detail}"), None);
+                if let Ok(mut slot) = self.restore_error.lock() {
+                    *slot = Some(format!(
+                        "Could not restore the saved dashboard state: {detail}"
+                    ));
+                }
                 return;
             }
         };
@@ -274,6 +281,12 @@ impl Shared {
             }
         }
         Value::Object(state)
+    }
+
+    /// Writes the current state even when no event produced it, so a signal
+    /// stop leaves a valid state file behind.
+    pub fn flush_state(&self) {
+        self.persist(&Value::Null);
     }
 
     /// Replaces the state file with the current state, skipping a write when
@@ -333,6 +346,8 @@ pub struct App {
     restart_hook: Mutex<Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>>,
     source_refresher: Mutex<Option<crate::source_refresh::SourceRefresher>>,
     restart_when_idle: Arc<std::sync::atomic::AtomicBool>,
+    /// True while one restart request is in flight.
+    restarting: std::sync::atomic::AtomicBool,
     /// ACP children the previous process recorded for its replacement to end.
     restored_children: Mutex<Vec<crate::detached_run::RecordedChild>>,
 }
@@ -364,6 +379,7 @@ impl App {
             gates: Mutex::new(Vec::new()),
             broadcast_hooks: Mutex::new(Vec::new()),
             persist_lock: Mutex::new(()),
+            restore_error: Mutex::new(None),
         });
         // The MCP optimizer page reads one projection file even before its
         // first cycle. Publish the empty, successful projection once; a later
@@ -413,6 +429,7 @@ impl App {
             restart_hook: Mutex::new(None),
             source_refresher: Mutex::new(None),
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            restarting: std::sync::atomic::AtomicBool::new(false),
             restored_children: Mutex::new(Vec::new()),
         });
         {
@@ -433,6 +450,13 @@ impl App {
         app.register_restart_section();
         app.register_children_section();
         app.shared.restore();
+        if app.restart_waits_for_idle() {
+            // A restart was waiting for idle work when the previous process
+            // ended; resume the wait instead of dropping the request.
+            app.restart_when_idle
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            app.hold_restart_until_idle();
+        }
         app.terminate_restored_children();
         app.start_lease_refresh();
         app
@@ -484,8 +508,18 @@ impl App {
         self.shared.broadcast(event);
     }
 
-    /// The frames a client owes on connect, before its own replies.
+    /// The frames a client owes on connect, before its own replies. A damaged
+    /// state file is reported once, before any restored state.
     pub async fn open(&self, conn: &Conn) {
+        let damaged = self
+            .shared
+            .restore_error
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(message) = damaged {
+            conn.send(json!({"type": "error", "message": message}));
+        }
         self.replay(conn);
     }
 
@@ -563,15 +597,18 @@ impl App {
                     conn.send(json!({"type": "error", "message": "Restarting the server is not available."}));
                     return Ok(());
                 }
+                if self.restarting.load(std::sync::atomic::Ordering::SeqCst) {
+                    conn.send(json!({"type": "error", "message": "A server restart is already in progress."}));
+                    return Ok(());
+                }
                 let when_idle = when_idle.as_ref().and_then(Value::as_bool).unwrap_or(false);
                 if when_idle && self.shared.busy_reason().is_some() {
                     self.arc_self().hold_restart_until_idle();
                     return Ok(());
                 }
-                match self.begin_restart() {
-                    Ok(()) => {}
-                    Err(message) => conn.send(json!({"type": "error", "message": message})),
-                }
+                // A failure is reported to every client through
+                // `replacement_failed`; the requester is one of them.
+                let _ = self.arc_self().begin_restart();
                 Ok(())
             }
             Command::GetMcpTools => {
@@ -710,7 +747,7 @@ impl App {
 
     /// Syncs the host's managed copies from the installed harness.
     pub fn sync_host_copies(&self) -> anyhow::Result<()> {
-        let report = crate::cli_install::install(Some(&self.config().repo_dir), false)?;
+        let report = crate::cli_install::install(Some(&self.config().repo_dir), true)?;
         if report.agents.as_str() == "drift" {
             self.shared
                 .journal
@@ -788,10 +825,7 @@ impl App {
                         &format!("could not replace the server with {version}: {error}"),
                         None,
                     );
-                    if let Ok(mut failure) = app.replacement_failure.lock() {
-                        *failure = Some(error);
-                    }
-                    app.shared.broadcast(app.version_state());
+                    app.replacement_failed(&error);
                 }
             }
         });
@@ -901,8 +935,12 @@ impl App {
 
     /// Keeps a restart request pending until no mode holds live work.
     pub fn hold_restart_until_idle(self: &Arc<Self>) {
-        self.restart_when_idle
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if !self
+            .restart_when_idle
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.shared.broadcast(json!({"type": "upgradePending"}));
+        }
         let app = Arc::clone(self);
         tokio::spawn(async move {
             let mut timer = tokio::time::interval(std::time::Duration::from_millis(1_000));
@@ -918,15 +956,52 @@ impl App {
     }
 
     /// Replaces this process through its launcher, telling pages first.
-    pub fn begin_restart(&self) -> Result<(), String> {
+    pub fn begin_restart(self: &Arc<Self>) -> Result<(), String> {
+        if self
+            .restarting
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("A server restart is already in progress.".to_string());
+        }
         self.restart_when_idle
             .store(false, std::sync::atomic::Ordering::SeqCst);
         let hook = self.restart_hook.lock().ok().and_then(|slot| slot.clone());
         let Some(hook) = hook else {
+            self.restarting
+                .store(false, std::sync::atomic::Ordering::SeqCst);
             return Err("Restarting the server is not available.".to_string());
         };
         self.prepare_replacement();
-        hook()
+        match hook() {
+            Ok(()) => Ok(()),
+            Err(message) => {
+                self.replacement_failed(&message);
+                Err(message)
+            }
+        }
+    }
+
+    /// The one failure path a restart and an automatic replacement share: the
+    /// handoff files go, the old process keeps serving, and every page is told
+    /// both versions and the failure.
+    fn replacement_failed(self: &Arc<Self>, error: &str) {
+        let config = self.config();
+        crate::detached_run::end_detached_handoff(
+            &config.state_dir,
+            &config.repo_dir,
+            Some(&self.instance),
+        );
+        crate::goal_drafts::remove_goal_draft_handoff(&config.state_dir, &config.repo_dir);
+        if let Ok(mut failure) = self.replacement_failure.lock() {
+            *failure = Some(error.to_string());
+        }
+        self.restart_when_idle
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.restarting
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.shared.broadcast(self.version_state());
+        self.shared
+            .broadcast(json!({"type": "error", "message": error}));
     }
 
     /// Whether harness reporting is configured for this process.
@@ -1269,4 +1344,17 @@ pub fn is_implemented(command: &str) -> bool {
 #[allow(dead_code)]
 fn credential_presented(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
     presented_credential(headers, cookie_name)
+}
+
+/// Ends everything a stopping dashboard owns: Discover staging and its peer,
+/// the ACP peers it holds directly, and every harness descendant (a worker, a
+/// stub, or an `omp acp` peer), then persists the state file. A replacement
+/// never calls this; it writes the handoff and leaves the work to its
+/// successor.
+pub async fn graceful_shutdown(app: &Arc<App>) {
+    crate::discover_mode::shutdown(app);
+    let children = app.capture_children();
+    crate::detached_run::terminate_recorded_children(&children, 5_000).await;
+    crate::supervision::terminate_harness_descendants(std::process::id(), 5_000).await;
+    app.shared.flush_state();
 }

@@ -133,7 +133,7 @@ pub fn valid_token(token: &str) -> bool {
 }
 
 /// A fresh dashboard credential: 32 random bytes in base64url without padding.
-fn generated_token() -> String {
+pub fn generated_token() -> String {
     use base64::Engine as _;
     let bytes: [u8; 32] = rand::random();
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)

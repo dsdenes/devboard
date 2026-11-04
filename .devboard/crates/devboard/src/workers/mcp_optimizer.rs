@@ -1780,6 +1780,9 @@ pub const TRIVIAL_COMMANDS: &[&str] = &[
     "bun run check",
     "bun run build",
     "bunx tsc --noEmit",
+    "cargo fmt",
+    "cargo clippy",
+    "cargo test",
 ];
 
 fn trivial_keys() -> &'static Vec<String> {
@@ -6884,7 +6887,9 @@ impl Activity {
             return CommandResult::refused(message);
         }
         let argv: Vec<String> = vec![
-            crate::relaunch::own_program().to_string_lossy().into_owned(),
+            crate::relaunch::own_program()
+                .to_string_lossy()
+                .into_owned(),
             "worker".to_string(),
             "mcp-optimizer".to_string(),
             "--repo".to_string(),

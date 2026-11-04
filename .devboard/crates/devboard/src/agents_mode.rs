@@ -2769,7 +2769,9 @@ fn default_spawn(argv: &[String], environment: HashMap<String, String>) -> Optio
 
 fn harness_argv(family: &str, flags: &[(&str, &Path)]) -> Vec<String> {
     let mut argv = vec![
-        crate::relaunch::own_program().to_string_lossy().into_owned(),
+        crate::relaunch::own_program()
+            .to_string_lossy()
+            .into_owned(),
         "worker".to_string(),
         family.to_string(),
     ];
@@ -2888,6 +2890,324 @@ pub fn set_agent_environment(
             }
         }
     }
+}
+
+/// A dashboard-free snapshot of every background agent, from its durable
+/// worker state, settings, ledger, and projection. A live dashboard's own
+/// replay is richer; this is what an MCP tool answers when no dashboard
+/// serves the repository.
+pub fn persisted_snapshots(state_dir: &Path, repo_dir: &Path) -> Vec<Value> {
+    DESCRIPTORS
+        .iter()
+        .map(|descriptor| persisted_snapshot(descriptor, state_dir, repo_dir))
+        .collect()
+}
+
+fn family_directory(state_dir: &Path, id: &str) -> PathBuf {
+    state_dir.join(id)
+}
+
+/// The newest file named `name` under `root`, by modification time.
+fn newest_state_file(root: &Path, name: &str) -> Option<Value> {
+    fn visit(
+        directory: &Path,
+        name: &str,
+        depth: usize,
+        best: &mut Option<(std::time::SystemTime, Value)>,
+    ) {
+        if depth > 5 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                visit(&path, name, depth + 1, best);
+                continue;
+            }
+            if entry.file_name().to_string_lossy() != name {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_some_and(|(at, _)| *at > modified) {
+                continue;
+            }
+            if let Some(value) = read_json(&path) {
+                *best = Some((modified, value));
+            }
+        }
+    }
+    let mut best = None;
+    visit(root, name, 0, &mut best);
+    best.map(|(_, value)| value)
+}
+
+fn object_text(value: Option<&Value>, key: &str) -> Option<String> {
+    value
+        .and_then(Value::as_object)
+        .and_then(|object| object.get(key))
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn object_bool(value: Option<&Value>, key: &str) -> Option<bool> {
+    value
+        .and_then(Value::as_object)
+        .and_then(|object| object.get(key))
+        .and_then(Value::as_bool)
+}
+
+fn object_limit(value: Option<&Value>, key: &str) -> Option<u32> {
+    value
+        .and_then(Value::as_object)
+        .and_then(|object| object.get(key))
+        .and_then(Value::as_u64)
+        .and_then(|number| u32::try_from(number).ok())
+}
+
+fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path) -> Value {
+    let directory = family_directory(state_dir, descriptor.id);
+    let state = newest_state_file(&directory, "state.json");
+    let worker = newest_state_file(&directory, "worker.json");
+    let settings = newest_state_file(&directory, "settings.json");
+    let projection = newest_state_file(&directory, "projection.json");
+    let reader = |key: &str| {
+        object_text(worker.as_ref(), key)
+            .or_else(|| object_text(state.as_ref(), key))
+            .or_else(|| object_text(settings.as_ref(), key))
+    };
+    let lifecycle = reader("lifecycle").unwrap_or_else(|| "stopped".to_string());
+    let enabled = object_bool(worker.as_ref(), "enabled")
+        .or_else(|| object_bool(state.as_ref(), "enabled"))
+        .or_else(|| object_bool(settings.as_ref(), "enabled"))
+        .unwrap_or(false);
+    let paused = object_bool(worker.as_ref(), "paused")
+        .or_else(|| object_bool(state.as_ref(), "paused"))
+        .unwrap_or(false);
+    let owner = worker
+        .as_ref()
+        .and_then(|value| value.get("pid"))
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| pid_alive(*pid));
+    let attached = owner.is_some();
+    let owned = attached
+        && object_text(worker.as_ref(), "stateDir")
+            .map(PathBuf::from)
+            .map(|path| resolved(&path) == resolved(state_dir))
+            .unwrap_or(false);
+    let minutes = object_limit(worker.as_ref(), "intervalMinutes")
+        .or_else(|| object_limit(state.as_ref(), "intervalMinutes"))
+        .or_else(|| object_limit(settings.as_ref(), "intervalMinutes"))
+        .unwrap_or(descriptor.default_minutes);
+    let limits = Limits {
+        max_per_hour: object_limit(state.as_ref(), "maxPerHour")
+            .or_else(|| {
+                state
+                    .as_ref()
+                    .and_then(|value| value.get("limits"))
+                    .and_then(|limits| limits.get("maxPerHour"))
+                    .and_then(Value::as_u64)
+                    .and_then(|number| u32::try_from(number).ok())
+            })
+            .or_else(|| object_limit(settings.as_ref(), "maxPerHour")),
+        max_pending: object_limit(state.as_ref(), "maxPending")
+            .or_else(|| {
+                state
+                    .as_ref()
+                    .and_then(|value| value.get("limits"))
+                    .and_then(|limits| limits.get("maxPending"))
+                    .and_then(Value::as_u64)
+                    .and_then(|number| u32::try_from(number).ok())
+            })
+            .or_else(|| object_limit(settings.as_ref(), "maxPending")),
+    };
+    let mut issues: Vec<Value> = state
+        .as_ref()
+        .and_then(|value| value.get("issues"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if issues.is_empty() {
+        issues = state
+            .as_ref()
+            .and_then(|value| value.get("findings"))
+            .and_then(Value::as_object)
+            .map(|findings| {
+                findings
+                    .values()
+                    .filter_map(|finding| {
+                        let disposition = finding.get("disposition")?.as_str()?;
+                        let url = disposition.strip_prefix("filed:")?;
+                        Some(json!({
+                            "title": finding.get("line").cloned().unwrap_or(Value::Null),
+                            "category": finding.get("category").cloned().unwrap_or(Value::Null),
+                            "filedAt": finding.get("filedAt").cloned().unwrap_or(Value::Null),
+                            "url": url,
+                            "state": "filed",
+                        }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    let pending = state
+        .as_ref()
+        .and_then(|value| value.get("pending"))
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| {
+            let findings = state
+                .as_ref()
+                .and_then(|value| value.get("findings"))
+                .and_then(Value::as_object)
+                .map(|findings| findings.len())
+                .unwrap_or(0);
+            (findings as u64).saturating_sub(issues.len() as u64)
+        });
+    let sync = state
+        .as_ref()
+        .and_then(|value| value.get("sync"))
+        .and_then(|sync| sync.as_object())
+        .map(|sync| AgentSync {
+            state: sync
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("stale")
+                .to_string(),
+            at: sync.get("at").and_then(Value::as_str).map(str::to_string),
+            error: sync
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+        .unwrap_or_else(AgentSync::stale);
+    if issues.is_empty() {
+        issues = projection
+            .as_ref()
+            .and_then(|value| value.get("issues"))
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| {
+                        json!({
+                            "title": row.get("title").cloned().unwrap_or(Value::Null),
+                            "category": row.get("category").cloned().unwrap_or(Value::Null),
+                            "filedAt": projection
+                                .as_ref()
+                                .and_then(|value| value.get("at"))
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                            "url": row.get("url").cloned().unwrap_or(Value::Null),
+                            "state": "filed",
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    let mut entries: Vec<String> = read_activity(&directory);
+    if let Some(activity) = state
+        .as_ref()
+        .and_then(|value| value.get("activity"))
+        .and_then(Value::as_array)
+    {
+        for line in activity {
+            if let Some(line) = line.as_str() {
+                entries.push(line.to_string());
+            }
+        }
+    }
+    if let Some(runs) = state
+        .as_ref()
+        .and_then(|value| value.get("runs"))
+        .and_then(Value::as_array)
+    {
+        for run in runs {
+            if let Some(id) = run.get("id").and_then(Value::as_str) {
+                entries.push(id.to_string());
+            }
+        }
+    }
+    if let Some(cycles) = state
+        .as_ref()
+        .and_then(|value| value.get("cycles"))
+        .and_then(Value::as_array)
+    {
+        for cycle in cycles {
+            if let Some(id) = cycle
+                .as_str()
+                .or_else(|| cycle.get("id").and_then(Value::as_str))
+            {
+                entries.push(id.to_string());
+            }
+        }
+    }
+    if entries.is_empty() {
+        entries = projection
+            .as_ref()
+            .and_then(|value| value.get("issues"))
+            .and_then(Value::as_array)
+            .map(|issues| {
+                issues
+                    .iter()
+                    .filter_map(|issue| issue.get("title").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    let last_run_at = reader("lastRunAt")
+        .or_else(|| reader("lastCycleStartedAt"))
+        .or_else(|| reader("lastRunAt"));
+    let next_run_at = reader("nextRunAt").or_else(|| reader("nextAttemptAt"));
+    let detail = Detail::Activity {
+        scan_id: reader("newestCycleId").or_else(|| reader("scanId")),
+        entries,
+    };
+    let _ = repo_dir;
+    project_snapshot(
+        descriptor,
+        SnapshotInput {
+            lifecycle,
+            paused,
+            enabled,
+            owned,
+            attached,
+            minutes,
+            last_run_at,
+            next_run_at,
+            limits,
+            issues,
+            documentation: state
+                .as_ref()
+                .and_then(|value| value.get("documentation"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            releases: state
+                .as_ref()
+                .and_then(|value| value.get("releases"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            pending,
+            sync,
+            detail,
+            notice: reader("notice"),
+            error: reader("lastError").or_else(|| reader("error")),
+            timer: None,
+            workers: Vec::new(),
+        },
+    )
 }
 
 /// Registers this mode's durable state with the dashboard.
@@ -4735,8 +5055,9 @@ impl RepoFamily {
                 remote.host
             ));
         }
-        for tool in ["git", "bun", "npm"] {
-            self.require_path(tool)?;
+        self.require_path("git")?;
+        if remote.forge == "github" {
+            self.require_path("gh")?;
         }
         self.forge_write_access(&remote).await?;
         self.ensure_label(
@@ -4782,7 +5103,7 @@ impl RepoFamily {
     }
 
     async fn preflight_api_standards(&self) -> Result<String, String> {
-        let source_dir = ".devboard/server";
+        let source_dir = crate::workers::api_standards::DEFAULT_API_SOURCE_DIRECTORY;
         let skill_dir = ".omp/skills/devboard-restful-api-implementation";
         let skill_document = format!("{skill_dir}/SKILL.md");
         let rules_document = format!("{skill_dir}/references/zalando-rest-rules.md");

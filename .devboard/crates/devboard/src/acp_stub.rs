@@ -2508,7 +2508,9 @@ fn git(repo: &Path, args: &[&str]) -> GitOutput {
 }
 
 /// True when `repo` resolves to the harness's own source checkout.
-fn is_harness_checkout(repo: &Path) -> bool {
+/// True when `repo` is the canonical Devboard source checkout. The stub never
+/// runs `git add -A` or a merge there; it would rewrite the harness itself.
+pub fn is_harness_checkout(repo: &Path) -> bool {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -2521,9 +2523,8 @@ fn is_harness_checkout(repo: &Path) -> bool {
     if top.is_empty() {
         return false;
     }
-    Path::new(&top)
-        .join(".devboard/server/fixtures/stub-agent.ts")
-        .exists()
+    let prefix = Path::new(&top).join(".devboard");
+    prefix.join("Cargo.toml").is_file() && prefix.join("crates/devboard/src").is_dir()
 }
 
 struct FlowGitOutput {
@@ -3344,5 +3345,34 @@ fn contribution_skill(no_forge: bool, invalid: &str) -> DiscoverSkill {
         description:
             "Author a pull request that matches the merged pull requests this repository accepts.",
         body,
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    #[test]
+    fn the_harness_checkout_is_recognised_and_the_fixture_is_not() {
+        let harness = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("the harness root");
+        assert!(is_harness_checkout(&harness));
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("stub-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fixture);
+        std::fs::create_dir_all(&fixture).expect("a fixture");
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&fixture)
+            .args(["init", "--quiet"])
+            .status()
+            .expect("git runs");
+        assert!(status.success());
+        assert!(!is_harness_checkout(&fixture));
+        let _ = std::fs::remove_dir_all(&fixture);
     }
 }
