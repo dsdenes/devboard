@@ -1,7 +1,0 @@
-# Harness model policy, installed as <host>/.omp/config.yml.
-#
-# The harness no longer pins modelRoles here. Every ACP peer starts with a
-# generated PI_CODING_AGENT_DIR under the dashboard state directory, and that
-# directory's config.yml selects the provider subscription with the most
-# remaining budget. A project-level pin would override that selection, so this
-# file carries no roles; the interactive agent keeps OMP's configured default.

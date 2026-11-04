@@ -502,6 +502,92 @@ async fn an_invalid_key_is_never_saved() {
     assert!(load_subscriptions(&state).subscriptions.is_empty());
 }
 
+#[tokio::test]
+async fn concurrent_refreshes_share_one_upstream_fetch() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let root = fixture_root("single-flight");
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[
+            subscription("first", ProviderId::OpenCodeGo, "shared-key-0001"),
+            subscription("second", ProviderId::OpenCodeGo, "shared-key-0001"),
+        ],
+    )
+    .expect("credentials");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let transport: Transport = {
+        let calls = Arc::clone(&calls);
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        Arc::new(move |_request| -> TransportFuture {
+            let calls = Arc::clone(&calls);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                entered.notify_one();
+                release.notified().await;
+                Ok(UsageResponse {
+                    status: 200,
+                    body: json!({
+                        "usage": {
+                            "rolling": {"percent": 10, "status": "ok"},
+                            "weekly": {"percent": 20, "status": "ok"},
+                            "monthly": {"percent": 30, "status": "ok"}
+                        }
+                    })
+                    .to_string(),
+                })
+            })
+        })
+    };
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(transport),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    let service = Arc::new(ProviderService::with_options(
+        &state,
+        root.join("repo"),
+        options,
+    ));
+
+    let first = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.refresh(true).await })
+    };
+    let second = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.refresh(true).await })
+    };
+    entered.notified().await;
+    // Let the second refresh join the in-flight request before it resolves.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    release.notify_waiters();
+    first.await.expect("the first refresh");
+    second.await.expect("the second refresh");
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "two concurrent subscriptions to one provider key share one fetch"
+    );
+    let view = service.view();
+    assert_eq!(view.subscriptions.len(), 2);
+    for subscription in &view.subscriptions {
+        assert!(subscription.last_checked_at.is_some());
+        assert!(subscription.error.is_none());
+    }
+}
+
 #[test]
 fn injected_transport_errors_stay_unknown() {
     let root = fixture_root("transport-error");

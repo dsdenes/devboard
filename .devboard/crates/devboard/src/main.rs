@@ -30,6 +30,7 @@ async fn run() -> anyhow::Result<()> {
         Some("mcp") => devboard::mcp_server::run_server().await,
         Some("bench") => bench_command(&args).await,
         Some("publish") => publish_command(&args).await,
+        Some("release-suite") => release_suite_command(&args).await,
         Some("check-runtime") => runtime_command(&args),
         Some("gate-prepush") => {
             let code = devboard::commit_gate::gate_prepush().await?;
@@ -37,6 +38,7 @@ async fn run() -> anyhow::Result<()> {
         }
         Some("hooks") => hooks_command(&args),
         Some("preflight") => preflight_command(&args),
+        Some("forge-auth") => std::process::exit(devboard::forge_auth::main(&args[1..]).await),
         Some(other) => {
             anyhow::bail!("unknown command {other}; expected serve, install, doctor, or version")
         }
@@ -83,6 +85,11 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     if !devboard::config::valid_token(&config.token) {
         anyhow::bail!(
             "DEVBOARD_DASHBOARD_TOKEN must carry RFC 6750 characters only: no whitespace, ';', or ','."
+        );
+    }
+    if !devboard::config::valid_token(&config.bootstrap) {
+        anyhow::bail!(
+            "DEVBOARD_BOOTSTRAP_TOKEN must carry RFC 6750 characters only: no whitespace, ';', or ','."
         );
     }
     if !config.repo_dir.is_dir() {
@@ -133,9 +140,10 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         server.app.start_source_refresh();
     }
     server.app.start_updater();
+    server.app.start_complexity();
     println!(
-        "ADR interface listening on http://{}:{}",
-        config.hostname, config.port
+        "ADR interface listening on http://{}:{}/?bootstrap={}",
+        config.hostname, config.port, config.bootstrap
     );
     devboard::http::serve_on(listener, server)
         .await
@@ -241,6 +249,44 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
             "the release shipped, but {} dashboard(s) did not receive a source-refresh request",
             report.source_refresh.failed.len()
         );
+    }
+    Ok(())
+}
+
+/// `devboard release-suite [--dir <workspace>] [--repo <dir>]`.
+///
+/// Runs the workspace suite with retries and a quarantine, files one issue per
+/// skipped test, and exits with the suite's verdict.
+async fn release_suite_command(args: &[String]) -> anyhow::Result<()> {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut repo_dir: Option<PathBuf> = None;
+    let mut index = 1;
+    while index < args.len() {
+        let value = args.get(index + 1).cloned();
+        match args[index].as_str() {
+            "--dir" => dir = PathBuf::from(value.context("--dir needs a path")?),
+            "--repo" => repo_dir = Some(PathBuf::from(value.context("--repo needs a path")?)),
+            "--help" | "-h" => {
+                println!("usage: devboard release-suite [--dir <workspace>] [--repo <dir>]");
+                return Ok(());
+            }
+            other => anyhow::bail!("unknown release-suite option {other}"),
+        }
+        index += 2;
+    }
+    if !dir.is_dir() {
+        anyhow::bail!("the suite directory {} does not exist", dir.display());
+    }
+    let mut options = devboard::release_suite::ReleaseSuiteOptions::new(dir);
+    options.forge_dir = repo_dir;
+    options.log = Some(std::sync::Arc::new(|line: &str| println!("{line}")));
+    let report = devboard::release_suite::run_suite(options).await?;
+    if report.code != 0 {
+        std::process::exit(report.code);
     }
     Ok(())
 }

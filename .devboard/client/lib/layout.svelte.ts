@@ -87,7 +87,6 @@ function normalizeTab(mode: Mode, tab: WorkspaceTab): WorkspaceTab {
   if (mode === "discover" && tab.kind === "term") {
     return { id: "glossary", kind: "glossary", resourceId: "glossary", title: "Glossary" };
   }
-  if (mode === "devboard" && tab.kind === "devboard-complexity") return defaultTab("devboard");
   if (mode === "goal" && tab.id === "overview") return { ...tab, title: "Implementation" };
   return tab;
 }

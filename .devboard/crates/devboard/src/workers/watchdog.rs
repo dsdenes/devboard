@@ -14,7 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -3221,20 +3221,20 @@ fn collapse(value: &str) -> String {
 
 fn truncate(value: &str, limit: usize) -> String {
     let single = collapse(value);
-    if single.chars().count() <= limit {
+    if crate::feedback::js_len(&single) <= limit {
         return single;
     }
-    let kept: String = single.chars().take(limit.saturating_sub(1)).collect();
+    let kept = crate::feedback::js_truncate(&single, limit.saturating_sub(1));
     format!("{}…", kept.trim_end())
 }
 
 /// `[watchdog] <category>: <line>`, one line, never longer than 80 characters.
 pub fn watchdog_title(category: &str, line: &str) -> String {
     let title = format!("[watchdog] {category}: {}", collapse(line));
-    if title.chars().count() <= TITLE_MAX {
+    if crate::feedback::js_len(&title) <= TITLE_MAX {
         return title;
     }
-    let kept: String = title.chars().take(TITLE_MAX - 1).collect();
+    let kept = crate::feedback::js_truncate(&title, TITLE_MAX - 1);
     format!("{}…", kept.trim_end())
 }
 
@@ -3568,17 +3568,146 @@ pub fn create_watchdog_delivery(
     root: &Path,
     gh: GhRun,
 ) -> Result<Arc<dyn WatchdogDelivery>, String> {
-    let Some((host, repository)) = origin_repository(root) else {
-        return Err("the checkout's origin does not name a supported repository".to_string());
+    create_watchdog_delivery_with(root, gh, &crate::forge::process_environment())
+}
+
+/// `create_watchdog_delivery` with an explicit environment, so a test never
+/// reads or writes the process environment.
+pub fn create_watchdog_delivery_with(
+    root: &Path,
+    gh: GhRun,
+    environment: &crate::forge::Environment,
+) -> Result<Arc<dyn WatchdogDelivery>, String> {
+    let Some(remote) = crate::forge::origin_forge_with(root, environment) else {
+        return Err(
+            "the checkout's origin does not name a supported repository at this root".to_string(),
+        );
     };
-    if !host.to_lowercase().contains("github") {
-        // Gitea origins are served through the Gitea REST API, which this
-        // build's gitea module does not yet expose for issue reads/comments.
-        return Err(format!(
-            "the checkout's origin is {host}, which the watchdog cannot file to here"
-        ));
+    match remote.forge {
+        crate::forge::Forge::GitHub => Ok(Arc::new(GithubDelivery::new(
+            remote.project.clone(),
+            remote.host.clone(),
+            gh,
+        ))),
+        crate::forge::Forge::Gitea => {
+            let target = crate::forge::gitea_target(Some(&remote), None, None, None, environment)
+                .map_err(|error| error.message)?;
+            Ok(Arc::new(GiteaDelivery::new(
+                crate::gitea::GiteaTarget {
+                    base_url: target.base_url,
+                    project: target.project,
+                    token: target.token,
+                },
+                gh,
+            )))
+        }
+        crate::forge::Forge::GitLab => Err(format!(
+            "the checkout's origin is {}, which the watchdog cannot file to here",
+            remote.forge.as_str()
+        )),
     }
-    Ok(Arc::new(GithubDelivery::new(repository, host, gh)))
+}
+
+/// Runs one async Gitea call from the delivery's synchronous surface on its
+/// own thread and runtime.
+fn block_on_gitea<F, T>(future: F) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, crate::gitea::GiteaError>> + Send + 'static,
+    T: Send + 'static,
+{
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        runtime.block_on(future).map_err(|error| error.to_string())
+    })
+    .join()
+    .map_err(|_| "the Gitea call panicked".to_string())?
+}
+
+/// Gitea delivery through the REST API.
+pub struct GiteaDelivery {
+    target: crate::gitea::GiteaTarget,
+    gh: GhRun,
+}
+
+impl GiteaDelivery {
+    pub fn new(target: crate::gitea::GiteaTarget, gh: GhRun) -> Self {
+        Self { target, gh }
+    }
+
+    fn issue_number(&self, url: &str) -> Option<u64> {
+        let parsed = url::Url::parse(url).ok()?;
+        let expected = url::Url::parse(&self.target.base_url).ok()?;
+        if parsed.host_str()?.to_lowercase() != expected.host_str()?.to_lowercase() {
+            return None;
+        }
+        let segments: Vec<&str> = parsed
+            .path()
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        let number = segments.last()?;
+        if segments.len() < 2 || segments[segments.len() - 2] != "issues" {
+            return None;
+        }
+        number.parse().ok()
+    }
+}
+
+impl WatchdogDelivery for GiteaDelivery {
+    fn repository(&self) -> &str {
+        &self.target.project
+    }
+
+    fn owns(&self, url: &str) -> bool {
+        self.issue_number(url).is_some()
+    }
+
+    fn create(&self, input: &IssueInput) -> DeliveryResult {
+        let target = self.target.clone();
+        let title = watchdog_title(&input.category, &input.line);
+        let body = watchdog_body(input);
+        let _ = &self.gh;
+        match block_on_gitea(async move {
+            crate::gitea::create_issue(&target, &title, &body, None, 60_000).await
+        }) {
+            Ok(issue) => DeliveryResult::Ok { url: issue.url },
+            Err(reason) => DeliveryResult::Failed { reason },
+        }
+    }
+
+    fn comment(&self, url: &str, input: &IssueInput) -> CommentResult {
+        let Some(number) = self.issue_number(url) else {
+            return CommentResult::Failed {
+                reason: "the issue URL is not on the configured Gitea origin".to_string(),
+            };
+        };
+        let target = self.target.clone();
+        let body = watchdog_comment(input);
+        match block_on_gitea(async move {
+            crate::gitea::comment_issue(&target, number, &body, None, 60_000).await
+        }) {
+            Ok(()) => CommentResult::Ok,
+            Err(reason) => CommentResult::Failed { reason },
+        }
+    }
+
+    fn state(&self, url: &str) -> Option<IssueState> {
+        let number = self.issue_number(url)?;
+        let target = self.target.clone();
+        match block_on_gitea(
+            async move { crate::gitea::issue_state(&target, number, 60_000).await },
+        )
+        .ok()
+        .flatten()
+        {
+            Some(true) => Some(IssueState::Open),
+            Some(false) => Some(IssueState::Closed),
+            None => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3820,6 +3949,93 @@ fn append_line(path: &Path, text: &str) -> io::Result<()> {
         .append(true)
         .open(path)?;
     file.write_all(text.as_bytes())
+}
+
+/// The production deduplication turn: one `omp acp` peer, given the shipped
+/// watchdog-dedup prompt and the run directory its MCP tools append to.
+pub struct AcpDedup {
+    pub command: String,
+    pub repo_dir: PathBuf,
+    pub environment: HashMap<String, String>,
+    pub timeout_ms: u64,
+}
+
+const WATCHDOG_DEDUP_PROMPT: &str = include_str!("../../../../prompts/watchdog-dedup.md");
+
+impl DedupRunner for AcpDedup {
+    fn run(&self, request: &DedupRequest, run_dir: &Path) -> Result<String, String> {
+        std::fs::create_dir_all(run_dir)
+            .map_err(|error| format!("the dedup run directory: {error}"))?;
+        let candidates = request.to_json()["candidates"].clone();
+        let prompt = WATCHDOG_DEDUP_PROMPT
+            .replace("{{repository}}", &request.repository)
+            .replace(
+                "{{candidates}}",
+                &serde_json::to_string_pretty(&candidates).unwrap_or_default(),
+            )
+            .replace("{{filingRoom}}", &request.filing_room.to_string());
+        let mut environment = self.environment.clone();
+        environment.insert(
+            "DEVBOARD_DEDUP_RUN_DIR".to_string(),
+            run_dir.to_string_lossy().into_owned(),
+        );
+        let mcp_servers = crate::acp::session_mcp_servers(&environment);
+        let options = crate::acp::AcpConnectionOptions::new(
+            self.command.clone(),
+            self.repo_dir.to_string_lossy().into_owned(),
+        )
+        .with_env(environment)
+        .with_mcp_servers(mcp_servers)
+        .with_permission_policy(crate::acp::PermissionPolicy::Deny);
+        let timeout_ms = self.timeout_ms;
+        let prompt_for_peer = prompt.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            runtime.block_on(async move {
+                let (connection, mut events) =
+                    crate::acp::AcpConnection::connect(options)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                let future = connection.run(&prompt_for_peer);
+                tokio::pin!(future);
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
+                let mut text = String::new();
+                loop {
+                    tokio::select! {
+                        result = &mut future => {
+                            connection.close();
+                            return result
+                                .map(|_| text)
+                                .map_err(|error| error.to_string());
+                        }
+                        event = events.recv() => {
+                            match event {
+                                Some(crate::acp::AcpEvent::Text(chunk)) => text.push_str(&chunk),
+                                Some(crate::acp::AcpEvent::Question(_)) => {
+                                    connection.close();
+                                    return Err("the dedup peer asked a question; refusing".to_string());
+                                }
+                                Some(_) => {}
+                                None => {}
+                            }
+                        }
+                        _ = tokio::time::sleep_until(deadline) => {
+                            connection.close();
+                            return Err(format!(
+                                "the dedup peer timed out after {timeout_ms}ms"
+                            ));
+                        }
+                    }
+                }
+            })
+        })
+        .join()
+        .map_err(|_| "the dedup peer panicked".to_string())?
+    }
 }
 
 /// The gate refuses to file when no deduplication turn can run.
@@ -4388,9 +4604,20 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                 Some(runner) => runner.clone(),
                 None => match stub_path {
                     Some(path) => Arc::new(StubDedup::new(path)),
-                    None => Arc::new(UnavailableDedup {
-                        reason: "the deduplication agent is unavailable".to_string(),
-                    }),
+                    None => {
+                        let command = options
+                            .environment
+                            .get("AGENT_COMMAND")
+                            .filter(|value| !value.is_empty())
+                            .cloned()
+                            .unwrap_or_else(|| "omp acp".to_string());
+                        Arc::new(AcpDedup {
+                            command,
+                            repo_dir: options.root.clone(),
+                            environment: options.environment.clone(),
+                            timeout_ms: 10 * 60_000,
+                        })
+                    }
                 },
             };
             match runner.run(&request, &dedup_run_dir) {

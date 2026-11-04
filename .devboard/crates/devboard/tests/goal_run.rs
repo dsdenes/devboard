@@ -147,6 +147,7 @@ fn config_at(scratch: &Scratch, command: String) -> Config {
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
         token: "fixture-token".to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     }
 }
@@ -793,4 +794,34 @@ async fn a_reset_refuses_when_repo_dir_is_not_the_git_top_level() {
     .await;
     assert_eq!(stopped["completed"], false);
     assert_eq!(state_value(&scratch)["resetActive"], false);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reset_refuses_every_mutating_command_and_answers_reads() {
+    let _serial = serial().lock().await;
+    let scratch = Scratch::new("reset-gate");
+    prepare_repository(&scratch, None);
+    let app = App::new(
+        config_at(&scratch, format!("{} --goal", stub_command(&scratch, &[]))),
+        Journal::open(&scratch.path().join("state"), scratch.path(), 0),
+    );
+    let (conn, mut inbox) = connected(&app).await;
+    devboard::goal_run::set_reset_active(&app, true);
+
+    app.command(&conn, Command::GetGoal).await;
+    let frame: Value = serde_json::from_str(&inbox.recv().await.expect("a frame")).expect("JSON");
+    assert_eq!(frame["type"], "goal");
+
+    app.command(&conn, Command::StartIssues).await;
+    let mut refused = false;
+    while let Ok(Some(text)) = tokio::time::timeout(Duration::from_millis(500), inbox.recv()).await
+    {
+        let frame: Value = serde_json::from_str(&text).expect("JSON");
+        if frame["type"] == "error" {
+            assert_eq!(frame["message"], "An implementation reset is active.");
+            refused = true;
+            break;
+        }
+    }
+    assert!(refused, "a mutating command is refused during the reset");
 }

@@ -20,6 +20,12 @@ use include_dir::{include_dir, Dir, DirEntry};
 /// The package tree a host install copies into `<host>/.omp/`.
 static OMP: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../omp");
 
+/// The agent-facing prompt tree the host's `.devboard/prompts/` receives.
+static PROMPTS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../prompts");
+
+/// The agent-facing extension tree the host's `.devboard/extensions/` receives.
+static EXTENSIONS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../extensions");
+
 /// The root-document template `syncAgents` copies to `<host>/AGENTS.md`.
 static HOST_AGENTS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -298,6 +304,9 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
         }
     }
 
+    installed_files += install_payload(&PROMPTS, &host.join(".devboard/prompts"))?;
+    installed_files += install_payload(&EXTENSIONS, &host.join(".devboard/extensions"))?;
+
     let agents_target = host.join("AGENTS.md");
     let agents = match fs::symlink_metadata(&agents_target) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -338,12 +347,50 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
     })
 }
 
-/// Append one `/.omp/skills/devboard-*` line per shipped skill that the host
-/// `.gitignore` does not already carry. A rerun appends nothing.
-fn ensure_gitignore(host: &Path, names: &[String]) -> Result<Vec<String>> {
-    if names.is_empty() {
-        return Ok(Vec::new());
+/// Copies one embedded payload tree as real files, writing only the files whose
+/// bytes differ. Returns the number of files written.
+fn install_payload(dir: &Dir<'static>, target: &Path) -> Result<usize> {
+    let mut files = Vec::new();
+    collect_files(dir, &mut files);
+    let mut written = 0usize;
+    for (relative, contents) in files {
+        let destination = target.join(relative.as_str());
+        if is_identical_file(&destination, contents)? {
+            continue;
+        }
+        if let Ok(meta) = fs::symlink_metadata(&destination) {
+            if meta.file_type().is_symlink() || meta.is_dir() {
+                remove_entry(&destination)?;
+            }
+        }
+        let parent = destination.parent().unwrap_or(target);
+        ensure_real_dir(parent)?;
+        fs::write(&destination, contents)
+            .with_context(|| format!("install: writing {}", destination.display()))?;
+        written += 1;
     }
+    Ok(written)
+}
+
+/// The host ignore lines the installed tree needs. `/.devboard` covers the
+/// installed payload; the `.omp` entries cover wrappers, extensions, and the
+/// MCP configuration. A rerun adds nothing.
+fn baseline_ignore_lines(names: &[String]) -> Vec<String> {
+    let mut lines = vec![
+        "/.devboard".to_string(),
+        "/.omp/commands".to_string(),
+        "/.omp/extensions".to_string(),
+        "/.omp/mcp.json".to_string(),
+    ];
+    for name in names {
+        lines.push(format!("/.omp/skills/{name}"));
+    }
+    lines
+}
+
+/// Append one ignore line per installed entry that the host `.gitignore` does
+/// not already carry. A rerun appends nothing.
+fn ensure_gitignore(host: &Path, names: &[String]) -> Result<Vec<String>> {
     let ignore_path = host.join(".gitignore");
     let existing = match fs::symlink_metadata(&ignore_path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
@@ -357,8 +404,7 @@ fn ensure_gitignore(host: &Path, names: &[String]) -> Result<Vec<String>> {
     };
     let lines: Vec<&[u8]> = existing.split(|byte| *byte == b'\n').collect();
     let mut added = Vec::new();
-    for name in names {
-        let entry = format!("/.omp/skills/{name}");
+    for entry in baseline_ignore_lines(names) {
         if lines.contains(&entry.as_bytes()) {
             continue;
         }
@@ -433,6 +479,33 @@ pub fn doctor(host: Option<&Path>) -> Result<DoctorReport> {
             })
             .collect();
         let actual = omp.join(prefix.trim_end_matches('/'));
+        match fs::symlink_metadata(&actual) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                report.failures.push(format!("{label} is missing"));
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("doctor: probing {}", actual.display()))
+            }
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                report
+                    .failures
+                    .push(format!("{label} is not a real directory"));
+                continue;
+            }
+            Ok(_) => {}
+        }
+        compare_tree(label, &expected, &actual, &mut report.failures)?;
+    }
+
+    for (label, dir, relative) in [
+        (".devboard/prompts", &PROMPTS, "prompts"),
+        (".devboard/extensions", &EXTENSIONS, "extensions"),
+    ] {
+        let mut expected = Vec::new();
+        collect_files(dir, &mut expected);
+        expected.sort_by(|left, right| left.0.cmp(&right.0));
+        let actual = host.join(".devboard").join(relative);
         match fs::symlink_metadata(&actual) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 report.failures.push(format!("{label} is missing"));

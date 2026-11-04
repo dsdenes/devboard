@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use url::Url;
 
 use crate::config::Config;
-use crate::http::{presented_credential, request_refusal, Replies, RequestRefusal};
+use crate::http::{presented_credential, request_refusal, Replies};
 use crate::journal::Journal;
 use crate::protocol::Command;
 
@@ -325,12 +325,16 @@ pub struct App {
     updater: Mutex<Option<crate::updates::Updater>>,
     /// The operator's provider credentials and the per-peer selection.
     pub providers: crate::providers::ProviderService,
+    /// The daily complexity snapshot controller for this dashboard.
+    pub complexity: Arc<crate::complexity::ComplexitySnapshots>,
     /// The dashboard's own handle, for modes that hold a shared reference.
     weak_self: std::sync::Weak<App>,
     /// Replaces this process; absent means the dashboard has no launcher.
     restart_hook: Mutex<Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>>,
     source_refresher: Mutex<Option<crate::source_refresh::SourceRefresher>>,
     restart_when_idle: Arc<std::sync::atomic::AtomicBool>,
+    /// ACP children the previous process recorded for its replacement to end.
+    restored_children: Mutex<Vec<crate::detached_run::RecordedChild>>,
 }
 
 impl App {
@@ -372,6 +376,12 @@ impl App {
             config_repo_dir(&shared),
             |line| eprintln!("{line}"),
         );
+        let complexity = Arc::new(crate::complexity::ComplexitySnapshots::new(
+            crate::complexity::ComplexityOptions::production(
+                config_state_dir(&shared),
+                config_repo_dir(&shared),
+            ),
+        ));
         let app = Arc::new_cyclic(|weak| Self {
             weak_self: weak.clone(),
             shared,
@@ -383,9 +393,11 @@ impl App {
             attempted_replacement: Mutex::new(None),
             updater: Mutex::new(None),
             providers,
+            complexity,
             restart_hook: Mutex::new(None),
             source_refresher: Mutex::new(None),
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            restored_children: Mutex::new(Vec::new()),
         });
         {
             let weak = Arc::downgrade(&app);
@@ -403,7 +415,9 @@ impl App {
         crate::agents_mode::init(&app);
         crate::ask_mode::init(&app);
         app.register_restart_section();
+        app.register_children_section();
         app.shared.restore();
+        app.terminate_restored_children();
         app.start_lease_refresh();
         app
     }
@@ -471,6 +485,7 @@ impl App {
     }
 
     pub async fn close(&self, conn: &Conn) {
+        self.complexity.unsubscribe(conn.id());
         crate::ask_mode::disconnect(&self.arc_self(), conn);
     }
 
@@ -482,6 +497,13 @@ impl App {
     }
 
     async fn dispatch(&self, conn: &Conn, command: Command) -> Result<(), String> {
+        if !command.is_read_only() && crate::goal_run::reset_is_active(&self.arc_self()) {
+            conn.send(json!({
+                "type": "error",
+                "message": "An implementation reset is active.",
+            }));
+            return Ok(());
+        }
         match command {
             Command::GetProject => {
                 conn.send(
@@ -554,6 +576,11 @@ impl App {
                     crate::installed_skills::installed_skills_payload(&self.config().repo_dir)
                         .await,
                 );
+                Ok(())
+            }
+            Command::GetComplexity => {
+                self.complexity.subscribe(conn);
+                conn.send(self.complexity.state_event());
                 Ok(())
             }
             Command::SetInstalledSkillEnabled { name, enabled } => {
@@ -647,6 +674,11 @@ impl App {
         }
     }
 
+    /// Starts the daily complexity snapshot check for this process.
+    pub fn start_complexity(self: &Arc<Self>) {
+        self.complexity.begin();
+    }
+
     /// Records the newest release a check has seen.
     pub fn note_latest_version(&self, version: &str) {
         if let Ok(mut latest) = self.latest_version.lock() {
@@ -674,23 +706,11 @@ impl App {
     /// Tells every page to wait for a replacement and hands detached runs
     /// over, before this process stops serving.
     pub fn prepare_replacement(&self) {
-        if let Err(error) = crate::detached_run::write_json(
-            &crate::detached_run::detached_run_handoff_path(
-                &self.config().state_dir,
-                &self.config().repo_dir,
-            ),
-            &serde_json::json!({
-                "at": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_millis() as u64)
-                    .unwrap_or(0),
-                "pid": std::process::id(),
-            }),
-        ) {
-            self.shared
-                .journal
-                .write("server-error", &format!("handoff: {error}"), None);
-        }
+        crate::detached_run::begin_detached_handoff(
+            &self.config().state_dir,
+            &self.config().repo_dir,
+            &self.instance,
+        );
         crate::goal_drafts::handoff_goal_draft_runs(
             &self.config().state_dir,
             &self.config().repo_dir,
@@ -718,24 +738,40 @@ impl App {
             None,
         );
         self.prepare_replacement();
-        let settings = crate::relaunch::RelaunchSettings::from_config(self.config());
-        match crate::relaunch::relaunch(&settings, Some(version)) {
-            Ok(()) => {
-                self.shared.shutdown.notify_waiters();
-                std::process::exit(0);
-            }
-            Err(error) => {
-                self.shared.journal.write(
-                    "update-error",
-                    &format!("could not replace the server with {version}: {error}"),
-                    None,
-                );
-                if let Ok(mut failure) = self.replacement_failure.lock() {
-                    *failure = Some(error.to_string());
+        let app = self.clone();
+        let version = version.to_string();
+        tokio::spawn(async move {
+            let settings = crate::relaunch::RelaunchSettings::from_config(app.config());
+            let ready_file = app
+                .config()
+                .state_dir
+                .join("replacement")
+                .join(format!("ready-{}.json", std::process::id()));
+            match crate::relaunch::relaunch_confirmed(
+                &settings,
+                &ready_file,
+                15_000,
+                Some(&version),
+            )
+            .await
+            {
+                Ok(()) => {
+                    app.shared.shutdown.notify_waiters();
+                    std::process::exit(0);
                 }
-                self.shared.broadcast(self.version_state());
+                Err(error) => {
+                    app.shared.journal.write(
+                        "update-error",
+                        &format!("could not replace the server with {version}: {error}"),
+                        None,
+                    );
+                    if let Ok(mut failure) = app.replacement_failure.lock() {
+                        *failure = Some(error);
+                    }
+                    app.shared.broadcast(app.version_state());
+                }
             }
-        }
+        });
     }
 
     /// Installs the process launcher a `restartServer` command uses.
@@ -768,6 +804,70 @@ impl App {
                 flag: Arc::clone(&self.restart_when_idle),
             }),
         );
+    }
+
+    /// Persists the ACP children this process owns so its replacement can
+    /// end any peer that outlives it.
+    fn register_children_section(self: &Arc<Self>) {
+        struct ChildrenSection {
+            app: std::sync::Weak<App>,
+        }
+        impl StateSection for ChildrenSection {
+            fn snapshot(&self) -> Option<Value> {
+                let app = self.app.upgrade()?;
+                let children: Vec<Value> = app
+                    .capture_children()
+                    .iter()
+                    .map(crate::detached_run::RecordedChild::to_json)
+                    .collect();
+                Some(Value::Array(children))
+            }
+
+            fn restore(&self, value: &Value) {
+                let Some(app) = self.app.upgrade() else {
+                    return;
+                };
+                let Some(entries) = value.as_array() else {
+                    return;
+                };
+                let children: Vec<crate::detached_run::RecordedChild> = entries
+                    .iter()
+                    .filter_map(|entry| crate::detached_run::RecordedChild::parse(Some(entry)))
+                    .collect();
+                if let Ok(mut slot) = app.restored_children.lock() {
+                    *slot = children;
+                };
+            }
+        }
+        self.shared.register_section(
+            "children",
+            Arc::new(ChildrenSection {
+                app: Arc::downgrade(self),
+            }),
+        );
+    }
+
+    /// The ACP peers this process still holds directly: a detached run belongs
+    /// to its owner, which the replacement adopts.
+    pub fn capture_children(&self) -> Vec<crate::detached_run::RecordedChild> {
+        crate::flow_mode::capture_children(self.arc_self())
+    }
+
+    /// Ends the recorded peers the replaced process left behind.
+    fn terminate_restored_children(&self) {
+        let children = self
+            .restored_children
+            .lock()
+            .map(|mut slot| std::mem::take(&mut *slot))
+            .unwrap_or_default();
+        if children.is_empty() {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                crate::detached_run::terminate_recorded_children(&children, 5_000).await;
+            });
+        }
     }
 
     /// Whether a restart is waiting for live work to finish.
@@ -833,14 +933,10 @@ impl App {
             return Responses::disabled_reporting(headers);
         };
         if let Some(refusal) = request_refusal(headers, url, &self.shared.allowed_hostnames) {
-            return Replies::problem(
+            return crate::http::refusal_problem(
                 headers,
-                403,
-                match refusal {
-                    RequestRefusal::Host => "The request host is not served by this dashboard.",
-                    RequestRefusal::Origin => "Cross-origin feedback is refused.",
-                },
-                &[],
+                refusal,
+                "Cross-origin feedback is refused.",
             );
         }
         let Some((raw, too_large)) = read_report(headers, body).await else {
@@ -891,7 +987,16 @@ impl App {
                     .to_string();
                 Replies::json(headers, filed, 201, &[("Location", href.as_str())])
             }
-            Err(error) => Replies::problem(headers, error.status, &error.message, &[]),
+            Err(error) => {
+                if error.status == 502 || error.status == 504 {
+                    self.shared.journal.write(
+                        "server-error",
+                        &format!("POST /feedback: {}", error.message),
+                        flow_id,
+                    );
+                }
+                Replies::problem(headers, error.status, &error.message, &[])
+            }
         }
     }
 
@@ -901,7 +1006,7 @@ impl App {
         method: &Method,
         headers: &HeaderMap,
         url: &Url,
-        _flow_id: Option<&str>,
+        flow_id: Option<&str>,
         body: axum::body::Body,
     ) -> axum::response::Response {
         if *method != Method::POST {
@@ -913,14 +1018,10 @@ impl App {
             );
         }
         if let Some(refusal) = request_refusal(headers, url, &self.shared.allowed_hostnames) {
-            return Replies::problem(
+            return crate::http::refusal_problem(
                 headers,
-                403,
-                match refusal {
-                    RequestRefusal::Host => "The request host is not served by this dashboard.",
-                    RequestRefusal::Origin => "Cross-origin feedback is refused.",
-                },
-                &[],
+                refusal,
+                "Cross-origin feedback is refused.",
             );
         }
         let Some((raw, too_large)) = read_report(headers, body).await else {
@@ -946,20 +1047,41 @@ impl App {
             Err(error) => return Replies::problem(headers, error.status, &error.message, &[]),
         };
         let repo_dir = self.config().repo_dir.clone();
+        let origin = url.origin().ascii_serialization();
         let outcome = self
             .idempotency
             .run("goal-proposal", key.as_deref(), || async {
-                crate::goal_proposal::write_goal_proposal(&submission, &repo_dir, None).await
+                crate::goal_proposal::write_goal_proposal(
+                    &submission,
+                    &repo_dir,
+                    None,
+                    Some(&origin),
+                )
+                .await
             })
             .await;
         match outcome {
             Ok(proposal) => {
+                // Every connected page sees the draft list the POST changed.
+                let drafts: Vec<Value> = crate::goal_drafts::list_goal_drafts(&repo_dir)
+                    .iter()
+                    .map(crate::goal_drafts::GoalDraftSummary::to_json)
+                    .collect();
+                self.broadcast(json!({"type": "issuesDrafts", "drafts": drafts}));
                 let href = proposal
                     .pointer("/links/draft/href")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
                 Replies::json(headers, proposal, 201, &[("Location", href.as_str())])
+            }
+            Err(error) if error.status >= 500 => {
+                self.shared.journal.write(
+                    "server-error",
+                    &format!("POST /goal-proposals: {}", error.message),
+                    flow_id,
+                );
+                Replies::problem(headers, 500, "An internal error occurred.", &[])
             }
             Err(error) => Replies::problem(headers, error.status, &error.message, &[]),
         }
@@ -1085,6 +1207,7 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "checkIssues",
     "closeIssue",
     "getInstalledSkills",
+    "getComplexity",
     "getIssues",
     "getIssuesRun",
     "pauseIssues",

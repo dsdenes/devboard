@@ -336,7 +336,8 @@
                       "scout",
                       "design",
                       "dead-code",
-                      "single-responsibility"
+                      "single-responsibility",
+                      "consistent-naming"
                     ]
                   },
                   "seed": {
@@ -923,20 +924,7 @@
                 "bun test",
                 "bun run check",
                 "bun run build",
-                "bunx tsc --noEmit",
-                "bun run verify:agents",
-                "bun run verify:mcp-optimizer",
-                "bun run verify:install",
-                "bun run verify:interface",
-                "bun run verify:issues",
-                "bun run verify:mcp",
-                "bun run verify:providers",
-                "bun run verify:scout",
-                "bun run verify:single-responsibility",
-                "bun run verify:dead-code",
-                "bun run verify:ui",
-                "bun run verify:update",
-                "bun run verify:watchdog"
+                "bunx tsc --noEmit"
               ]
             },
             {

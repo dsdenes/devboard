@@ -89,12 +89,13 @@ The width survives a reload.
   session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
   overview at the blocker they name.
 - **Devboard** carries the **Background agents** group — Auto Scout, Watchdog, Design System,
-  MCP optimizer, and Release Train — then exactly two `data-testid="devboard-tab"` entries: `MCP
-  tools` (`data-command="devboard.tab.tools"`) and `Skills` (`data-command="devboard.tab.skills"`).
-  Each agent entry opens its page; the last two open the read-only MCP tool list and the Skills
-  table.
-  Neither entry is repeated per tool or per skill, so adding or removing one never changes the
-  menu. No tool or skill name appears in the sidebar.
+  MCP optimizer, and Release Train — then exactly three `data-testid="devboard-tab"` entries: `MCP
+  tools` (`data-command="devboard.tab.tools"`), `Skills` (`data-command="devboard.tab.skills"`),
+  and `Complexity` (`data-command="devboard.tab.complexity"`), directly after `Skills`.
+  Each agent entry opens its page; the last three open the read-only MCP tool list, the Skills
+  table, and the complexity dashboard.
+  No entry is repeated per tool, per skill, or per recorded date, so adding or removing one
+  never changes the menu. No tool, skill, or file name appears in the sidebar.
 - **Discover** lists the overview, glossary, and contribution sections, the six skills under their
   own group, and warnings only while at least one exists. The glossary entry carries the published
   term count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
@@ -175,6 +176,47 @@ was. The skill stays installed with its bytes, row, and `SKILL.md`, and the excl
 page reload, a dashboard restart, a harness update, and a rerun of `.devboard/install.sh`, which
 never copies that file. A toggle applies to sessions and runs started afterwards; opening the page
 starts no agent, and a toggle never stops, restarts, or edits a skill or a live run.
+
+### Complexity page
+
+The `Complexity` sidebar entry follows `Skills` and opens the Devboard mode's complexity page,
+`data-testid="complexity-page"`. Every figure on it comes from a recorded daily snapshot of this
+harness's own application source: `.devboard/crates/**/*.rs` and
+`.devboard/client/**/*.{ts,svelte}`. Test files (`*.test.*` and every `tests/` directory), `target`,
+`node_modules`, `dist`, `.tmp`, and `public` are never read. The analyzer is a deterministic token
+scanner inside the dashboard process: it needs no parser, external binary, network call, or
+runtime dependency, and two analyses of the same unchanged tree produce the same values.
+
+One snapshot records three levels. Per function it records cyclomatic complexity (1 plus the
+language's decision points in its own body: `if`, `for`, `while`, `loop`, `match` arms, `&&`, and
+`||` in Rust; `if`, `for`, `while`, `do`, `catch`, `case`, `&&`, `||`, `??`, and a ternary `?` in
+TypeScript and Svelte), source length in lines, maximum brace-block nesting, and parameter count.
+Per file it records non-blank, non-comment lines of code, function count, duplicated-line ratio,
+and a maintainability index clamped to 0-100 and derived from Halstead volume, mean cyclomatic
+complexity, and lines of code. Per project it records file count, function count, total lines of
+code, mean and maximum cyclomatic complexity, the number of functions above cyclomatic complexity
+10, the duplicated-line ratio, and the mean maintainability index. A line counts as duplicated when
+its normalized tokens (comments removed, at least four tokens) appear more than once across the
+analyzed set.
+
+The page renders `data-testid="complexity-summary"` with the latest snapshot's date, its recording
+timestamp, and the recorded-date count; one `data-testid="complexity-card"` per project metric with
+`data-metric` and the latest `data-value`; one `data-testid="complexity-series"` per project metric
+with `data-points`, one `data-testid="complexity-series-point"` per recorded date carrying
+`data-date` and `data-value`, and a `data-testid="complexity-series-latest"` marker on the newest
+point; and one `data-testid="complexity-file-table"` whose `data-testid="complexity-file-row"` rows
+carry `data-path` and one `data-testid="complexity-cell"` per per-file metric. Each series is
+scaled to its own range, so a changed value between two dates moves its point and its line
+direction. Clicking any `data-testid="complexity-sort"` header orders the table by that column, and
+a second click reverses it; the default order is the file path.
+
+Snapshots live in `<stateDir>/complexity/<24-hex project key>/<YYYY-MM-DD>.json`, the same project
+key the journal and dashboard state use, and nowhere else. The server records exactly one snapshot
+per UTC calendar day: at server start and whenever the UTC date changes while it runs, it records
+that day when and only when no file for it exists. A restart, a page open, a reload, a reconnect,
+or a later check on the same day writes no second file, which needs no background worker,
+detached process, or service. `DEVBOARD_COMPLEXITY_NOW` pins the analyzed instant for a fixture
+host or a verification run; the real clock is used when it is unset or unparseable.
 
 A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
@@ -483,6 +525,22 @@ checkout's released source version on a source checkout. The status bar labels t
 `installed` or `source` accordingly; the reload control appears only when a replacement could not
 start.
 
+### Release suite
+
+`devboard publish` runs the workspace suite before it tags, pushes, or dispatches the release
+workflow, and refuses the release while the suite exits nonzero. The same step runs alone as
+`devboard release-suite [--dir <workspace>]`, defaulting to the harness workspace. It retries the
+whole suite up to nine times and stops at the first attempt with no failing test; a test that
+fails three consecutive attempts is skipped for the rest of that run, and the remaining attempts
+run only the other test names through `cargo test --exact`. No tracked file is rewritten, so
+`git status --porcelain` is empty afterwards and the tree is byte-identical.
+
+Each skipped test files one Gitea issue whose title names the exact test and whose body names the
+file, the failed attempt output, the released commit, and the workflow run; a later run comments on
+the open issue instead of filing a second one. Filing failure prints one line and never changes the
+exit code. A suite that cannot compile, or whose output names no test, is structural: it exits
+nonzero, files nothing, and prints the first concrete error line.
+
 ### Publish-only source refresh
 
 A canonical source checkout never installs a released binary and never replaces itself on an
@@ -641,10 +699,9 @@ operator's inherited `OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then add
 selected keys (a Go peer also receives an OpenRouter key when one exists, for its fallback
 chain).
 
-`omp/config.yml` is still installed as `<host>/.omp/config.yml`, but it no longer pins
-`modelRoles`: a project-level pin would override the per-peer selection. The interactive agent
-started in the repository keeps OMP's configured default. Editing `omp/config.yml` here and
-rerunning `install.sh` changes the installed copy.
+The installer writes no project-level `omp/config.yml`, because any `modelRoles` pin there would
+override the per-peer selection. The interactive agent started in the repository keeps OMP's
+configured default, and every generated peer directory owns its own `config.yml`.
 
 `bun run verify:providers` proves the selection matrix, the 1% boundary, unknown-usage ranking,
 OpenRouter fallback, refusal, masking, environment and argv hygiene, generated roles,
@@ -2106,7 +2163,7 @@ sends one settings command. The Devboard sidebar has two groups in order: `Backg
 `open-devboard-dead-code`, `open-devboard-mcp-optimizer`, `open-devboard-api-standards`,
 `open-devboard-single-responsibility`, then
 `open-devboard-release-train`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
-`Devboard sections` (the `devboard-tab` MCP tools and Skills entries). The Issues sidebar carries no
+`Devboard sections` (the `devboard-tab` MCP tools, Skills, and Complexity entries). The Issues sidebar carries no
 Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
 table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
 queue.

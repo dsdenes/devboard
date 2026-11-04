@@ -7,10 +7,6 @@
  * self-contained: it fetches the issue, checks the label, prepares a worktree,
  * activates the `goal` tool, and hands the issue body to the model verbatim.
  *
- * Like `implement-next-epic.ts`, this file uses only the globals the omp host
- * provides and the exec seam it injects; it shares the forge, worktree, and
- * session helpers with that file instead of importing the harness runtime.
- *
  * Harness rules: this file lives under `.devboard/`; the only host-side file is
  * the thin wrapper at `.omp/extensions/implement-goal-issue.ts`, copied by
  * `install.sh`.
@@ -19,26 +15,59 @@
 import {
   createWorktree,
   detectForge,
-  environmentExec,
-  firstLine,
-  giteaIssue,
-  giteaTarget,
+  execWithEnvironment,
   goalModeFromBranch,
-  isFailure,
-  isObject,
-  parseForgeRemote,
-  parseJsonObject,
   planWorktree,
-  run as runCommand,
   slugify,
-  writeStderr,
-  type Exec,
-  type ExtensionAPI,
-  type ExtensionCommandContext,
-  type FetchLike,
-  type Outcome,
   type RemoteInfo,
 } from "./implement-next-epic.ts";
+import type { Exec } from "../lib/forge-auth.ts";
+import { parseForgeRemote } from "../lib/forge.ts";
+import { giteaIssue, giteaTarget, type FetchLike } from "../lib/gitea.ts";
+
+interface ExecResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+  killed?: boolean;
+}
+
+interface ExecOptions {
+  cwd?: string;
+  timeout?: number;
+}
+
+interface ExtensionAPI {
+  registerCommand(
+    name: string,
+    options: {
+      description?: string;
+      handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
+    },
+  ): void;
+  exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
+  getActiveTools(): string[];
+  getAllTools(): Array<{ name: string }>;
+  setActiveTools(names: string[]): Promise<void>;
+  sendUserMessage(content: string): void;
+}
+
+interface ModeChangeEntry {
+  type: string;
+  mode?: string;
+  data?: Record<string, unknown> | null;
+}
+
+interface ExtensionCommandContext {
+  cwd: string;
+  ui: {
+    notify(message: string, type?: "info" | "warning" | "error"): void;
+  };
+  sessionManager: {
+    getBranch(): ModeChangeEntry[];
+  };
+  waitForIdle?(): Promise<void>;
+}
 
 export interface GoalIssue {
   number: number;
@@ -58,15 +87,61 @@ export interface RunResult {
   prompt?: string;
 }
 
+interface Failure {
+  error: string;
+}
+
+type Outcome<T> = T | Failure;
+
+function isFailure<T>(value: Outcome<T>): value is Failure {
+  return typeof value === "object" && value !== null && "error" in value;
+}
+
 const GOAL_LABEL = "goal";
 const TITLE_MAX = 200;
+
+function firstLine(value: string): string {
+  return value.trim().split("\n")[0]?.trim() ?? "";
+}
+
+async function run(
+  pi: ExtensionAPI,
+  command: string,
+  args: string[],
+  cwd: string,
+): Promise<ExecResult> {
+  try {
+    return await pi.exec(command, args, { cwd, timeout: 120_000 });
+  } catch (error) {
+    return {
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+      code: -1,
+      killed: false,
+    };
+  }
+}
+
+function parseJsonObject(stdout: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(stdout);
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 function normalizedLabels(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const labels: string[] = [];
   for (const entry of raw) {
     if (typeof entry === "string") labels.push(entry);
-    else if (isObject(entry) && typeof entry.name === "string") labels.push(entry.name);
+    else if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
+      const name = (entry as Record<string, unknown>).name;
+      if (typeof name === "string") labels.push(name);
+    }
   }
   return labels;
 }
@@ -83,14 +158,14 @@ export async function fetchGoalIssue(
   giteaFetch?: FetchLike,
 ): Promise<Outcome<GoalIssue>> {
   if (info.forge === "gitea") {
-    const target = giteaTarget({
-      project: info.project,
-      ...(info.baseUrl === undefined ? {} : { baseUrl: info.baseUrl }),
-    });
-    if (target === undefined) {
-      return { error: "the Gitea address is not configured; set DEVBOARD_GITEA_URL" };
-    }
     try {
+      const target = giteaTarget({
+        project: info.project,
+        ...(info.baseUrl === undefined ? {} : { baseUrl: info.baseUrl }),
+      });
+      if (target === undefined) {
+        return { error: "the Gitea address is not configured; set DEVBOARD_GITEA_URL" };
+      }
       const issue = await giteaIssue(target, number, giteaFetch);
       return {
         number: issue.number,
@@ -110,7 +185,7 @@ export async function fetchGoalIssue(
   if (info.forge !== "github") {
     return { error: "goal issues are filed with gh or the Gitea API; this origin supports neither" };
   }
-  const result = await runCommand(
+  const result = await run(
     pi,
     "gh",
     ["issue", "view", String(number), "--json", "number,title,body,url,labels"],
@@ -199,11 +274,7 @@ After the goal tool succeeds, implement the issue end to end:
 - If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once on a line beginning \`DEVBOARD-BLOCKED:\`. Do not ask for permission or guidance.`;
 }
 
-function notify(
-  ctx: ExtensionCommandContext,
-  message: string,
-  type: "info" | "warning" | "error",
-): void {
+function notify(ctx: ExtensionCommandContext, message: string, type: "info" | "warning" | "error"): void {
   try {
     ctx.ui.notify(`implement-goal-issue: ${message}`, type);
   } catch {
@@ -213,7 +284,11 @@ function notify(
 
 function fail(ctx: ExtensionCommandContext, message: string): RunResult {
   notify(ctx, message, "error");
-  writeStderr(`implement-goal-issue: ${message}\n`);
+  try {
+    process.stderr.write(`implement-goal-issue: ${message}\n`);
+  } catch {
+    // A closed stderr must not change the command's outcome.
+  }
   return { ok: false, message };
 }
 
@@ -221,7 +296,7 @@ export async function runImplementGoalIssue(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   args = "",
-  authExec?: Exec,
+  authExec: Exec = execWithEnvironment,
   giteaFetch?: FetchLike,
 ): Promise<RunResult> {
   const requested = args.trim();
@@ -233,7 +308,7 @@ export async function runImplementGoalIssue(
   }
   const number = Number(requested);
 
-  const top = await runCommand(pi, "git", ["rev-parse", "--show-toplevel"], ctx.cwd);
+  const top = await run(pi, "git", ["rev-parse", "--show-toplevel"], ctx.cwd);
   if (top.code !== 0) {
     return fail(ctx, `not a git repository: ${firstLine(top.stderr) || "git rev-parse failed"}`);
   }
@@ -241,23 +316,19 @@ export async function runImplementGoalIssue(
 
   const goalMode = goalModeFromBranch(ctx.sessionManager.getBranch());
   if (goalMode) {
-    return fail(
-      ctx,
-      `a goal is already ${goalMode}; finish or drop it before implementing another goal`,
-    );
+    return fail(ctx, `a goal is already ${goalMode}; finish or drop it before implementing another goal`);
   }
 
-  const origin = await runCommand(pi, "git", ["remote", "get-url", "origin"], repo);
+  const origin = await run(pi, "git", ["remote", "get-url", "origin"], repo);
   if (origin.code !== 0 || !origin.stdout.trim()) {
     return fail(ctx, "origin remote is not configured; a goal issue cannot be implemented");
   }
-  const remote = parseForgeRemote(origin.stdout);
+  const remote = parseForgeRemote(origin.stdout, process.env);
   if (remote === undefined) {
     return fail(ctx, `cannot parse origin remote: ${origin.stdout.trim()}`);
   }
 
-  const exec = authExec ?? environmentExec(pi);
-  const info = await detectForge(remote, repo, exec, giteaFetch);
+  const info = await detectForge(remote, repo, authExec, giteaFetch);
   if (isFailure(info)) return fail(ctx, info.error);
 
   const fetched = await fetchGoalIssue(pi, info, number, repo, giteaFetch);
@@ -290,9 +361,7 @@ export async function runImplementGoalIssue(
   }
   const goalAvailable =
     pi.getActiveTools().includes("goal") && pi.getAllTools().some((tool) => tool.name === "goal");
-  if (!goalAvailable) {
-    return fail(ctx, "goal mode is unavailable; enable goal.enabled in omp settings");
-  }
+  if (!goalAvailable) return fail(ctx, "goal mode is unavailable; enable goal.enabled in omp settings");
 
   await ctx.waitForIdle?.();
 
@@ -330,7 +399,11 @@ export default function implementGoalIssueExtension(pi: ExtensionAPI): void {
           error instanceof Error ? error.message : String(error)
         }`;
         notify(ctx, message, "error");
-        writeStderr(`implement-goal-issue: ${message}\n`);
+        try {
+          process.stderr.write(`implement-goal-issue: ${message}\n`);
+        } catch {
+          // A closed stderr must not change the command's outcome.
+        }
       }
     },
   });

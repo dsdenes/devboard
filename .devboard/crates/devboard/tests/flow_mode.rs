@@ -230,6 +230,7 @@ fn fixture(label: &str) -> Fixture {
         state_dir: state.clone(),
         allowed_hosts: Vec::new(),
         token: "contract-token".to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
@@ -247,6 +248,10 @@ async fn send(app: &Arc<App>, conn: &Conn, command: Command) {
     app.command(conn, command).await;
 }
 
+/// The fixture writes process-wide environment variables, so its tests run one
+/// at a time.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn session_directory(fixture: &Fixture, session_id: &str) -> PathBuf {
     fixture
         .state
@@ -257,6 +262,7 @@ fn session_directory(fixture: &Fixture, session_id: &str) -> PathBuf {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_goal_widgets_steering_and_conversation_round_trip() {
+    let _env = ENV_LOCK.lock().await;
     let fixture = fixture("round-trip");
     let app = fixture.app.clone();
     let mut client = Client::connect(&app).await;
@@ -866,6 +872,7 @@ async fn socket_frames_after(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_flow_refusal_frames_reach_a_fresh_socket() {
+    let _env = ENV_LOCK.lock().await;
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -885,6 +892,7 @@ async fn the_flow_refusal_frames_reach_a_fresh_socket() {
         state_dir: state.clone(),
         allowed_hosts: Vec::new(),
         token: "contract-token".to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let listener = devboard::http::bind(&config.hostname, 0)
@@ -943,4 +951,50 @@ async fn the_flow_refusal_frames_reach_a_fresh_socket() {
 
     let _ = socket.close(None).await;
     task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_steering_write_surfaces_a_flow_error() {
+    let _env = ENV_LOCK.lock().await;
+    let fixture = fixture("steering-write");
+    let app = fixture.app.clone();
+    let mut client = Client::connect(&app).await;
+
+    send(&app, &client.conn, Command::CreateFlowGoal).await;
+    let snapshot = client
+        .wait_for("a session snapshot", |frame| {
+            frame["type"] == "flowSnapshot" && frame["sessionId"].is_string()
+        })
+        .await;
+    let session_id = snapshot["sessionId"]
+        .as_str()
+        .expect("a session id")
+        .to_string();
+    let directory = session_directory(&fixture, &session_id);
+    // A directory where the steering log belongs makes the append fail.
+    std::fs::create_dir(directory.join("steering.jsonl")).expect("an unwritable steering path");
+
+    send(
+        &app,
+        &client.conn,
+        Command::SendFlowSteering {
+            text: Some(json!("prefer a smaller configuration")),
+        },
+    )
+    .await;
+    let error = client
+        .wait_for("the failed steering write", |frame| {
+            frame["type"] == "flowError"
+                && frame["message"].as_str().is_some_and(|message| {
+                    message.starts_with("Could not record the steering note: ")
+                })
+        })
+        .await;
+    assert!(
+        error["message"]
+            .as_str()
+            .expect("a message")
+            .starts_with("Could not record the steering note: "),
+        "{error}"
+    );
 }

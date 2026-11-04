@@ -5,12 +5,14 @@
 //! dashboard.
 
 pub mod api_standards;
+pub mod consistent_naming;
 pub mod dead_code;
 pub mod design;
 pub mod goal_draft;
 pub mod issues;
 pub mod mcp_optimizer;
 pub mod release_train;
+pub mod run_owner;
 pub mod scout;
 pub mod single_responsibility;
 pub mod watchdog;
@@ -122,12 +124,14 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
 async fn run_family(invocation: &WorkerInvocation) -> anyhow::Result<()> {
     match invocation.family.as_str() {
         "goal-draft" => goal_draft::run(invocation).await,
+        "run-owner" => run_owner::run(invocation).await,
         "issues" => issues::run(invocation).await,
         "scout" => scout::run(invocation).await,
         "design" => design::run(invocation).await,
         "api-standards" => api_standards::run(invocation).await,
         "dead-code" => dead_code::run(invocation).await,
         "single-responsibility" => single_responsibility::run(invocation).await,
+        "consistent-naming" => consistent_naming::run(invocation).await,
         "mcp-optimizer" => mcp_optimizer::run(invocation).await,
         "release-train" => release_train::run(invocation).await,
         "watchdog" => watchdog::run(invocation).await,
@@ -145,6 +149,7 @@ pub fn known_family(family: &str) -> bool {
             | "api-standards"
             | "dead-code"
             | "single-responsibility"
+            | "consistent-naming"
             | "mcp-optimizer"
             | "release-train"
             | "watchdog"

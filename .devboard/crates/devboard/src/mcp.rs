@@ -208,7 +208,7 @@ fn catalog() -> Vec<Value> {
                 json!({
                     "surface": json!({
                         "type": "string",
-                        "enum": json!(["scout", "design", "dead-code", "single-responsibility"]),
+                        "enum": json!(["scout", "design", "dead-code", "single-responsibility", "consistent-naming"]),
                     }),
                     "seed": string_schema(),
                 }),
@@ -512,19 +512,6 @@ fn catalog() -> Vec<Value> {
                 "bun run check",
                 "bun run build",
                 "bunx tsc --noEmit",
-                "bun run verify:agents",
-                "bun run verify:mcp-optimizer",
-                "bun run verify:install",
-                "bun run verify:interface",
-                "bun run verify:issues",
-                "bun run verify:mcp",
-                "bun run verify:providers",
-                "bun run verify:scout",
-                "bun run verify:single-responsibility",
-                "bun run verify:dead-code",
-                "bun run verify:ui",
-                "bun run verify:update",
-                "bun run verify:watchdog",
             ]),
         ),
         tool(

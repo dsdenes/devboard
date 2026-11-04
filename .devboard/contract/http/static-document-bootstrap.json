@@ -1,0 +1,17 @@
+{
+  "name": "static-document-bootstrap",
+  "method": "GET",
+  "path": "/?bootstrap=contract-bootstrap",
+  "requestHeaders": {
+    "accept-encoding": "identity"
+  },
+  "requestBody": "",
+  "status": 200,
+  "headers": {
+    "cache-control": "no-cache",
+    "content-type": "text/html;charset=utf-8",
+    "vary": "Accept-Encoding",
+    "set-cookie": "devboard_dashboard_0=contract-token; Path=/; HttpOnly; SameSite=Strict"
+  },
+  "body": "<!doctype html><title>Contract</title>\n"
+}

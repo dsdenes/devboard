@@ -1126,3 +1126,185 @@ fn the_cli_exits_two_for_missing_prerequisites_and_bad_flags() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("--collect runs with --dry-run"));
 }
+
+// ---------------------------------------------------------------------------
+// Origin delivery
+// ---------------------------------------------------------------------------
+
+fn git_init_with_origin(root: &Path, origin: &str) {
+    std::fs::create_dir_all(root).expect("a fixture root");
+    for args in [vec!["init", "-q"], vec!["remote", "add", "origin", origin]] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(&args)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    }
+}
+
+fn input() -> IssueInput {
+    IssueInput {
+        category: "dead-code".to_string(),
+        fingerprint: "fp-1".to_string(),
+        line: "unused thing".to_string(),
+        first_seen: "2026-01-01T00:00:00.000Z".to_string(),
+        last_seen: "2026-01-01T00:00:00.000Z".to_string(),
+        count: 1,
+        window: Window {
+            start_ms: 1_767_225_600_000,
+            end_ms: 1_767_225_600_000,
+        },
+        instances: Vec::new(),
+        report_path: "report.md".to_string(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gitea_origin_files_and_comments_through_the_rest_api() {
+    use axum::routing::{get, post};
+    use axum::Json;
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let calls: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let state = calls.clone();
+    let server = tokio::spawn(async move {
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/repos/owner/name/issues",
+                post(
+                    |axum::extract::State(calls): axum::extract::State<Arc<Mutex<Vec<Value>>>>,
+                     Json(body): Json<Value>| async move {
+                        calls.lock().unwrap().push(body);
+                        Json(json!({
+                            "number": 7,
+                            "title": "filed",
+                            "html_url": format!("http://127.0.0.1:{}/owner/name/issues/7", 0),
+                            "state": "open",
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/repos/owner/name/issues/7/comments",
+                post(
+                    |axum::extract::State(calls): axum::extract::State<Arc<Mutex<Vec<Value>>>>,
+                     Json(body): Json<Value>| async move {
+                        calls.lock().unwrap().push(body);
+                        Json(json!({"id": 1}))
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/repos/owner/name/issues/7",
+                get(|| async { Json(json!({"number": 7, "state": "closed"})) }),
+            )
+            .with_state(state);
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let root = scratch("gitea-delivery");
+    git_init_with_origin(&root, "https://gitea.test/owner/name.git");
+    let mut environment = HashMap::new();
+    environment.insert(
+        "DEVBOARD_GITEA_URL".to_string(),
+        format!("http://127.0.0.1:{port}"),
+    );
+    let gh: GhRun = Arc::new(|_argv, _stdin| GhOutcome {
+        code: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+        timed_out: false,
+    });
+    let delivery = create_watchdog_delivery_with(&root, gh, &environment).expect("a delivery");
+    assert_eq!(delivery.repository(), "owner/name");
+
+    let created = delivery.create(&input());
+    let url = match created {
+        DeliveryResult::Ok { url } => url,
+        other => panic!("gitea create failed: {other:?}"),
+    };
+    assert!(delivery.owns(&url));
+    assert!(matches!(
+        delivery.comment(&url, &input()),
+        CommentResult::Ok
+    ));
+    assert_eq!(delivery.state(&url), Some(IssueState::Closed));
+    let recorded = calls.lock().unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded[1].get("body").is_some(), "the comment body");
+    server.abort();
+}
+
+#[test]
+fn github_delivery_stays_on_gh_and_other_forges_refuse_by_name() {
+    let root = scratch("github-delivery");
+    git_init_with_origin(&root, "https://github.com/owner/name.git");
+    let gh: GhRun = Arc::new(|_argv, _stdin| GhOutcome {
+        code: 0,
+        stdout: "https://github.com/owner/name/issues/3".to_string(),
+        stderr: String::new(),
+        timed_out: false,
+    });
+    let delivery =
+        create_watchdog_delivery_with(&root, gh, &HashMap::new()).expect("a GitHub delivery");
+    assert_eq!(delivery.repository(), "owner/name");
+    assert!(matches!(
+        delivery.create(&input()),
+        DeliveryResult::Ok { .. }
+    ));
+
+    let gitlab = scratch("gitlab-delivery");
+    git_init_with_origin(&gitlab, "https://gitlab.test/owner/name.git");
+    let error = create_watchdog_delivery_with(
+        &gitlab,
+        Arc::new(|_argv, _stdin| GhOutcome {
+            code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+        }),
+        &HashMap::new(),
+    )
+    .err()
+    .expect("a GitLab origin refuses");
+    assert!(error.contains("gitlab"), "{error}");
+}
+
+#[test]
+fn filing_from_a_subdirectory_refuses_instead_of_using_the_parent_origin() {
+    let root = scratch("subdirectory");
+    git_init_with_origin(&root, "https://gitea.test/owner/name.git");
+    let child = root.join("nested");
+    std::fs::create_dir_all(&child).unwrap();
+    let error = create_watchdog_delivery_with(
+        &child,
+        Arc::new(|_argv, _stdin| GhOutcome {
+            code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+        }),
+        &HashMap::new(),
+    )
+    .err()
+    .expect("a subdirectory refuses");
+    assert!(error.contains("at this root"), "{error}");
+}
+
+#[test]
+fn a_watchdog_title_counts_utf16_units() {
+    let line = "😀".repeat(40);
+    let title = devboard::workers::watchdog::watchdog_title("rule", &line);
+    assert!(devboard::feedback::js_len(&title) <= 80, "{title}");
+    assert!(title.ends_with('…'), "{title}");
+    let expected = format!(
+        "{}…",
+        devboard::feedback::js_truncate(&format!("[watchdog] rule: {line}"), 79).trim_end()
+    );
+    assert_eq!(title, expected);
+}

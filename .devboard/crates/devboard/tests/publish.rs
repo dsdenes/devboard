@@ -22,6 +22,9 @@ use devboard::publish::{
     ReleaseLevel, ReleaseLockOptions, Sleeper, SourceRefreshOptions, RELEASE_INSTALLERS,
     RELEASE_TARGETS,
 };
+use devboard::release_suite::{
+    BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -778,6 +781,35 @@ impl Sleeper for FakeSleeper {
     }
 }
 
+/// The gate every publish test uses: no real suite runs, and the verdict is
+/// the one the test asked for. It asserts the gate receives the harness
+/// workspace.
+struct StubSuiteGate {
+    code: i32,
+    structural: Option<String>,
+}
+
+impl ReleaseSuiteGate for StubSuiteGate {
+    fn run<'a>(
+        &'a self,
+        options: ReleaseSuiteOptions,
+    ) -> BoxFuture<'a, anyhow::Result<ReleaseSuiteReport>> {
+        assert!(
+            options.dir.ends_with(".devboard"),
+            "the gate runs the harness workspace, got {}",
+            options.dir.display()
+        );
+        let report = ReleaseSuiteReport {
+            code: self.code,
+            attempts: if self.code == 0 { 1 } else { 9 },
+            quarantined: Vec::new(),
+            structural: self.structural.clone(),
+            error_line: self.structural.clone(),
+        };
+        Box::pin(async move { Ok(report) })
+    }
+}
+
 fn test_args(
     repo: &Path,
     gitea: &StubServer,
@@ -803,6 +835,10 @@ fn test_args(
     args.poll_interval = Duration::from_millis(5);
     args.lock_poll_interval = Duration::from_millis(5);
     args.instances = instance.map(|instance| vec![instance]);
+    args.release_suite = Some(Arc::new(StubSuiteGate {
+        code: 0,
+        structural: None,
+    }));
     args.log = Some(Arc::new(|_line: &str| {}));
     args
 }
@@ -997,6 +1033,60 @@ async fn a_tag_for_an_unrelated_commit_is_refused_before_any_write() {
 
 // ---------------------------------------------------------------------------
 // Full release path
+
+#[tokio::test]
+async fn release_suite_gate_prevents_tagging_and_dispatch() {
+    let live = live("suite-gate", release_assets()).await;
+    let head = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    let origin_head = git_output(&live.origin, &["rev-parse", "main"]);
+    let github_head = git_output(&live.github, &["rev-parse", "main"]);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.release_suite = Some(Arc::new(StubSuiteGate {
+        code: 1,
+        structural: Some(
+            "the suite could not compile: error[E0425]: cannot find value `missing` in this scope"
+                .to_string(),
+        ),
+    }));
+    let error = publish(args)
+        .await
+        .expect_err("a failing suite blocks the release");
+    let message = format!("{error:#}");
+    assert!(message.contains("release suite did not pass"), "{message}");
+    assert!(message.contains("error[E0425]"), "{message}");
+
+    // Nothing was bumped, committed, tagged, pushed, or dispatched.
+    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        git_output(&live.seed, &["show", "-s", "--format=%s", "HEAD"]),
+        "feat: the next release"
+    );
+    let tags = git_output(&live.seed, &["tag", "--list", "v1.1.0"]);
+    assert!(tags.trim().is_empty(), "{tags}");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        origin_head
+    );
+    assert_eq!(
+        git_output(&live.github, &["rev-parse", "main"]),
+        github_head
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 0);
+    assert!(live
+        .github_server
+        .find(
+            "POST",
+            "/repos/dsdenes/devboard/actions/workflows/release.yml/dispatches"
+        )
+        .is_none());
+    assert!(live
+        .gitea_server
+        .find("POST", "/api/v1/repos/dsdenes/devboard/releases")
+        .is_none());
+    let manifest = fs::read_to_string(live.seed.join(".devboard/Cargo.toml")).expect("manifest");
+    assert!(manifest.contains("version = \"0.0.0\""), "{manifest}");
+}
 
 struct Live {
     _scratch: Scratch,

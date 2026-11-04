@@ -143,7 +143,7 @@ pull request, and the remainder goes to Non-goals.
 4. Resolve the identity against that exact project, from the host repository root:
 
    ```sh
-   bun <host>/.devboard/scripts/forge-auth.ts check \
+   devboard forge-auth check \
      --host <host> --project <project> --forge <github|gitlab|gitea> --required write --cwd <host>
    ```
 
@@ -162,7 +162,7 @@ pull request, and the remainder goes to Non-goals.
    use the API with `GITEA_TOKEN`, which the `check` output names. Write `<auth>` for:
 
    ```sh
-   bun <host>/.devboard/scripts/forge-auth.ts exec \
+   devboard forge-auth exec \
      --host <host> --project <project> --forge <forge> --required write --
    ```
 

@@ -11,6 +11,9 @@ use crate::feedback::{
 /// Where a draft lives, relative to the repository root.
 pub const GOAL_PROPOSALS_DIRECTORY: &str = ".devboard/goal-proposals";
 
+/// The HTTP route that serves one draft.
+pub const GOAL_PROPOSALS_ENDPOINT: &str = "/goal-proposals";
+
 const MAX_HEADING: usize = 200;
 const MAX_NAME_WORDS: usize = 6;
 const MAX_SLUG_LENGTH: usize = 64;
@@ -162,10 +165,11 @@ pub async fn write_goal_proposal(
     submission: &GoalProposalSubmission,
     repo_dir: &Path,
     suggested_name: Option<String>,
+    origin: Option<&str>,
 ) -> Result<Value, RequestError> {
     let directory = repo_dir.join(GOAL_PROPOSALS_DIRECTORY);
     std::fs::create_dir_all(&directory).map_err(|error| {
-        RequestError::bad_request(format!("could not write the goal proposal: {error}"))
+        RequestError::internal(format!("could not write the goal proposal: {error}"))
     })?;
     let name = suggested_name
         .as_deref()
@@ -175,11 +179,32 @@ pub async fn write_goal_proposal(
     let filename = create_exclusive(&directory, &name, &body)
         .await
         .map_err(|error| {
-            RequestError::bad_request(format!("could not write the goal proposal: {error}"))
+            RequestError::internal(format!("could not write the goal proposal: {error}"))
         })?;
-    let path = directory.join(&filename);
-    let href = file_url(&path);
+    let href = match origin {
+        Some(origin) => format!(
+            "{}{}/{}",
+            origin.trim_end_matches('/'),
+            GOAL_PROPOSALS_ENDPOINT,
+            encode_path_segment(&filename)
+        ),
+        None => file_url(&directory.join(&filename)),
+    };
     Ok(json!({"links": {"draft": {"href": href}}}))
+}
+
+/// One URL path segment, percent-encoding everything outside the unreserved
+/// set. Draft names are slugs, so this only guards the link grammar.
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 /// Writes the content to `name.md`, or the first free `name-N.md`.

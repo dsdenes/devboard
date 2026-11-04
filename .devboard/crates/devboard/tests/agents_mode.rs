@@ -36,6 +36,7 @@ fn scratch(label: &str) -> PathBuf {
         "dead-code-removal.md",
         "api-standards.md",
         "single-responsibility.md",
+        "consistent-naming.md",
         "release-train.md",
     ] {
         std::fs::write(
@@ -59,6 +60,7 @@ fn app_at(root: &Path) -> Arc<App> {
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
         token: "test-token".to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
@@ -184,6 +186,7 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
             "mcp-optimizer",
             "api-standards",
             "single-responsibility",
+            "consistent-naming",
             "release-train",
         ]
     );
@@ -222,12 +225,24 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
     assert_eq!(mcp["limits"]["maxPending"], 20);
     assert_eq!(mcp["detail"]["panel"], "cycles");
 
-    let release = &agents[7];
+    let naming = &agents[7];
+    assert_eq!(naming["label"], "Consistent Naming");
+    assert_eq!(
+        naming["description"],
+        "Audits the repository's vocabulary against the project naming skill and files one capped vocabulary issue per concept and violation."
+    );
+    assert_eq!(naming["scope"], "repository");
+    assert_eq!(naming["cadence"]["defaultMinutes"], 60);
+    assert_eq!(naming["limits"]["maxPerHour"], 10);
+    assert_eq!(naming["limits"]["maxPending"], 5);
+    assert_eq!(naming["detail"]["panel"], "activity");
+
+    let release = &agents[8];
     assert_eq!(release["cadence"]["minutes"], 10);
     assert_eq!(release["detail"]["scanId"], "idle:0");
 
     let prompts = find(&all, "agentPromptState");
-    assert_eq!(prompts.len(), 8);
+    assert_eq!(prompts.len(), 9);
     assert_eq!(prompts[0]["id"], "scout");
     assert_eq!(prompts[0]["prompt"]["absent"], false);
     assert!(prompts[0]["prompt"]["text"]
@@ -630,4 +645,125 @@ async fn reconnect_replays_the_newest_scout_activity_and_sorted_issues() {
             {"text": "second line", "append": false}
         ])
     );
+}
+
+#[tokio::test]
+async fn a_hanging_start_preflight_refuses_within_the_bound() {
+    let root = scratch("start-timeout");
+    let app = app_at(&root);
+    devboard::agents_mode::set_preflight_timeout(&app, "scout", 20);
+    let preflight: devboard::agents_mode::PreflightCallback = Arc::new(|_request| {
+        Box::pin(async { std::future::pending::<Result<String, String>>().await })
+    });
+    devboard::agents_mode::set_preflight(&app, "scout", preflight);
+    let (conn, mut inbox) = connection_for(&app).await;
+
+    let started = std::time::Instant::now();
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("scout")),
+        },
+    )
+    .await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let all = frames(&mut inbox);
+    let errors = find(&all, "error");
+    let error = errors.first().expect("a refusal");
+    assert_eq!(
+        error["message"],
+        "the start preflight did not finish within 20 ms; press Start to retry."
+    );
+    let scout = agent(&all, "scout").expect("a scout snapshot");
+    assert_ne!(scout["lifecycle"], "starting");
+}
+
+#[tokio::test]
+async fn a_single_responsibility_page_open_pushes_the_worker_refresh() {
+    let root = scratch("single-responsibility-refresh");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a stand-in worker");
+    let pid = child.id();
+    std::mem::forget(child);
+    let lock = devboard::workers::single_responsibility::lock_path(&repo);
+    write_json(
+        &lock,
+        json!({
+            "pid": pid,
+            "startedAt": devboard::journal::now_iso8601(),
+            "repo": repo.to_string_lossy(),
+            "stateDir": state.to_string_lossy(),
+            "harnessVersion": null,
+            "argv": ["devboard", "worker", "single-responsibility"],
+        }),
+    );
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::RefreshAgent {
+            id: Some(json!("single-responsibility")),
+        },
+    )
+    .await;
+    let control = devboard::workers::single_responsibility::control_directory(&state, &repo);
+    let command = std::fs::read_dir(&control)
+        .expect("a control directory")
+        .filter_map(Result::ok)
+        .map(|entry| std::fs::read_to_string(entry.path()).expect("a command"))
+        .map(|text| serde_json::from_str::<Value>(&text).expect("JSON"))
+        .next()
+        .expect("a refresh command");
+    assert_eq!(command, json!({"type": "refresh"}));
+    let all = frames(&mut inbox);
+    assert!(agent(&all, "single-responsibility").is_some());
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[tokio::test]
+async fn a_changed_open_issue_read_republishes_the_prompt_template() {
+    let root = scratch("prompt-refresh");
+    let app = app_at(&root);
+    let (_conn, mut inbox) = connection_for(&app).await;
+    let first = vec![json!({
+        "number": 11,
+        "title": "[mcp-optimizer] aaamarker7",
+        "url": "https://example.test/11",
+        "body": "family: aaamarker7",
+    })];
+    devboard::agents_mode::publish_prompt_templates(&app, first);
+    let all = frames(&mut inbox);
+    let template = find(&all, "agentPromptState")
+        .into_iter()
+        .find(|frame| frame["id"] == "mcp-optimizer")
+        .and_then(|frame| frame["prompt"]["template"].as_str())
+        .expect("the republished template");
+    assert!(template.contains("aaamarker7"), "{template}");
+
+    let second = vec![json!({
+        "number": 12,
+        "title": "[mcp-optimizer] bbbmarker8",
+        "url": "https://example.test/12",
+        "body": "family: bbbmarker8",
+    })];
+    devboard::agents_mode::publish_prompt_templates(&app, second);
+    let all = frames(&mut inbox);
+    let template = find(&all, "agentPromptState")
+        .into_iter()
+        .find(|frame| frame["id"] == "mcp-optimizer")
+        .and_then(|frame| frame["prompt"]["template"].as_str())
+        .expect("the republished template");
+    assert!(template.contains("bbbmarker8"), "{template}");
+    assert!(!template.contains("aaamarker7"), "{template}");
 }

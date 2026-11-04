@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
+use super::api_standards::{run_until_idle, CycleHeartbeat};
 use super::WorkerInvocation;
 use crate::acp::{
     session_mcp_servers, AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent, AcpQuestion,
@@ -3989,11 +3990,12 @@ impl DesignWorkerInner {
             state.next_attempt_at = None;
         }
         self.publish();
+        let heartbeat = CycleHeartbeat::new();
         let turn = AuditTurn {
             directory: directory.clone(),
             prompt: prompt_for(&directory),
             environment: turn_environment,
-            signal: self.audit_signal(&cycle_id),
+            signal: self.audit_signal(&cycle_id, Arc::clone(&heartbeat)),
         };
         let inner = Arc::clone(self);
         let audit = Arc::clone(&self.options.audit);
@@ -4001,13 +4003,7 @@ impl DesignWorkerInner {
         tokio::spawn(async move {
             let audit = audit(turn);
             let result = tokio::select! {
-                outcome = tokio::time::timeout(
-                    Duration::from_millis(timeout_ms),
-                    audit,
-                ) => match outcome {
-                    Ok(result) => Some(result),
-                    Err(_) => Some(Err("the audit timed out".to_string())),
-                },
+                outcome = run_until_idle(audit, heartbeat, timeout_ms) => Some(outcome),
                 _ = stop.notified() => None,
             };
             if inner.stopping.load(Ordering::SeqCst) {
@@ -4034,7 +4030,11 @@ impl DesignWorkerInner {
         self.starting.store(false, Ordering::SeqCst);
     }
 
-    fn audit_signal(self: &Arc<Self>, cycle_id: &str) -> Arc<dyn Fn(AuditSignal) + Send + Sync> {
+    fn audit_signal(
+        self: &Arc<Self>,
+        cycle_id: &str,
+        heartbeat: Arc<CycleHeartbeat>,
+    ) -> Arc<dyn Fn(AuditSignal) + Send + Sync> {
         let inner = Arc::clone(self);
         let cycle_id = cycle_id.to_string();
         Arc::new(move |signal| {
@@ -4047,10 +4047,11 @@ impl DesignWorkerInner {
             }
             match signal {
                 AuditSignal::Activity { text, append } => {
+                    heartbeat.beat();
                     append_activity_line(&mut lock_unpoisoned(&active.activity), &text, append);
                     inner.write_activity_of(active);
                 }
-                AuditSignal::SessionUpdate => {}
+                AuditSignal::SessionUpdate => heartbeat.beat(),
                 AuditSignal::Stderr(text) => {
                     let mut first = lock_unpoisoned(&active.first_line);
                     if first.is_none() {

@@ -147,6 +147,100 @@ pub async fn create_issue(
     }
 }
 
+/// Adds one comment to an existing issue.
+pub async fn comment_issue(
+    target: &GiteaTarget,
+    number: u64,
+    body: &str,
+    flow_id: Option<&str>,
+    timeout_ms: u64,
+) -> Result<(), GiteaError> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms.max(1)))
+        .build()
+        .map_err(|error| GiteaError {
+            status: None,
+            message: error.to_string(),
+        })?;
+    let path = format!("{}/issues/{number}/comments", repo_path(target));
+    let mut request = client
+        .post(api_url(target, &path))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .body(crate::jsjson::stringify(&json!({"body": body})));
+    if let Some(flow_id) = flow_id {
+        request = request.header("X-Flow-ID", flow_id);
+    }
+    if let Some(token) = target.token.as_deref().filter(|token| !token.is_empty()) {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+    let response = request.send().await.map_err(|error| GiteaError {
+        status: None,
+        message: error.to_string(),
+    })?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(GiteaError {
+            status: Some(status.as_u16()),
+            message: format!(
+                "POST {path} failed (HTTP {}): {}",
+                status.as_u16(),
+                message_from_body(&text)
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// One issue's current state, or `None` when it could not be read.
+pub async fn issue_state(
+    target: &GiteaTarget,
+    number: u64,
+    timeout_ms: u64,
+) -> Result<Option<bool>, GiteaError> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms.max(1)))
+        .build()
+        .map_err(|error| GiteaError {
+            status: None,
+            message: error.to_string(),
+        })?;
+    let path = format!("{}/issues/{number}", repo_path(target));
+    let mut request = client
+        .get(api_url(target, &path))
+        .header("Accept", "application/json");
+    if let Some(token) = target.token.as_deref().filter(|token| !token.is_empty()) {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+    let response = request.send().await.map_err(|error| GiteaError {
+        status: None,
+        message: error.to_string(),
+    })?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(GiteaError {
+            status: Some(status.as_u16()),
+            message: format!(
+                "GET {path} failed (HTTP {}): {}",
+                status.as_u16(),
+                message_from_body(&text)
+            ),
+        });
+    }
+    let document: Value = serde_json::from_str(&text).map_err(|error| GiteaError {
+        status: None,
+        message: format!("GET {path} returned invalid JSON: {error}"),
+    })?;
+    let state = document.get("state").and_then(Value::as_str);
+    match state {
+        Some(state) if state.eq_ignore_ascii_case("open") => Ok(Some(true)),
+        Some(state) if state.eq_ignore_ascii_case("closed") => Ok(Some(false)),
+        _ => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

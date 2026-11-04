@@ -80,6 +80,7 @@ fn config(scratch: &Scratch, command: String) -> Config {
         state_dir: scratch.state(),
         allowed_hosts: Vec::new(),
         token: "ask-test-token".to_string(),
+        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     }
 }

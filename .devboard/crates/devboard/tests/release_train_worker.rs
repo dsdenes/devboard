@@ -1271,6 +1271,7 @@ async fn release_history_reads_the_request_of_a_legacy_run() {
             url: Some("https://forge.test/releases/tag/v1.0.0".to_string()),
             detail: None,
             commits: None,
+            peer: None,
         },
         ReleaseTrainRun {
             id: "failed".to_string(),
@@ -1283,6 +1284,7 @@ async fn release_history_reads_the_request_of_a_legacy_run() {
             url: None,
             detail: Some("no".to_string()),
             commits: None,
+            peer: None,
         },
     ];
     let rows = release_history(&directory, Some(&state));
@@ -1530,3 +1532,89 @@ async fn the_run_result_document_is_read_from_the_run_directory() {
 /* ------------------------------------------------------------------------ */
 
 use serde_json::Value;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_release_agent_is_one_omp_peer_named_in_the_state_and_stopped_by_stop() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    let root = scratch_root("release-agent");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).expect("a repo");
+    let run_dir = root.join("run");
+    std::fs::create_dir_all(&run_dir).expect("a run directory");
+    let stub = format!(
+        "{} acp-stub --delay-ms=60000",
+        env!("CARGO_BIN_EXE_devboard")
+    );
+    let stopped = Arc::new(AtomicBool::new(false));
+    let registered: Arc<Mutex<Option<devboard::workers::release_train::ReleasePeer>>> =
+        Arc::new(Mutex::new(None));
+    let input = ReleaseRunInput {
+        request: ReleaseTrainRequest {
+            format: 1,
+            run_id: "run-1".to_string(),
+            range: "v1.0.0..abc".to_string(),
+            target: "abc".to_string(),
+            version: "1.1.0".to_string(),
+            previous: Some("v1.0.0".to_string()),
+            commits: Vec::new(),
+            release_commits: Vec::new(),
+        },
+        activity: Arc::new(|_line: &str| {}),
+        stopping: {
+            let stopped = stopped.clone();
+            Arc::new(move || stopped.load(Ordering::SeqCst))
+        },
+        run_dir: run_dir.clone(),
+        repo_dir: repo.clone(),
+        state_dir: root.join("state"),
+        agent_command: stub,
+        register_peer: {
+            let registered = registered.clone();
+            Arc::new(move |peer| *registered.lock().unwrap() = Some(peer))
+        },
+    };
+    let verify: VerifyFn = Arc::new(|_options| {
+        Box::pin(async {
+            ReleaseVerification::Ok {
+                version: "1.1.0".to_string(),
+                url: "https://forge.test/releases/tag/v1.1.0".to_string(),
+            }
+        })
+    });
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify,
+        std::collections::HashMap::new(),
+    );
+    let handle = tokio::spawn(run(input));
+    let peer = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            if let Some(peer) = registered.lock().unwrap().clone() {
+                return peer;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the peer starts");
+    assert!(peer.command.contains("acp-stub"), "{:?}", peer.argv);
+    assert!(peer.pid > 0);
+
+    stopped.store(true, Ordering::SeqCst);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+        .await
+        .expect("Stop ends the peer")
+        .expect("the run joins");
+    assert!(
+        matches!(
+            result,
+            ReleaseRunResult::Ok { .. } | ReleaseRunResult::Failed { .. }
+        ),
+        "{result:?}"
+    );
+    // The process group is gone.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let alive = std::path::Path::new(&format!("/proc/{}", peer.pid)).exists();
+    assert!(!alive, "the release peer survived Stop");
+}

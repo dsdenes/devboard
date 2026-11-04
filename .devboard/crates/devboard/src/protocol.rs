@@ -16,6 +16,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "getVersion",
     "getMcpTools",
     "getInstalledSkills",
+    "getComplexity",
     "setInstalledSkillEnabled",
     "getIssues",
     "getIssuesRun",
@@ -98,6 +99,7 @@ pub enum Command {
     GetVersion,
     GetMcpTools,
     GetInstalledSkills,
+    GetComplexity,
     SetInstalledSkillEnabled {
         name: Option<Value>,
         enabled: Option<Value>,
@@ -290,6 +292,7 @@ impl Command {
             Self::GetVersion => "getVersion",
             Self::GetMcpTools => "getMcpTools",
             Self::GetInstalledSkills => "getInstalledSkills",
+            Self::GetComplexity => "getComplexity",
             Self::SetInstalledSkillEnabled { .. } => "setInstalledSkillEnabled",
             Self::GetIssues => "getIssues",
             Self::GetIssuesRun { .. } => "getIssuesRun",
@@ -374,6 +377,7 @@ impl Command {
                 | Self::GetVersion
                 | Self::GetMcpTools
                 | Self::GetInstalledSkills
+                | Self::GetComplexity
                 | Self::GetIssues
                 | Self::GetIssuesRun { .. }
                 | Self::GetGoalDrafts
@@ -405,6 +409,7 @@ pub fn parse_client_message(text: &str) -> Option<Command> {
         "getVersion" => Command::GetVersion,
         "getMcpTools" => Command::GetMcpTools,
         "getInstalledSkills" => Command::GetInstalledSkills,
+        "getComplexity" => Command::GetComplexity,
         "setInstalledSkillEnabled" => Command::SetInstalledSkillEnabled {
             name: field("name"),
             enabled: field("enabled"),

@@ -1,6 +1,6 @@
 //! Discover Mode: the project sheet, glossary, skill, and contribution crawl.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -14,8 +14,9 @@ use time::format_description::FormatItem;
 use time::macros::format_description;
 use time::OffsetDateTime;
 
-use crate::acp::{AcpConnection, AcpConnectionOptions, AcpEvent, AcpId, AcpQuestion};
+use crate::acp::{AcpId, AcpQuestion};
 use crate::app::{App, Conn, StateSection};
+use crate::detached_run::{DetachedPeer, DetachedPeerOptions, DetachedRunOutcome};
 use crate::protocol::Command;
 
 /// One of the seven Discover agents, in sidebar order.
@@ -160,7 +161,33 @@ fn significance_path(repo_dir: &Path) -> PathBuf {
 
 fn remove_staging(repo_dir: &Path, run_id: &str) {
     let _ = fs::remove_dir_all(staging_directory(repo_dir, run_id));
-    let _ = fs::remove_dir_all(staging_root(repo_dir));
+    remove_staging_root_if_empty(repo_dir);
+}
+
+/// Removes the staging a restored run left behind. The run is always restarted
+/// with a fresh staging directory, so the interrupted one never outlives the
+/// restore.
+fn remove_interrupted_staging(staging_dir: &Path) {
+    if staging_dir.as_os_str().is_empty() {
+        return;
+    }
+    let _ = fs::remove_dir_all(staging_dir);
+    if let Some(parent) = staging_dir.parent() {
+        if let Ok(mut entries) = fs::read_dir(parent) {
+            if entries.next().is_none() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
+}
+
+fn remove_staging_root_if_empty(repo_dir: &Path) {
+    let root = staging_root(repo_dir);
+    if let Ok(mut entries) = fs::read_dir(&root) {
+        if entries.next().is_none() {
+            let _ = fs::remove_dir(&root);
+        }
+    }
 }
 
 // --------------------------------------------------------------- utility
@@ -1900,6 +1927,19 @@ fn parse_yaml_sequence(lines: &[YamlLine], index: &mut usize, indent: usize) -> 
         }
     }
     Value::Array(out)
+}
+
+/// Parses one YAML document with the subset reader Discover's glossary uses.
+/// A damaged document yields `Value::Null` rather than an error, so a caller
+/// that only needs the record decides what an unusable document means.
+pub fn parse_yaml_document(text: &str) -> Value {
+    let lines = yaml_lines(text);
+    let mut index = 0;
+    if lines.is_empty() {
+        Value::Null
+    } else {
+        parse_yaml_value(&lines, &mut index, lines[0].indent)
+    }
 }
 
 pub fn parse_glossary(
@@ -7066,7 +7106,9 @@ fn usage_files(repo_dir: &Path) -> Vec<(String, String)> {
     let mut files = Vec::new();
     for path in host_files(repo_dir) {
         let absolute = repo_dir.join(&path);
-        let Ok(metadata) = fs::symlink_metadata(&absolute) else {
+        // `metadata` follows a symlink: a tracked link to a readable file is
+        // host documentation and counts, exactly as the crawl reads it.
+        let Ok(metadata) = fs::metadata(&absolute) else {
             continue;
         };
         if !metadata.is_file() || metadata.len() > 512 * 1024 {
@@ -7083,6 +7125,45 @@ fn usage_files(repo_dir: &Path) -> Vec<(String, String)> {
     files
 }
 
+/// How many usage analyses stay cached, keyed by host revision and glossary
+/// shape.
+const USAGE_CACHE_MAX: usize = 8;
+
+static USAGE_CACHE: LazyLock<Mutex<VecDeque<(String, Value)>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+
+/// The cache key: the repository, the fingerprint, and every concept's id,
+/// labels, and grounding. A second publish of an unchanged host with the same
+/// glossary reuses the analysis instead of walking the tree again.
+fn usage_key(repo_dir: &Path, fingerprint: &str, glossaries: &[Glossary]) -> String {
+    let shape: Vec<Value> = glossaries
+        .iter()
+        .map(|glossary| {
+            json!({
+                "context": glossary.bounded_context,
+                "concepts": glossary.concepts.iter().map(|concept| {
+                    json!({
+                        "id": concept.id,
+                        "labels": concept
+                            .pref_labels
+                            .iter()
+                            .chain(concept.alt_labels.iter())
+                            .map(|label| label.text.clone())
+                            .collect::<Vec<_>>(),
+                        "grounding": concept.grounding,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let digest = format!(
+        "{}\u{0}{fingerprint}\u{0}{}",
+        repo_dir.to_string_lossy(),
+        crate::jsjson::stringify(&Value::Array(shape))
+    );
+    sha256_hex(digest.as_bytes())
+}
+
 fn identifier_pattern() -> &'static Regex {
     static PATTERN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"[A-Za-z_$][A-Za-z0-9_$]*").expect("an identifier"));
@@ -7090,7 +7171,17 @@ fn identifier_pattern() -> &'static Regex {
 }
 
 pub fn glossary_usage(repo_dir: &Path, glossaries: &[Glossary], fingerprint: &str) -> Value {
-    let _ = fingerprint;
+    let key = usage_key(repo_dir, fingerprint, glossaries);
+    let cached = {
+        let cache = lock(&USAGE_CACHE);
+        cache
+            .iter()
+            .find(|(existing, _)| existing == &key)
+            .map(|(_, value)| value.clone())
+    };
+    if let Some(cached) = cached {
+        return cached;
+    }
     let files = usage_files(repo_dir);
     let mut usage = Map::new();
     for glossary in glossaries {
@@ -7167,7 +7258,12 @@ pub fn glossary_usage(repo_dir: &Path, glossaries: &[Glossary], fingerprint: &st
                     .2
                     .cmp(&left.2)
                     .then_with(|| right.1.cmp(&left.1))
-                    .then_with(|| left.0.cmp(&right.0))
+                    .then_with(|| {
+                        left.0
+                            .to_lowercase()
+                            .cmp(&right.0.to_lowercase())
+                            .then_with(|| left.0.cmp(&right.0))
+                    })
             });
             let examples: Vec<Value> = ranked
                 .into_iter()
@@ -7181,7 +7277,17 @@ pub fn glossary_usage(repo_dir: &Path, glossaries: &[Glossary], fingerprint: &st
         }
         usage.insert(glossary.bounded_context.clone(), Value::Object(contexts));
     }
-    Value::Object(usage)
+    let usage = Value::Object(usage);
+    {
+        let mut cache = lock(&USAGE_CACHE);
+        if !cache.iter().any(|(existing, _)| existing == &key) {
+            cache.push_back((key, usage.clone()));
+        }
+        while cache.len() > USAGE_CACHE_MAX {
+            cache.pop_front();
+        }
+    }
+    usage
 }
 // ------------------------------------------------------------- mode state
 
@@ -7215,6 +7321,7 @@ struct Checkout {
 struct Cloning {
     url: String,
     target: RemoteRepository,
+    staging: PathBuf,
 }
 
 #[derive(Clone)]
@@ -7228,7 +7335,8 @@ struct Run {
     activity: Vec<String>,
     question: Option<AcpQuestion>,
     remote: Option<RemoteRepository>,
-    peer: Option<Arc<AcpConnection>>,
+    resumed: bool,
+    peer: Option<Arc<DetachedPeer>>,
 }
 
 struct ModeState {
@@ -7257,9 +7365,12 @@ struct ModeState {
 
 #[derive(Clone)]
 struct StoredDiscover {
+    run_id: String,
+    staging_dir: String,
     started_at: String,
     agent: String,
     activity: Vec<String>,
+    question: Option<AcpQuestion>,
     remote: Option<RemoteRepository>,
 }
 
@@ -7826,6 +7937,19 @@ fn notify_discover_failure(conn: Option<&Conn>, message: &str) {
     }
 }
 
+/// Reports a failure the restore path raised before any page was attached.
+/// The frame goes to every connected page and stays queued for the first page
+/// that connects afterwards, so a resumed run's refusal is never silent.
+fn report_discover_failure(app: &Arc<App>, mode: &Arc<Mode>, conn: Option<&Conn>, message: &str) {
+    if let Some(conn) = conn {
+        notify_discover_failure(Some(conn), message);
+        return;
+    }
+    lock(&mode.state).notice = Some(message.to_string());
+    app.shared
+        .broadcast(json!({"type": "discoverError", "message": message}));
+}
+
 // ------------------------------------------------------------ state parts
 
 enum SectionPart {
@@ -7869,11 +7993,35 @@ impl StateSection for ModeSection {
         match self.part {
             SectionPart::Run => {
                 let stored = parse_stored_discover(value);
+                if let Some(stored) = &stored {
+                    remove_interrupted_staging(Path::new(&stored.staging_dir));
+                }
                 let mut state = lock(&self.mode.state);
-                state.restored = stored;
-                if state.restored.is_some() {
+                if let Some(stored) = &stored {
+                    // Build the run the reconnecting page owes before the
+                    // asynchronous attach runs; its owner's journals then
+                    // extend the same activity stream.
+                    state.run = Some(Run {
+                        run_id: stored.run_id.clone(),
+                        staging_dir: PathBuf::from(&stored.staging_dir),
+                        cwd: self
+                            .mode
+                            .app
+                            .upgrade()
+                            .map(|app| app.config().repo_dir.clone())
+                            .unwrap_or_default(),
+                        started_at: stored.started_at.clone(),
+                        agent: stored.agent.clone(),
+                        mode: "single",
+                        activity: stored.activity.clone(),
+                        question: stored.question.clone(),
+                        remote: stored.remote.clone(),
+                        resumed: true,
+                        peer: None,
+                    });
                     state.interrupted = true;
                 }
+                state.restored = stored;
             }
             SectionPart::Interrupted => {
                 lock(&self.mode.state).interrupted = value.as_bool().unwrap_or(false);
@@ -7928,6 +8076,7 @@ fn stored_discover_json(run: &Run) -> Value {
     json!({
         "runId": run.run_id,
         "stagingDir": run.staging_dir.to_string_lossy(),
+        "stagingDir": run.staging_dir.to_string_lossy(),
         "startedAt": run.started_at,
         "agent": run.agent,
         "activity": run.activity,
@@ -7977,7 +8126,7 @@ fn parse_question(value: &Value) -> Option<AcpQuestion> {
 }
 
 fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
-    let _run_id = value.get("runId")?.as_str()?.to_string();
+    let run_id = value.get("runId")?.as_str()?.to_string();
     let staging_dir = value.get("stagingDir")?.as_str()?.to_string();
     let started_at = value.get("startedAt")?.as_str()?.to_string();
     let activity: Vec<String> = value
@@ -7997,11 +8146,17 @@ fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
         }
         Some(remote) => Some(parse_stored_target(remote)?),
     };
-    let _ = value.get("question").and_then(parse_question);
+    let question = match value.get("question") {
+        None | Some(Value::Null) => None,
+        Some(question) => Some(parse_question(question)?),
+    };
     Some(StoredDiscover {
+        run_id,
+        staging_dir,
         started_at,
         agent,
         activity,
+        question,
         remote,
     })
 }
@@ -8073,6 +8228,21 @@ pub fn init(app: &Arc<App>) {
             part: SectionPart::Target,
         }),
     );
+    {
+        // A graceful stop leaves no run's staging behind. The watcher owns only
+        // the shared signal; a dropped app simply skips its cleanup.
+        let weak = Arc::downgrade(app);
+        let shared = Arc::clone(&app.shared);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                shared.shutdown.notified().await;
+                drop(shared);
+                if let Some(app) = weak.upgrade() {
+                    shutdown(&app);
+                }
+            });
+        }
+    }
 }
 
 /// Replays the frames a connecting client owes before its own replies.
@@ -8205,7 +8375,10 @@ fn start_refusal(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn) -> bool {
         );
         return true;
     }
-    if state.starting || state.run.is_some() {
+    // A restored interrupted run is the run this request resumes; its
+    // placeholder must not refuse its own resume.
+    let resuming = state.interrupted && state.run.is_some();
+    if state.starting || (state.run.is_some() && !resuming) {
         drop(state);
         notify_discover_failure(Some(conn), "A Discover run is already active.");
         return true;
@@ -8249,6 +8422,9 @@ fn fail_discover(app: &Arc<App>, mode: &Arc<Mode>, run: &Run, message: &str) {
         if let Some(peer) = &run.peer {
             peer.close();
         }
+        if run.resumed {
+            state.notice = Some(message.to_string());
+        }
         remove_staging(&run.cwd, &run.run_id);
         let started = state
             .status(&run.agent)
@@ -8289,72 +8465,6 @@ fn append_activity(run: &mut Run, text: &str, append: bool) {
     run.activity.push(text.to_string());
 }
 
-fn spawn_event_pump(
-    app: &Arc<App>,
-    mode: &Arc<Mode>,
-    run_id: &str,
-    mut events: tokio::sync::mpsc::UnboundedReceiver<AcpEvent>,
-) {
-    let app = Arc::clone(app);
-    let mode = Arc::clone(mode);
-    let run_id = run_id.to_string();
-    tokio::spawn(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                AcpEvent::Activity(activity) => {
-                    let frame = {
-                        let mut state = lock(&mode.state);
-                        let Some(run) = state.run.as_mut().filter(|run| run.run_id == run_id)
-                        else {
-                            continue;
-                        };
-                        app.shared.journal.write("activity", &activity.text, None);
-                        let append = activity.append && !run.activity.is_empty();
-                        append_activity(run, &activity.text, append);
-                        let mut frame = json!({
-                            "type": "discoverActivity",
-                            "agent": run.agent,
-                            "text": activity.text,
-                        });
-                        if append {
-                            frame["append"] = Value::Bool(true);
-                        }
-                        frame
-                    };
-                    app.shared.send_all(frame, None);
-                }
-                AcpEvent::Question(question) => {
-                    let frame = {
-                        let mut state = lock(&mode.state);
-                        let Some(run) = state.run.as_mut().filter(|run| run.run_id == run_id)
-                        else {
-                            continue;
-                        };
-                        app.shared
-                            .journal
-                            .write("question", &question.message, Some("discover"));
-                        run.question = Some(question.clone());
-                        json!({
-                            "type": "discoverQuestion",
-                            "agent": run.agent,
-                            "id": acp_id_json(&question.id),
-                            "message": question.message,
-                            "options": serde_json::to_value(&question.options)
-                                .unwrap_or(Value::Array(Vec::new())),
-                        })
-                    };
-                    app.shared.send_all(frame, None);
-                }
-                AcpEvent::Stderr(text) => {
-                    app.shared.journal.write("acp-stderr", &text, None);
-                    eprint!("{text}");
-                }
-                AcpEvent::Text(_) | AcpEvent::SessionUpdate => {}
-            }
-        }
-    });
-}
-
 /// True while this run is still the one the mode owns.
 fn still_current(mode: &Arc<Mode>, run_id: &str, request: u64) -> bool {
     let state = lock(&mode.state);
@@ -8366,6 +8476,9 @@ fn still_current(mode: &Arc<Mode>, run_id: &str, request: u64) -> bool {
             .unwrap_or(false)
 }
 
+/// Runs exactly one agent against one root: one detached owner, one staging
+/// directory, one validated slice, one publication. Returns true only when the
+/// slice was published; a failure or a stop reports itself and returns false.
 async fn run_agent(
     app: &Arc<App>,
     mode: &Arc<Mode>,
@@ -8374,18 +8487,39 @@ async fn run_agent(
     run_mode: &'static str,
     target: &DiscoverTarget,
     resumed: Option<&StoredDiscover>,
+    attach: bool,
 ) -> bool {
     let Some(descriptor) = discover_agent(agent) else {
-        notify_discover_failure(conn, &format!("Unknown Discover agent: {agent}."));
+        report_discover_failure(
+            app,
+            mode,
+            conn,
+            &format!("Unknown Discover agent: {agent}."),
+        );
         return false;
     };
     let repo_dir = app.config().repo_dir.clone();
     let facts_before = host_facts(&target.root);
-    let run_id = new_run_id();
-    let staging_dir = staging_directory(&target.root, &run_id);
-    {
+    let run_id = if attach {
+        resumed
+            .map(|stored| stored.run_id.clone())
+            .unwrap_or_else(new_run_id)
+    } else {
+        new_run_id()
+    };
+    let staging_dir = if attach {
+        resumed
+            .map(|stored| stored.staging_dir.clone())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| staging_directory(&target.root, &run_id))
+    } else {
+        staging_directory(&target.root, &run_id)
+    };
+    if !attach {
         if let Err(error) = fs::create_dir_all(&staging_dir) {
-            notify_discover_failure(
+            report_discover_failure(
+                app,
+                mode,
                 conn,
                 &format!(
                     "Could not prepare the {} staging directory: {error}",
@@ -8432,6 +8566,7 @@ async fn run_agent(
             activity,
             question: None,
             remote: target.remote.clone(),
+            resumed: resumed.is_some(),
             peer: None,
         });
         state.starting = false;
@@ -8471,52 +8606,133 @@ async fn run_agent(
     if !still_current(mode, &run_id, request) {
         return false;
     }
-    let command = format!("{} --no-skills", app.config().agent_command);
-    let options = AcpConnectionOptions::new(command, target.root.to_string_lossy().into_owned())
-        .with_env(environment);
-    let (connection, events) = match AcpConnection::connect(options).await {
-        Ok(connection) => connection,
-        Err(error) => {
+
+    let activity_run = run_id.clone();
+    let activity_app = Arc::clone(app);
+    let activity_mode = Arc::clone(mode);
+    let on_activity: crate::detached_run::ActivityCallback =
+        Arc::new(move |activity: crate::acp::AcpActivity| {
+            let frame = {
+                let mut state = lock(&activity_mode.state);
+                let Some(run) = state.run.as_mut().filter(|run| run.run_id == activity_run) else {
+                    return;
+                };
+                activity_app
+                    .shared
+                    .journal
+                    .write("activity", &activity.text, None);
+                let append = activity.append && !run.activity.is_empty();
+                append_activity(run, &activity.text, append);
+                let mut frame = json!({
+                    "type": "discoverActivity",
+                    "agent": run.agent,
+                    "text": activity.text,
+                });
+                if append {
+                    frame["append"] = Value::Bool(true);
+                }
+                frame
+            };
+            activity_app.shared.send_all(frame, None);
+        });
+    let question_run = run_id.clone();
+    let question_app = Arc::clone(app);
+    let question_mode = Arc::clone(mode);
+    let on_question: crate::detached_run::QuestionCallback =
+        Arc::new(move |question: AcpQuestion| {
+            let frame = {
+                let mut state = lock(&question_mode.state);
+                let Some(run) = state.run.as_mut().filter(|run| run.run_id == question_run) else {
+                    return;
+                };
+                question_app
+                    .shared
+                    .journal
+                    .write("question", &question.message, Some("discover"));
+                run.question = Some(question.clone());
+                json!({
+                    "type": "discoverQuestion",
+                    "agent": run.agent,
+                    "id": acp_id_json(&question.id),
+                    "message": question.message,
+                    "options": serde_json::to_value(&question.options)
+                        .unwrap_or(Value::Array(Vec::new())),
+                })
+            };
+            question_app.shared.send_all(frame, None);
+        });
+    let stderr_app = Arc::clone(app);
+    let on_stderr: crate::detached_run::StderrCallback = Arc::new(move |text: String| {
+        stderr_app.shared.journal.write("acp-stderr", &text, None);
+        eprint!("{text}");
+    });
+
+    let skip_activity = lock(&mode.state)
+        .run
+        .as_ref()
+        .filter(|run| run.run_id == run_id)
+        .map(|run| run.activity.len())
+        .unwrap_or(0);
+    let mut options = DetachedPeerOptions::new(
+        repo_dir.clone(),
+        app.config().state_dir.clone(),
+        "discover",
+        run_id.clone(),
+        app.instance.clone(),
+        format!("{} --no-skills", app.config().agent_command),
+        target.root.to_string_lossy().into_owned(),
+    )
+    .env(environment)
+    .skip_activity(skip_activity)
+    .attach_only(attach)
+    .activity(on_activity)
+    .question(on_question)
+    .stderr(on_stderr);
+    options.harness_version = app.running_version.clone();
+    let peer = DetachedPeer::new(options);
+    {
+        let mut state = lock(&mode.state);
+        match state.run.as_mut().filter(|run| run.run_id == run_id) {
+            Some(run) => {
+                if attach {
+                    if let Some(stored) = peer.state() {
+                        if let Some(question) = stored.question {
+                            run.question = Some(question);
+                        }
+                    }
+                }
+                run.peer = Some(Arc::clone(&peer));
+            }
+            None => {
+                peer.close();
+                return false;
+            }
+        }
+    }
+    if attach {
+        push_state(app, mode);
+    }
+
+    let prompt = format!("{} {}", descriptor.command, staging_dir.display());
+    let outcome = peer.run(&prompt).await;
+    if !still_current(mode, &run_id, request) {
+        return false;
+    }
+    match outcome {
+        Ok(DetachedRunOutcome::Completed) | Ok(DetachedRunOutcome::Attached) => {}
+        Ok(DetachedRunOutcome::Stopped) | Ok(DetachedRunOutcome::Preserved) => return false,
+        Err(message) => {
             let run = lock(&mode.state).run.clone();
             if let Some(run) = run.filter(|run| still_current(mode, &run.run_id, request)) {
                 fail_discover(
                     app,
                     mode,
                     &run,
-                    &format!("Could not start the {} agent: {error}", descriptor.label),
+                    &format!("The {} run failed: {message}", descriptor.label),
                 );
             }
             return false;
         }
-    };
-    if !still_current(mode, &run_id, request) {
-        connection.close();
-        return false;
-    }
-    let peer = Arc::new(connection);
-    {
-        let mut state = lock(&mode.state);
-        if let Some(run) = state.run.as_mut().filter(|run| run.run_id == run_id) {
-            run.peer = Some(Arc::clone(&peer));
-        }
-    }
-    spawn_event_pump(app, mode, &run_id, events);
-
-    let prompt = format!("{} {}", descriptor.command, staging_dir.display());
-    if let Err(error) = peer.run(&prompt).await {
-        let run = lock(&mode.state).run.clone();
-        if let Some(run) = run.filter(|run| still_current(mode, &run.run_id, request)) {
-            fail_discover(
-                app,
-                mode,
-                &run,
-                &format!("The {} run failed: {error}", descriptor.label),
-            );
-        }
-        return false;
-    }
-    if !still_current(mode, &run_id, request) {
-        return false;
     }
     let published = (|| -> Result<(), String> {
         if !target.root.is_dir() {
@@ -8659,14 +8875,18 @@ async fn clone_remote_project(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     if let Err(error) = fs::create_dir_all(&remote_root) {
-        notify_discover_failure(
+        report_discover_failure(
+            app,
+            mode,
             conn,
             &format!("Could not prepare the Discover scratch root: {error}"),
         );
         return false;
     }
     if !claim_scratch_entry(&remote_root, &staging_name) {
-        notify_discover_failure(
+        report_discover_failure(
+            app,
+            mode,
             conn,
             &format!(
                 "Could not prepare the Discover scratch root: the scratch root is not writable: {}",
@@ -8680,6 +8900,7 @@ async fn clone_remote_project(
         state.cloning = Some(Cloning {
             url: target.url.clone(),
             target: target.clone(),
+            staging: staging.clone(),
         });
     }
     app.shared
@@ -8698,7 +8919,7 @@ async fn clone_remote_project(
         }
         let _ = fs::remove_dir_all(&staging);
         release_scratch_entry(&remote_root, &staging_name);
-        notify_discover_failure(conn, &message);
+        report_discover_failure(app, mode, conn, &message);
         push_state(app, mode);
         false
     };
@@ -8790,7 +9011,7 @@ async fn start_all(app: &Arc<App>, mode: &Arc<Mode>, conn: Option<&Conn>, claime
     let mut last = DISCOVER_RUN_ORDER[0];
     for id in DISCOVER_RUN_ORDER {
         last = id;
-        let published = run_agent(app, mode, conn, id, "all", &target, None).await;
+        let published = run_agent(app, mode, conn, id, "all", &target, None, false).await;
         if !published {
             return;
         }
@@ -8813,7 +9034,7 @@ async fn start_agent(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn, agent: &Valu
     let Some(target) = resolve_discover_root(app, mode, Some(conn)).await else {
         return;
     };
-    let published = run_agent(app, mode, Some(conn), id, "single", &target, None).await;
+    let published = run_agent(app, mode, Some(conn), id, "single", &target, None, false).await;
     if !published {
         return;
     }
@@ -8989,23 +9210,31 @@ async fn start_remote(
         let state = lock(&mode.state);
         if state.cloning.is_some() {
             drop(state);
-            notify_discover_failure(conn, "A repository clone is already active.");
+            report_discover_failure(app, mode, conn, "A repository clone is already active.");
             return;
         }
-        if discover_active(&state) {
+        let resuming = resumed.is_some() && state.interrupted;
+        if discover_active(&state) && !resuming {
             drop(state);
-            notify_discover_failure(conn, "A Discover run is already active.");
+            report_discover_failure(app, mode, conn, "A Discover run is already active.");
             return;
         }
     }
     if let Some(busy) = busy_reason(app) {
-        notify_discover_failure(conn, &format!("A repository clone cannot start: {busy}"));
+        report_discover_failure(
+            app,
+            mode,
+            conn,
+            &format!("A repository clone cannot start: {busy}"),
+        );
         return;
     }
     let repo_dir = app.config().repo_dir.clone();
     let remote_root = lock(&mode.state).remote_root.clone();
     if !is_inside_repository(&repo_dir, &remote_root) {
-        notify_discover_failure(
+        report_discover_failure(
+            app,
+            mode,
             conn,
             "The Discover scratch root is outside the repository. STATE_DIR must name a directory inside the repository.",
         );
@@ -9014,7 +9243,12 @@ async fn start_remote(
     let parsed = match parse_remote_url(url) {
         Ok(parsed) => parsed,
         Err(reason) => {
-            notify_discover_failure(conn, &format!("Could not clone the repository: {reason}."));
+            report_discover_failure(
+                app,
+                mode,
+                conn,
+                &format!("Could not clone the repository: {reason}."),
+            );
             return;
         }
     };
@@ -9038,6 +9272,7 @@ async fn start_remote(
             "single",
             &target,
             Some(&resumed),
+            false,
         )
         .await;
         if published {
@@ -9053,10 +9288,25 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
     if discover_agent(&stored.agent).is_none() {
         return;
     }
+    let config = app.config();
+    let attach = crate::detached_run::detached_run_live(
+        &config.state_dir,
+        &config.repo_dir,
+        "discover",
+        &stored.run_id,
+        &app.instance,
+    );
+    if !attach {
+        let staging = PathBuf::from(&stored.staging_dir);
+        let _ = fs::remove_dir_all(&staging);
+        if let Some(parent) = staging.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
     if stored.remote.is_none() {
         {
             let state = lock(&mode.state);
-            if state.cloning.is_some() || discover_active(&state) {
+            if state.cloning.is_some() || state.all_active || state.starting {
                 return;
             }
         }
@@ -9077,6 +9327,7 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
             "single",
             &target,
             Some(&stored),
+            attach,
         )
         .await;
         if published {
@@ -9086,6 +9337,15 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
         return;
     }
     if !lock(&mode.state).remote_available {
+        report_discover_failure(
+            &app,
+            &mode,
+            None,
+            &format!(
+                "The Discover run started at {} was interrupted when the server restarted, and a remote run cannot be resumed in this installation.",
+                stored.started_at
+            ),
+        );
         push_state(&app, &mode);
         return;
     }
@@ -9093,6 +9353,48 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
         return;
     };
     start_remote(&app, &mode, None, &remote.url, Some(stored)).await;
+}
+
+/// Ends the work a graceful stop would abandon. The run's peer closes, its
+/// staging goes, and a clone or checkout no successor owns is released. This
+/// is a filesystem cleanup only: a stopping dashboard publishes nothing.
+pub fn shutdown(app: &Arc<App>) {
+    let mode = mode_for(app);
+    let (run, checkout, cloning, remote_root) = {
+        let mut state = lock(&mode.state);
+        state.request += 1;
+        let run = state.run.take();
+        let checkout = state.checkout.take();
+        let cloning = state.cloning.take();
+        state.all_active = false;
+        state.starting = false;
+        let remote_root = state.remote_root.clone();
+        (run, checkout, cloning, remote_root)
+    };
+    if let Some(run) = run {
+        if let Some(peer) = &run.peer {
+            peer.close();
+        }
+        remove_staging(&run.cwd, &run.run_id);
+    }
+    if let Some(cloning) = cloning {
+        let _ = fs::remove_dir_all(&cloning.staging);
+        let name = cloning
+            .staging
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        release_scratch_entry(&remote_root, &name);
+    }
+    if let Some(checkout) = checkout {
+        let _ = fs::remove_dir_all(&checkout.dir);
+        let name = checkout
+            .dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        release_scratch_entry(&remote_root, &name);
+    }
 }
 
 fn stop_discover(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn) {
@@ -9107,8 +9409,20 @@ fn stop_discover(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn) {
         let run = state.run.take();
         state.all_active = false;
         if let Some(run) = &run {
-            if let Some(peer) = &run.peer {
-                peer.close();
+            match &run.peer {
+                Some(peer) => peer.close(),
+                None => {
+                    let directory = crate::detached_run::detached_run_directory(
+                        &app.config().state_dir,
+                        &app.config().repo_dir,
+                        "discover",
+                        &run.run_id,
+                    );
+                    crate::detached_run::write_detached_run_command(
+                        &crate::detached_run::detached_run_control_directory(&directory),
+                        &crate::detached_run::DetachedRunCommand::Stop,
+                    );
+                }
             }
             remove_staging(&run.cwd, &run.run_id);
             let started = state
@@ -9183,7 +9497,7 @@ async fn answer_discover(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn, id: &Val
         notify_discover_failure(Some(conn), "The Discover question is no longer pending.");
         return;
     };
-    let answered = peer.answer(&question.id, value_text).await;
+    let answered = peer.answer(&question.id, value_text);
     if !answered {
         notify_discover_failure(Some(conn), "The Discover question is no longer pending.");
         return;

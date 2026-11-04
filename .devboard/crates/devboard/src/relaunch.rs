@@ -19,6 +19,8 @@ pub struct RelaunchSettings {
     pub repo_dir: PathBuf,
     pub goal_file: PathBuf,
     pub state_dir: PathBuf,
+    /// The credential a readiness probe must present.
+    pub token: String,
 }
 
 impl RelaunchSettings {
@@ -30,6 +32,7 @@ impl RelaunchSettings {
             repo_dir: config.repo_dir.clone(),
             goal_file: config.goal_file.clone(),
             state_dir: config.state_dir.clone(),
+            token: config.token.clone(),
         }
     }
 }
@@ -68,6 +71,7 @@ pub fn spawn_replacement(
         .env("REPO_DIR", &settings.repo_dir)
         .env("GOAL_FILE", &settings.goal_file)
         .env("STATE_DIR", &settings.state_dir)
+        .env("DEVBOARD_DASHBOARD_TOKEN", &settings.token)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -178,5 +182,52 @@ pub async fn relaunch_confirmed(
         );
     }
     let _ = std::fs::remove_file(ready_file);
+    // The marker proves the child started; the probe proves that this
+    // dashboard, and not another process on the port, answers with the
+    // credential the replacement inherited.
+    if stub.is_empty() && !stub_mode_is_test() {
+        let pid = Some(child.id());
+        if !probe_ready(settings.port, &settings.token, pid).await {
+            let _ = child.kill();
+            return Err(
+                "the replacement did not answer the authenticated readiness probe; the running server keeps serving"
+                    .to_string(),
+            );
+        }
+    }
     Ok(())
+}
+
+/// Sends the authenticated readiness probe a launcher, a replacement, and the
+/// update check present before trusting a listener.
+pub async fn probe_ready(port: u16, token: &str, expected_pid: Option<u32>) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    let request = client
+        .get(format!("http://127.0.0.1:{port}/ready"))
+        .header("Authorization", format!("Bearer {token}"));
+    let Ok(response) = request.send().await else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    let Ok(document) = response.json::<serde_json::Value>().await else {
+        return false;
+    };
+    let pid = document.get("pid").and_then(serde_json::Value::as_u64);
+    match (pid, expected_pid) {
+        (Some(pid), Some(expected)) => pid == u64::from(expected),
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn stub_mode_is_test() -> bool {
+    std::env::var("DEVBOARD_REPLACEMENT_STUB").is_ok()
 }

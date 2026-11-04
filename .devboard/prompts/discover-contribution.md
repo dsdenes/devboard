@@ -56,8 +56,8 @@ Read the merge history through the repository's one forge-auth resolution, read-
 
 1. Resolve the origin remote with `git remote get-url origin` and record its forge host. The forge
    is `github`, `gitlab`, or `gitea`.
-2. Select an identity with `bun .devboard/scripts/forge-auth.ts check --forge <name> --required
-   read` when the target carries that script. For GitHub use `gh` through
+2. Select an identity with `devboard forge-auth check --forge <name> --required
+   read` when the harness ships that command. For GitHub use `gh` through
    `forge-auth exec -- gh ...`; for GitLab use `glab` through `forge-auth exec -- glab ...`; for
    Gitea query `$DEVBOARD_GITEA_URL/api/v1/repos/<owner>/<repo>/...` with the token the check
    selected. Every request is a read (`GET`).

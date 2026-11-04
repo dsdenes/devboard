@@ -74,14 +74,31 @@ if ! host=$(cd -- "$host_arg" 2>/dev/null && pwd); then
   exit 1
 fi
 
-if [ ! -d "$host/.devboard" ]; then
-  printf 'install: no .devboard directory in %s; install the harness there first\n' "$host" >&2
-  exit 1
-fi
+mkdir -p -- "$host/.devboard"
 
 target_omp="$host/.omp"
 source_skills="$source_omp/skills"
 managed_prefix='devboard-'
+
+# The agent-facing prompt and extension trees live under the host `.devboard`
+# payload, at the paths the installed commands and wrappers import.
+payload_installed=0
+for payload in prompts extensions; do
+  source_payload="$source_dir/$payload"
+  target_payload="$host/.devboard/$payload"
+  [ -d "$source_payload" ] || continue
+  mkdir -p -- "$target_payload"
+  while IFS= read -r -d '' source_file; do
+    relative_path="${source_file#"$source_payload"/}"
+    destination="$target_payload/$relative_path"
+    if [ -f "$destination" ] && cmp -s -- "$source_file" "$destination"; then
+      continue
+    fi
+    mkdir -p -- "$(dirname -- "$destination")"
+    cp -- "$source_file" "$destination"
+    payload_installed=$((payload_installed + 1))
+  done < <(find "$source_payload" -type f -print0)
+done
 
 # The fixed wrapper files keep the refuse-unless---force rule; the marked
 # skills are collected separately because the package owns them outright.
@@ -105,6 +122,12 @@ while IFS= read -r -d '' source_file; do
     *) regular_paths+=("$relative_path") ;;
   esac
 done < <(find "$source_omp" -type f -print0)
+
+# The binary installs and lists the marked skills sorted by name; sorting here
+# keeps the host tree and the ignore file identical between both installers.
+if [ "${#managed_skills[@]}" -gt 0 ]; then
+  mapfile -t managed_skills < <(printf '%s\n' "${managed_skills[@]}" | LC_ALL=C sort)
+fi
 
 if [ "${#regular_paths[@]}" -eq 0 ] && [ "${#managed_skills[@]}" -eq 0 ]; then
   printf 'install: no files under %s\n' "$source_omp" >&2
@@ -200,23 +223,31 @@ if [ -d "$source_skills" ] && [ -d "$target_omp/skills" ]; then
   done < <(find "$target_omp/skills" -mindepth 1 -maxdepth 1 -print0)
 fi
 
-# One ignore line per shipped skill, so a host's git status stays free of the
-# package-owned copies. The write is idempotent: a rerun adds nothing.
-if [ "${#managed_skills[@]}" -gt 0 ]; then
-  ignore_path="$host/.gitignore"
-  missing=()
-  for skill_name in "${managed_skills[@]}"; do
-    entry="/.omp/skills/$skill_name"
-    if [ ! -f "$ignore_path" ] || ! grep -Fxq -- "$entry" "$ignore_path"; then
-      missing+=("$entry")
-    fi
-  done
-  if [ "${#missing[@]}" -gt 0 ]; then
-    {
-      if [ -s "$ignore_path" ] && [ -n "$(tail -c 1 -- "$ignore_path")" ]; then printf '\n'; fi
-      printf '%s\n' "${missing[@]}"
-    } >>"$ignore_path"
+# The ignore lines cover the installed payload and wrappers, so a host's git
+# status stays free of them. The write is idempotent: a rerun adds nothing.
+ignore_path="$host/.gitignore"
+missing=()
+for entry in "/.devboard" "/.omp/commands" "/.omp/extensions" "/.omp/mcp.json"; do
+  if [ ! -f "$ignore_path" ] || ! grep -Fxq -- "$entry" "$ignore_path"; then
+    missing+=("$entry")
   fi
+done
+for skill_name in ${managed_skills[@]+"${managed_skills[@]}"}; do
+  entry="/.omp/skills/$skill_name"
+  if [ ! -f "$ignore_path" ] || ! grep -Fxq -- "$entry" "$ignore_path"; then
+    missing+=("$entry")
+  fi
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  {
+    if [ -s "$ignore_path" ] && [ -n "$(tail -c 1 -- "$ignore_path")" ]; then printf '\n'; fi
+    printf '%s\n' "${missing[@]}"
+  } >>"$ignore_path"
 fi
 
-printf 'install: %d file(s) installed into %s\n' "$installed" "$target_omp"
+# The root contract is copied only when absent; host content is left alone.
+if [ -f "$source_dir/templates/host-AGENTS.md" ] && [ ! -e "$host/AGENTS.md" ]; then
+  cp -- "$source_dir/templates/host-AGENTS.md" "$host/AGENTS.md"
+fi
+
+printf 'install: %d file(s) installed into %s\n' "$((installed + payload_installed))" "$target_omp"

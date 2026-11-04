@@ -6,13 +6,11 @@
     "accept-encoding": "identity"
   },
   "requestBody": "",
-  "status": 200,
+  "status": 401,
   "headers": {
     "cache-control": "no-store",
-    "content-length": "15",
-    "content-type": "application/json;charset=utf-8",
-    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
+    "content-type": "application/problem+json",
     "vary": "Accept-Encoding"
   },
-  "body": "{\"pid\":3627673}"
+  "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
 }

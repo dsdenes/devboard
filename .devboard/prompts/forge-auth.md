@@ -9,7 +9,7 @@ is every tracker read and write authenticated through `forge-auth.ts` with the c
 
 # Forge identity
 
-`bun .devboard/scripts/forge-auth.ts check` is the single authority for the forge host, the
+`devboard forge-auth check` is the single authority for the forge host, the
 project path, the base URL, and the token scope a run may use. It reads `DEVBOARD_GITEA_URL`,
 `GITEA_TOKEN`, and the `origin` remote itself, so no other file or command has to locate them.
 
@@ -17,7 +17,7 @@ Run it once from the checkout root before the first tracker read or write, in th
 target is this checkout's own repository:
 
 ```sh
-bun .devboard/scripts/forge-auth.ts check --required <read|write> --json
+devboard forge-auth check --required <read|write> --json
 ```
 
 That is the canonical invocation: the wrapper takes `forge`, `host`, and `project` from the
@@ -27,7 +27,7 @@ value, for example `--required write --json`.
 
 - `<forge>` is `github`, `gitlab`, or `gitea`; the wrapper infers it from the remote's host name.
 - Pass an explicit target only when the target repository is not this checkout's `origin`:
-  `bun .devboard/scripts/forge-auth.ts check --host <host> --project <owner>/<repo> --required <read|write> --json`.
+  `devboard forge-auth check --host <host> --project <owner>/<repo> --required <read|write> --json`.
 - `--forge` is the last resort for a host name that cannot decide the forge. Never pass it to
   confirm a guess, never combine it with `--host`/`--project` when the origin already names the
   target, and never retry a failed check with a different flag set.
@@ -42,7 +42,7 @@ resolved: use it as-is and skip the check. Run the check at most once per sessio
 the context carries no such result.
 
 When a prompt needs the token inside a child process, it names
-`bun .devboard/scripts/forge-auth.ts exec ... -- <command>`; the wrapper injects the selected
+`devboard forge-auth exec ... -- <command>`; the wrapper injects the selected
 token into that child's environment only, never into an argument, a log line, or a reply.
 
 ## Forbidden

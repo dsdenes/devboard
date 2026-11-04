@@ -91,7 +91,6 @@ fn install_writes_real_files_and_one_gitignore_line_per_skill() {
     for relative in [
         "commands/adr-resolve.md",
         "extensions/implement-goal-issue.ts",
-        "config.yml",
         "mcp.json",
     ] {
         assert_real_file(&omp.join(relative));
@@ -107,14 +106,41 @@ fn install_writes_real_files_and_one_gitignore_line_per_skill() {
     }
     assert_real_file(&omp.join("skills/devboard-ui-ux/references/validation.md"));
 
+    // Every prompt and extension asset lands byte-identically under the host
+    // `.devboard` payload.
+    let mut prompt_files = 0usize;
+    for entry in fs::read_dir(package_dir().join("prompts")).unwrap() {
+        let entry = entry.unwrap();
+        let relative = entry.file_name();
+        let expected = fs::read(entry.path()).unwrap();
+        let installed = host.join(".devboard/prompts").join(&relative);
+        assert_real_file(&installed);
+        assert_eq!(fs::read(&installed).unwrap(), expected, "{relative:?}");
+        prompt_files += 1;
+    }
+    assert!(prompt_files > 0);
+    for name in ["implement-goal-issue.ts", "implement-next-epic.ts"] {
+        assert_eq!(
+            fs::read(host.join(".devboard/extensions").join(name)).unwrap(),
+            fs::read(package_dir().join("extensions").join(name)).unwrap()
+        );
+    }
+
     let template = fs::read(package_dir().join("templates/host-AGENTS.md")).unwrap();
     assert_eq!(fs::read(host.join("AGENTS.md")).unwrap(), template);
 
-    let expected: Vec<String> = report
-        .skills
-        .iter()
-        .map(|name| format!("/.omp/skills/{name}"))
-        .collect();
+    let mut expected = vec![
+        "/.devboard".to_string(),
+        "/.omp/commands".to_string(),
+        "/.omp/extensions".to_string(),
+        "/.omp/mcp.json".to_string(),
+    ];
+    expected.extend(
+        report
+            .skills
+            .iter()
+            .map(|name| format!("/.omp/skills/{name}")),
+    );
     assert_eq!(gitignore_lines(host), expected);
     assert_eq!(report.gitignore_added, expected);
 }
@@ -187,7 +213,7 @@ fn an_unmarked_host_skill_is_never_read_or_deleted() {
 fn a_differing_unmarked_file_refuses_without_force() {
     let scratch = Scratch::new("conflict");
     let host = scratch.host();
-    let target = host.join(".omp/config.yml");
+    let target = host.join(".omp/mcp.json");
     fs::create_dir_all(target.parent().unwrap()).unwrap();
     fs::write(&target, b"host: config\n").unwrap();
 
@@ -198,7 +224,7 @@ fn a_differing_unmarked_file_refuses_without_force() {
         error.contains("install: refusing to overwrite differing files"),
         "{error}"
     );
-    assert!(error.contains("config.yml"), "{error}");
+    assert!(error.contains("mcp.json"), "{error}");
     assert!(
         error.contains("install: rerun with --force to replace them"),
         "{error}"
@@ -208,7 +234,7 @@ fn a_differing_unmarked_file_refuses_without_force() {
 
     let report = cli_install::install(Some(host), true).unwrap();
     assert!(report.installed_files > 0);
-    let shipped = fs::read(package_dir().join("omp/config.yml")).unwrap();
+    let shipped = fs::read(package_dir().join("omp/mcp.json")).unwrap();
     assert_eq!(fs::read(&target).unwrap(), shipped);
     assert!(cli_install::doctor(Some(host)).unwrap().ok());
 }
@@ -240,4 +266,120 @@ fn agents_md_drift_is_reported_without_failing() {
     let doctor = cli_install::doctor(Some(host)).unwrap();
     assert!(doctor.ok(), "{:?}", doctor.failures);
     assert!(doctor.drift.iter().any(|entry| entry.contains("AGENTS.md")));
+}
+
+#[test]
+fn doctor_names_a_missing_or_changed_prompt_and_extension() {
+    let scratch = Scratch::new("doctor-payload");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+    assert!(cli_install::doctor(Some(host)).unwrap().ok());
+
+    let prompt = host.join(".devboard/prompts/forge-auth.md");
+    fs::remove_file(&prompt).unwrap();
+    let report = cli_install::doctor(Some(host)).unwrap();
+    assert!(!report.ok());
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.contains(".devboard/prompts/forge-auth.md")),
+        "{:?}",
+        report.failures
+    );
+
+    // Reinstall restores it, then a changed extension byte is drift too.
+    cli_install::install(Some(host), false).unwrap();
+    assert!(cli_install::doctor(Some(host)).unwrap().ok());
+    let extension = host.join(".devboard/extensions/implement-next-epic.ts");
+    let mut bytes = fs::read(&extension).unwrap();
+    bytes[0] ^= 0x01;
+    fs::write(&extension, &bytes).unwrap();
+    let report = cli_install::doctor(Some(host)).unwrap();
+    assert!(!report.ok());
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.contains(".devboard/extensions/implement-next-epic.ts")),
+        "{:?}",
+        report.failures
+    );
+}
+
+#[test]
+fn install_sh_produces_the_same_host_tree_as_the_binary() {
+    let binary = Scratch::new("parity-binary");
+    cli_install::install(Some(binary.host()), false).unwrap();
+
+    let scripted = Scratch::new("parity-script");
+    let output = std::process::Command::new("bash")
+        .arg(package_dir().join("install.sh"))
+        .arg(scripted.host())
+        .output()
+        .expect("the installer runs");
+    assert!(
+        output.status.success(),
+        "install.sh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut left = snapshot(binary.host());
+    let mut right = snapshot(scripted.host());
+    // The two hosts are different roots; every relative path and byte must
+    // still agree.
+    assert_eq!(left, right);
+    left.clear();
+    right.clear();
+}
+
+#[test]
+fn every_installed_reference_resolves() {
+    let scratch = Scratch::new("references");
+    let host = scratch.host();
+    fs::remove_dir_all(host.join(".devboard")).unwrap();
+    cli_install::install(Some(host), false).unwrap();
+
+    let mut prompt_references = 0usize;
+    for entry in fs::read_dir(host.join(".omp/commands")).unwrap() {
+        let entry = entry.unwrap();
+        let text = fs::read_to_string(entry.path()).unwrap();
+        for token in text.split('`') {
+            if let Some(rest) = token.strip_prefix(".devboard/prompts/") {
+                assert!(
+                    host.join(".devboard/prompts").join(rest).is_file(),
+                    "{} names a missing prompt {token}",
+                    entry.path().display()
+                );
+                prompt_references += 1;
+            }
+        }
+    }
+    assert!(prompt_references > 0, "the commands name prompt files");
+
+    let mut extension_references = 0usize;
+    for entry in fs::read_dir(host.join(".omp/extensions")).unwrap() {
+        let entry = entry.unwrap();
+        let text = fs::read_to_string(entry.path()).unwrap();
+        for token in text.split(|character: char| {
+            !(character.is_ascii_alphanumeric()
+                || matches!(character, '.' | '/' | '-' | '_' | '"' | '\''))
+        }) {
+            let token = token.trim_matches(|character: char| {
+                matches!(character, '"' | '\'' | ';' | ',' | ')' | '(')
+            });
+            if let Some(rest) = token.strip_prefix("../../.devboard/") {
+                assert!(
+                    host.join(".devboard").join(rest).is_file(),
+                    "{} imports a missing file {token}",
+                    entry.path().display()
+                );
+                extension_references += 1;
+            }
+        }
+    }
+    assert!(
+        extension_references > 0,
+        "the extension wrappers re-export the payload"
+    );
 }
