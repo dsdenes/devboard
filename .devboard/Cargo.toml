@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/devboard", "crates/devboard-contract", "shadow"]
 
 [workspace.package]
-version = "1.35.14"
+version = "1.35.15"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
