@@ -839,6 +839,42 @@ async fn a_hanging_start_preflight_refuses_within_the_bound() {
 }
 
 #[tokio::test]
+async fn a_shared_preflight_budget_bounds_every_step_and_names_the_slow_one() {
+    use devboard::agents_mode::PreflightBudget;
+    use std::time::{Duration, Instant};
+
+    let budget = PreflightBudget::new(150);
+    let first = budget
+        .run("the first forge step", async {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            Ok(1_u32)
+        })
+        .await
+        .expect("the first step fits the budget");
+    assert_eq!(first, 1);
+
+    // The second step overruns; it is cut by the remainder of the same budget
+    // and names itself, so a chained slow read can no longer outlive the
+    // twenty second preflight behind a generic refusal.
+    let started = Instant::now();
+    let error = budget
+        .run::<()>("the second forge step", async {
+            tokio::time::sleep(Duration::from_millis(5_000)).await;
+            Ok(())
+        })
+        .await
+        .expect_err("a step past the shared deadline fails");
+    let elapsed = started.elapsed();
+    assert!(
+        error.starts_with("the second forge step did not finish within "),
+        "{error}"
+    );
+    assert!(error.ends_with(" ms; press Start to retry."), "{error}");
+    assert!(elapsed < Duration::from_millis(300), "{elapsed:?}");
+    assert_eq!(budget.remaining_ms(), 1);
+}
+
+#[tokio::test]
 async fn a_single_responsibility_page_open_pushes_the_worker_refresh() {
     let root = scratch("single-responsibility-refresh");
     let app = app_at(&root);
