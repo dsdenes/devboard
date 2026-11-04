@@ -168,6 +168,19 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   and the Gitea manifest, and report the version and release URL. `devboard publish` dispatches
   `.github/workflows/release.yml` for the released tag when that tag has no usable run, then
   performs the existing verification; it never requires a push.
+- **Agent.** The worker starts exactly one `omp acp` peer with `/release-train <run-dir>`; the run
+  state names that peer, and Stop ends it. `.devboard/prompts/release-train.md` is the instruction
+  the peer receives. The peer releases through `devboard publish` and verifies the GitHub assets
+  and the Gitea manifest; it never edits a tracked file.
+- **Release suite and quarantine.** `devboard publish` runs `devboard release-suite` before it
+  tags or dispatches, and refuses both when the suite exits nonzero. The suite runs the workspace
+  tests, retries at most nine times, and quarantines a test that fails three consecutive attempts:
+  the rest of the run skips it, and the report names the file and the exact test. Quarantining
+  never rewrites a tracked file, so `git status --porcelain` stays empty and the tree stays
+  byte-identical. One deduplicated issue per skipped test records the file, the exact test name,
+  and the failed attempt output; a filing failure never blocks the release. A suite that cannot
+  compile, or that yields no per-test result, exits nonzero, files nothing, and prints the first
+  concrete error line.
 - **No other releaser.** `.github/workflows/release.yml` runs only on
   `workflow_dispatch`. The implementing agent closes its issue after the push proof and never
   publishes. The Design System pushes its documentation commit and reports without waiting for a

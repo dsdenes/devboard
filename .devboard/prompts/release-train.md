@@ -5,8 +5,9 @@ description: Release the collected unreleased main range through the harness pub
 ## Manifesto
 
 Your goal is to ship exactly one release for the range this run was handed, and the observable
-result is one npm version, one Gitea release with its fallback tarball and checksum, and one
-release tag naming the main tip the range ended at.
+result is one tagged version, one GitHub release with the platform archives and installers, and one
+Gitea release carrying `devboard-manifest.json` and the checksums, all naming the main tip the range
+ended at.
 
 The run directory arrives as the command argument, absolute and outside your control:
 `<run-dir>`. Read `<run-dir>/request.json` exactly once. It carries `range`, `target` (the main
@@ -17,24 +18,29 @@ request is the whole unresolved range; never recompute a different one and never
 ## Contract
 
 - Run one release. There is no batching choice to make and no version to choose: the range is
-  already collected, and `bun run publish` derives the same Conventional Commit version.
+  already collected, and `devboard publish` derives the same Conventional Commit version.
 - Fetch canonical `main` once before publishing:
   `git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`. The publish path itself
   fast-forwards a clean integration checkout to that tip.
 - Release through the harness publish path only, from the repository's `.devboard` directory:
 
   ```bash
-  bun run publish --wait-timeout 1800
+  devboard publish --wait-timeout 1800
   ```
 
-  Run it in the foreground with no output consumer and keep it alive until it exits. It waits for
-  the release workflow it dispatches for the checked-out `main` tip, reads the tag that workflow
-  created, verifies the npm package and both Gitea assets, pushes the GitHub mirror when one
-  exists, and reports every dashboard. It never requires a push and never needs a manual
-  workflow run.
+  Run it in the foreground with no output consumer and keep it alive until it exits. It runs the
+  release suite before tagging, waits for the cargo-dist release workflow it dispatches for the
+  checked-out `main` tip, reads the tag that workflow created, verifies the GitHub archives and
+  installers and the Gitea manifest, and reports every dashboard. It never requires a push and
+  never needs a manual workflow run.
 - Never push, force-push, retag, delete a release or tag, or publish a package yourself. Never
-  call npm, the Gitea API, or a workflow endpoint directly for the release. `bun run publish` is
-  the only release command.
+  call cargo-dist, the GitHub API, the Gitea API, or a workflow endpoint directly for the release.
+  `devboard publish` is the only release command.
+- The release suite runs inside `devboard publish`. When a test fails three consecutive attempts,
+  the suite quarantines it: the rest of that run skips it, one deduplicated issue records its file,
+  exact test name, and failed output, and the release continues. Never rewrite a tracked test file,
+  delete a failing test, or bypass the suite; a structural suite failure (a compile error or no
+  per-test result) stops the release and prints the first concrete error line.
 - Never edit a repository file, commit, rebase, or change the checked-out branch. The one write
   outside the run directory is what publish itself does: fast-forwarding a clean integration
   checkout and pushing the mirror.
@@ -48,7 +54,8 @@ request is the whole unresolved range; never recompute a different one and never
   release it names for that version.
 - On failure, write `<run-dir>/result.json` with
   `{"ok":false,"detail":"<the failing step and its first concrete line>"}`. Name the step —
-  workflow conclusion, missing npm version, missing release asset, or rejected derived version —
+  workflow conclusion, missing platform archive or installer, missing Gitea manifest, or rejected
+  derived version —
   and never claim a release that publish did not verify.
 - A failure ships nothing and leaves the same range for the next scheduled tick. Report the
   failure; do not retry the release in this turn.
