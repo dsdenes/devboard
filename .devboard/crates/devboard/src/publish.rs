@@ -2310,6 +2310,26 @@ async fn dispatch_release_when_needed(
     })
 }
 
+/// Reads the release workflow runs for one commit and selects the run to follow.
+///
+/// The dispatch's own run is identified by the ids captured before it, so a
+/// finished run from an earlier attempt is never mistaken for this wait.
+async fn follow_release_run(
+    api: &Api,
+    attempt: &DispatchAttempt,
+    commit: &str,
+) -> Result<Option<WorkflowRun>> {
+    let runs = api.github_runs(commit).await?;
+    let candidates: Vec<WorkflowRun> = if attempt.dispatched {
+        runs.into_iter()
+            .filter(|run| !attempt.previous_ids.contains(&run.id))
+            .collect()
+    } else {
+        runs
+    };
+    Ok(choose_workflow_run(&candidates, commit))
+}
+
 async fn dispatch_and_wait(
     api: &Api,
     clock: &Arc<dyn Clock>,
@@ -2339,28 +2359,48 @@ async fn dispatch_and_wait(
         }
     };
     let mut selected: Option<WorkflowRun> = None;
+    let mut last_error: Option<String> = None;
     loop {
         if clock.now_millis() >= deadline {
             break;
         }
-        let runs = api.github_runs(commit).await?;
-        let candidates: Vec<WorkflowRun> = if attempt.dispatched {
-            runs.into_iter()
-                .filter(|run| !attempt.previous_ids.contains(&run.id))
-                .collect()
-        } else {
-            runs
-        };
-        if let Some(run) = choose_workflow_run(&candidates, commit) {
-            let finished = workflow_finished(&run);
-            selected = Some(run);
-            if finished {
-                break;
+        match follow_release_run(api, &attempt, commit).await {
+            Ok(Some(run)) => {
+                let finished = workflow_finished(&run);
+                selected = Some(run);
+                if finished {
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let text = format!("{error:#}");
+                if last_error.as_deref() != Some(text.as_str()) {
+                    (log)(&format!("the release workflow read failed: {text}"));
+                    last_error = Some(text);
+                }
             }
         }
         sleeper.sleep(args.poll_interval).await;
     }
+    // The bound can expire while the process was stalled — a suspended host
+    // resumes with the deadline already passed — or during the last poll
+    // interval, so an unfinished selection is read once more instead of
+    // deciding the verdict on a snapshot that predates a finish.
+    if !selected.as_ref().is_some_and(workflow_finished) {
+        match follow_release_run(api, &attempt, commit).await {
+            Ok(Some(run)) => selected = Some(run),
+            Ok(None) => {}
+            Err(error) => last_error = Some(format!("{error:#}")),
+        }
+    }
     let Some(workflow) = selected else {
+        if let Some(error) = last_error {
+            bail!(
+                "no release workflow run for {} could be read within the wait: {error}",
+                short_sha(commit)
+            );
+        }
         bail!(
             "no release workflow run for {} within the wait",
             short_sha(commit)

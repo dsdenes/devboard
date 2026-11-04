@@ -23,7 +23,7 @@ use devboard::workers::release_train::{
     ReleaseTrainFailure, ReleaseTrainGate, ReleaseTrainGateOptions, ReleaseTrainRequest,
     ReleaseTrainRun, ReleaseTrainRunState, ReleaseTrainTag, ReleaseTrainWorker,
     ReleaseTrainWorkerOptions, ReleaseVerification, ReleaseVerificationOptions,
-    ReleaseVerificationPhase, RunFuture, RunReleaseFn, VerifyFn,
+    ReleaseVerificationPhase, ReadRetry, RunFuture, RunReleaseFn, VerifyFn,
 };
 
 const START_ISO: &str = "2026-11-02T10:00:00.000Z";
@@ -1111,6 +1111,10 @@ fn verification_options(
         refresh: Some(Arc::new(|_repo: &Path| GitOutcome::ok(String::new()))),
         read_github_assets: None,
         read_release: None,
+        read_retry: Some(ReadRetry {
+            attempts: 2,
+            delay: std::time::Duration::ZERO,
+        }),
     }
 }
 
@@ -1178,6 +1182,37 @@ async fn verification_reads_the_github_assets_and_the_gitea_manifest() {
         )),
         "{lines:?}"
     );
+}
+
+#[tokio::test]
+async fn verification_retries_a_read_that_failed_in_transport() {
+    let fixture = fixture("verify-retry", true);
+    let head = git(&fixture.repo, &["rev-parse", "HEAD"]);
+    let mut options =
+        verification_options(&fixture.repo, &head, "1.0.0", Arc::new(|_line: &str| {}));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let seen = attempts.clone();
+    options.read_github_assets = Some(Arc::new(move |_tag: String| {
+        let seen = seen.clone();
+        Box::pin(async move {
+            if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err("error sending request for url".to_string());
+            }
+            Ok(Some(github_asset_names()))
+        })
+    }));
+    options.read_release = Some(Arc::new(|tag: String| {
+        Box::pin(async move { Ok(Some(gitea_manifest_release(tag))) })
+    }));
+    let verified = verify_shipped(options).await;
+    assert_eq!(
+        verified,
+        ReleaseVerification::Ok {
+            version: "1.0.0".to_string(),
+            url: "https://forge.test/releases/tag/v1.0.0".to_string(),
+        }
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

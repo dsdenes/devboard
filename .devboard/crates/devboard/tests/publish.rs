@@ -388,6 +388,11 @@ struct GithubData {
     settled_conclusion: String,
     /// The jobs document the run's jobs route answers.
     jobs: Option<Value>,
+    /// When set, the runs read reports a settled success once this many reads
+    /// have happened, so a wait can be tested against a run that finishes
+    /// after the last poll.
+    settle_after: Option<usize>,
+    reads: usize,
 }
 
 #[derive(Clone)]
@@ -416,6 +421,8 @@ impl GithubStub {
             complete,
             settled_conclusion: "success".to_string(),
             jobs: None,
+            settle_after: None,
+            reads: 0,
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
         let inner = state.clone();
@@ -451,6 +458,16 @@ impl GithubStub {
         data.settled_conclusion = conclusion.to_string();
         data.jobs = Some(jobs);
     }
+
+    async fn settling_after(
+        repo_dir: PathBuf,
+        assets: BTreeMap<String, Vec<u8>>,
+        after: usize,
+    ) -> GithubFixture {
+        let fixture = GithubStub::start(repo_dir, assets, Vec::new(), false).await;
+        fixture.stub.state.lock().expect("github").settle_after = Some(after);
+        fixture
+    }
 }
 
 fn github_route(
@@ -463,15 +480,29 @@ fn github_route(
     if request.method == "GET"
         && path == "/repos/dsdenes/devboard/actions/workflows/release.yml/runs"
     {
-        let data = state.lock().expect("github");
-        let runs = if data.dispatched > 0 && data.complete {
+        let mut data = state.lock().expect("github");
+        data.reads += 1;
+        let settled = (data.dispatched > 0 && data.complete)
+            || data.settle_after.is_some_and(|after| data.reads > after);
+        let head_named = data.settle_after.is_some();
+        let runs = if settled || head_named {
             let sha = git_output(repo_dir, &["rev-parse", "HEAD"]);
-            vec![json!({
-                "id": 42,
-                "head_sha": sha.trim(),
-                "status": "completed",
-                "conclusion": data.settled_conclusion.clone(),
-            })]
+            let sha = sha.trim();
+            if settled {
+                vec![json!({
+                    "id": 42,
+                    "head_sha": sha,
+                    "status": "completed",
+                    "conclusion": data.settled_conclusion.clone(),
+                })]
+            } else {
+                vec![json!({
+                    "id": 42,
+                    "head_sha": sha,
+                    "status": "in_progress",
+                    "conclusion": null,
+                })]
+            }
         } else {
             data.runs.clone()
         };
@@ -1348,6 +1379,30 @@ async fn a_refused_dispatch_fails_without_retrying() {
     let message = format!("{error:#}");
     assert!(message.contains("HTTP 404"), "{message}");
     assert_eq!(live.github_stub.dispatch_attempts(), 1);
+}
+
+#[tokio::test]
+async fn the_workflow_verdict_reads_the_run_once_more_at_the_deadline() {
+    let mut live = live("settle", release_assets()).await;
+    // Reads: one for the dispatch decision, two polls before the deadline, and
+    // the final read the verdict takes — the run settles before that last one.
+    let github = GithubStub::settling_after(live.seed.clone(), release_assets(), 3).await;
+    live.github_server = github.server;
+    live.github_stub = github.stub;
+    let clock = FakeClock::new(0);
+    let sleeper = Arc::new(FakeSleeper {
+        clock: clock.clone(),
+        step: 50,
+    });
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_millis(100);
+    args.poll_interval = Duration::from_millis(50);
+    args.clock = Some(clock);
+    args.sleeper = Some(sleeper);
+    let report = publish(args)
+        .await
+        .expect("the run that settled after the last poll is followed");
+    assert_eq!(report.workflow_run, Some(42));
     assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 

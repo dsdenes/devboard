@@ -1956,6 +1956,26 @@ pub type ReadReleaseFn = Arc<
         + Sync,
 >;
 
+/// How often and how patiently one verification read retries a failed read.
+///
+/// A release's verdict must not turn on a single dropped request, so a read
+/// that fails is retried inside this budget before it is reported. A release
+/// the forge answers as absent is not a failure and is never retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadRetry {
+    pub attempts: usize,
+    pub delay: Duration,
+}
+
+impl Default for ReadRetry {
+    fn default() -> Self {
+        Self {
+            attempts: 6,
+            delay: Duration::from_secs(5),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ReleaseVerificationOptions {
     pub repo_dir: PathBuf,
@@ -1971,6 +1991,28 @@ pub struct ReleaseVerificationOptions {
     pub read_github_assets: Option<ReadGithubAssetsFn>,
     /// Reads one Gitea release and its page URL.
     pub read_release: Option<ReadReleaseFn>,
+    /// Retries one read that failed in transport; the default tolerates a
+    /// short outage.
+    pub read_retry: Option<ReadRetry>,
+}
+
+/// Runs one remote read, retrying a failure inside the policy's budget.
+async fn read_with_retries<T>(
+    retry: ReadRetry,
+    mut read: impl FnMut() -> Pin<Box<dyn Future<Output = Result<T, String>> + Send>>,
+) -> Result<T, String> {
+    let attempts = retry.attempts.max(1);
+    let mut last = String::new();
+    for attempt in 0..attempts {
+        if attempt > 0 && !retry.delay.is_zero() {
+            tokio::time::sleep(retry.delay).await;
+        }
+        match read().await {
+            Ok(value) => return Ok(value),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
 }
 
 fn short_sha(sha: &str) -> String {
@@ -2099,7 +2141,12 @@ pub async fn verify_shipped(options: ReleaseVerificationOptions) -> ReleaseVerif
             let environment = options.environment.clone();
             default_github_assets_reader(environment)
         });
-    let github_assets = match read_github_assets(tag.clone()).await {
+    let retry = options.read_retry.unwrap_or_default();
+    let github_assets = match read_with_retries(retry, || {
+        read_github_assets(tag.clone())
+    })
+    .await
+    {
         Ok(Some(assets)) => assets,
         Ok(None) => {
             return version_failed(
@@ -2143,7 +2190,7 @@ pub async fn verify_shipped(options: ReleaseVerificationOptions) -> ReleaseVerif
             default_release_reader(repo_dir, environment)
         }
     };
-    let release = read_release(tag.clone()).await;
+    let release = read_with_retries(retry, || read_release(tag.clone())).await;
     let release = match release {
         Ok(Some(release)) => release,
         Ok(None) => {
@@ -2461,6 +2508,7 @@ async fn run_release_and_verify(
         refresh: None,
         read_github_assets: None,
         read_release: None,
+        read_retry: None,
     })
     .await;
     match verified {
@@ -2992,6 +3040,7 @@ impl ReleaseTrainWorker {
             refresh: None,
             read_github_assets: None,
             read_release: None,
+            read_retry: None,
         })
         .await;
         match result {
