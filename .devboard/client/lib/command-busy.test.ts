@@ -101,3 +101,46 @@ test("a confirming frame that arrives after the ceiling drops the notice", () =>
     jest.useRealTimers();
   }
 });
+
+test("a control reused for another subject drops the previous subject's latch", () => {
+  const family = { id: "scout" };
+  const lifecycle = { value: "running" };
+  const command = createCommandBusy({
+    label: "Stop",
+    evidence: () => lifecycle.value,
+    scope: () => family.id,
+  });
+  command.start();
+  expect(command.busy).toBe(true);
+  // The operator opens another running family on the same page component.
+  family.id = "dead-code";
+  expect(command.busy).toBe(false);
+  expect(command.notice).toBeNull();
+  // Returning to the family that was stopped re-arms nothing on its own.
+  family.id = "scout";
+  expect(command.busy).toBe(true);
+  lifecycle.value = "stopped";
+  expect(command.busy).toBe(false);
+});
+
+test("a reused control never shows the ceiling notice on another subject", () => {
+  jest.useFakeTimers();
+  try {
+    const family = { id: "scout" };
+    const lifecycle = { value: "running" };
+    const command = createCommandBusy({
+      label: "Stop",
+      evidence: () => lifecycle.value,
+      scope: () => family.id,
+      ceilingMs: 5,
+    });
+    command.start();
+    family.id = "dead-code";
+    jest.advanceTimersByTime(5);
+    expect(command.notice).toBeNull();
+    family.id = "scout";
+    expect(command.notice).toBe("Stop received no answer.");
+  } finally {
+    jest.useRealTimers();
+  }
+});

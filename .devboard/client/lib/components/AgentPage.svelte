@@ -163,6 +163,7 @@
           <CommandButton
             variant="default"
             label="Stop"
+            scope={() => agentId}
             evidence={() => agents.lifecycle(agentId)}
             command={() => agents.stop(agentId)}
             data-testid="agent-stop"
@@ -177,6 +178,7 @@
           <CommandButton
             variant="default"
             label="Start"
+            scope={() => agentId}
             evidence={() => agents.lifecycle(agentId)}
             command={() => agents.start(agentId)}
             data-testid="agent-start"

@@ -9,15 +9,21 @@
     label: string;
     /** Reactive read of the server state that confirms the command. */
     evidence: () => unknown;
+    /** Reactive read of the subject; a reused control never carries another's latch. */
+    scope?: () => unknown;
     /** Dispatches the WebSocket command once per activation. */
     command: () => void;
     /** Exact busy phrase, for a control whose label is a phrase. */
     busyLabel?: string;
   }
 
-  let { label, evidence, command, busyLabel, children, ...rest }: Props = $props();
+  let { label, evidence, scope, command, busyLabel, children, ...rest }: Props = $props();
 
-  const pending = createCommandBusy({ label: () => label, evidence: () => evidence() });
+  const pending = createCommandBusy({
+    label: () => label,
+    evidence: () => evidence(),
+    scope: scope === undefined ? undefined : () => scope(),
+  });
 
   function activate(): void {
     pending.start();
