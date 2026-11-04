@@ -1772,7 +1772,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         // The workflow lives on GitHub, so the mirror receives the tagged
         // commit before the run can be selected or dispatched.
         if preflight.remotes.iter().any(|remote| remote == "github") {
-            push_github_mirror(&git, &commit, &log).await?;
+            push_github_mirror(&git, &commit, &tag, &log).await?;
         } else {
             (log)("no github mirror remote; skipped");
         }
@@ -2862,6 +2862,7 @@ async fn write_gitea_release(
 async fn push_github_mirror(
     git: &Git<'_>,
     commit: &str,
+    tag: &str,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
 ) -> Result<()> {
     (log)("pushing the GitHub mirror");
@@ -2893,6 +2894,28 @@ async fn push_github_mirror(
             "the GitHub mirror moved to {} during the push and already carries main",
             short_sha(&sha)
         ));
+    }
+    let tag_ref = format!("refs/tags/{tag}:refs/tags/{tag}");
+    let tag_pushed = git
+        .run(&[
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
+            "push",
+            "github",
+            &tag_ref,
+        ])
+        .await;
+    if tag_pushed.code != 0 {
+        bail!(
+            "could not push {tag} to the GitHub mirror: {}",
+            first_line(if tag_pushed.stderr.is_empty() {
+                tag_pushed.stdout.as_str()
+            } else {
+                tag_pushed.stderr.as_str()
+            })
+        );
     }
     Ok(())
 }
