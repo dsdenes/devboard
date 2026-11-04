@@ -795,3 +795,4 @@ async fn a_reset_refuses_when_repo_dir_is_not_the_git_top_level() {
     assert_eq!(stopped["completed"], false);
     assert_eq!(state_value(&scratch)["resetActive"], false);
 }
+
