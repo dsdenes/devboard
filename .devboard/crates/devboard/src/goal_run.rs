@@ -697,6 +697,15 @@ impl ModeGate for GoalRunGate {
     }
 }
 
+/// Sets the reset flag for a test seam. Production only reaches this through
+/// `perform_implementation_reset`.
+#[doc(hidden)]
+pub fn set_reset_active(app: &Arc<App>, active: bool) {
+    if let Some(owner) = state_for(app) {
+        lock(&owner.inner).reset_active = active;
+    }
+}
+
 /// True while an implementation reset is under way. Every non-read-only
 /// command is refused in that window.
 pub fn reset_is_active(app: &Arc<App>) -> bool {

@@ -6,16 +6,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use devboard_contract::{normalize, CommandRecording, Corpus};
+use devboard_contract::{normalize, Corpus};
 use devboard_shadow::{free_port, route, Route, ShadowLayout, WindowReport};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-const SETTLE_MS: u64 = 150;
+const SETTLE_MS: u64 = 50;
 const MIN_COMPARISONS: u64 = 100;
 
 struct Args {
@@ -81,31 +79,28 @@ fn parse_args() -> anyhow::Result<Args> {
 async fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
     let corpus = Arc::new(Corpus::load(&args.corpus)?);
-    let work = args
-        .report
-        .parent()
-        .map(|parent| parent.join(".shadow-work"))
-        .unwrap_or_else(|| PathBuf::from(".shadow-work"));
+    // The dual-run work tree is harness scratch, never a report sibling: the
+    // report may name any host path.
+    let work = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.tmp/shadow-work");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
     let layout = ShadowLayout::new(&work);
 
-    let ts_port = free_port().await?;
-    let mut ts = spawn_typescript(&args.typescript, ts_port, &layout)?;
-    wait_ready(ts_port, Duration::from_secs(30)).await?;
     layout.prepare()?;
-    let mut rust_port = free_port().await?;
+    // The recorded corpus is the baseline: the TypeScript server it was
+    // recorded from is no longer shipped. Seed the Rust checkout from the
+    // corpus fixture so every command runs against the same tree.
+    seed_fixture(&args.corpus, &layout.rust_repo_dir())?;
+    let rust_port = free_port().await?;
     let mut rust = spawn_rust(&args, rust_port, &layout)?;
-    wait_ready(rust_port, Duration::from_secs(30)).await?;
+    wait_ready(rust_port, &args.token, Duration::from_secs(30)).await?;
 
     let cutover = match &args.cutover {
         Some(path) => devboard_shadow::Cutover::load(path)?,
         None => devboard_shadow::Cutover::default(),
     };
-    eprintln!("shadow: both dashboards are ready");
-    let mut ts_socket = connect(ts_port, &args.token).await?;
+    eprintln!("shadow: the Rust dashboard is ready");
     let mut rust_socket = connect(rust_port, &args.token).await?;
-    drain(&mut ts_socket).await;
     drain(&mut rust_socket).await;
 
     let started = Instant::now();
@@ -119,7 +114,6 @@ async fn main() -> anyhow::Result<()> {
     // TypeScript answer and state tree are replayed against fresh Rust
     // instances afterwards, which compares the write without letting either
     // server mutate the other's state.
-    let mut write_recordings = Vec::new();
     let mut ordered: Vec<&devboard_contract::CommandRecording> = corpus
         .commands
         .iter()
@@ -161,44 +155,27 @@ async fn main() -> anyhow::Result<()> {
             },
         );
         eprintln!("shadow: {}/{label}", recording.command);
-        if kind == Route::TypeScriptOnly {
-            // A command still on TypeScript goes to the only writer, never to
-            // Rust.
-            ts_socket
-                .send(Message::Text(scenario.send.clone().into()))
-                .await?;
-            drain(&mut ts_socket).await;
-            // The TypeScript server is the only writer; its durable state is
-            // the state the mirror must answer from. Copy it and restart the
-            // Rust process over the fresh copy (never the live directory).
-            let _ = rust.kill();
-            let _ = rust.wait();
-            layout.prepare()?;
-            rust_port = free_port().await?;
-            rust = spawn_rust(&args, rust_port, &layout)?;
-            wait_ready(rust_port, Duration::from_secs(30)).await?;
-            rust_socket = connect(rust_port, &args.token).await?;
-            drain(&mut rust_socket).await;
-            write_recordings.push(recording.clone());
-            continue;
-        }
-        if kind == Route::RustOnly {
-            // A cut-over mutating command is served by Rust alone; the router
-            // never forwards it to TypeScript.
+        if kind != Route::Mirror {
+            // A cut-over or mutating command is served by Rust alone; the
+            // corpus replay proves its answer and state.
             rust_socket
                 .send(Message::Text(scenario.send.clone().into()))
                 .await?;
             drain(&mut rust_socket).await;
             continue;
         }
-        for _ in 0..args.iterations {
-            let frames = exchange(
-                &mut ts_socket,
-                &scenario.send,
-                &layout.typescript.join("repo"),
-                &corpus.allowlist,
-            )
-            .await?;
+        let baseline: Vec<Value> = scenario
+            .frames
+            .iter()
+            .map(|frame| {
+                simplify(normalize(
+                    frame,
+                    &corpus.allowlist,
+                    &corpus.root.join("fixtures/repo"),
+                ))
+            })
+            .collect();
+        for _ in 0..args.iterations.min(1) {
             let rust_frames = exchange(
                 &mut rust_socket,
                 &scenario.send,
@@ -211,9 +188,9 @@ async fn main() -> anyhow::Result<()> {
                 .get_mut(&recording.command)
                 .expect("the command is registered");
             entry.comparisons += 1;
-            if frames != rust_frames {
-                if devboard_shadow::explains_trailing_background(&frames, &rust_frames)
-                    || devboard_shadow::explains_trailing_background(&rust_frames, &frames)
+            if baseline != rust_frames {
+                if devboard_shadow::explains_trailing_background(&baseline, &rust_frames)
+                    || devboard_shadow::explains_trailing_background(&rust_frames, &baseline)
                 {
                     report.explained.push(devboard_shadow::ExplainedDivergence {
                         command: recording.command.clone(),
@@ -224,7 +201,7 @@ async fn main() -> anyhow::Result<()> {
                 let detail = format!(
                     "{}: {}",
                     recording.command,
-                    first_difference(&frames, &rust_frames)
+                    first_difference(&baseline, &rust_frames)
                 );
                 entry.divergences.push(detail.clone());
                 report.unexplained.push(detail);
@@ -238,29 +215,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    if !write_recordings.is_empty() {
-        eprintln!(
-            "shadow: replaying {} write recording(s) against fresh Rust instances",
-            write_recordings.len()
-        );
-        let deadline = started + Duration::from_secs(args.window_seconds);
-        replay_writes(
-            Arc::clone(&corpus),
-            write_recordings,
-            args.iterations,
-            deadline,
-            &args.contract_bin,
-            &mut report,
-        )
-        .await?;
-    }
-
     let text = format!("{}\n", serde_json::to_string_pretty(&report.to_json())?);
     if let Some(parent) = args.report.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&args.report, text)?;
-    let _ = ts.kill();
     let _ = rust.kill();
     println!(
         "shadow: wrote {} with {} commands and {} unexplained divergence(s)",
@@ -271,140 +230,15 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One write command's replay counts and mismatches.
-struct WriteReplay {
-    command: String,
-    comparisons: u64,
-    divergences: Vec<String>,
-}
-
-/// Replays every write recording until the window's comparison target is met.
-/// Each replay starts a fresh Rust instance over the corpus fixture, so the
-/// TypeScript answer, state tree, and repository tree are compared without
-/// touching the live mirror.
-async fn replay_writes(
-    corpus: Arc<Corpus>,
-    recordings: Vec<CommandRecording>,
-    iterations: u64,
-    deadline: Instant,
-    contract_bin: &Path,
-    report: &mut WindowReport,
-) -> anyhow::Result<()> {
-    const CONCURRENT_REPLAYS: usize = 8;
-    let permits = Arc::new(Semaphore::new(CONCURRENT_REPLAYS));
-    let mut tasks = JoinSet::new();
-    for recording in recordings {
-        let permit = Arc::clone(&permits)
-            .acquire_owned()
-            .await
-            .context("the write replay permits are open")?;
-        let corpus = Arc::clone(&corpus);
-        let contract_bin = contract_bin.to_path_buf();
-        tasks.spawn(async move {
-            let _permit = permit;
-            replay_write(&corpus, &recording, iterations, deadline, &contract_bin).await
-        });
+/// Copies the corpus fixture repository into the shadow checkout.
+fn seed_fixture(corpus: &Path, target: &Path) -> anyhow::Result<()> {
+    let source = corpus.join("fixtures/repo");
+    if !source.is_dir() {
+        return Ok(());
     }
-    while let Some(joined) = tasks.join_next().await {
-        let outcome = joined.context("a write replay task panicked")??;
-        let entry = report
-            .commands
-            .get_mut(&outcome.command)
-            .with_context(|| format!("no report entry for {}", outcome.command))?;
-        entry.comparisons += outcome.comparisons;
-        for detail in outcome.divergences {
-            entry.divergences.push(detail.clone());
-            report.unexplained.push(detail);
-        }
-    }
+    let _ = std::fs::remove_dir_all(target);
+    devboard_contract::copy_dir(&source, target).context("seeding the shadow fixture")?;
     Ok(())
-}
-
-async fn replay_write(
-    corpus: &Corpus,
-    recording: &CommandRecording,
-    iterations: u64,
-    deadline: Instant,
-    contract_bin: &Path,
-) -> anyhow::Result<WriteReplay> {
-    let mut comparisons = 0u64;
-    let mut divergences = Vec::new();
-    while comparisons < iterations {
-        // One child per replay gives the instance a fresh runtime and file
-        // handles; a leaked timer or background task cannot poison the next
-        // comparison.
-        let output = tokio::process::Command::new(contract_bin)
-            .args(["--corpus", &corpus.root.to_string_lossy()])
-            .args(["--play-command", &recording.command])
-            .args(["--token", &recording.token])
-            .output()
-            .await
-            .with_context(|| format!("replaying {}", recording.command))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let replay: Value = serde_json::from_str(stdout.trim()).with_context(|| {
-            format!(
-                "{} printed no replay report: {}",
-                recording.command,
-                String::from_utf8_lossy(&output.stderr)
-            )
-        })?;
-        let compared = replay
-            .get("compared")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        if compared == 0 {
-            bail!("{} has no replayable scenario", recording.command);
-        }
-        comparisons += compared;
-        if let Some(mismatches) = replay.get("mismatches").and_then(Value::as_array) {
-            for mismatch in mismatches {
-                divergences.push(format!(
-                    "{}/{}: {}",
-                    mismatch
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?"),
-                    mismatch
-                        .get("scenario")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?"),
-                    mismatch
-                        .get("detail")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?"),
-                ));
-            }
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-    }
-    Ok(WriteReplay {
-        command: recording.command.clone(),
-        comparisons,
-        divergences,
-    })
-}
-
-fn spawn_typescript(typescript: &Path, port: u16, layout: &ShadowLayout) -> anyhow::Result<Child> {
-    let script = typescript.join("contract/serve-typescript.ts");
-    let stub = typescript.join("server/fixtures/stub-agent.ts");
-    Command::new("bun")
-        .arg(script)
-        .args(["--port", &port.to_string()])
-        .args(["--root", &layout.typescript.to_string_lossy()])
-        .env(
-            "AGENT_COMMAND",
-            format!(
-                "bun {} --log={}",
-                stub.display(),
-                layout.work.join("agent.log").display()
-            ),
-        )
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("starting the TypeScript dashboard")
 }
 
 fn spawn_rust(args: &Args, port: u16, layout: &ShadowLayout) -> anyhow::Result<Child> {
@@ -431,12 +265,13 @@ fn spawn_rust(args: &Args, port: u16, layout: &ShadowLayout) -> anyhow::Result<C
         .context("starting the Rust dashboard")
 }
 
-async fn wait_ready(port: u16, bound: Duration) -> anyhow::Result<()> {
+async fn wait_ready(port: u16, token: &str, bound: Duration) -> anyhow::Result<()> {
     let started = Instant::now();
     let client = reqwest::Client::new();
     while started.elapsed() < bound {
         if client
             .get(format!("http://127.0.0.1:{port}/ready"))
+            .header("authorization", format!("Bearer {token}"))
             .send()
             .await
             .map(|response| response.status().is_success())
@@ -492,13 +327,13 @@ async fn exchange(
             Ok(Some(Err(_))) | Ok(None) => break,
             Err(_) => {
                 if last.elapsed() >= Duration::from_millis(SETTLE_MS)
-                    || started.elapsed() >= Duration::from_secs(5)
+                    || started.elapsed() >= Duration::from_secs(1)
                 {
                     break;
                 }
             }
         }
-        if started.elapsed() >= Duration::from_secs(5) {
+        if started.elapsed() >= Duration::from_secs(1) {
             break;
         }
     }

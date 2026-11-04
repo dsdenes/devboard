@@ -3426,6 +3426,7 @@ impl ReleaseTrainWorker {
             register_peer: {
                 let inner = self.inner.clone();
                 let run_id = run_id.clone();
+                let directory = self.directory.clone();
                 Arc::new(move |peer: ReleasePeer| {
                     let mut guard = lock_unpoisoned(&inner);
                     let updated = {
@@ -3439,6 +3440,7 @@ impl ReleaseTrainWorker {
                         active.clone()
                     };
                     guard.shared.runs = record_run(&guard.shared.runs, updated);
+                    let _ = write_state(&directory, &guard.shared);
                 })
             },
         };
