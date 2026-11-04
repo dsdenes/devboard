@@ -2187,7 +2187,6 @@ async fn refresh_lockfile(
             args: vec![
                 "metadata".to_string(),
                 "--format-version=1".to_string(),
-                "--no-deps".to_string(),
             ],
             cwd: root.to_path_buf(),
             env: environment.clone(),
