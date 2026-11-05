@@ -1611,9 +1611,6 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     if args.wait_timeout.is_zero() {
         bail!("--wait-timeout needs positive seconds");
     }
-    // The bundle, the staged manifest, and the tag are proven before anything
-    // is tagged, pushed, or written.
-    verify_release_bundle(&args.harness_root)?;
     let runner: Arc<dyn CommandRunner> = args
         .runner
         .clone()
@@ -1660,6 +1657,11 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     if dist_is_stale(&args.harness_root)? {
         rebuild_client(&args, runner.as_ref(), &log).await?;
     }
+    // The bundle, the staged manifest, and the tag are proven before anything
+    // is tagged, pushed, or written, and only after the checkout is current
+    // and its stale bundle rebuilt: proving first would refuse a checkout whose
+    // sources moved ahead of a bundle this very run is about to rebuild.
+    verify_release_bundle(&args.harness_root)?;
 
     let gitea = resolve_gitea_target(&args, runner.as_ref(), &preflight.remote).await?;
     let github_base = args
@@ -3597,7 +3599,9 @@ async fn rebuild_client(
     Ok(())
 }
 
-/// Proves the release bundle before the publish writes anything.
+/// Proves the release bundle before the publish tags, dispatches, or writes a
+/// release. The publish calls this after it refreshes the checkout and rebuilds
+/// a stale bundle, so the proof reads the current sources.
 ///
 /// The client bundle must be newer than its sources, every `/assets/...`
 /// reference in `dist/index.html` must exist, and a staged manifest must carry

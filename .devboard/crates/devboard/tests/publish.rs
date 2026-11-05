@@ -10,7 +10,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,9 +18,10 @@ use axum::extract::State;
 use devboard::jsjson;
 use devboard::publish::{
     acquire_release_lock, commit_level, deliver_source_refresh, dist_digest, next_release_version,
-    parse_subject, publish, subject_rule, verify_release_bundle, Clock, CommitRecord,
-    DashboardInstance, PublishArgs, ReleaseLevel, ReleaseLockOptions, Sleeper,
-    SourceRefreshOptions, RELEASE_INSTALLERS, RELEASE_TARGETS,
+    parse_subject, publish, subject_rule, verify_release_bundle, Clock, CommandInvocation,
+    CommandOutcome, CommandRunner, CommitRecord, DashboardInstance, ProcessRunner, PublishArgs,
+    ReleaseLevel, ReleaseLockOptions, Sleeper, SourceRefreshOptions, RELEASE_INSTALLERS,
+    RELEASE_TARGETS,
 };
 use devboard::release_suite::{
     BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport,
@@ -1324,6 +1325,76 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
     );
     assert!(second.source_refresh.written.is_empty());
     assert_eq!(second.source_refresh.applied.len(), 1);
+}
+
+/// A record-and-delegate runner: `bun run build` writes the bundle itself, and
+/// every other command reaches the real process runner.
+struct RebuildRunner {
+    builds: AtomicUsize,
+}
+
+impl CommandRunner for RebuildRunner {
+    fn run<'a>(
+        &'a self,
+        invocation: CommandInvocation,
+    ) -> Pin<Box<dyn Future<Output = CommandOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            if invocation.program == "bun" {
+                self.builds.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    invocation.args,
+                    vec!["run".to_string(), "build".to_string()]
+                );
+                std::thread::sleep(Duration::from_millis(10));
+                fs::create_dir_all(invocation.cwd.join("dist/assets")).expect("the bundle");
+                fs::write(
+                    invocation.cwd.join("dist/index.html"),
+                    "<!doctype html><script src=\"/assets/app.js\"></script>\n",
+                )
+                .expect("an index");
+                fs::write(
+                    invocation.cwd.join("dist/assets/app.js"),
+                    "console.log(\"built\");\n",
+                )
+                .expect("an asset");
+                return CommandOutcome {
+                    code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                };
+            }
+            ProcessRunner.run(invocation).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_checkout_whose_sources_moved_rebuilds_the_bundle_before_proving_it() {
+    let live = live("stale-bundle", release_assets()).await;
+    // A source newer than the committed bundle, exactly what a refreshed
+    // integration checkout leaves behind.
+    std::thread::sleep(Duration::from_millis(10));
+    let source = live.seed.join(".devboard/client/Row.svelte");
+    fs::create_dir_all(source.parent().expect("a parent")).expect("the client tree");
+    fs::write(&source, "<p></p>\n").expect("a newer source");
+
+    let runner = Arc::new(RebuildRunner {
+        builds: AtomicUsize::new(0),
+    });
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.runner = Some(runner.clone());
+    let report = publish(args)
+        .await
+        .expect("the stale bundle is rebuilt before it is proven");
+
+    assert_eq!(report.version, "1.1.0");
+    assert_eq!(runner.builds.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fs::read_to_string(live.seed.join(".devboard/dist/assets/app.js"))
+            .expect("the rebuilt asset"),
+        "console.log(\"built\");\n"
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 1);
 }
 
 #[tokio::test]
