@@ -290,46 +290,83 @@ impl SourceRefresher {
     }
 }
 
-async fn check_once(app: &Arc<App>, dist: &Path) {
-    let state_dir = &app.config().state_dir;
-    let read = read_source_refresh_request(state_dir);
-    let request = match read {
-        RequestRead::Missing => return,
+/// What one poll of the request file does.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RefreshAction {
+    /// Nothing to do: no request, or the request's commit already applied.
+    Idle,
+    /// Journal this one record and keep serving.
+    Report {
+        kind: &'static str,
+        key: String,
+        text: String,
+    },
+    /// Replace the process through the replacement handoff.
+    Replace(SourceRefreshRequest),
+}
+
+/// Decides what one poll of the request file does, without side effects.
+///
+/// A request whose digest names a bundle other than the one this dashboard
+/// serves was superseded by a later build: it can never apply, so it is
+/// recorded once per request as `activity` — nothing failed — while the poll
+/// keeps checking, so a `dist` rebuilt back to the requested tree still
+/// applies it. An unreadable request or an unreadable bundle is a failure and
+/// is recorded as `update-error`.
+pub fn plan_refresh(state_dir: &Path, dist: &Path) -> RefreshAction {
+    let (request, key) = match read_source_refresh_request(state_dir) {
+        RequestRead::Missing => return RefreshAction::Idle,
         RequestRead::Invalid { error, key } => {
-            report_once(app, &key, &format!("source refresh ignored: {error}"));
-            return;
+            return RefreshAction::Report {
+                kind: "update-error",
+                key,
+                text: format!("source refresh ignored: {error}"),
+            }
         }
-        RequestRead::Valid { request, .. } => request,
+        RequestRead::Valid { request, key } => (request, key),
     };
     if already_applied(read_applied_source_refresh(state_dir).as_ref(), &request) {
-        return;
+        return RefreshAction::Idle;
     }
     let current = match dist_digest(dist) {
         Ok(digest) => digest,
         Err(error) => {
-            report_once(
-                app,
-                &format!("digest-unreadable:{}", request.commit),
-                &format!(
+            return RefreshAction::Report {
+                kind: "update-error",
+                key: format!("digest-unreadable:{key}"),
+                text: format!(
                     "source refresh ignored: could not read {}: {error}",
                     dist.display()
                 ),
-            );
-            return;
+            }
         }
     };
     if current != request.dist_digest {
-        report_once(
-            app,
-            &format!("digest-mismatch:{}:{current}", request.commit),
-            &format!(
-                "source refresh ignored: {} digests {current}, not the requested {}",
+        return RefreshAction::Report {
+            kind: "activity",
+            key: format!("superseded:{key}"),
+            text: format!(
+                "source refresh ignored: {} digests {current}, not the requested {}; \
+                 a later build superseded this request",
                 dist.display(),
                 request.dist_digest
             ),
-        );
-        return;
+        };
     }
+    RefreshAction::Replace(request)
+}
+
+async fn check_once(app: &Arc<App>, dist: &Path) {
+    let state_dir = &app.config().state_dir;
+    match plan_refresh(state_dir, dist) {
+        RefreshAction::Idle => {}
+        RefreshAction::Report { kind, key, text } => report_once(app, kind, &key, &text),
+        RefreshAction::Replace(request) => replace(app, state_dir, &request).await,
+    }
+}
+
+/// The replacement handoff for one matching request.
+async fn replace(app: &Arc<App>, state_dir: &Path, request: &SourceRefreshRequest) {
     app.shared.journal.write(
         "update",
         &format!(
@@ -352,12 +389,12 @@ async fn check_once(app: &Arc<App>, dist: &Path) {
         &settings,
         &ready_file,
         10_000,
-        Some(&request.version),
+        Some(request.version.as_str()),
     )
     .await
     {
         Ok(()) => {
-            let _ = write_applied_source_refresh(state_dir, &request);
+            let _ = write_applied_source_refresh(state_dir, request);
             app.prepare_replacement();
             app.shared.shutdown.notify_waiters();
             std::process::exit(0);
@@ -372,7 +409,7 @@ async fn check_once(app: &Arc<App>, dist: &Path) {
     }
 }
 
-fn report_once(app: &Arc<App>, key: &str, text: &str) {
+fn report_once(app: &Arc<App>, kind: &str, key: &str, text: &str) {
     static REPORTED: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
     let first = {
         let mut reported = REPORTED.lock().expect("the source refresh report set");
@@ -381,7 +418,7 @@ fn report_once(app: &Arc<App>, key: &str, text: &str) {
             .insert(key.to_string())
     };
     if first {
-        app.shared.journal.write("update-error", text, None);
+        app.shared.journal.write(kind, text, None);
     }
 }
 
@@ -409,5 +446,101 @@ mod tests {
         let mut bad = value;
         bad["distDigest"] = json!("nope");
         assert_eq!(parse_source_refresh_request(&bad), None);
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("source-refresh-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch root");
+        root
+    }
+
+    fn write_request(state_dir: &Path, commit: &str, dist_digest: &str) {
+        let directory = source_refresh_directory(state_dir);
+        std::fs::create_dir_all(&directory).expect("the source refresh directory");
+        let text = crate::jsjson::stringify(&json!({
+            "schema": SOURCE_REFRESH_SCHEMA,
+            "commit": commit,
+            "version": "1.2.3",
+            "distDigest": dist_digest,
+            "requestedAt": "2026-11-03T00:00:00.000Z",
+        }));
+        std::fs::write(directory.join(SOURCE_REFRESH_REQUEST_FILE), text).expect("a request");
+    }
+
+    #[test]
+    fn a_superseded_request_is_recorded_once_and_a_matching_one_replaces() {
+        let root = scratch("superseded");
+        let state_dir = root.join("state");
+        let dist = root.join("dist");
+        std::fs::create_dir_all(dist.join("assets")).expect("the bundle");
+        std::fs::write(dist.join("index.html"), b"<html>published</html>").expect("an asset");
+        let published = dist_digest(&dist).expect("the published digest");
+
+        assert_eq!(plan_refresh(&state_dir, &dist), RefreshAction::Idle);
+
+        write_request(&state_dir, "abcdef1234567", &"b".repeat(64));
+        let (kind, key) = match plan_refresh(&state_dir, &dist) {
+            RefreshAction::Report { kind, key, text } => {
+                assert!(
+                    text.contains(&published),
+                    "the record names the served bundle: {text}"
+                );
+                (kind, key)
+            }
+            other => panic!("a superseded request reports, not {other:?}"),
+        };
+        assert_eq!(kind, "activity", "an ignored request is not a failure");
+
+        std::fs::write(dist.join("index.html"), b"<html>rebuilt</html>").expect("a rebuilt asset");
+        match plan_refresh(&state_dir, &dist) {
+            RefreshAction::Report {
+                kind, key: again, ..
+            } => {
+                assert_eq!(kind, "activity");
+                assert_eq!(again, key, "a rebuilt bundle keeps one record per request");
+            }
+            other => panic!("a superseded request reports, not {other:?}"),
+        }
+
+        std::fs::write(dist.join("index.html"), b"<html>published</html>")
+            .expect("the published asset");
+        write_request(&state_dir, "abcdef1234567", &published);
+        assert!(
+            matches!(plan_refresh(&state_dir, &dist), RefreshAction::Replace(_)),
+            "a request naming the served bundle replaces the process"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unreadable_bundle_and_a_malformed_request_are_failures() {
+        let root = scratch("failure");
+        let state_dir = root.join("state");
+        write_request(&state_dir, "abcdef1234567", &"c".repeat(64));
+
+        match plan_refresh(&state_dir, &root.join("missing-dist")) {
+            RefreshAction::Report { kind, key, .. } => {
+                assert_eq!(kind, "update-error");
+                assert!(key.starts_with("digest-unreadable:"));
+            }
+            other => panic!("a missing bundle reports a failure, not {other:?}"),
+        }
+
+        std::fs::write(
+            source_refresh_directory(&state_dir).join(SOURCE_REFRESH_REQUEST_FILE),
+            "{}",
+        )
+        .expect("a malformed request");
+        match plan_refresh(&state_dir, &root.join("missing-dist")) {
+            RefreshAction::Report { kind, .. } => assert_eq!(kind, "update-error"),
+            other => panic!("a malformed request reports a failure, not {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

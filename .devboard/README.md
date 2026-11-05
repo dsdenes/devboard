@@ -587,12 +587,15 @@ readiness marker, the old process stops only once that marker exists, every conn
 `<STATE_DIR>/source-refresh/applied.json` so re-delivering the same publish never restarts again.
 
 The interval is 60,000 ms and is configurable with `DEVBOARD_SOURCE_REFRESH_INTERVAL_MS`; values
-below 1,000 ms are raised to 1,000 ms. An invalid or unreadable request, a digest mismatch, a
-failed replacement spawn, or a replacement that never becomes ready leaves the old process serving
-on the original port and journals the failure once per attempt. A new commit, a new release tag, a
-rebuilt `dist`, an edited source file, a page reload, and an update check never restart a source
-dashboard; only a valid publish request or the retry of one does. Installed hosts never receive or
-act on a source-refresh request.
+below 1,000 ms are raised to 1,000 ms. An invalid or unreadable request, a failed replacement
+spawn, or a replacement that never becomes ready leaves the old process serving on the original
+port and journals the failure once per attempt. A request whose digest names a bundle other than
+the one being served was superseded by a later build: it can never apply, so it is recorded once
+per request as `activity` — not an update error — and the poll keeps checking, so a bundle rebuilt
+back to the requested tree still applies it. A new commit, a new release tag, a rebuilt `dist`, an
+edited source file, a page reload, and an update check never restart a source dashboard; only a
+valid publish request or the retry of one does. Installed hosts never receive or act on a
+source-refresh request.
 
 `devboard install --host <path>` targets another repository. `DEVBOARD_RELEASE_URL` points the
 updater and `devboard update` at a local manifest and artifact directory for offline verification

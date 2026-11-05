@@ -124,8 +124,10 @@ passed. The request names the published commit, the released version, and a SHA-
 `.devboard/dist`; the dashboard verifies that digest without a second build, replaces itself through
 the ordinary replacement handoff, and records the applied commit so the same publish never restarts
 it twice. A missing, invalid, or mismatched request, a failed spawn, or a replacement that never
-becomes ready leaves the old process serving and is journaled once per attempt; a valid pending
-request is retried on a fixed interval, 60,000 ms by default and configurable with
+becomes ready leaves the old process serving and is journaled once per attempt; a request whose
+digest no longer matches the served bundle was superseded by a later build, so it is recorded once
+per request as `activity` rather than an error. A valid pending request is retried on a fixed
+interval, 60,000 ms by default and configurable with
 `DEVBOARD_SOURCE_REFRESH_INTERVAL_MS` (minimum 1,000 ms). A new commit, a new tag, a rebuilt
 `dist`, an edited source file, a page reload, and an update check never restart a source dashboard.
 Installed hosts never receive or act on a source-refresh request. When GitHub cannot serve the
