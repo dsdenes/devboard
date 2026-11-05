@@ -1102,6 +1102,92 @@ fn the_judgment_skip_interval_comes_from_the_omp_log_record() {
 }
 
 #[test]
+fn a_backend_denied_codex_account_is_not_a_finding() {
+    let root = production_root("codex-account");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let mut denied = event(
+        now,
+        1,
+        "Codex model discovery skipped an account denied by the backend",
+        "omp-log",
+        &instance,
+    );
+    denied.level = Some("warn".to_string());
+    let mut other = event(
+        now,
+        2,
+        "model discovery failed for provider: HTTP 500",
+        "omp-log",
+        &instance,
+    );
+    other.level = Some("warn".to_string());
+
+    let findings = analyze_evidence(&[denied, other], window, window);
+
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].category, "omp-warn");
+    assert!(findings[0]
+        .quote
+        .starts_with("model discovery failed for provider"));
+}
+
+#[test]
+fn a_denied_account_record_in_the_omp_log_files_nothing() {
+    let root = scratch("codex-account-log");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let logs = root.join("omp-logs");
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    write(
+        &logs.join("omp.fixture.log"),
+        &format!(
+            "{}\n{}\n",
+            json!({
+                "timestamp": iso_from_ms(now),
+                "level": "warn",
+                "pid": 4242,
+                "message": "Codex model discovery skipped an account denied by the backend",
+                "accountId": "ce499a29-c203-4b1a-b0c5-88df5da414f2",
+                "status": 401,
+            }),
+            json!({
+                "timestamp": iso_from_ms(now),
+                "level": "warn",
+                "pid": 4242,
+                "message": "model discovery failed for provider: HTTP 404 from http://127.0.0.1:8080/models",
+            })
+        ),
+    );
+    let owner = instance.pid;
+    let process_info = move |_pid: u32| Some(vec![owner]);
+    let self_pids: HashSet<u32> = HashSet::new();
+
+    let (events, malformed, unattributed) = read_omp_evidence(&OmpOptions {
+        window,
+        logs_dir: Some(&logs),
+        instances: &[instance],
+        self_pids: &self_pids,
+        process_info: Some(&process_info),
+    });
+
+    assert_eq!(malformed, 0);
+    assert_eq!(unattributed, 0);
+    assert_eq!(events.len(), 2, "{events:?}");
+    let findings = analyze_evidence(&events, window, window);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].category, "omp-warn");
+    assert!(findings[0].quote.contains("HTTP 404"), "{findings:?}");
+}
+
+#[test]
 fn filing_caps_limit_the_room_and_keep_the_rest_pending() {
     let root = production_root("caps");
     let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);

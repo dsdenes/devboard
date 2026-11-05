@@ -2794,7 +2794,10 @@ persistence failure with any other cause still files its `omp-error` record. An 
 judge stepping past a model provider that rejects the account's credential — operator state no
 repository change can configure — and the judge continues with another candidate, so it is never a
 finding; a candidate failure that names no skip is not a recovery and still files its `omp-warn`
-record.
+record. A Codex account the backend denies is the operator's provider configuration, not a
+repository defect: discovery continues for every other account, no repository change grants that
+account access, and the `Codex model discovery skipped an account denied by the backend` warning is
+therefore never a finding; every other model-discovery warning still files its `omp-warn` record.
 
 The ledger outlives a forge change: an entry may name an issue filed through another forge, or
 through the same project under a different instance. The delivery reports the URLs its configured

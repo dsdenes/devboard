@@ -3262,6 +3262,18 @@ fn skipped_judgment_candidate(event: &EvidenceEvent) -> bool {
     failed && event.skipped_ms.is_some_and(|ms| ms > 0)
 }
 
+const CODEX_ACCOUNT_DENIED: &str = "Codex model discovery skipped an account denied by the backend";
+
+/// A Codex account the backend denies is the operator's provider configuration,
+/// not a repository defect: discovery continues for every other account, and no
+/// repository change can grant that account access. Filing would spend the
+/// cycle's budget on an issue nothing here can fix, so it is never a finding.
+fn denied_codex_account(event: &EvidenceEvent) -> bool {
+    event.kind == "omp-log"
+        && event.level.as_deref() == Some("warn")
+        && normalize_evidence_line(&event.text).starts_with(CODEX_ACCOUNT_DENIED)
+}
+
 fn event_key(event: &EvidenceEvent) -> String {
     match &event.instance {
         Some(instance) => format!("{}:{}", instance.repo_dir, instance.port),
@@ -3377,6 +3389,7 @@ pub fn analyze_evidence(
                     && !interrupted_python_runner(event)
                     && !host_storage_failure(event)
                     && !skipped_judgment_candidate(event)
+                    && !denied_codex_account(event)
                 {
                     add(&format!("omp-{level}"), event, &mut findings);
                 }
