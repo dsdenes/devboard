@@ -3,7 +3,7 @@
   import { createCommandBusy } from "../command-busy.svelte";
   import { percentText, statusText } from "../provider-label";
   import { providers } from "../providers.svelte";
-  import { PROVIDERS } from "../../../lib/provider-catalog.ts";
+  import { PROVIDER_IDS, PROVIDERS } from "../../../lib/provider-catalog.ts";
   import type { ProviderId, ProviderSubscription } from "../types";
   import CommandButton from "./CommandButton.svelte";
   import CommandNotice from "./CommandNotice.svelte";
@@ -59,13 +59,9 @@
     saving = providers.save({
       ...(editing === null ? {} : { id: editing.id }),
       provider,
-      label: label.trim().length === 0 ? providersProviderName(provider) : label.trim(),
+      label: label.trim().length === 0 ? PROVIDERS[provider].name : label.trim(),
       ...(key.trim().length === 0 ? {} : { key: key.trim() }),
     });
-  }
-
-  function providersProviderName(id: ProviderId): string {
-    return id === "opencode-go" ? "OpenCode Go" : "OpenRouter";
   }
 
   function confirmDelete(): void {
@@ -121,9 +117,9 @@
       </div>
       <div class="dialog-body providers-body">
         <Dialog.Description class="providers-rule" data-testid="provider-rule">
-          Two providers: OpenCode Go first, then the OpenRouter fallback. A key is used only when
-          every quota window is above 1% remaining; the harness {providers.rule}. Usage is checked
-          at most once a minute unless refreshed.
+          Providers in order: {PROVIDER_IDS.map((id) => PROVIDERS[id].name).join(", ")}. A key is
+          used only when every quota window is above 1% remaining; the harness {providers.rule}.
+          Usage is checked at most once a minute unless refreshed.
         </Dialog.Description>
 
         {#if providers.error !== null}
@@ -144,8 +140,9 @@
               bind:value={provider}
               disabled={editing !== null}
             >
-              <option value="opencode-go">OpenCode Go</option>
-              <option value="openrouter">OpenRouter</option>
+              {#each PROVIDER_IDS as id}
+                <option value={id}>{PROVIDERS[id].name}</option>
+              {/each}
             </select>
             <span class="providers-model" data-testid="provider-model">
               model <span class="mono">{PROVIDERS[provider].model}</span>
@@ -155,7 +152,7 @@
             <span>Label</span>
             <Input
               data-testid="provider-label-input"
-              placeholder={providersProviderName(provider)}
+              placeholder={PROVIDERS[provider].name}
               value={label}
               oninput={(event) => (label = (event.currentTarget as HTMLInputElement).value)}
             />
