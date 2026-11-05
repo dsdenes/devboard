@@ -943,6 +943,54 @@ fn a_dry_run_cycle_changes_nothing() {
 }
 
 #[test]
+fn a_full_disk_session_persistence_error_is_not_a_finding() {
+    let root = production_root("storage-failure");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let mut full = event(
+        now,
+        1,
+        "Session persistence error.: ENOSPC: no space left on device, write",
+        "omp-log",
+        &instance,
+    );
+    full.level = Some("error".to_string());
+    let mut denied = event(
+        now,
+        2,
+        "Session persistence error.: EACCES: permission denied, open",
+        "omp-log",
+        &instance,
+    );
+    denied.level = Some("error".to_string());
+    let mut other = event(
+        now,
+        3,
+        "Disk flush failed.: ENOSPC: no space left on device, write",
+        "omp-log",
+        &instance,
+    );
+    other.level = Some("error".to_string());
+
+    let findings = analyze_evidence(&[full, denied, other], window, window);
+
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings
+        .iter()
+        .all(|finding| finding.category == "omp-error"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.quote.contains("EACCES")));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.quote.starts_with("Disk flush failed.")));
+}
+
+#[test]
 fn filing_caps_limit_the_room_and_keep_the_rest_pending() {
     let root = production_root("caps");
     let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);

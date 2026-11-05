@@ -2767,6 +2767,22 @@ fn interrupted_python_runner(event: &EvidenceEvent) -> bool {
         && traceback_exception(event.detail.as_deref()) == Some("KeyboardInterrupt")
 }
 
+const SESSION_PERSISTENCE_ERROR: &str = "Session persistence error.";
+const ENOSPC_CODE: &str = "ENOSPC";
+
+/// A failed session append because the host filesystem is full is a host
+/// resource condition, not a repository defect: the peer keeps its session in
+/// memory, and no repository change can free the disk. Excluding it keeps a
+/// full disk from spending the cycle's filing budget on an issue that cannot
+/// be fixed and from writing further bytes to the same full disk.
+fn host_storage_failure(event: &EvidenceEvent) -> bool {
+    if event.kind != "omp-log" || event.level.as_deref() != Some("error") {
+        return false;
+    }
+    let line = normalize_evidence_line(&event.text);
+    line.starts_with(SESSION_PERSISTENCE_ERROR) && line.contains(ENOSPC_CODE)
+}
+
 fn event_key(event: &EvidenceEvent) -> String {
     match &event.instance {
         Some(instance) => format!("{}:{}", instance.repo_dir, instance.port),
@@ -2878,7 +2894,10 @@ pub fn analyze_evidence(
         }
         if event.kind == "omp-log" {
             if let Some(level) = event.level.as_deref() {
-                if !recovered_stream_warning(event) && !interrupted_python_runner(event) {
+                if !recovered_stream_warning(event)
+                    && !interrupted_python_runner(event)
+                    && !host_storage_failure(event)
+                {
                     add(&format!("omp-{level}"), event, &mut findings);
                 }
             }

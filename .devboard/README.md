@@ -2740,7 +2740,11 @@ omp's own thinking-loop notice — `Thinking loop detected; aborting stream for 
 recovery it performs itself, so it is never a finding; a turn that cannot recover still files its
 provider-error record. A `Python runner stderr` warning whose traceback ends in `KeyboardInterrupt`
 is the runner stopping the cell it ran, which is how it exits, so it is never a finding either; a
-runner traceback that ends in any other exception still files its `omp-warn` record.
+runner traceback that ends in any other exception still files its `omp-warn` record. An omp
+`Session persistence error.` whose cause is `ENOSPC` is the host filesystem being full: the peer
+keeps its session in memory, no repository change can free the disk, and filing would spend the
+cycle's budget and write more bytes to the same full disk, so it is never a finding; a session
+persistence failure with any other cause still files its `omp-error` record.
 
 The ledger outlives a forge change: an entry may name an issue filed through another forge, or
 through the same project under a different instance. The delivery reports the URLs its configured
