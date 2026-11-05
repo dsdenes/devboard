@@ -581,10 +581,13 @@ live dashboard whose `REPO_DIR` is the checkout and whose serving harness is tha
 `.devboard`. It carries the published commit, the released version, and a deterministic SHA-256 of
 the built `.devboard/dist` tree. The dashboard re-reads it on a fixed interval and verifies that
 the running binary's embedded client digests identically; it never runs a second build. A matching
-request replaces the process through the ordinary replacement handoff: the replacement writes a
-readiness marker, the old process stops only once that marker exists, every connected page receives
-`serverRestarting` and reloads once, and the applied commit is recorded in
+request replaces the process through the ordinary replacement handoff: the replacement starts a
+loopback readiness listener of its own and writes a marker naming it, the old process stops only
+once that listener answers the authenticated probe with the replacement's pid, every connected page
+receives `serverRestarting` and reloads once, and the applied commit is recorded in
 `<STATE_DIR>/source-refresh/applied.json` so re-delivering the same publish never restarts again.
+The replacement cannot answer on the dashboard port before the old process exits, which is why it
+proves readiness on its own listener.
 
 The interval is 60,000 ms and is configurable with `DEVBOARD_SOURCE_REFRESH_INTERVAL_MS`; values
 below 1,000 ms are raised to 1,000 ms. An invalid or unreadable request, a failed replacement

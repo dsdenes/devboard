@@ -200,9 +200,16 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     // One orphan-reaping pass before this process serves. It never signals a
     // live recorded child and journals the pass and every kill.
     devboard::workers::watchdog::reap_on_startup(&config.state_dir, &config.repo_dir);
+    // A confirmed replacement answers its own loopback readiness listener
+    // until it binds the dashboard port this process still holds.
+    let mut readiness = None;
     if let Ok(ready_file) = std::env::var("DEVBOARD_REPLACEMENT_READY_FILE") {
         if !ready_file.is_empty() {
-            let _ = devboard::relaunch::write_ready_marker(std::path::Path::new(&ready_file));
+            let (port, task) = devboard::relaunch::start_readiness_listener(config.token.clone())
+                .await
+                .context("starting the replacement readiness listener")?;
+            readiness = Some(task);
+            let _ = devboard::relaunch::write_ready_marker(std::path::Path::new(&ready_file), port);
         }
     }
     let mut listener = None;
@@ -219,6 +226,9 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         }
     }
     let listener = listener.context("binding the dashboard listener")?;
+    if let Some(task) = readiness.take() {
+        task.abort();
+    }
     config.port = listener
         .local_addr()
         .map(|address| address.port())

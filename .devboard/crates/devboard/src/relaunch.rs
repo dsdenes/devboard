@@ -7,7 +7,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 
+use axum::extract::State;
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde_json::json;
 
 /// The listener inputs a replacement inherits.
@@ -128,17 +133,77 @@ pub fn spawn_replacement(
     command.spawn()
 }
 
+/// Starts the loopback listener a replacement answers its readiness probe on.
+///
+/// The replacement cannot bind the dashboard port before the process it
+/// replaces exits, so its marker names a listener of its own instead. The
+/// returned task serves that listener until the dashboard listener is bound.
+pub async fn start_readiness_listener(
+    token: String,
+) -> std::io::Result<(u16, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let router = axum::Router::new()
+        .route("/ready", axum::routing::get(readiness_answer))
+        .with_state(Arc::new(token));
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    Ok((port, task))
+}
+
+/// The pid of the replacement, answered only with the credential it inherited.
+async fn readiness_answer(State(token): State<Arc<String>>, headers: HeaderMap) -> Response {
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().split_once(char::is_whitespace))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty());
+    if !crate::http::credential_matches(presented, &token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+            Json(json!({"detail": "The readiness probe requires the dashboard token."})),
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"pid": std::process::id()})),
+    )
+        .into_response()
+}
+
 /// Writes the readiness marker a confirmed replacement waits for.
-pub fn write_ready_marker(path: &Path) -> std::io::Result<()> {
+pub fn write_ready_marker(path: &Path, port: u16) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut text = crate::jsjson::stringify(&json!({
         "pid": std::process::id(),
         "readyAt": crate::journal::now_iso8601(),
+        "port": port,
     }));
     text.push('\n');
     std::fs::write(path, text)
+}
+
+/// The pid and readiness-listener port a replacement announced.
+///
+/// A replacement built before the listener existed writes a marker without a
+/// port; that marker still proves the child started and took over.
+fn read_ready_marker(path: &Path) -> Option<(u32, Option<u16>)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let pid = value.get("pid")?.as_u64()?;
+    let port = match value.get("port") {
+        Some(value) => Some(u16::try_from(value.as_u64()?).ok()?),
+        None => None,
+    };
+    Some((u32::try_from(pid).ok()?, port))
 }
 
 /// The fixture's replacement mode; absent means a real replacement.
@@ -195,10 +260,10 @@ pub async fn relaunch_confirmed(
     }
     let mut child = spawn_replacement(settings, &extra).map_err(|error| error.to_string())?;
     let started = std::time::Instant::now();
-    let mut ready = false;
+    let mut marker = None;
     while started.elapsed() < std::time::Duration::from_millis(timeout_ms) {
-        if ready_file.exists() {
-            ready = true;
+        if let Some(announced) = read_ready_marker(ready_file) {
+            marker = Some(announced);
             break;
         }
         match child.try_wait() {
@@ -208,24 +273,35 @@ pub async fn relaunch_confirmed(
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    if !ready {
+    let Some((marker_pid, probe_port)) = marker else {
         let _ = child.kill();
         return Err(
             "the replacement did not become ready; the running server keeps serving".to_string(),
         );
-    }
+    };
     let _ = std::fs::remove_file(ready_file);
-    // The marker proves the child started; the probe proves that this
-    // dashboard, and not another process on the port, answers with the
-    // credential the replacement inherited.
-    if stub.is_empty() && !stub_mode_is_test() {
-        let pid = Some(child.id());
-        if !probe_ready(settings.port, &settings.token, pid).await {
-            let _ = child.kill();
-            return Err(
-                "the replacement did not answer the authenticated readiness probe; the running server keeps serving"
-                    .to_string(),
-            );
+    // The dashboard port stays held by this process until it exits, so the
+    // marker's own listener is the one the child can answer on. The probe
+    // proves that the child, holding the credential it inherited, answers;
+    // a marker from a replacement older than that listener still proves the
+    // child started and takes the port over.
+    if let Some(port) = probe_port {
+        if stub.is_empty() && !stub_mode_is_test() {
+            let pid = child.id();
+            if marker_pid != pid {
+                let _ = child.kill();
+                return Err(
+                    "the replacement's readiness marker names another process; the running server keeps serving"
+                        .to_string(),
+                );
+            }
+            if !probe_ready(port, &settings.token, Some(pid)).await {
+                let _ = child.kill();
+                return Err(
+                    "the replacement did not answer the authenticated readiness probe; the running server keeps serving"
+                        .to_string(),
+                );
+            }
         }
     }
     Ok(())
