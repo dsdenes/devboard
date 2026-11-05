@@ -33,6 +33,9 @@ const ACTION_ERROR: &str = "action must be one of REPORT, REMOVE, REDESIGN.";
 pub struct RequestError {
     pub status: u16,
     pub message: String,
+    /// The failure's own text. The client reads `message`; only the journal
+    /// records this, and it is `None` when `message` already names the cause.
+    pub diagnostic: Option<String>,
 }
 
 impl RequestError {
@@ -40,6 +43,7 @@ impl RequestError {
         Self {
             status: 400,
             message: message.into(),
+            diagnostic: None,
         }
     }
 
@@ -49,7 +53,23 @@ impl RequestError {
         Self {
             status: 500,
             message: message.into(),
+            diagnostic: None,
         }
+    }
+
+    /// Maps one failed delivery. The client keeps the fixed detail; the
+    /// delivery's own text goes only to the journal.
+    pub fn delivery(error: DeliveryError) -> Self {
+        Self {
+            status: error.status,
+            message: error.message,
+            diagnostic: Some(error.diagnostic),
+        }
+    }
+
+    /// The line the journal records for this failure.
+    pub fn journal_detail(&self) -> &str {
+        self.diagnostic.as_deref().unwrap_or(&self.message)
     }
 }
 

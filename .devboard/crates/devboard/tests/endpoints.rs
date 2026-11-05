@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::Json;
 use devboard::config::{Config, FeedbackConfig};
@@ -14,7 +16,7 @@ use devboard::journal::Journal;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::{json, Value};
 
-type StubState = (Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>);
+type StubState = (Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>, bool);
 
 const TOKEN: &str = "contract-token";
 
@@ -42,11 +44,20 @@ fn fixture_root(label: &str) -> PathBuf {
 }
 
 async fn start(label: &str) -> Fixture {
+    start_with(label, false).await
+}
+
+/// One fixture whose stub Gitea answers `500` instead of filing an issue.
+async fn start_failing(label: &str) -> Fixture {
+    start_with(label, true).await
+}
+
+async fn start_with(label: &str, failing: bool) -> Fixture {
     let root = fixture_root(label);
     let repo = root.join("repo");
     let calls: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicUsize::new(0));
-    let stub_state = (calls.clone(), count.clone());
+    let stub_state = (calls.clone(), count.clone(), failing);
     let stub_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("a stub listener");
@@ -56,16 +67,21 @@ async fn start(label: &str) -> Fixture {
             .route(
                 "/api/v1/repos/dsdenes/devboard/issues",
                 post(
-                    |State((calls, count)): State<StubState>,
+                    |State((calls, count, failing)): State<StubState>,
                      Json(body): Json<Value>| async move {
                         count.fetch_add(1, Ordering::SeqCst);
                         calls.lock().expect("calls").push(body.clone());
+                        if failing {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "gitea is offline")
+                                .into_response();
+                        }
                         let number = count.load(Ordering::SeqCst);
                         Json(json!({
                             "number": number,
                             "title": body.get("title").cloned().unwrap_or(Value::Null),
                             "html_url": format!("https://gitea.test/dsdenes/devboard/issues/{number}"),
                         }))
+                        .into_response()
                     },
                 ),
             )
@@ -283,6 +299,39 @@ async fn a_report_files_one_issue_through_the_configured_gitea() {
         .as_str()
         .expect("a body")
         .contains("## Operator report"));
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+#[tokio::test]
+async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
+    let fixture = start_failing("feedback-failure").await;
+    let response = client()
+        .post(format!("{}/feedback", fixture.base))
+        .headers(bearer())
+        .json(&json!({"report": "Fix the header", "route": "/"}))
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 502);
+    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(body["detail"], "The issue could not be filed.");
+    assert_eq!(fixture.count.load(Ordering::SeqCst), 1);
+
+    let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
+    let text = std::fs::read_to_string(&journal).expect("the journal");
+    assert!(
+        text.contains("\"kind\":\"server-error\""),
+        "the failed delivery is journaled: {text}"
+    );
+    assert!(
+        text.contains("POST /feedback: Issue creation failed: POST /repos/dsdenes/devboard/issues failed (HTTP 500): gitea is offline"),
+        "the journal names the delivery's own diagnostic: {text}"
+    );
+    assert!(
+        !text.contains("POST /feedback: The issue could not be filed."),
+        "the journal never repeats the client-facing detail: {text}"
+    );
     fixture.handle.abort();
     fixture.stub.abort();
 }

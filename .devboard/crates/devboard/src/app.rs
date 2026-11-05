@@ -1070,10 +1070,7 @@ impl App {
             .run("feedback", key.as_deref(), || async {
                 crate::feedback::file_feedback_issue(&submission, &target, flow_id, timeout_ms)
                     .await
-                    .map_err(|error| crate::feedback::RequestError {
-                        status: error.status,
-                        message: error.message,
-                    })
+                    .map_err(crate::feedback::RequestError::delivery)
             })
             .await;
         match outcome {
@@ -1089,7 +1086,7 @@ impl App {
                 if error.status == 502 || error.status == 504 {
                     self.shared.journal.write(
                         "server-error",
-                        &format!("POST /feedback: {}", error.message),
+                        &format!("POST /feedback: {}", error.journal_detail()),
                         flow_id,
                     );
                 }
