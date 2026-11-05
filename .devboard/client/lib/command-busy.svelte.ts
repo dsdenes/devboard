@@ -45,6 +45,12 @@ export interface CommandBusyOptions<E> {
   label: string | (() => string);
   /** Reactive read of the server state that confirms the command. */
   evidence: () => E;
+  /**
+   * Reactive read of the subject this control acts on. One component instance
+   * can be reused for a different subject — the Start/Stop control is shared
+   * by every agent page — and the previous subject's latch must not follow it.
+   */
+  scope?: () => unknown;
   /** Overrides the 10-second ceiling; tests use a short bound. */
   ceilingMs?: number;
 }
@@ -59,15 +65,19 @@ export class CommandBusy<E> {
    * still re-renders the busy word; `raw` keeps an object evidence's identity.
    */
   #baseline: E | undefined = $state.raw(undefined);
+  /** The subject captured at activation; a reused control has no claim on another. */
+  #scopeBaseline: unknown = $state.raw(undefined);
   #timer: ReturnType<typeof setTimeout> | null = null;
   readonly #label: () => string;
   readonly #evidence: () => E;
+  readonly #scope: (() => unknown) | undefined;
   readonly #ceilingMs: number;
 
   constructor(options: CommandBusyOptions<E>) {
     this.#label =
       typeof options.label === "function" ? options.label : () => options.label as string;
     this.#evidence = options.evidence;
+    this.#scope = options.scope;
     this.#ceilingMs = options.ceilingMs ?? COMMAND_CEILING_MS;
   }
 
@@ -77,6 +87,7 @@ export class CommandBusy<E> {
       this.#active &&
       !this.#expired &&
       !this.#dismissed &&
+      this.#sameSubject() &&
       Object.is(this.#evidence(), this.#baseline)
     );
   }
@@ -92,6 +103,7 @@ export class CommandBusy<E> {
    */
   get notice(): string | null {
     if (!this.#active || !this.#expired || this.#dismissed) return null;
+    if (!this.#sameSubject()) return null;
     if (!Object.is(this.#evidence(), this.#baseline)) return null;
     const label = this.#label().trim();
     return label.length === 0
@@ -103,6 +115,7 @@ export class CommandBusy<E> {
   start(): void {
     this.#clearTimer();
     this.#baseline = this.#evidence();
+    this.#scopeBaseline = this.#scope?.();
     this.#active = true;
     this.#expired = false;
     this.#dismissed = false;
@@ -117,6 +130,10 @@ export class CommandBusy<E> {
     this.#clearTimer();
     this.#active = false;
     this.#dismissed = true;
+  }
+
+  #sameSubject(): boolean {
+    return this.#scope === undefined || Object.is(this.#scope(), this.#scopeBaseline);
   }
 
   #clearTimer(): void {

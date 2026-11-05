@@ -65,64 +65,60 @@ impl Fixture {
         self.write(
             ".devboard/crates/devboard/src/http.rs",
             concat!(
-                "pub async fn handle(uri: &str, method: &Method) -> Response {\n",
-                "    match uri {\n",
+                "use axum::http::{HeaderMap, Method};\n",
+                "\n",
+                "async fn handle(server: Arc<Server>, uri: Uri, method: Method) -> Response {\n",
+                "    match uri.path() {\n",
+                "        \"/api/ready\" => {\n",
+                "            if *method != Method::GET && *method != Method::HEAD {\n",
+                "                return reply(Replies::problem(&headers, 405, \"GET only.\", &[(\"Allow\", \"GET\")]));\n",
+                "            }\n",
+                "            return reply(ready(&headers, &method));\n",
+                "        }\n",
                 "        \"/feedback\" => {\n",
-                "            return app.feedback(&method).await;\n",
-                "        }\n",
-                "        \"/ready\" => {\n",
-                "            return ready(&method);\n",
-                "        }\n",
-                "        \"/goal-proposals\" => {\n",
-                "            return app.goal_proposals(&method).await;\n",
+                "            return reply(server.app.feedback(&method, &headers).await);\n",
                 "        }\n",
                 "        \"/ws\" => {\n",
                 "            if method != Method::GET {\n",
-                "                return problem();\n",
+                "                return reply(Replies::problem(&headers, 405, \"GET only.\", &[(\"Allow\", \"GET\")]));\n",
                 "            }\n",
-                "            return upgrade().await;\n",
+                "            return reply(upgrade(server.clone()).await);\n",
                 "        }\n",
                 "        _ => {}\n",
                 "    }\n",
-                "    if let Some(relative) = static_relative_path(uri) {\n",
-                "        return static_file(&relative, &method);\n",
+                "    if let Some(name) = uri.path().strip_prefix(\"/api/ready/\") {\n",
+                "        return reply(draft_answer(&server, name, &method, &headers));\n",
                 "    }\n",
-                "    problem()\n",
+                "    static_file(&server, &relative, &method, &headers)\n",
                 "}\n",
                 "\n",
-                "fn ready(method: &Method) -> Response {\n",
+                "fn draft_answer(server: &Arc<Server>, name: &str, method: &Method, headers: &HeaderMap) -> Response {\n",
                 "    if *method != Method::GET && *method != Method::HEAD {\n",
-                "        return problem();\n",
+                "        return Replies::problem(headers, 405, \"GET only.\", &[(\"Allow\", \"GET\")]);\n",
                 "    }\n",
-                "    json()\n",
+                "    Replies::json(headers, Value::Null, 200, &[])\n",
                 "}\n",
             ),
         );
         self.write(
             ".devboard/crates/devboard/src/app.rs",
             concat!(
-                "pub async fn feedback(&self, method: &Method) -> Response {\n",
-                "    if *method != Method::POST {\n",
-                "        return problem();\n",
-                "    }\n",
-                "    accepted()\n",
-                "}\n",
+                "use axum::http::{HeaderMap, Method};\n",
                 "\n",
-                "pub async fn goal_proposals(&self, method: &Method) -> Response {\n",
-                "    if *method != Method::POST {\n",
-                "        return problem();\n",
+                "impl App {\n",
+                "    /// `POST /feedback`.\n",
+                "    pub async fn feedback(&self, method: &Method, headers: &HeaderMap) -> Response {\n",
+                "        if *method != Method::POST {\n",
+                "            return Replies::problem(headers, 405, \"POST only.\", &[(\"Allow\", \"POST\")]);\n",
+                "        }\n",
+                "        Replies::json(headers, Value::Null, 201, &[])\n",
                 "    }\n",
-                "    accepted()\n",
                 "}\n",
             ),
         );
         self.write(
-            ".devboard/crates/devboard/src/app_test.rs",
-            "fn fixture_test() {}\n",
-        );
-        self.write(
-            ".devboard/crates/devboard/src/tests/ignored.rs",
-            "fn ignored_test() {}\n",
+            ".devboard/crates/devboard/src/journal.rs",
+            "pub fn write(text: &str) {\n    let _ = text;\n}\n",
         );
         self.write(
             ".omp/skills/devboard-restful-api-implementation/SKILL.md",
@@ -488,47 +484,20 @@ async fn api_standards_runs_one_cycle_and_files_a_must_finding() {
             assert_eq!(request["issueRoom"], 5);
             assert_eq!(request["sourceDir"], ".devboard/crates/devboard/src");
             assert!(request["knownTitles"].is_array());
-            let sources = request["sources"].as_array().expect("sources");
-            assert!(!sources.is_empty());
-            for entry in sources {
-                let path = entry["path"].as_str().expect("a source path");
-                assert!(path.ends_with(".rs"), "{path} is not a Rust source");
-                assert!(!path.contains("_test.rs"), "{path} is a test file");
-                assert!(!path.contains("/tests/"), "{path} is a test file");
-            }
-            let routes = request["routes"].as_array().expect("routes");
-            let route = |path: &str, method: &str| {
-                routes.iter().any(|entry| {
-                    entry["path"] == path
-                        && entry["methods"]
-                            .as_array()
-                            .is_some_and(|methods| methods.iter().any(|item| item == method))
-                })
-            };
-            assert!(route("/feedback", "POST"));
-            assert!(route("/ready", "GET"));
-            assert!(route("/ready", "HEAD"));
-            assert!(route("/goal-proposals", "POST"));
-            assert!(routes.iter().any(|entry| entry["path"] == "/ws"
-                && entry["kind"] == "upgrade"
-                && entry["methods"] == json!(["GET"])));
-            assert!(routes
-                .iter()
-                .any(|entry| entry["kind"] == "static-fallback"));
             let finding = json!({
-                "title": "POST /feedback ignores the method",
+                "title": "POST /api/ready ignores the method",
                 "ruleId": "148",
                 "level": "MUST",
                 "chapter": "HTTP requests",
                 "directive": "Use HTTP methods according to RFC 9110.",
-                "endpoints": [{"method": "POST", "path": "/feedback"}],
+                "endpoints": [{"method": "POST", "path": "/api/ready"}],
                 "evidence": [{
-                    "path": ".devboard/crates/devboard/src/app.rs",
-                    "lines": "2",
-                    "quote": "if *method != Method::POST {",
+                    "path": ".devboard/crates/devboard/src/http.rs",
+                    "lines": "5-9",
+                    "quote": "if *method != Method::GET && *method != Method::HEAD {",
                 }],
-                "proposedChange": "Answer a non-POST request with 405.",
-                "acceptanceCriteria": ["GET /feedback answers 405."],
+                "proposedChange": "Answer a non-GET request with 405.",
+                "acceptanceCriteria": ["POST /api/ready answers 405."],
                 "decision": "filed",
                 "issueNumber": 7,
                 "issueUrl": "https://forge.test/acme/fixture/issues/7",
@@ -538,14 +507,14 @@ async fn api_standards_runs_one_cycle_and_files_a_must_finding() {
                 format!("{}\n", json!({"version": 1, "findings": [finding]})),
             )
             .expect("findings");
-            write_tool_record(&directory, 7, "POST /feedback ignores the method");
+            write_tool_record(&directory, 7, "POST /api/ready ignores the method");
             forge
                 .issues
                 .lock()
                 .expect("the fake")
                 .push(api::ForgeIssue {
                     number: 7,
-                    title: "POST /feedback ignores the method".to_string(),
+                    title: "POST /api/ready ignores the method".to_string(),
                     url: "https://forge.test/acme/fixture/issues/7".to_string(),
                     state: "open".to_string(),
                     created_at: "2026-01-01T00:00:00.000Z".to_string(),
@@ -687,10 +656,10 @@ async fn api_standards_settings_command_resumes_filing() {
                     "level": "MUST",
                     "chapter": "HTTP requests",
                     "directive": "Use HTTP methods according to RFC 9110.",
-                    "endpoints": [{"method": "GET", "path": "/ready"}],
-                    "evidence": [{"path": ".devboard/crates/devboard/src/http.rs", "lines": "27", "quote": "if *method != Method::GET && *method != Method::HEAD {"}],
+                    "endpoints": [{"method": "GET", "path": "/api/ready"}],
+                    "evidence": [{"path": ".devboard/crates/devboard/src/http.rs", "lines": "6", "quote": "if *method != Method::GET && *method != Method::HEAD {"}],
                     "proposedChange": "Keep GET.",
-                    "acceptanceCriteria": ["GET /ready answers 200."],
+                    "acceptanceCriteria": ["GET /api/ready answers 200."],
                     "decision": "filed",
                     "issueNumber": 9,
                 })]
@@ -790,15 +759,7 @@ async fn api_standards_preflight_refusals_name_the_missing_fact() {
         state_dir: fixture.state_dir.clone(),
         ..api::PreflightOptions::default()
     };
-    std::fs::remove_dir_all(
-        fixture
-            .repo
-            .join(".devboard")
-            .join("crates")
-            .join("devboard")
-            .join("src"),
-    )
-    .expect("remove");
+    std::fs::remove_dir_all(fixture.repo.join(".devboard").join("crates")).expect("remove");
     let message = api::preflight_api_standards(&options)
         .await
         .expect_err("a refusal");
@@ -840,6 +801,48 @@ async fn api_standards_preflight_refusals_name_the_missing_fact() {
         .await
         .expect_err("a refusal");
     assert!(message.contains("not inside REPO_DIR"));
+}
+
+#[test]
+fn api_standards_inventory_reads_the_rust_http_surface() {
+    let fixture = Fixture::new("api-inventory");
+    fixture.api_inputs();
+    let input =
+        api::read_audit_input(&fixture.repo, &api::Config::default()).expect("an audit input");
+    assert_eq!(input.source_dir, api::DEFAULT_API_SOURCE_DIRECTORY);
+    let routes: Vec<(&str, Vec<&str>, &str)> = input
+        .routes
+        .iter()
+        .map(|route| {
+            (
+                route.path.as_str(),
+                route.methods.iter().map(String::as_str).collect(),
+                route.kind.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            ("*", vec!["GET", "HEAD"], "static-fallback"),
+            ("/api/ready", vec!["GET", "HEAD"], "endpoint"),
+            ("/api/ready/{name}", vec!["GET", "HEAD"], "endpoint"),
+            ("/feedback", vec!["POST"], "endpoint"),
+            ("/ws", vec!["GET"], "upgrade"),
+        ]
+    );
+    let sources: Vec<&str> = input
+        .sources
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    assert_eq!(
+        sources,
+        vec![
+            ".devboard/crates/devboard/src/app.rs",
+            ".devboard/crates/devboard/src/http.rs",
+        ]
+    );
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1381,6 +1384,38 @@ fn git_init(fixture: &Fixture) {
 }
 
 #[test]
+fn a_tracked_entry_point_is_not_excluded_by_an_ignore_rule() {
+    let fixture = Fixture::new("tracked-entry-point");
+    git_init(&fixture);
+    // A host pattern that keeps an installed copy untracked also matches the
+    // tracked harness tree. The entry-point pool is built from tracked files,
+    // so the file is repository content and must stay eligible.
+    fixture.write(".gitignore", "/.devboard\n");
+    fixture.write(
+        ".devboard/src/module.rs",
+        "pub fn run() {\n    let value = 1;\n    let _ = value;\n}\n",
+    );
+    git_command(
+        &fixture,
+        &["add", "-f", ".gitignore", ".devboard/src/module.rs"],
+    );
+    git_command(&fixture, &["commit", "-q", "-m", "tracked entry point"]);
+
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&fixture.repo)
+        .args(["check-ignore", "-q", "--", ".devboard/src/module.rs"])
+        .status()
+        .expect("git runs");
+    assert!(!status.success(), "git itself never ignores a tracked path");
+
+    let entry = dead::pick_entry_point(&fixture.repo, "dead-code", Some("seed"))
+        .expect("the tracked entry point is eligible");
+    assert_eq!(entry.path, ".devboard/src/module.rs");
+    assert!(entry.line >= 1);
+}
+
+#[test]
 fn worker_exits_two_without_an_origin_and_zero_when_already_running() {
     let fixture = Fixture::new("cli");
     git_init(&fixture);
@@ -1459,4 +1494,40 @@ fn origin(forge: &str, host: &str, project: &str) -> devboard::forge::ForgeRemot
 
 fn versioned(lock: PathBuf) -> PathBuf {
     devboard::workers::watchdog::versioned_lock_path(&lock, Some(VERSION))
+}
+
+#[test]
+fn the_real_harness_surface_carries_every_route_and_only_rust_sources() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("the repository root")
+        .to_path_buf();
+    let config = api::api_standards_config();
+    assert_eq!(config.source_dir, ".devboard/crates/devboard/src");
+    let input = api::read_audit_input(&root, &config).expect("the real surface is readable");
+    assert!(!input.sources.is_empty());
+    for source in &input.sources {
+        assert!(source.path.ends_with(".rs"), "{}", source.path);
+        assert!(!source.path.contains("_test.rs"), "{}", source.path);
+        assert!(!source.path.contains("/tests/"), "{}", source.path);
+    }
+    let route = |path: &str, method: &str| {
+        input
+            .routes
+            .iter()
+            .any(|entry| entry.path == path && entry.methods.iter().any(|item| item == method))
+    };
+    assert!(route("/feedback", "POST"));
+    assert!(route("/ready", "GET"));
+    assert!(route("/ready", "HEAD"));
+    assert!(route("/goal-proposals", "POST"));
+    assert!(input.routes.iter().any(|entry| entry.path == "/ws"
+        && entry.kind == "upgrade"
+        && entry.methods == vec!["GET".to_string()]));
+    assert!(input
+        .routes
+        .iter()
+        .any(|entry| entry.kind == "static-fallback"));
 }

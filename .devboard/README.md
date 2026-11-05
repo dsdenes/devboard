@@ -381,8 +381,16 @@ scrollback, and expose their full buffer to assistive technology.
 Server errors and notices appear in the notification region (`data-testid="notifications"`) with
 severity, the subsystem or the exact agent label that raised them, text, and dismissal. Each card
 closes itself after five seconds; every entry stays in the history opened from the status bar.
-Every error and warning card also carries `File issue`: it files that notification's text and card
-context as a UI issue through `/feedback` at once, then replaces itself with the issue URL.
+An error card files one UI issue by itself through `/feedback`, with no operator click: the issue
+carries the notification's text, severity, source, raise time, the card context, and the fixed
+instruction `Investigate this error and fix it if it is needed.`, and the card links to it as
+`Open issue`. The filing is keyed by the notification's severity, source, and text, so a repeat in
+the same page session, a second window, and a later raise of the identical error inside the
+server's 24-hour key retention all link to the issue already filed and file nothing. Warning
+notifications keep the `File issue` button and file one issue per click. When automatic filing
+fails, or reporting is disabled because `DEVBOARD_GITEA_URL` is absent, the card reads
+`Issue not filed:` with the reason and reveals the `File issue` button again, so a retry files
+the issue and replaces the message with the issue link.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's
@@ -2355,10 +2363,13 @@ currently `POST /feedback`, `/ready` for `GET` and `HEAD` with a `405` and `Allo
 HEAD` for every other method, `POST /goal-proposals`, the `/ws` upgrade
 with its refusal and method handling, and the static-file fallback, together with any route added
 later. The audit input carries every Rust module under
-`<REPO_DIR>/.devboard/crates/devboard/src` that defines routing, request parsing, or responses
-(test files and fixtures excluded), so a route added to that directory appears in the next cycle
-with no engine change. The WebSocket messages carried
-after an upgrade, the MCP tool contract, and the static asset contents are not audited.
+`<REPO_DIR>/.devboard/crates/devboard/src` that names axum's request types or dispatches on the
+request path — `http.rs` and `app.rs` today — with tests, fixtures, `target`, and `node_modules`
+excluded. The route inventory is read from the dispatcher's `match uri.path()` arms and its
+`uri.path().strip_prefix(...)` routes, and an arm that forwards to a handler takes its methods
+from that handler, so a route added to the dispatcher appears in the next cycle with no engine
+change. The WebSocket messages carried after an upgrade, the MCP tool contract, and the static
+asset contents are not audited.
 
 A finding is filed only when the HTTP surface violates a MUST- or SHOULD-level rule. MAY-level
 rules, stylistic preferences, and deviations outside the HTTP surface are recorded in activity
@@ -4361,11 +4372,21 @@ bun install --frozen-lockfile
 bun run build
 bun run check
 bun test
+# The operator suite: one serial browser session against the built dashboard,
+# a throwaway fixture repository, and the live Gitea.
+set -a; . ../.env; set +a
+bunx playwright test --config e2e/playwright.config.ts
 ```
 
-The historical Playwright/browser `verify-*` suite is retired. It is not restored, no Playwright
-test or `verify-*.ts` script is added, and no browser-E2E gate blocks a change. Its coverage moved
-to the surfaces below, which run from the current tree with no Node or Bun runtime for the
+The browser suite under `e2e/` is an operator tool and a one-time proof, not a CI gate: no
+workflow and no release suite runs it. It starts the built `devboard serve` binary serving the
+built client bundle against a fixture repository under `.test-tmp/`, points at the live Gitea,
+and answers every agent prompt with `devboard acp-stub`. It proves, through the real controls,
+that each background family and the Issues worker start and stop without a surviving process,
+that a report filed through the overlay becomes a linked issue, and that five start/stop cycles
+leave the dashboard ready and the board unchanged. Its report and traces stay under `.tmp/e2e/`.
+
+The rest of the surfaces below run from the current tree with no Node or Bun runtime for the
 harness itself:
 
 - **Rust workspace tests** cover the dashboard, every worker family, the MCP server, install and
@@ -4384,5 +4405,6 @@ harness itself:
 - **The container gate** builds the image from `.devboard` and proves `GET /ready` with the
   dashboard token.
 
-Every fixture stays under `.devboard/.tmp` or `.devboard/.test-tmp`; no test uses the network or a
-real model unless the gate is the release transport check, which serves its own local stub.
+Every fixture stays under `.devboard/.tmp` or `.devboard/.test-tmp`; no Rust or client test uses
+the network or a real model, and the browser suite is the one surface that talks to the live
+Gitea, by design.

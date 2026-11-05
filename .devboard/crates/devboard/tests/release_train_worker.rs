@@ -4,6 +4,7 @@
 //! Every fixture is a real Git repository with a local bare `origin`; every
 //! release run and verification is injected, so no test contacts a network.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -11,6 +12,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use devboard::forge::{gitea_git_credential, GiteaGitCredential};
 use devboard::publish::{
     PublishArgs, PublishReport, SourceRefreshReport, SourceRefreshRequest, MANIFEST_CHECKSUM_ASSET,
     RELEASE_INSTALLERS, RELEASE_TARGETS,
@@ -339,6 +341,97 @@ async fn an_unreadable_tag_list_is_a_reported_failure() {
         }
         other => panic!("expected an error, got {other:?}"),
     }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The worker                                                                */
+/* ------------------------------------------------------------------------ */
+
+fn gitea_environment() -> HashMap<String, String> {
+    HashMap::from([
+        (
+            "DEVBOARD_GITEA_URL".to_string(),
+            "http://localhost:3001".to_string(),
+        ),
+        ("GITEA_TOKEN".to_string(), "secret-token".to_string()),
+    ])
+}
+
+#[test]
+fn an_ssh_origin_resolves_the_configured_gitea_http_credential() {
+    let fixture = fixture("gate-credential", true);
+    git(
+        &fixture.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://ds@localhost:2223/dsdenes/devboard.git",
+        ],
+    );
+    let credential = gitea_git_credential(&fixture.repo, &gitea_environment())
+        .expect("an ssh origin resolves the configured credential");
+    assert_eq!(credential.url, "http://localhost:3001/dsdenes/devboard.git");
+    assert_eq!(
+        credential.remote_url,
+        "ssh://ds@localhost:2223/dsdenes/devboard.git"
+    );
+    assert_eq!(credential.base_url, "http://localhost:3001");
+    assert_eq!(credential.header, "Authorization: token secret-token");
+}
+
+#[test]
+fn an_http_origin_or_a_missing_token_resolves_no_credential() {
+    let fixture = fixture("gate-no-credential", true);
+    let without_token = HashMap::from([(
+        "DEVBOARD_GITEA_URL".to_string(),
+        "http://localhost:3001".to_string(),
+    )]);
+    let ssh = "ssh://ds@localhost:2223/dsdenes/devboard.git";
+    git(&fixture.repo, &["remote", "set-url", "origin", ssh]);
+    assert!(gitea_git_credential(&fixture.repo, &without_token).is_none());
+    git(
+        &fixture.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "http://localhost:3001/dsdenes/devboard.git",
+        ],
+    );
+    assert!(gitea_git_credential(&fixture.repo, &gitea_environment()).is_none());
+}
+
+#[tokio::test]
+async fn the_gate_fetches_through_the_gitea_credential() {
+    let fixture = fixture("gate-credential-fetch", true);
+    git(
+        &fixture.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://ds@localhost:2223/dsdenes/devboard.git",
+        ],
+    );
+    let options = ReleaseTrainGateOptions {
+        credential: Some(GiteaGitCredential {
+            url: fixture
+                .root
+                .join("origin.git")
+                .to_string_lossy()
+                .into_owned(),
+            remote_url: "ssh://ds@localhost:2223/dsdenes/devboard.git".to_string(),
+            base_url: "http://localhost:3001".to_string(),
+            header: "Authorization: token secret-token".to_string(),
+        }),
+        ..ReleaseTrainGateOptions::default()
+    };
+    // The plain SSH origin cannot be fetched here; the credential redirects
+    // the fetch to the local bare repository, so a successful gate proves the
+    // override reached `git fetch`.
+    let gate = check_release_train(&fixture.repo, options);
+    assert!(matches!(gate, ReleaseTrainGate::Nothing { .. }), "{gate:?}");
 }
 
 /* ------------------------------------------------------------------------ */

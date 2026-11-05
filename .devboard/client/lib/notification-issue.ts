@@ -79,6 +79,30 @@ export function notificationFingerprint(item: AppNotification): string {
   return JSON.stringify([item.severity, item.source, item.text]);
 }
 
+/**
+ * The `Idempotency-Key` an error notification files under. The fingerprint is
+ * identical in every page session, so two windows that raise the same error
+ * post the same key and the server answers the second with the issue filed by
+ * the first instead of filing a duplicate. Only errors carry it: a warning is
+ * filed by an explicit click and each click files its own issue.
+ */
+export function notificationIdempotencyKey(item: AppNotification): string {
+  return `notification-error:${fnv1a64(notificationFingerprint(item))}`;
+}
+
+/**
+ * FNV-1a over the fingerprint's UTF-8 bytes: a fixed 16-hex-digit key that is
+ * pure ASCII, well inside the header's 255-character bound.
+ */
+function fnv1a64(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
 /** The request one notification posts, with the instruction an error carries. */
 export function notificationIssueRequest(
   item: AppNotification,
@@ -200,9 +224,13 @@ export class NotificationFiler {
     fetchImpl: FetchLike,
   ): Promise<NotificationFiling> {
     const payload = notificationIssueRequest(item, context());
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (item.severity === "error") {
+      headers["idempotency-key"] = notificationIdempotencyKey(item);
+    }
     const response = await fetchImpl(FEEDBACK_ENDPOINT, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(payload),
     });
     const body = (await response.json().catch(() => null)) as {

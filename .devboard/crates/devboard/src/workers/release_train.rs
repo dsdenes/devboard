@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::forge::{gitea_git_credential, GiteaGitCredential};
 use crate::publish::{MANIFEST_CHECKSUM_ASSET, RELEASE_INSTALLERS, RELEASE_TARGETS};
 use crate::release::MANIFEST_ASSET;
 
@@ -1471,6 +1472,8 @@ pub struct ReleaseTrainGateOptions {
     pub remote: String,
     pub branch: String,
     pub fetch: bool,
+    /// The Gitea HTTP credential a fetch of an SSH origin needs.
+    pub credential: Option<GiteaGitCredential>,
     pub run: Option<GateGit>,
 }
 
@@ -1480,18 +1483,47 @@ impl Default for ReleaseTrainGateOptions {
             remote: "origin".to_string(),
             branch: "main".to_string(),
             fetch: true,
+            credential: None,
             run: None,
         }
     }
 }
 
+/// The environment overrides one git invocation needs to read the canonical
+/// remote: the configured origin URL is rewritten to the Gitea HTTP address,
+/// and the token rides an `Authorization` header scoped to that address.
+pub fn gate_git_environment(credential: Option<&GiteaGitCredential>) -> Vec<(String, String)> {
+    let Some(credential) = credential else {
+        return Vec::new();
+    };
+    vec![
+        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
+        ("GIT_CONFIG_COUNT".to_string(), "2".to_string()),
+        (
+            "GIT_CONFIG_KEY_0".to_string(),
+            format!("url.{}.insteadOf", credential.url),
+        ),
+        (
+            "GIT_CONFIG_VALUE_0".to_string(),
+            credential.remote_url.clone(),
+        ),
+        (
+            "GIT_CONFIG_KEY_1".to_string(),
+            format!("http.{}.extraHeader", credential.base_url),
+        ),
+        ("GIT_CONFIG_VALUE_1".to_string(), credential.header.clone()),
+    ]
+}
+
 /// The default runner: one `git -C <repoDir>` invocation.
-pub fn release_train_git(repo_dir: &Path) -> GateGit {
+pub fn release_train_git(repo_dir: &Path, credential: Option<&GiteaGitCredential>) -> GateGit {
     let repo_dir = repo_dir.to_path_buf();
+    let environment = gate_git_environment(credential);
     Arc::new(move |args: &[&str]| {
         let output = std::process::Command::new("git")
             .arg("-C")
             .arg(&repo_dir)
+            .envs(environment.iter().map(|(key, value)| (key, value)))
             .args(args)
             .output();
         match output {
@@ -1564,7 +1596,9 @@ fn merged_tags(run: &GateGit, target: &str) -> Result<Vec<ReleaseTrainTag>, Rele
 /// One deterministic answer for the tracked branch: release, nothing, or
 /// failure.
 pub fn check_release_train(repo_dir: &Path, options: ReleaseTrainGateOptions) -> ReleaseTrainGate {
-    let run = options.run.unwrap_or_else(|| release_train_git(repo_dir));
+    let run = options
+        .run
+        .unwrap_or_else(|| release_train_git(repo_dir, options.credential.as_ref()));
     let target_ref = format!("refs/remotes/{}/{}", options.remote, options.branch);
     if options.fetch {
         let fetch_ref = format!("+refs/heads/{}:{}", options.branch, target_ref);
@@ -2053,10 +2087,14 @@ pub async fn verify_shipped(options: ReleaseVerificationOptions) -> ReleaseVerif
         }
     };
     let refresh: RefreshFn = options.refresh.clone().unwrap_or_else(|| {
-        Arc::new(|repo_dir: &Path| {
+        let environment = options.environment.clone();
+        Arc::new(move |repo_dir: &Path| {
+            let credential = gitea_git_credential(repo_dir, &environment);
+            let overrides = gate_git_environment(credential.as_ref());
             let output = std::process::Command::new("git")
                 .arg("-C")
                 .arg(repo_dir)
+                .envs(overrides.iter().map(|(key, value)| (key, value)))
                 .args(["fetch", "--quiet", "--tags", "origin"])
                 .output();
             match output {
@@ -2949,10 +2987,14 @@ impl ReleaseTrainWorker {
             }
         });
         let gate = options.gate.unwrap_or_else(|| {
-            Arc::new(|repo_dir: &Path| {
+            let environment = environment.clone();
+            Arc::new(move |repo_dir: &Path| {
                 Ok(check_release_train(
                     repo_dir,
-                    ReleaseTrainGateOptions::default(),
+                    ReleaseTrainGateOptions {
+                        credential: gitea_git_credential(repo_dir, &environment),
+                        ..ReleaseTrainGateOptions::default()
+                    },
                 ))
             })
         });

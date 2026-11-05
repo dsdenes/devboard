@@ -38,6 +38,51 @@ const START_PROOF_MS: i64 = 5_000;
 /// Wall-clock bound for a family's Start preflight. A preflight that never
 /// settles must answer with a refusal instead of leaving the family starting.
 const AGENT_PREFLIGHT_TIMEOUT_MS: u64 = 20_000;
+/// How much later than the preflight's own budget the outer guard fires, so a
+/// slow step's named error wins over the generic refusal.
+const PREFLIGHT_BUDGET_GRACE_MS: u64 = 1_000;
+
+/// One Start preflight's wall clock, shared by every forge step it runs.
+///
+/// The steps used to carry their own twenty second timeouts while being
+/// chained, so three slow forge reads could outlive the whole preflight and
+/// surface only the generic refusal. Each step now gets the remaining budget,
+/// so the preflight settles inside its bound and names the step that stalled.
+#[derive(Debug, Clone, Copy)]
+pub struct PreflightBudget {
+    deadline: tokio::time::Instant,
+}
+
+impl PreflightBudget {
+    pub fn new(timeout_ms: u64) -> Self {
+        Self {
+            deadline: tokio::time::Instant::now() + Duration::from_millis(timeout_ms.max(1)),
+        }
+    }
+
+    /// Milliseconds left for the next step; never zero.
+    pub fn remaining_ms(&self) -> u64 {
+        let left = self
+            .deadline
+            .saturating_duration_since(tokio::time::Instant::now());
+        u64::try_from(left.as_millis()).unwrap_or(u64::MAX).max(1)
+    }
+
+    /// Runs one step under the remaining budget, naming the step on expiry.
+    pub async fn run<T>(
+        &self,
+        step: &str,
+        work: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        let remaining = self.remaining_ms();
+        match crate::deadline::within_deadline(work, remaining).await {
+            Some(result) => result,
+            None => Err(format!(
+                "{step} did not finish within {remaining} ms; press Start to retry."
+            )),
+        }
+    }
+}
 /// The command's grace before the table's proof signals a worker.
 const STOP_PROOF_MS: u64 = 3_000;
 /// How long a proven worker gets after SIGTERM before SIGKILL.
@@ -3717,6 +3762,9 @@ struct RepoMutable {
     preview_starting: bool,
     starting: bool,
     starting_since: Option<i64>,
+    /// The pid the last Start spawned, while that worker is the one being
+    /// waited on. A live process proves the start; the lock proves attachment.
+    started_pid: Option<u32>,
     stop_requested: bool,
     start_error: Option<String>,
     notice: Option<String>,
@@ -3789,6 +3837,7 @@ impl RepoFamily {
                 preview_starting: false,
                 starting: false,
                 starting_since: None,
+                started_pid: None,
                 stop_requested: false,
                 start_error: None,
                 notice: None,
@@ -4015,7 +4064,7 @@ impl RepoFamily {
             if !owners.is_empty() {
                 mutable.start_error = None;
             }
-            if mutable.starting {
+            if mutable.starting && !mutable.started_pid.is_some_and(pid_alive) {
                 if let Some(since) = mutable.starting_since {
                     if now - since > START_PROOF_MS {
                         mutable.starting = false;
@@ -4529,6 +4578,7 @@ impl RepoFamily {
             let mut mutable = self.mutable.lock().expect("family state");
             mutable.starting = true;
             mutable.starting_since = None;
+            mutable.started_pid = None;
             mutable.start_error = None;
             mutable.notice = None;
         }
@@ -4544,17 +4594,21 @@ impl RepoFamily {
             .ok()
             .and_then(|slot| slot.clone());
         let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
+        let budget = PreflightBudget::new(timeout_ms);
         let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
             match override_preflight {
                 Some(callback) => callback(request),
-                None => Box::pin(self.real_preflight()),
+                None => Box::pin(self.real_preflight(budget)),
             };
-        let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
-            Some(result) => result,
-            None => Err(format!(
+        let result =
+            match crate::deadline::within_deadline(pending, timeout_ms + PREFLIGHT_BUDGET_GRACE_MS)
+                .await
+            {
+                Some(result) => result,
+                None => Err(format!(
                 "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
             )),
-        };
+            };
         match result {
             Ok(_) => self.spawn_worker().await,
             Err(message) => {
@@ -4613,11 +4667,13 @@ impl RepoFamily {
         let spawn = self.spawn.lock().map(|slot| slot.clone()).ok();
         let pid = spawn.and_then(|spawn| spawn(&argv, environment));
         match pid {
-            Some(_) => {
+            Some(spawn_pid) => {
                 // The proof clock starts when the worker exists, never at the
                 // request: a forge preflight that reads the repository and
-                // ensures its labels outlasts the five second window.
+                // ensures its labels outlasts the five second window. The live
+                // pid is the proof; the lock only proves attachment.
                 let mut mutable = self.mutable.lock().expect("family state");
+                mutable.started_pid = Some(spawn_pid);
                 mutable.starting_since = Some((self.now)());
                 AgentResult::ok()
             }
@@ -4785,14 +4841,14 @@ impl RepoFamily {
         AgentResult::ok()
     }
 
-    async fn real_preflight(&self) -> Result<String, String> {
+    async fn real_preflight(&self, budget: PreflightBudget) -> Result<String, String> {
         match self.flavor {
-            RepoFlavor::Scout => self.preflight_scout().await,
-            RepoFlavor::Design => self.preflight_design().await,
-            RepoFlavor::DeadCode => self.preflight_dead_code().await,
-            RepoFlavor::ApiStandards => self.preflight_api_standards().await,
-            RepoFlavor::SingleResponsibility => self.preflight_single_responsibility().await,
-            RepoFlavor::ConsistentNaming => self.preflight_consistent_naming().await,
+            RepoFlavor::Scout => self.preflight_scout(budget).await,
+            RepoFlavor::Design => self.preflight_design(budget).await,
+            RepoFlavor::DeadCode => self.preflight_dead_code(budget).await,
+            RepoFlavor::ApiStandards => self.preflight_api_standards(budget).await,
+            RepoFlavor::SingleResponsibility => self.preflight_single_responsibility(budget).await,
+            RepoFlavor::ConsistentNaming => self.preflight_consistent_naming(budget).await,
         }
     }
 
@@ -4839,14 +4895,29 @@ impl RepoFamily {
         Ok(())
     }
 
-    async fn forge_write_access(&self, remote: &ForgeRemote) -> Result<(), String> {
+    async fn forge_write_access(
+        &self,
+        remote: &ForgeRemote,
+        budget: PreflightBudget,
+    ) -> Result<(), String> {
         if remote.forge == "gitea" {
             let base_url = gitea_base_url(remote, &self.environment).ok_or_else(|| {
                 "missing prerequisite: the Gitea address is not configured (set DEVBOARD_GITEA_URL or use an HTTP(S) origin)".to_string()
             })?;
             let token = configured_gitea_token(&self.environment)
                 .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
-            let document = gitea_repository(&base_url, &remote.project, &token).await?;
+            let document = budget
+                .run(
+                    "reading the Gitea repository",
+                    gitea_repository(&base_url, &remote.project, &token, budget.remaining_ms()),
+                )
+                .await
+                .map_err(|error| {
+                    format!(
+                        "missing prerequisite: the Gitea repository {} could not be read: {error}",
+                        remote.project
+                    )
+                })?;
             let permissions = document.get("permissions").cloned().unwrap_or(Value::Null);
             let writable = permissions.get("push").and_then(Value::as_bool) == Some(true)
                 || permissions.get("admin").and_then(Value::as_bool) == Some(true);
@@ -4867,7 +4938,7 @@ impl RepoFamily {
                 "--jq",
                 ".permissions.push",
             ],
-            Some(20_000),
+            Some(budget.remaining_ms()),
         )
         .await?;
         if permission.code != 0 || permission.stdout.trim() != "true" {
@@ -4888,6 +4959,7 @@ impl RepoFamily {
         label: &str,
         color: &str,
         description: &str,
+        budget: PreflightBudget,
     ) -> Result<(), String> {
         if remote.forge == "gitea" {
             let base_url = gitea_base_url(remote, &self.environment).ok_or_else(|| {
@@ -4895,11 +4967,16 @@ impl RepoFamily {
             })?;
             let token = configured_gitea_token(&self.environment)
                 .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
-            let labels = gitea_json(
-                &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
-                &token,
-            )
-            .await?;
+            let labels = budget
+                .run(
+                    &format!("reading the labels of {}", remote.project),
+                    gitea_json(
+                        &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
+                        &token,
+                        budget.remaining_ms(),
+                    ),
+                )
+                .await?;
             let has_label = labels
                 .as_array()
                 .map(|entries| {
@@ -4911,20 +4988,30 @@ impl RepoFamily {
             if has_label {
                 return Ok(());
             }
-            let created = gitea_post(
-                &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
-                &token,
-                &json!({"name": label, "color": color, "description": description}),
-            )
-            .await;
+            let created = budget
+                .run(
+                    &format!("creating the \"{label}\" label"),
+                    gitea_post(
+                        &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
+                        &token,
+                        &json!({"name": label, "color": color, "description": description}),
+                        budget.remaining_ms(),
+                    ),
+                )
+                .await;
             if created.is_ok() {
                 return Ok(());
             }
-            let after = gitea_json(
-                &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
-                &token,
-            )
-            .await?;
+            let after = budget
+                .run(
+                    &format!("re-reading the labels of {}", remote.project),
+                    gitea_json(
+                        &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
+                        &token,
+                        budget.remaining_ms(),
+                    ),
+                )
+                .await?;
             let present = after
                 .as_array()
                 .map(|entries| {
@@ -4950,7 +5037,7 @@ impl RepoFamily {
                 "--jq",
                 ".name",
             ],
-            Some(20_000),
+            Some(budget.remaining_ms()),
         )
         .await?;
         if label_read.code == 0 && label_read.stdout.trim() == label {
@@ -4970,7 +5057,7 @@ impl RepoFamily {
                 description,
                 "--force",
             ],
-            Some(20_000),
+            Some(budget.remaining_ms()),
         )
         .await?;
         if created.code != 0 {
@@ -4984,7 +5071,7 @@ impl RepoFamily {
         Ok(())
     }
 
-    async fn preflight_scout(&self) -> Result<String, String> {
+    async fn preflight_scout(&self, budget: PreflightBudget) -> Result<String, String> {
         let remote = self.origin()?;
         if !state_inside_repository(&self.repo_dir, &self.state_dir) {
             return Err(format!(
@@ -4994,11 +5081,11 @@ impl RepoFamily {
             ));
         }
         self.require_installed_command("scout-recommendations")?;
-        self.forge_write_access(&remote).await?;
+        self.forge_write_access(&remote, budget).await?;
         Ok(remote.project)
     }
 
-    async fn preflight_design(&self) -> Result<String, String> {
+    async fn preflight_design(&self, budget: PreflightBudget) -> Result<String, String> {
         let source_dir = self
             .environment
             .get("DESIGN_SOURCE_DIR")
@@ -5059,18 +5146,19 @@ impl RepoFamily {
         if remote.forge == "github" {
             self.require_path("gh")?;
         }
-        self.forge_write_access(&remote).await?;
+        self.forge_write_access(&remote, budget).await?;
         self.ensure_label(
             &remote,
             "design",
             "1f6feb",
             "Design system divergence from the documented interface",
+            budget,
         )
         .await?;
         Ok(remote.project)
     }
 
-    async fn preflight_dead_code(&self) -> Result<String, String> {
+    async fn preflight_dead_code(&self, budget: PreflightBudget) -> Result<String, String> {
         if let Some(problem) = root_problem(&self.repo_dir) {
             return Err(problem);
         }
@@ -5091,18 +5179,19 @@ impl RepoFamily {
             ));
         }
         self.require_installed_command("dead-code-removal")?;
-        self.forge_write_access(&remote).await?;
+        self.forge_write_access(&remote, budget).await?;
         self.ensure_label(
             &remote,
             "dead-code",
             "8250df",
             "Dead code proved removable by the Dead Code agent",
+            budget,
         )
         .await?;
         Ok(remote.project)
     }
 
-    async fn preflight_api_standards(&self) -> Result<String, String> {
+    async fn preflight_api_standards(&self, budget: PreflightBudget) -> Result<String, String> {
         let source_dir = crate::workers::api_standards::DEFAULT_API_SOURCE_DIRECTORY;
         let skill_dir = ".omp/skills/devboard-restful-api-implementation";
         let skill_document = format!("{skill_dir}/SKILL.md");
@@ -5143,18 +5232,22 @@ impl RepoFamily {
                 remote.host
             ));
         }
-        self.forge_write_access(&remote).await?;
+        self.forge_write_access(&remote, budget).await?;
         self.ensure_label(
             &remote,
             "api-standards",
             "0e8a16",
             "HTTP API deviation from the project REST standard",
+            budget,
         )
         .await?;
         Ok(remote.project)
     }
 
-    async fn preflight_single_responsibility(&self) -> Result<String, String> {
+    async fn preflight_single_responsibility(
+        &self,
+        budget: PreflightBudget,
+    ) -> Result<String, String> {
         if let Some(problem) = root_problem(&self.repo_dir) {
             return Err(problem);
         }
@@ -5206,18 +5299,19 @@ impl RepoFamily {
             ));
         }
         self.require_installed_command("single-responsibility")?;
-        self.forge_write_access(&remote).await?;
+        self.forge_write_access(&remote, budget).await?;
         self.ensure_label(
             &remote,
             "single-responsibility",
             "0e8a16",
             "Single Responsibility violation proved against the project SRP skill",
+            budget,
         )
         .await?;
         Ok(remote.project)
     }
 
-    async fn preflight_consistent_naming(&self) -> Result<String, String> {
+    async fn preflight_consistent_naming(&self, budget: PreflightBudget) -> Result<String, String> {
         if let Some(problem) = root_problem(&self.repo_dir) {
             return Err(problem);
         }
@@ -5270,12 +5364,13 @@ impl RepoFamily {
             ));
         }
         self.require_installed_command("consistent-naming")?;
-        self.forge_write_access(&remote).await?;
+        self.forge_write_access(&remote, budget).await?;
         self.ensure_label(
             &remote,
             "consistent-naming",
             "1d76db",
             "Consistent Naming vocabulary change proved against the project naming skill",
+            budget,
         )
         .await?;
         Ok(remote.project)
@@ -5472,9 +5567,9 @@ struct GhOutcome {
     stderr: String,
 }
 
-async fn gitea_json(url: &str, token: &str) -> Result<Value, String> {
+async fn gitea_json(url: &str, token: &str, timeout_ms: u64) -> Result<Value, String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_millis(timeout_ms.max(1)))
         .build()
         .map_err(|error| error.to_string())?;
     let response = client
@@ -5491,13 +5586,28 @@ async fn gitea_json(url: &str, token: &str) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
-async fn gitea_repository(base_url: &str, project: &str, token: &str) -> Result<Value, String> {
-    gitea_json(&format!("{base_url}/api/v1/repos/{project}"), token).await
+async fn gitea_repository(
+    base_url: &str,
+    project: &str,
+    token: &str,
+    timeout_ms: u64,
+) -> Result<Value, String> {
+    gitea_json(
+        &format!("{base_url}/api/v1/repos/{project}"),
+        token,
+        timeout_ms,
+    )
+    .await
 }
 
-async fn gitea_post(url: &str, token: &str, body: &Value) -> Result<Value, String> {
+async fn gitea_post(
+    url: &str,
+    token: &str,
+    body: &Value,
+    timeout_ms: u64,
+) -> Result<Value, String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_millis(timeout_ms.max(1)))
         .build()
         .map_err(|error| error.to_string())?;
     let response = client
@@ -6840,7 +6950,7 @@ impl WatchdogFamily {
             })?;
             let token = configured_gitea_token(&self.environment)
                 .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
-            let document = gitea_repository(&base_url, &remote.project, &token)
+            let document = gitea_repository(&base_url, &remote.project, &token, 20_000)
                 .await
                 .map_err(|error| {
                     format!(
@@ -7756,7 +7866,7 @@ impl McpFamily {
         })?;
         let token = configured_gitea_token(&self.environment)
             .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
-        let document = gitea_repository(&base_url, &remote.project, &token)
+        let document = gitea_repository(&base_url, &remote.project, &token, 20_000)
             .await
             .map_err(|error| {
                 format!(

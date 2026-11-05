@@ -2910,6 +2910,11 @@ fn regular_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The paths among `paths` that git itself excludes.
+///
+/// `git check-ignore` reports only untracked matches, so a tracked file that
+/// happens to match a broad rule stays admitted; asking with `--no-index`
+/// would exclude repository content a host keeps tracked.
 fn git_ignored_among(root: &Path, paths: &[String]) -> Option<HashSet<String>> {
     use std::io::Write;
     if paths.is_empty() {
@@ -2918,7 +2923,7 @@ fn git_ignored_among(root: &Path, paths: &[String]) -> Option<HashSet<String>> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["check-ignore", "-z", "--no-index", "--stdin"])
+        .args(["check-ignore", "-z", "--stdin"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -3266,6 +3271,7 @@ fn pick_entry_point(context: &McpContext, args: &Map<String, Value>) -> Result<V
     Ok(json!({"path": path, "line": line, "surface": surface, "seed": seed}))
 }
 
+/// Whether git itself excludes this path; a tracked path never is.
 fn ignored_path(root: &Path, relative: &str) -> bool {
     if !git_work_tree(root) {
         return false;
@@ -3273,7 +3279,7 @@ fn ignored_path(root: &Path, relative: &str) -> bool {
     match Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["check-ignore", "-q", "--no-index", "--", relative])
+        .args(["check-ignore", "-q", "--", relative])
         .status()
     {
         Ok(status) => status.success(),
