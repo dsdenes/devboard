@@ -49,8 +49,14 @@ fn a_recorded_dead_child_is_reaped_and_the_pass_is_journaled() {
     devboard::workers::watchdog::reap_on_startup(&state, &repo);
 
     let lines = reaped_lines(&state);
-    assert_eq!(lines.len(), 1, "one pass record: {lines:?}");
-    assert_eq!(lines[0]["pass"], "startup");
+    // The pass also covers every live dashboard's state directory, so this
+    // journal may carry a decision about a child recorded elsewhere; exactly
+    // one record is this start's own pass.
+    let passes = lines
+        .iter()
+        .filter(|line| line["pass"] == "startup")
+        .count();
+    assert_eq!(passes, 1, "one pass record: {lines:?}");
     assert!(!supervision.join("4294967000.json").exists());
     let _ = std::fs::remove_dir_all(&directory);
 }
@@ -86,8 +92,13 @@ async fn a_live_recorded_child_with_a_live_owner_is_never_signalled() {
         "a live recorded child with a live owner is protected"
     );
     let lines = reaped_lines(&state);
-    assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["pass"], "startup");
+    // As above, a decision about a child recorded in another live state
+    // directory can share this journal; the pass record is this start's own.
+    let passes = lines
+        .iter()
+        .filter(|line| line["pass"] == "startup")
+        .count();
+    assert_eq!(passes, 1, "one pass record: {lines:?}");
     #[cfg(unix)]
     unsafe {
         libc::kill(pid as i32, libc::SIGKILL);
