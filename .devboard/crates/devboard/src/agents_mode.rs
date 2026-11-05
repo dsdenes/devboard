@@ -6189,7 +6189,7 @@ struct WatchdogFamily {
     forge: ForgeProjection,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     mutable: Arc<Mutex<WatchdogMutable>>,
-    starting_lock: tokio::sync::Mutex<()>,
+    start_lock: tokio::sync::Mutex<()>,
 }
 
 impl WatchdogFamily {
@@ -6231,7 +6231,7 @@ impl WatchdogFamily {
                 takeover: false,
                 legacy_control_keys: HashSet::new(),
             })),
-            starting_lock: tokio::sync::Mutex::new(()),
+            start_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -6711,7 +6711,7 @@ impl WatchdogFamily {
     }
 
     async fn start(&self) -> AgentResult {
-        let _guard = self.starting_lock.lock().await;
+        let _guard = self.start_lock.lock().await;
         {
             let mutable = self.mutable.lock().expect("watchdog state");
             if mutable.start_pending {
@@ -7343,7 +7343,7 @@ struct McpFamily {
     forge: ForgeProjection,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     mutable: Arc<Mutex<McpMutable>>,
-    starting_lock: tokio::sync::Mutex<()>,
+    start_lock: tokio::sync::Mutex<()>,
 }
 
 impl McpFamily {
@@ -7399,7 +7399,7 @@ impl McpFamily {
                 stopping: HashSet::new(),
                 takeover: false,
             })),
-            starting_lock: tokio::sync::Mutex::new(()),
+            start_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -7685,7 +7685,7 @@ impl McpFamily {
     }
 
     async fn start(&self) -> AgentResult {
-        let _guard = self.starting_lock.lock().await;
+        let _guard = self.start_lock.lock().await;
         {
             let mutable = self.mutable.lock().expect("mcp state");
             if mutable.starting {
@@ -8119,7 +8119,7 @@ struct ReleaseFamily {
     spawn: SharedSpawn,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     mutable: Arc<Mutex<ReleaseMutable>>,
-    starting_lock: tokio::sync::Mutex<()>,
+    start_lock: tokio::sync::Mutex<()>,
 }
 
 impl ReleaseFamily {
@@ -8148,7 +8148,7 @@ impl ReleaseFamily {
                 start_error: None,
                 takeover: false,
             })),
-            starting_lock: tokio::sync::Mutex::new(()),
+            start_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -8410,7 +8410,7 @@ impl ReleaseFamily {
     }
 
     async fn start(&self) -> AgentResult {
-        let _guard = self.starting_lock.lock().await;
+        let _guard = self.start_lock.lock().await;
         {
             let mutable = self.mutable.lock().expect("release state");
             if mutable.starting {
