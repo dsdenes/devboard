@@ -21,7 +21,7 @@
   const detail = $derived(issues.run?.runId === runId ? issues.run : null);
   const lines = $derived(agent !== null ? issues.activityFor(runId) : (detail?.activityLines ?? []));
   const unavailable = $derived(agent === null && detail === null && issues.runError !== null);
-  const workerVersion = $derived(detail?.harnessVersion ?? issues.versionForRun(runId));
+  const harnessVersion = $derived(detail?.harnessVersion ?? issues.versionForRun(runId));
   const startedAt = $derived(agent?.startedAt ?? detail?.startedAt ?? null);
   const barState = $derived(
     agent !== null
@@ -62,7 +62,7 @@
         <h1 class="issues-overview__title" title={tab.title}>{tab.title}</h1>
         <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
         <p class="muted mono" data-testid="issues-agent-focus-version">
-          worker {versionLabel(workerVersion)}
+          worker {versionLabel(harnessVersion)}
         </p>
       </div>
       <Button

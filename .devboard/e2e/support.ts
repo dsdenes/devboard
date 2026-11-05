@@ -68,7 +68,7 @@ export interface SuiteState {
   stateDir: string;
   adrsDir: string;
   goalFile: string;
-  workerVersion: string;
+  harnessVersion: string;
   pid: number;
 }
 

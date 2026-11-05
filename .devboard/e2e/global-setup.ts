@@ -57,7 +57,7 @@ interface Prepared {
   adrsDir: string;
   goalFile: string;
   binDir: string;
-  workerVersion: string;
+  harnessVersion: string;
 }
 
 function git(cwd: string, args: string[]): void {
@@ -123,8 +123,8 @@ async function prepareFixture(): Promise<Prepared> {
   const { promise, resolve } = Promise.withResolvers<void>();
   version.once("exit", () => resolve());
   await promise;
-  const workerVersion = text.trim().split(/\s+/).pop() ?? "unknown";
-  return { repoDir, stateDir, adrsDir, goalFile, binDir, workerVersion };
+  const harnessVersion = text.trim().split(/\s+/).pop() ?? "unknown";
+  return { repoDir, stateDir, adrsDir, goalFile, binDir, harnessVersion };
 }
 
 /** One deterministic provider so every family can spawn its stub peer. */
@@ -161,7 +161,7 @@ function workerEnvironment(prepared: Prepared): NodeJS.ProcessEnv {
     AGENT_COMMAND: `${binary} acp-stub`,
     DEVBOARD_GITEA_URL: giteaUrl(),
     GITEA_TOKEN: giteaToken(),
-    DEVBOARD_HARNESS_VERSION: prepared.workerVersion,
+    DEVBOARD_HARNESS_VERSION: prepared.harnessVersion,
     GIT_TERMINAL_PROMPT: "0",
   };
 }
@@ -330,7 +330,7 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
     stateDir: prepared.stateDir,
     adrsDir: prepared.adrsDir,
     goalFile: prepared.goalFile,
-    workerVersion: prepared.workerVersion,
+    harnessVersion: prepared.harnessVersion,
     pid: child.pid ?? 0,
   };
   writeState(state);
