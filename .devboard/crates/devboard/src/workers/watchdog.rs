@@ -6224,7 +6224,7 @@ fn log_startup_pass(state_dir: &Path, report: &ReapReport) {
         "available": report.available,
         "decisions": report.decisions.len(),
         "killed": report.killed,
-        "removedRecords": report.removed_records,
+        "removedRecordPids": report.removed_record_pids,
     }));
     let _ = append_line(&directory.join("reaped.jsonl"), &format!("{text}\n"));
 }
@@ -6236,7 +6236,7 @@ pub fn run_orphan_reaper(mut options: OrphanReaperRunOptions) -> ReapReport {
             available: false,
             decisions: Vec::new(),
             killed: Vec::new(),
-            removed_records: Vec::new(),
+            removed_record_pids: Vec::new(),
         };
     }
     let root = absolute(&options.root);

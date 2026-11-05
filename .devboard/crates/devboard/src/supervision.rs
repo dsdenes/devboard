@@ -914,7 +914,7 @@ pub struct ReapReport {
     pub available: bool,
     pub decisions: Vec<ReapDecision>,
     pub killed: Vec<u32>,
-    pub removed_records: Vec<u32>,
+    pub removed_record_pids: Vec<u32>,
 }
 
 /// The inputs of one reaping pass.
@@ -1050,7 +1050,7 @@ pub fn reap_orphans(options: ReapOptions) -> ReapReport {
             if !alive(pid) {
                 if !dry_run {
                     remove_supervision_record(&path);
-                    report.removed_records.push(pid);
+                    report.removed_record_pids.push(pid);
                 }
                 records.retain(|entry| entry.0.pid != pid);
                 handled.insert(pid);
@@ -1472,7 +1472,7 @@ mod tests {
             "a live child is not reaped: {:?}",
             report.decisions
         );
-        assert!(report.removed_records.is_empty());
+        assert!(report.removed_record_pids.is_empty());
         assert!(path.exists(), "the live child keeps its record");
 
         child.start_kill().expect("a signal");
@@ -1509,7 +1509,7 @@ mod tests {
         });
         assert!(report.available);
         assert_eq!(report.killed, vec![pid]);
-        assert!(report.removed_records.is_empty());
+        assert!(report.removed_record_pids.is_empty());
         assert_eq!(report.decisions.len(), 1);
         assert_eq!(report.decisions[0].action, ReapAction::Killed);
         assert_eq!(report.decisions[0].reason, ReapReason::Record);
