@@ -8,7 +8,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
 const { default: DevboardComplexity } = await import("./DevboardComplexity.svelte");
-const { devboard, EMPTY_COMPLEXITY_VIEW } = await import("../devboard.svelte");
+const { complexity, EMPTY_COMPLEXITY_VIEW } = await import("../complexity.svelte");
 
 const EARLIER = {
   files: 3,
@@ -39,7 +39,7 @@ const FILES = [
 ];
 
 function seed(): void {
-  devboard.complexity = {
+  complexity.complexity = {
     points: [
       { date: "2026-11-01", recordedAt: "2026-11-01T00:00:00.000Z", project: EARLIER },
       { date: "2026-11-02", recordedAt: "2026-11-02T00:00:00.000Z", project: LATEST },
@@ -51,13 +51,13 @@ function seed(): void {
       files: FILES,
     },
   };
-  devboard.complexityLoaded = true;
+  complexity.complexityLoaded = true;
 }
 
 afterEach(() => {
   cleanup();
-  devboard.complexity = EMPTY_COMPLEXITY_VIEW;
-  devboard.complexityLoaded = false;
+  complexity.complexity = EMPTY_COMPLEXITY_VIEW;
+  complexity.complexityLoaded = false;
 });
 
 test("renders one card per project metric with the latest value and its unit", () => {

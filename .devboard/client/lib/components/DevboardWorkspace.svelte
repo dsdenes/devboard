@@ -2,8 +2,8 @@
   import { onMount } from "svelte";
   import { agentRegistry } from "../../../lib/agent-registry.ts";
   import { connection } from "../connection.svelte";
-  import { devboard } from "../devboard.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
+  import { mcpTools } from "../mcp-tools.svelte";
   import AgentPage from "./AgentPage.svelte";
   import DevboardComplexity from "./DevboardComplexity.svelte";
   import DevboardSkills from "./DevboardSkills.svelte";
@@ -16,13 +16,13 @@
   let { tab }: Props = $props();
 
   const agentDescriptor = $derived(tab === null ? undefined : agentRegistry.get(tab.kind));
-  const count = $derived(devboard.tools.length);
+  const count = $derived(mcpTools.tools.length);
 
   // Counts change while a peer runs, so the page re-reads them on the same
   // cadence as the version poll instead of waiting for a reload.
   onMount(() => {
     const timer = setInterval(() => {
-      if (connection.open) devboard.request();
+      if (connection.open) mcpTools.request();
     }, 5000);
     return () => clearInterval(timer);
   });
@@ -51,7 +51,7 @@
 
     <section class="panel devboard-panel" aria-label="MCP tools">
       <div class="devboard-list" data-testid="mcp-tools-list">
-        {#each devboard.tools as tool (tool.name)}
+        {#each mcpTools.tools as tool (tool.name)}
           <article class="devboard-tool" data-testid="mcp-tool" data-tool={tool.name}>
             <div class="devboard-tool__head">
               <code class="devboard-tool__name">{tool.name}</code>
@@ -68,7 +68,7 @@
           </article>
         {:else}
           <p class="empty" data-testid="mcp-tools-empty">
-            {devboard.loaded ? "No MCP tools are exposed." : "Loading the MCP tool catalog…"}
+            {mcpTools.loaded ? "No MCP tools are exposed." : "Loading the MCP tool catalog…"}
           </p>
         {/each}
       </div>

@@ -7,20 +7,20 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // the testing library load after registration.
 const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { default: DevboardSkills } = await import("./DevboardSkills.svelte");
-const { devboard } = await import("../devboard.svelte");
+const { devboardSkills } = await import("../devboard-skills.svelte");
 
 afterEach(() => {
   cleanup();
-  devboard.skills = [];
-  devboard.skillsLoaded = false;
+  devboardSkills.skills = [];
+  devboardSkills.skillsLoaded = false;
 });
 
 test("renders one row per installed skill with a name cell and one checkbox", () => {
-  devboard.skills = [
+  devboardSkills.skills = [
     { name: "benchmark-methodology", enabled: true, content: "", builtin: false, deletable: false },
     { name: "wire-format-conformance", enabled: false, content: "", builtin: false, deletable: false },
   ];
-  devboard.skillsLoaded = true;
+  devboardSkills.skillsLoaded = true;
 
   const { container } = render(DevboardSkills);
   const tables = container.querySelectorAll('[data-testid="skills-table"]');
@@ -52,10 +52,10 @@ test("renders one row per installed skill with a name cell and one checkbox", ()
 });
 
 test("the disclosure is the shared Button primitive and paints a press", async () => {
-  devboard.skills = [
+  devboardSkills.skills = [
     { name: "benchmark-methodology", enabled: true, content: "", builtin: false, deletable: false },
   ];
-  devboard.skillsLoaded = true;
+  devboardSkills.skillsLoaded = true;
 
   const { container } = render(DevboardSkills);
   const disclosure = container.querySelector<HTMLButtonElement>(
@@ -72,7 +72,7 @@ test("the disclosure is the shared Button primitive and paints a press", async (
 });
 
 test("clicking a skill row reveals its SKILL.md body and clicking again hides it", async () => {
-  devboard.skills = [
+  devboardSkills.skills = [
     {
       name: "benchmark-methodology",
       enabled: true,
@@ -91,7 +91,7 @@ test("clicking a skill row reveals its SKILL.md body and clicking again hides it
       deletable: false,
     },
   ];
-  devboard.skillsLoaded = true;
+  devboardSkills.skillsLoaded = true;
 
   const { container } = render(DevboardSkills);
   const row = container.querySelector<HTMLTableRowElement>('[data-testid="skill-row"]');
@@ -122,7 +122,7 @@ test("clicking a skill row reveals its SKILL.md body and clicking again hides it
 });
 
 test("built-in rows carry Managed and no delete; prepared rows carry one delete control", () => {
-  devboard.skills = [
+  devboardSkills.skills = [
     {
       name: "devboard-ui-ux",
       enabled: true,
@@ -152,7 +152,7 @@ test("built-in rows carry Managed and no delete; prepared rows carry one delete 
       deletable: false,
     },
   ];
-  devboard.skillsLoaded = true;
+  devboardSkills.skillsLoaded = true;
 
   const { container } = render(DevboardSkills);
   const builtin = container.querySelector('[data-skill="devboard-ui-ux"]');

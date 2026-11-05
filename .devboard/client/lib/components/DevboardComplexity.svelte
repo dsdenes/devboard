@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { connection } from "../connection.svelte";
   import {
-    devboard,
+    complexity,
     type ComplexityFileRow,
     type ComplexityPoint,
     type ComplexityProjectRow,
-  } from "../devboard.svelte";
+  } from "../complexity.svelte";
+  import { connection } from "../connection.svelte";
   import Button from "./ui/button.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
@@ -60,7 +60,7 @@
   let chartWidth = $state(0);
   const chartBoxWidth = $derived(chartWidth > 0 ? chartWidth : CHART_FALLBACK_WIDTH);
 
-  const view = $derived(devboard.complexity);
+  const view = $derived(complexity.complexity);
   const points = $derived(view.points);
   const latest = $derived(view.latest);
 
@@ -70,7 +70,7 @@
   // The page reads when it opens and after a reconnect; the server pushes a
   // frame when a new daily snapshot is recorded.
   $effect(() => {
-    if (connection.open) devboard.requestComplexity();
+    if (connection.open) complexity.requestComplexity();
   });
 
   const rows = $derived.by(() => {
@@ -214,7 +214,7 @@
     <div class="panel__body complexity-history__body">
       {#if points.length === 0}
         <p class="complexity-history__empty" data-testid="complexity-history-empty">
-          {devboard.complexityLoaded
+          {complexity.complexityLoaded
             ? "No snapshot has been recorded yet."
             : "Loading the complexity history…"}
         </p>
@@ -350,7 +350,7 @@
           {:else}
             <tr>
               <td colspan={FILE_METRICS.length + 1} class="empty">
-                {devboard.complexityLoaded
+                {complexity.complexityLoaded
                   ? "No snapshot has been recorded yet."
                   : "Loading the complexity history…"}
               </td>

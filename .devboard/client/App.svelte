@@ -17,8 +17,9 @@
   import Sidebar from "./lib/components/Sidebar.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
   import { buildCommands } from "./lib/commands";
+  import { complexity } from "./lib/complexity.svelte";
   import { connection } from "./lib/connection.svelte";
-  import { devboard } from "./lib/devboard.svelte";
+  import { devboardSkills } from "./lib/devboard-skills.svelte";
   import { discover } from "./lib/discover.svelte";
   import { flow } from "./lib/flow.svelte";
   import { goal } from "./lib/goal.svelte";
@@ -26,6 +27,7 @@
   import { agents } from "./lib/agents.svelte";
   import { applyTheme, layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
+  import { mcpTools } from "./lib/mcp-tools.svelte";
   import { notifications } from "./lib/notifications.svelte";
   import { collectPendingQuestions, osNotifications } from "./lib/os-notifications.svelte";
   import { providers } from "./lib/providers.svelte";
@@ -315,7 +317,7 @@
       discover.resetActiveOperations();
       providers.resetActiveOperations();
       issues.resetActiveOperations();
-      devboard.request();
+      mcpTools.request();
       providers.request();
     });
     connection.onMessage((message) => {
@@ -325,7 +327,9 @@
       agents.handleEvent(record);
       flow.handleEvent(record);
       discover.handleEvent(record);
-      devboard.handleEvent(record);
+      mcpTools.handleEvent(record);
+      devboardSkills.handleEvent(record);
+      complexity.handleEvent(record);
       providers.handleEvent(record);
       handleFlowTabEvents(record);
       // The OS channel follows the same frames as the in-app state: every

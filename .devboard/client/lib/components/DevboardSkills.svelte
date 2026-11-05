@@ -3,12 +3,12 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { connection } from "../connection.svelte";
-  import { devboard } from "../devboard.svelte";
+  import { devboardSkills } from "../devboard-skills.svelte";
   import { renderSkillDocument } from "../skill-document";
   import Button from "./ui/button.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
-  const count = $derived(devboard.skills.length);
+  const count = $derived(devboardSkills.skills.length);
   let expanded = $state<string[]>([]);
   /** The prepared skill whose deletion waits for the dialog's confirmation. */
   let deleteTarget = $state<string | null>(null);
@@ -16,13 +16,13 @@
   // The page reads when it opens and after a reconnect; the server pushes a
   // frame after every toggle. No watcher, poll, or start trigger is involved.
   $effect(() => {
-    if (connection.open) devboard.requestSkills();
+    if (connection.open) devboardSkills.requestSkills();
   });
 
   function toggle(name: string, event: Event): void {
     const input = event.currentTarget;
     if (!(input instanceof HTMLInputElement)) return;
-    devboard.setSkillEnabled(name, input.checked);
+    devboardSkills.setSkillEnabled(name, input.checked);
   }
 
   function setExpanded(name: string, open: boolean): void {
@@ -50,7 +50,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each devboard.skills as skill (skill.name)}
+        {#each devboardSkills.skills as skill (skill.name)}
           {@const open = expanded.includes(skill.name)}
           <tr
             class="skills-table__row"
@@ -150,7 +150,7 @@
         {:else}
           <tr>
             <td colspan="3" class="empty">
-              {devboard.skillsLoaded
+              {devboardSkills.skillsLoaded
                 ? "No skills are installed in .omp/skills."
                 : "Loading the installed skills…"}
             </td>
@@ -172,9 +172,9 @@
   testid="delete-skill-confirmation"
   confirmCommand="devboard.skills.delete.confirm"
   cancelCommand="devboard.skills.delete.cancel"
-  evidence={() => devboard.skills}
+  evidence={() => devboardSkills.skills}
   onconfirm={() => {
-    if (deleteTarget !== null) devboard.deleteSkill(deleteTarget);
+    if (deleteTarget !== null) devboardSkills.deleteSkill(deleteTarget);
     deleteTarget = null;
   }}
   oncancel={() => (deleteTarget = null)}
