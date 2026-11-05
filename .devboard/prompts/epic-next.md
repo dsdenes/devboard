@@ -143,9 +143,13 @@ pull request, and the remainder goes to Non-goals.
 4. Resolve the identity against that exact project, from the host repository root:
 
    ```sh
-   devboard forge-auth check \
+   <devboard> forge-auth check \
      --host <host> --project <project> --forge <github|gitlab|gitea> --required write --cwd <host>
    ```
+
+   `<devboard>` is the absolute harness binary resolved once per session as
+   `.devboard/prompts/forge-auth.md` states, so this block is the canonical invocation with only
+   its program path absolute.
 
    The wrapper inspects every authenticated account for the host, tests each token against this
    repository, and chooses a write-capable account (repository owner first, then the active
@@ -162,9 +166,12 @@ pull request, and the remainder goes to Non-goals.
    use the API with `GITEA_TOKEN`, which the `check` output names. Write `<auth>` for:
 
    ```sh
-   devboard forge-auth exec \
+   <devboard> forge-auth exec \
      --host <host> --project <project> --forge <forge> --required write --
    ```
+
+   That is the same resolved `<devboard>` as the `check` above, so one session resolves the
+   binary once.
 
    Then run `<auth> gh ...` or `<auth> glab ...`. A direct CLI call can silently use a different
    account or a stale token; the wrapper is the only supported path. It puts the selected token

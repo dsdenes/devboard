@@ -19,10 +19,12 @@ Autonomy contract:
 Steps:
 1. Resolve the repository root with `git rev-parse --show-toplevel`. Never edit that checkout;
    it is for the final merge only.
-2. Resolve the authenticated forge identity with `devboard forge-auth check --required write`.
-   Route every GitHub or GitLab read and write through
-   `devboard forge-auth exec --required write -- <gh|glab> ...`. For Gitea, resolve the identity
-   with `check` and call the API with `GITEA_TOKEN`; the harness never execs a Gitea write.
+2. Resolve the authenticated forge identity with `<devboard> forge-auth check --required write`,
+   where `<devboard>` is the absolute harness binary resolved once per session as
+   `.devboard/prompts/forge-auth.md` states. Route every GitHub or GitLab read and write through
+   the same `<devboard> forge-auth exec --required write -- <gh|glab> ...`. For Gitea, resolve
+   the identity with `check` and call the API with `GITEA_TOKEN`; the harness never execs a Gitea
+   write.
 3. Fetch the issue and require its labels to contain the exact `goal` label. An issue without
    that label is a refusal: report it and stop without implementing anything.
 4. Keep the issue title and its whole body as the objective, dropping only harness HTML comments.

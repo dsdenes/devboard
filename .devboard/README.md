@@ -3275,14 +3275,16 @@ It creates and works in one worktree under `<REPO_DIR>/.worktree/` named for the
 the canonical checkout and never in another agent's worktree, and writes nothing outside
 `<REPO_DIR>`. Forge write access is a precondition it resolves once per session: a `canWrite: true`
 result already in context is reused as-is, and only when the context lacks one does it run one
-canonical auth check, `devboard forge-auth check --required write --json`, from the
-repository root: the wrapper takes the target from `DEVBOARD_GITEA_URL`, `GITEA_TOKEN`, and the
-`origin` remote, so no forge, host, project, or URL flag is passed, the exit status and JSON are
-read directly, and no further auth probe runs in the session. The shared credential rule every
-tracker prompt follows is `.devboard/prompts/forge-auth.md`: the wrapper is the only authority for
-forge host, project, and token scope, and enumerating the environment or reading credential files
-to find them is forbidden. It changes only that issue's implementation, tests, and documentation;
-it may read other issues and code but never edits, comments on, closes, or reopens another issue.
+canonical auth check, `<devboard> forge-auth check --required write --json`, from the
+repository root, with `<devboard>` the absolute harness binary it resolves once per session as
+`.devboard/prompts/forge-auth.md` states: the wrapper takes the target from `DEVBOARD_GITEA_URL`,
+`GITEA_TOKEN`, and the `origin` remote, so no forge, host, project, or URL flag is passed, the
+exit status and JSON are read directly, and no further auth probe runs in the session. The shared
+credential rule every tracker prompt follows is `.devboard/prompts/forge-auth.md`: the wrapper is
+the only authority for forge host, project, and token scope, and enumerating the environment or
+reading credential files to find them is forbidden. It changes only that issue's implementation,
+tests, and documentation; it may read other issues and code but never edits, comments on, closes,
+or reopens another issue.
 When the issue declares an open prerequisite (`depends on`, `blocked by`, or a
 task-list issue reference), it writes `blocked: #<prerequisite>` as the first stderr line, exits
 nonzero, leaves the issue open and unhandled, and never implements the prerequisite in another
@@ -3601,8 +3603,10 @@ creates no other file except that spec and the draft removal, starts no implemen
 not enter goal mode. It files the spec's bytes verbatim, as a body file, as an open issue in the
 checkout's `origin` (never the harness repository unless that is the origin), with a one-line title
 bounded to 200 characters and the exact `goal` label, creating the label first when it is missing.
-Every tracker command goes through `devboard forge-auth exec --required write`. After
-filing it reads the issue back with `gh issue view <number> --json number,url,labels,body`; only
+Every tracker command goes through `<devboard> forge-auth exec --required write`, with
+`<devboard>` the absolute harness binary the run resolves once per session as
+`.devboard/prompts/forge-auth.md` states. After filing it reads the issue back with
+`gh issue view <number> --json number,url,labels,body`; only
 when the `goal` label is present and the body equals the spec file may it delete the draft. A
 failed label creation, issue creation, or verification leaves the draft in place and reports the
 failure and any created issue URL. A successful completion removes the draft from the list, keeps

@@ -56,10 +56,12 @@ Read the merge history through the repository's one forge-auth resolution, read-
 
 1. Resolve the origin remote with `git remote get-url origin` and record its forge host. The forge
    is `github`, `gitlab`, or `gitea`.
-2. Select an identity with `devboard forge-auth check --forge <name> --required
-   read` when the harness ships that command. For GitHub use `gh` through
-   `forge-auth exec -- gh ...`; for GitLab use `glab` through `forge-auth exec -- glab ...`; for
-   Gitea query `$DEVBOARD_GITEA_URL/api/v1/repos/<owner>/<repo>/...` with the token the check
+2. Select an identity with `<devboard> forge-auth check --forge <name> --required
+   read` when the harness ships that command, where `<devboard>` is the absolute harness binary
+   resolved once per session as `.devboard/prompts/forge-auth.md` states. For GitHub use `gh`
+   through the same `<devboard> forge-auth exec -- gh ...`; for GitLab use `glab` through
+   `<devboard> forge-auth exec -- glab ...`; for Gitea query
+   `$DEVBOARD_GITEA_URL/api/v1/repos/<owner>/<repo>/...` with the token the check
    selected. Every request is a read (`GET`).
 3. A pull request is **merged** only when the forge records it as merged: `merged_at` is set for
    GitHub and Gitea, or `state` is `merged` for GitLab. A pull request the forge records as closed

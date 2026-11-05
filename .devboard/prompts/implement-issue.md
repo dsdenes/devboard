@@ -42,9 +42,9 @@ context, but you never edit, comment on, close, or reopen another issue.
   `git remote get-url origin` or `git remote get-url github`, no `git config --get
   remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
   directory, no `env | grep`, and no
-  `cd <root> && … && devboard forge-auth check` line. The `devboard_status`
+  `cd <root> && … && forge-auth check` line. The `devboard_status`
   result covers the roots, and the session's auth result — already in context, otherwise the one
-  `devboard forge-auth check` JSON line below — covers the forge, host, project, and identity; neither
+  `forge-auth check` JSON line below — covers the forge, host, project, and identity; neither
   is re-derived to orient the run.
 - Fall back to a shell probe only for a field neither the `devboard_status` result nor the auth
   gate reports, and then at most one probe, run alone: never a chained discovery line, never
@@ -108,24 +108,33 @@ context, but you never edit, comment on, close, or reopen another issue.
   forge read or write, run verbatim from the repository root:
 
   ```sh
-  devboard forge-auth check --required write --json
+  <devboard> forge-auth check --required write --json
   ```
+
+  `<devboard>` is the absolute harness binary the run resolves once, from the `harnessDirectory`
+  of the `devboard_status` result above, exactly as `.devboard/prompts/forge-auth.md` states:
+  `<harnessDirectory>/bin/devboard` when it is executable, otherwise the newer, by modification
+  time, of `<harnessDirectory>/target/release/devboard` and
+  `<harnessDirectory>/target/debug/devboard`. Only the program path is absolute; the arguments
+  never change. A bare `devboard` is never used, because the peer's PATH holds no harness
+  directory and that invocation exits 127.
 
   This is the only pre-write auth gate and the session's only auth invocation: a run whose
   context already carries `canWrite: true` issues none. The canonical form infers the forge,
   host, project, and identity from the `origin` remote and `DEVBOARD_GITEA_URL`, so this check
-  has exactly one spelling: that literal command line, with no `--forge`, `--host`,
+  has exactly one argument spelling: that literal command line, with no `--forge`, `--host`,
   `--project`, or `--url` flag and no derived replacement for any of them. The wrapper resolves
   all of them from the checkout, so this prompt never overrides one: never preempt the check with
   a guessed `--forge`, never re-run it with a target flag because the answer looks wrong, and
   never derive the values with `sed`, `git remote get-url`, or any other shell substitution. When
   the `origin` remote cannot name the forge, stop and report that as the blocker.
 
-  A session following this prompt issues at most one call matching `devboard forge-auth check` in
-  total, and none once its context carries `canWrite: true`; that call has no `cd`, no `--forge`,
-  and no `--host` in its command text. Invoke that one line alone: never prefix it with
-  `cd <absolute repository path> &&` (the `cd /home/... &&` shape) or
-  `git rev-parse --show-toplevel &&`, and never chain it into a compound command with a `curl`
+  A session following this prompt issues at most one call matching `forge-auth check` in
+  total, and none once its context carries `canWrite: true`; that call carries no `cd` or
+  `PATH="<dir>:$PATH"` prefix, no `--forge`, and no `--host` in its command text. Invoke that one
+  line alone: never prefix it with `cd <absolute repository path> &&` (the `cd /home/... &&`
+  shape), a `PATH="<dir>:$PATH"` assignment, or `git rev-parse --show-toplevel &&`, and never
+  chain it into a compound command with a `curl`
   request to the forge API or any other command. Set the tool's working directory to the
   repository root instead of prefixing the command.
 
@@ -150,11 +159,12 @@ context, but you never edit, comment on, close, or reopen another issue.
   to learn the forge host, project, or credential state: it reports presence and resolution
   without exposing a value, so an environment sweep answers nothing it does not. Forge and
   registry configuration MUST be
-  resolved through `devboard forge-auth check` and MUST NOT be discovered with
+  resolved through the `<devboard> forge-auth check` gate and MUST NOT be discovered with
   an `env | grep` probe, `cat .env`, `cat ~/.npmrc`, `git config --get-regexp 'url\..*'`, or any
   other environment or credential-file sweep: never enumerate the process environment or hunt
   for credential files, and `.devboard/prompts/forge-auth.md` holds that rule in full. Never
-  inspect the harness binary to rediscover its resolution order; run `devboard forge-auth --help` only when the run changes it. `DEVBOARD_GITEA_URL` is supplied by the host at run time:
+  inspect the harness binary to rediscover its resolution order; run `<devboard> forge-auth
+  --help` only when the run changes it. `DEVBOARD_GITEA_URL` is supplied by the host at run time:
   use it exactly as supplied, verbatim, with no derived or default port, so never hardcode it
   or fall back to a guessed base such as `http://localhost:2223`. Verify access only through
   the `check --json` call above; never probe a forge endpoint such as `/api/v1/version` to
