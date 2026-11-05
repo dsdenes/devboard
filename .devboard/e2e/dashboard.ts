@@ -8,7 +8,14 @@
 
 import { expect, type Page } from "@playwright/test";
 
-import { FAMILIES, FAMILY_LABELS, readState, sleep, type Family } from "./support.ts";
+import {
+  clearFamilyRuntime,
+  FAMILIES,
+  FAMILY_LABELS,
+  readState,
+  sleep,
+  type Family,
+} from "./support.ts";
 
 /** Opens the dashboard document through the launcher's bootstrap handshake. */
 export async function openDashboard(page: Page): Promise<void> {
@@ -73,6 +80,7 @@ export async function recordedWorkers(page: Page, family: Family): Promise<numbe
 /** Starts one family through its own page and waits for the running state. */
 export async function startFamily(page: Page, family: Family): Promise<number[]> {
   await showFamily(page, family);
+  clearFamilyRuntime(family, readState());
   const start = page.locator(
     `[data-testid="agent-page"][data-agent="${family}"] [data-testid="agent-start"]`,
   );

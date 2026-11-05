@@ -8,7 +8,13 @@
 import { expect, test } from "@playwright/test";
 
 import { openDashboard } from "./dashboard.ts";
-import { escapePattern, pidAlive, processesMatching, readState } from "./support.ts";
+import {
+  clearFamilyRuntime,
+  escapePattern,
+  pidAlive,
+  processesMatching,
+  readState,
+} from "./support.ts";
 
 test("the Issues worker starts and stops from its workspace", async ({ page }) => {
   const state = readState();
@@ -17,6 +23,7 @@ test("the Issues worker starts and stops from its workspace", async ({ page }) =
 
   const start = page.locator('[data-testid="issues-start"]');
   await expect(start).toBeEnabled({ timeout: 30_000 });
+  clearFamilyRuntime("issues", state);
   await start.click();
   await expect
     .poll(async () => (await page.locator('[data-testid="issues-stop"]').count()) > 0, {
