@@ -1233,6 +1233,44 @@ impl Api {
             .context("the created release has no identifier")
     }
 
+    /// Proves the configured Gitea credential may create this project's
+    /// release. The manifest is written only after the tag push, the mirror
+    /// push, and the GitHub assets, so a credential that cannot write must
+    /// fail here instead of leaving a released tag with no Gitea manifest.
+    async fn gitea_verify_write_credential(&self) -> Result<()> {
+        if self.gitea.token.as_deref().unwrap_or("").is_empty() {
+            bail!(
+                "GITEA_TOKEN is required to create the release for {}",
+                self.gitea.project
+            );
+        }
+        let path = gitea::repo_path(&self.gitea);
+        let response = self.gitea_request("GET", &path, None).await?;
+        if !(200..300).contains(&response.status) {
+            bail!(
+                "the Gitea credential for {} is not valid (HTTP {}): {}; set GITEA_TOKEN to a token that can create a release",
+                self.gitea.project,
+                response.status,
+                failure_message(&response)
+            );
+        }
+        let repository = response.json()?;
+        let writable = ["admin", "push"].iter().any(|key| {
+            repository
+                .get("permissions")
+                .and_then(|permissions| permissions.get(*key))
+                .and_then(Value::as_bool)
+                == Some(true)
+        });
+        if !writable {
+            bail!(
+                "the Gitea credential for {} cannot create a release; set GITEA_TOKEN to a token with repository write access",
+                self.gitea.project
+            );
+        }
+        Ok(())
+    }
+
     async fn github_runs(&self, commit: &str) -> Result<Vec<WorkflowRun>> {
         let path = format!(
             "/repos/{}/actions/workflows/{}/runs?head_sha={}&per_page=50",
@@ -1711,6 +1749,10 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             "{tag} already names {}; verifying the existing release",
             short_sha(&published_head)
         ));
+        // The Gitea manifest is written only after the tag push and the GitHub
+        // assets, so a credential that cannot write must fail before the
+        // mirror push and the dispatch.
+        api.gitea_verify_write_credential().await?;
         // Nothing is pushed or dispatched before the suite passes.
         if let Some(suite_dir) = args.release_suite_dir.clone() {
             run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
@@ -1780,6 +1822,11 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         }
 
         (log)(&format!("{tag} at {}", short_sha(&published_head)));
+
+        // The Gitea manifest is written only after the tag push and the GitHub
+        // assets, so a credential that cannot write must fail before the first
+        // irreversible step.
+        api.gitea_verify_write_credential().await?;
 
         // Nothing is bumped, tagged, pushed, or dispatched before the suite
         // passes.

@@ -210,6 +210,15 @@ struct GiteaData {
     releases: BTreeMap<String, StoredRelease>,
     refs: HashMap<String, String>,
     next_id: u64,
+    credential: GiteaCredential,
+}
+
+/// How the stub answers the repository read the publish preflight makes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GiteaCredential {
+    Writable,
+    ReadOnly,
+    Invalid,
 }
 
 #[derive(Clone)]
@@ -240,6 +249,7 @@ impl GiteaStub {
             releases,
             refs: seeded.into_iter().collect(),
             next_id,
+            credential: GiteaCredential::Writable,
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
         let inner = state.clone();
@@ -250,6 +260,10 @@ impl GiteaStub {
             stub: GiteaStub { state },
             server,
         }
+    }
+
+    fn set_credential(&self, credential: GiteaCredential) {
+        self.state.lock().expect("gitea").credential = credential;
     }
 
     fn release_bytes(&self, tag: &str, name: &str) -> Option<Vec<u8>> {
@@ -269,6 +283,22 @@ fn gitea_route(
 ) -> StubResponse {
     let path = request.path.as_str();
     let repo = "/api/v1/repos/dsdenes/devboard";
+    if request.method == "GET" && path == repo {
+        let data = state.lock().expect("gitea");
+        if data.credential == GiteaCredential::Invalid {
+            return StubResponse {
+                status: 401,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: br#"{"message":"invalid username, password or token"}"#.to_vec(),
+            };
+        }
+        let push = data.credential == GiteaCredential::Writable;
+        return json_response(json!({
+            "full_name": "dsdenes/devboard",
+            "private": false,
+            "permissions": {"admin": false, "push": push, "pull": true},
+        }));
+    }
     if request.method == "GET" && path == format!("{repo}/releases") {
         let data = state.lock().expect("gitea");
         let releases: Vec<Value> = data
@@ -1294,6 +1324,75 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
     );
     assert!(second.source_refresh.written.is_empty());
     assert_eq!(second.source_refresh.applied.len(), 1);
+}
+
+#[tokio::test]
+async fn a_revoked_gitea_credential_fails_before_the_tag_is_pushed() {
+    let live = live("credential-revoked", release_assets()).await;
+    live.gitea_stub.set_credential(GiteaCredential::Invalid);
+    let head = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    let origin_head = git_output(&live.origin, &["rev-parse", "main"]);
+    let github_head = git_output(&live.github, &["rev-parse", "main"]);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    let error = publish(args)
+        .await
+        .expect_err("a revoked credential refuses the release");
+    let message = format!("{error:#}");
+    assert!(message.contains("HTTP 401"), "{message}");
+    assert!(
+        message.contains("invalid username, password or token"),
+        "{message}"
+    );
+
+    // Nothing was bumped, tagged, pushed, or dispatched.
+    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), head);
+    let local = git_output(&live.seed, &["tag", "--list", "v1.1.0"]);
+    assert!(local.trim().is_empty(), "{local}");
+    let published = git_output(&live.origin, &["tag", "--list", "v1.1.0"]);
+    assert!(published.trim().is_empty(), "{published}");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        origin_head
+    );
+    assert_eq!(
+        git_output(&live.github, &["rev-parse", "main"]),
+        github_head
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 0);
+    assert!(live
+        .gitea_server
+        .find("POST", "/api/v1/repos/dsdenes/devboard/releases")
+        .is_none());
+}
+
+#[tokio::test]
+async fn a_read_only_gitea_credential_fails_before_the_tag_is_pushed() {
+    let live = live("credential-read-only", release_assets()).await;
+    live.gitea_stub.set_credential(GiteaCredential::ReadOnly);
+    let origin_head = git_output(&live.origin, &["rev-parse", "main"]);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    let error = publish(args)
+        .await
+        .expect_err("a read-only credential refuses the release");
+    let message = format!("{error:#}");
+    assert!(message.contains("cannot create a release"), "{message}");
+    assert!(message.contains("repository write access"), "{message}");
+
+    let local = git_output(&live.seed, &["tag", "--list", "v1.1.0"]);
+    assert!(local.trim().is_empty(), "{local}");
+    let published = git_output(&live.origin, &["tag", "--list", "v1.1.0"]);
+    assert!(published.trim().is_empty(), "{published}");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        origin_head
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 0);
+    assert!(live
+        .gitea_server
+        .find("POST", "/api/v1/repos/dsdenes/devboard/releases")
+        .is_none());
 }
 
 #[tokio::test]
