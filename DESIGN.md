@@ -414,7 +414,9 @@ bar) so a page's last control can scroll clear of it; the same 56px on the Goal 
 scrolling pages clears that region. The 180px Discover activity terminal, the
 104px fact-label column, the 160px Discover boundary-role column, the 200–600px sidebar bounds,
 the 160px split minimum, and the dependency canvas `clamp(220px, 40vh, 400px)` height cap are
-component geometry, not spacing steps. The 5px vertical padding of table cells, the 5px 10px
+component geometry, not spacing steps. The metric-history panel's four row tracks (96–148px,
+flexible, 72px, 64px), its 24px sparkline height, its 8px chart inset, and its 4px row padding are
+that panel's geometry. The 5px vertical padding of table cells, the 5px 10px
 cycle-history row padding, and the 5px horizontal padding of status-bar items are documented
 component padding for dense rows, not layout steps.
 
@@ -648,6 +650,24 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   When the primary column is narrower than 900px the table drops its category, filed, and
   version columns so the issue title keeps enough width to identify the finding; the title still
   carries the category.
+- **Metric history panel** (`.complexity-history__body` in `DevboardComplexity.svelte`) — the
+  complexity page's sparkline surface: the shared `.panel` frame with a 30px `panel__header`
+  carrying the panel title `Metric history`, then one body row per project metric. Every row and
+  the axis share one four-track grid — label `minmax(96px, 148px)`, chart `minmax(0, 1fr)`, newest
+  value 72px, window change 64px — on a 10px column gap, so values and changes compare vertically.
+  The label is 11px/600 `foreground` and ellipsizes; the newest value is 11.5px mono tabular
+  `foreground` on the trailing edge; the change is the signed move from the first recorded value to
+  the newest, 11px mono tabular `muted-foreground`, `0` when the metric did not move and blank
+  while the window holds one day. Rows are 4px apart with a `border-subtle` rule under every row
+  except the last. The chart is a 24px sparkline whose viewBox width is the measured track width,
+  so a data point is a circle at every width: a 1.5px `accent` line, `muted-foreground` older
+  points, and the newest point as a 3.5px `accent` dot with a `surface` halo. The recorded dates
+  appear once, as 10px mono `muted-foreground` labels in a band pinned below the scrolling body
+  under the chart track, separated by a `border-subtle` rule, inset by the chart's own 8px x
+  padding and thinning to first, middle, and last on a long history; no series repeats the axis and
+  no series draws its own frame. The body scrolls when the rows outgrow the panel while the axis
+  stays visible. With no recorded snapshot the body is one 12px `muted-foreground` line stating
+  that the history is loading or that none exists.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The five `role="tab"` controls — Goal, Issues, Flow,
   Discover, and Devboard — sit in a `role="tablist"` group, each 64×52px with 6px vertical and

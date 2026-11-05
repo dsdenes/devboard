@@ -130,6 +130,49 @@ test("draws one series per project metric with every date and a latest marker", 
   }
 });
 
+test("states each metric's move across the recorded window beside its newest value", () => {
+  seed();
+
+  const { container } = render(DevboardComplexity);
+  const changes = [...container.querySelectorAll('[data-testid="complexity-series-change"]')];
+
+  expect(changes.map((entry) => entry.getAttribute("data-metric"))).toEqual([
+    "files",
+    "functions",
+    "loc",
+    "meanCyclomatic",
+    "maxCyclomatic",
+    "functionsOverThreshold",
+    "duplicatedLineRatio",
+    "meanMaintainability",
+  ]);
+  expect(changes.map((entry) => entry.textContent?.trim())).toEqual([
+    "0",
+    "0",
+    "+20",
+    "+1.00",
+    "+2",
+    "+1",
+    "+0.0750",
+    "−4.25",
+  ]);
+  expect(changes[2]?.getAttribute("title")).toBe("Change since 2026-11-01");
+});
+
+test("states the recorded dates once for the whole panel", () => {
+  seed();
+
+  const { container } = render(DevboardComplexity);
+  const axes = [...container.querySelectorAll(".complexity-series__dates")];
+
+  expect(axes).toHaveLength(1);
+  expect(
+    [...(axes[0]?.querySelectorAll("[data-date]") ?? [])].map((entry) =>
+      entry.getAttribute("data-date"),
+    ),
+  ).toEqual(["2026-11-01", "2026-11-02"]);
+});
+
 test("a changed value moves its point and a flat one keeps its line level", () => {
   seed();
 
@@ -210,5 +253,9 @@ test("an empty history renders the loading state without inventing a value", () 
   expect(
     container.querySelector('[data-testid="complexity-card"]')?.getAttribute("data-value"),
   ).toBe("");
+  expect(container.querySelectorAll('[data-testid="complexity-series"]')).toHaveLength(0);
+  expect(
+    container.querySelector('[data-testid="complexity-history-empty"]')?.textContent?.trim(),
+  ).toBe("Loading the complexity history…");
   expect(container.textContent ?? "").toContain("Loading the complexity history…");
 });

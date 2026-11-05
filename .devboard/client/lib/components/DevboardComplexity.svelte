@@ -47,10 +47,18 @@
   type SortKey = "path" | FileMetricKey;
 
   /** The chart's drawing box; every series shares one x scale. */
-  const CHART_WIDTH = 240;
-  const CHART_HEIGHT = 48;
+  const CHART_FALLBACK_WIDTH = 240;
+  const CHART_HEIGHT = 24;
   const CHART_PADDING_X = 8;
-  const CHART_PADDING_Y = 6;
+  const CHART_PADDING_Y = 4;
+
+  /**
+   * The chart's measured width. The viewBox uses it so the drawing box matches
+   * the rendered box: a point stays a circle at any track width, while the line
+   * still reaches both edges.
+   */
+  let chartWidth = $state(0);
+  const chartBoxWidth = $derived(chartWidth > 0 ? chartWidth : CHART_FALLBACK_WIDTH);
 
   const view = $derived(devboard.complexity);
   const points = $derived(view.points);
@@ -107,8 +115,8 @@
   }
 
   function pointX(index: number, count: number): number {
-    if (count <= 1) return CHART_WIDTH / 2;
-    return CHART_PADDING_X + (index * (CHART_WIDTH - CHART_PADDING_X * 2)) / (count - 1);
+    if (count <= 1) return chartBoxWidth / 2;
+    return CHART_PADDING_X + (index * (chartBoxWidth - CHART_PADDING_X * 2)) / (count - 1);
   }
 
   function pointY(value: number, bounds: { min: number; max: number }): number {
@@ -142,6 +150,23 @@
       labels.push({ date: point.date, text: point.date.slice(5) });
     }
     return labels;
+  }
+
+  /** The signed move across the whole window, or null while it has one day. */
+  function windowChange(values: readonly number[]): number | null {
+    if (values.length < 2) return null;
+    const first = values[0];
+    const last = values[values.length - 1];
+    if (first === undefined || last === undefined) return null;
+    return last - first;
+  }
+
+  /** The window move as a signed figure; blank when the window has one day. */
+  function formatChange(change: number | null, digits: number): string {
+    if (change === null) return "";
+    const magnitude = Math.abs(change).toFixed(digits);
+    if (Number(magnitude) === 0) return "0";
+    return `${change > 0 ? "+" : "−"}${magnitude}`;
   }
 </script>
 
@@ -183,71 +208,94 @@
   </section>
 
   <section class="panel complexity-panel" aria-label="Metric history">
-    <div class="complexity-series-grid">
-      {#each PROJECT_METRICS as metric (metric.key)}
-        {@const values = points.map((point) => point.project[metric.key])}
-        {@const bounds = seriesBounds(values)}
-        <article
-          class="complexity-series"
-          data-testid="complexity-series"
-          data-metric={metric.key}
-          data-points={points.length}
-        >
-          <header class="complexity-series__head">
+    <div class="panel__header">
+      <h2 class="panel__title">Metric history</h2>
+    </div>
+    <div class="panel__body complexity-history__body">
+      {#if points.length === 0}
+        <p class="complexity-history__empty" data-testid="complexity-history-empty">
+          {devboard.complexityLoaded
+            ? "No snapshot has been recorded yet."
+            : "Loading the complexity history…"}
+        </p>
+      {:else}
+        {#each PROJECT_METRICS as metric (metric.key)}
+          {@const values = points.map((point) => point.project[metric.key])}
+          {@const bounds = seriesBounds(values)}
+          {@const change = windowChange(values)}
+          <article
+            class="complexity-series"
+            data-testid="complexity-series"
+            data-metric={metric.key}
+            data-points={points.length}
+          >
             <span class="complexity-series__label">{metric.label}</span>
+            <svg
+              class="complexity-series__chart"
+              bind:clientWidth={chartWidth}
+              viewBox={`0 0 ${chartBoxWidth} ${CHART_HEIGHT}`}
+              preserveAspectRatio="none"
+              role="img"
+              aria-label={`${metric.label} across ${points.length} recorded dates`}
+            >
+              {#if values.length > 1}
+                <polyline
+                  class="complexity-series__line"
+                  data-testid="complexity-series-line"
+                  data-metric={metric.key}
+                  points={polyline(values, bounds)}
+                  fill="none"
+                  vector-effect="non-scaling-stroke"
+                />
+              {/if}
+              {#each points as point, index (point.date)}
+                <circle
+                  class="complexity-series__point"
+                  data-testid="complexity-series-point"
+                  data-metric={metric.key}
+                  data-date={point.date}
+                  data-value={format(values[index] ?? 0, metric.digits)}
+                  cx={pointX(index, points.length)}
+                  cy={pointY(values[index] ?? 0, bounds)}
+                  r={2}
+                />
+              {/each}
+              {#if points.length > 0}
+                <circle
+                  class="complexity-series__latest"
+                  data-testid="complexity-series-latest"
+                  data-metric={metric.key}
+                  data-date={latest?.date ?? ""}
+                  cx={pointX(points.length - 1, points.length)}
+                  cy={pointY(values[values.length - 1] ?? 0, bounds)}
+                  r={3.5}
+                />
+              {/if}
+            </svg>
             <span class="complexity-series__latest-value mono">
               {latest === null ? "—" : format(latest.project[metric.key], metric.digits)}
             </span>
-          </header>
-          <svg
-            class="complexity-series__chart"
-            viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
-            preserveAspectRatio="none"
-            role="img"
-            aria-label={`${metric.label} across ${points.length} recorded dates`}
-          >
-            {#if values.length > 1}
-              <polyline
-                class="complexity-series__line"
-                data-testid="complexity-series-line"
-                data-metric={metric.key}
-                points={polyline(values, bounds)}
-                fill="none"
-                vector-effect="non-scaling-stroke"
-              />
-            {/if}
-            {#each points as point, index (point.date)}
-              <circle
-                class="complexity-series__point"
-                data-testid="complexity-series-point"
-                data-metric={metric.key}
-                data-date={point.date}
-                data-value={format(values[index] ?? 0, metric.digits)}
-                cx={pointX(index, points.length)}
-                cy={pointY(values[index] ?? 0, bounds)}
-                r={2.5}
-              />
-            {/each}
-            {#if points.length > 0}
-              <circle
-                class="complexity-series__latest"
-                data-testid="complexity-series-latest"
-                data-metric={metric.key}
-                data-date={latest?.date ?? ""}
-                cx={pointX(points.length - 1, points.length)}
-                cy={pointY(values[values.length - 1] ?? 0, bounds)}
-                r={4}
-              />
-            {/if}
-          </svg>
-          <div class="complexity-series__dates">
-            {#each dateLabels(points) as label (label.date)}
-              <span class="complexity-series__date mono" data-date={label.date}>{label.text}</span>
-            {/each}
-          </div>
-        </article>
-      {/each}
+            <span
+              class="complexity-series__change mono"
+              data-testid="complexity-series-change"
+              data-metric={metric.key}
+              title={change === null ? "" : `Change since ${points[0]?.date ?? ""}`}
+            >
+              {formatChange(change, metric.digits)}
+            </span>
+          </article>
+        {/each}
+      {/if}
     </div>
+    {#if points.length > 0}
+      <div class="complexity-history__axis">
+        <div class="complexity-series__dates">
+          {#each dateLabels(points) as label (label.date)}
+            <span class="complexity-series__date mono" data-date={label.date}>{label.text}</span>
+          {/each}
+        </div>
+      </div>
+    {/if}
   </section>
 
   <section class="panel complexity-panel complexity-panel--files" aria-label="Per-file measurements">
@@ -360,40 +408,44 @@
   }
 
   .complexity-panel {
-    flex: 1 1 auto;
+    --complexity-tracks: minmax(96px, 148px) minmax(0, 1fr) 72px 64px;
+    flex: 0 1 auto;
     min-height: 0;
-    overflow: auto;
-    padding: 8px;
   }
 
   .complexity-panel--files {
     flex: 1 1 45%;
+    padding: 8px;
   }
 
-  .complexity-series-grid {
-    display: grid;
-    gap: 10px;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  /* One grid for every row and for the axis, so the tracks line up. */
+  .complexity-history__body {
+    padding: 8px 8px 4px;
+  }
+
+  .complexity-history__empty {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    margin: 0;
   }
 
   .complexity-series {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
+    align-items: center;
+    border-bottom: 1px solid var(--border-subtle);
+    display: grid;
+    gap: 0 10px;
+    grid-template-columns: var(--complexity-tracks);
+    padding: 4px 0;
   }
 
-  .complexity-series__head {
-    align-items: baseline;
-    display: flex;
-    gap: 8px;
-    justify-content: space-between;
-    min-width: 0;
+  .complexity-series:last-child {
+    border-bottom: none;
   }
 
   .complexity-series__label {
-    color: var(--muted-foreground);
+    color: var(--foreground);
     font-size: 11px;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -401,36 +453,54 @@
 
   .complexity-series__latest-value {
     color: var(--foreground);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  .complexity-series__change {
+    color: var(--muted-foreground);
     font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
   .complexity-series__chart {
-    background: var(--surface-raised);
-    border: 1px solid var(--border-subtle);
-    border-radius: 3px;
-    height: 48px;
+    display: block;
+    height: 24px;
+    min-width: 0;
     width: 100%;
   }
 
   .complexity-series__line {
-    stroke: var(--ring);
+    stroke: var(--accent);
     stroke-width: 1.5;
   }
 
   .complexity-series__point {
-    fill: var(--ring);
+    fill: var(--muted-foreground);
   }
 
   .complexity-series__latest {
-    fill: var(--success);
+    fill: var(--accent);
     stroke: var(--surface);
     stroke-width: 1.5;
   }
 
+  .complexity-history__axis {
+    border-top: 1px solid var(--border-subtle);
+    display: grid;
+    gap: 0 10px;
+    grid-template-columns: var(--complexity-tracks);
+    padding: 4px 8px 8px;
+  }
+
+  /* The chart's 8px inset, so a label sits under its point. */
   .complexity-series__dates {
     display: flex;
+    grid-column: 2;
     justify-content: space-between;
-    min-height: 13px;
+    padding: 0 8px;
   }
 
   .complexity-series__date {

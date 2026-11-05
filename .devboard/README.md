@@ -203,12 +203,18 @@ The page renders `data-testid="complexity-summary"` with the latest snapshot's d
 timestamp, and the recorded-date count; one `data-testid="complexity-card"` per project metric with
 `data-metric` and the latest `data-value`; one `data-testid="complexity-series"` per project metric
 with `data-points`, one `data-testid="complexity-series-point"` per recorded date carrying
-`data-date` and `data-value`, and a `data-testid="complexity-series-latest"` marker on the newest
-point; and one `data-testid="complexity-file-table"` whose `data-testid="complexity-file-row"` rows
-carry `data-path` and one `data-testid="complexity-cell"` per per-file metric. Each series is
-scaled to its own range, so a changed value between two dates moves its point and its line
-direction. Clicking any `data-testid="complexity-sort"` header orders the table by that column, and
-a second click reverses it; the default order is the file path.
+`data-date` and `data-value`, a `data-testid="complexity-series-latest"` marker on the newest
+point, and a `data-testid="complexity-series-change"` stating the metric's signed move from the
+first recorded value to the newest one (`0` when it did not move, empty while the window holds one
+day); and one `data-testid="complexity-file-table"` whose `data-testid="complexity-file-row"` rows
+carry `data-path` and one `data-testid="complexity-cell"` per per-file metric. The metric rows share
+one grid — name, chart, newest value, change — and the recorded dates appear once, in the axis under
+the chart column, instead of repeating under every series. Each series is scaled to its own range,
+so a changed value between two dates moves its point and its line direction; the change figure is
+what states how far it moved. With no recorded snapshot the panel draws no series and states that
+the history is loading or that none has been recorded. Clicking any `data-testid="complexity-sort"`
+header orders the table by that column, and a second click reverses it; the default order is the
+file path.
 
 Snapshots live in `<stateDir>/complexity/<24-hex project key>/<YYYY-MM-DD>.json`, the same project
 key the journal and dashboard state use, and nowhere else. The server records exactly one snapshot
