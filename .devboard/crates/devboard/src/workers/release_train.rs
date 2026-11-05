@@ -2528,7 +2528,18 @@ pub fn default_release_runner(
 
 /// One POSIX shell word, single-quoted with embedded quotes escaped.
 fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+    // A URL or token needs no quoting, and an unquoted assignment is read the
+    // same way by every consumer, including one that parses the file instead
+    // of sourcing it.
+    let safe = !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-~:/+=,@".contains(&byte));
+    if safe {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 /// The production release path: one `omp acp` peer running

@@ -1617,6 +1617,11 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     }
 
     preflight.published = refresh_main(&args, runner.as_ref(), &preflight.remote, &log).await?;
+    // A client bundle older than the checkout is rebuilt from the released
+    // sources before anything is proven or tagged.
+    if dist_is_stale(&args.harness_root)? {
+        rebuild_client(&args, runner.as_ref(), &log).await?;
+    }
 
     let gitea = resolve_gitea_target(&args, runner.as_ref(), &preflight.remote).await?;
     let github_base = args
@@ -3497,6 +3502,52 @@ fn pid_alive(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+/// True when `dist` exists but is older than the newest source file.
+fn dist_is_stale(harness_root: &Path) -> Result<bool> {
+    let dist = harness_root.join("dist");
+    if !dist.is_dir() {
+        return Ok(false);
+    }
+    Ok(newest_source_mtime(harness_root)? > newest_mtime(&dist))
+}
+
+/// Rebuilds the client bundle from the released sources. The bundle is build
+/// output, not a tracked file, so this leaves the tree clean.
+async fn rebuild_client(
+    args: &PublishArgs,
+    runner: &dyn CommandRunner,
+    log: &Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<()> {
+    let package = args.harness_root.join("package.json");
+    if !package.is_file() {
+        bail!(
+            "dist is older than its sources and {} carries no client build",
+            args.harness_root.display()
+        );
+    }
+    (log)("rebuilding the client bundle from the released sources");
+    let outcome = runner
+        .run(CommandInvocation {
+            program: "bun".to_string(),
+            args: vec!["run".to_string(), "build".to_string()],
+            cwd: args.harness_root.clone(),
+            env: args.environment.clone(),
+            timeout: Duration::from_secs(900),
+        })
+        .await;
+    if outcome.code != 0 {
+        bail!(
+            "could not rebuild the client bundle: {}",
+            first_line(if outcome.stderr.is_empty() {
+                outcome.stdout.as_str()
+            } else {
+                outcome.stderr.as_str()
+            })
+        );
+    }
+    Ok(())
 }
 
 /// Proves the release bundle before the publish writes anything.
