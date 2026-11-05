@@ -5024,11 +5024,20 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                                 "reason": reason,
                             }));
                         }
+                        let count_of = |wanted: &str| -> usize {
+                            decisions
+                                .iter()
+                                .filter(|decision| {
+                                    decision.get("decision").and_then(Value::as_str) == Some(wanted)
+                                })
+                                .count()
+                        };
                         log(&format!(
-                            "deduplication: {} candidate(s), {} unique, {} duplicate",
+                            "deduplication: {} candidate(s), {} unique, {} duplicate, {} failed",
                             candidates.len(),
                             unique_candidates.len(),
-                            candidates.len() - unique_candidates.len()
+                            count_of("duplicate"),
+                            count_of("failed")
                         ));
                     }
                 }

@@ -2121,6 +2121,36 @@ fn dedup_run_directory(context: &McpContext) -> Option<PathBuf> {
     target.starts_with(&root).then_some(target)
 }
 
+/// Records one candidate this turn filed. `issue_create` is a deduplication
+/// run's only filing path, so this record is what attributes the created
+/// issue to its candidate; an unrecorded filing reads as no decision and the
+/// cycle files the candidate again.
+fn record_watchdog_filed(
+    directory: &Path,
+    fingerprint: &str,
+    issue: &ForgeIssueDocument,
+) -> Result<(), String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("the dedup run directory: {error}"))?;
+    append_line(
+        &directory.join(DEDUP_RECORD_FILE),
+        &json!({
+            "fingerprint": fingerprint,
+            "action": "filed",
+            "number": issue.number,
+            "url": issue.url,
+            "title": issue.title,
+            "at": now_iso(),
+        }),
+    )
+    .map_err(|error| {
+        format!(
+            "the issue was created at {} but its dedup record failed: {error}",
+            issue.url
+        )
+    })
+}
+
 fn record_watchdog_duplicate(
     context: &McpContext,
     args: &Map<String, Value>,
@@ -2406,6 +2436,23 @@ async fn create_issue(context: &McpContext, args: &Map<String, Value>) -> Result
         ));
     }
     let labels = issue_labels(args.get("labels"))?;
+    // A watchdog deduplication run files through this tool alone, so the
+    // candidate fingerprint is what lets the cycle attribute the created
+    // issue. Without the record the turn's filing reads as no decision.
+    let dedup_directory = dedup_run_directory(context);
+    let fingerprint = match args.get("fingerprint") {
+        Some(value) => match value.as_str() {
+            Some(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
+            _ => return Err("fingerprint must be a non-empty candidate fingerprint.".to_string()),
+        },
+        None => None,
+    };
+    if dedup_directory.is_some() && fingerprint.is_none() {
+        return Err(
+            "fingerprint is required while a watchdog deduplication run records its decisions."
+                .to_string(),
+        );
+    }
     let forge = issues_client(context)?;
     for guarded in [
         (
@@ -2465,6 +2512,9 @@ async fn create_issue(context: &McpContext, args: &Map<String, Value>) -> Result
         })
         .await
         .map_err(|error| error.message)?;
+    if let (Some(directory), Some(fingerprint)) = (dedup_directory, fingerprint) {
+        record_watchdog_filed(&directory, &fingerprint, &issue)?;
+    }
     Ok(json!({
         "number": issue.number,
         "url": issue.url,

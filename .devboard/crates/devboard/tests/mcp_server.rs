@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+use axum::extract::State;
 use serde_json::{json, Value};
 
 use devboard::mcp_server::{run_stdio, McpContext};
@@ -400,4 +402,155 @@ async fn a_malformed_line_is_counted_not_guessed() {
         .as_str()
         .expect("tool text")
         .contains("No session nope in this repository's evidence."));
+}
+
+// ---------------------------------------------------------------------------
+// Watchdog deduplication records
+// ---------------------------------------------------------------------------
+
+type StubCalls = Arc<Mutex<Vec<String>>>;
+
+/// Answers the three Gitea requests one filed candidate makes: the identity,
+/// the checkout's push permission, and the created issue.
+async fn stub_gitea_entry(
+    State(calls): State<StubCalls>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let method = request.method().as_str().to_string();
+    let path = request.uri().path().to_string();
+    let host = request
+        .headers()
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    calls
+        .lock()
+        .expect("calls")
+        .push(format!("{method} {path}"));
+    let (status, body) = match (method.as_str(), path.as_str()) {
+        ("GET", "/api/v1/user") => (200, json!({"login": "alice"}).to_string()),
+        ("GET", "/api/v1/repos/owner/name") => (
+            200,
+            json!({"permissions": {"pull": true, "push": true, "admin": false}}).to_string(),
+        ),
+        ("POST", "/api/v1/repos/owner/name/issues") => (
+            201,
+            json!({
+                "number": 101,
+                "title": "[watchdog] update-error: boom",
+                "html_url": format!("http://{host}/owner/name/issues/101"),
+                "state": "open",
+                "body": "the body",
+                "labels": [],
+                "created_at": "2026-01-01T00:00:00.000Z",
+            })
+            .to_string(),
+        ),
+        _ => (500, format!("unexpected {method} {path}")),
+    };
+    axum::response::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .expect("a stub response")
+}
+
+#[tokio::test]
+async fn a_dedup_run_records_the_issue_the_turn_files() {
+    let calls: StubCalls = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let app = axum::Router::new()
+        .fallback(stub_gitea_entry)
+        .with_state(calls.clone());
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mut context = fixture("dedup-filed");
+    let remote = format!("http://127.0.0.1:{port}/owner/name.git");
+    let added = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&context.repo_dir)
+        .args(["remote", "add", "origin", &remote])
+        .status()
+        .expect("git runs");
+    assert!(added.success(), "the fixture origin is added");
+    let run_dir = context
+        .state_dir
+        .join("watchdog")
+        .join("runs")
+        .join("cycle")
+        .join("dedup");
+    std::fs::create_dir_all(&run_dir).expect("the dedup run directory");
+    context.environment = HashMap::from([
+        ("GITEA_TOKEN".to_string(), "secret".to_string()),
+        (
+            "DEVBOARD_DEDUP_RUN_DIR".to_string(),
+            run_dir.to_string_lossy().into_owned(),
+        ),
+    ]);
+
+    let frames = drive(
+        &context,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 40,
+                "method": "tools/call",
+                "params": {
+                    "name": "issue_create",
+                    "arguments": {
+                        "title": "[watchdog] update-error: boom",
+                        "body": "the body",
+                        "fingerprint": "fp-1"
+                    }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 41,
+                "method": "tools/call",
+                "params": {
+                    "name": "issue_create",
+                    "arguments": {
+                        "title": "[watchdog] update-error: again",
+                        "body": "the body"
+                    }
+                }
+            }),
+        ],
+    )
+    .await;
+
+    let created = tool_result(&frames, 40);
+    let url = format!("http://127.0.0.1:{port}/owner/name/issues/101");
+    assert_eq!(created["number"], 101);
+    assert_eq!(created["url"], url);
+
+    let unattributed = reply(&frames, 41);
+    assert_eq!(unattributed["result"]["isError"], true);
+    assert!(unattributed["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool text")
+        .contains("fingerprint is required"));
+
+    let records = devboard::workers::watchdog::read_dedup_records(&run_dir);
+    assert_eq!(records.len(), 1, "one filed candidate, one record");
+    assert_eq!(records[0].fingerprint, "fp-1");
+    assert_eq!(records[0].action, "filed");
+    assert_eq!(records[0].number, Some(101));
+    assert_eq!(records[0].url.as_deref(), Some(url.as_str()));
+
+    let posts = calls
+        .lock()
+        .expect("calls")
+        .iter()
+        .filter(|call| call.as_str() == "POST /api/v1/repos/owner/name/issues")
+        .count();
+    assert_eq!(posts, 1, "the refused call files nothing");
+    server.abort();
 }

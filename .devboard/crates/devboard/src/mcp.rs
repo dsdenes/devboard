@@ -407,12 +407,13 @@ fn catalog() -> Vec<Value> {
         tool(
             "issue_create",
             "Create an issue",
-            "Creates one issue with a one-line title, a full Markdown body, and an optional list of label names. Each label is ensured before the issue is created; the created issue's number, URL, title, and labels are returned.",
+            "Creates one issue with a one-line title, a full Markdown body, and an optional list of label names. Each label is ensured before the issue is created; the created issue's number, URL, title, and labels are returned. A watchdog deduplication run passes the candidate `fingerprint`, which the tool records for the cycle.",
             object_schema(
                 json!({
                     "title": string_schema(),
                     "body": string_schema(),
                     "labels": json!({"type": "array", "items": string_schema(), "maxItems": 20}),
+                    "fingerprint": string_schema(),
                 }),
                 &["title", "body"],
             ),

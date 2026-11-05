@@ -49,6 +49,7 @@ For every candidate, do exactly one of:
    - `title` is exactly `[watchdog] <category>: <line>`, one line, at most 80 characters; truncate
      an overlong line with `…`.
    - `body` is the complete Markdown body below.
+   - `fingerprint` is required and is exactly the candidate's fingerprint from the set above.
    - The tool records the created issue for the cycle and returns its number and URL.
 2. **Duplicate of an open issue** — call `watchdog_duplicate_record` with `fingerprint` and the
    open issue URL in `issue`.

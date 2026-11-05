@@ -707,7 +707,7 @@
       {
         "name": "issue_create",
         "title": "Create an issue",
-        "description": "Creates one issue with a one-line title, a full Markdown body, and an optional list of label names. Each label is ensured before the issue is created; the created issue's number, URL, title, and labels are returned.",
+        "description": "Creates one issue with a one-line title, a full Markdown body, and an optional list of label names. Each label is ensured before the issue is created; the created issue's number, URL, title, and labels are returned. A watchdog deduplication run passes the candidate `fingerprint`, which the tool records for the cycle.",
         "inputSchema": {
           "type": "object",
           "additionalProperties": false,
@@ -724,6 +724,9 @@
                 "type": "string"
               },
               "maxItems": 20
+            },
+            "fingerprint": {
+              "type": "string"
             }
           },
           "required": [

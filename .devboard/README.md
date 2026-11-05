@@ -2753,14 +2753,16 @@ The agent reads the repository's currently open issues itself through the Devboa
 (`issues_list` and `issue_get`). It files each unique candidate itself through the MCP
 `issue_create` tool and records each duplicate disposition, against an open issue URL or another
 candidate's fingerprint, through the MCP `watchdog_duplicate_record` tool. A duplicate creates and
-comments on nothing. The tools write `<run-dir>/dedup-records.jsonl`; the cycle reads those records
-and never asks for, parses, or validates an answer object. A candidate with no record stays
-pending, so a failed tool call files nothing and the next cycle retries it. A duplicate of an open
-issue is suppressed silently: no issue, no comment. Its ledger entry records `duplicate:<url>` with
-no `filed:` disposition, so it is never treated as filed and never takes a 24-hour recurrence
-comment. `issues_list` reads every open issue page by page and reports `truncated: true` when an
-explicit `limit` or a forge read ceiling kept the older rows back, so an open issue below one
-`list` page is never invisible by silence.
+comments on nothing. The tools write `<run-dir>/dedup-records.jsonl`: `issue_create` writes the
+`filed` record beside the issue it created and requires the candidate `fingerprint` while a
+deduplication run is recording, so every filing is attributable to its candidate. The cycle reads
+those records and never asks for, parses, or validates an answer object. A candidate with no record
+stays pending, so a failed tool call files nothing and the next cycle retries it. A duplicate of
+an open issue is suppressed silently: no issue, no comment. Its ledger entry records
+`duplicate:<url>` with no `filed:` disposition, so it is never treated as filed and never takes a
+24-hour recurrence comment. `issues_list` reads every open issue page by page and reports
+`truncated: true` when an explicit `limit` or a forge read ceiling kept the older rows back, so an
+open issue below one `list` page is never invisible by silence.
 
 Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
 that issue is closed, the next cycle that observes the same evidence sends the candidate to the
