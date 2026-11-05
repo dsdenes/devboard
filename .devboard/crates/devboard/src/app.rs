@@ -1037,12 +1037,13 @@ impl App {
                 "Cross-origin feedback is refused.",
             );
         }
-        let Some((raw, too_large)) = read_report(headers, body).await else {
-            return Replies::problem(headers, 400, "The report could not be read.", &[]);
+        let raw = match read_report(headers, body).await {
+            Ok(raw) => raw,
+            Err(ReportRefusal::TooLarge) => return too_large_answer(headers),
+            Err(ReportRefusal::Unreadable) => {
+                return Replies::problem(headers, 400, "The report could not be read.", &[])
+            }
         };
-        if too_large {
-            return too_large_answer(headers);
-        }
         let value: Value = match serde_json::from_str(&raw) {
             Ok(value) => value,
             Err(_) => return Replies::problem(headers, 400, "The report is not valid JSON.", &[]),
@@ -1119,12 +1120,13 @@ impl App {
                 "Cross-origin feedback is refused.",
             );
         }
-        let Some((raw, too_large)) = read_report(headers, body).await else {
-            return Replies::problem(headers, 400, "The report could not be read.", &[]);
+        let raw = match read_report(headers, body).await {
+            Ok(raw) => raw,
+            Err(ReportRefusal::TooLarge) => return too_large_answer(headers),
+            Err(ReportRefusal::Unreadable) => {
+                return Replies::problem(headers, 400, "The report could not be read.", &[])
+            }
         };
-        if too_large {
-            return too_large_answer(headers);
-        }
         let value: Value = match serde_json::from_str(&raw) {
             Ok(value) => value,
             Err(_) => return Replies::problem(headers, 400, "The report is not valid JSON.", &[]),
@@ -1188,24 +1190,45 @@ impl App {
 /// The largest body either mutating endpoint reads.
 const MAX_REPORT_BYTES: usize = 64_000;
 
-/// Reads one bounded body, or `None` when it could not be read.
-async fn read_report(headers: &HeaderMap, body: axum::body::Body) -> Option<(String, bool)> {
+/// Why one report body could not be read.
+enum ReportRefusal {
+    /// The body exceeds `MAX_REPORT_BYTES`, declared or as read.
+    TooLarge,
+    /// The body could not be read at all, or is not UTF-8.
+    Unreadable,
+}
+
+/// Reads one bounded body, or names why it was refused.
+async fn read_report(headers: &HeaderMap, body: axum::body::Body) -> Result<String, ReportRefusal> {
     let declared = headers
         .get(axum::http::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.0);
     if declared.is_finite() && declared > MAX_REPORT_BYTES as f64 {
-        return Some((String::new(), true));
+        return Err(ReportRefusal::TooLarge);
     }
-    let collected = axum::body::to_bytes(body, MAX_REPORT_BYTES + 1)
-        .await
-        .ok()?;
-    let raw = std::str::from_utf8(&collected).ok()?.to_string();
+    let collected = match axum::body::to_bytes(body, MAX_REPORT_BYTES + 1).await {
+        Ok(collected) => collected,
+        // The one-byte-over bound refuses an oversized chunked body here; every
+        // other read failure, such as a dropped connection, is not a size answer.
+        Err(error) => {
+            return Err(
+                if error.into_inner().is::<http_body_util::LengthLimitError>() {
+                    ReportRefusal::TooLarge
+                } else {
+                    ReportRefusal::Unreadable
+                },
+            )
+        }
+    };
+    let raw = std::str::from_utf8(&collected)
+        .map_err(|_| ReportRefusal::Unreadable)?
+        .to_string();
     if crate::feedback::js_len(&raw) > MAX_REPORT_BYTES {
-        return Some((raw, true));
+        return Err(ReportRefusal::TooLarge);
     }
-    Some((raw, false))
+    Ok(raw)
 }
 
 /// The 413 for a report larger than the bound.

@@ -374,6 +374,71 @@ async fn a_repeated_idempotency_key_files_one_issue() {
     fixture.stub.abort();
 }
 
+/// One report body of exactly `len` bytes that is still valid JSON.
+fn report_body(len: usize) -> String {
+    let prefix = "{\"report\":\"";
+    let suffix = "\"}";
+    let filler = len - prefix.len() - suffix.len();
+    format!("{prefix}{}{suffix}", "x".repeat(filler))
+}
+
+/// One raw chunked POST, so the request carries no `Content-Length`.
+async fn chunked_post(fixture: &Fixture, path: &str, body: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let port = fixture
+        .base
+        .rsplit(':')
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .expect("a port");
+    let mut request = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {TOKEN}\r\n\
+         Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n"
+    )
+    .into_bytes();
+    for chunk in body.as_bytes().chunks(4_096) {
+        request.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+        request.extend_from_slice(chunk);
+        request.extend_from_slice(b"\r\n");
+    }
+    request.extend_from_slice(b"0\r\n\r\n");
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("a connection");
+    // The server answers and closes as soon as the over-bound body is read, so
+    // a write error carries no information; the headers below are the evidence.
+    let _ = stream.write_all(&request).await;
+    let mut answer = Vec::new();
+    let mut buf = [0u8; 4096];
+    while !answer.windows(4).any(|window| window == b"\r\n\r\n") {
+        match stream.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => answer.extend_from_slice(&buf[..read]),
+        }
+    }
+    let text = String::from_utf8_lossy(&answer).to_string();
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("no status line in {text:?}"));
+    (status, text)
+}
+
+/// One response header from the raw answer above, lower-cased by name.
+fn header(answer: &str, wanted: &str) -> String {
+    answer
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case(wanted)
+                .then(|| value.trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
 #[tokio::test]
 async fn an_oversized_report_is_refused_before_parsing() {
     let fixture = start("oversized").await;
@@ -385,7 +450,82 @@ async fn an_oversized_report_is_refused_before_parsing() {
         .await
         .expect("an answer");
     assert_eq!(response.status(), 413);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/problem+json")
+    );
     assert!(!fixture.root.join("repo").join(".devboard").exists());
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+#[tokio::test]
+async fn a_chunked_feedback_body_over_the_bound_answers_413() {
+    let fixture = start("chunked-oversized").await;
+    let (status, answer) = chunked_post(&fixture, "/feedback", &report_body(64_002)).await;
+    assert_eq!(status, 413, "{answer}");
+    assert_eq!(header(&answer, "content-type"), "application/problem+json");
+    assert_eq!(
+        fixture.count.load(Ordering::SeqCst),
+        0,
+        "an oversized report is never filed"
+    );
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+#[tokio::test]
+async fn a_chunked_goal_proposal_body_over_the_bound_answers_413() {
+    let fixture = start("chunked-proposal").await;
+    let (status, answer) = chunked_post(&fixture, "/goal-proposals", &report_body(64_002)).await;
+    assert_eq!(status, 413, "{answer}");
+    assert_eq!(header(&answer, "content-type"), "application/problem+json");
+    assert!(
+        !fixture.repo.join(".devboard/goal-proposals").exists(),
+        "an oversized proposal writes no draft"
+    );
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+#[tokio::test]
+async fn a_report_that_is_not_utf8_answers_400() {
+    let fixture = start("not-utf8").await;
+    let response = client()
+        .post(format!("{}/feedback", fixture.base))
+        .headers(bearer())
+        .body(vec![0x7b, 0xff, 0xfe, 0x7d])
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 400);
+    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(body["detail"], "The report could not be read.");
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+#[tokio::test]
+async fn an_empty_goal_proposal_answers_400() {
+    let fixture = start("empty-proposal").await;
+    let response = client()
+        .post(format!("{}/goal-proposals", fixture.base))
+        .headers(bearer())
+        .body(Vec::new())
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 400);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/problem+json")
+    );
     fixture.handle.abort();
     fixture.stub.abort();
 }
