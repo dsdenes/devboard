@@ -12,7 +12,6 @@ license = "MIT"
 anyhow = "1"
 axum = { version = "0.8", features = ["ws", "http2"] }
 base64 = "0.22"
-bytes = "1"
 flate2 = "1"
 xz2 = { version = "0.1", features = ["static"] }
 futures-util = "0.3"
@@ -35,7 +34,6 @@ subtle = "2"
 tar = "0.4"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect"] }
-tower = "0.5"
 time = { version = "0.3", features = ["formatting", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2"
