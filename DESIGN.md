@@ -254,9 +254,11 @@ invented for this document.
 3. **One primary per surface.** `primary` is the single filled action, `accent` marks links,
    selection, and current position, and `ring` is focus only.
 4. **State is a word.** Every badge and state line pairs its color with visible text that states
-   the meaning, so the state survives grayscale and color blindness. A compact 6px indicator dot
-   carries no visible label: the state word joins the accessible name of the dot or of the control
-   that owns it, so the dot never states the state alone.
+   the meaning, so the state survives grayscale and color blindness. An indicator dot carries no
+   visible label: the state word joins the accessible name of the dot or of the control that owns
+   it, so the dot never states the state alone. Its diameter is the owning component's geometry —
+   6px in the rail, the status-bar items, and state pills, 7px for the status bar's connection,
+   8px on the shared agent activity bar — and it is never a spacing step.
 5. **Type stays on the scale.** System stacks only; `overline` for uppercase micro-labels and
    monospace for paths, identifiers, counts, and commands; no new size between steps.
 6. **Spacing is a grid with named exceptions.** Use the approved scale; component geometry and
