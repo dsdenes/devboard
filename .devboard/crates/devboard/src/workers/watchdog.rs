@@ -1388,17 +1388,27 @@ pub fn serving_harness(process: &ProcessSnapshot) -> Option<PathBuf> {
     process.cwd.as_deref().and_then(real_path)
 }
 
-/// True when a dashboard serves a repository inside harness verification
-/// scratch (`<anything>/.devboard/.tmp`).
-pub fn is_verification_scratch(repo_dir: &str) -> bool {
+/// True when a dashboard serves a repository inside a harness verification
+/// scratch root: `<anything>/.devboard/.tmp` for the verification scripts, or
+/// `<anything>/.devboard/.test-tmp` for the crate test suite's fixtures.
+///
+/// A fixture is invisible even though it looks like a real host, because the
+/// test that started it deletes it and its deliberate release, install, and
+/// server failures prove an assertion. `supervision::is_verification_scratch`
+/// answers the other question — whether an orphan is safe to reap — and
+/// deliberately excludes the test root, so the two predicates stay separate.
+fn is_fixture_repository(repo_dir: &str) -> bool {
     let segments: Vec<&str> = repo_dir
         .split(['/', '\\'])
         .filter(|segment| !segment.is_empty())
         .collect();
-    segments
-        .iter()
-        .enumerate()
-        .any(|(index, segment)| *segment == ".devboard" && segments.get(index + 1) == Some(&".tmp"))
+    segments.iter().enumerate().any(|(index, segment)| {
+        *segment == ".devboard"
+            && matches!(
+                segments.get(index + 1),
+                Some(next) if *next == ".tmp" || *next == ".test-tmp"
+            )
+    })
 }
 
 /// The local release directory override the verification scripts set.
@@ -1407,7 +1417,7 @@ const RELEASE_FIXTURE_ENV: &str = "DEVBOARD_RELEASE_DIR";
 /// True when a dashboard belongs to verification.
 pub fn is_verification_fixture(repo_dir: &str, env: &HashMap<String, String>) -> bool {
     let release_dir = env.get(RELEASE_FIXTURE_ENV);
-    is_verification_scratch(repo_dir) || release_dir.is_some_and(|value| !value.is_empty())
+    is_fixture_repository(repo_dir) || release_dir.is_some_and(|value| !value.is_empty())
 }
 
 /// The live watchdog verification seeds a scratch dashboard on purpose.

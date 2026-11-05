@@ -196,11 +196,18 @@ fn discovery_deduplicates_excludes_the_watchdog_and_resolves_the_harness() {
     let harness = root.join("repo").join(".devboard");
     let state_dir = harness.join(".tmp");
     std::fs::create_dir_all(state_dir.join("journal")).expect("a state directory");
-    let repo = root.join("repo");
+    // A real dashboard serves a host outside every verification scratch root;
+    // the harness and state directories stay real so both resolve.
+    let real_repo = PathBuf::from("/srv/host");
     let other_harness = root.join("other").join(".devboard");
     std::fs::create_dir_all(&other_harness).expect("another harness");
     let omitted = root.join(".devboard").join(".tmp").join("fixture");
     std::fs::create_dir_all(&omitted).expect("a fixture dashboard");
+    let test_fixture = root
+        .join(".devboard")
+        .join(".test-tmp")
+        .join("install-start-start-1");
+    std::fs::create_dir_all(&test_fixture).expect("a crate test fixture dashboard");
 
     let snapshot = |pid: u32,
                     cmdline: &str,
@@ -238,40 +245,40 @@ fn discovery_deduplicates_excludes_the_watchdog_and_resolves_the_harness() {
             100,
             "bun server/index.ts",
             &harness,
-            &repo,
-            base_env(&repo),
+            &real_repo,
+            base_env(&real_repo),
             vec![1],
         ),
         snapshot(
             100,
             "bun server/index.ts",
             &harness,
-            &repo,
-            base_env(&repo),
+            &real_repo,
+            base_env(&real_repo),
             vec![1],
         ),
         snapshot(
             101,
             "bun server/index.ts",
             &harness,
-            &repo,
-            base_env(&repo),
+            &real_repo,
+            base_env(&real_repo),
             vec![1],
         ),
         snapshot(
             102,
             "bun server/index.ts",
             &harness,
-            &repo,
-            base_env(&repo),
+            &real_repo,
+            base_env(&real_repo),
             vec![101],
         ),
         snapshot(
             103,
             "bun other.ts",
             &other_harness,
-            &repo,
-            base_env(&repo),
+            &real_repo,
+            base_env(&real_repo),
             vec![1],
         ),
         snapshot(
@@ -290,6 +297,14 @@ fn discovery_deduplicates_excludes_the_watchdog_and_resolves_the_harness() {
             opted_in,
             vec![1],
         ),
+        snapshot(
+            106,
+            "bun server/index.ts",
+            &test_fixture,
+            &test_fixture,
+            base_env(&test_fixture),
+            vec![1],
+        ),
     ];
     let self_pids = HashSet::from([101]);
     let instances = instances_from_processes(&processes, &self_pids);
@@ -298,10 +313,14 @@ fn discovery_deduplicates_excludes_the_watchdog_and_resolves_the_harness() {
         2,
         "deduplicated, minus the watchdog and fixtures"
     );
+    assert!(
+        instances.iter().all(|instance| instance.pid != 106),
+        "a crate test fixture under .devboard/.test-tmp is never surveyed"
+    );
     let first = &instances[0];
     assert_eq!(first.pid, 100);
     assert_eq!(first.port, 4747);
-    assert_eq!(first.repo_dir, repo.to_string_lossy());
+    assert_eq!(first.repo_dir, real_repo.to_string_lossy());
     assert_eq!(
         first.harness,
         std::fs::canonicalize(&harness)
@@ -310,7 +329,7 @@ fn discovery_deduplicates_excludes_the_watchdog_and_resolves_the_harness() {
     );
     assert_eq!(
         first.journal,
-        journal_file(&state_dir, &repo).to_string_lossy()
+        journal_file(&state_dir, &real_repo).to_string_lossy()
     );
     assert!(first.instrumented);
     assert_eq!(instances[1].pid, 105);
