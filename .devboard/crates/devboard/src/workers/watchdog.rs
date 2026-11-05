@@ -5506,7 +5506,7 @@ fn handoff_held(handoff: Option<i64>, grace_ms: i64, now: i64) -> bool {
 
 /// Every pid a live detached run, goal-draft owner, or worker lock still
 /// holds.
-pub fn orphan_claims(scopes: &[SupervisionScope]) -> HashSet<u32> {
+pub fn protected_pids(scopes: &[SupervisionScope]) -> HashSet<u32> {
     let mut pids = HashSet::new();
     let now = epoch_ms();
     for scope in scopes {
@@ -5712,7 +5712,7 @@ pub fn run_orphan_reaper(mut options: OrphanReaperRunOptions) -> ReapReport {
         }
     };
     let scopes = reaper_scopes(&root, options.state_dir.as_deref(), &instances);
-    let protected_pids = orphan_claims(&scopes);
+    let protected_pids = protected_pids(&scopes);
     let report = reap_orphans(ReapOptions {
         scopes,
         protected_pids,
