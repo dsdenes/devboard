@@ -248,7 +248,7 @@ checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
 name = "devboard"
-version = "1.38.3"
+version = "1.38.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "devboard-contract"
-version = "1.38.3"
+version = "1.38.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "devboard-shadow"
-version = "1.38.3"
+version = "1.38.4"
 dependencies = [
  "anyhow",
  "axum",
