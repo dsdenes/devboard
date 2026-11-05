@@ -29,6 +29,7 @@ import {
   FAMILIES,
   clearFamilyRuntime,
   escapePattern,
+  familyRuntimeRoot,
   giteaToken,
   giteaUrl,
   harnessDir,
@@ -165,20 +166,6 @@ function workerEnvironment(prepared: Prepared): NodeJS.ProcessEnv {
   };
 }
 
-/** The directory a family's worker publishes under, for the warm-up. */
-function familyRoot(family: Family, prepared: Prepared): string {
-  if (family === "watchdog") {
-    return path.join(prepared.repoDir, ".devboard", ".tmp", "watchdog");
-  }
-  if (family === "mcp-optimizer") {
-    return path.join(prepared.stateDir, "coach");
-  }
-  if (family === "release-train") {
-    return path.join(prepared.stateDir, "release-train");
-  }
-  return path.join(prepared.stateDir, family);
-}
-
 function familyArgs(family: Family, prepared: Prepared): string[] {
   if (family === "watchdog") {
     return [
@@ -207,7 +194,7 @@ async function warmUp(family: Family, prepared: Prepared): Promise<void> {
   child.stderr?.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  const root = familyRoot(family, prepared);
+  const root = familyRuntimeRoot(family, prepared);
   try {
     await waitFor(`${family} to publish state`, () => jsonFiles(root).length > 0 || !child.killed, 10_000);
     // Let the immediate cycle start and record its outcome, whatever it is.
@@ -265,7 +252,7 @@ function settle(value: unknown, now: string, later: string): unknown {
 
 /** Seeds every family far from its next cycle and clears warm-up noise. */
 function seedCadence(family: Family, prepared: Prepared): void {
-  const root = familyRoot(family, prepared);
+  const root = familyRuntimeRoot(family, prepared);
   if (!existsSync(root)) return;
   const now = new Date().toISOString();
   const later = new Date(Date.now() + FAR_FUTURE_MS).toISOString();
