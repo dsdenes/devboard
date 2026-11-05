@@ -118,7 +118,7 @@ pub struct ProcessStat {
     pub pid: u32,
     pub ppid: i64,
     /// The process group id; equal to `pid` for a supervised child.
-    pub pgrp: i64,
+    pub pgid: i64,
     /// Field 22, in USER_HZ ticks since boot.
     pub start_ticks: i64,
     /// Field 3, e.g. `R`, `S`, or `Z`.
@@ -138,19 +138,19 @@ pub fn process_stat(pid: u32) -> Option<ProcessStat> {
 ///
 /// The command name may contain spaces and parentheses; fields resume after
 /// the last `)`. That suffix starts at field 3 (state), so ppid is index 1,
-/// pgrp index 2, and starttime index 19.
+/// pgid index 2, and starttime index 19.
 fn parse_stat(pid: u32, text: &str) -> Option<ProcessStat> {
     let close = text.rfind(')')?;
     let suffix = text.get(close + 2..)?;
     let fields: Vec<&str> = suffix.split(' ').collect();
     let state = fields.first().copied().unwrap_or_default().to_string();
     let ppid = fields.get(1)?.parse::<i64>().ok()?;
-    let pgrp = fields.get(2)?.parse::<i64>().ok()?;
+    let pgid = fields.get(2)?.parse::<i64>().ok()?;
     let start_ticks = fields.get(19)?.parse::<i64>().ok()?;
     Some(ProcessStat {
         pid,
         ppid,
-        pgrp,
+        pgid,
         start_ticks,
         state,
     })
@@ -310,7 +310,7 @@ fn record_child(state_dir: &Path, pid: u32, cwd: &Path) -> Option<PathBuf> {
         owner_pid: std::process::id(),
         started_at: now_iso8601_millis(),
         start_ticks: stat.start_ticks,
-        pgid: stat.pgrp,
+        pgid: stat.pgid,
     };
     let path = supervision_record_path(state_dir, pid);
     let value = serde_json::to_value(&record).ok()?;
@@ -958,7 +958,7 @@ pub fn signal_process_group(pid: u32, signal: i32) {
         }
         let stat = process_stat(pid);
         let group = match stat {
-            Some(stat) if stat.pgrp == i64::from(pid) && pid != std::process::id() => -(pid as i32),
+            Some(stat) if stat.pgid == i64::from(pid) && pid != std::process::id() => -(pid as i32),
             _ => pid as i32,
         };
         if unsafe { libc::kill(group, signal) } == 0 {
@@ -1365,7 +1365,7 @@ mod tests {
         let stat = parse_stat(42, text).expect("a stat");
         assert_eq!(stat.pid, 42);
         assert_eq!(stat.ppid, 7);
-        assert_eq!(stat.pgrp, 42);
+        assert_eq!(stat.pgid, 42);
         assert_eq!(stat.start_ticks, 987_654);
         assert_eq!(stat.state, "R");
         assert!(parse_stat(42, "42 without a close parenthesis").is_none());
