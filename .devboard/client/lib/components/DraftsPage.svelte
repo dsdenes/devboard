@@ -4,7 +4,8 @@
   import NotebookPen from "lucide-svelte/icons/notebook-pen";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import { draftProposal } from "../draft-format";
-  import { issues, markDraftsPage } from "../issues.svelte";
+  import { goalDrafts, markDraftsPage } from "../goal-drafts.svelte";
+  import { issues } from "../issues.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import CommandButton from "./CommandButton.svelte";
@@ -17,15 +18,15 @@
    * refresh loop stops with the page. Opening the page restores the stored
    * draft path; a path whose file vanished resolves to the list.
    */
-  const proposal = $derived(draftProposal(issues.draft?.text ?? ""));
-  const hasDrafts = $derived(issues.drafts.length > 0);
+  const proposal = $derived(draftProposal(goalDrafts.draft?.text ?? ""));
+  const hasDrafts = $derived(goalDrafts.drafts.length > 0);
 
   // The header reports the selected draft's run only; another draft's run is not this draft's state.
-  const run = $derived(issues.draft !== null ? issues.draftRunFor(issues.draft.path) : null);
+  const run = $derived(goalDrafts.draft !== null ? goalDrafts.draftRunFor(goalDrafts.draft.path) : null);
   const status = $derived(run?.status ?? "idle");
   const running = $derived(run?.status === "running");
   const question = $derived(run?.question ?? null);
-  const error = $derived(issues.draftErrorFor(issues.draft?.path ?? null));
+  const error = $derived(goalDrafts.draftErrorFor(goalDrafts.draft?.path ?? null));
 
   let instructions = $state("");
   let input = $state<HTMLTextAreaElement | undefined>(undefined);
@@ -33,18 +34,18 @@
   let deleteTarget = $state<{ path: string; name: string } | null>(null);
 
   $effect(() => {
-    if (issues.draftCreateOpen) input?.focus();
+    if (goalDrafts.draftCreateOpen) input?.focus();
   });
 
   async function submitNewGoal(): Promise<void> {
-    if (instructions.trim().length === 0 || issues.draftCreating) return;
-    if (await issues.createDraft(instructions)) instructions = "";
+    if (instructions.trim().length === 0 || goalDrafts.draftCreating) return;
+    if (await goalDrafts.createDraft(instructions)) instructions = "";
   }
 
   function cancelNewGoal(): void {
-    if (issues.draftCreating) return;
+    if (goalDrafts.draftCreating) return;
     instructions = "";
-    issues.cancelDraftCreate();
+    goalDrafts.cancelDraftCreate();
   }
 
   function onNewGoalKeydown(event: KeyboardEvent): void {
@@ -57,13 +58,13 @@
   onMount(() => {
     markDraftsPage(true);
     const restore = (): void => {
-      const saved = issues.draftPath;
-      if (saved !== null && issues.draft === null) issues.openDraft(saved);
+      const saved = goalDrafts.draftPath;
+      if (saved !== null && goalDrafts.draft === null) goalDrafts.openDraft(saved);
     };
-    issues.refreshDrafts();
+    goalDrafts.refreshDrafts();
     restore();
     const timer = setInterval(() => {
-      issues.refreshDrafts();
+      goalDrafts.refreshDrafts();
       restore();
     }, 2000);
     return () => {
@@ -78,7 +79,7 @@
     <div>
       <h1 class="issues-overview__title">Draft goals</h1>
       <p class="issues-overview__repo mono" title={issues.repoLabel}>
-        {issues.repoLabel} · {issues.draftStatus} · {issues.drafts.length} draft(s)
+        {issues.repoLabel} · {goalDrafts.draftStatus} · {goalDrafts.drafts.length} draft(s)
       </p>
     </div>
   </header>
@@ -87,18 +88,18 @@
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
         <Button
-          variant={issues.draftCreateOpen ? "secondary" : "default"}
+          variant={goalDrafts.draftCreateOpen ? "secondary" : "default"}
           size="sm"
           data-testid="issues-draft-new"
           data-command="issues.draft.new"
-          aria-expanded={issues.draftCreateOpen}
-          aria-controls={issues.draftCreateOpen ? "issues-draft-new-popover" : undefined}
-          onclick={() => issues.beginDraftCreate()}
+          aria-expanded={goalDrafts.draftCreateOpen}
+          aria-controls={goalDrafts.draftCreateOpen ? "issues-draft-new-popover" : undefined}
+          onclick={() => goalDrafts.beginDraftCreate()}
         >
           New goal
         </Button>
       </div>
-      {#if issues.draftCreateOpen}
+      {#if goalDrafts.draftCreateOpen}
         <div
           class="issues-draft-new"
           id="issues-draft-new-popover"
@@ -118,12 +119,12 @@
             bind:this={input}
             bind:value={instructions}
             rows="4"
-            disabled={issues.draftCreating}
+            disabled={goalDrafts.draftCreating}
             placeholder="Describe the goal in your own words."
           ></textarea>
-          {#if issues.draftCreateError !== null}
+          {#if goalDrafts.draftCreateError !== null}
             <p class="issues-error" data-testid="issues-draft-new-error" role="alert">
-              {issues.draftCreateError}
+              {goalDrafts.draftCreateError}
             </p>
           {/if}
           <div class="issues-draft-new__actions">
@@ -131,7 +132,7 @@
               variant="ghost"
               data-testid="issues-draft-new-cancel"
               data-command="issues.draft.new.cancel"
-              disabled={issues.draftCreating}
+              disabled={goalDrafts.draftCreating}
               onclick={cancelNewGoal}
             >
               Cancel
@@ -139,13 +140,13 @@
             <CommandButton
               variant="default"
               label="Create draft"
-              evidence={() => issues.draftCreateError ?? issues.draftCreateOpen}
+              evidence={() => goalDrafts.draftCreateError ?? goalDrafts.draftCreateOpen}
               command={() => void submitNewGoal()}
               data-testid="issues-draft-new-submit"
               data-command="issues.draft.new.submit"
-              disabled={issues.draftCreating || instructions.trim().length === 0}
+              disabled={goalDrafts.draftCreating || instructions.trim().length === 0}
             >
-              {issues.draftCreating ? "Creating…" : "Create draft"}
+              {goalDrafts.draftCreating ? "Creating…" : "Create draft"}
             </CommandButton>
           </div>
         </div>
@@ -166,13 +167,13 @@
       {:else}
         <div class="panel__body panel__body--flush">
           <ol class="issues-drafts" data-testid="issues-draft-list">
-            {#each issues.drafts as draft (draft.path)}
-              {@const draftStatus = issues.draftState(draft.path)}
-              {@const waiting = issues.draftWaiting(draft.path)}
-              {@const blocker = issues.draftStartBlocker(draft.path)}
+            {#each goalDrafts.drafts as draft (draft.path)}
+              {@const draftStatus = goalDrafts.draftState(draft.path)}
+              {@const waiting = goalDrafts.draftWaiting(draft.path)}
+              {@const blocker = goalDrafts.draftStartBlocker(draft.path)}
               <li
                 class="issues-draft-row"
-                data-current={issues.draftPath === draft.path}
+                data-current={goalDrafts.draftPath === draft.path}
               >
                 <Button
                   bare
@@ -182,8 +183,8 @@
                   data-command="issues.draft.open"
                   data-status={draftStatus}
                   data-question={waiting ? "true" : undefined}
-                  aria-current={issues.draftPath === draft.path}
-                  onclick={() => issues.openDraft(draft.path)}
+                  aria-current={goalDrafts.draftPath === draft.path}
+                  onclick={() => goalDrafts.openDraft(draft.path)}
                 >
                   <span class="issues-draft__text">
                     <span class="issues-draft__name mono" title={draft.path}>{draft.name}</span>
@@ -210,13 +211,13 @@
                     variant="outline"
                     size="sm"
                     label="Start"
-                    evidence={() => issues.draftRunFor(draft.path)?.status}
-                    command={() => issues.startDraft(draft.path)}
+                    evidence={() => goalDrafts.draftRunFor(draft.path)?.status}
+                    command={() => goalDrafts.startDraft(draft.path)}
                     data-testid="issues-draft-row-start"
                     data-command="issues.draft.start"
                     data-path={draft.path}
                     aria-label={`Start ${draft.name}`}
-                    disabled={issues.draftRunning(draft.path)}
+                    disabled={goalDrafts.draftRunning(draft.path)}
                     title={blocker ?? "Start the elaboration agent"}
                   >
                     Start
@@ -228,7 +229,7 @@
                     data-command="issues.draft.delete"
                     data-path={draft.path}
                     aria-label={`Delete ${draft.name}`}
-                    disabled={issues.draftRunning(draft.path)}
+                    disabled={goalDrafts.draftRunning(draft.path)}
                     title={blocker ?? `Delete ${draft.name} from ${draft.path}`}
                     onclick={() => (deleteTarget = { path: draft.path, name: draft.name })}
                   >
@@ -242,11 +243,11 @@
       {/if}
     </section>
 
-    {#if issues.draft !== null}
+    {#if goalDrafts.draft !== null}
       <section
         class="panel issues-draft-detail"
         data-testid="issues-draft-detail"
-        data-path={issues.draft.path}
+        data-path={goalDrafts.draft.path}
         aria-labelledby="issues-draft-detail-title"
       >
         <div class="issues-draft-detail__header">
@@ -254,12 +255,12 @@
             <h2
               class="issues-draft-detail__title"
               id="issues-draft-detail-title"
-              title={issues.draft.heading || issues.draft.name}
+              title={goalDrafts.draft.heading || goalDrafts.draft.name}
             >
-              {issues.draft.heading || issues.draft.name}
+              {goalDrafts.draft.heading || goalDrafts.draft.name}
             </h2>
-            <span class="issues-draft-detail__path mono" title={issues.draft.path}>
-              {issues.draft.name}
+            <span class="issues-draft-detail__path mono" title={goalDrafts.draft.path}>
+              {goalDrafts.draft.name}
             </span>
           </div>
           {#if status !== "idle"}
@@ -275,8 +276,8 @@
                 <CommandButton
                   variant="ghost"
                   label="Stop"
-                  evidence={() => issues.draftRunFor(issues.draftPath)?.status}
-                  command={() => issues.stopDraft()}
+                  evidence={() => goalDrafts.draftRunFor(goalDrafts.draftPath)?.status}
+                  command={() => goalDrafts.stopDraft()}
                   class="issues-draft-detail__stop"
                   data-testid="issues-draft-stop"
                   data-command="issues.draft.stop"
@@ -299,7 +300,7 @@
               <IssuesQuestion
                 question={question}
                 testid="issues-draft-question"
-                onanswer={(value) => issues.submitDraftAnswer(value)}
+                onanswer={(value) => goalDrafts.submitDraftAnswer(value)}
                 choiceTestid="issues-draft-choice"
                 inputTestid="issues-draft-answer-input"
                 submitTestid="issues-draft-answer-submit"
@@ -355,9 +356,9 @@
   testid="issues-draft-delete-confirmation"
   confirmCommand="issues.draft.delete.confirm"
   cancelCommand="issues.draft.delete.cancel"
-  evidence={() => issues.drafts}
+  evidence={() => goalDrafts.drafts}
   onconfirm={() => {
-    if (deleteTarget !== null) issues.deleteDraft(deleteTarget.path);
+    if (deleteTarget !== null) goalDrafts.deleteDraft(deleteTarget.path);
     deleteTarget = null;
   }}
   oncancel={() => (deleteTarget = null)}

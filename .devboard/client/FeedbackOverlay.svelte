@@ -4,7 +4,7 @@
   import TriangleAlert from "lucide-svelte/icons/alert-triangle";
   import X from "lucide-svelte/icons/x";
   import { connection } from "./lib/connection.svelte";
-  import { issues } from "./lib/issues.svelte";
+  import { goalDrafts } from "./lib/goal-drafts.svelte";
   import Button from "./lib/components/ui/button.svelte";
   import CommandButton from "./lib/components/CommandButton.svelte";
   import CommandNotice from "./lib/components/CommandNotice.svelte";
@@ -645,7 +645,7 @@
       return;
     }
     const text = `Goal proposed: ${response.path}`;
-    issues.refreshDrafts();
+    goalDrafts.refreshDrafts();
     // Stay in selection mode so the next draft starts with one click.
     arm("REPORT");
     showToast({ ok: true, text });

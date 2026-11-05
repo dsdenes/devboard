@@ -23,7 +23,8 @@
   import { discover } from "./lib/discover.svelte";
   import { flow } from "./lib/flow.svelte";
   import { goal } from "./lib/goal.svelte";
-  import { draftsPageWasOpen, issues } from "./lib/issues.svelte";
+  import { draftsPageWasOpen, goalDrafts } from "./lib/goal-drafts.svelte";
+  import { issues } from "./lib/issues.svelte";
   import { agents } from "./lib/agents.svelte";
   import { applyTheme, layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
@@ -223,6 +224,7 @@
     flow,
     discover,
     issues,
+    goalDrafts,
     layout,
     connection,
     notifications,
@@ -250,7 +252,7 @@
   $effect(() => {
     if (connection.open && !draftsRequested) {
       draftsRequested = true;
-      issues.refreshDrafts();
+      goalDrafts.refreshDrafts();
     } else if (!connection.open) {
       draftsRequested = false;
     }
@@ -324,6 +326,7 @@
       const record = message as Record<string, unknown>;
       goal.handleEvent(record);
       issues.handleEvent(record);
+      goalDrafts.handleEvent(record);
       agents.handleEvent(record);
       flow.handleEvent(record);
       discover.handleEvent(record);
@@ -334,7 +337,9 @@
       handleFlowTabEvents(record);
       // The OS channel follows the same frames as the in-app state: every
       // snapshot, poll, and reconnect re-observes the whole pending set.
-      osNotifications.observe(collectPendingQuestions({ goal, discover, flow, issues }));
+      osNotifications.observe(
+        collectPendingQuestions({ goal, discover, flow, issues, goalDrafts }),
+      );
     });
     connection.connect();
     connection.startPolling();

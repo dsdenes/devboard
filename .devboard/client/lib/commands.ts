@@ -4,6 +4,7 @@ import type { GoalStore } from "./goal.svelte";
 import type { FlowStore } from "./flow.svelte";
 import type { DiscoverStore } from "./discover.svelte";
 import type { IssuesStore } from "./issues.svelte";
+import type { GoalDraftsStore } from "./goal-drafts.svelte";
 import type { LayoutStore, WorkspaceTab } from "./layout.svelte";
 import type { ConnectionStore } from "./connection.svelte";
 import type { NotificationStore } from "./notifications.svelte";
@@ -26,6 +27,7 @@ export interface CommandContext {
   flow: FlowStore;
   discover: DiscoverStore;
   issues: IssuesStore;
+  goalDrafts: GoalDraftsStore;
   layout: LayoutStore;
   connection: ConnectionStore;
   notifications: NotificationStore;
@@ -58,7 +60,7 @@ function tabId(kind: string, resourceId: string): string {
 
 /** Every palette entry; buttons use the same ids through `data-command`. */
 export function buildCommands(ctx: CommandContext): CommandDef[] {
-  const { goal, flow, discover, issues, layout, connection, notifications } = ctx;
+  const { goal, flow, discover, issues, goalDrafts, layout, connection, notifications } = ctx;
   const commands: CommandDef[] = [];
 
   const add = (command: CommandDef): void => {
@@ -298,7 +300,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
         resourceId: "drafts",
         title: "Draft goals",
       });
-      issues.beginDraftCreate();
+      goalDrafts.beginDraftCreate();
     },
   });
   add({

@@ -5,6 +5,7 @@ import {
   OsNotificationController,
   type DiscoverQuestionSource,
   type FlowQuestionSource,
+  type GoalDraftsQuestionSource,
   type GoalQuestionSource,
   type IssuesQuestionSource,
   type OsNotificationEnvironment,
@@ -94,7 +95,13 @@ function flowSource(overrides: Partial<FlowQuestionSource> = {}): FlowQuestionSo
 }
 
 function issuesSource(overrides: Partial<IssuesQuestionSource> = {}): IssuesQuestionSource {
-  return { agents: [], draftRuns: {}, drafts: [], ...overrides };
+  return { agents: [], ...overrides };
+}
+
+function goalDraftsSource(
+  overrides: Partial<GoalDraftsQuestionSource> = {},
+): GoalDraftsQuestionSource {
+  return { draftRuns: {}, drafts: [], ...overrides };
 }
 
 function sources(overrides: Partial<QuestionSources> = {}): QuestionSources {
@@ -103,6 +110,7 @@ function sources(overrides: Partial<QuestionSources> = {}): QuestionSources {
     discover: discoverSource(),
     flow: flowSource(),
     issues: issuesSource(),
+    goalDrafts: goalDraftsSource(),
     ...overrides,
   };
 }
@@ -379,7 +387,7 @@ test("an issues draft elaboration raises one notification naming the draft", () 
   controller.observe(
     collectPendingQuestions(
       sources({
-        issues: issuesSource({
+        goalDrafts: goalDraftsSource({
           draftRuns: {
             ".devboard/goal-proposals/001-question.md": {
               path: ".devboard/goal-proposals/001-question.md",
@@ -626,7 +634,7 @@ test("collecting ignores everything that is not a pending question", () => {
       }),
       discover: discoverSource({ active: true, agentQuestions: { conventions: null } }),
       flow: flowSource({ goalCreation: { question: null } }),
-      issues: issuesSource({
+      goalDrafts: goalDraftsSource({
         draftRuns: { "a.md": { path: "a.md", status: "running", question: null } },
       }),
     }),

@@ -13,6 +13,7 @@
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
+  import { goalDrafts } from "../goal-drafts.svelte";
   import { issues } from "../issues.svelte";
   import { queueCounts, queueSummary } from "../issues-queue";
   import { agents } from "../agents.svelte";
@@ -115,7 +116,7 @@
 
   /** The Draft goals entry: any live elaboration, a waiting question, its last failure. */
   function draftsRun(): RunState {
-    const runs = Object.values(issues.draftRuns);
+    const runs = Object.values(goalDrafts.draftRuns);
     if (runs.some((run) => run.question !== null)) return "answer";
     if (runs.some((run) => run.status === "running")) return "running";
     const finished = runs
@@ -351,7 +352,7 @@
           onclick={() => open("issues", "drafts", "drafts", "drafts", "Draft goals")}
         >
           <span class="sidebar-item__label">Draft goals</span>
-          <span class="sidebar-item__meta">{issues.drafts.length}</span>
+          <span class="sidebar-item__meta">{goalDrafts.drafts.length}</span>
           {#if draftsRun() !== "idle"}
             <span class="badge" data-tone={runStateTone(draftsRun())} data-testid="run-state-badge">
               {draftsRun()}

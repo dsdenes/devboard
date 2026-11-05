@@ -20,6 +20,7 @@ const { default: Sidebar } = await import("./Sidebar.svelte");
 const { layout } = await import("../layout.svelte");
 const { discover } = await import("../discover.svelte");
 const { goal } = await import("../goal.svelte");
+const { goalDrafts } = await import("../goal-drafts.svelte");
 const { issues } = await import("../issues.svelte");
 const { flow } = await import("../flow.svelte");
 const { agents } = await import("../agents.svelte");
@@ -126,8 +127,8 @@ function resetStores(): void {
   goal.lanes = [];
   issues.snapshot = null;
   issues.agentActivity = {};
-  issues.draftRuns = {};
-  issues.drafts = [];
+  goalDrafts.draftRuns = {};
+  goalDrafts.drafts = [];
   flow.status = "none";
   flow.checkpoints = [];
   flow.question = null;
@@ -442,27 +443,27 @@ test("the Issues entries read only the issues snapshot and draft runs", async ()
   await tick();
   expect(overview()?.getAttribute("data-run-state")).toBe("failed");
 
-  issues.draftRuns = {
+  goalDrafts.draftRuns = {
     "/a.md": { status: "running", path: "/a.md", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null, error: null, activity: [], question: null },
   };
   await tick();
   expect(drafts()?.getAttribute("data-run-state")).toBe("running");
   expect(badgeText(drafts())).toBe("running");
 
-  issues.draftRuns = {
+  goalDrafts.draftRuns = {
     "/a.md": { status: "running", path: "/a.md", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null, error: null, activity: [], question: { id: "q", message: "Which?", options: [] } },
   };
   await tick();
   expect(drafts()?.getAttribute("data-run-state")).toBe("answer");
 
-  issues.draftRuns = {
+  goalDrafts.draftRuns = {
     "/old.md": { status: "failed", path: "/old.md", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:01:00.000Z", error: "boom", activity: [], question: null },
     "/new.md": { status: "succeeded", path: "/new.md", startedAt: "2026-01-01T00:02:00.000Z", finishedAt: "2026-01-01T00:03:00.000Z", error: null, activity: [], question: null },
   };
   await tick();
   expect(drafts()?.getAttribute("data-run-state")).toBe("idle");
 
-  issues.draftRuns = {
+  goalDrafts.draftRuns = {
     "/old.md": { status: "failed", path: "/old.md", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:01:00.000Z", error: "boom", activity: [], question: null },
   };
   await tick();

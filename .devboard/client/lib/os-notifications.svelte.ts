@@ -75,6 +75,9 @@ export interface FlowQuestionSource {
 
 export interface IssuesQuestionSource {
   agents: readonly IssuesAgent[];
+}
+
+export interface GoalDraftsQuestionSource {
   draftRuns: Record<string, { path: string | null; status: string; question: RunQuestion | null }>;
   drafts: readonly { path: string; name: string }[];
 }
@@ -84,6 +87,7 @@ export interface QuestionSources {
   discover: DiscoverQuestionSource;
   flow: FlowQuestionSource;
   issues: IssuesQuestionSource;
+  goalDrafts: GoalDraftsQuestionSource;
 }
 
 export const NOTIFICATION_TITLE = "devboard";
@@ -189,9 +193,14 @@ function issuesQuestions(issues: IssuesQuestionSource): PendingQuestion[] {
       ),
     );
   }
-  const names = new Map(issues.drafts.map((draft) => [draft.path, draft.name]));
-  for (const path of Object.keys(issues.draftRuns).sort()) {
-    const run = issues.draftRuns[path];
+  return questions;
+}
+
+function goalDraftsQuestions(goalDrafts: GoalDraftsQuestionSource): PendingQuestion[] {
+  const questions: PendingQuestion[] = [];
+  const names = new Map(goalDrafts.drafts.map((draft) => [draft.path, draft.name]));
+  for (const path of Object.keys(goalDrafts.draftRuns).sort()) {
+    const run = goalDrafts.draftRuns[path];
     if (run === null || run === undefined || run.question === null) continue;
     if (run.status !== "running") continue;
     questions.push(
@@ -201,13 +210,14 @@ function issuesQuestions(issues: IssuesQuestionSource): PendingQuestion[] {
   return questions;
 }
 
-/** Every pending agent question across Goal, Discover, Flow, and Issues. */
+/** Every pending agent question across Goal, Discover, Flow, Issues, and drafts. */
 export function collectPendingQuestions(sources: QuestionSources): PendingQuestion[] {
   return [
     ...goalQuestions(sources.goal),
     ...discoverQuestions(sources.discover),
     ...flowQuestions(sources.flow),
     ...issuesQuestions(sources.issues),
+    ...goalDraftsQuestions(sources.goalDrafts),
   ];
 }
 
