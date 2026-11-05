@@ -6683,7 +6683,7 @@ impl WatchdogFamily {
         {
             return;
         }
-        if self.spawn_newest().is_none() {
+        if self.spawn_worker().is_none() {
             return;
         }
         for owner in owners {
@@ -6787,7 +6787,7 @@ impl WatchdogFamily {
             let mut mutable = self.mutable.lock().expect("watchdog state");
             mutable.starting_since = Some((self.now)());
         }
-        match self.spawn_newest() {
+        match self.spawn_worker() {
             Some(_) => {
                 if let Ok(mut mutable) = self.mutable.lock() {
                     mutable.start_pending = false;
@@ -6815,7 +6815,7 @@ impl WatchdogFamily {
         }
     }
 
-    fn spawn_newest(&self) -> Option<u32> {
+    fn spawn_worker(&self) -> Option<u32> {
         let argv = harness_argv(
             "watchdog",
             &[
