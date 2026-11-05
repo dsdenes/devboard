@@ -2944,7 +2944,6 @@ pub struct ReleaseTrainWorker {
     environment: HashMap<String, String>,
     agent_command: String,
     tick_ms: u64,
-    manual: bool,
     clock: Clock,
     gate: Arc<dyn Fn(&Path) -> Result<ReleaseTrainGate, String> + Send + Sync>,
     run_release: RunReleaseFn,
@@ -3020,7 +3019,6 @@ impl ReleaseTrainWorker {
                 .agent_command
                 .unwrap_or_else(|| "omp acp".to_string()),
             tick_ms: options.tick_ms.unwrap_or(TICK_MS).max(20),
-            manual: options.manual,
             clock,
             gate,
             run_release,
@@ -3055,10 +3053,6 @@ impl ReleaseTrainWorker {
 
     pub fn current_worker(&self) -> Option<ReleaseTrainWorkerRecord> {
         lock_unpoisoned(&self.inner).worker.clone()
-    }
-
-    pub fn current_settings(&self) -> ReleaseTrainSettings {
-        lock_unpoisoned(&self.inner).settings.clone()
     }
 
     pub fn is_stopping(&self) -> bool {
@@ -3800,22 +3794,9 @@ impl ReleaseTrainWorker {
         }
     }
 
-    /// Whether a tick would start a run now (for the page and the tests).
-    pub fn is_due(&self, now_ms: i64) -> bool {
-        let inner = lock_unpoisoned(&self.inner);
-        !inner.stopping
-            && !inner.paused
-            && inner.active_run.is_none()
-            && now_ms >= inner.next_run_at_ms
-    }
-
     /// Whether a release run is active now.
     pub fn active_run(&self) -> Option<ReleaseTrainRun> {
         lock_unpoisoned(&self.inner).active_run.clone()
-    }
-
-    pub fn is_manual(&self) -> bool {
-        self.manual
     }
 }
 
