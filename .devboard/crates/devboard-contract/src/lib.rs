@@ -8,7 +8,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
@@ -971,9 +970,4 @@ pub async fn replay_all(
         replay_command(&corpus, recording, implemented, &mut report).await?;
     }
     Ok(report)
-}
-
-/// Unused helper so the crate can expose the dashboard without a name clash.
-pub fn dashboard() -> Arc<()> {
-    Arc::new(())
 }
