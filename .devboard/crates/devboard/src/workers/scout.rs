@@ -33,6 +33,7 @@ use crate::state::{
 };
 use crate::supervision::{live_process, process_age_ms, process_argv};
 use crate::version::read_harness_version;
+use crate::workers::startup::{inherited_state_path, versioned_state_files};
 use crate::workers::WorkerInvocation;
 
 pub const SCOUT_DIRECTORY: &str = "scout";
@@ -2849,8 +2850,12 @@ impl ScoutWorker {
                 return false;
             }
         };
-        let previous = load_state(&self.versioned_state_path())
-            .or_else(|| load_state(&state_path(&self.state_dir, &self.repo_dir)));
+        let previous = inherited_state_path(
+            &self.versioned_state_path(),
+            &versioned_state_files(&worker_state_directories(&self.state_dir, &self.repo_dir)),
+            &state_path(&self.state_dir, &self.repo_dir),
+        )
+        .and_then(|path| load_state(&path));
         let now = (self.clock)();
         let mut last_error: Option<String> = None;
         let owned_by_this_version = match &previous {
@@ -3032,16 +3037,20 @@ impl ScoutWorker {
     }
 
     fn cadence_remaining(&self, now: i64) -> bool {
-        let runtime = lock_unpoisoned(&self.runtime);
-        match runtime
+        // The anchor is read under the lock and the cadence after it is released:
+        // `cadence_ms` takes the same mutex, so holding it here would deadlock the
+        // tick that follows a recorded run.
+        let last_scan_started_at = lock_unpoisoned(&self.runtime)
             .state
             .last_scan_started_at
+            .clone();
+        let Some(started) = last_scan_started_at
             .as_deref()
             .and_then(parse_iso_millis)
-        {
-            Some(started) => now < started + self.cadence_ms(),
-            None => false,
-        }
+        else {
+            return false;
+        };
+        now < started + self.cadence_ms()
     }
 
     fn cooldown_remaining(&self, now: i64) -> bool {

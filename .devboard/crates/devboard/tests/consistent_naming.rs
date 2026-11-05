@@ -781,3 +781,228 @@ fn git_fixture(fixture: &Fixture, origin: &str) {
 fn versioned(lock: PathBuf) -> PathBuf {
     devboard::workers::watchdog::versioned_lock_path(&lock, Some(VERSION))
 }
+
+/* ------------------------------------------------------------------------ */
+/* The inherited startup state                                               */
+/* ------------------------------------------------------------------------ */
+
+fn published_naming_state(
+    repo: &Path,
+    anchor: &str,
+    newest_cycle_id: &str,
+    limits: (Option<i64>, Option<i64>),
+    updated_at: &str,
+) -> cn::State {
+    let mut state = cn::empty_state(cn::EmptyStateOptions {
+        repo: "acme/fixture".to_string(),
+        root: repo.to_string_lossy().into_owned(),
+        lifecycle: cn::Lifecycle::Idle,
+        limit: cn::Limits {
+            max_per_hour: limits.0,
+            max_pending: limits.1,
+        },
+        interval_minutes: 1,
+        now: updated_at.to_string(),
+    });
+    state.enabled = true;
+    state.last_cycle_started_at = Some(anchor.to_string());
+    state.sync = cn::SyncStatus {
+        state: cn::SyncState::Ok,
+        at: Some(anchor.to_string()),
+        error: None,
+    };
+    state.newest_cycle_id = Some(newest_cycle_id.to_string());
+    state.updated_at = updated_at.to_string();
+    state
+}
+
+fn write_published_naming_state(
+    state_dir: &Path,
+    repo: &Path,
+    version: Option<&str>,
+    state: &cn::State,
+) {
+    let path = match version {
+        Some(version) => cn::versioned_state_path(state_dir, repo, Some(version)),
+        None => cn::state_path(state_dir, repo),
+    };
+    std::fs::create_dir_all(path.parent().expect("a state directory")).expect("state directory");
+    cn::write_state(&path, state).expect("a published state");
+}
+
+fn started_naming_worker(fixture: &Fixture) -> Arc<cn::Worker> {
+    let forge = Arc::new(NamingForge::default());
+    let connect = fake_connect(|_prompt| Box::pin(async { Ok(()) }));
+    naming_worker(fixture, forge, connect)
+}
+
+#[tokio::test]
+async fn a_new_version_inherits_the_newest_published_state() {
+    let fixture = Fixture::new("inherit-newest");
+    write_published_naming_state(
+        &fixture.state_dir,
+        &fixture.repo,
+        None,
+        &published_naming_state(
+            &fixture.repo,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-cycle",
+            (Some(11), Some(2)),
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    write_published_naming_state(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some("0.0.1"),
+        &published_naming_state(
+            &fixture.repo,
+            "2026-01-02T00:00:00.000Z",
+            "v1-cycle",
+            (Some(22), Some(3)),
+            "2026-01-02T00:00:00.000Z",
+        ),
+    );
+    write_published_naming_state(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some("0.0.2"),
+        &published_naming_state(
+            &fixture.repo,
+            "2026-01-03T00:00:00.000Z",
+            "v2-cycle",
+            (Some(33), Some(4)),
+            "2026-01-03T00:00:00.000Z",
+        ),
+    );
+    let worker = started_naming_worker(&fixture);
+    assert!(worker.start("acme/fixture"));
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some("2026-01-03T00:00:00.000Z"),
+        "the newest cadence anchor is inherited"
+    );
+    assert_eq!(state.newest_cycle_id.as_deref(), Some("v2-cycle"));
+    assert_eq!(state.limits.max_per_hour, Some(33));
+    assert_eq!(state.limits.max_pending, Some(4));
+    assert_eq!(state.sync.at.as_deref(), Some("2026-01-03T00:00:00.000Z"));
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_newer_versioned_state_outranks_the_legacy_file() {
+    let fixture = Fixture::new("inherit-precedence");
+    write_published_naming_state(
+        &fixture.state_dir,
+        &fixture.repo,
+        None,
+        &published_naming_state(
+            &fixture.repo,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-cycle",
+            (Some(11), Some(2)),
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    write_published_naming_state(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some("0.0.1"),
+        &published_naming_state(
+            &fixture.repo,
+            "2026-01-05T00:00:00.000Z",
+            "v1-cycle",
+            (Some(22), Some(3)),
+            "2026-01-05T00:00:00.000Z",
+        ),
+    );
+    let newer_worker = started_naming_worker(&fixture);
+    assert!(newer_worker.start("acme/fixture"));
+    let state = newer_worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some("2026-01-05T00:00:00.000Z"),
+        "the newer versioned anchor wins"
+    );
+    assert_eq!(state.newest_cycle_id.as_deref(), Some("v1-cycle"));
+    assert_eq!(state.limits.max_per_hour, Some(22));
+    newer_worker.stop().await;
+
+    let legacy_only = Fixture::new("inherit-legacy-only");
+    write_published_naming_state(
+        &legacy_only.state_dir,
+        &legacy_only.repo,
+        None,
+        &published_naming_state(
+            &legacy_only.repo,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-cycle",
+            (Some(11), Some(2)),
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    let legacy_worker = started_naming_worker(&legacy_only);
+    assert!(legacy_worker.start("acme/fixture"));
+    let state = legacy_worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some("2026-01-01T00:00:00.000Z"),
+        "the legacy file is used when it is the only state"
+    );
+    assert_eq!(state.newest_cycle_id.as_deref(), Some("legacy-cycle"));
+    assert_eq!(state.limits.max_per_hour, Some(11));
+    legacy_worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_version_keeps_its_own_published_state() {
+    let fixture = Fixture::new("inherit-own");
+    write_published_naming_state(
+        &fixture.state_dir,
+        &fixture.repo,
+        None,
+        &published_naming_state(
+            &fixture.repo,
+            "2026-01-04T00:00:00.000Z",
+            "legacy-cycle",
+            (Some(11), Some(2)),
+            "2026-01-04T00:00:00.000Z",
+        ),
+    );
+    write_published_naming_state(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some("0.0.1"),
+        &published_naming_state(
+            &fixture.repo,
+            "2026-01-05T00:00:00.000Z",
+            "v1-cycle",
+            (Some(22), Some(3)),
+            "2026-01-05T00:00:00.000Z",
+        ),
+    );
+    write_published_naming_state(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some(VERSION),
+        &published_naming_state(
+            &fixture.repo,
+            "2026-01-02T00:00:00.000Z",
+            "own-cycle",
+            (Some(44), Some(5)),
+            "2026-01-02T00:00:00.000Z",
+        ),
+    );
+    let worker = started_naming_worker(&fixture);
+    assert!(worker.start("acme/fixture"));
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some("2026-01-02T00:00:00.000Z"),
+        "the version's own anchor is kept whatever other timestamps say"
+    );
+    assert_eq!(state.newest_cycle_id.as_deref(), Some("own-cycle"));
+    assert_eq!(state.limits.max_per_hour, Some(44));
+    worker.stop().await;
+}

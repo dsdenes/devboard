@@ -33,6 +33,7 @@ use crate::providers::{
     create_worker_provider_environment, Env, ProviderOptions, WorkerProviderEnvironment,
 };
 use crate::version::read_harness_version;
+use crate::workers::startup::{inherited_state_path, versioned_state_files};
 
 use super::mcp_optimizer::{iso, now_iso};
 use super::watchdog::{
@@ -2666,8 +2667,12 @@ impl Worker {
                 return false;
             }
         };
-        let previous = load_state(&self.versioned_state_path())
-            .or_else(|| load_state(&state_path(&self.state_dir, &self.repo_dir)));
+        let previous = inherited_state_path(
+            &self.versioned_state_path(),
+            &versioned_state_files(&worker_state_directories(&self.state_dir, &self.repo_dir)),
+            &state_path(&self.state_dir, &self.repo_dir),
+        )
+        .and_then(|path| load_state(&path));
         let settings = read_settings(&settings_path(&self.state_dir, &self.repo_dir))
             .unwrap_or_else(|| Settings {
                 max_per_hour: previous

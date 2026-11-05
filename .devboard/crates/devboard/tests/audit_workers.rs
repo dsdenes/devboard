@@ -1531,3 +1531,408 @@ fn the_real_harness_surface_carries_every_route_and_only_rust_sources() {
         .iter()
         .any(|entry| entry.kind == "static-fallback"));
 }
+
+/* ------------------------------------------------------------------------ */
+/* The inherited startup state, for every audited family                     */
+/* ------------------------------------------------------------------------ */
+
+type PublishedSnapshot = (
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+);
+
+/// Writes one family's published state: state directory, repository, version (or
+/// the legacy file), cadence anchor, newest run id, limits, and `updatedAt`.
+type PublishedWrite = fn(&Path, &Path, Option<&str>, &str, &str, (Option<i64>, Option<i64>), &str);
+
+struct PublishedFamily {
+    versioned_state_path: fn(&Path, &Path, Option<&str>) -> PathBuf,
+    write: PublishedWrite,
+    read: fn(&Path) -> Option<PublishedSnapshot>,
+    start: fn(&Path, &Path) -> bool,
+}
+
+fn write_dead_published(
+    state_dir: &Path,
+    repo: &Path,
+    version: Option<&str>,
+    anchor: &str,
+    newest_cycle_id: &str,
+    limits: (Option<i64>, Option<i64>),
+    updated_at: &str,
+) {
+    let mut state = dead::empty_state(dead::EmptyStateOptions {
+        repo: "acme/fixture".to_string(),
+        root: repo.to_string_lossy().into_owned(),
+        lifecycle: dead::Lifecycle::Idle,
+        limit: dead::Limits {
+            max_per_hour: limits.0,
+            max_pending: limits.1,
+        },
+        interval_minutes: 1,
+        now: updated_at.to_string(),
+    });
+    state.enabled = true;
+    state.last_cycle_started_at = Some(anchor.to_string());
+    state.sync = dead::SyncStatus {
+        state: dead::SyncState::Ok,
+        at: Some(anchor.to_string()),
+        error: None,
+    };
+    state.newest_cycle_id = Some(newest_cycle_id.to_string());
+    state.updated_at = updated_at.to_string();
+    let path = match version {
+        Some(version) => dead::versioned_state_path(state_dir, repo, Some(version)),
+        None => dead::state_path(state_dir, repo),
+    };
+    std::fs::create_dir_all(path.parent().expect("a state directory")).expect("state directory");
+    dead::write_state(&path, &state).expect("a published state");
+}
+
+fn read_dead_published(path: &Path) -> Option<PublishedSnapshot> {
+    dead::read_state(path).map(|state| {
+        (
+            state.last_cycle_started_at,
+            state.newest_cycle_id,
+            state.limits.max_per_hour,
+            state.limits.max_pending,
+            state.sync.at,
+        )
+    })
+}
+
+fn start_dead(repo: &Path, state_dir: &Path) -> bool {
+    let mut options = dead::WorkerOptions::new(repo, state_dir);
+    options.harness_version = Some(VERSION.to_string());
+    let worker = dead::Worker::new(options);
+    worker.start("acme/fixture")
+}
+
+fn write_srp_published(
+    state_dir: &Path,
+    repo: &Path,
+    version: Option<&str>,
+    anchor: &str,
+    newest_cycle_id: &str,
+    limits: (Option<i64>, Option<i64>),
+    updated_at: &str,
+) {
+    let mut state = srp::empty_state(srp::EmptyStateOptions {
+        repo: "acme/fixture".to_string(),
+        root: repo.to_string_lossy().into_owned(),
+        lifecycle: srp::Lifecycle::Idle,
+        limit: srp::Limits {
+            max_per_hour: limits.0,
+            max_pending: limits.1,
+        },
+        interval_minutes: 1,
+        now: updated_at.to_string(),
+    });
+    state.enabled = true;
+    state.last_cycle_started_at = Some(anchor.to_string());
+    state.sync = srp::SyncStatus {
+        state: srp::SyncState::Ok,
+        at: Some(anchor.to_string()),
+        error: None,
+    };
+    state.newest_cycle_id = Some(newest_cycle_id.to_string());
+    state.updated_at = updated_at.to_string();
+    let path = match version {
+        Some(version) => srp::versioned_state_path(state_dir, repo, Some(version)),
+        None => srp::state_path(state_dir, repo),
+    };
+    std::fs::create_dir_all(path.parent().expect("a state directory")).expect("state directory");
+    srp::write_state(&path, &state).expect("a published state");
+}
+
+fn read_srp_published(path: &Path) -> Option<PublishedSnapshot> {
+    srp::read_state(path).map(|state| {
+        (
+            state.last_cycle_started_at,
+            state.newest_cycle_id,
+            state.limits.max_per_hour,
+            state.limits.max_pending,
+            state.sync.at,
+        )
+    })
+}
+
+fn start_srp(repo: &Path, state_dir: &Path) -> bool {
+    let mut options = srp::WorkerOptions::new(repo, state_dir);
+    options.harness_version = Some(VERSION.to_string());
+    let worker = srp::Worker::new(options);
+    worker.start("acme/fixture")
+}
+
+fn write_api_published(
+    state_dir: &Path,
+    repo: &Path,
+    version: Option<&str>,
+    anchor: &str,
+    newest_cycle_id: &str,
+    limits: (Option<i64>, Option<i64>),
+    updated_at: &str,
+) {
+    let mut state = api::empty_state(api::EmptyStateOptions {
+        repo: "acme/fixture".to_string(),
+        root: repo.to_string_lossy().into_owned(),
+        lifecycle: api::Lifecycle::Idle,
+        limit: api::Limits {
+            max_per_hour: limits.0,
+            max_pending: limits.1,
+        },
+        interval_minutes: 1,
+        now: updated_at.to_string(),
+    });
+    state.enabled = true;
+    state.last_cycle_started_at = Some(anchor.to_string());
+    state.sync = api::SyncStatus {
+        state: api::SyncState::Ok,
+        at: Some(anchor.to_string()),
+        error: None,
+    };
+    state.newest_cycle_id = Some(newest_cycle_id.to_string());
+    state.updated_at = updated_at.to_string();
+    let path = match version {
+        Some(version) => api::versioned_state_path(state_dir, repo, Some(version)),
+        None => api::state_path(state_dir, repo),
+    };
+    std::fs::create_dir_all(path.parent().expect("a state directory")).expect("state directory");
+    api::write_state(&path, &state).expect("a published state");
+}
+
+fn read_api_published(path: &Path) -> Option<PublishedSnapshot> {
+    api::read_state(path).map(|state| {
+        (
+            state.last_cycle_started_at,
+            state.newest_cycle_id,
+            state.limits.max_per_hour,
+            state.limits.max_pending,
+            state.sync.at,
+        )
+    })
+}
+
+fn start_api(repo: &Path, state_dir: &Path) -> bool {
+    let mut options = api::WorkerOptions::new(repo, state_dir);
+    options.harness_version = Some(VERSION.to_string());
+    let worker = api::Worker::new(options);
+    worker.start("acme/fixture")
+}
+
+fn published_families() -> Vec<(&'static str, PublishedFamily)> {
+    vec![
+        (
+            "dead code",
+            PublishedFamily {
+                versioned_state_path: dead::versioned_state_path,
+                write: write_dead_published,
+                read: read_dead_published,
+                start: start_dead,
+            },
+        ),
+        (
+            "single responsibility",
+            PublishedFamily {
+                versioned_state_path: srp::versioned_state_path,
+                write: write_srp_published,
+                read: read_srp_published,
+                start: start_srp,
+            },
+        ),
+        (
+            "api standards",
+            PublishedFamily {
+                versioned_state_path: api::versioned_state_path,
+                write: write_api_published,
+                read: read_api_published,
+                start: start_api,
+            },
+        ),
+    ]
+}
+
+fn assert_newest_is_inherited(label: &str, family: &PublishedFamily) {
+    let fixture = Fixture::new(&format!("inherit-newest-{label}"));
+    let write = family.write;
+    write(
+        &fixture.state_dir,
+        &fixture.repo,
+        None,
+        "2026-01-01T00:00:00.000Z",
+        "legacy-cycle",
+        (Some(11), Some(2)),
+        "2026-01-01T00:00:00.000Z",
+    );
+    write(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some("0.0.1"),
+        "2026-01-02T00:00:00.000Z",
+        "v1-cycle",
+        (Some(22), Some(3)),
+        "2026-01-02T00:00:00.000Z",
+    );
+    write(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some("0.0.2"),
+        "2026-01-03T00:00:00.000Z",
+        "v2-cycle",
+        (Some(33), Some(4)),
+        "2026-01-03T00:00:00.000Z",
+    );
+    assert!((family.start)(&fixture.repo, &fixture.state_dir));
+    let published = (family.read)(&(family.versioned_state_path)(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some(VERSION),
+    ))
+    .expect("the published state");
+    assert_eq!(
+        published.0.as_deref(),
+        Some("2026-01-03T00:00:00.000Z"),
+        "{label}: the newest cadence anchor is inherited"
+    );
+    assert_eq!(published.1.as_deref(), Some("v2-cycle"), "{label}");
+    assert_eq!(published.2, Some(33), "{label}");
+    assert_eq!(published.3, Some(4), "{label}");
+    assert_eq!(
+        published.4.as_deref(),
+        Some("2026-01-03T00:00:00.000Z"),
+        "{label}: the newest sync instant is inherited"
+    );
+}
+
+fn assert_versioned_outranks_legacy(label: &str, family: &PublishedFamily) {
+    let fixture = Fixture::new(&format!("inherit-precedence-{label}"));
+    let write = family.write;
+    write(
+        &fixture.state_dir,
+        &fixture.repo,
+        None,
+        "2026-01-01T00:00:00.000Z",
+        "legacy-cycle",
+        (Some(11), Some(2)),
+        "2026-01-01T00:00:00.000Z",
+    );
+    write(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some("0.0.1"),
+        "2026-01-05T00:00:00.000Z",
+        "v1-cycle",
+        (Some(22), Some(3)),
+        "2026-01-05T00:00:00.000Z",
+    );
+    assert!((family.start)(&fixture.repo, &fixture.state_dir));
+    let published = (family.read)(&(family.versioned_state_path)(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some(VERSION),
+    ))
+    .expect("the published state");
+    assert_eq!(
+        published.0.as_deref(),
+        Some("2026-01-05T00:00:00.000Z"),
+        "{label}: the newer versioned anchor wins"
+    );
+    assert_eq!(published.1.as_deref(), Some("v1-cycle"), "{label}");
+    assert_eq!(published.2, Some(22), "{label}");
+    assert_eq!(published.3, Some(3), "{label}");
+
+    let legacy_only = Fixture::new(&format!("inherit-legacy-only-{label}"));
+    write(
+        &legacy_only.state_dir,
+        &legacy_only.repo,
+        None,
+        "2026-01-01T00:00:00.000Z",
+        "legacy-cycle",
+        (Some(11), Some(2)),
+        "2026-01-01T00:00:00.000Z",
+    );
+    assert!((family.start)(&legacy_only.repo, &legacy_only.state_dir));
+    let published = (family.read)(&(family.versioned_state_path)(
+        &legacy_only.state_dir,
+        &legacy_only.repo,
+        Some(VERSION),
+    ))
+    .expect("the published state");
+    assert_eq!(
+        published.0.as_deref(),
+        Some("2026-01-01T00:00:00.000Z"),
+        "{label}: the legacy file is used when it is the only state"
+    );
+    assert_eq!(published.1.as_deref(), Some("legacy-cycle"), "{label}");
+    assert_eq!(published.2, Some(11), "{label}");
+}
+
+fn assert_own_state_is_kept(label: &str, family: &PublishedFamily) {
+    let fixture = Fixture::new(&format!("inherit-own-{label}"));
+    let write = family.write;
+    write(
+        &fixture.state_dir,
+        &fixture.repo,
+        None,
+        "2026-01-04T00:00:00.000Z",
+        "legacy-cycle",
+        (Some(11), Some(2)),
+        "2026-01-04T00:00:00.000Z",
+    );
+    write(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some("0.0.1"),
+        "2026-01-05T00:00:00.000Z",
+        "v1-cycle",
+        (Some(22), Some(3)),
+        "2026-01-05T00:00:00.000Z",
+    );
+    write(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some(VERSION),
+        "2026-01-02T00:00:00.000Z",
+        "own-cycle",
+        (Some(44), Some(5)),
+        "2026-01-02T00:00:00.000Z",
+    );
+    assert!((family.start)(&fixture.repo, &fixture.state_dir));
+    let published = (family.read)(&(family.versioned_state_path)(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some(VERSION),
+    ))
+    .expect("the published state");
+    assert_eq!(
+        published.0.as_deref(),
+        Some("2026-01-02T00:00:00.000Z"),
+        "{label}: the version's own anchor is kept whatever other timestamps say"
+    );
+    assert_eq!(published.1.as_deref(), Some("own-cycle"), "{label}");
+    assert_eq!(published.2, Some(44), "{label}");
+}
+
+#[test]
+fn every_audited_family_inherits_the_newest_published_state() {
+    for (label, family) in published_families() {
+        assert_newest_is_inherited(label, &family);
+    }
+}
+
+#[test]
+fn every_audited_family_prefers_a_newer_versioned_state_to_the_legacy_file() {
+    for (label, family) in published_families() {
+        assert_versioned_outranks_legacy(label, &family);
+    }
+}
+
+#[test]
+fn every_audited_family_keeps_its_own_published_state() {
+    for (label, family) in published_families() {
+        assert_own_state_is_kept(label, &family);
+    }
+}

@@ -901,3 +901,414 @@ fn an_invocation_parses_the_worker_flags() {
     };
     assert_eq!(invocation.option("sync"), Some("2000"));
 }
+
+/* ------------------------------------------------------------------------ */
+/* Cadence liveness and the inherited startup state                          */
+/* ------------------------------------------------------------------------ */
+
+/// The worker's ticks, on one thread and one runtime of their own, so a gate that
+/// never returns fails the test within its bound instead of hanging the suite. The
+/// runtime stays alive between ticks, so a cycle an earlier tick started still runs.
+struct TickThread {
+    requests: tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>,
+}
+
+fn tick_thread(worker: Arc<DesignWorker>) -> TickThread {
+    let (requests, mut queue) =
+        tokio::sync::mpsc::unbounded_channel::<tokio::sync::oneshot::Sender<()>>();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a tick runtime");
+        runtime.block_on(async move {
+            while let Some(done) = queue.recv().await {
+                worker.tick_now().await;
+                let _ = done.send(());
+            }
+        });
+    });
+    TickThread { requests }
+}
+
+async fn a_tick_within_five_seconds(ticks: &TickThread, description: &str) {
+    let (done, finished) = tokio::sync::oneshot::channel();
+    ticks.requests.send(done).expect("the tick thread");
+    let completed = tokio::time::timeout(Duration::from_secs(5), finished).await;
+    assert!(completed.is_ok(), "{description} did not complete within 5 seconds");
+}
+
+fn published_design_state(
+    repo: &Path,
+    anchor: &str,
+    newest_cycle_id: &str,
+    limits: (i64, i64),
+    release: &str,
+    updated_at: &str,
+) -> devboard::workers::design::DesignState {
+    let mut state = devboard::workers::design::empty_state("acme/fixture", repo, 0);
+    state.lifecycle = devboard::workers::design::DesignLifecycle::Idle;
+    state.enabled = true;
+    state.limits = DesignLimits {
+        max_per_hour: Some(limits.0),
+        max_pending: Some(limits.1),
+    };
+    state.interval_minutes = 1;
+    state.last_cycle_started_at = Some(anchor.to_string());
+    state.sync = devboard::workers::design::DesignSync {
+        state: DesignSyncState::Ok,
+        at: Some(anchor.to_string()),
+        error: None,
+    };
+    state.newest_cycle_id = Some(newest_cycle_id.to_string());
+    state.release = Some(devboard::workers::design::DesignStateRelease {
+        version: release.to_string(),
+        url: format!("https://forge.test/acme/fixture/releases/tag/{release}"),
+        at: anchor.to_string(),
+    });
+    state.updated_at = updated_at.to_string();
+    state
+}
+
+fn write_published_design_state(
+    state_dir: &Path,
+    repo: &Path,
+    version: Option<&str>,
+    state: &devboard::workers::design::DesignState,
+) {
+    let path = match version {
+        Some(version) => versioned_state_path(state_dir, repo, Some(version)),
+        None => devboard::workers::design::state_path(state_dir, repo),
+    };
+    std::fs::create_dir_all(path.parent().expect("a state directory")).expect("state directory");
+    devboard::workers::design::write_state(&path, state).expect("a published state");
+}
+
+/// A worker whose cadence comes from the published interval, not an override, and
+/// whose ticker never fires on its own.
+fn cadence_options(fixture: &Fixture, clock: &Arc<Clock>) -> DesignWorkerOptions {
+    let mut options = DesignWorkerOptions::new(&fixture.repo, &fixture.state);
+    options.harness_version = Some("test".to_string());
+    options.sync_ms = Some(10_000);
+    options.tick_ms = Some(3_600_000);
+    options.now = Some(clock.function());
+    options.argv = vec![
+        "devboard".to_string(),
+        "worker".to_string(),
+        "design".to_string(),
+    ];
+    options
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_elapsed_cadence_after_a_published_cycle_starts_the_next_one() {
+    let fixture = Fixture::new("cadence-published");
+    let anchor = devboard::workers::design::iso_from_millis(NOW - 120_000);
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        Some("test"),
+        &published_design_state(&fixture.repo, &anchor, "cycle-previous", (10, 5), "v1", &anchor),
+    );
+    let clock = Clock::new(NOW);
+    let mut worker_options = cadence_options(&fixture, &clock);
+    worker_options.forge = Some(FakeForge::new(Vec::new()) as Arc<dyn DesignForge>);
+    worker_options.audit = Some(Arc::new(|_turn: AuditTurn| {
+        Box::pin(async move { Ok(()) })
+    }));
+    let worker = Arc::new(DesignWorker::new(worker_options));
+    assert!(worker.start("acme/fixture"));
+    let ticks = tick_thread(Arc::clone(&worker));
+    assert_eq!(
+        worker.current_state().last_cycle_started_at.as_deref(),
+        Some(anchor.as_str()),
+        "the published cycle start is the inherited cadence anchor"
+    );
+
+    a_tick_within_five_seconds(&ticks, "the cadence tick").await;
+
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some(devboard::workers::design::iso_from_millis(NOW).as_str()),
+        "the elapsed cadence publishes a new cycle start"
+    );
+    assert_eq!(cycle_directories(&fixture.repo).len(), 1, "one cycle started");
+    worker.stop().await;
+}
+
+fn published_design(fixture: &Fixture) -> devboard::workers::design::DesignState {
+    devboard::workers::design::read_state(&versioned_state_path(
+        &fixture.state,
+        &fixture.repo,
+        Some("test"),
+    ))
+    .expect("the published state")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_completed_cycle_keeps_the_cadence_and_a_later_tick_consumes_a_control() {
+    let fixture = Fixture::new("cadence-after-cycle");
+    let mut published = devboard::workers::design::empty_state("acme/fixture", &fixture.repo, 0);
+    published.lifecycle = devboard::workers::design::DesignLifecycle::Idle;
+    published.enabled = true;
+    published.interval_minutes = 1;
+    published.updated_at = devboard::workers::design::iso_from_millis(NOW - 120_000);
+    write_published_design_state(&fixture.state, &fixture.repo, Some("test"), &published);
+
+    let clock = Clock::new(NOW);
+    let mut worker_options = cadence_options(&fixture, &clock);
+    worker_options.forge = Some(FakeForge::new(Vec::new()) as Arc<dyn DesignForge>);
+    worker_options.audit = Some(Arc::new(|_turn: AuditTurn| {
+        Box::pin(async move { Ok(()) })
+    }));
+    let worker = Arc::new(DesignWorker::new(worker_options));
+    assert!(worker.start("acme/fixture"));
+    let ticks = tick_thread(Arc::clone(&worker));
+
+    a_tick_within_five_seconds(&ticks, "the first cycle").await;
+    let finished = tokio::time::timeout(Duration::from_secs(5), worker.wait_for_cycle()).await;
+    assert!(finished.is_ok(), "the first cycle did not finish within 5 seconds");
+    assert_eq!(cycle_directories(&fixture.repo).len(), 1, "the first cycle starts");
+    let first_start = published_design(&fixture)
+        .last_cycle_started_at
+        .expect("the completed cycle records its start");
+
+    clock.now.store(NOW + 30_000, Ordering::SeqCst);
+    a_tick_within_five_seconds(&ticks, "the tick inside the cadence").await;
+    assert_eq!(
+        cycle_directories(&fixture.repo).len(),
+        1,
+        "the cadence gate still holds"
+    );
+
+    clock.now.store(NOW + 120_000, Ordering::SeqCst);
+    a_tick_within_five_seconds(&ticks, "the tick after the cadence").await;
+    assert_eq!(
+        cycle_directories(&fixture.repo).len(),
+        2,
+        "the elapsed cadence starts the next cycle"
+    );
+    assert_ne!(
+        published_design(&fixture).last_cycle_started_at.as_deref(),
+        Some(first_start.as_str()),
+        "the next cycle publishes its own start"
+    );
+
+    let control = versioned_control_directory(&fixture.state, &fixture.repo, Some("test"));
+    write_command(
+        &control,
+        &DesignCommand::Settings {
+            interval_minutes: 7,
+            max_per_hour: Some(2),
+            max_pending: Some(3),
+        },
+    )
+    .expect("a settings command");
+    a_tick_within_five_seconds(&ticks, "the tick after the control").await;
+    assert_eq!(
+        published_design(&fixture).interval_minutes,
+        7,
+        "the worker still consumes a control command after a cycle"
+    );
+    let _ = tokio::time::timeout(Duration::from_secs(5), worker.stop()).await;
+}
+
+fn inherited_design_worker(fixture: &Fixture) -> Arc<DesignWorker> {
+    let clock = Clock::new(NOW);
+    let mut options = options(fixture, &clock);
+    options.forge = Some(FakeForge::new(Vec::new()) as Arc<dyn DesignForge>);
+    options.audit = Some(Arc::new(|_turn: AuditTurn| {
+        Box::pin(async move { Ok(()) })
+    }));
+    Arc::new(DesignWorker::new(options))
+}
+
+#[tokio::test]
+async fn a_new_version_inherits_the_newest_published_state() {
+    let fixture = Fixture::new("inherit-newest");
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        None,
+        &published_design_state(
+            &fixture.repo,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-cycle",
+            (11, 2),
+            "v0.0.0",
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        Some("0.0.1"),
+        &published_design_state(
+            &fixture.repo,
+            "2026-01-02T00:00:00.000Z",
+            "v1-cycle",
+            (22, 3),
+            "v0.0.1",
+            "2026-01-02T00:00:00.000Z",
+        ),
+    );
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        Some("0.0.2"),
+        &published_design_state(
+            &fixture.repo,
+            "2026-01-03T00:00:00.000Z",
+            "v2-cycle",
+            (33, 4),
+            "v0.0.2",
+            "2026-01-03T00:00:00.000Z",
+        ),
+    );
+    let worker = inherited_design_worker(&fixture);
+    assert!(worker.start("acme/fixture"));
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some("2026-01-03T00:00:00.000Z"),
+        "the newest cadence anchor is inherited"
+    );
+    assert_eq!(state.newest_cycle_id.as_deref(), Some("v2-cycle"));
+    assert_eq!(state.limits.max_per_hour, Some(33));
+    assert_eq!(state.limits.max_pending, Some(4));
+    assert_eq!(
+        state.release.as_ref().map(|release| release.version.as_str()),
+        Some("v0.0.2"),
+        "the newest release record is inherited"
+    );
+    assert_eq!(state.sync.at.as_deref(), Some("2026-01-03T00:00:00.000Z"));
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_newer_versioned_state_outranks_the_legacy_file() {
+    let fixture = Fixture::new("inherit-precedence");
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        None,
+        &published_design_state(
+            &fixture.repo,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-cycle",
+            (11, 2),
+            "v0.0.0",
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        Some("0.0.1"),
+        &published_design_state(
+            &fixture.repo,
+            "2026-01-05T00:00:00.000Z",
+            "v1-cycle",
+            (22, 3),
+            "v0.0.1",
+            "2026-01-05T00:00:00.000Z",
+        ),
+    );
+    let newer_worker = inherited_design_worker(&fixture);
+    assert!(newer_worker.start("acme/fixture"));
+    let state = newer_worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some("2026-01-05T00:00:00.000Z"),
+        "the newer versioned anchor wins"
+    );
+    assert_eq!(state.newest_cycle_id.as_deref(), Some("v1-cycle"));
+    assert_eq!(state.limits.max_per_hour, Some(22));
+    assert_eq!(
+        state.release.as_ref().map(|release| release.version.as_str()),
+        Some("v0.0.1")
+    );
+    newer_worker.stop().await;
+
+    let legacy_only = Fixture::new("inherit-legacy-only");
+    write_published_design_state(
+        &legacy_only.state,
+        &legacy_only.repo,
+        None,
+        &published_design_state(
+            &legacy_only.repo,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-cycle",
+            (11, 2),
+            "v0.0.0",
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    let legacy_worker = inherited_design_worker(&legacy_only);
+    assert!(legacy_worker.start("acme/fixture"));
+    let state = legacy_worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some("2026-01-01T00:00:00.000Z"),
+        "the legacy file is used when it is the only state"
+    );
+    assert_eq!(state.newest_cycle_id.as_deref(), Some("legacy-cycle"));
+    assert_eq!(state.limits.max_per_hour, Some(11));
+    legacy_worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_version_keeps_its_own_published_state() {
+    let fixture = Fixture::new("inherit-own");
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        None,
+        &published_design_state(
+            &fixture.repo,
+            "2026-01-04T00:00:00.000Z",
+            "legacy-cycle",
+            (11, 2),
+            "v0.0.0",
+            "2026-01-04T00:00:00.000Z",
+        ),
+    );
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        Some("0.0.1"),
+        &published_design_state(
+            &fixture.repo,
+            "2026-01-05T00:00:00.000Z",
+            "v1-cycle",
+            (22, 3),
+            "v0.0.1",
+            "2026-01-05T00:00:00.000Z",
+        ),
+    );
+    write_published_design_state(
+        &fixture.state,
+        &fixture.repo,
+        Some("test"),
+        &published_design_state(
+            &fixture.repo,
+            "2026-01-02T00:00:00.000Z",
+            "own-cycle",
+            (44, 5),
+            "v0.0.4",
+            "2026-01-02T00:00:00.000Z",
+        ),
+    );
+    let worker = inherited_design_worker(&fixture);
+    assert!(worker.start("acme/fixture"));
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_cycle_started_at.as_deref(),
+        Some("2026-01-02T00:00:00.000Z"),
+        "the version's own anchor is kept whatever other timestamps say"
+    );
+    assert_eq!(state.newest_cycle_id.as_deref(), Some("own-cycle"));
+    assert_eq!(state.limits.max_per_hour, Some(44));
+    worker.stop().await;
+}

@@ -15,6 +15,7 @@ pub mod release_train;
 pub mod run_owner;
 pub mod scout;
 pub mod single_responsibility;
+pub mod startup;
 pub mod watchdog;
 
 use std::path::Path;

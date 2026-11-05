@@ -881,7 +881,11 @@ Each background worker family also accepts a live worker of more than one harnes
 running version starts its own worker as soon as an older-version worker is live, sends the older
 worker a `drain`, and claims every unit that arises afterwards; the older worker starts no new
 unit, finishes its in-flight unit, exits when that unit ends, releases its lock, and leaves its
-state, run directories, and activity readable. The mode lists every live worker with its version
+state, run directories, and activity readable. A worker of a version that has published no state
+of its own inherits the newest published state — the file with the newest `updatedAt` among every
+version's file and the legacy unversioned file — so a fresh version resumes the cadence anchor,
+run id, limits, and sync the last live worker published, and a version that already has its own
+file keeps it. The mode lists every live worker with its version
 and merges every running unit into one view, so no surface reports a worker/dashboard or
 front-end/backend version divergence. While a newer worker takes over, the issues status bar
 reports the family's running work, `issues working (N)` with N summed across every attached

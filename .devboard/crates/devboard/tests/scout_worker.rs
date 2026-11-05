@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -887,4 +887,397 @@ async fn two_versions_share_one_checkout_and_one_scan_slot() {
     newer.stop().await;
     assert!(!version_lock_path(&lock_path(&repo), Some("0.0.9")).exists());
     assert!(!version_lock_path(&lock_path(&repo), Some("1.0.0")).exists());
+}
+
+/* ------------------------------------------------------------------------ */
+/* Cadence liveness and the inherited startup state                          */
+/* ------------------------------------------------------------------------ */
+
+/// The worker's ticks, on one thread and one runtime of their own, so a gate that
+/// never returns fails the test within its bound instead of hanging the suite.
+struct TickThread {
+    requests: tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>,
+}
+
+fn tick_thread(worker: Arc<ScoutWorker>) -> TickThread {
+    let (requests, mut queue) =
+        tokio::sync::mpsc::unbounded_channel::<tokio::sync::oneshot::Sender<()>>();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a tick runtime");
+        runtime.block_on(async move {
+            while let Some(done) = queue.recv().await {
+                worker.tick_now().await;
+                let _ = done.send(());
+            }
+        });
+    });
+    TickThread { requests }
+}
+
+async fn a_tick_within_five_seconds(ticks: &TickThread, description: &str) {
+    let (done, finished) = tokio::sync::oneshot::channel();
+    ticks.requests.send(done).expect("the tick thread");
+    let completed = tokio::time::timeout(Duration::from_secs(5), finished).await;
+    assert!(completed.is_ok(), "{description} did not complete within 5 seconds");
+}
+
+fn published_state(
+    repo: &Path,
+    anchor: &str,
+    newest_scan_id: &str,
+    limits: (i64, i64),
+    release_signature: &str,
+    updated_at: &str,
+) -> devboard::workers::scout::ScoutState {
+    let mut state = devboard::workers::scout::empty_state("acme/fixture", repo, 0);
+    state.lifecycle = "idle".to_string();
+    state.enabled = true;
+    state.limits = devboard::workers::scout::ScoutLimits {
+        max_per_hour: Some(limits.0),
+        max_pending: Some(limits.1),
+    };
+    state.interval_minutes = 1;
+    state.last_scan_started_at = Some(anchor.to_string());
+    state.release_signature = Some(release_signature.to_string());
+    state.sync = devboard::workers::scout::ScoutSync {
+        state: "ok".to_string(),
+        at: Some(anchor.to_string()),
+        error: None,
+    };
+    state.newest_scan_id = Some(newest_scan_id.to_string());
+    state.updated_at = updated_at.to_string();
+    state
+}
+
+fn write_published_state(
+    state_dir: &Path,
+    repo: &Path,
+    version: Option<&str>,
+    state: &devboard::workers::scout::ScoutState,
+) {
+    let path = match version {
+        Some(version) => versioned_state_path(state_dir, repo, Some(version)),
+        None => state_path(state_dir, repo),
+    };
+    std::fs::create_dir_all(path.parent().expect("a state directory")).expect("state directory");
+    devboard::workers::scout::write_state(&path, state).expect("a published state");
+}
+
+/// A worker whose cadence comes from the published interval, not an override.
+fn cadence_worker(repo: &Path, forge: FixtureForge, clock: Arc<AtomicI64>) -> ScoutWorker {
+    let mut options = ScoutWorkerOptions::new(repo, repo.join(".devboard").join("state"));
+    options.harness_version = Some("test-version".to_string());
+    options.forge = Some(Arc::new(forge));
+    options.agent = Some(Arc::new(|_context| Box::pin(async { Ok(()) })));
+    options.sync_ms = Some(1000);
+    options.tick_ms = Some(10);
+    options.timeout_ms = Some(10_000);
+    options.now = Some(Arc::new(move || clock.load(Ordering::SeqCst)));
+    ScoutWorker::new(options)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_elapsed_cadence_after_a_published_run_starts_the_next_scan() {
+    let repo = scratch("cadence-published");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = 1_780_000_000_000i64;
+    let anchor = devboard::workers::scout::iso_from_millis(now - 120_000);
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("test-version"),
+        &published_state(&repo, &anchor, "scan-previous", (10, 5), "v1", &anchor),
+    );
+    let clock = Arc::new(AtomicI64::new(now));
+    let worker = Arc::new(cadence_worker(&repo, FixtureForge::default(), clock));
+    assert!(worker.start("acme/fixture"));
+    let ticks = tick_thread(Arc::clone(&worker));
+    assert_eq!(
+        worker.current_state().last_scan_started_at.as_deref(),
+        Some(anchor.as_str()),
+        "the published run start is the inherited cadence anchor"
+    );
+
+    a_tick_within_five_seconds(&ticks, "the cadence tick").await;
+
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_scan_started_at.as_deref(),
+        Some(devboard::workers::scout::iso_from_millis(now).as_str()),
+        "the elapsed cadence publishes a new run start"
+    );
+    assert_eq!(state.lifecycle, "idle");
+    assert_eq!(scan_ids(&repo).len(), 1, "one scan started");
+    worker.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_completed_run_keeps_the_cadence_and_a_later_tick_consumes_a_control() {
+    let repo = scratch("cadence-after-run");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = 1_780_000_000_000i64;
+    let clock = Arc::new(AtomicI64::new(now));
+    let worker = Arc::new(cadence_worker(&repo, FixtureForge::default(), Arc::clone(&clock)));
+    assert!(worker.start("acme/fixture"));
+    let ticks = tick_thread(Arc::clone(&worker));
+
+    a_tick_within_five_seconds(&ticks, "the first run").await;
+    assert_eq!(scan_ids(&repo).len(), 1, "the first run starts");
+    let first_start = worker
+        .current_state()
+        .last_scan_started_at
+        .clone()
+        .expect("the completed run records its start");
+
+    clock.store(now + 30_000, Ordering::SeqCst);
+    a_tick_within_five_seconds(&ticks, "the tick inside the cadence").await;
+    assert_eq!(scan_ids(&repo).len(), 1, "the cadence gate still holds");
+
+    clock.store(now + 120_000, Ordering::SeqCst);
+    a_tick_within_five_seconds(&ticks, "the tick after the cadence").await;
+    assert_eq!(scan_ids(&repo).len(), 2, "the elapsed cadence starts the next run");
+    assert_ne!(
+        worker.current_state().last_scan_started_at.as_deref(),
+        Some(first_start.as_str()),
+        "the next run publishes its own start"
+    );
+
+    let control = versioned_control_directory(&state_dir, &repo, Some("test-version"));
+    write_command(
+        &control,
+        &ScoutCommand::Settings {
+            interval_minutes: 7,
+            max_per_hour: Some(2),
+            max_pending: Some(3),
+        },
+    )
+    .expect("a settings command");
+    a_tick_within_five_seconds(&ticks, "the tick after the control").await;
+    assert_eq!(
+        worker.current_state().interval_minutes,
+        7,
+        "the worker still consumes a control command after a run"
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_new_version_inherits_the_newest_published_state() {
+    let repo = scratch("inherit-newest");
+    let state_dir = repo.join(".devboard").join("state");
+    write_published_state(
+        &state_dir,
+        &repo,
+        None,
+        &published_state(
+            &repo,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-scan",
+            (11, 2),
+            "legacy",
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("0.0.1"),
+        &published_state(
+            &repo,
+            "2026-01-02T00:00:00.000Z",
+            "v1-scan",
+            (22, 3),
+            "v1",
+            "2026-01-02T00:00:00.000Z",
+        ),
+    );
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("0.0.2"),
+        &published_state(
+            &repo,
+            "2026-01-03T00:00:00.000Z",
+            "v2-scan",
+            (33, 4),
+            "v2",
+            "2026-01-03T00:00:00.000Z",
+        ),
+    );
+    let worker = worker(
+        &repo,
+        FixtureForge::default(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_scan_started_at.as_deref(),
+        Some("2026-01-03T00:00:00.000Z"),
+        "the newest cadence anchor is inherited"
+    );
+    assert_eq!(state.newest_scan_id.as_deref(), Some("v2-scan"));
+    assert_eq!(state.limits.max_per_hour, Some(33));
+    assert_eq!(state.limits.max_pending, Some(4));
+    assert_eq!(state.release_signature.as_deref(), Some("v2"));
+    assert_eq!(
+        state.sync.at.as_deref(),
+        Some("2026-01-03T00:00:00.000Z"),
+        "the newest sync instant is inherited"
+    );
+    let published = read_state(&versioned_state_path(
+        &state_dir,
+        &repo,
+        Some("test-version"),
+    ))
+    .expect("the published state");
+    assert_eq!(published.newest_scan_id.as_deref(), Some("v2-scan"));
+    assert_eq!(published.limits.max_per_hour, Some(33));
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_newer_versioned_state_outranks_the_legacy_file() {
+    let repo = scratch("inherit-precedence");
+    let state_dir = repo.join(".devboard").join("state");
+    write_published_state(
+        &state_dir,
+        &repo,
+        None,
+        &published_state(
+            &repo,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-scan",
+            (11, 2),
+            "legacy",
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("0.0.1"),
+        &published_state(
+            &repo,
+            "2026-01-05T00:00:00.000Z",
+            "v1-scan",
+            (22, 3),
+            "v1",
+            "2026-01-05T00:00:00.000Z",
+        ),
+    );
+    let newer_worker = worker(
+        &repo,
+        FixtureForge::default(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(newer_worker.start("acme/fixture"));
+    let state = newer_worker.current_state();
+    assert_eq!(
+        state.last_scan_started_at.as_deref(),
+        Some("2026-01-05T00:00:00.000Z"),
+        "the newer versioned anchor wins"
+    );
+    assert_eq!(state.newest_scan_id.as_deref(), Some("v1-scan"));
+    assert_eq!(state.limits.max_per_hour, Some(22));
+    assert_eq!(state.limits.max_pending, Some(3));
+    assert_eq!(state.release_signature.as_deref(), Some("v1"));
+    newer_worker.stop().await;
+
+    let legacy_only = scratch("inherit-legacy-only");
+    let legacy_state_dir = legacy_only.join(".devboard").join("state");
+    write_published_state(
+        &legacy_state_dir,
+        &legacy_only,
+        None,
+        &published_state(
+            &legacy_only,
+            "2026-01-01T00:00:00.000Z",
+            "legacy-scan",
+            (11, 2),
+            "legacy",
+            "2026-01-01T00:00:00.000Z",
+        ),
+    );
+    let legacy_worker = worker(
+        &legacy_only,
+        FixtureForge::default(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(legacy_worker.start("acme/fixture"));
+    let state = legacy_worker.current_state();
+    assert_eq!(
+        state.last_scan_started_at.as_deref(),
+        Some("2026-01-01T00:00:00.000Z"),
+        "the legacy file is used when it is the only state"
+    );
+    assert_eq!(state.newest_scan_id.as_deref(), Some("legacy-scan"));
+    assert_eq!(state.limits.max_per_hour, Some(11));
+    assert_eq!(state.release_signature.as_deref(), Some("legacy"));
+    legacy_worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_version_keeps_its_own_published_state() {
+    let repo = scratch("inherit-own");
+    let state_dir = repo.join(".devboard").join("state");
+    write_published_state(
+        &state_dir,
+        &repo,
+        None,
+        &published_state(
+            &repo,
+            "2026-01-04T00:00:00.000Z",
+            "legacy-scan",
+            (11, 2),
+            "legacy",
+            "2026-01-04T00:00:00.000Z",
+        ),
+    );
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("0.0.1"),
+        &published_state(
+            &repo,
+            "2026-01-05T00:00:00.000Z",
+            "v1-scan",
+            (22, 3),
+            "v1",
+            "2026-01-05T00:00:00.000Z",
+        ),
+    );
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("test-version"),
+        &published_state(
+            &repo,
+            "2026-01-02T00:00:00.000Z",
+            "own-scan",
+            (44, 5),
+            "own",
+            "2026-01-02T00:00:00.000Z",
+        ),
+    );
+    let worker = worker(
+        &repo,
+        FixtureForge::default(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_scan_started_at.as_deref(),
+        Some("2026-01-02T00:00:00.000Z"),
+        "the version's own anchor is kept whatever other timestamps say"
+    );
+    assert_eq!(state.newest_scan_id.as_deref(), Some("own-scan"));
+    assert_eq!(state.limits.max_per_hour, Some(44));
+    assert_eq!(state.release_signature.as_deref(), Some("own"));
+    worker.stop().await;
 }

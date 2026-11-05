@@ -28,6 +28,7 @@ use crate::acp::{
     session_mcp_servers, AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent, AcpQuestion,
     PermissionPolicy,
 };
+use crate::workers::startup::{inherited_state_path, versioned_state_files};
 
 /* ------------------------------------------------------------------------ */
 /* Constants and paths                                                       */
@@ -3153,17 +3154,19 @@ impl DesignWorker {
         };
         *lock_unpoisoned(&inner.lock) = Some(guard);
 
-        let previous = load_state(&versioned_state_path(
-            &inner.options.state_dir,
-            &inner.options.repo_dir,
-            inner.options.harness_version.as_deref(),
-        ))
-        .or_else(|| {
-            load_state(&state_path(
+        let previous = inherited_state_path(
+            &versioned_state_path(
                 &inner.options.state_dir,
                 &inner.options.repo_dir,
-            ))
-        });
+                inner.options.harness_version.as_deref(),
+            ),
+            &versioned_state_files(&worker_state_directories(
+                &inner.options.state_dir,
+                &inner.options.repo_dir,
+            )),
+            &state_path(&inner.options.state_dir, &inner.options.repo_dir),
+        )
+        .and_then(|path| load_state(&path));
         let now = (inner.options.clock)();
         let now_text = iso_from_millis(now);
         let settings = read_settings(&settings_path(
@@ -3411,20 +3414,22 @@ impl DesignWorkerInner {
     }
 
     fn cadence_remaining(&self) -> bool {
-        let state = lock_unpoisoned(&self.state);
-        let Some(last) = state.last_cycle_started_at.clone() else {
-            return false;
-        };
-        let Some(started) = parse_iso_millis(&last) else {
+        // The anchor is read under the lock and the cadence after it is released:
+        // `cadence_ms` takes the same mutex, so holding it here would deadlock the
+        // tick that follows a recorded cycle.
+        let last_cycle_started_at = lock_unpoisoned(&self.state).last_cycle_started_at.clone();
+        let Some(started) = last_cycle_started_at
+            .as_deref()
+            .and_then(parse_iso_millis)
+        else {
             return false;
         };
         (self.options.clock)() < started + self.cadence_ms()
     }
 
     fn cadence_ready_at(&self, now: i64) -> Option<String> {
-        let state = lock_unpoisoned(&self.state);
-        let last = state.last_cycle_started_at.clone()?;
-        let started = parse_iso_millis(&last)?;
+        let last_cycle_started_at = lock_unpoisoned(&self.state).last_cycle_started_at.clone();
+        let started = parse_iso_millis(last_cycle_started_at.as_deref()?)?;
         let ready = started + self.cadence_ms();
         if ready > now {
             Some(iso_from_millis(ready))
