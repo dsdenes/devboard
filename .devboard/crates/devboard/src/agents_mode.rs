@@ -2289,7 +2289,7 @@ impl Adapter {
     /// Whether a live forge read is due, spawning one when it is.
     fn schedule_forge(&self, weak: &Weak<AgentsMode>, has_clients: bool, now: i64) {
         let (id, forge) = match self {
-            Adapter::Repo(family) if family.flavor.uses_forge() => {
+            Adapter::Repo(family) if family.family_id.uses_forge() => {
                 (family.descriptor.id, &family.forge)
             }
             Adapter::Watchdog(family) => (family.descriptor.id, &family.forge),
@@ -2334,7 +2334,7 @@ impl Adapter {
 
     fn forge_ref(&self) -> Option<&ForgeProjection> {
         match self {
-            Adapter::Repo(family) if family.flavor.uses_forge() => Some(&family.forge),
+            Adapter::Repo(family) if family.family_id.uses_forge() => Some(&family.forge),
             Adapter::Watchdog(family) => Some(&family.forge),
             Adapter::Mcp(family) => Some(&family.forge),
             _ => None,
@@ -2417,16 +2417,16 @@ impl AgentsMode {
         };
         let new_preflight = || -> SharedPreflight { Arc::new(Mutex::new(None)) };
         let mut adapters = Vec::new();
-        for flavor in [
-            RepoFlavor::Scout,
-            RepoFlavor::Design,
-            RepoFlavor::DeadCode,
-            RepoFlavor::ApiStandards,
-            RepoFlavor::SingleResponsibility,
-            RepoFlavor::ConsistentNaming,
+        for family_id in [
+            RepoFamilyId::Scout,
+            RepoFamilyId::Design,
+            RepoFamilyId::DeadCode,
+            RepoFamilyId::ApiStandards,
+            RepoFamilyId::SingleResponsibility,
+            RepoFamilyId::ConsistentNaming,
         ] {
             adapters.push(Adapter::Repo(RepoFamily::new(
-                flavor,
+                family_id,
                 &repo_dir,
                 &state_dir,
                 &environment,
@@ -3359,7 +3359,7 @@ pub async fn run_worker(family: &str, args: &[String]) -> anyhow::Result<()> {
 /* ------------------------------------------------------------------------ */
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RepoFlavor {
+enum RepoFamilyId {
     Scout,
     Design,
     DeadCode,
@@ -3368,7 +3368,7 @@ enum RepoFlavor {
     ConsistentNaming,
 }
 
-impl RepoFlavor {
+impl RepoFamilyId {
     fn directory(self) -> &'static str {
         match self {
             Self::Scout => "scout",
@@ -3551,7 +3551,7 @@ fn nullable_key(object: &Map<String, Value>, key: &str) -> Option<Option<String>
     }
 }
 
-fn valid_repo_issue(value: &Value, flavor: RepoFlavor) -> Option<Value> {
+fn valid_repo_issue(value: &Value, family_id: RepoFamilyId) -> Option<Value> {
     let object = value.as_object()?;
     let number = object.get("number")?.as_u64()?;
     if number == 0 {
@@ -3566,23 +3566,23 @@ fn valid_repo_issue(value: &Value, flavor: RepoFlavor) -> Option<Value> {
     }
     nullable_key(object, "category")?;
     nullable_key(object, "version")?;
-    if matches!(flavor, RepoFlavor::Scout | RepoFlavor::DeadCode) {
+    if matches!(family_id, RepoFamilyId::Scout | RepoFamilyId::DeadCode) {
         nullable_key(object, "versionAttemptAt")?;
         nullable_key(object, "versionError")?;
     }
     Some(value.clone())
 }
 
-fn parse_repo_state(flavor: RepoFlavor, text: &str) -> Option<RepoState> {
+fn parse_repo_state(family_id: RepoFamilyId, text: &str) -> Option<RepoState> {
     let value: Value = serde_json::from_str(text).ok()?;
     let object = value.as_object()?;
-    if object.get("version")?.as_u64()? != flavor.state_version() {
+    if object.get("version")?.as_u64()? != family_id.state_version() {
         return None;
     }
     object.get("repo")?.as_str()?;
     object.get("root")?.as_str()?;
     let lifecycle = object.get("lifecycle")?.as_str()?;
-    if !flavor.lifecycle_allowed(lifecycle) {
+    if !family_id.lifecycle_allowed(lifecycle) {
         return None;
     }
     object.get("enabled")?.as_bool()?;
@@ -3594,17 +3594,17 @@ fn parse_repo_state(flavor: RepoFlavor, text: &str) -> Option<RepoState> {
     let max_per_hour = valid_limit(limits_object.get("maxPerHour"))?;
     let max_pending = valid_limit(limits_object.get("maxPending"))?;
     let interval_minutes = match object.get("intervalMinutes") {
-        None if flavor == RepoFlavor::Scout => flavor.default_minutes(),
+        None if family_id == RepoFamilyId::Scout => family_id.default_minutes(),
         Some(value) => valid_cadence(Some(value))?,
         None => return None,
     };
-    let last_cycle_key = if flavor == RepoFlavor::Scout {
+    let last_cycle_key = if family_id == RepoFamilyId::Scout {
         "lastScanStartedAt"
     } else {
         "lastCycleStartedAt"
     };
     let last_cycle_started_at = match object.get(last_cycle_key) {
-        None if flavor == RepoFlavor::Scout => None,
+        None if family_id == RepoFamilyId::Scout => None,
         Some(Value::Null) => None,
         Some(Value::String(text)) => Some(text.clone()),
         _ => return None,
@@ -3613,10 +3613,10 @@ fn parse_repo_state(flavor: RepoFlavor, text: &str) -> Option<RepoState> {
         .get("issues")?
         .as_array()?
         .iter()
-        .map(|issue| valid_repo_issue(issue, flavor))
+        .map(|issue| valid_repo_issue(issue, family_id))
         .collect::<Option<Vec<Value>>>()?;
     let sync = valid_sync(object.get("sync")?)?;
-    let newest_key = if flavor == RepoFlavor::Scout {
+    let newest_key = if family_id == RepoFamilyId::Scout {
         "newestScanId"
     } else {
         "newestCycleId"
@@ -3635,7 +3635,7 @@ fn parse_repo_state(flavor: RepoFlavor, text: &str) -> Option<RepoState> {
     };
     let updated_at = object.get("updatedAt")?.as_str()?.to_string();
     let mut active_cycle_started_at = last_cycle_started_at.clone();
-    if flavor == RepoFlavor::Scout {
+    if family_id == RepoFamilyId::Scout {
         if let Some(scan) = object.get("scan").and_then(Value::as_object) {
             if let Some(started) = scan.get("startedAt").and_then(Value::as_str) {
                 active_cycle_started_at = Some(started.to_string());
@@ -3665,7 +3665,7 @@ fn parse_repo_state(flavor: RepoFlavor, text: &str) -> Option<RepoState> {
     })
 }
 
-fn project_repo_issue(flavor: RepoFlavor, issue: &Value) -> Value {
+fn project_repo_issue(family_id: RepoFamilyId, issue: &Value) -> Value {
     let object = issue.as_object();
     let mut row = Map::new();
     row.insert(
@@ -3714,7 +3714,7 @@ fn project_repo_issue(flavor: RepoFlavor, issue: &Value) -> Value {
                 .map(str::to_string),
         ),
     );
-    if flavor == RepoFlavor::DeadCode {
+    if family_id == RepoFamilyId::DeadCode {
         row.insert(
             "note".to_string(),
             nullable_text(
@@ -3748,20 +3748,20 @@ fn merge_repo_issues(states: &[RepoState]) -> Vec<Value> {
 
 /// The facts a previous dashboard run already resolved, so a restart reads
 /// only the URLs that are still pending or unreadable.
-fn seed_forge_facts(flavor: RepoFlavor, state_dir: &Path, repo_dir: &Path) -> Vec<ForgeFact> {
+fn seed_forge_facts(family_id: RepoFamilyId, state_dir: &Path, repo_dir: &Path) -> Vec<ForgeFact> {
     let directory = state_dir
-        .join(flavor.directory())
-        .join(flavor.directory())
+        .join(family_id.directory())
+        .join(family_id.directory())
         .join(crate::journal::journal_key(repo_dir));
     let mut states = Vec::new();
     if let Ok(text) = std::fs::read_to_string(directory.join("state.json")) {
-        if let Some(state) = parse_repo_state(flavor, &text) {
+        if let Some(state) = parse_repo_state(family_id, &text) {
             states.push(state);
         }
     }
     for worker in worker_state_directories(&directory) {
         if let Ok(text) = std::fs::read_to_string(worker.join("state.json")) {
-            if let Some(state) = parse_repo_state(flavor, &text) {
+            if let Some(state) = parse_repo_state(family_id, &text) {
                 states.push(state);
             }
         }
@@ -3832,7 +3832,7 @@ fn scan_id_of(states: &[RepoState]) -> Option<String> {
         .max()
 }
 
-fn worker_lifecycle(_flavor: RepoFlavor, state: Option<&RepoState>) -> String {
+fn worker_lifecycle(_family_id: RepoFamilyId, state: Option<&RepoState>) -> String {
     let Some(state) = state else {
         return "running".to_string();
     };
@@ -3868,7 +3868,7 @@ struct RepoMutable {
 
 struct RepoFamily {
     descriptor: &'static Descriptor,
-    flavor: RepoFlavor,
+    family_id: RepoFamilyId,
     repo_dir: PathBuf,
     canonical_repo_dir: PathBuf,
     state_dir: PathBuf,
@@ -3888,7 +3888,7 @@ struct RepoFamily {
 impl RepoFamily {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        flavor: RepoFlavor,
+        family_id: RepoFamilyId,
         repo_dir: &Path,
         state_dir: &Path,
         environment: &HashMap<String, String>,
@@ -3900,18 +3900,18 @@ impl RepoFamily {
         forge_reader: Option<ForgeReader>,
         now: Arc<dyn Fn() -> i64 + Send + Sync>,
     ) -> Self {
-        let descriptor = match flavor {
-            RepoFlavor::Scout => descriptor("scout"),
-            RepoFlavor::Design => descriptor("design"),
-            RepoFlavor::DeadCode => descriptor("dead-code"),
-            RepoFlavor::ApiStandards => descriptor("api-standards"),
-            RepoFlavor::SingleResponsibility => descriptor("single-responsibility"),
-            RepoFlavor::ConsistentNaming => descriptor("consistent-naming"),
+        let descriptor = match family_id {
+            RepoFamilyId::Scout => descriptor("scout"),
+            RepoFamilyId::Design => descriptor("design"),
+            RepoFamilyId::DeadCode => descriptor("dead-code"),
+            RepoFamilyId::ApiStandards => descriptor("api-standards"),
+            RepoFamilyId::SingleResponsibility => descriptor("single-responsibility"),
+            RepoFamilyId::ConsistentNaming => descriptor("consistent-naming"),
         }
         .expect("a repository family descriptor");
         Self {
             descriptor,
-            flavor,
+            family_id,
             repo_dir: repo_dir.to_path_buf(),
             canonical_repo_dir: canonical_process_path(repo_dir),
             state_dir: state_dir.to_path_buf(),
@@ -3924,7 +3924,7 @@ impl RepoFamily {
             agent_environment,
             forge: ForgeProjection::new(
                 forge_reader,
-                seed_forge_facts(flavor, state_dir, repo_dir),
+                seed_forge_facts(family_id, state_dir, repo_dir),
             ),
             now,
             mutable: Arc::new(Mutex::new(RepoMutable {
@@ -3951,7 +3951,7 @@ impl RepoFamily {
 
     fn repo_state_directory(&self) -> PathBuf {
         self.state_dir
-            .join(self.flavor.directory())
+            .join(self.family_id.directory())
             .join(crate::journal::journal_key(&self.repo_dir))
     }
 
@@ -3985,7 +3985,7 @@ impl RepoFamily {
         self.repo_dir
             .join(".devboard")
             .join(".tmp")
-            .join(self.flavor.directory())
+            .join(self.family_id.directory())
             .join("lock")
     }
 
@@ -3993,21 +3993,21 @@ impl RepoFamily {
         self.repo_dir
             .join(".devboard")
             .join(".tmp")
-            .join(self.flavor.directory())
-            .join(self.flavor.cycle_directory())
+            .join(self.family_id.directory())
+            .join(self.family_id.cycle_directory())
             .join(id)
     }
 
     fn all_states(&self) -> Vec<RepoState> {
         let mut states = Vec::new();
         if let Ok(text) = std::fs::read_to_string(self.legacy_state_path()) {
-            if let Some(state) = parse_repo_state(self.flavor, &text) {
+            if let Some(state) = parse_repo_state(self.family_id, &text) {
                 states.push(state);
             }
         }
         for directory in worker_state_directories(&self.repo_state_directory()) {
             if let Ok(text) = std::fs::read_to_string(directory.join("state.json")) {
-                if let Some(state) = parse_repo_state(self.flavor, &text) {
+                if let Some(state) = parse_repo_state(self.family_id, &text) {
                     states.push(state);
                 }
             }
@@ -4040,7 +4040,7 @@ impl RepoFamily {
 
     fn control_for(&self, owner: &LockOwner) -> PathBuf {
         if let Some(version) = owner.harness_version.as_deref() {
-            if self.flavor == RepoFlavor::Scout {
+            if self.family_id == RepoFamilyId::Scout {
                 if self.versioned_state_path(Some(version)).exists() {
                     return self.versioned_control_directory(Some(version));
                 }
@@ -4054,21 +4054,21 @@ impl RepoFamily {
     fn state_for_owner(&self, owner: &LockOwner) -> Option<RepoState> {
         if let Some(version) = owner.harness_version.as_deref() {
             if let Ok(text) = std::fs::read_to_string(self.versioned_state_path(Some(version))) {
-                if let Some(state) = parse_repo_state(self.flavor, &text) {
+                if let Some(state) = parse_repo_state(self.family_id, &text) {
                     return Some(state);
                 }
             }
         }
         let text = std::fs::read_to_string(self.legacy_state_path()).ok()?;
-        parse_repo_state(self.flavor, &text)
+        parse_repo_state(self.family_id, &text)
     }
 
     fn settings(&self, state: Option<&RepoState>) -> BasicSettings {
         read_basic_settings(&self.settings_path()).unwrap_or_else(|| {
             let defaults = BasicSettings {
-                interval_minutes: self.flavor.default_minutes(),
-                max_per_hour: self.flavor.default_limits().max_per_hour,
-                max_pending: self.flavor.default_limits().max_pending,
+                interval_minutes: self.family_id.default_minutes(),
+                max_per_hour: self.family_id.default_limits().max_per_hour,
+                max_pending: self.family_id.default_limits().max_pending,
             };
             match state {
                 Some(state) => BasicSettings {
@@ -4083,7 +4083,7 @@ impl RepoFamily {
 
     fn snapshot(&self) -> Value {
         let now = (self.now)();
-        if self.flavor.uses_forge() && self.forge_urls().is_empty() {
+        if self.family_id.uses_forge() && self.forge_urls().is_empty() {
             self.forge.note_empty_read(now);
         }
         let owners = self.owned_owners();
@@ -4104,7 +4104,7 @@ impl RepoFamily {
             .filter(|owner| pid_alive(owner.pid))
             .cloned()
             .collect();
-        if self.flavor == RepoFlavor::Scout {
+        if self.family_id == RepoFamilyId::Scout {
             attached_owners = owners.clone();
         }
         let attached_states: Vec<RepoState> = attached_owners
@@ -4119,7 +4119,7 @@ impl RepoFamily {
         let attached = !attached_owners.is_empty();
         let mut sorted = states.clone();
         sorted.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-        let active: Option<RepoState> = if self.flavor == RepoFlavor::Scout {
+        let active: Option<RepoState> = if self.family_id == RepoFamilyId::Scout {
             attached_states
                 .iter()
                 .find(|state| state.lifecycle == "scanning")
@@ -4129,8 +4129,9 @@ impl RepoFamily {
             attached_states
                 .iter()
                 .find(|state| {
-                    state.lifecycle == self.flavor.active_lifecycle()
-                        || (self.flavor == RepoFlavor::Design && state.lifecycle == "releasing")
+                    state.lifecycle == self.family_id.active_lifecycle()
+                        || (self.family_id == RepoFamilyId::Design
+                            && state.lifecycle == "releasing")
                 })
                 .cloned()
                 .or_else(|| {
@@ -4165,7 +4166,7 @@ impl RepoFamily {
                         mutable.starting_since = None;
                         mutable.start_error = Some(format!(
                             "the {} worker did not publish its state within 5 seconds",
-                            self.flavor.worker_label()
+                            self.family_id.worker_label()
                         ));
                     }
                 }
@@ -4176,7 +4177,7 @@ impl RepoFamily {
             if let Some(foreign) = foreign.as_ref() {
                 mutable.notice = Some(format!(
                     "this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
-                    self.flavor.worker_label(),
+                    self.family_id.worker_label(),
                     foreign.pid,
                     foreign.state_dir,
                     self.state_dir.display()
@@ -4193,7 +4194,7 @@ impl RepoFamily {
         let mutable = self.mutable.lock().expect("family state");
         let scanning = attached_states
             .iter()
-            .any(|state| state.lifecycle == self.flavor.active_lifecycle());
+            .any(|state| state.lifecycle == self.family_id.active_lifecycle());
         let failed = attached_states
             .iter()
             .any(|state| state.lifecycle == "failed");
@@ -4207,7 +4208,7 @@ impl RepoFamily {
         } else if mutable.stop_requested {
             "stopping".to_string()
         } else if attached {
-            if self.flavor == RepoFlavor::Scout {
+            if self.family_id == RepoFamilyId::Scout {
                 if scanning {
                     "running".to_string()
                 } else if failed {
@@ -4244,7 +4245,7 @@ impl RepoFamily {
             "stopped".to_string()
         };
         let settings = self.settings(active.as_ref().or(state.as_ref()));
-        let last_run_at = if self.flavor == RepoFlavor::Scout {
+        let last_run_at = if self.family_id == RepoFamilyId::Scout {
             let mut candidates: Vec<String> = attached_states
                 .iter()
                 .filter_map(|state| state.last_cycle_started_at.clone())
@@ -4269,7 +4270,7 @@ impl RepoFamily {
             candidates.last().cloned()
         };
         let next_run_at = if attached {
-            if self.flavor == RepoFlavor::Scout {
+            if self.family_id == RepoFamilyId::Scout {
                 active
                     .as_ref()
                     .and_then(|state| state.next_attempt_at.clone())
@@ -4290,14 +4291,14 @@ impl RepoFamily {
             })
             .map(|issue| {
                 let url = issue.get("url").and_then(Value::as_str).unwrap_or("");
-                if self.flavor.uses_forge() {
+                if self.family_id.uses_forge() {
                     if let Some(fact) = self.forge.fact(url) {
-                        let mut row = project_repo_issue(self.flavor, &issue);
+                        let mut row = project_repo_issue(self.family_id, &issue);
                         if let Some(object) = row.as_object_mut() {
                             object.insert("state".to_string(), Value::String(fact.state));
                             object
                                 .insert("version".to_string(), nullable_text(fact.version.clone()));
-                            if self.flavor == RepoFlavor::DeadCode {
+                            if self.family_id == RepoFamilyId::DeadCode {
                                 let note = if fact.version.is_none() {
                                     issue
                                         .get("versionError")
@@ -4313,11 +4314,11 @@ impl RepoFamily {
                     }
                     if self.forge.unreadable(url)
                         && matches!(
-                            self.flavor,
-                            RepoFlavor::Scout | RepoFlavor::Design | RepoFlavor::DeadCode
+                            self.family_id,
+                            RepoFamilyId::Scout | RepoFamilyId::Design | RepoFamilyId::DeadCode
                         )
                     {
-                        let mut row = project_repo_issue(self.flavor, &issue);
+                        let mut row = project_repo_issue(self.family_id, &issue);
                         if let Some(object) = row.as_object_mut() {
                             object
                                 .insert("state".to_string(), Value::String("unknown".to_string()));
@@ -4325,10 +4326,10 @@ impl RepoFamily {
                         return row;
                     }
                 }
-                project_repo_issue(self.flavor, &issue)
+                project_repo_issue(self.family_id, &issue)
             })
             .collect();
-        let cycle_id = if self.flavor == RepoFlavor::Scout {
+        let cycle_id = if self.family_id == RepoFamilyId::Scout {
             scan_id_of(&states)
         } else {
             newest_cycle_id(&states)
@@ -4344,18 +4345,18 @@ impl RepoFamily {
                     pid: owner.pid,
                     version: owner.harness_version.clone(),
                     state_dir: owner.state_dir.clone(),
-                    lifecycle: worker_lifecycle(self.flavor, state.as_ref()),
+                    lifecycle: worker_lifecycle(self.family_id, state.as_ref()),
                 }
             })
             .collect();
-        let enabled = if self.flavor == RepoFlavor::Scout {
+        let enabled = if self.family_id == RepoFamilyId::Scout {
             attached && attached_states.iter().any(|state| state.enabled) && lifecycle != "stopped"
         } else {
             attached
                 && active.as_ref().map(|state| state.enabled).unwrap_or(false)
                 && lifecycle != "stopped"
         };
-        let sync = if self.flavor.uses_forge() {
+        let sync = if self.family_id.uses_forge() {
             self.forge.sync(now)
         } else {
             active
@@ -4367,7 +4368,7 @@ impl RepoFamily {
             .iter()
             .filter(|row| row.get("state").and_then(Value::as_str) == Some("pending"))
             .count() as u64;
-        let documentation = if self.flavor == RepoFlavor::Design {
+        let documentation = if self.family_id == RepoFamilyId::Design {
             merge_documentation(&states)
         } else {
             Vec::new()
@@ -4430,7 +4431,7 @@ impl RepoFamily {
             .and_then(|mutable| mutable.last_activity_cycle.clone())
             .or_else(|| {
                 let states = self.all_states();
-                if self.flavor == RepoFlavor::Scout {
+                if self.family_id == RepoFamilyId::Scout {
                     scan_id_of(&states)
                 } else {
                     newest_cycle_id(&states)
@@ -4457,7 +4458,7 @@ impl RepoFamily {
 
     fn poll_activity(&self, shared: &Shared) {
         let states = self.all_states();
-        let cycle_id = if self.flavor == RepoFlavor::Scout {
+        let cycle_id = if self.family_id == RepoFamilyId::Scout {
             scan_id_of(&states)
         } else {
             newest_cycle_id(&states)
@@ -4517,10 +4518,10 @@ impl RepoFamily {
     }
 
     fn request_sync(&self) {
-        if self.flavor.uses_forge() {
+        if self.family_id.uses_forge() {
             self.forge.request_sync_only();
         }
-        if !self.flavor.refreshes_worker() {
+        if !self.family_id.refreshes_worker() {
             return;
         }
         let owners = self.owned_owners();
@@ -4577,7 +4578,7 @@ impl RepoFamily {
     }
 
     fn preview_start(&self) {
-        let idle = if self.flavor == RepoFlavor::Scout {
+        let idle = if self.family_id == RepoFamilyId::Scout {
             self.owned_owners().is_empty()
         } else {
             self.all_owners().is_empty()
@@ -4600,7 +4601,7 @@ impl RepoFamily {
     async fn start(&self) -> AgentResult {
         let _guard = self.start_lock.lock().await;
         for _ in 0..1000 {
-            let owners = if self.flavor == RepoFlavor::Scout {
+            let owners = if self.family_id == RepoFamilyId::Scout {
                 self.owned_owners()
             } else {
                 self.all_owners()
@@ -4609,7 +4610,7 @@ impl RepoFamily {
                 if let Some(foreign) = self.foreign_owner() {
                     let notice = format!(
                         "this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
-                        self.flavor.worker_label(),
+                        self.family_id.worker_label(),
                         foreign.pid,
                         foreign.state_dir,
                         self.state_dir.display()
@@ -4624,11 +4625,11 @@ impl RepoFamily {
             let foreign = owners
                 .iter()
                 .find(|owner| resolved(Path::new(&owner.state_dir)) != resolved(&self.state_dir));
-            if self.flavor != RepoFlavor::Scout {
+            if self.family_id != RepoFamilyId::Scout {
                 if let Some(foreign) = foreign {
                     let notice = format!(
                         "this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
-                        self.flavor.worker_label(),
+                        self.family_id.worker_label(),
                         foreign.pid,
                         foreign.state_dir,
                         self.state_dir.display()
@@ -4659,7 +4660,7 @@ impl RepoFamily {
             if !all_stopped {
                 return AgentResult::failure(format!(
                     "the previous {} worker (pid {}) is still stopping; press Start once it has exited.",
-                    self.flavor.worker_label(),
+                    self.family_id.worker_label(),
                     stopping
                         .iter()
                         .map(u32::to_string)
@@ -4677,7 +4678,7 @@ impl RepoFamily {
             mutable.notice = None;
         }
         let request = PreflightRequest {
-            family: self.flavor.directory().to_string(),
+            family: self.family_id.directory().to_string(),
             repo_dir: self.repo_dir.clone(),
             state_dir: self.state_dir.clone(),
             environment: self.environment.clone(),
@@ -4725,7 +4726,7 @@ impl RepoFamily {
 
     async fn spawn_worker(&self) -> AgentResult {
         let argv = harness_argv(
-            self.flavor.directory(),
+            self.family_id.directory(),
             &[
                 ("repo", self.repo_dir.as_path()),
                 ("state-dir", self.state_dir.as_path()),
@@ -4774,7 +4775,7 @@ impl RepoFamily {
             None => {
                 let message = format!(
                     "the {} worker could not be started",
-                    self.flavor.worker_label()
+                    self.family_id.worker_label()
                 );
                 let mut mutable = self.mutable.lock().expect("family state");
                 mutable.starting = false;
@@ -4786,13 +4787,13 @@ impl RepoFamily {
     }
 
     fn stop(&self) -> AgentResult {
-        let owners = if self.flavor == RepoFlavor::Scout {
+        let owners = if self.family_id == RepoFamilyId::Scout {
             self.owned_owners()
         } else {
             self.all_owners()
         };
         if owners.is_empty() {
-            if self.flavor == RepoFlavor::Scout {
+            if self.family_id == RepoFamilyId::Scout {
                 if let Some(foreign) = self.foreign_owner() {
                     return AgentResult::failure(format!(
                         "the Auto Scout worker (pid {}) uses {}; this dashboard's STATE_DIR is {}",
@@ -4804,7 +4805,7 @@ impl RepoFamily {
             }
             return AgentResult::failure(format!(
                 "No {} worker is running for this checkout.",
-                self.flavor.worker_label()
+                self.family_id.worker_label()
             ));
         }
         if let Some(foreign) = owners
@@ -4813,7 +4814,7 @@ impl RepoFamily {
         {
             return AgentResult::failure(format!(
                 "the {} worker (pid {}) uses {}; this dashboard's STATE_DIR is {}",
-                self.flavor.worker_label(),
+                self.family_id.worker_label(),
                 foreign.pid,
                 foreign.state_dir,
                 self.state_dir.display()
@@ -4844,7 +4845,7 @@ impl RepoFamily {
         }
         let repo_dir = self.repo_dir.clone();
         let canonical = self.canonical_repo_dir.clone();
-        let flavor = self.flavor;
+        let family_id = self.family_id;
         let mutable = Arc::clone(&self.mutable);
         let mut state_paths = vec![self.legacy_state_path()];
         for directory in worker_state_directories(&self.repo_state_directory()) {
@@ -4856,11 +4857,11 @@ impl RepoFamily {
                 if !still_stopping(&mutable, pid) {
                     return;
                 }
-                if !pid_alive(pid) || !proves_worker(pid, flavor, &repo_dir, &canonical) {
+                if !pid_alive(pid) || !proves_worker(pid, family_id, &repo_dir, &canonical) {
                     clear_stopping(&mutable, pid);
                     return;
                 }
-                if flavor == RepoFlavor::Design && design_is_releasing(&state_paths, pid) {
+                if family_id == RepoFamilyId::Design && design_is_releasing(&state_paths, pid) {
                     continue;
                 }
                 unsafe {
@@ -4870,11 +4871,11 @@ impl RepoFamily {
                 if !still_stopping(&mutable, pid) {
                     return;
                 }
-                if !pid_alive(pid) || !proves_worker(pid, flavor, &repo_dir, &canonical) {
+                if !pid_alive(pid) || !proves_worker(pid, family_id, &repo_dir, &canonical) {
                     clear_stopping(&mutable, pid);
                     return;
                 }
-                if flavor == RepoFlavor::Design && design_is_releasing(&state_paths, pid) {
+                if family_id == RepoFamilyId::Design && design_is_releasing(&state_paths, pid) {
                     continue;
                 }
                 clear_stopping(&mutable, pid);
@@ -4936,13 +4937,15 @@ impl RepoFamily {
     }
 
     async fn real_preflight(&self, budget: PreflightBudget) -> Result<String, String> {
-        match self.flavor {
-            RepoFlavor::Scout => self.preflight_scout(budget).await,
-            RepoFlavor::Design => self.preflight_design(budget).await,
-            RepoFlavor::DeadCode => self.preflight_dead_code(budget).await,
-            RepoFlavor::ApiStandards => self.preflight_api_standards(budget).await,
-            RepoFlavor::SingleResponsibility => self.preflight_single_responsibility(budget).await,
-            RepoFlavor::ConsistentNaming => self.preflight_consistent_naming(budget).await,
+        match self.family_id {
+            RepoFamilyId::Scout => self.preflight_scout(budget).await,
+            RepoFamilyId::Design => self.preflight_design(budget).await,
+            RepoFamilyId::DeadCode => self.preflight_dead_code(budget).await,
+            RepoFamilyId::ApiStandards => self.preflight_api_standards(budget).await,
+            RepoFamilyId::SingleResponsibility => {
+                self.preflight_single_responsibility(budget).await
+            }
+            RepoFamilyId::ConsistentNaming => self.preflight_consistent_naming(budget).await,
         }
     }
 
@@ -4956,13 +4959,13 @@ impl RepoFamily {
         if remote.forge == "gitlab" {
             return Err(format!(
                 "{} supports a GitHub or Gitea origin, not a GitLab one: {}",
-                match self.flavor {
-                    RepoFlavor::Scout => "the scout",
-                    RepoFlavor::DeadCode => "the dead-code agent",
-                    RepoFlavor::ApiStandards => "the API Standards agent",
-                    RepoFlavor::SingleResponsibility => "the Single Responsibility agent",
-                    RepoFlavor::ConsistentNaming => "the Consistent Naming agent",
-                    RepoFlavor::Design => "the design agent",
+                match self.family_id {
+                    RepoFamilyId::Scout => "the scout",
+                    RepoFamilyId::DeadCode => "the dead-code agent",
+                    RepoFamilyId::ApiStandards => "the API Standards agent",
+                    RepoFamilyId::SingleResponsibility => "the Single Responsibility agent",
+                    RepoFamilyId::ConsistentNaming => "the Consistent Naming agent",
+                    RepoFamilyId::Design => "the design agent",
                 },
                 remote.host
             ));
@@ -5544,7 +5547,7 @@ fn design_is_releasing(paths: &[PathBuf], pid: u32) -> bool {
     let states: Vec<RepoState> = paths
         .iter()
         .filter_map(|path| std::fs::read_to_string(path).ok())
-        .filter_map(|text| parse_repo_state(RepoFlavor::Design, &text))
+        .filter_map(|text| parse_repo_state(RepoFamilyId::Design, &text))
         .collect();
     let releasing = states
         .iter()
@@ -5590,12 +5593,12 @@ fn inside_or_equal(root: &Path, candidate: &Path) -> bool {
     candidate.starts_with(&root)
 }
 
-fn proves_worker(pid: u32, flavor: RepoFlavor, repo_dir: &Path, canonical: &Path) -> bool {
+fn proves_worker(pid: u32, family_id: RepoFamilyId, repo_dir: &Path, canonical: &Path) -> bool {
     let argv = match crate::supervision::process_argv(pid) {
         Some(argv) => argv,
         None => return false,
     };
-    let family = flavor.directory();
+    let family = family_id.directory();
     let mounted = argv
         .windows(2)
         .any(|pair| pair[0] == "worker" && pair[1] == family)
