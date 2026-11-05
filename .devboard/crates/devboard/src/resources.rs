@@ -1176,7 +1176,7 @@ pub fn apply_slice_properties_for(name: &str, settings: Settings) -> SliceInfo {
     let high = format!("MemoryHigh={}", settings.memory_high_mb.saturating_mul(MIB));
     let max = format!("MemoryMax={}", settings.memory_max_mb.saturating_mul(MIB));
     let set = Command::new("systemctl")
-        .args(["--user", "set-property", leaf, &high, &max])
+        .args(["--user", "set-property", "--runtime", leaf, &high, &max])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1188,7 +1188,13 @@ pub fn apply_slice_properties_for(name: &str, settings: Settings) -> SliceInfo {
     // grow past it and pressure the session instead. An older systemd that
     // cannot set the swap bound still gets the RAM bound above.
     let _ = Command::new("systemctl")
-        .args(["--user", "set-property", leaf, "MemorySwapMax=0"])
+        .args([
+            "--user",
+            "set-property",
+            "--runtime",
+            leaf,
+            "MemorySwapMax=0",
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
