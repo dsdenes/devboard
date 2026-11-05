@@ -544,7 +544,12 @@ running binary, and replaces the process without an operator click. Every connec
 the replacement event, waits for the new process, and reloads once. An unreachable, invalid, or
 mismatched manifest leaves the running process serving and is journaled once per attempt. The
 `DEVBOARD_UPDATE_INTERVAL_MS` and `DEVBOARD_UPDATE_BACKOFF_MAX_MS` variables tune the cadence and
-the backoff ceiling; `DEVBOARD_GITEA_URL` names the Gitea instance and `GITEA_TOKEN` its token.
+the backoff ceiling; `DEVBOARD_GITEA_URL` names the Gitea instance and `GITEA_TOKEN` its token. A
+credential Gitea refuses is dropped for that read: the release metadata of a public repository
+needs none, so a token the forge has since rotated away — still exported to a dashboard that
+started before the rotation — cannot fail the check, because the read is retried without the
+header. A repository that really needs the credential answers 401 again, and that refusal is
+journaled like any other failed check.
 
 `versionState` reports `running`, `installed`, `latest`, `stale`, and `source`. `installed` is the
 version a restart would load — the manifest beside the running binary on an installed host, the

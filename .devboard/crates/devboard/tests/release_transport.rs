@@ -160,3 +160,90 @@ async fn a_local_release_directory_installs_offline() {
     assert!(prefix.join("bin/devboard").is_file());
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+/// A Gitea stub that refuses every request carrying a credential, as Gitea
+/// does for a token it does not accept. `serve_anonymous` decides whether the
+/// anonymous read that follows is served, which separates a public repository
+/// from a private one.
+fn refusing_gitea_stub(
+    serve_anonymous: bool,
+    connections: usize,
+) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let manifest_url = format!("{base}/releases/download/v1.2.3/devboard-manifest.json");
+    let release = serde_json::to_vec(&json!({
+        "tag_name": "v1.2.3",
+        "assets": [{
+            "name": "devboard-manifest.json",
+            "browser_download_url": manifest_url,
+        }],
+    }))
+    .unwrap();
+    let manifest = serde_json::to_vec(&json!({
+        "version": "1.2.3",
+        "tag": "v1.2.3",
+        "assets": [],
+    }))
+    .unwrap();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..connections {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let read = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..read]).to_lowercase();
+            let (status, payload) = if request.contains("\r\nauthorization:") || !serve_anonymous {
+                (
+                    "401 Unauthorized",
+                    br#"{"message":"invalid username, password or token"}"#.to_vec(),
+                )
+            } else if request.starts_with("get /api/v1/") {
+                ("200 OK", release.clone())
+            } else {
+                ("200 OK", manifest.clone())
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                payload.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(&payload).unwrap();
+        }
+    });
+    (base, handle)
+}
+
+#[tokio::test]
+async fn a_refused_credential_still_reads_a_public_release() {
+    let (base, handle) = refusing_gitea_stub(true, 4);
+    let source = devboard::release::ManifestSource {
+        base_url: base,
+        repository: "dsdenes/devboard".to_string(),
+        token: Some("stale-token".to_string()),
+        timeout_ms: 5_000,
+        local_dir: None,
+    };
+    let release = devboard::release::latest_manifest(&source)
+        .await
+        .expect("a public release stays readable without the refused credential");
+    assert_eq!(release.version, "1.2.3");
+    assert_eq!(release.tag, "v1.2.3");
+    handle.join().unwrap();
+}
+
+#[tokio::test]
+async fn a_private_release_still_reports_a_refused_credential() {
+    let (base, handle) = refusing_gitea_stub(false, 2);
+    let source = devboard::release::ManifestSource {
+        base_url: base,
+        repository: "dsdenes/devboard".to_string(),
+        token: Some("stale-token".to_string()),
+        timeout_ms: 5_000,
+        local_dir: None,
+    };
+    let error = devboard::release::latest_manifest(&source)
+        .await
+        .expect_err("a private release needs the credential");
+    assert!(error.contains("HTTP 401"), "{error}");
+    handle.join().unwrap();
+}

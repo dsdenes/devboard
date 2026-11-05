@@ -193,6 +193,43 @@ impl ManifestSource {
     }
 }
 
+/// Sends one release read with the credential it is given, when one is given.
+async fn send_release_request(
+    client: &reqwest::Client,
+    url: &str,
+    accept: &str,
+    token: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    let mut request = client.get(url).header("Accept", accept);
+    if let Some(token) = token.filter(|token| !token.is_empty()) {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+    request.send().await.map_err(|error| error.to_string())
+}
+
+/// Reads one release URL, dropping a credential the forge refuses.
+///
+/// A long-running dashboard keeps the credential its launcher exported, and
+/// the forge may since have rotated that token away. Gitea answers HTTP 401 to
+/// a request that presents a token it does not accept, even for a public
+/// repository, so a stale credential alone would fail every release read. The
+/// read is retried without the header: a public release stays readable, and a
+/// repository that really needs the credential answers 401 again for the
+/// caller to report.
+async fn get_release_response(
+    client: &reqwest::Client,
+    url: &str,
+    accept: &str,
+    token: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    let token = token.filter(|token| !token.is_empty());
+    let response = send_release_request(client, url, accept, token).await?;
+    if token.is_none() || response.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return Ok(response);
+    }
+    send_release_request(client, url, accept, None).await
+}
+
 /// Reads the newest release's manifest from Gitea, or from a local release
 /// directory when `DEVBOARD_RELEASE_URL` names one.
 pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
@@ -207,11 +244,8 @@ pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, Str
     }
     let client = source.client();
     let url = source.api(&format!("{}/releases/latest", source.repo_path()));
-    let mut request = client.get(&url).header("Accept", "application/json");
-    if let Some(token) = source.token.as_deref().filter(|token| !token.is_empty()) {
-        request = request.header("Authorization", format!("token {token}"));
-    }
-    let response = request.send().await.map_err(|error| error.to_string())?;
+    let response =
+        get_release_response(&client, &url, "application/json", source.token.as_deref()).await?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -236,13 +270,13 @@ pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, Str
         .find(|asset| asset.get("name").and_then(Value::as_str) == Some(MANIFEST_ASSET))
         .and_then(|asset| asset.get("browser_download_url").and_then(Value::as_str))
         .ok_or_else(|| format!("the release carries no {MANIFEST_ASSET}"))?;
-    let mut request = client
-        .get(manifest_url)
-        .header("Accept", "application/json");
-    if let Some(token) = source.token.as_deref().filter(|token| !token.is_empty()) {
-        request = request.header("Authorization", format!("token {token}"));
-    }
-    let response = request.send().await.map_err(|error| error.to_string())?;
+    let response = get_release_response(
+        &client,
+        manifest_url,
+        "application/json",
+        source.token.as_deref(),
+    )
+    .await?;
     if !response.status().is_success() {
         return Err(format!(
             "GET {manifest_url} failed (HTTP {})",
@@ -404,11 +438,8 @@ async fn gitea_asset_bytes(
         source.repo_path(),
         release.tag
     ));
-    let mut request = client.get(&url).header("Accept", "application/json");
-    if let Some(token) = source.token.as_deref().filter(|token| !token.is_empty()) {
-        request = request.header("Authorization", format!("token {token}"));
-    }
-    let response = request.send().await.map_err(|error| error.to_string())?;
+    let response =
+        get_release_response(&client, &url, "application/json", source.token.as_deref()).await?;
     if !response.status().is_success() {
         return Err(format!(
             "GET {url} failed (HTTP {})",
@@ -436,13 +467,13 @@ async fn gitea_asset_bytes(
                 .or_else(|| entry.get("url").and_then(Value::as_str))
         })
         .ok_or_else(|| format!("the Gitea release carries no {target_name}"))?;
-    let mut request = client
-        .get(asset_url)
-        .header("Accept", "application/octet-stream");
-    if let Some(token) = source.token.as_deref().filter(|token| !token.is_empty()) {
-        request = request.header("Authorization", format!("token {token}"));
-    }
-    let response = request.send().await.map_err(|error| error.to_string())?;
+    let response = get_release_response(
+        &client,
+        asset_url,
+        "application/octet-stream",
+        source.token.as_deref(),
+    )
+    .await?;
     if !response.status().is_success() {
         return Err(format!(
             "GET {asset_url} failed (HTTP {})",
