@@ -1486,6 +1486,7 @@ fn owner_argv(executable: &Path, repo_dir: &Path, state_dir: &Path, path: &str) 
 /// Starts one detached owner in its own session with ignored stdio.
 fn spawn_owner(argv: &[String], cwd: &Path, environment: &HashMap<String, String>) -> Option<u32> {
     use std::process::{Command, Stdio};
+    let argv = crate::resources::wrap_argv(argv.to_vec());
     let program = argv.first()?;
     let mut command = Command::new(program);
     command

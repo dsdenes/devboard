@@ -5084,7 +5084,31 @@ impl IssuesWorker {
                 labels: issue.labels,
                 body: issue.body,
             };
-            self.begin(issue).await;
+            // The global cap admits this issue's peer before the run opens.
+            // A deferral leaves the issue queued for the next tick; it is
+            // never marked failed.
+            let permit = match crate::resources::global() {
+                Some(governor) => {
+                    let label = format!("issue #{}", issue.number);
+                    match governor.try_acquire("issue", &label) {
+                        Ok(slot) => Some(slot),
+                        Err(reason) => {
+                            governor.record_deferral("issue", &label, &reason);
+                            release_issue_claim(&self.repo_dir, issue.number);
+                            self.claiming.remove(&issue.number);
+                            self.state.notice = Some(format!(
+                                "issue #{} deferred: {}",
+                                issue.number,
+                                reason.message()
+                            ));
+                            self.publish();
+                            break;
+                        }
+                    }
+                }
+                None => None,
+            };
+            self.begin(issue, permit).await;
             if self.stopping || self.state.paused || !self.state.enabled {
                 break;
             }
@@ -5172,7 +5196,7 @@ impl IssuesWorker {
         })
     }
 
-    async fn begin(&mut self, issue: Issue) {
+    async fn begin(&mut self, issue: Issue, permit: Option<crate::resources::Slot>) {
         if !self.set_processing(issue.number, true).await {
             if self.claiming.remove(&issue.number) {
                 release_issue_claim(&self.repo_dir, issue.number);
@@ -5227,6 +5251,10 @@ impl IssuesWorker {
             self.repo_dir.display().to_string(),
         )
         .with_env(environment);
+        let options = match permit {
+            Some(permit) => options.with_permit(permit),
+            None => options,
+        };
         let connected = crate::acp::AcpConnection::connect(options).await;
         let (peer, mut receiver) = match connected {
             Ok(value) => value,

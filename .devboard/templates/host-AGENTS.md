@@ -252,6 +252,23 @@ The API Standards worker reads the project copy: `apiStandardsConfig().skillDocu
 `.omp/skills/devboard-restful-api-implementation/SKILL.md` and its rule table is
 `references/zalando-rest-rules.md` under the same directory.
 
+## Resource limits
+
+Every worker, run owner, and `omp acp` peer the dashboard starts runs inside the transient
+`devboard.slice`; the dashboard process itself stays outside it, so a slice kill never takes the
+control plane down. One global cap bounds concurrent agent peers across the Issues worker, every
+background family, goal, flow, and discover runs, the Release Train, and manual runs. A start at
+the cap or below the memory reserve is deferred with a recorded reason and retried on a later
+tick; it is never marked failed, and running work is never stopped for budget reasons. The
+kernel's hard slice limit is the only kill.
+
+The budget is derived from host memory and CPUs: the reserve is `max(1 GiB, 25% of MemTotal)`,
+the hard maximum is 50% of MemTotal, the soft high mark is 80% of the maximum, and the agent cap
+is `min(4, max(1, cpus / 4))`. `DEVBOARD_MEMORY_RESERVE_MB`, `DEVBOARD_MEMORY_MAX_MB`,
+`DEVBOARD_MEMORY_HIGH_MB`, and `DEVBOARD_MAX_AGENT_PEERS` override a default when no saved value
+exists. The Devboard workspace's `Resources` tab reads and saves the same values, applies them
+to the live slice without a restart, and persists them in the dashboard state directory.
+
 ## Cross-boundary changes
 
 Split, never mix: host-specific detail in host files; generic mechanism in `.devboard/` taking that detail as input. A host name, path, or stack inside `.devboard/` is a bug. A harness dependency outside it is a bug.

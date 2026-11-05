@@ -29,6 +29,7 @@ async fn run() -> anyhow::Result<()> {
         Some("cleanup") => cleanup_command(&args),
         Some("watchdog") => watchdog_command(&args),
         Some("worker") => worker_command(&args).await,
+        Some("resources") => resources_command(&args[1..]).await,
         Some("acp-stub") => devboard::acp_stub::run_stub(&args[1..]),
         Some("mcp") => devboard::mcp_server::run_server().await,
         Some("bench") => bench_command(&args).await,
@@ -43,7 +44,7 @@ async fn run() -> anyhow::Result<()> {
         Some("preflight") => preflight_command(&args),
         Some("forge-auth") => std::process::exit(devboard::forge_auth::main(&args[1..]).await),
         Some(other) => anyhow::bail!(
-            "unknown command {other}; expected serve, version, install, update, doctor, cleanup, watchdog, worker, acp-stub, mcp, bench, publish, release-suite, check-runtime, gate-prepush, hooks, preflight, or forge-auth"
+            "unknown command {other}; expected serve, version, install, update, doctor, cleanup, watchdog, worker, resources, acp-stub, mcp, bench, publish, release-suite, check-runtime, gate-prepush, hooks, preflight, or forge-auth"
         ),
     }
 }
@@ -247,7 +248,11 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         &format!("{}\n", serde_json::to_string(&version_marker)?),
     );
     let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
+    // The governor owns the transient slice before the first client connects,
+    // so every child this process starts joins the bounded pool.
+    devboard::resources::install_production(&config.state_dir);
     let server = Server::new(config.clone(), journal);
+    server.app.start_resource_watcher();
     {
         let app = std::sync::Arc::downgrade(&server.app);
         let config = server.config.clone();
@@ -279,6 +284,139 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
 async fn worker_command(args: &[String]) -> anyhow::Result<()> {
     let invocation = devboard::workers::parse(&args[1..])?;
     devboard::workers::run(&invocation).await
+}
+
+/// One `--name value` or `--name=value` option in a CLI argument vector.
+fn option_value(args: &[String], name: &str) -> Option<String> {
+    let flag = format!("--{name}");
+    let prefix = format!("--{name}=");
+    let mut index = 0;
+    while index < args.len() {
+        if let Some(value) = args[index].strip_prefix(&prefix) {
+            return Some(value.to_string());
+        }
+        if args[index] == flag {
+            return args.get(index + 1).cloned();
+        }
+        index += 1;
+    }
+    None
+}
+
+/// `devboard resources <status|admit|stress> --state-dir <dir> ...`.
+///
+/// `status` prints the live governor view, `admit` asks once (exiting 2 on a
+/// deferral), and `stress` drives many starts through the governor for the
+/// live proof. All three use the same slot files and slice as the dashboard.
+async fn resources_command(args: &[String]) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let subcommand = args.first().map(String::as_str).unwrap_or("status");
+    let state_dir = option_value(args, "state-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".devboard/.tmp"));
+    let governor = devboard::resources::install_production(&state_dir);
+    match subcommand {
+        "status" => {
+            println!("{}", serde_json::to_string_pretty(&governor.status_json())?);
+            Ok(())
+        }
+        "admit" => {
+            let label = option_value(args, "label").unwrap_or_else(|| "manual".to_string());
+            let kind = option_value(args, "kind").unwrap_or_else(|| "peer".to_string());
+            let hold_ms = option_value(args, "hold-ms")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            match governor.try_acquire(&kind, &label) {
+                Ok(slot) => {
+                    println!("admitted {}", slot.id());
+                    if hold_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(hold_ms)).await;
+                    }
+                    drop(slot);
+                    Ok(())
+                }
+                Err(reason) => {
+                    governor.record_deferral(&kind, &label, &reason);
+                    println!("deferred: {}", reason.message());
+                    std::process::exit(2);
+                }
+            }
+        }
+        "stress" => {
+            let count = option_value(args, "count")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(10);
+            let hold_ms = option_value(args, "hold-ms")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(3_000);
+            let peer = option_value(args, "peer").unwrap_or_else(|| "sleep".to_string());
+            let mut argv: Vec<String> = peer.split_whitespace().map(str::to_string).collect();
+            if argv.is_empty() {
+                anyhow::bail!("--peer names no command");
+            }
+            argv.push(format!("{:.3}", hold_ms as f64 / 1_000.0));
+            let settings = governor.settings();
+            let mut pending = count;
+            let mut started = 0usize;
+            let mut deferred = 0usize;
+            let mut max_active = 0usize;
+            let mut running: Vec<(devboard::resources::Slot, std::process::Child)> = Vec::new();
+            while pending > 0 || !running.is_empty() {
+                while pending > 0 {
+                    match governor.try_acquire("stress", "stress") {
+                        Ok(slot) => {
+                            let spawn_argv = governor.wrap_argv(argv.clone());
+                            let child = std::process::Command::new(&spawn_argv[0])
+                                .args(&spawn_argv[1..])
+                                .spawn()
+                                .with_context(|| format!("starting {}", spawn_argv[0]))?;
+                            running.push((slot, child));
+                            pending -= 1;
+                            started += 1;
+                            max_active = max_active.max(running.len());
+                        }
+                        Err(reason) => {
+                            deferred += 1;
+                            governor.record_deferral("stress", "stress", &reason);
+                            break;
+                        }
+                    }
+                }
+                let mut index = 0;
+                while index < running.len() {
+                    let finished = running[index].1.try_wait().ok().flatten().is_some();
+                    if finished {
+                        running.remove(index);
+                    } else {
+                        index += 1;
+                    }
+                }
+                if pending > 0 || !running.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+            let report = serde_json::json!({
+                "started": started,
+                "deferredAttempts": deferred,
+                "maxActive": max_active,
+                "cap": settings.max_agent_peers,
+                "budget": settings.to_json(),
+                "live": governor.status_json()["live"].clone(),
+            });
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if max_active > settings.max_agent_peers as usize {
+                anyhow::bail!(
+                    "the governor admitted {max_active} active peers above the cap of {}",
+                    settings.max_agent_peers
+                );
+            }
+            Ok(())
+        }
+        other => {
+            anyhow::bail!("unknown resources command {other}; expected status, admit, or stress")
+        }
+    }
 }
 
 /// Discovers the loopback Gitea origin of a canonical source checkout whose

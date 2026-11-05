@@ -112,6 +112,14 @@
     {
       "name": "error",
       "reason": "an ENOENT diagnostic naming an absolute fixture path"
+    },
+    {
+      "name": "effective",
+      "reason": "the derived budget depends on the recording host's RAM and CPUs"
+    },
+    {
+      "name": "live",
+      "reason": "the active agent count, available memory, and slice figures are live host facts"
     }
   ],
   "statePrefixes": [

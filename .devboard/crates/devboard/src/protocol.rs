@@ -17,6 +17,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "getMcpTools",
     "getInstalledSkills",
     "getComplexity",
+    "getResources",
+    "setResources",
     "setInstalledSkillEnabled",
     "getIssues",
     "getIssuesRun",
@@ -100,6 +102,13 @@ pub enum Command {
     GetMcpTools,
     GetInstalledSkills,
     GetComplexity,
+    GetResources,
+    SetResources {
+        max_agent_peers: Option<Value>,
+        memory_high_mb: Option<Value>,
+        memory_max_mb: Option<Value>,
+        memory_reserve_mb: Option<Value>,
+    },
     SetInstalledSkillEnabled {
         name: Option<Value>,
         enabled: Option<Value>,
@@ -293,6 +302,8 @@ impl Command {
             Self::GetMcpTools => "getMcpTools",
             Self::GetInstalledSkills => "getInstalledSkills",
             Self::GetComplexity => "getComplexity",
+            Self::GetResources => "getResources",
+            Self::SetResources { .. } => "setResources",
             Self::SetInstalledSkillEnabled { .. } => "setInstalledSkillEnabled",
             Self::GetIssues => "getIssues",
             Self::GetIssuesRun { .. } => "getIssuesRun",
@@ -378,6 +389,7 @@ impl Command {
                 | Self::GetMcpTools
                 | Self::GetInstalledSkills
                 | Self::GetComplexity
+                | Self::GetResources
                 | Self::GetIssues
                 | Self::GetIssuesRun { .. }
                 | Self::GetGoalDrafts
@@ -410,6 +422,13 @@ pub fn parse_client_message(text: &str) -> Option<Command> {
         "getMcpTools" => Command::GetMcpTools,
         "getInstalledSkills" => Command::GetInstalledSkills,
         "getComplexity" => Command::GetComplexity,
+        "getResources" => Command::GetResources,
+        "setResources" => Command::SetResources {
+            max_agent_peers: field("maxAgentPeers"),
+            memory_high_mb: field("memoryHighMb"),
+            memory_max_mb: field("memoryMaxMb"),
+            memory_reserve_mb: field("memoryReserveMb"),
+        },
         "setInstalledSkillEnabled" => Command::SetInstalledSkillEnabled {
             name: field("name"),
             enabled: field("enabled"),

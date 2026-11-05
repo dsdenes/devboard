@@ -3044,10 +3044,7 @@ impl ScoutWorker {
             .state
             .last_scan_started_at
             .clone();
-        let Some(started) = last_scan_started_at
-            .as_deref()
-            .and_then(parse_iso_millis)
-        else {
+        let Some(started) = last_scan_started_at.as_deref().and_then(parse_iso_millis) else {
             return false;
         };
         now < started + self.cadence_ms()

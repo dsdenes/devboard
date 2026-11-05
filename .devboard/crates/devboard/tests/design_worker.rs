@@ -935,7 +935,10 @@ async fn a_tick_within_five_seconds(ticks: &TickThread, description: &str) {
     let (done, finished) = tokio::sync::oneshot::channel();
     ticks.requests.send(done).expect("the tick thread");
     let completed = tokio::time::timeout(Duration::from_secs(5), finished).await;
-    assert!(completed.is_ok(), "{description} did not complete within 5 seconds");
+    assert!(
+        completed.is_ok(),
+        "{description} did not complete within 5 seconds"
+    );
 }
 
 fn published_design_state(
@@ -1008,14 +1011,19 @@ async fn an_elapsed_cadence_after_a_published_cycle_starts_the_next_one() {
         &fixture.state,
         &fixture.repo,
         Some("test"),
-        &published_design_state(&fixture.repo, &anchor, "cycle-previous", (10, 5), "v1", &anchor),
+        &published_design_state(
+            &fixture.repo,
+            &anchor,
+            "cycle-previous",
+            (10, 5),
+            "v1",
+            &anchor,
+        ),
     );
     let clock = Clock::new(NOW);
     let mut worker_options = cadence_options(&fixture, &clock);
     worker_options.forge = Some(FakeForge::new(Vec::new()) as Arc<dyn DesignForge>);
-    worker_options.audit = Some(Arc::new(|_turn: AuditTurn| {
-        Box::pin(async move { Ok(()) })
-    }));
+    worker_options.audit = Some(Arc::new(|_turn: AuditTurn| Box::pin(async move { Ok(()) })));
     let worker = Arc::new(DesignWorker::new(worker_options));
     assert!(worker.start("acme/fixture"));
     let ticks = tick_thread(Arc::clone(&worker));
@@ -1033,7 +1041,11 @@ async fn an_elapsed_cadence_after_a_published_cycle_starts_the_next_one() {
         Some(devboard::workers::design::iso_from_millis(NOW).as_str()),
         "the elapsed cadence publishes a new cycle start"
     );
-    assert_eq!(cycle_directories(&fixture.repo).len(), 1, "one cycle started");
+    assert_eq!(
+        cycle_directories(&fixture.repo).len(),
+        1,
+        "one cycle started"
+    );
     worker.stop().await;
 }
 
@@ -1059,17 +1071,22 @@ async fn a_completed_cycle_keeps_the_cadence_and_a_later_tick_consumes_a_control
     let clock = Clock::new(NOW);
     let mut worker_options = cadence_options(&fixture, &clock);
     worker_options.forge = Some(FakeForge::new(Vec::new()) as Arc<dyn DesignForge>);
-    worker_options.audit = Some(Arc::new(|_turn: AuditTurn| {
-        Box::pin(async move { Ok(()) })
-    }));
+    worker_options.audit = Some(Arc::new(|_turn: AuditTurn| Box::pin(async move { Ok(()) })));
     let worker = Arc::new(DesignWorker::new(worker_options));
     assert!(worker.start("acme/fixture"));
     let ticks = tick_thread(Arc::clone(&worker));
 
     a_tick_within_five_seconds(&ticks, "the first cycle").await;
     let finished = tokio::time::timeout(Duration::from_secs(5), worker.wait_for_cycle()).await;
-    assert!(finished.is_ok(), "the first cycle did not finish within 5 seconds");
-    assert_eq!(cycle_directories(&fixture.repo).len(), 1, "the first cycle starts");
+    assert!(
+        finished.is_ok(),
+        "the first cycle did not finish within 5 seconds"
+    );
+    assert_eq!(
+        cycle_directories(&fixture.repo).len(),
+        1,
+        "the first cycle starts"
+    );
     let first_start = published_design(&fixture)
         .last_cycle_started_at
         .expect("the completed cycle records its start");
@@ -1118,9 +1135,7 @@ fn inherited_design_worker(fixture: &Fixture) -> Arc<DesignWorker> {
     let clock = Clock::new(NOW);
     let mut options = options(fixture, &clock);
     options.forge = Some(FakeForge::new(Vec::new()) as Arc<dyn DesignForge>);
-    options.audit = Some(Arc::new(|_turn: AuditTurn| {
-        Box::pin(async move { Ok(()) })
-    }));
+    options.audit = Some(Arc::new(|_turn: AuditTurn| Box::pin(async move { Ok(()) })));
     Arc::new(DesignWorker::new(options))
 }
 
@@ -1178,7 +1193,10 @@ async fn a_new_version_inherits_the_newest_published_state() {
     assert_eq!(state.limits.max_per_hour, Some(33));
     assert_eq!(state.limits.max_pending, Some(4));
     assert_eq!(
-        state.release.as_ref().map(|release| release.version.as_str()),
+        state
+            .release
+            .as_ref()
+            .map(|release| release.version.as_str()),
         Some("v0.0.2"),
         "the newest release record is inherited"
     );
@@ -1226,7 +1244,10 @@ async fn a_newer_versioned_state_outranks_the_legacy_file() {
     assert_eq!(state.newest_cycle_id.as_deref(), Some("v1-cycle"));
     assert_eq!(state.limits.max_per_hour, Some(22));
     assert_eq!(
-        state.release.as_ref().map(|release| release.version.as_str()),
+        state
+            .release
+            .as_ref()
+            .map(|release| release.version.as_str()),
         Some("v0.0.1")
     );
     newer_worker.stop().await;

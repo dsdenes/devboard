@@ -592,16 +592,18 @@ test("a checkpoint badge names its verification tone", async () => {
   expect(tones).toEqual(["warning", "success", "error"]);
 });
 
-test("the Devboard group lists Complexity directly after Skills", async () => {
+test("the Devboard group lists Resources directly after Complexity", async () => {
   layout.mode = "devboard";
   mount();
   await tick();
   const labels = [
     ...document.querySelectorAll('[data-testid="devboard-tab"] .sidebar-item__label'),
   ].map((entry) => entry.textContent?.trim());
-  expect(labels.slice(0, 3)).toEqual(["MCP tools", "Skills", "Complexity"]);
-  const entry = document.querySelector(
-    '[data-testid="devboard-tab"][data-command="devboard.tab.complexity"]',
-  );
-  expect(entry).not.toBeNull();
+  expect(labels.slice(0, 4)).toEqual(["MCP tools", "Skills", "Complexity", "Resources"]);
+  for (const command of ["devboard.tab.complexity", "devboard.tab.resources"]) {
+    const entry = document.querySelector(
+      `[data-testid="devboard-tab"][data-command="${command}"]`,
+    );
+    expect(entry).not.toBeNull();
+  }
 });

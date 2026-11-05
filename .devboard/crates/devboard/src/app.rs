@@ -340,6 +340,8 @@ pub struct App {
     pub providers: crate::providers::ProviderService,
     /// The daily complexity snapshot controller for this dashboard.
     pub complexity: Arc<crate::complexity::ComplexitySnapshots>,
+    /// The resource governor the Resources tab reads and writes.
+    pub resources: Arc<crate::resources::Governor>,
     /// The dashboard's own handle, for modes that hold a shared reference.
     weak_self: std::sync::Weak<App>,
     /// Replaces this process; absent means the dashboard has no launcher.
@@ -414,6 +416,7 @@ impl App {
                 config_repo_dir(&shared),
             ),
         ));
+        let resources = crate::resources::for_app(&config_state_dir(&shared));
         let app = Arc::new_cyclic(|weak| Self {
             weak_self: weak.clone(),
             shared,
@@ -426,6 +429,7 @@ impl App {
             updater: Mutex::new(None),
             providers,
             complexity,
+            resources,
             restart_hook: Mutex::new(None),
             source_refresher: Mutex::new(None),
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -480,6 +484,32 @@ impl App {
                     &shared.config.repo_dir,
                     &instance,
                 );
+            }
+        });
+    }
+
+    /// Journals every kernel kill the slice records and routes deferral
+    /// reports into the dashboard journal. Runs only while serving.
+    pub fn start_resource_watcher(self: &Arc<Self>) {
+        if !self.resources.slice_enabled() {
+            return;
+        }
+        {
+            let weak = Arc::downgrade(self);
+            self.resources.set_journal_hook(Arc::new(move |kind, text| {
+                if let Some(app) = weak.upgrade() {
+                    app.shared.journal.write(kind, text, None);
+                }
+            }));
+        }
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(2));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                timer.tick().await;
+                // `collect_kills` records the kill and calls the journal hook.
+                let _ = app.resources.collect_kills();
             }
         });
     }
@@ -634,6 +664,49 @@ impl App {
             Command::GetComplexity => {
                 self.complexity.subscribe(conn);
                 conn.send(self.complexity.state_event());
+                Ok(())
+            }
+            Command::GetResources => {
+                conn.send(self.resources.state_event());
+                Ok(())
+            }
+            Command::SetResources {
+                max_agent_peers,
+                memory_high_mb,
+                memory_max_mb,
+                memory_reserve_mb,
+            } => {
+                let number = |value: &Option<Value>, label: &str| -> Result<Option<u64>, String> {
+                    match value {
+                        None | Some(Value::Null) => Ok(None),
+                        Some(value) => value
+                            .as_u64()
+                            .map(Some)
+                            .ok_or_else(|| format!("{label} must be a whole number of megabytes.")),
+                    }
+                };
+                let update = (|| -> Result<crate::resources::Settings, String> {
+                    let mut settings = self.resources.settings();
+                    if let Some(value) = number(&max_agent_peers, "Max concurrent agents")? {
+                        settings.max_agent_peers = value.try_into().map_err(|_| {
+                            "Max concurrent agents must be between 1 and 64.".to_string()
+                        })?;
+                    }
+                    if let Some(value) = number(&memory_high_mb, "Memory high")? {
+                        settings.memory_high_mb = value;
+                    }
+                    if let Some(value) = number(&memory_max_mb, "Memory max")? {
+                        settings.memory_max_mb = value;
+                    }
+                    if let Some(value) = number(&memory_reserve_mb, "Reserve")? {
+                        settings.memory_reserve_mb = value;
+                    }
+                    Ok(settings)
+                })();
+                match update.and_then(|settings| self.resources.save(settings)) {
+                    Ok(_) => self.broadcast(self.resources.state_event()),
+                    Err(message) => conn.send(json!({"type": "error", "message": message})),
+                }
                 Ok(())
             }
             Command::SetInstalledSkillEnabled { name, enabled } => {
@@ -1328,6 +1401,8 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "closeIssue",
     "getInstalledSkills",
     "getComplexity",
+    "getResources",
+    "setResources",
     "getIssues",
     "getIssuesRun",
     "pauseIssues",

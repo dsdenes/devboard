@@ -3418,10 +3418,7 @@ impl DesignWorkerInner {
         // `cadence_ms` takes the same mutex, so holding it here would deadlock the
         // tick that follows a recorded cycle.
         let last_cycle_started_at = lock_unpoisoned(&self.state).last_cycle_started_at.clone();
-        let Some(started) = last_cycle_started_at
-            .as_deref()
-            .and_then(parse_iso_millis)
-        else {
+        let Some(started) = last_cycle_started_at.as_deref().and_then(parse_iso_millis) else {
             return false;
         };
         (self.options.clock)() < started + self.cadence_ms()

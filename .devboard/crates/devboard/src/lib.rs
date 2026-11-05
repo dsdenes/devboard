@@ -48,6 +48,7 @@ pub mod redact;
 pub mod relaunch;
 pub mod release;
 pub mod release_suite;
+pub mod resources;
 pub mod runtime_boundary;
 pub mod source_refresh;
 pub mod state;

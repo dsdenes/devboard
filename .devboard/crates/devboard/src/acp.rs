@@ -132,6 +132,9 @@ pub struct AcpConnectionOptions {
     /// generated `mcp.json` registration.
     pub mcp_servers: Option<Vec<SessionMcpServer>>,
     pub permission_policy: PermissionPolicy,
+    /// A slot already admitted by the caller. When absent, the process-wide
+    /// governor admits the peer before it spawns.
+    pub permit: Option<Arc<crate::resources::Slot>>,
 }
 
 impl AcpConnectionOptions {
@@ -142,7 +145,15 @@ impl AcpConnectionOptions {
             env: None,
             mcp_servers: None,
             permission_policy: PermissionPolicy::default(),
+            permit: None,
         }
+    }
+
+    /// Hands the connection an already admitted slot. The Issues worker
+    /// checks admission before it marks an issue processing.
+    pub fn with_permit(mut self, permit: crate::resources::Slot) -> Self {
+        self.permit = Some(Arc::new(permit));
+        self
     }
 
     pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
@@ -423,6 +434,8 @@ pub struct AcpConnection {
     /// Ends a child the owner forgot to close. Disarmed by `close`, which
     /// records the close before signalling.
     _guard: Option<ProcessGuard>,
+    /// The global cap slot this peer holds until the connection ends.
+    _permit: Option<Arc<crate::resources::Slot>>,
 }
 
 impl AcpConnection {
@@ -436,9 +449,22 @@ impl AcpConnection {
         options: AcpConnectionOptions,
     ) -> AcpResult<(Self, mpsc::UnboundedReceiver<AcpEvent>)> {
         let argv = split_command(&options.command)?;
-        let mut command = Command::new(&argv[0]);
+        // A governor admitted before spawning keeps the cap authoritative even
+        // when several surfaces try to start at once.
+        let permit = match options.permit.clone() {
+            Some(permit) => Some(permit),
+            None => match crate::resources::global() {
+                Some(governor) => {
+                    let label = format!("{} ({})", options.command, options.cwd);
+                    Some(Arc::new(governor.wait_for_admission("peer", &label).await))
+                }
+                None => None,
+            },
+        };
+        let spawn_argv = crate::resources::wrap_argv(argv.clone());
+        let mut command = Command::new(&spawn_argv[0]);
         command
-            .args(&argv[1..])
+            .args(&spawn_argv[1..])
             .current_dir(&options.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -501,6 +527,7 @@ impl AcpConnection {
             Self {
                 inner,
                 _guard: guard,
+                _permit: permit,
             },
             receiver,
         ))

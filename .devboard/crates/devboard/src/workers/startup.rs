@@ -41,9 +41,7 @@ pub fn inherited_state_path(own: &Path, versioned: &[PathBuf], legacy: &Path) ->
         };
         let better = match newest {
             None => true,
-            Some((newest_at, newest_path)) => {
-                (updated_at, path) > (newest_at, newest_path)
-            }
+            Some((newest_at, newest_path)) => (updated_at, path) > (newest_at, newest_path),
         };
         if better {
             newest = Some((updated_at, path));
@@ -162,10 +160,7 @@ mod tests {
         write_state_file(&newer, "2026-01-03T00:00:00.000Z");
         write_state_file(&legacy, "2026-01-02T00:00:00.000Z");
         let versioned = vec![own.clone(), older, newer.clone()];
-        assert_eq!(
-            inherited_state_path(&own, &versioned, &legacy),
-            Some(newer)
-        );
+        assert_eq!(inherited_state_path(&own, &versioned, &legacy), Some(newer));
         write_state_file(&own, "2025-01-01T00:00:00.000Z");
         assert_eq!(inherited_state_path(&own, &versioned, &legacy), Some(own));
         std::fs::remove_dir_all(&base).expect("the fixture is removed");
@@ -177,8 +172,10 @@ mod tests {
             instant_millis("2026-01-01T00:00:00.000Z"),
             instant_millis("2026-01-01T01:00:00.000+01:00")
         );
-        assert!(instant_millis("2026-01-01T00:00:00.500Z").unwrap()
-            > instant_millis("2026-01-01T00:00:00Z").unwrap());
+        assert!(
+            instant_millis("2026-01-01T00:00:00.500Z").unwrap()
+                > instant_millis("2026-01-01T00:00:00Z").unwrap()
+        );
         assert_eq!(instant_millis("not an instant"), None);
     }
 }

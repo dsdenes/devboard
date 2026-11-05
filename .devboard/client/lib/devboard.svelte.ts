@@ -32,6 +32,14 @@ export const DEVBOARD_COMPLEXITY_TAB: WorkspaceTab = {
   title: "Complexity",
 };
 
+/** The resource governor's budget page. */
+export const DEVBOARD_RESOURCES_TAB: WorkspaceTab = {
+  id: "resources",
+  kind: "devboard-resources",
+  resourceId: "resources",
+  title: "Resources",
+};
+
 export const DEVBOARD_SIDEBAR: readonly DevboardSidebarEntry[] = [
   { id: "tools", label: "MCP tools", command: "devboard.tab.tools", tab: DEVBOARD_TAB },
   { id: "skills", label: "Skills", command: "devboard.tab.skills", tab: DEVBOARD_SKILLS_TAB },
@@ -40,5 +48,11 @@ export const DEVBOARD_SIDEBAR: readonly DevboardSidebarEntry[] = [
     label: "Complexity",
     command: "devboard.tab.complexity",
     tab: DEVBOARD_COMPLEXITY_TAB,
+  },
+  {
+    id: "resources",
+    label: "Resources",
+    command: "devboard.tab.resources",
+    tab: DEVBOARD_RESOURCES_TAB,
   },
 ];

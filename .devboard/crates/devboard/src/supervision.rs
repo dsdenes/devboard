@@ -281,27 +281,12 @@ fn parse_record(value: &Value) -> Option<SupervisionRecord> {
     })
 }
 
-/// The kernel argv of a just-spawned child. The exec can trail the spawn by a
-/// few milliseconds, so an empty read is retried briefly; a child that is gone
-/// or still nameless is never recorded, because a record must describe the
-/// process a later proof would signal.
-fn read_argv_soon(pid: u32) -> Option<Vec<String>> {
-    for _attempt in 0..50 {
-        if let Some(argv) = process_argv(pid) {
-            if !argv.is_empty() {
-                return Some(argv);
-            }
-        }
-        process_stat(pid)?;
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    None
-}
-
-/// Records the pid now, before the caller uses the child.
-fn record_child(state_dir: &Path, pid: u32, cwd: &Path) -> Option<PathBuf> {
+/// Records the pid now, before the caller uses the child. The caller supplies
+/// the argv the child execs to: a child started through the transient-slice
+/// wrapper briefly shows the wrapper's argv in `/proc`, while the later proof
+/// must compare the worker's own argv.
+fn record_child(state_dir: &Path, pid: u32, cwd: &Path, argv: Vec<String>) -> Option<PathBuf> {
     let stat = process_stat(pid)?;
-    let argv = read_argv_soon(pid)?;
     let record = SupervisionRecord {
         version: RECORD_VERSION,
         pid,
@@ -501,6 +486,8 @@ pub fn supervised_spawn(
     argv: &[String],
     options: SupervisedSpawnOptions,
 ) -> io::Result<SupervisedChild> {
+    let logical_argv = argv.to_vec();
+    let argv = crate::resources::wrap_argv(logical_argv.clone());
     let program = argv.first().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "spawn argv must not be empty")
     })?;
@@ -524,7 +511,7 @@ pub fn supervised_spawn(
     let child = command.spawn()?;
     let record_path = child
         .id()
-        .and_then(|pid| record_child(&state_dir, pid, &options.cwd));
+        .and_then(|pid| record_child(&state_dir, pid, &options.cwd, logical_argv));
     Ok(SupervisedChild { child, record_path })
 }
 
@@ -595,6 +582,8 @@ impl Default for DetachStdio {
 /// The caller must run inside a Tokio runtime, which [`tokio::process`]
 /// requires; the watcher that removes the record runs until the child exits.
 pub fn supervised_detach(argv: &[String], options: SupervisedDetachOptions) -> Option<u32> {
+    let logical_argv = argv.to_vec();
+    let argv = crate::resources::wrap_argv(logical_argv.clone());
     let program = argv.first()?;
     let state_dir = options
         .state_dir
@@ -621,7 +610,7 @@ pub fn supervised_detach(argv: &[String], options: SupervisedDetachOptions) -> O
         }
     };
     let pid = child.id();
-    let record_path = pid.and_then(|pid| record_child(&state_dir, pid, &options.cwd));
+    let record_path = pid.and_then(|pid| record_child(&state_dir, pid, &options.cwd, logical_argv));
     tokio::spawn(async move {
         let _ = child.wait().await;
         if let Some(path) = record_path {

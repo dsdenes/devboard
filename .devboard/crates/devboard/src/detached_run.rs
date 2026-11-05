@@ -1910,6 +1910,7 @@ pub fn spawn_owner(
     cwd: &Path,
     environment: &HashMap<String, String>,
 ) -> Option<u32> {
+    let argv = crate::resources::wrap_argv(argv.to_vec());
     let program = argv.first()?;
     let mut command = Command::new(program);
     command

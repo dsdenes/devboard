@@ -89,11 +89,12 @@ The width survives a reload.
   session and PR state, widgets, changed files, checkpoints, and blockers. Blockers open the
   overview at the blocker they name.
 - **Devboard** carries the **Background agents** group — Auto Scout, Watchdog, Design System,
-  MCP optimizer, and Release Train — then exactly three `data-testid="devboard-tab"` entries: `MCP
+  MCP optimizer, and Release Train — then exactly four `data-testid="devboard-tab"` entries: `MCP
   tools` (`data-command="devboard.tab.tools"`), `Skills` (`data-command="devboard.tab.skills"`),
-  and `Complexity` (`data-command="devboard.tab.complexity"`), directly after `Skills`.
-  Each agent entry opens its page; the last three open the read-only MCP tool list, the Skills
-  table, and the complexity dashboard.
+  `Complexity` (`data-command="devboard.tab.complexity"`), and `Resources`
+  (`data-command="devboard.tab.resources"`), in that order.
+  Each agent entry opens its page; the last four open the read-only MCP tool list, the Skills
+  table, the complexity dashboard, and the resource budget.
   No entry is repeated per tool, per skill, or per recorded date, so adding or removing one
   never changes the menu. No tool, skill, or file name appears in the sidebar.
 - **Discover** lists the overview, glossary, and contribution sections, the six skills under their
@@ -228,6 +229,25 @@ A reload restores the active mode, each mode's open page, sidebar and split size
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
 before Devboard existed still restores every stored mode and page; Devboard starts on its default
 `MCP tools` page.
+
+### Resources page
+
+The `Resources` sidebar entry follows `Complexity` and opens `data-testid="resources-page"`, the
+resource governor's budget. Four `type="number"` inputs — `resource-max-agents`,
+`resource-memory-high`, `resource-memory-max`, and `resource-reserve` — edit the effective values,
+and `resource-save` sends one `setResources` command with all four. The page never sends an
+invalid draft: max agents must be 1–64, memory max at least 128 MB, memory high 64 MB through
+memory max, and the reserve 64 MB up to but below memory max; the refusal renders in a
+`role="alert"` paragraph beside the form. A save confirms through `SaveFeedback` scope
+`resources.budget` only after the server broadcasts the frame that follows it.
+
+The page asks for `getResources` when the connection opens and renders every `resourcesState`
+frame. Its header names whether the budget is saved settings or derived defaults, and
+`resource-unsaved` marks inputs that differ from the effective values. The live panel is read-only:
+`resource-live-agents` and `resource-live-available` always render, while the slice's
+`resource-live-high`, `resource-live-max`, and `resource-live-current` render only when the slice
+exists. A frame whose effective or live figures are not finite non-negative numbers is dropped, so
+no label ever shows a value the server did not send.
 
 ### Single-agent activity bar
 
@@ -2210,10 +2230,10 @@ sends one settings command. The Devboard sidebar has two groups in order: `Backg
 `open-devboard-dead-code`, `open-devboard-mcp-optimizer`, `open-devboard-api-standards`,
 `open-devboard-single-responsibility`, then
 `open-devboard-release-train`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
-`Devboard sections` (the `devboard-tab` MCP tools, Skills, and Complexity entries). The Issues sidebar carries no
-Background agents group. `agent-count-<id>` is the number of rows in that agent's filed-issues
-table, equal to `agent-issues-count`; it never counts findings still waiting in the pending-filing
-queue.
+`Devboard sections` (the `devboard-tab` MCP tools, Skills, Complexity, and Resources entries). The
+Issues sidebar carries no Background agents group. `agent-count-<id>` is the number of rows in that
+agent's filed-issues table, equal to `agent-issues-count`; it never counts findings still waiting in
+the pending-filing queue.
 
 ### Periodic forge reads
 

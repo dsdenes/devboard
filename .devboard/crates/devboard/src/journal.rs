@@ -26,6 +26,8 @@ pub const JOURNAL_KINDS: &[&str] = &[
     "server-error",
     "update",
     "update-error",
+    "resource-defer",
+    "resource-kill",
 ];
 
 /// The 24-hex project key that names this project's journal.

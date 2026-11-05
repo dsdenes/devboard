@@ -921,7 +921,10 @@ async fn a_tick_within_five_seconds(ticks: &TickThread, description: &str) {
     let (done, finished) = tokio::sync::oneshot::channel();
     ticks.requests.send(done).expect("the tick thread");
     let completed = tokio::time::timeout(Duration::from_secs(5), finished).await;
-    assert!(completed.is_ok(), "{description} did not complete within 5 seconds");
+    assert!(
+        completed.is_ok(),
+        "{description} did not complete within 5 seconds"
+    );
 }
 
 fn published_state(
@@ -1020,7 +1023,11 @@ async fn a_completed_run_keeps_the_cadence_and_a_later_tick_consumes_a_control()
     let state_dir = repo.join(".devboard").join("state");
     let now = 1_780_000_000_000i64;
     let clock = Arc::new(AtomicI64::new(now));
-    let worker = Arc::new(cadence_worker(&repo, FixtureForge::default(), Arc::clone(&clock)));
+    let worker = Arc::new(cadence_worker(
+        &repo,
+        FixtureForge::default(),
+        Arc::clone(&clock),
+    ));
     assert!(worker.start("acme/fixture"));
     let ticks = tick_thread(Arc::clone(&worker));
 
@@ -1038,7 +1045,11 @@ async fn a_completed_run_keeps_the_cadence_and_a_later_tick_consumes_a_control()
 
     clock.store(now + 120_000, Ordering::SeqCst);
     a_tick_within_five_seconds(&ticks, "the tick after the cadence").await;
-    assert_eq!(scan_ids(&repo).len(), 2, "the elapsed cadence starts the next run");
+    assert_eq!(
+        scan_ids(&repo).len(),
+        2,
+        "the elapsed cadence starts the next run"
+    );
     assert_ne!(
         worker.current_state().last_scan_started_at.as_deref(),
         Some(first_start.as_str()),

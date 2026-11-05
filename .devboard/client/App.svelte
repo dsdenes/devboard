@@ -32,6 +32,7 @@
   import { notifications } from "./lib/notifications.svelte";
   import { collectPendingQuestions, osNotifications } from "./lib/os-notifications.svelte";
   import { providers } from "./lib/providers.svelte";
+  import { resources } from "./lib/resources.svelte";
   import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
   import { MINIMUM_VIEWPORT, viewport } from "./lib/viewport.svelte";
 
@@ -333,6 +334,7 @@
       mcpTools.handleEvent(record);
       devboardSkills.handleEvent(record);
       complexity.handleEvent(record);
+      resources.handleEvent(record);
       providers.handleEvent(record);
       handleFlowTabEvents(record);
       // The OS channel follows the same frames as the in-app state: every

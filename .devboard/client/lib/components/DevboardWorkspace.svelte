@@ -6,6 +6,7 @@
   import { mcpTools } from "../mcp-tools.svelte";
   import AgentPage from "./AgentPage.svelte";
   import DevboardComplexity from "./DevboardComplexity.svelte";
+  import DevboardResources from "./DevboardResources.svelte";
   import DevboardSkills from "./DevboardSkills.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
@@ -34,6 +35,8 @@
   <DevboardSkills />
 {:else if tab?.kind === "devboard-complexity"}
   <DevboardComplexity />
+{:else if tab?.kind === "devboard-resources"}
+  <DevboardResources />
 {:else}
   <div class="mode-body" data-testid="devboard-workspace">
     <PageHeader
