@@ -2733,7 +2733,7 @@ a.code-chip--link:focus-visible {
 
 .skill-table__row td {
   border-bottom: 1px solid var(--border-subtle);
-  padding: 6px 8px;
+  padding: 5px 8px;
   vertical-align: top;
 }
 
