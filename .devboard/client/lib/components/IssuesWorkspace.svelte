@@ -52,6 +52,12 @@
 
   let now = $state(Date.now());
   const poll = $derived(pollStatus(issues.snapshot, now));
+  // Poll fields belong to a live worker. A stopped family leaves the newest
+  // state on disk for history, and its last poll error is not a current
+  // failure; the dashboard's own tracker sync reports while stopped.
+  const workerLive = $derived(
+    (issues.snapshot?.enabled ?? false) && (issues.snapshot?.lifecycle ?? "stopped") !== "stopped",
+  );
   $effect(() => {
     if (page !== "agents" && page !== "overview") return;
     const timer = setInterval(() => (now = Date.now()), 1000);
@@ -233,15 +239,21 @@
           {#if issues.notice !== null}
             <p class="issues-notice" data-testid="issues-notice" role="status">{issues.notice}</p>
           {/if}
-          {#if issues.snapshot?.poll?.error != null}
+          {#if workerLive && issues.snapshot?.poll?.error != null}
             <p class="issues-error" data-testid="issues-poll-error" role="alert">
               {issues.snapshot.poll.error}
             </p>
           {/if}
-          {#if issues.snapshot?.lastError != null &&
+          {#if workerLive &&
+            issues.snapshot?.lastError != null &&
             issues.snapshot.lastError !== issues.snapshot.poll?.error}
             <p class="issues-error" data-testid="issues-error" role="alert">
               {issues.snapshot.lastError}
+            </p>
+          {/if}
+          {#if !workerLive && issues.snapshot?.sync?.error != null}
+            <p class="issues-error" data-testid="issues-sync-error" role="alert">
+              {issues.snapshot.sync.error}
             </p>
           {/if}
         </div>
