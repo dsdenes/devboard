@@ -598,6 +598,17 @@ impl std::fmt::Display for HttpError {
 
 impl std::error::Error for HttpError {}
 
+/// One failed transport call, named by the request it carried. A timeout
+/// reports the bound that expired, so the reason a worker publishes is
+/// actionable rather than a bare "the request timed out".
+fn transport_failure(method: &str, path: &str, timeout_ms: u64, error: &HttpError) -> String {
+    let detail = match error {
+        HttpError::Timeout => format!("the request timed out after {timeout_ms} ms"),
+        HttpError::Unreachable(message) => message.clone(),
+    };
+    format!("{method} {path} failed: {detail}")
+}
+
 pub type HttpFuture = Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send>>;
 /// The injected-transport seam, the Rust form of the TypeScript `FetchLike`.
 pub type Transport = Arc<dyn Fn(HttpRequest) -> HttpFuture + Send + Sync>;
@@ -974,16 +985,17 @@ pub async fn gitea_request(
             headers.push(("Content-Type".to_string(), "application/json".to_string()));
         }
     }
+    let timeout_ms = options.timeout_ms.unwrap_or(GITEA_REQUEST_TIMEOUT_MS);
     let request = HttpRequest {
         method: method.clone(),
         url: api_url(target, path),
         headers,
         body: init.body,
-        timeout_ms: Some(options.timeout_ms.unwrap_or(GITEA_REQUEST_TIMEOUT_MS)),
+        timeout_ms: Some(timeout_ms),
     };
-    let response = transport(request)
-        .await
-        .map_err(|error| GiteaError::new(error.to_string(), None))?;
+    let response = transport(request).await.map_err(|error| {
+        GiteaError::new(transport_failure(&method, path, timeout_ms, &error), None)
+    })?;
     if (200..300).contains(&response.status) {
         return Ok(response);
     }

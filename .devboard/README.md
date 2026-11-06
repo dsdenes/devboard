@@ -2274,7 +2274,10 @@ from the end of the previous attempt, with at most one read in flight per agent.
 attempt plus those four retries is five attempts; the fifth consecutive transport failure moves
 the page to `error` with that attempt's reason in `agent-sync-error`, and later attempts follow
 the normal 60-second cadence rather than another immediate retry. A successful read at any point
-in the schedule clears the failures and advances the last-read time.
+in the schedule clears the failures and advances the last-read time. A transport reason names the
+HTTP method, the API path, and the bound a timeout expired against — for example
+`GET /repos/<owner>/<name>/issues failed: the request timed out after 30000 ms` — so the reason
+identifies the request that failed instead of repeating the transport's bare phrase.
 
 A permanent failure — unusable credentials, a missing repository, an answer that is not the
 expected JSON, or missing forge configuration — and a rate-limited answer (a primary or secondary

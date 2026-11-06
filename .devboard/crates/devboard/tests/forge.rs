@@ -417,6 +417,58 @@ async fn gitea_requests_carry_the_default_timeout_and_flow_id() {
 }
 
 #[tokio::test]
+async fn gitea_transport_failures_name_the_request_and_stay_transient() {
+    let target = GiteaTarget {
+        base_url: "http://gitea.test".to_string(),
+        project: "owner/name".to_string(),
+        token: Some("t".to_string()),
+    };
+    let timed_out: Transport = Arc::new(|_| Box::pin(async { Err(HttpError::Timeout) }));
+    let error = gitea_json(
+        &target,
+        "/repos/owner/name/issues",
+        None,
+        &timed_out,
+        &GiteaCallOptions::default(),
+    )
+    .await
+    .expect_err("timeout");
+    assert_eq!(error.status, None);
+    assert_eq!(
+        error.message,
+        "GET /repos/owner/name/issues failed: the request timed out after 30000 ms"
+    );
+    // The page publishes this reason, so it must still classify as a transport
+    // failure the shared retry schedule retries rather than a permanent one.
+    assert_eq!(
+        classify_forge_read_failure(&error.message),
+        ForgeReadFailureKind::Transient
+    );
+
+    let unreachable: Transport = Arc::new(|_| {
+        Box::pin(async {
+            Err(HttpError::Unreachable(
+                "error sending request for url (http://gitea.test/api/v1/x)".to_string(),
+            ))
+        })
+    });
+    let error = gitea_json(
+        &target,
+        "/repos/owner/name/x",
+        None,
+        &unreachable,
+        &GiteaCallOptions::default(),
+    )
+    .await
+    .expect_err("unreachable");
+    assert_eq!(
+        error.message,
+        "GET /repos/owner/name/x failed: error sending request for url \
+         (http://gitea.test/api/v1/x)"
+    );
+}
+
+#[tokio::test]
 async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
     let server = StubServer::start(|request| {
         let path = request.path.as_str();
