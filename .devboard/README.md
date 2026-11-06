@@ -241,7 +241,8 @@ memory max, and the reserve 64 MB up to but below memory max; the server also re
 max whose sum with the reserve exceeds the host's `MemTotal`, so the reserve stays free. The
 refusal renders in a `role="alert"` paragraph beside the form. A save confirms through
 `SaveFeedback` scope `resources.budget` only after the server broadcasts the frame that follows
-it.
+it. The slice's owning dashboard is named in the unit description; a second dashboard, a worker,
+or a CLI only joins it and never rewrites its budget.
 
 The page asks for `getResources` when the connection opens and renders every `resourcesState`
 frame. Its header names whether the budget is saved settings or derived defaults, and
