@@ -41,9 +41,7 @@ test("five start/stop cycles keep one ready dashboard and file nothing", async (
     await startFamily(page, family);
     await stopFamily(page, family);
 
-    const ready = await page.request.get(`${state.baseUrl}/ready`, {
-      headers: { Authorization: `Bearer ${state.token}` },
-    });
+    const ready = await page.request.get(`${state.baseUrl}/ready`);
     expect(ready.status()).toBe(200);
     expect(await ready.json()).toMatchObject({ pid: state.pid });
 

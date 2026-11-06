@@ -47,8 +47,6 @@ import {
   type SuiteState,
 } from "./support.ts";
 
-const TOKEN = "operator-suite-dashboard-token";
-const BOOTSTRAP = "operator-suite-bootstrap-token";
 const FAR_FUTURE_MS = 24 * 60 * 60 * 1000;
 
 interface Prepared {
@@ -274,8 +272,6 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
   const port = await freePort();
   const env = {
     ...workerEnvironment(prepared),
-    DEVBOARD_DASHBOARD_TOKEN: TOKEN,
-    DEVBOARD_BOOTSTRAP_TOKEN: BOOTSTRAP,
     DEVBOARD_ALLOWED_HOSTS: "127.0.0.1,localhost",
     DEVBOARD_FEEDBACK_TIMEOUT_MS: "30000",
     STATIC_DIR: staticDir,
@@ -295,8 +291,6 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
       prepared.adrsDir,
       "--static-dir",
       staticDir,
-      "--token",
-      TOKEN,
     ],
     { cwd: harnessDir, env, stdio: ["ignore", "ignore", "pipe"] },
   );
@@ -309,9 +303,7 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
     await waitFor(
       "the dashboard readiness probe",
       async () => {
-        const response = await fetch(`${baseUrl}/ready`, {
-          headers: { Authorization: `Bearer ${TOKEN}` },
-        });
+        const response = await fetch(`${baseUrl}/ready`);
         return response.ok;
       },
       30_000,
@@ -323,8 +315,6 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
   const state: SuiteState = {
     baseUrl,
     port,
-    token: TOKEN,
-    bootstrap: BOOTSTRAP,
     repository: repository(),
     repoDir: prepared.repoDir,
     stateDir: prepared.stateDir,

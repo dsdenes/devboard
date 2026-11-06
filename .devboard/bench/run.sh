@@ -58,8 +58,6 @@ if [ -n "$typescript" ]; then
   mkdir -p "$work/typescript/state" "$work/typescript/repo"
   cp -r "$harness/contract/fixtures/repo/." "$work/typescript/repo/"
 fi
-export DEVBOARD_DASHBOARD_TOKEN=bench-token
-token="$DEVBOARD_DASHBOARD_TOKEN"
 
 free_port() {
   python3 - <<'PY'
@@ -84,7 +82,7 @@ start_side() {
   local started
   started=$(date +%s%N)
   for _ in $(seq 1 600); do
-    if curl -fsS -H "Authorization: Bearer $token" "http://127.0.0.1:$port/ready" >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:$port/ready" >/dev/null 2>&1; then
       break
     fi
     sleep 0.05
@@ -115,14 +113,14 @@ rss() {
 }
 
 ts_latency='{"p95Ms":0,"p50Ms":0}'
-rust_latency=$(cd "$harness" && "$rust" bench --port "$rust_port" --token "$token" --iterations "$iterations")
+rust_latency=$(cd "$harness" && "$rust" bench --port "$rust_port" --iterations "$iterations")
 rust_idle=$(rss "$rust_pid")
 rust_loaded=$(rss "$rust_pid")
 ts_idle=0
 ts_loaded=0
 if [ -n "$typescript" ]; then
   ts_idle=$(rss "$ts_pid")
-  ts_latency=$(cd "$harness" && "$rust" bench --port "$ts_port" --token "$token" --iterations "$iterations")
+  ts_latency=$(cd "$harness" && "$rust" bench --port "$ts_port" --iterations "$iterations")
   ts_loaded=$(rss "$ts_pid")
 fi
 

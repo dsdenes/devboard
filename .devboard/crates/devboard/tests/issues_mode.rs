@@ -730,8 +730,6 @@ fn app_config(repo: &Path, state: &Path) -> Config {
         agent_command: "omp acp".to_string(),
         state_dir: state.to_path_buf(),
         allowed_hosts: Vec::new(),
-        token: "contract-token".to_string(),
-        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     }
 }

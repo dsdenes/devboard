@@ -7,10 +7,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 
-use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -24,10 +22,6 @@ pub struct RelaunchSettings {
     pub repo_dir: PathBuf,
     pub goal_file: PathBuf,
     pub state_dir: PathBuf,
-    /// The credential a readiness probe must present.
-    pub token: String,
-    /// The launcher credential a page opens with.
-    pub bootstrap: String,
 }
 
 impl RelaunchSettings {
@@ -39,8 +33,6 @@ impl RelaunchSettings {
             repo_dir: config.repo_dir.clone(),
             goal_file: config.goal_file.clone(),
             state_dir: config.state_dir.clone(),
-            token: config.token.clone(),
-            bootstrap: config.bootstrap.clone(),
         }
     }
 }
@@ -108,8 +100,6 @@ pub fn spawn_replacement(
         .env("REPO_DIR", &settings.repo_dir)
         .env("GOAL_FILE", &settings.goal_file)
         .env("STATE_DIR", &settings.state_dir)
-        .env("DEVBOARD_DASHBOARD_TOKEN", &settings.token)
-        .env("DEVBOARD_BOOTSTRAP_TOKEN", &settings.bootstrap)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -138,37 +128,18 @@ pub fn spawn_replacement(
 /// The replacement cannot bind the dashboard port before the process it
 /// replaces exits, so its marker names a listener of its own instead. The
 /// returned task serves that listener until the dashboard listener is bound.
-pub async fn start_readiness_listener(
-    token: String,
-) -> std::io::Result<(u16, tokio::task::JoinHandle<()>)> {
+pub async fn start_readiness_listener() -> std::io::Result<(u16, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
-    let router = axum::Router::new()
-        .route("/ready", axum::routing::get(readiness_answer))
-        .with_state(Arc::new(token));
+    let router = axum::Router::new().route("/ready", axum::routing::get(readiness_answer));
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
     Ok((port, task))
 }
 
-/// The pid of the replacement, answered only with the credential it inherited.
-async fn readiness_answer(State(token): State<Arc<String>>, headers: HeaderMap) -> Response {
-    let presented = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().split_once(char::is_whitespace))
-        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-        .map(|(_, value)| value.trim())
-        .filter(|value| !value.is_empty());
-    if !crate::http::credential_matches(presented, &token) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Bearer")],
-            Json(json!({"detail": "The readiness probe requires the dashboard token."})),
-        )
-            .into_response();
-    }
+/// The pid of the replacement.
+async fn readiness_answer() -> Response {
     (
         StatusCode::OK,
         [(header::CACHE_CONTROL, "no-store")],
@@ -282,9 +253,8 @@ pub async fn relaunch_confirmed(
     let _ = std::fs::remove_file(ready_file);
     // The dashboard port stays held by this process until it exits, so the
     // marker's own listener is the one the child can answer on. The probe
-    // proves that the child, holding the credential it inherited, answers;
-    // a marker from a replacement older than that listener still proves the
-    // child started and takes the port over.
+    // proves that the child answers; a marker from a replacement older than
+    // that listener still proves the child started and takes the port over.
     if let Some(port) = probe_port {
         if stub.is_empty() && !stub_mode_is_test() {
             let pid = child.id();
@@ -295,10 +265,10 @@ pub async fn relaunch_confirmed(
                         .to_string(),
                 );
             }
-            if !probe_ready(port, &settings.token, Some(pid)).await {
+            if !probe_ready(port, Some(pid)).await {
                 let _ = child.kill();
                 return Err(
-                    "the replacement did not answer the authenticated readiness probe; the running server keeps serving"
+                    "the replacement did not answer the readiness probe; the running server keeps serving"
                         .to_string(),
                 );
             }
@@ -307,9 +277,9 @@ pub async fn relaunch_confirmed(
     Ok(())
 }
 
-/// Sends the authenticated readiness probe a launcher, a replacement, and the
-/// update check present before trusting a listener.
-pub async fn probe_ready(port: u16, token: &str, expected_pid: Option<u32>) -> bool {
+/// Sends the readiness probe a launcher, a replacement, and the update check
+/// present before trusting a listener.
+pub async fn probe_ready(port: u16, expected_pid: Option<u32>) -> bool {
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -317,9 +287,7 @@ pub async fn probe_ready(port: u16, token: &str, expected_pid: Option<u32>) -> b
         Ok(client) => client,
         Err(_) => return false,
     };
-    let request = client
-        .get(format!("http://127.0.0.1:{port}/ready"))
-        .header("Authorization", format!("Bearer {token}"));
+    let request = client.get(format!("http://127.0.0.1:{port}/ready"));
     let Ok(response) = request.send().await else {
         return false;
     };

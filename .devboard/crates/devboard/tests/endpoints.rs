@@ -98,8 +98,6 @@ async fn start_with(label: &str, failing: bool) -> Fixture {
         agent_command: "true".to_string(),
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
-        token: TOKEN.to_string(),
-        bootstrap: "test-bootstrap".to_string(),
         feedback: Some(FeedbackConfig {
             base_url: format!("http://127.0.0.1:{stub_port}"),
             repo: "dsdenes/devboard".to_string(),

@@ -17,10 +17,6 @@ pub struct Config {
     pub agent_command: String,
     pub state_dir: PathBuf,
     pub allowed_hosts: Vec<String>,
-    pub token: String,
-    /// The credential the launcher prints in the page address. It is distinct
-    /// from the dashboard token so the token never rides in a URL.
-    pub bootstrap: String,
     /// Harness reporting, enabled only by `DEVBOARD_GITEA_URL`.
     pub feedback: Option<FeedbackConfig>,
 }
@@ -97,16 +93,6 @@ impl Config {
         let state_dir = env::var("STATE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| running_harness_dir.join(".tmp"));
-        let token = env::var("DEVBOARD_DASHBOARD_TOKEN")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(crate::config::generated_token);
-        let bootstrap = env::var("DEVBOARD_BOOTSTRAP_TOKEN")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(crate::config::generated_token);
         Self {
             hostname,
             port,
@@ -117,24 +103,7 @@ impl Config {
             agent_command,
             state_dir,
             allowed_hosts,
-            token,
-            bootstrap,
             feedback: FeedbackConfig::from_env(),
         }
     }
-}
-
-/// The RFC 6750 characters a dashboard credential may carry.
-pub fn valid_token(token: &str) -> bool {
-    !token.is_empty()
-        && token
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._~+/=:-".contains(&byte))
-}
-
-/// A fresh dashboard credential: 32 random bytes in base64url without padding.
-pub fn generated_token() -> String {
-    use base64::Engine as _;
-    let bytes: [u8; 32] = rand::random();
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }

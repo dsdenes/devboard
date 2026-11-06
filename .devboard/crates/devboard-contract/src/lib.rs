@@ -1,7 +1,7 @@
 //! The normative contract corpus: loading, normalization, and replay.
 //!
 //! One recording per dispatcher command carries the frames the TypeScript
-//! dashboard answered, the state tree it left, and the unauthorized answer.
+//! dashboard answered and the state tree it left.
 //! Replay drives the same frames at the Rust dashboard on a private copy of the
 //! same fixture and compares everything after the allowlisted nondeterministic
 //! fields are normalized.
@@ -27,26 +27,14 @@ pub struct Scenario {
     pub name: String,
     pub send: String,
     pub frames: Vec<Value>,
-    pub unauthorized: HttpAnswer,
     pub state: BTreeMap<String, String>,
     pub repository: BTreeMap<String, String>,
-}
-
-/// One recorded HTTP answer.
-#[derive(Debug, Clone)]
-pub struct HttpAnswer {
-    pub method: String,
-    pub path: String,
-    pub headers: BTreeMap<String, String>,
-    pub status: u16,
-    pub body: String,
 }
 
 /// One command's recording.
 #[derive(Debug, Clone)]
 pub struct CommandRecording {
     pub command: String,
-    pub token: String,
     pub scenarios: Vec<Scenario>,
 }
 
@@ -149,11 +137,6 @@ impl Corpus {
                 .and_then(Value::as_str)
                 .context("a command name")?
                 .to_string();
-            let token = value
-                .get("token")
-                .and_then(Value::as_str)
-                .context("a token")?
-                .to_string();
             let mut scenarios = Vec::new();
             for scenario in value
                 .get("scenarios")
@@ -162,11 +145,7 @@ impl Corpus {
             {
                 scenarios.push(parse_scenario(scenario)?);
             }
-            commands.push(CommandRecording {
-                command,
-                token,
-                scenarios,
-            });
+            commands.push(CommandRecording { command, scenarios });
         }
         Ok(Self {
             root,
@@ -218,18 +197,12 @@ fn parse_scenario(value: &Value) -> anyhow::Result<Scenario> {
         .and_then(Value::as_array)
         .context("scenario frames")?
         .clone();
-    let unauthorized = parse_http(
-        value
-            .get("unauthorized")
-            .context("the unauthorized answer")?,
-    )?;
     let state = manifest_field(value.get("state"));
     let repository = manifest_field(value.get("repository"));
     Ok(Scenario {
         name,
         send,
         frames,
-        unauthorized,
         state,
         repository,
     })
@@ -245,36 +218,6 @@ fn manifest_field(value: Option<&Value>) -> BTreeMap<String, String> {
         }
     }
     manifest
-}
-
-fn parse_http(value: &Value) -> anyhow::Result<HttpAnswer> {
-    let mut headers = BTreeMap::new();
-    if let Some(entries) = value.get("headers").and_then(Value::as_object) {
-        for (name, header) in entries {
-            if let Some(header) = header.as_str() {
-                headers.insert(name.clone(), header.to_string());
-            }
-        }
-    }
-    Ok(HttpAnswer {
-        method: value
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("GET")
-            .to_string(),
-        path: value
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or("/")
-            .to_string(),
-        headers,
-        status: value.get("status").and_then(Value::as_u64).unwrap_or(0) as u16,
-        body: value
-            .get("body")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-    })
 }
 
 /// The work root one scenario uses; it mirrors the recorder's layout.
@@ -577,7 +520,7 @@ pub async fn replay_command(
     }
     for scenario in &recording.scenarios {
         let root = scenario_root(&corpus.root, &recording.command, &scenario.name);
-        let outcome = replays(corpus, recording, scenario, &root).await?;
+        let outcome = replays(corpus, scenario, &root).await?;
         report.compared += 1;
         match outcome {
             Ok(()) => report.matched += 1,
@@ -594,7 +537,6 @@ pub async fn replay_command(
 /// Replays one scenario and returns its mismatch, if any.
 async fn replays(
     corpus: &Corpus,
-    recording: &CommandRecording,
     scenario: &Scenario,
     root: &Path,
 ) -> anyhow::Result<Result<(), String>> {
@@ -605,12 +547,7 @@ async fn replays(
     std::fs::create_dir_all(&state_dir)?;
     copy_dir(&fixture.join("repo"), &repo_dir)?;
 
-    let mut config = crate::dashboard_config(
-        &repo_dir,
-        &state_dir,
-        &fixture.join("static"),
-        &recording.token,
-    );
+    let mut config = crate::dashboard_config(&repo_dir, &state_dir, &fixture.join("static"));
     config.port = 0;
     let listener = devboard::http::bind("127.0.0.1", 0).await?;
     let port = listener.local_addr()?.port();
@@ -622,26 +559,7 @@ async fn replays(
         let _ = devboard::http::serve_on(listener, server).await;
     });
 
-    let unauthorized = probe_unauthorized(port).await?;
-    let normalized_expected = normalize(
-        &serde_json::json!(scenario.unauthorized.status),
-        &corpus.allowlist,
-        root,
-    );
-    let normalized_actual = normalize(
-        &serde_json::json!(unauthorized.status),
-        &corpus.allowlist,
-        root,
-    );
-    if normalized_expected != normalized_actual {
-        handle.abort();
-        return Ok(Err(format!(
-            "unauthorized probe answered {} not {}",
-            unauthorized.status, scenario.unauthorized.status
-        )));
-    }
-
-    let frames = drive_socket(port, &recording.token, &scenario.send).await?;
+    let frames = drive_socket(port, &scenario.send).await?;
     let actual: Vec<Value> = frames
         .iter()
         .map(|frame| normalize(frame, &corpus.allowlist, root))
@@ -801,38 +719,14 @@ fn describe_frame_mismatch(expected: &[Value], actual: &[Value]) -> String {
     "frames differ".to_string()
 }
 
-async fn probe_unauthorized(port: u16) -> anyhow::Result<HttpAnswer> {
-    let response = reqwest::Client::new()
-        .get(format!("http://127.0.0.1:{port}/ws"))
-        .send()
-        .await?;
-    let status = response.status().as_u16();
-    let mut headers = BTreeMap::new();
-    for (name, value) in response.headers() {
-        headers.insert(name.to_string(), value.to_str().unwrap_or("").to_string());
-    }
-    let body = response.text().await.unwrap_or_default();
-    Ok(HttpAnswer {
-        method: "GET".to_string(),
-        path: "/ws".to_string(),
-        headers,
-        status,
-        body,
-    })
-}
-
 /// Drives one frame at a socket and collects every answer within the settle
 /// window.
-pub async fn drive_socket(port: u16, token: &str, send: &str) -> anyhow::Result<Vec<Value>> {
+pub async fn drive_socket(port: u16, send: &str) -> anyhow::Result<Vec<Value>> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::Message;
 
-    let mut request = format!("ws://127.0.0.1:{port}/ws").into_client_request()?;
-    request.headers_mut().insert(
-        "authorization",
-        axum::http::HeaderValue::from_str(&format!("Bearer {token}"))?,
-    );
+    let request = format!("ws://127.0.0.1:{port}/ws").into_client_request()?;
     let (mut socket, _response) = tokio_tungstenite::connect_async(request).await?;
     // The open replay settles before the command runs.
     drain_quiet(&mut socket, None).await;
@@ -941,7 +835,6 @@ pub fn dashboard_config(
     repo_dir: &Path,
     state_dir: &Path,
     static_dir: &Path,
-    token: &str,
 ) -> devboard::config::Config {
     devboard::config::Config {
         hostname: "127.0.0.1".to_string(),
@@ -953,8 +846,6 @@ pub fn dashboard_config(
         agent_command: "true".to_string(),
         state_dir: state_dir.to_path_buf(),
         allowed_hosts: Vec::new(),
-        token: token.to_string(),
-        bootstrap: "contract-bootstrap".to_string(),
         feedback: None,
     }
 }

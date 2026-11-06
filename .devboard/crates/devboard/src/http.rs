@@ -13,8 +13,6 @@ use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use url::Url;
 
 use crate::app::{App, Conn};
@@ -22,8 +20,6 @@ use crate::config::Config;
 use crate::jsjson;
 use crate::protocol::parse_client_message;
 
-/// The cookie whose name carries the dashboard credential to its own page.
-const DASHBOARD_COOKIE: &str = "devboard_dashboard";
 /// The header a client sends and the dashboard echoes.
 const FLOW_ID_HEADER: &str = "x-flow-id";
 /// The longest flow id a client may send.
@@ -119,45 +115,6 @@ fn host_with_port(url: &Url) -> String {
         Some(port) => format!("{host}:{port}"),
         None => host.to_string(),
     }
-}
-
-/// The credential a request presents.
-pub fn presented_credential(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
-    if let Some(value) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-    {
-        let trimmed = value.trim();
-        if let Some((scheme, rest)) = trimmed.split_once(char::is_whitespace) {
-            if scheme.eq_ignore_ascii_case("bearer") {
-                let token = rest.trim();
-                if !token.is_empty() {
-                    return Some(token.to_string());
-                }
-            }
-        }
-    }
-    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
-    for entry in cookies.split(';') {
-        let Some((name, value)) = entry.split_once('=') else {
-            continue;
-        };
-        if name.trim() == cookie_name {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
-}
-
-/// Whether a presented credential is the dashboard token, compared in
-/// constant time over both digests.
-pub fn credential_matches(presented: Option<&str>, token: &str) -> bool {
-    let Some(presented) = presented else {
-        return false;
-    };
-    let left = Sha256::digest(presented.as_bytes());
-    let right = Sha256::digest(token.as_bytes());
-    left.ct_eq(&right).into()
 }
 
 /// The reason phrase each failure status carries.
@@ -290,13 +247,11 @@ impl Server {
             }
         }
         let allowed_hostnames = allowed_request_hostnames(&config.hostname, &config.allowed_hosts);
-        let token = config.token.clone();
         let app = App::new(config.clone(), journal);
         Arc::new(Self {
             app,
             allowed_hostnames,
             static_cache: StaticCache::new(),
-            token,
             config,
         })
     }
@@ -308,7 +263,6 @@ pub struct Server {
     pub config: Config,
     pub allowed_hostnames: HashSet<String>,
     pub static_cache: StaticCache,
-    pub token: String,
 }
 
 /// The HTTP answer helpers: JSON and Problem bodies negotiated through
@@ -548,11 +502,8 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             ))
         }
     };
-    let cookie_name = format!("{DASHBOARD_COOKIE}_{}", local_port(&server));
-
-    // A Host this listener does not serve is misdirected, whether or not the
-    // caller presented a credential: the three request paths a browser opens
-    // directly never run against another site's name.
+    // A Host this listener does not serve is misdirected: the three request
+    // paths a browser opens directly never run against another site's name.
     let guarded_path = matches!(uri.path(), "/ws" | "/feedback" | "/goal-proposals")
         || uri.path().starts_with("/goal-proposals/");
     if guarded_path {
@@ -574,34 +525,25 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
 
     match uri.path() {
         "/feedback" => {
-            let Some(denied) = credential_refusal(&server, &headers, &cookie_name) else {
-                let (_parts, body) = request.into_parts();
-                return reply(
-                    server
-                        .app
-                        .feedback(&method, &headers, &url, flow_id.as_deref(), body)
-                        .await,
-                );
-            };
-            return reply(denied);
+            let (_parts, body) = request.into_parts();
+            return reply(
+                server
+                    .app
+                    .feedback(&method, &headers, &url, flow_id.as_deref(), body)
+                    .await,
+            );
         }
         "/ready" => {
-            if let Some(denied) = credential_refusal(&server, &headers, &cookie_name) {
-                return reply(denied);
-            }
             return reply(ready(&headers, &method));
         }
         "/goal-proposals" => {
-            let Some(denied) = credential_refusal(&server, &headers, &cookie_name) else {
-                let (_parts, body) = request.into_parts();
-                return reply(
-                    server
-                        .app
-                        .goal_proposals(&method, &headers, &url, flow_id.as_deref(), body)
-                        .await,
-                );
-            };
-            return reply(denied);
+            let (_parts, body) = request.into_parts();
+            return reply(
+                server
+                    .app
+                    .goal_proposals(&method, &headers, &url, flow_id.as_deref(), body)
+                    .await,
+            );
         }
         "/ws" => {
             if method != Method::GET {
@@ -615,18 +557,12 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             if let Some(refusal) = request_refusal(&headers, &url, &server.allowed_hostnames) {
                 return reply(refusal_answer(&headers, refusal));
             }
-            if let Some(denied) = credential_refusal(&server, &headers, &cookie_name) {
-                return reply(denied);
-            }
             return reply(upgrade(server.clone(), request, &headers, flow_id.as_deref()).await);
         }
         _ => {}
     }
 
     if let Some(name) = uri.path().strip_prefix("/goal-proposals/") {
-        if let Some(denied) = credential_refusal(&server, &headers, &cookie_name) {
-            return reply(denied);
-        }
         return reply(draft_answer(&server, name, &method, &headers));
     }
 
@@ -660,16 +596,9 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             &[],
         ));
     };
-    // The document carries the page's credential, so only a request that
-    // presents it, or the launcher's bootstrap handshake, is served one.
-    if is_html(&relative) {
-        if let Some(refused) = document_refusal(&server, &headers, &url, &cookie_name) {
-            return reply(refused);
-        }
-    }
     // A file answer is never correlated with the call that asked for it: a
     // shared cache must not replay one client's flow id to another.
-    static_file(&server, &relative, &method, &headers, &cookie_name)
+    static_file(&server, &relative, &method, &headers)
 }
 
 /// The 421 for a host this listener does not serve, or the 403 for a
@@ -696,42 +625,6 @@ fn refusal_answer(headers: &HeaderMap, refusal: RequestRefusal) -> Response {
         refusal,
         "Cross-origin WebSocket upgrades are refused.",
     )
-}
-
-/// The 401 for a document request that may not carry the page's credential.
-fn document_refusal(
-    server: &Server,
-    headers: &HeaderMap,
-    url: &Url,
-    cookie_name: &str,
-) -> Option<Response> {
-    if server.token.is_empty() {
-        return None;
-    }
-    if credential_matches(
-        presented_credential(headers, cookie_name).as_deref(),
-        &server.token,
-    ) {
-        return None;
-    }
-    let bootstrap = server.config.bootstrap.as_str();
-    if !bootstrap.is_empty()
-        && credential_matches(
-            url.query_pairs()
-                .find(|(name, _)| name == "bootstrap")
-                .map(|(_, value)| value.into_owned())
-                .as_deref(),
-            bootstrap,
-        )
-    {
-        return None;
-    }
-    Some(Replies::problem(
-        headers,
-        401,
-        "This page requires the dashboard credential.",
-        &[("WWW-Authenticate", "Bearer")],
-    ))
 }
 
 /// One written draft, served where `POST /goal-proposals` linked it.
@@ -786,28 +679,6 @@ fn draft_answer(server: &Server, raw_name: &str, method: &Method, headers: &Head
         .unwrap_or_else(|_| Replies::problem(headers, 500, "An internal error occurred.", &[]))
 }
 
-/// The listener's local port; the cookie name carries it.
-fn local_port(server: &Server) -> u16 {
-    server.config.port
-}
-
-/// The 401 for a request without a valid dashboard credential.
-fn credential_refusal(server: &Server, headers: &HeaderMap, cookie_name: &str) -> Option<Response> {
-    if server.token.is_empty() {
-        return None;
-    }
-    let presented = presented_credential(headers, cookie_name);
-    if credential_matches(presented.as_deref(), &server.token) {
-        return None;
-    }
-    Some(Replies::problem(
-        headers,
-        401,
-        "This endpoint requires the dashboard token.",
-        &[("WWW-Authenticate", "Bearer")],
-    ))
-}
-
 /// `/ready`: the pid of the process that answered.
 fn ready(headers: &HeaderMap, method: &Method) -> Response {
     if *method != Method::GET && *method != Method::HEAD {
@@ -834,13 +705,7 @@ fn ready(headers: &HeaderMap, method: &Method) -> Response {
 }
 
 /// Serves one file under the static root, or from the embedded client.
-fn static_file(
-    server: &Server,
-    relative: &str,
-    method: &Method,
-    headers: &HeaderMap,
-    cookie_name: &str,
-) -> Response {
+fn static_file(server: &Server, relative: &str, method: &Method, headers: &HeaderMap) -> Response {
     let served: Option<(Vec<u8>, Option<std::time::SystemTime>, u64)> =
         match &server.config.static_dir {
             Some(root) => match read_static_file(root, relative) {
@@ -883,15 +748,6 @@ fn static_file(
         .header(header::CONTENT_TYPE, content_type(relative))
         .header(header::VARY, "Accept-Encoding")
         .header(header::CACHE_CONTROL, cache_control);
-    if !server.token.is_empty() && is_html(relative) && crate::config::valid_token(&server.token) {
-        builder = builder.header(
-            header::SET_COOKIE,
-            format!(
-                "{cookie_name}={}; Path=/; HttpOnly; SameSite=Strict",
-                server.token
-            ),
-        );
-    }
     let payload = if gzip {
         builder = builder.header(header::CONTENT_ENCODING, "gzip");
         server
@@ -940,12 +796,6 @@ fn read_static_file(
         Ok(body) => Ok(Some((body, metadata.modified().ok(), metadata.len()))),
         Err(error) => Err(error.to_string()),
     }
-}
-
-/// Whether a static path is an HTML document, which carries the credential.
-fn is_html(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".html") || lower.ends_with(".htm")
 }
 
 /// Decodes percent escapes in a request path, refusing invalid ones.

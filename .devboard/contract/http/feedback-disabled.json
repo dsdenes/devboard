@@ -3,7 +3,6 @@
   "method": "POST",
   "path": "/feedback",
   "requestHeaders": {
-    "authorization": "Bearer contract-token",
     "content-type": "application/json",
     "accept-encoding": "identity"
   },

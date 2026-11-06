@@ -9,7 +9,6 @@ async fn main() -> anyhow::Result<()> {
     let mut corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../contract");
     let mut compare_http: Option<u16> = None;
     let mut play_command: Option<String> = None;
-    let mut token = "contract-token".to_string();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -31,13 +30,6 @@ async fn main() -> anyhow::Result<()> {
                         .context("--play-command needs a name")?
                         .clone(),
                 );
-                index += 2;
-            }
-            "--token" => {
-                token = args
-                    .get(index + 1)
-                    .context("--token needs a value")?
-                    .clone();
                 index += 2;
             }
             other => anyhow::bail!("unknown option {other}"),
@@ -66,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(port) = compare_http {
         let base = format!("http://127.0.0.1:{port}");
-        let results = devboard_contract::http_table::run(&base, &token).await;
+        let results = devboard_contract::http_table::run(&base).await;
         let mut failures = 0;
         for result in &results {
             if let Err(error) = result {

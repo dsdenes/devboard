@@ -9,18 +9,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 /// Measures round-trip latency for one read command and returns the summary.
-pub async fn measure(
-    port: u16,
-    token: &str,
-    iterations: u64,
-    command: &str,
-) -> anyhow::Result<Value> {
-    let mut request = format!("ws://127.0.0.1:{port}/ws").into_client_request()?;
-    if !token.is_empty() {
-        request
-            .headers_mut()
-            .insert("authorization", format!("Bearer {token}").parse()?);
-    }
+pub async fn measure(port: u16, iterations: u64, command: &str) -> anyhow::Result<Value> {
+    let request = format!("ws://127.0.0.1:{port}/ws").into_client_request()?;
     let (mut socket, _response) = tokio_tungstenite::connect_async(request)
         .await
         .context("connecting the benchmark socket")?;

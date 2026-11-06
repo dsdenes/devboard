@@ -59,8 +59,6 @@ fn app_at(root: &Path) -> Arc<App> {
         agent_command: "omp acp".to_string(),
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
-        token: "test-token".to_string(),
-        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);

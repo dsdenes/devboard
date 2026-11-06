@@ -1,6 +1,5 @@
 {
   "command": "answerGoalDraft",
-  "token": "contract-token",
   "scenarios": [
     {
       "name": "request",
@@ -16,21 +15,6 @@
           "message": "That question is no longer waiting for an answer."
         }
       ],
-      "unauthorized": {
-        "method": "GET",
-        "path": "/ws",
-        "headers": {
-          "cache-control": "no-store",
-          "content-encoding": "gzip",
-          "content-length": "116",
-          "content-type": "application/problem+json",
-          "date": "Tue, 03 Nov 2026 17:02:31 GMT",
-          "vary": "Accept-Encoding",
-          "www-authenticate": "Bearer"
-        },
-        "status": 401,
-        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
-      },
       "state": {
         "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725353506}\n",
         "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:02:32.555Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
@@ -51,21 +35,6 @@
           "message": "Invalid WebSocket message."
         }
       ],
-      "unauthorized": {
-        "method": "GET",
-        "path": "/ws",
-        "headers": {
-          "cache-control": "no-store",
-          "content-encoding": "gzip",
-          "content-length": "116",
-          "content-type": "application/problem+json",
-          "date": "Tue, 03 Nov 2026 17:02:33 GMT",
-          "vary": "Accept-Encoding",
-          "www-authenticate": "Bearer"
-        },
-        "status": 401,
-        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
-      },
       "state": {
         "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725354820}\n",
         "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:02:33.859Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"

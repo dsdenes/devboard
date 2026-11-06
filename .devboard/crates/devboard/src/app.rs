@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use url::Url;
 
 use crate::config::Config;
-use crate::http::{presented_credential, request_refusal, Replies};
+use crate::http::{request_refusal, Replies};
 use crate::journal::Journal;
 use crate::protocol::Command;
 
@@ -82,7 +82,6 @@ pub struct Shared {
     pub config: Config,
     pub journal: Journal,
     clients: Mutex<HashMap<u64, Conn>>,
-    pub token: String,
     pub allowed_hostnames: std::collections::HashSet<String>,
     state_path: PathBuf,
     sections: Mutex<Vec<(String, Arc<dyn StateSection>)>>,
@@ -358,7 +357,6 @@ impl App {
     pub fn new(config: Config, journal: Journal) -> Arc<Self> {
         let allowed_hostnames =
             crate::http::allowed_request_hostnames(&config.hostname, &config.allowed_hosts);
-        let token = config.token.clone();
         let idempotency =
             crate::idempotency::IdempotencyStore::open(&config.state_dir, &config.repo_dir);
         let instance = uuid::Uuid::new_v4().to_string();
@@ -372,7 +370,6 @@ impl App {
             config,
             journal,
             clients: Mutex::new(HashMap::new()),
-            token,
             allowed_hostnames,
             state_path,
             sections: Mutex::new(Vec::new()),
@@ -1433,12 +1430,6 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
 /// Whether one command name is implemented.
 pub fn is_implemented(command: &str) -> bool {
     IMPLEMENTED_COMMANDS.contains(&command)
-}
-
-/// Guards the `/goal-proposals` endpoint against a missing credential.
-#[allow(dead_code)]
-fn credential_presented(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
-    presented_credential(headers, cookie_name)
 }
 
 /// Ends everything a stopping dashboard owns: Discover staging and its peer,

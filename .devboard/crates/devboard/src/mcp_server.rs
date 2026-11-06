@@ -104,8 +104,6 @@ pub struct LiveDashboard {
     pub repo_dir: String,
     pub harness: String,
     pub state_dir: String,
-    /// The dashboard's socket credential; empty when the process published none.
-    pub token: String,
 }
 
 /// A path argument that cannot leave one allowed root.
@@ -191,7 +189,6 @@ pub fn discover_dashboards(repo_dir: &Path) -> Vec<LiveDashboard> {
             repo_dir: instance.repo_dir,
             harness: instance.harness,
             state_dir: instance.state_dir,
-            token: instance.token,
         })
         .collect();
     found.sort_by_key(|dashboard| dashboard.port);
@@ -238,15 +235,9 @@ async fn dashboard_command(
     timeout_ms: u64,
 ) -> Result<Value, String> {
     let port = dashboard.port;
-    let mut request = format!("ws://127.0.0.1:{port}/ws")
+    let request = format!("ws://127.0.0.1:{port}/ws")
         .into_client_request()
         .map_err(|_| format!("the dashboard on port {port} refused the connection"))?;
-    if !dashboard.token.is_empty() {
-        let value = format!("Bearer {}", dashboard.token);
-        if let Ok(header) = value.parse() {
-            request.headers_mut().insert("authorization", header);
-        }
-    }
     let commands: Vec<Value> = match command {
         Value::Array(entries) => entries,
         other => vec![other],
@@ -1478,7 +1469,6 @@ fn search_journal(context: &McpContext, args: &Map<String, Value>) -> Result<Val
         host: "127.0.0.1".to_string(),
         harness: context.harness_dir.to_string_lossy().into_owned(),
         state_dir: context.state_dir.to_string_lossy().into_owned(),
-        token: String::new(),
         journal: journal.to_string_lossy().into_owned(),
         instrumented: true,
         legacy_log: None,

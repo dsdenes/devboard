@@ -275,24 +275,21 @@ fn a_dashboard_is_discovered_by_every_surface() {
 }
 
 #[test]
-fn a_generated_credential_is_published_into_the_process_environment() {
+fn a_started_dashboard_publishes_no_dashboard_credential() {
     let dashboard = Dashboard::start("credentials");
     let environ = dashboard.environ();
-    assert!(environ.contains("DEVBOARD_DASHBOARD_TOKEN="), "{environ}");
-    assert!(environ.contains("DEVBOARD_BOOTSTRAP_TOKEN="), "{environ}");
-    let token = environ
-        .lines()
-        .find_map(|line| line.strip_prefix("DEVBOARD_DASHBOARD_TOKEN="))
-        .expect("the published token");
-    assert!(!token.is_empty());
+    for family in ["DASHBOARD", "BOOTSTRAP"] {
+        let name = format!("DEVBOARD_{family}_TOKEN=");
+        assert!(!environ.contains(&name), "{environ}");
+    }
     let instances = devboard::workers::watchdog::discover_instances_for(&dashboard.repo);
     let instance = instances
         .iter()
         .find(|instance| instance.pid == dashboard.pid)
         .expect("the instance");
-    assert_eq!(instance.token, token);
+    assert_eq!(instance.repo_dir, dashboard.repo.to_string_lossy());
 
-    // A control surface reaches `/ws` with the published token.
+    // A control surface reaches `/ws` without a credential.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -301,14 +298,10 @@ fn a_generated_credential_is_published_into_the_process_environment() {
         use futures_util::SinkExt as _;
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let url = format!("ws://127.0.0.1:{}/ws", dashboard.port);
-        let mut request = url.into_client_request().expect("a request");
-        request.headers_mut().insert(
-            "authorization",
-            format!("Bearer {token}").parse().expect("a header"),
-        );
+        let request = url.into_client_request().expect("a request");
         let (mut socket, _) = tokio_tungstenite::connect_async(request)
             .await
-            .expect("the socket opens with the credential");
+            .expect("the socket opens without a credential");
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
                 json!({"type": "getVersion"}).to_string().into(),
@@ -340,7 +333,7 @@ fn a_generated_credential_is_published_into_the_process_environment() {
     });
     assert!(
         frames.iter().any(|frame| frame["type"] == "versionState"),
-        "the token answers the expected state: {frames:?}"
+        "the credential-free socket answers the expected state: {frames:?}"
     );
 }
 
@@ -388,20 +381,9 @@ fn sigterm_ends_the_child_and_removes_the_staging() {
     let run_id = runtime.block_on(async {
         use futures_util::{SinkExt as _, StreamExt as _};
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-        let instances = devboard::workers::watchdog::discover_instances_for(&dashboard.repo);
-        let token = instances
-            .iter()
-            .find(|instance| instance.pid == dashboard.pid)
-            .expect("the instance")
-            .token
-            .clone();
-        let mut request = format!("ws://127.0.0.1:{}/ws", dashboard.port)
+        let request = format!("ws://127.0.0.1:{}/ws", dashboard.port)
             .into_client_request()
             .expect("a request");
-        request.headers_mut().insert(
-            "authorization",
-            format!("Bearer {token}").parse().expect("a header"),
-        );
         let (mut socket, _) = tokio_tungstenite::connect_async(request)
             .await
             .expect("the socket");

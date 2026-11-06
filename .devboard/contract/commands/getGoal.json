@@ -1,6 +1,5 @@
 {
   "command": "getGoal",
-  "token": "contract-token",
   "scenarios": [
     {
       "name": "request",
@@ -15,21 +14,6 @@
           "text": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n"
         }
       ],
-      "unauthorized": {
-        "method": "GET",
-        "path": "/ws",
-        "headers": {
-          "cache-control": "no-store",
-          "content-encoding": "gzip",
-          "content-length": "116",
-          "content-type": "application/problem+json",
-          "date": "Tue, 03 Nov 2026 17:01:39 GMT",
-          "vary": "Accept-Encoding",
-          "www-authenticate": "Bearer"
-        },
-        "status": 401,
-        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
-      },
       "state": {
         "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725301348}\n",
         "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:01:40.389Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
@@ -50,21 +34,6 @@
           "message": "Invalid WebSocket message."
         }
       ],
-      "unauthorized": {
-        "method": "GET",
-        "path": "/ws",
-        "headers": {
-          "cache-control": "no-store",
-          "content-encoding": "gzip",
-          "content-length": "116",
-          "content-type": "application/problem+json",
-          "date": "Tue, 03 Nov 2026 17:01:40 GMT",
-          "vary": "Accept-Encoding",
-          "www-authenticate": "Bearer"
-        },
-        "status": 401,
-        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
-      },
       "state": {
         "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725302650}\n",
         "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:01:41.690Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"

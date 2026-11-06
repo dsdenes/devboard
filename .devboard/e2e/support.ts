@@ -61,8 +61,6 @@ export const FAMILY_LABELS: Record<Family, string> = {
 export interface SuiteState {
   baseUrl: string;
   port: number;
-  token: string;
-  bootstrap: string;
   repository: string;
   repoDir: string;
   stateDir: string;

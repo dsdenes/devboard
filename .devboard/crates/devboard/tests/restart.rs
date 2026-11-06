@@ -43,8 +43,6 @@ impl Fixture {
             agent_command: "omp acp".to_string(),
             state_dir,
             allowed_hosts: Vec::new(),
-            token: "fixture-token".to_string(),
-            bootstrap: "fixture-bootstrap".to_string(),
             feedback: None,
         };
         Self { root, config }

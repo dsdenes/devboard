@@ -3,7 +3,6 @@
   "method": "GET",
   "path": "/ws",
   "requestHeaders": {
-    "authorization": "Bearer contract-token",
     "host": "evil.test",
     "accept-encoding": "identity"
   },

@@ -46,8 +46,6 @@ fn settings(root: &Path, port: u16) -> RelaunchSettings {
         repo_dir: repo.clone(),
         goal_file: repo.join("GOAL.md"),
         state_dir: root.join("state"),
-        token: "replacement-token".to_string(),
-        bootstrap: "replacement-bootstrap".to_string(),
     }
 }
 
@@ -77,15 +75,14 @@ fn stop(pid: u32) {
 /// The marker's listener names this process and answers only with the
 /// credential the replacement inherited.
 #[tokio::test]
-async fn the_replacement_readiness_listener_answers_only_the_inherited_credential() {
-    let (port, task) = start_readiness_listener("replacement-token".to_string())
+async fn the_replacement_readiness_listener_answers_the_pid_without_a_credential() {
+    let (port, task) = start_readiness_listener()
         .await
         .expect("a readiness listener");
     let pid = std::process::id();
-    assert!(probe_ready(port, "replacement-token", Some(pid)).await);
-    assert!(!probe_ready(port, "wrong-token", Some(pid)).await);
+    assert!(probe_ready(port, Some(pid)).await);
     assert!(
-        !probe_ready(port, "replacement-token", Some(pid.wrapping_add(1))).await,
+        !probe_ready(port, Some(pid.wrapping_add(1))).await,
         "another pid never becomes the replacement"
     );
     task.abort();

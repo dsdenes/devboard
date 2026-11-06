@@ -1,6 +1,5 @@
 {
   "command": "getProviders",
-  "token": "contract-token",
   "scenarios": [
     {
       "name": "request",
@@ -18,21 +17,6 @@
           "rule": "rotates at 1% remaining"
         }
       ],
-      "unauthorized": {
-        "method": "GET",
-        "path": "/ws",
-        "headers": {
-          "cache-control": "no-store",
-          "content-encoding": "gzip",
-          "content-length": "116",
-          "content-type": "application/problem+json",
-          "date": "Tue, 03 Nov 2026 17:04:45 GMT",
-          "vary": "Accept-Encoding",
-          "www-authenticate": "Bearer"
-        },
-        "status": 401,
-        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
-      },
       "state": {
         "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725486911}\n",
         "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:04:45.952Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"
@@ -53,21 +37,6 @@
           "message": "Invalid WebSocket message."
         }
       ],
-      "unauthorized": {
-        "method": "GET",
-        "path": "/ws",
-        "headers": {
-          "cache-control": "no-store",
-          "content-encoding": "gzip",
-          "content-length": "116",
-          "content-type": "application/problem+json",
-          "date": "Tue, 03 Nov 2026 17:04:46 GMT",
-          "vary": "Accept-Encoding",
-          "www-authenticate": "Bearer"
-        },
-        "status": 401,
-        "body": "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"This endpoint requires the dashboard token.\"}"
-      },
       "state": {
         "runs/{{KEY24}}/lease.json": "{\"pid\":3627673,\"instance\":\"{{UUID}}\",\"updatedAt\":1793725488212}\n",
         "coach/projection.json": "{\n  \"version\": 1,\n  \"state\": \"ok\",\n  \"at\": \"2026-11-03T17:04:47.256Z\",\n  \"error\": null,\n  \"issues\": []\n}\n"

@@ -1334,8 +1334,6 @@ pub struct Instance {
     pub harness: String,
     /// The dashboard's own state directory, from `STATE_DIR`.
     pub state_dir: String,
-    /// The dashboard's socket credential, from its own environment.
-    pub token: String,
     pub journal: String,
     /// False when the serving harness never wrote a journal for this project.
     pub instrumented: bool,
@@ -1477,7 +1475,7 @@ fn rust_serve_arguments(cmdline: &str) -> Option<ServeArguments> {
                 arguments.state_dir = tokens.get(index + 1).map(|value| value.to_string());
                 index += 2;
             }
-            "--adrs-dir" | "--static-dir" | "--token" => index += 2,
+            "--adrs-dir" | "--static-dir" => index += 2,
             _ => index += 1,
         }
     }
@@ -1581,11 +1579,6 @@ pub fn instances_from_processes_including(
                 .unwrap_or_else(|| "127.0.0.1".to_string()),
             harness: harness.to_string_lossy().into_owned(),
             state_dir: state_dir.to_string_lossy().into_owned(),
-            token: process
-                .env
-                .get("DEVBOARD_DASHBOARD_TOKEN")
-                .cloned()
-                .unwrap_or_default(),
             journal: journal.to_string_lossy().into_owned(),
             instrumented: state_dir.join("journal").exists(),
             legacy_log: legacy

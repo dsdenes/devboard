@@ -144,8 +144,6 @@ fn config(repo: &Path, state: &Path, command: String) -> Config {
         agent_command: command,
         state_dir: state.to_path_buf(),
         allowed_hosts: Vec::new(),
-        token: "discover-token".to_string(),
-        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     }
 }

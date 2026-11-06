@@ -6,15 +6,12 @@ use std::path::{Path, PathBuf};
 use devboard::config::Config;
 use devboard::http::Server;
 use devboard::journal::Journal;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING, AUTHORIZATION, HOST, ORIGIN};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING, HOST, ORIGIN};
 use reqwest::{Method, StatusCode};
-
-const TOKEN: &str = "contract-token";
 
 struct Instance {
     base: String,
     root: PathBuf,
-    token: String,
 }
 
 fn private_root(label: &str) -> PathBuf {
@@ -47,8 +44,6 @@ async fn start(label: &str) -> Instance {
         agent_command: "true".to_string(),
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
-        token: TOKEN.to_string(),
-        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let listener = devboard::http::bind(&config.hostname, 0)
@@ -65,7 +60,6 @@ async fn start(label: &str) -> Instance {
     Instance {
         base: format!("http://127.0.0.1:{port}"),
         root,
-        token: TOKEN.to_string(),
     }
 }
 
@@ -99,15 +93,6 @@ async fn raw_get(base: &str, path: &str) -> u16 {
         .unwrap_or(0)
 }
 
-fn bearer(token: &str) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {token}")).expect("a token"),
-    );
-    headers
-}
-
 async fn send(method: Method, url: &str, headers: HeaderMap) -> (StatusCode, HeaderMap, Vec<u8>) {
     let response = client()
         .request(method, url)
@@ -127,7 +112,7 @@ async fn ready_answers_get_and_head_with_the_pid() {
     let (status, headers, body) = send(
         Method::GET,
         &format!("{}/ready", instance.base),
-        bearer(&instance.token),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -143,7 +128,7 @@ async fn ready_answers_get_and_head_with_the_pid() {
     let (status, headers, body) = send(
         Method::HEAD,
         &format!("{}/ready", instance.base),
-        bearer(&instance.token),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -163,7 +148,7 @@ async fn ready_refuses_other_methods_with_allow() {
         let (status, headers, body) = send(
             method.clone(),
             &format!("{}/ready", instance.base),
-            bearer(&instance.token),
+            HeaderMap::new(),
         )
         .await;
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{method}");
@@ -180,7 +165,7 @@ async fn ready_refuses_other_methods_with_allow() {
 #[tokio::test]
 async fn ready_negotiates_gzip() {
     let instance = start("ready-gzip").await;
-    let mut headers = bearer(&instance.token);
+    let mut headers = HeaderMap::new();
     headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
     let (status, headers, _body) =
         send(Method::GET, &format!("{}/ready", instance.base), headers).await;
@@ -198,7 +183,7 @@ async fn ready_negotiates_gzip() {
 }
 
 #[tokio::test]
-async fn socket_guards_answer_method_host_origin_and_credential() {
+async fn socket_guards_answer_method_host_and_origin() {
     let instance = start("ws-guards").await;
     let url = format!("{}/ws", instance.base);
 
@@ -210,20 +195,17 @@ async fn socket_guards_answer_method_host_origin_and_credential() {
     );
 
     let (status, _headers, _body) = send(Method::GET, &url, HeaderMap::new()).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
 
-    let mut headers = bearer(&instance.token);
+    let mut headers = HeaderMap::new();
     headers.insert(HOST, HeaderValue::from_static("evil.test"));
     let (status, _headers, _body) = send(Method::GET, &url, headers).await;
     assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
 
-    let mut headers = bearer(&instance.token);
+    let mut headers = HeaderMap::new();
     headers.insert(ORIGIN, HeaderValue::from_static("http://evil.test"));
     let (status, _headers, _body) = send(Method::GET, &url, headers).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-
-    let (status, _headers, _body) = send(Method::GET, &url, bearer(&instance.token)).await;
-    assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
 }
 
 #[tokio::test]
@@ -251,27 +233,9 @@ async fn static_serving_refuses_control_characters_and_normalizes_paths() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
     }
 
-    let (status, headers, _body) = send(
-        Method::GET,
-        &format!("{}/", instance.base),
-        HeaderMap::new(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        headers
-            .get("www-authenticate")
-            .and_then(|value| value.to_str().ok()),
-        Some("Bearer")
-    );
-    assert!(
-        headers.get("set-cookie").is_none(),
-        "no cookie before the credential"
-    );
-
     let (status, headers, body) = send(
         Method::GET,
-        &format!("{}/?bootstrap=test-bootstrap", instance.base),
+        &format!("{}/", instance.base),
         HeaderMap::new(),
     )
     .await;
@@ -282,22 +246,15 @@ async fn static_serving_refuses_control_characters_and_normalizes_paths() {
             .and_then(|value| value.to_str().ok()),
         Some("no-cache")
     );
-    let cookie = headers
-        .get("set-cookie")
-        .and_then(|value| value.to_str().ok())
-        .expect("the document hands out its cookie")
-        .to_string();
-    assert!(cookie.contains("HttpOnly"));
-    assert!(!String::from_utf8_lossy(&body).contains(TOKEN));
-
-    let mut cookie_headers = HeaderMap::new();
-    cookie_headers.insert(
-        reqwest::header::COOKIE,
-        HeaderValue::from_str(cookie.split(';').next().expect("a cookie pair")).expect("a cookie"),
+    assert!(
+        headers.get("set-cookie").is_none(),
+        "the document sets no cookie"
     );
-    let (status, _headers, _body) =
-        send(Method::GET, &format!("{}/", instance.base), cookie_headers).await;
-    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers.get("www-authenticate").is_none(),
+        "the document demands no credential"
+    );
+    assert!(String::from_utf8_lossy(&body).contains("<!doctype html"));
 
     let (status, headers, _body) = send(
         Method::GET,
@@ -315,24 +272,37 @@ async fn static_serving_refuses_control_characters_and_normalizes_paths() {
 }
 
 #[tokio::test]
-async fn mutating_endpoints_enforce_credential_method_and_configuration() {
+async fn mutating_endpoints_enforce_method_and_configuration() {
     let instance = start("endpoints").await;
-    for path in ["/feedback", "/goal-proposals"] {
-        let url = format!("{}{path}", instance.base);
-        let (status, headers, _body) = send(Method::POST, &url, HeaderMap::new()).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
-        assert_eq!(
-            headers
-                .get("www-authenticate")
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer")
-        );
-    }
+    let (status, _headers, _body) = send(
+        Method::POST,
+        &format!("{}/feedback", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "feedback without a Gitea target is disabled, never unauthorized"
+    );
+    let (status, _headers, body) = send(
+        Method::POST,
+        &format!("{}/goal-proposals", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the handler answers the empty report, never 401"
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+    assert_eq!(parsed["title"], "Bad Request");
 
     let (status, headers, _body) = send(
         Method::GET,
         &format!("{}/feedback", instance.base),
-        bearer(&instance.token),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
@@ -344,7 +314,7 @@ async fn mutating_endpoints_enforce_credential_method_and_configuration() {
     let (status, _headers, body) = send(
         Method::POST,
         &format!("{}/feedback", instance.base),
-        bearer(&instance.token),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -357,7 +327,7 @@ async fn mutating_endpoints_enforce_credential_method_and_configuration() {
     let (status, _headers, _body) = send(
         Method::GET,
         &format!("{}/goal-proposals", instance.base),
-        bearer(&instance.token),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
@@ -403,13 +373,9 @@ async fn the_socket_accepts_a_recorded_frame() {
     use tokio_tungstenite::tungstenite::Message;
 
     let instance = start("socket").await;
-    let mut request = format!("{}/ws", instance.base.replace("http://", "ws://"))
+    let request = format!("{}/ws", instance.base.replace("http://", "ws://"))
         .into_client_request()
         .expect("a request");
-    request.headers_mut().insert(
-        "authorization",
-        HeaderValue::from_str(&format!("Bearer {}", instance.token)).expect("a token"),
-    );
     let (mut socket, _response) = tokio_tungstenite::connect_async(request)
         .await
         .expect("an upgrade");
@@ -475,8 +441,6 @@ async fn the_embedded_client_serves_without_a_static_directory() {
         agent_command: "true".to_string(),
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
-        token: TOKEN.to_string(),
-        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let listener = devboard::http::bind("127.0.0.1", 0)
@@ -491,7 +455,7 @@ async fn the_embedded_client_serves_without_a_static_directory() {
         let _ = devboard::http::serve_on(listener, server).await;
     });
     let base = format!("http://127.0.0.1:{port}");
-    let (status, headers, body) = send(Method::GET, &format!("{base}/"), bearer(TOKEN)).await;
+    let (status, headers, body) = send(Method::GET, &format!("{base}/"), HeaderMap::new()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         headers
@@ -499,7 +463,10 @@ async fn the_embedded_client_serves_without_a_static_directory() {
             .and_then(|value| value.to_str().ok()),
         Some("text/html;charset=utf-8")
     );
-    assert!(headers.get("set-cookie").is_some());
+    assert!(
+        headers.get("set-cookie").is_none(),
+        "an embedded document sets no cookie"
+    );
     assert!(String::from_utf8_lossy(&body).contains("<html"));
     let (status, _headers, _body) = send(
         Method::GET,
@@ -514,7 +481,7 @@ async fn the_embedded_client_serves_without_a_static_directory() {
 async fn a_flow_id_is_echoed_on_endpoint_answers_and_never_on_a_static_asset() {
     let instance = start("flow-echo").await;
 
-    let mut headers = bearer(&instance.token);
+    let mut headers = HeaderMap::new();
     headers.insert("x-flow-id", HeaderValue::from_static("flow-42"));
     let (_status, headers, _body) =
         send(Method::GET, &format!("{}/ready", instance.base), headers).await;
@@ -539,7 +506,7 @@ async fn a_flow_id_is_echoed_on_endpoint_answers_and_never_on_a_static_asset() {
         "a shared cache must not replay one client's flow id"
     );
 
-    let mut headers = bearer(&instance.token);
+    let mut headers = HeaderMap::new();
     headers.insert("x-flow-id", HeaderValue::from_static("flow-42"));
     headers.insert(HOST, HeaderValue::from_static("evil.test"));
     let (status, headers, _body) =
@@ -561,7 +528,7 @@ async fn mutating_endpoints_refuse_a_misdirected_host() {
         (Method::POST, "/goal-proposals"),
         (Method::GET, "/goal-proposals/missing.md"),
     ] {
-        let mut headers = bearer(&instance.token);
+        let mut headers = HeaderMap::new();
         headers.insert(HOST, HeaderValue::from_static("evil.test"));
         let (status, _headers, body) =
             send(method, &format!("{}{path}", instance.base), headers).await;
@@ -574,7 +541,7 @@ async fn mutating_endpoints_refuse_a_misdirected_host() {
         );
     }
     // The socket keeps its 421 for the same misdirected Host.
-    let mut headers = bearer(&instance.token);
+    let mut headers = HeaderMap::new();
     headers.insert(HOST, HeaderValue::from_static("evil.test"));
     let (status, _headers, _body) =
         send(Method::GET, &format!("{}/ws", instance.base), headers).await;
@@ -642,7 +609,7 @@ async fn a_static_directory_is_served_from_an_immutable_snapshot() {
     let (status, _, first) = send(
         Method::GET,
         &format!("{}/", instance.base),
-        bearer(&instance.token),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -669,7 +636,7 @@ async fn a_static_directory_is_served_from_an_immutable_snapshot() {
     let (status, _, second) = send(
         Method::GET,
         &format!("{}/", instance.base),
-        bearer(&instance.token),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -677,7 +644,7 @@ async fn a_static_directory_is_served_from_an_immutable_snapshot() {
 }
 
 #[tokio::test]
-async fn the_readiness_probe_presents_the_credential_and_checks_the_pid() {
+async fn the_readiness_probe_answers_without_a_credential_and_checks_the_pid() {
     let instance = start("ready-probe").await;
     let port: u16 = instance
         .base
@@ -685,7 +652,6 @@ async fn the_readiness_probe_presents_the_credential_and_checks_the_pid() {
         .next()
         .and_then(|value| value.parse().ok())
         .expect("the listener port");
-    assert!(devboard::relaunch::probe_ready(port, &instance.token, Some(std::process::id())).await);
-    assert!(!devboard::relaunch::probe_ready(port, "wrong-token", Some(std::process::id())).await);
-    assert!(!devboard::relaunch::probe_ready(port, &instance.token, Some(0)).await);
+    assert!(devboard::relaunch::probe_ready(port, Some(std::process::id())).await);
+    assert!(!devboard::relaunch::probe_ready(port, Some(0)).await);
 }

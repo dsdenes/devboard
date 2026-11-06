@@ -17,10 +17,10 @@ import {
   type Family,
 } from "./support.ts";
 
-/** Opens the dashboard document through the launcher's bootstrap handshake. */
+/** Opens the dashboard document. */
 export async function openDashboard(page: Page): Promise<void> {
   const state = readState();
-  await page.goto(`${state.baseUrl}/?bootstrap=${state.bootstrap}`);
+  await page.goto(`${state.baseUrl}/`);
   await expect(page.locator('[data-testid="app-shell"]')).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('[data-testid="unsupported-viewport"]')).toHaveCount(0);
 }

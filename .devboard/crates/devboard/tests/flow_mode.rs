@@ -229,8 +229,6 @@ fn fixture(label: &str) -> Fixture {
         agent_command: stub_agent_command(&scratch),
         state_dir: state.clone(),
         allowed_hosts: Vec::new(),
-        token: "contract-token".to_string(),
-        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
@@ -891,8 +889,6 @@ async fn the_flow_refusal_frames_reach_a_fresh_socket() {
         agent_command: "true".to_string(),
         state_dir: state.clone(),
         allowed_hosts: Vec::new(),
-        token: "contract-token".to_string(),
-        bootstrap: "test-bootstrap".to_string(),
         feedback: None,
     };
     let listener = devboard::http::bind(&config.hostname, 0)

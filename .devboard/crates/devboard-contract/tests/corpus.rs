@@ -136,12 +136,7 @@ async fn the_http_table_passes_against_the_rust_dashboard() {
     let state = work.join("state");
     devboard_contract::copy_dir(&root.join("fixtures/repo"), &repo).expect("a fixture repo");
     std::fs::create_dir_all(&state).expect("a fixture state");
-    let mut config = dashboard_config(
-        &repo,
-        &state,
-        &root.join("fixtures/static"),
-        "contract-token",
-    );
+    let mut config = dashboard_config(&repo, &state, &root.join("fixtures/static"));
     let listener = devboard::http::bind("127.0.0.1", 0)
         .await
         .expect("a listener");
@@ -154,7 +149,7 @@ async fn the_http_table_passes_against_the_rust_dashboard() {
         let _ = devboard::http::serve_on(listener, running).await;
     });
     let base = format!("http://127.0.0.1:{port}");
-    let results = http_table::run(&base, "contract-token").await;
+    let results = http_table::run(&base).await;
     handle.abort();
     for result in &results {
         if let Err(error) = result {
@@ -182,19 +177,11 @@ fn a_broken_fixture_makes_the_replay_fail() {
         temp.join("commands/getProject.json"),
         r#"{
   "command": "getProject",
-  "token": "contract-token",
   "scenarios": [
     {
       "name": "request",
       "send": "{\"type\":\"getProject\"}",
       "frames": [{"type": "project", "path": "definitely-not-the-project"}],
-      "unauthorized": {
-        "method": "GET",
-        "path": "/ws",
-        "headers": {},
-        "status": 200,
-        "body": ""
-      },
       "state": {}
     }
   ]
@@ -244,12 +231,7 @@ async fn the_recorded_http_table_passes_against_the_rust_dashboard() {
     let state = work.join("state");
     devboard_contract::copy_dir(&root.join("fixtures/repo"), &repo).expect("a fixture repo");
     std::fs::create_dir_all(&state).expect("a fixture state");
-    let mut config = dashboard_config(
-        &repo,
-        &state,
-        &root.join("fixtures/static"),
-        "contract-token",
-    );
+    let mut config = dashboard_config(&repo, &state, &root.join("fixtures/static"));
     let listener = devboard::http::bind("127.0.0.1", 0)
         .await
         .expect("a listener");
@@ -261,14 +243,8 @@ async fn the_recorded_http_table_passes_against_the_rust_dashboard() {
         let _ = devboard::http::serve_on(listener, server).await;
     });
     let base = format!("http://127.0.0.1:{port}");
-    let failures = devboard_contract::http_corpus::replay(
-        &base,
-        "contract-token",
-        &cases,
-        &corpus.allowlist,
-        &work,
-    )
-    .await;
+    let failures =
+        devboard_contract::http_corpus::replay(&base, &cases, &corpus.allowlist, &work).await;
     handle.abort();
     assert!(failures.is_empty(), "HTTP divergences: {failures:#?}");
 }
@@ -282,12 +258,7 @@ async fn flow_edge_frames_answer() {
     let state = work.join("state");
     devboard_contract::copy_dir(&root.join("fixtures/repo"), &repo).expect("a fixture repo");
     std::fs::create_dir_all(&state).expect("a fixture state");
-    let mut config = dashboard_config(
-        &repo,
-        &state,
-        &root.join("fixtures/static"),
-        "contract-token",
-    );
+    let mut config = dashboard_config(&repo, &state, &root.join("fixtures/static"));
     let listener = devboard::http::bind("127.0.0.1", 0)
         .await
         .expect("a listener");
@@ -298,24 +269,16 @@ async fn flow_edge_frames_answer() {
     let handle = tokio::spawn(async move {
         let _ = devboard::http::serve_on(listener, server).await;
     });
-    let malformed = devboard_contract::drive_socket(
-        port,
-        "contract-token",
-        "{\"type\":\"notAContractCommand\"}",
-    )
-    .await
-    .expect("malformed drives");
+    let malformed = devboard_contract::drive_socket(port, "{\"type\":\"notAContractCommand\"}")
+        .await
+        .expect("malformed drives");
     assert_eq!(
         malformed,
         vec![serde_json::json!({"type": "error", "message": "Invalid WebSocket message."})]
     );
-    let stop = devboard_contract::drive_socket(
-        port,
-        "contract-token",
-        "{\"type\":\"stopFlowImplementation\"}",
-    )
-    .await
-    .expect("stop drives");
+    let stop = devboard_contract::drive_socket(port, "{\"type\":\"stopFlowImplementation\"}")
+        .await
+        .expect("stop drives");
     assert_eq!(
         stop,
         vec![

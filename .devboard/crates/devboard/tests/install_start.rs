@@ -1,4 +1,4 @@
-//! `devboard install <host> --port <n>`: one dashboard, one bootstrap URL, a
+//! `devboard install <host> --port <n>`: one dashboard, one plain URL, a
 //! live `/ready`, a replaced stale dashboard, and a named bind failure.
 
 use std::io::{Read, Write};
@@ -40,16 +40,13 @@ fn install(host: &Path, port: u16) -> Output {
         .expect("install runs")
 }
 
-fn http(port: u16, path: &str, token: Option<&str>) -> (u16, String) {
+fn http(port: u16, path: &str) -> (u16, String) {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
         .expect("the dashboard accepts a connection");
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut request =
         format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
-    if let Some(token) = token {
-        request.push_str(&format!("Authorization: Bearer {token}\r\n"));
-    }
     request.push_str("\r\n");
     stream.write_all(request.as_bytes()).expect("a request");
     let mut answer = String::new();
@@ -87,7 +84,7 @@ fn stop(host: &Path) {
 }
 
 #[test]
-fn install_starts_exactly_one_dashboard_and_prints_its_bootstrap_url() {
+fn install_starts_exactly_one_dashboard_and_prints_its_url() {
     let host = scratch("start");
     let port = free_port();
     let first = install(&host, port);
@@ -98,31 +95,35 @@ fn install_starts_exactly_one_dashboard_and_prints_its_bootstrap_url() {
     );
     let stdout = String::from_utf8_lossy(&first.stdout).to_string();
     assert_eq!(
-        stdout.matches("?bootstrap=").count(),
+        stdout.matches("dashboard on ").count(),
         1,
-        "one bootstrap URL: {stdout}"
+        "one dashboard line: {stdout}"
     );
-    let token = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("devboard: dashboard token "))
-        .expect("the printed dashboard token")
-        .trim()
-        .to_string();
+    assert!(
+        stdout.contains(&format!("dashboard on http://127.0.0.1:{port}/ (pid ")),
+        "the plain dashboard URL: {stdout}"
+    );
+    assert!(
+        !stdout.contains('?'),
+        "the printed URL carries no query string: {stdout}"
+    );
     let pid = dashboard_pid(&host);
     assert!(live(pid));
 
-    let (status, _) = http(port, "/ready", Some(&token));
-    assert_eq!(status, 200, "the printed token answers /ready");
+    let (status, _) = http(port, "/ready");
+    assert_eq!(status, 200, "readiness answers without a credential");
     let url = stdout
         .lines()
         .find_map(|line| line.split_once("dashboard on "))
         .map(|(_, rest)| rest.split(' ').next().unwrap_or_default())
-        .expect("the bootstrap URL");
-    let path = url
-        .strip_prefix(&format!("http://127.0.0.1:{port}"))
-        .expect("a loopback URL");
-    let (status, _) = http(port, path, None);
+        .expect("the dashboard URL");
+    assert_eq!(url, format!("http://127.0.0.1:{port}/"));
+    let (status, answer) = http(port, "/");
     assert_eq!(status, 200, "opening the printed URL answers 200");
+    assert!(
+        !answer.to_ascii_lowercase().contains("set-cookie:"),
+        "the page sets no cookie: {answer}"
+    );
 
     // A second install starts no second dashboard.
     let second = install(&host, port);

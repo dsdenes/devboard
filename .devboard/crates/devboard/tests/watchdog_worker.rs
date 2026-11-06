@@ -62,7 +62,6 @@ fn fixture_instance(root: &Path, state_dir: &Path) -> Instance {
         host: "127.0.0.1".to_string(),
         harness: root.join(".devboard").to_string_lossy().into_owned(),
         state_dir: state_dir.to_string_lossy().into_owned(),
-        token: String::new(),
         journal: journal_file(state_dir, root).to_string_lossy().into_owned(),
         instrumented: true,
         legacy_log: None,

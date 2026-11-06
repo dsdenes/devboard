@@ -16,8 +16,6 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-const TOKEN: &str = "runs-test-token";
-
 fn devboard_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -174,7 +172,6 @@ fn spawn_server(scratch: &Scratch, command: &str) -> ServerProcess {
         .env("GOAL_FILE", repo.join("GOAL.md"))
         .env("STATE_DIR", &state)
         .env("AGENT_COMMAND", command)
-        .env("DEVBOARD_DASHBOARD_TOKEN", TOKEN)
         .env("DEVBOARD_OWNER_EXECUTABLE", binary)
         .env("DEVBOARD_UPDATE_INTERVAL_MS", "3600000")
         .env("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1")
@@ -193,7 +190,6 @@ fn spawn_server(scratch: &Scratch, command: &str) -> ServerProcess {
 async fn ready(base: &str) -> bool {
     reqwest::Client::new()
         .get(format!("{base}/ready"))
-        .bearer_auth(TOKEN)
         .send()
         .await
         .map(|response| response.status().is_success())
@@ -217,13 +213,9 @@ async fn wait_ready(base: &str) {
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 async fn socket(port: u16) -> Socket {
-    let mut request = format!("ws://127.0.0.1:{port}/ws")
+    let request = format!("ws://127.0.0.1:{port}/ws")
         .into_client_request()
         .expect("a socket URL");
-    request.headers_mut().insert(
-        "authorization",
-        axum::http::HeaderValue::from_str(&format!("Bearer {TOKEN}")).expect("a token"),
-    );
     let (socket, _) = connect_async(request).await.expect("a websocket");
     socket
 }

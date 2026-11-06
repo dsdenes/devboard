@@ -3,7 +3,6 @@
   "method": "POST",
   "path": "/goal-proposals",
   "requestHeaders": {
-    "authorization": "Bearer contract-token",
     "accept-encoding": "identity",
     "content-type": "application/json"
   },

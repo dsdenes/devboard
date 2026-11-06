@@ -87,7 +87,6 @@ pub fn load(root: &Path) -> anyhow::Result<Vec<HttpCase>> {
 /// Replays every case against one dashboard base URL.
 pub async fn replay(
     base: &str,
-    token: &str,
     cases: &[HttpCase],
     allowlist: &Allowlist,
     root: &Path,
@@ -95,7 +94,7 @@ pub async fn replay(
     let client = RawClient;
     let mut failures = Vec::new();
     for case in cases {
-        match run_case(&client, base, token, case, allowlist, root).await {
+        match run_case(&client, base, case, allowlist, root).await {
             Ok(()) => {}
             Err(error) => failures.push(error),
         }
@@ -106,13 +105,12 @@ pub async fn replay(
 async fn run_case(
     client: &RawClient,
     base: &str,
-    token: &str,
     case: &HttpCase,
     allowlist: &Allowlist,
     root: &Path,
 ) -> Result<(), String> {
     let response = client
-        .request(base, case, token)
+        .request(base, case)
         .await
         .map_err(|error| format!("{}: {error}", case.name))?;
     if response.status != case.status {
@@ -138,9 +136,6 @@ async fn run_case(
             }
         }
     }
-    if case.headers.contains_key("set-cookie") && !response.headers.contains_key("set-cookie") {
-        return Err(format!("{}: expected a Set-Cookie header", case.name));
-    }
     let expected = normalized_body(&case.body, allowlist, root);
     let actual = normalized_body(&response.body, allowlist, root);
     if expected != actual {
@@ -162,12 +157,7 @@ struct RawResponse {
 }
 
 impl RawClient {
-    async fn request(
-        &self,
-        base: &str,
-        case: &HttpCase,
-        token: &str,
-    ) -> anyhow::Result<RawResponse> {
+    async fn request(&self, base: &str, case: &HttpCase) -> anyhow::Result<RawResponse> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let address = base.trim_start_matches("http://");
         let mut headers = BTreeMap::new();
@@ -177,12 +167,7 @@ impl RawClient {
             &case.request_headers
         };
         for (name, value) in request_headers {
-            let value = if name == "authorization" && value.contains("contract-token") {
-                format!("Bearer {token}")
-            } else {
-                value.clone()
-            };
-            headers.insert(name.clone(), value);
+            headers.insert(name.clone(), value.clone());
         }
         headers
             .entry("host".to_string())

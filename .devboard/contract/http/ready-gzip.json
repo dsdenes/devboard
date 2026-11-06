@@ -3,8 +3,7 @@
   "method": "GET",
   "path": "/ready",
   "requestHeaders": {
-    "accept-encoding": "gzip",
-    "authorization": "Bearer contract-token"
+    "accept-encoding": "gzip"
   },
   "requestBody": "",
   "status": 200,
