@@ -3303,10 +3303,16 @@ fn same_path(left: &Path, right: &Path) -> bool {
 }
 
 fn discover_dashboard_instances() -> Vec<DashboardInstance> {
-    let self_pid = std::process::id();
+    dashboard_instances(&crate::supervision::process_table(), std::process::id())
+}
+
+fn dashboard_instances(
+    processes: &[crate::supervision::ProcessSnapshot],
+    self_pid: u32,
+) -> Vec<DashboardInstance> {
     let mut instances = Vec::new();
     let mut seen = HashSet::new();
-    for process in crate::supervision::process_table() {
+    for process in processes {
         if process.pid == self_pid || process.ancestors.contains(&self_pid) {
             continue;
         }
@@ -3341,7 +3347,16 @@ fn discover_dashboard_instances() -> Vec<DashboardInstance> {
             .env
             .get("STATIC_DIR")
             .and_then(|value| Path::new(value).parent().map(Path::to_path_buf))
-            .or_else(|| process.cwd.clone());
+            .or_else(|| {
+                let cwd = process.cwd.clone()?;
+                // A source dashboard started at the repository root serves
+                // `<repo>/.devboard`; its cwd alone names the wrong harness.
+                let source = Path::new(repo_dir).join(".devboard");
+                if same_path(&cwd, Path::new(repo_dir)) && source.is_dir() {
+                    return Some(source);
+                }
+                Some(cwd)
+            });
         let Some(harness) = harness else {
             continue;
         };
@@ -3846,5 +3861,31 @@ mod tests {
             ]),
             Some("a failed; b failed at Set up job; c failed; and 1 more job".to_string())
         );
+    }
+
+    #[test]
+    fn a_source_dashboard_at_the_repo_root_names_its_harness() {
+        use crate::supervision::ProcessSnapshot;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.tmp")
+            .join(format!("publish-instance-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".devboard")).expect("a source harness");
+        let mut env = std::collections::HashMap::new();
+        env.insert("REPO_DIR".to_string(), root.display().to_string());
+        env.insert("PORT".to_string(), "8080".to_string());
+        env.insert("DEVBOARD_WATCHDOG_FIXTURE".to_string(), "1".to_string());
+        let process = ProcessSnapshot {
+            pid: 424242,
+            cmdline: format!("{}/devboard serve", root.display()),
+            env,
+            cwd: Some(root.clone()),
+            ancestors: vec![1],
+        };
+        let instances = dashboard_instances(&[process], 999_999);
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].harness, root.join(".devboard"));
+        assert!(instances[0].state_dir.ends_with(".devboard/.tmp"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
