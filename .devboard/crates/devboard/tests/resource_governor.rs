@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use devboard::resources::{
-    apply_slice_properties_for, current_in_slice, stop_slice_for, DeferReason, Governor,
-    GovernorOptions, MemoryReader, Settings, Slot,
+    apply_slice_properties_for, current_in_slice, slice_cgroup_path_for, stop_slice_for,
+    DeferReason, Governor, GovernorOptions, MemoryReader, Settings, Slot,
 };
 
 /// The slice the tests own; it is separate from the production
@@ -247,6 +247,7 @@ async fn concurrency_cap_defers_the_next_issue() {
 async fn global_cap_spans_goal_and_issues() {
     let directory = scratch("global");
     let binary = env!("CARGO_BIN_EXE_devboard");
+    let slice_before = live_slice_memory_max();
     let run = |label: &str, kind: &str, hold_ms: u64| {
         Command::new(binary)
             .args([
@@ -323,6 +324,11 @@ async fn global_cap_spans_goal_and_issues() {
     );
     assert!(String::from_utf8_lossy(&retried.stdout).contains("admitted"));
     assert_eq!(slot_count(), 0, "no slot leaks");
+    assert_eq!(
+        live_slice_memory_max(),
+        slice_before,
+        "a CLI helper never rewrites the live slice budget"
+    );
 }
 
 #[test]
@@ -380,19 +386,152 @@ fn admission_defers_below_reserve() {
 /* ------------------------------------------------------------------------ */
 
 #[test]
+fn budget_policy_uses_the_host_minus_the_reserve() {
+    let directory = scratch("budget-policy");
+    let memory = FakeMemory::new(96_468, 90_000, 32);
+    let governor = in_memory_governor(&directory, Arc::clone(&memory), &[]);
+    // The default maximum is everything the operator's reserve leaves.
+    let derived = governor.defaults();
+    assert_eq!(derived.memory_reserve_mb, 24_117);
+    assert_eq!(derived.memory_max_mb, 72_351);
+
+    let at_the_limit = Settings {
+        max_agent_peers: 12,
+        memory_high_mb: 60_000,
+        memory_max_mb: 86_468,
+        memory_reserve_mb: 10_000,
+    };
+    governor
+        .save(at_the_limit)
+        .expect("the host total minus the reserve is available");
+    let over = Settings {
+        memory_max_mb: 86_469,
+        ..at_the_limit
+    };
+    assert!(
+        governor.save(over).is_err(),
+        "one MB into the reserve is refused"
+    );
+    governor
+        .save(Settings {
+            memory_max_mb: 72_351,
+            memory_high_mb: 57_880,
+            memory_reserve_mb: 24_117,
+            ..at_the_limit
+        })
+        .expect("the default reserve bounds the maximum");
+    governor
+        .save(Settings {
+            max_agent_peers: 64,
+            ..at_the_limit
+        })
+        .expect("a cap of 64 is accepted");
+    assert!(governor
+        .save(Settings {
+            max_agent_peers: 65,
+            ..at_the_limit
+        })
+        .is_err());
+    let saved = Settings {
+        max_agent_peers: 12,
+        memory_high_mb: 60_000,
+        memory_max_mb: 70_000,
+        memory_reserve_mb: 10_000,
+    };
+    governor
+        .save(saved)
+        .expect("the live saved budget is accepted");
+    assert_eq!(governor.settings(), saved);
+
+    // Saving applies the hard maximum to the slice this test owns.
+    let _lock = slice_lock();
+    if require_slice() {
+        let slice_governor = sized_governor(
+            &scratch("budget-slice"),
+            FakeMemory::new(96_468, 90_000, 32),
+            Settings {
+                max_agent_peers: 12,
+                memory_high_mb: 400,
+                memory_max_mb: 512,
+                memory_reserve_mb: 128,
+            },
+            true,
+        );
+        assert_eq!(slice_governor.slice_info().memory_max_mb, 512);
+        let output = Command::new("systemctl")
+            .args(["--user", "show", TEST_SLICE, "-p", "MemoryMax", "--value"])
+            .output()
+            .expect("systemctl show runs");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            (512 * 1024 * 1024).to_string()
+        );
+        stop_slice_for(TEST_SLICE);
+    }
+}
+
+#[test]
+fn a_second_dashboard_joins_without_rewriting_the_budget() {
+    let _lock = slice_lock();
+    if !require_slice() {
+        return;
+    }
+    let owner = sized_governor(
+        &scratch("slice-owner"),
+        FakeMemory::new(64_000, 60_000, 16),
+        Settings {
+            max_agent_peers: 1,
+            memory_high_mb: 1_600,
+            memory_max_mb: 2_000,
+            memory_reserve_mb: 256,
+        },
+        true,
+    );
+    assert_eq!(owner.slice_info().memory_max_mb, 2_000);
+    let foreign = sized_governor(
+        &scratch("slice-foreign"),
+        FakeMemory::new(64_000, 60_000, 16),
+        Settings {
+            max_agent_peers: 1,
+            memory_high_mb: 800,
+            memory_max_mb: 1_024,
+            memory_reserve_mb: 256,
+        },
+        true,
+    );
+    assert_eq!(
+        foreign.slice_info().memory_max_mb,
+        2_000,
+        "a dashboard that does not own the slice only joins it"
+    );
+    assert_eq!(owner.slice_info().memory_max_mb, 2_000);
+    owner
+        .save(Settings {
+            max_agent_peers: 1,
+            memory_high_mb: 1_200,
+            memory_max_mb: 1_536,
+            memory_reserve_mb: 256,
+        })
+        .expect("the owner still applies its own budget");
+    assert_eq!(owner.slice_info().memory_max_mb, 1_536);
+    stop_slice_for(TEST_SLICE);
+}
+
+#[test]
 fn budget_formula_and_overrides() {
     let derived = Settings::derive(100_000, 32);
     assert_eq!(derived.memory_reserve_mb, 25_000);
-    assert_eq!(derived.memory_max_mb, 50_000);
-    assert_eq!(derived.memory_high_mb, 40_000);
-    assert_eq!(derived.max_agent_peers, 4);
+    assert_eq!(derived.memory_max_mb, 75_000);
+    assert_eq!(derived.memory_high_mb, 60_000);
+    assert_eq!(derived.max_agent_peers, 8);
     let small = Settings::derive(4_096, 2);
     assert_eq!(small.memory_reserve_mb, 1_024);
-    assert_eq!(small.memory_max_mb, 2_048);
-    assert_eq!(small.memory_high_mb, 1_638);
+    assert_eq!(small.memory_max_mb, 3_072);
+    assert_eq!(small.memory_high_mb, 2_457);
     assert_eq!(small.max_agent_peers, 1);
     assert_eq!(Settings::derive(100_000, 3).max_agent_peers, 1);
-    assert_eq!(Settings::derive(100_000, 40).max_agent_peers, 4);
+    assert_eq!(Settings::derive(100_000, 40).max_agent_peers, 10);
+    assert_eq!(Settings::derive(100_000, 400).max_agent_peers, 64);
 
     // The unit fixture's own defaults.
     let directory = scratch("budget-default");
@@ -532,6 +671,30 @@ fn spawn_allocator(governor: &Governor, limit: Settings) -> Child {
         wrapped.iter().any(|argument| argument
             == &format!("--property=MemoryMax={}", limit.memory_max_mb * 1024 * 1024)),
         "the scope carries the hard limit: {wrapped:?}"
+    );
+    Command::new(&wrapped[0])
+        .args(&wrapped[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the allocator starts")
+}
+
+/// Starts the same synthetic allocator without a per-scope limit, so the
+/// slice's own `MemoryMax` is the only bound it meets.
+fn spawn_allocator_in_slice(governor: &Governor) -> Child {
+    let wrapped = governor.wrap_argv(vec![
+        "python3".to_string(),
+        "-c".to_string(),
+        "a = bytearray(512 * 1024 * 1024)".to_string(),
+    ]);
+    assert_eq!(wrapped.first().map(String::as_str), Some("systemd-run"));
+    assert!(
+        wrapped
+            .iter()
+            .any(|argument| argument == &format!("--slice={}", governor.slice_name())),
+        "the allocator joins the governor's slice: {wrapped:?}"
     );
     Command::new(&wrapped[0])
         .args(&wrapped[1..])
@@ -811,6 +974,225 @@ fn peers_join_the_slice() {
     }
 }
 
+fn live_slice_memory_max() -> String {
+    let output = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "devboard.slice",
+            "-p",
+            "MemoryMax",
+            "--value",
+        ])
+        .output()
+        .expect("systemctl show runs");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn spawn_slice_canary() -> Child {
+    Command::new("systemd-run")
+        .args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--slice=devboard.slice",
+            "--",
+            "sh",
+            "-c",
+            "sleep 120",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the slice canary starts")
+}
+
+fn assert_canary_alive(canary: &mut Child, step: &str) {
+    assert!(
+        canary.try_wait().ok().flatten().is_none(),
+        "the slice canary must survive {step}"
+    );
+}
+
+/// A workspace test, a release-suite run, and each CLI invocation only join
+/// the live slice. None of them may rewrite its budget or kill its members.
+#[test]
+fn slice_rewrite_never_follows_a_workspace_or_cli_run() {
+    let _lock = slice_lock();
+    if !require_slice() {
+        return;
+    }
+    let before = live_slice_memory_max();
+    let directory = scratch("slice-rewrite");
+    let fixture = directory.join("fixture");
+    std::fs::create_dir_all(fixture.join(".devboard")).expect("a fixture checkout");
+    let binary = env!("CARGO_BIN_EXE_devboard");
+    let kills = directory.join("resources").join("kills.jsonl");
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let mut command = Command::new(binary);
+        command
+            .args(args)
+            .envs(env.iter().copied())
+            .stdin(Stdio::null());
+        command.output().expect("the CLI runs")
+    };
+    let assert_untouched = |step: &str, canary: &mut Child| {
+        assert_eq!(
+            live_slice_memory_max(),
+            before,
+            "{step} must not rewrite the live slice budget"
+        );
+        assert_canary_alive(canary, step);
+        assert!(
+            !kills.exists(),
+            "{step} must not record a kernel kill: {}",
+            kills.display()
+        );
+    };
+
+    let mut canary = spawn_slice_canary();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !cgroup(canary.id()).contains("devboard.slice") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        cgroup(canary.id()).contains("devboard.slice"),
+        "the canary joins the live slice: {}",
+        cgroup(canary.id())
+    );
+
+    let stress = run(
+        &[
+            "resources",
+            "stress",
+            "--state-dir",
+            directory.to_str().expect("a UTF-8 path"),
+            "--count",
+            "4",
+            "--hold-ms",
+            "100",
+        ],
+        &[("DEVBOARD_MEMORY_MAX_MB", "2048")],
+    );
+    assert!(
+        stress.status.success(),
+        "stress failed: {}",
+        String::from_utf8_lossy(&stress.stderr)
+    );
+    assert_untouched("resources stress", &mut canary);
+
+    let admit = run(
+        &[
+            "resources",
+            "admit",
+            "--state-dir",
+            directory.to_str().expect("a UTF-8 path"),
+        ],
+        &[],
+    );
+    assert!(
+        admit.status.success(),
+        "admit failed: {}",
+        String::from_utf8_lossy(&admit.stderr)
+    );
+    assert_untouched("resources admit", &mut canary);
+
+    // The worker fails fast on a fixture without an origin, but it has already
+    // installed its governor by then; that install must not touch the slice.
+    let worker = run(
+        &[
+            "worker",
+            "issues",
+            "--repo",
+            fixture.to_str().expect("a UTF-8 path"),
+            "--state-dir",
+            directory.to_str().expect("a UTF-8 path"),
+        ],
+        &[(
+            "GIT_CEILING_DIRECTORIES",
+            directory.to_str().expect("a UTF-8 path"),
+        )],
+    );
+    assert!(
+        !worker.status.success(),
+        "the fixture worker reports its missing origin"
+    );
+    assert_untouched("devboard worker", &mut canary);
+
+    let _ = canary.kill();
+    let _ = canary.wait();
+}
+
+#[test]
+fn desktop_session_survives_a_slice_that_reaches_its_maximum() {
+    let _lock = slice_lock();
+    if !require_slice() {
+        return;
+    }
+    let directory = scratch("desktop");
+    let memory = FakeMemory::new(64_000, 60_000, 16);
+    let governor = sized_governor(
+        &directory,
+        memory,
+        Settings {
+            max_agent_peers: 1,
+            memory_high_mb: 128,
+            memory_max_mb: 128,
+            memory_reserve_mb: 64,
+        },
+        true,
+    );
+    let info = governor.slice_info();
+    assert!(info.present, "the test slice exists");
+    assert_eq!(info.memory_max_mb, 128);
+    let limit = 128 * 1024 * 1024;
+    let mut canary = spawn_hold(120.0);
+    assert!(!cgroup(canary.id()).contains("devboard.slice"));
+    let mut allocator = spawn_allocator_in_slice(&governor);
+    let started = SystemTime::now();
+    let mut peak = 0u64;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(path) = slice_cgroup_path_for(TEST_SLICE) {
+            if let Ok(text) = std::fs::read_to_string(path.join("memory.current")) {
+                peak = peak.max(text.trim().parse::<u64>().unwrap_or(0));
+            }
+        }
+        if let Some(status) = allocator.try_wait().ok().flatten() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the slice limit must end the allocator"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert!(!status.success(), "the allocator is killed at the limit");
+    assert!(
+        peak <= limit,
+        "the slice stays at or below its maximum: {peak} > {limit}"
+    );
+    assert!(
+        canary.try_wait().ok().flatten().is_none(),
+        "the session canary survives the slice kill"
+    );
+    let elapsed = SystemTime::now()
+        .duration_since(started)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    for line in journal_since(elapsed + 5).lines() {
+        let lowered = line.to_lowercase();
+        if lowered.contains("session-") && (lowered.contains("oom") || lowered.contains("killed")) {
+            panic!("the session scope was killed: {line}");
+        }
+    }
+    let _ = canary.kill();
+    let _ = canary.wait();
+    stop_slice_for(TEST_SLICE);
+}
+
 #[test]
 fn a_low_memory_snapshot_defers_every_start_in_the_cli() {
     // The live proof uses `devboard resources stress`; this proves its cap
@@ -818,6 +1200,7 @@ fn a_low_memory_snapshot_defers_every_start_in_the_cli() {
     let _lock = slice_lock();
     let directory = scratch("stress");
     let binary = env!("CARGO_BIN_EXE_devboard");
+    let slice_before = live_slice_memory_max();
     let output = Command::new(binary)
         .args([
             "resources",
@@ -846,6 +1229,11 @@ fn a_low_memory_snapshot_defers_every_start_in_the_cli() {
     assert_eq!(report["started"], 6);
     assert_eq!(report["maxActive"], 2);
     assert!(report["deferredAttempts"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(
+        live_slice_memory_max(),
+        slice_before,
+        "the CLI never rewrites the live slice budget"
+    );
 }
 
 #[test]

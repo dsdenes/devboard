@@ -237,9 +237,11 @@ resource governor's budget. Four `type="number"` inputs — `resource-max-agents
 `resource-memory-high`, `resource-memory-max`, and `resource-reserve` — edit the effective values,
 and `resource-save` sends one `setResources` command with all four. The page never sends an
 invalid draft: max agents must be 1–64, memory max at least 128 MB, memory high 64 MB through
-memory max, and the reserve 64 MB up to but below memory max; the refusal renders in a
-`role="alert"` paragraph beside the form. A save confirms through `SaveFeedback` scope
-`resources.budget` only after the server broadcasts the frame that follows it.
+memory max, and the reserve 64 MB up to but below memory max; the server also refuses a memory
+max whose sum with the reserve exceeds the host's `MemTotal`, so the reserve stays free. The
+refusal renders in a `role="alert"` paragraph beside the form. A save confirms through
+`SaveFeedback` scope `resources.budget` only after the server broadcasts the frame that follows
+it.
 
 The page asks for `getResources` when the connection opens and renders every `resourcesState`
 frame. Its header names whether the budget is saved settings or derived defaults, and
@@ -2255,8 +2257,13 @@ While at least one dashboard client is connected, each table is read at most onc
 seconds, and one read per table is in flight at a time. Opening a page whose last read is older
 than 60 seconds starts exactly one read immediately; repeated opens inside the interval start
 none. With no client connected the dashboard makes no read for these tables. The read only
-reads: it starts no worker, writes no worker state, and runs no agent turn. The Issues Open
-list keeps its own reader and its own 30-second cadence.
+reads: it starts no worker, writes no worker state, and runs no agent turn. A resolved fact is
+cached: a row already `implemented` is never asked about again, and the next cycle requests only
+the URLs still `pending` or unreadable. One read batches every pending URL
+for its table, so the release list is read at most once per cycle. A dashboard restart seeds the
+cache from the worker states it already persisted, so a restart re-reads only the unresolved
+rows instead of the whole history. The Issues Open list keeps its own reader and its own
+30-second cadence.
 
 All four periodic reads share one failure policy. A transport failure — a timeout, a refused or
 reset connection, a 5xx answer, or an unclassified error — keeps the last known filed rows, the
@@ -3707,8 +3714,14 @@ prompt carries no forge CLI or forge API write of its own.
 
 Pause lets every active peer finish, then reports `paused` and starts no new peer or poll.
 Resume polls immediately. Stop closes every peer, records every active run as `stopped`, leaves
-every issue unhandled, releases the lock, and writes no cooldown. A successful run records only
-its issue as handled in the ledger once the tracker reports it closed; an open issue after a clean
+every issue unhandled, releases the lock, and writes no cooldown. An enabled worker that vanishes
+without a Stop or Pause is replaced on its own within one supervisor tick: the dashboard sees no
+live lock for a state that is still `enabled`, not paused, and not `stopped`, and starts the same
+repository and version again. An operator Stop or Pause is never overridden; the dashboard
+remembers the explicit decision until the next Start. A vanished worker's stale lock is reclaimed
+by its replacement, and one failed restart attempt is retried after a quiet period. A successful
+run records only its issue as handled in the ledger once the tracker reports it closed; an open
+issue after a clean
 turn, or a failed state lookup, records `failed` and gates only that issue for five minutes,
 leaving it open and unhandled. A failed run records its first stderr line. An issue closed by its
 agent leaves the queue on the next poll.

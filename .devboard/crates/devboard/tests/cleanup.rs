@@ -531,10 +531,16 @@ fn providers_orphan_selection_directories_follow_the_credentials_rule() {
     set_mtime(&dedup_dir.join("config.yml"), old);
     set_mtime(&orphan.join("config.yml"), old);
     set_mtime(&fresh_orphan.join("config.yml"), fresh);
-    write_text(&state.join("providers/credentials.json"), &credentials_with(known));
+    write_text(
+        &state.join("providers/credentials.json"),
+        &credentials_with(known),
+    );
 
     sweep_state_dir_with(&state, now, false, None, &ProviderRetention::default());
-    assert!(known_dir.exists(), "a matching subscription is never removed");
+    assert!(
+        known_dir.exists(),
+        "a matching subscription is never removed"
+    );
     assert!(
         dedup_dir.exists(),
         "a trailing -watchdog-dedup does not orphan a matching directory"

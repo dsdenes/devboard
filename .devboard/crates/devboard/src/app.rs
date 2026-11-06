@@ -215,10 +215,15 @@ impl Shared {
         }
     }
 
-    /// Ends the work every mode says a reset or creation preempts.
+    /// Ends the work every mode says a reset or creation preempts. The Issues
+    /// worker is a long-lived repository service, not a run: creating a goal
+    /// never stops it.
     pub fn abort_all_work(&self) {
         if let Ok(gates) = self.gates.lock() {
-            for (_, gate) in gates.iter() {
+            for (name, gate) in gates.iter() {
+                if name == "issues" {
+                    continue;
+                }
                 gate.abort_active_work();
             }
         }

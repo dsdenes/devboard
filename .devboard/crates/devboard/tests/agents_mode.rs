@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use devboard::agents_mode::{ForgeFact, ForgeProjection, ForgeReader};
 use devboard::app::{App, Conn};
 use devboard::config::Config;
 use devboard::journal::Journal;
@@ -959,4 +960,115 @@ async fn a_changed_open_issue_read_republishes_the_prompt_template() {
         .expect("the republished template");
     assert!(template.contains("bbbmarker8"), "{template}");
     assert!(!template.contains("aaamarker7"), "{template}");
+}
+
+/// A resolved fact stays cached; the next cycle asks only for pending and
+/// unreadable URLs, and one cycle never makes more than one reader call.
+#[tokio::test]
+async fn forge_projection_reads_only_unresolved_urls() {
+    let resolved = "https://example.test/issues/1";
+    let pending = "https://example.test/issues/2";
+    let unreadable = "https://example.test/issues/3";
+    let all = vec![
+        resolved.to_string(),
+        pending.to_string(),
+        unreadable.to_string(),
+    ];
+    let batches: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let batches_for_reader = Arc::clone(&batches);
+    let calls = Arc::new(AtomicU64::new(0));
+    let calls_for_reader = Arc::clone(&calls);
+    let reader: ForgeReader = Arc::new(move |urls: Vec<String>| {
+        let batches = Arc::clone(&batches_for_reader);
+        let calls = Arc::clone(&calls_for_reader);
+        batches.lock().expect("batches").push(urls.clone());
+        calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            let facts = urls
+                .into_iter()
+                .filter_map(|url| match url.as_str() {
+                    "https://example.test/issues/1" => Some(ForgeFact {
+                        url,
+                        state: "implemented".to_string(),
+                        version: Some("1.2.3".to_string()),
+                    }),
+                    "https://example.test/issues/2" => Some(ForgeFact {
+                        url,
+                        state: "pending".to_string(),
+                        version: None,
+                    }),
+                    "https://example.test/issues/3" => Some(ForgeFact {
+                        url,
+                        state: "unreadable".to_string(),
+                        version: None,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            Ok(facts)
+        })
+    });
+    let reader_for_test = Arc::clone(&reader);
+    let projection = ForgeProjection::new(Some(reader), Vec::new());
+
+    let first = projection.pending_urls(all.clone());
+    assert_eq!(first, all, "the first cycle reads every unresolved URL");
+    let facts = reader_for_test(first.clone())
+        .await
+        .expect("the first read answers");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "one reader call per cycle");
+    projection.apply(first, facts, 1_000);
+
+    let second = projection.pending_urls(all.clone());
+    assert_eq!(
+        second,
+        vec![pending.to_string(), unreadable.to_string()],
+        "a resolved URL is never requested again"
+    );
+    let facts = reader_for_test(second.clone())
+        .await
+        .expect("the second read answers");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "the release list is read at most once per cycle"
+    );
+    projection.apply(second, facts, 2_000);
+
+    let answer = projection
+        .fact(resolved)
+        .expect("the resolved fact is cached");
+    assert_eq!(answer.state, "implemented");
+    assert_eq!(answer.version.as_deref(), Some("1.2.3"));
+    assert_eq!(
+        projection.fact(pending).map(|answer| answer.state),
+        Some("pending".to_string())
+    );
+    assert!(batches.lock().expect("batches").len() == 2);
+    assert_eq!(
+        projection.pending_urls(all.clone()),
+        vec![pending.to_string(), unreadable.to_string()]
+    );
+
+    // A restart seeds the cache from persisted state, so even its first cycle
+    // asks only for the rows that were not resolved before.
+    let seeded = ForgeProjection::new(
+        None,
+        vec![ForgeFact {
+            url: resolved.to_string(),
+            state: "implemented".to_string(),
+            version: Some("1.2.3".to_string()),
+        }],
+    );
+    assert_eq!(
+        seeded.pending_urls(all),
+        vec![pending.to_string(), unreadable.to_string()]
+    );
+    assert_eq!(
+        seeded
+            .fact(resolved)
+            .and_then(|answer| answer.version)
+            .as_deref(),
+        Some("1.2.3")
+    );
 }

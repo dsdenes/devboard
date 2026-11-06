@@ -59,14 +59,16 @@ pub struct Settings {
 
 impl Settings {
     /// The documented defaults: a quarter of RAM (at least 1 GiB) as the
-    /// reserve, half of RAM as the hard maximum, 80% of that as the soft high
-    /// mark, and one peer per four CPUs clamped to 1..=4.
+    /// reserve, everything above it as the hard maximum, 80% of that as the
+    /// soft high mark, and one peer per four CPUs clamped to 1..=64.
     pub fn derive(total_mb: u64, cpus: u32) -> Self {
         let total_mb = total_mb.max(1);
-        let memory_max_mb = total_mb / 2;
-        let memory_high_mb = memory_max_mb.saturating_mul(4) / 5;
-        let memory_reserve_mb = (total_mb / 4).max(GIB / MIB);
-        let max_agent_peers = (cpus / 4).clamp(1, 4);
+        let memory_reserve_mb = (total_mb / 4)
+            .max(GIB / MIB)
+            .min(total_mb.saturating_sub(64).max(64));
+        let memory_max_mb = total_mb.saturating_sub(memory_reserve_mb).max(64);
+        let memory_high_mb = (memory_max_mb.saturating_mul(4) / 5).max(64);
+        let max_agent_peers = (cpus / 4).clamp(1, 64);
         Self {
             max_agent_peers,
             memory_high_mb,
@@ -152,6 +154,18 @@ impl Settings {
         }
         if self.memory_reserve_mb < 64 || self.memory_reserve_mb >= self.memory_max_mb {
             return Err("Reserve must be at least 64 MB and below memory max.".to_string());
+        }
+        Ok(())
+    }
+
+    /// Like [`Self::validate`], and also refuses a hard maximum that reaches
+    /// into the reserve the host must keep free.
+    pub fn validate_for(&self, total_mb: u64) -> Result<(), String> {
+        self.validate()?;
+        if self.memory_max_mb.saturating_add(self.memory_reserve_mb) > total_mb {
+            return Err(format!(
+                "Memory max plus reserve must not exceed the host's {total_mb} MB."
+            ));
         }
         Ok(())
     }
@@ -491,6 +505,9 @@ pub struct Governor {
     saved: Mutex<SavedSettings>,
     settings_stamp: Mutex<Option<SystemTime>>,
     slice_enabled: bool,
+    /// Whether this process owns the slice properties. A dashboard does; a
+    /// worker or a CLI that only joins the slice never rewrites its budget.
+    slice_owned: bool,
     /// The slice unit this governor owns: `devboard.slice` in production, a
     /// transient child under it in the tests.
     slice_name: String,
@@ -560,6 +577,7 @@ impl Governor {
             saved: Mutex::new(saved),
             settings_stamp: Mutex::new(file_stamp(&settings_path(state_dir))),
             slice_enabled: options.slice,
+            slice_owned: options.slice && apply,
             slice_name: slice_name.to_string(),
             slice: Mutex::new(SliceInfo::default()),
             slice_cgroup: Mutex::new(None),
@@ -650,7 +668,7 @@ impl Governor {
 
     /// Persists the operator's values and applies them to the live slice.
     pub fn save(&self, settings: Settings) -> Result<Settings, String> {
-        settings.validate()?;
+        settings.validate_for(self.memory.total_mb())?;
         let saved = SavedSettings::from_settings(&settings);
         write_json_atomically(&settings_path(&self.state_dir), &saved.to_json())
             .map_err(|error| format!("could not save the resource settings: {error}"))?;
@@ -663,7 +681,7 @@ impl Governor {
         if let Ok(mut current) = self.settings_stamp.lock() {
             *current = file_stamp(&settings_path(&self.state_dir));
         }
-        if self.slice_enabled {
+        if self.slice_enabled && self.slice_owned {
             self.apply_slice();
         }
         Ok(settings)
@@ -866,7 +884,8 @@ impl Governor {
             return SliceInfo::default();
         }
         let settings = self.settings();
-        let info = apply_slice_properties_for(&self.slice_name, settings);
+        let marker = slice_owner_marker(&self.state_dir);
+        let info = apply_slice_properties_owned(&self.slice_name, settings, Some(&marker));
         if info.present {
             if let Some(path) = slice_cgroup_path_for(&self.slice_name) {
                 if let Ok(mut current) = self.slice_cgroup.lock() {
@@ -1044,6 +1063,19 @@ pub fn install_production(state_dir: &Path) -> Arc<Governor> {
     install(state_dir, true)
 }
 
+/// Installs a governor that joins the live slice without rewriting its
+/// properties. Every CLI and worker entry point uses this: only the dashboard
+/// owns the budget the slice enforces.
+pub fn install_attached(state_dir: &Path) -> Arc<Governor> {
+    GLOBAL_GOVERNOR
+        .get_or_init(|| {
+            let mut options = GovernorOptions::system();
+            options.slice = cfg!(target_os = "linux");
+            Governor::attached(state_dir, options)
+        })
+        .clone()
+}
+
 /// The installed governor, if this process owns one. A library or contract
 /// test that never installed one starts peers ungoverned; every production
 /// entry point installs one.
@@ -1162,10 +1194,55 @@ pub fn slice_cgroup_path() -> Option<PathBuf> {
     slice_cgroup_path_for(SLICE_NAME)
 }
 
+/// The unit description that names which dashboard owns the slice budget.
+fn slice_owner_marker(state_dir: &Path) -> String {
+    format!("devboard owner {}", state_dir.display())
+}
+
+/// The description systemd reports for one slice, when the slice exists.
+#[cfg(target_os = "linux")]
+fn slice_description(name: &str) -> Option<String> {
+    run_output(
+        "systemctl",
+        &[
+            "--user",
+            "show",
+            leaf_slice_name(name),
+            "-p",
+            "Description",
+            "--value",
+        ],
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn slice_description(_name: &str) -> Option<String> {
+    None
+}
+
 /// Creates the named slice if needed and sets its memory limits. Returns the
 /// live facts; `present: false` means this host cannot enforce a slice.
 #[cfg(target_os = "linux")]
 pub fn apply_slice_properties_for(name: &str, settings: Settings) -> SliceInfo {
+    apply_slice_properties_owned(name, settings, None)
+}
+
+/// Like [`apply_slice_properties_for`], but refuses to rewrite a slice another
+/// dashboard already owns. A workspace test's ephemeral dashboard, a second
+/// dashboard, and a CLI all see the live description and only join it.
+#[cfg(target_os = "linux")]
+fn apply_slice_properties_owned(name: &str, settings: Settings, marker: Option<&str>) -> SliceInfo {
+    if let Some(marker) = marker {
+        if let Some(path) = slice_cgroup_path_for(name) {
+            if let Some(existing) = slice_description(name) {
+                // Only another dashboard's explicit marker blocks this one; a
+                // system-generated description is a slice still to be claimed.
+                if existing.starts_with("devboard owner ") && existing != marker {
+                    return slice_info_from_cgroup(Some(&path));
+                }
+            }
+        }
+    }
     if !ensure_slice_unit(name) {
         return SliceInfo::default();
     }
@@ -1173,6 +1250,20 @@ pub fn apply_slice_properties_for(name: &str, settings: Settings) -> SliceInfo {
         return SliceInfo::default();
     };
     let leaf = leaf_slice_name(name);
+    if let Some(marker) = marker {
+        let _ = Command::new("systemctl")
+            .args([
+                "--user",
+                "set-property",
+                "--runtime",
+                leaf,
+                &format!("Description={marker}"),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
     let high = format!("MemoryHigh={}", settings.memory_high_mb.saturating_mul(MIB));
     let max = format!("MemoryMax={}", settings.memory_max_mb.saturating_mul(MIB));
     let set = Command::new("systemctl")
@@ -1205,6 +1296,15 @@ pub fn apply_slice_properties_for(name: &str, settings: Settings) -> SliceInfo {
 /// No cgroup on this platform; the cap and admission control still apply.
 #[cfg(not(target_os = "linux"))]
 pub fn apply_slice_properties_for(_name: &str, _settings: Settings) -> SliceInfo {
+    SliceInfo::default()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_slice_properties_owned(
+    _name: &str,
+    _settings: Settings,
+    _marker: Option<&str>,
+) -> SliceInfo {
     SliceInfo::default()
 }
 
@@ -1441,13 +1541,13 @@ mod tests {
     fn the_default_budget_follows_the_documented_formula() {
         let settings = Settings::derive(100_000, 32);
         assert_eq!(settings.memory_reserve_mb, 25_000);
-        assert_eq!(settings.memory_max_mb, 50_000);
-        assert_eq!(settings.memory_high_mb, 40_000);
-        assert_eq!(settings.max_agent_peers, 4);
+        assert_eq!(settings.memory_max_mb, 75_000);
+        assert_eq!(settings.memory_high_mb, 60_000);
+        assert_eq!(settings.max_agent_peers, 8);
         let small = Settings::derive(4_096, 2);
         assert_eq!(small.memory_reserve_mb, 1_024);
-        assert_eq!(small.memory_max_mb, 2_048);
-        assert_eq!(small.memory_high_mb, 1_638);
+        assert_eq!(small.memory_max_mb, 3_072);
+        assert_eq!(small.memory_high_mb, 2_457);
         assert_eq!(small.max_agent_peers, 1);
     }
 

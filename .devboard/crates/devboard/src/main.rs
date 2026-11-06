@@ -292,7 +292,7 @@ async fn resources_command(args: &[String]) -> anyhow::Result<()> {
     let state_dir = option_value(args, "state-dir")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".devboard/.tmp"));
-    let governor = devboard::resources::install_production(&state_dir);
+    let governor = devboard::resources::install_attached(&state_dir);
     match subcommand {
         "status" => {
             println!("{}", serde_json::to_string_pretty(&governor.status_json())?);
@@ -1047,6 +1047,18 @@ async fn release_suite_command(args: &[String]) -> anyhow::Result<()> {
             other => anyhow::bail!("unknown release-suite option {other}"),
         }
         index += 2;
+    }
+    if !dir.is_dir() && dir.is_relative() {
+        // A harness run from its own directory can name the checkout's
+        // harness path the way the repository root sees it.
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Some(top) = devboard::forge::top_level(&cwd) {
+                let candidate = PathBuf::from(top).join(&dir);
+                if candidate.is_dir() {
+                    dir = candidate;
+                }
+            }
+        }
     }
     if !dir.is_dir() {
         anyhow::bail!("the suite directory {} does not exist", dir.display());

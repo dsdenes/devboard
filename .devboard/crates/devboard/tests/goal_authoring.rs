@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use devboard::app::{App, Conn};
+use devboard::app::{App, Conn, ModeGate};
 use devboard::config::Config;
 use devboard::journal::Journal;
 use devboard::protocol::Command;
@@ -533,4 +533,46 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
         2_000,
     )
     .await;
+}
+
+/// Goal creation preempts runs, never the long-lived Issues worker.
+#[tokio::test]
+async fn preemption_keeps_the_issues_worker() {
+    struct CountingGate(Arc<AtomicU64>);
+    impl ModeGate for CountingGate {
+        fn has_active_work(&self) -> bool {
+            true
+        }
+
+        fn busy_reason(&self) -> Option<String> {
+            None
+        }
+
+        fn abort_active_work(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let scratch = Scratch::new("preemption");
+    let app = App::new(
+        config_at(&scratch, "omp acp".to_string()),
+        Journal::open(&scratch.path().join("state"), scratch.path(), 0),
+    );
+    let issues = Arc::new(AtomicU64::new(0));
+    let other = Arc::new(AtomicU64::new(0));
+    app.shared
+        .register_gate("issues", Arc::new(CountingGate(Arc::clone(&issues))));
+    app.shared
+        .register_gate("goal-authoring", Arc::new(CountingGate(Arc::clone(&other))));
+    app.shared.abort_all_work();
+    assert_eq!(
+        issues.load(Ordering::SeqCst),
+        0,
+        "goal creation must not stop the Issues worker"
+    );
+    assert_eq!(
+        other.load(Ordering::SeqCst),
+        1,
+        "goal creation still preempts the runs it replaces"
+    );
 }

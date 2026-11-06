@@ -263,11 +263,14 @@ tick; it is never marked failed, and running work is never stopped for budget re
 kernel's hard slice limit is the only kill.
 
 The budget is derived from host memory and CPUs: the reserve is `max(1 GiB, 25% of MemTotal)`,
-the hard maximum is 50% of MemTotal, the soft high mark is 80% of the maximum, and the agent cap
-is `min(4, max(1, cpus / 4))`. `DEVBOARD_MEMORY_RESERVE_MB`, `DEVBOARD_MEMORY_MAX_MB`,
-`DEVBOARD_MEMORY_HIGH_MB`, and `DEVBOARD_MAX_AGENT_PEERS` override a default when no saved value
-exists. The Devboard workspace's `Resources` tab reads and saves the same values, applies them
-to the live slice without a restart, and persists them in the dashboard state directory.
+the hard maximum is `MemTotal - reserve`, the soft high mark is 80% of the maximum, and the agent
+cap is `max(1, cpus / 4)` clamped to 1..=64. The reserve is the only hard protection for the
+desktop session: the slice may use everything above it. `DEVBOARD_MEMORY_RESERVE_MB`,
+`DEVBOARD_MEMORY_MAX_MB`, `DEVBOARD_MEMORY_HIGH_MB`, and `DEVBOARD_MAX_AGENT_PEERS` override a
+default when no saved value exists. The Devboard workspace's `Resources` tab reads and saves the
+same values, refuses a maximum that reaches into the reserve, applies the values to the live slice
+without a restart, and persists them in the dashboard state directory. A CLI invocation, a
+workspace test, and a worker only join the slice; only the dashboard ever rewrites its budget.
 
 ## Cross-boundary changes
 

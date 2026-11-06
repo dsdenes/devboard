@@ -414,6 +414,101 @@ async fn start_spawns_once_then_attaches_and_writes_every_control() {
 }
 
 #[tokio::test]
+async fn auto_resume_replaces_a_crashed_worker_and_respects_stop_and_pause() {
+    let (repo, state) = scratch("auto-resume");
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let spawns: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&spawns);
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(move |_argv, _env| {
+                let mut spawns = recorded.lock().expect("spawns");
+                let pid = 9_000 + spawns.len() as u32;
+                spawns.push(pid);
+                Some(pid)
+            }),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    ));
+    write_state(&repo, &state, &state_document(&repo, "running", json!([])));
+
+    // A live worker is never duplicated.
+    let mut owner = spawn_owner(&repo, &state);
+    assert!(!bridge.supervise_once().await);
+    assert!(spawns.lock().expect("spawns").is_empty());
+
+    // A worker that vanishes while enabled is replaced on the next tick.
+    owner.child.kill().expect("the worker dies");
+    owner.child.wait().expect("the worker is reaped");
+    std::fs::remove_file(lock_path(&repo)).expect("the stale lock leaves");
+    assert!(
+        bridge.supervise_once().await,
+        "the vanished worker restarts"
+    );
+    assert_eq!(spawns.lock().expect("spawns").len(), 1);
+
+    // An operator Stop stays respected even when the worker dies before it
+    // can publish the stopped state itself.
+    let mut owner = spawn_owner(&repo, &state);
+    bridge.command(&IssuesCommand::Stop).expect("stop");
+    owner.child.kill().ok();
+    owner.child.wait().ok();
+    std::fs::remove_file(lock_path(&repo)).ok();
+    assert!(
+        !bridge.supervise_once().await,
+        "an operator Stop suspends auto-resume"
+    );
+    assert_eq!(spawns.lock().expect("spawns").len(), 1);
+
+    // A Pause is equally an operator decision.
+    let (repo, state) = scratch("auto-resume-paused");
+    let paused_spawns: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&paused_spawns);
+    let paused = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(move |_argv, _env| {
+                let mut spawns = recorded.lock().expect("spawns");
+                let pid = 9_100 + spawns.len() as u32;
+                spawns.push(pid);
+                Some(pid)
+            }),
+            Arc::new(|_request| Ok(())),
+        ),
+        sink,
+    ));
+    let mut document = state_document(&repo, "paused", json!([]));
+    document["paused"] = json!(true);
+    write_state(&repo, &state, &document);
+    let mut owner = spawn_owner(&repo, &state);
+    assert!(!paused.supervise_once().await);
+    owner.child.kill().ok();
+    owner.child.wait().ok();
+    std::fs::remove_file(lock_path(&repo)).ok();
+    assert!(
+        !paused.supervise_once().await,
+        "a paused worker is not restarted"
+    );
+    assert!(paused_spawns.lock().expect("spawns").is_empty());
+
+    // A stopped worker stays stopped.
+    let mut document = state_document(&repo, "stopped", json!([]));
+    document["enabled"] = json!(false);
+    write_state(&repo, &state, &document);
+    assert!(!paused.supervise_once().await);
+}
+
+#[tokio::test]
 async fn a_live_worker_s_published_state_drives_the_lifecycle_frames() {
     let (repo, state) = scratch("lifecycle");
     let owner = spawn_owner(&repo, &state);

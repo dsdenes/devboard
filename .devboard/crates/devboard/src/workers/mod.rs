@@ -116,8 +116,9 @@ pub fn parse(args: &[String]) -> anyhow::Result<WorkerInvocation> {
 /// Runs one family's engine.
 pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
     // Each worker process enforces the same global cap and joins the same
-    // slice; the governor is process-wide from here on.
-    crate::resources::install_production(&invocation.state_dir);
+    // slice; only the dashboard owns the slice properties, so a worker never
+    // rewrites the budget of a dashboard that is already running.
+    crate::resources::install_attached(&invocation.state_dir);
     if !invocation.repo_dir.is_dir() {
         anyhow::bail!(
             "the repository directory {} does not exist",

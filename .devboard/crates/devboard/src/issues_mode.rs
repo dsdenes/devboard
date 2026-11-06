@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -55,6 +55,11 @@ const MAX_CONCURRENT_PEERS: usize = 30;
 const MAX_FOLLOW_UP_TURNS: u32 = 4;
 const TURN_SILENCE_MS: u64 = 30 * 60_000;
 const DEFAULT_INTERVAL_MS: u64 = 10_000;
+/// How often the dashboard checks whether an enabled worker disappeared.
+const AUTO_RESUME_INTERVAL_MS: u64 = 2_000;
+/// The quiet period after one restart attempt, so a worker that exits at once
+/// is not spawned in a tight loop.
+const AUTO_RESUME_BACKOFF_MS: u64 = 15_000;
 const COOLDOWN_MS: u64 = 5 * 60_000;
 const DISMISS_MS: u64 = 2 * 60_000;
 const WORKER_TICK_MS: u64 = 100;
@@ -2680,6 +2685,8 @@ struct BridgeInner {
     abandoned: HashSet<String>,
     started: bool,
     sync_stopped: bool,
+    /// When the supervisor last tried to replace a vanished worker.
+    resume_attempt: Option<std::time::Instant>,
 }
 
 /// The dashboard half of Issues mode.
@@ -2701,6 +2708,9 @@ pub struct IssuesBridge {
     inner: Mutex<BridgeInner>,
     start_lock: tokio::sync::Mutex<()>,
     stop_sequence: AtomicU64,
+    /// Set by an operator Stop; cleared by an operator Start. A supervisor
+    /// never overrides either decision.
+    auto_resume_suspended: AtomicBool,
 }
 
 fn newest_state(state_dir: &Path, repo_dir: &Path) -> Option<IssuesState> {
@@ -2782,6 +2792,7 @@ impl IssuesBridge {
             inner: Mutex::new(BridgeInner::default()),
             start_lock: tokio::sync::Mutex::new(()),
             stop_sequence: AtomicU64::new(0),
+            auto_resume_suspended: AtomicBool::new(false),
         })
     }
 
@@ -3355,8 +3366,43 @@ impl IssuesBridge {
     /* ------------------------------------------------------------------ */
 
     pub async fn start(self: &Arc<Self>) -> StartOutcome {
+        self.auto_resume_suspended.store(false, Ordering::SeqCst);
         let _guard = self.start_lock.lock().await;
         self.start_once().await
+    }
+
+    /// Replaces an enabled worker that vanished without an operator Stop or
+    /// Pause. The dashboard calls this on its supervisor tick; tests call it
+    /// directly so the decision is deterministic.
+    pub async fn supervise_once(self: &Arc<Self>) -> bool {
+        if self.auto_resume_suspended.load(Ordering::SeqCst) {
+            return false;
+        }
+        if !self.owners().is_empty() {
+            return false;
+        }
+        let Some(state) = self.current_state() else {
+            return false;
+        };
+        if !state.enabled || state.paused || state.lifecycle == "stopped" {
+            return false;
+        }
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            if !inner.stopping.is_empty() {
+                return false;
+            }
+            if let Some(last) = inner.resume_attempt {
+                if last.elapsed() < Duration::from_millis(AUTO_RESUME_BACKOFF_MS) {
+                    return false;
+                }
+            }
+            inner.resume_attempt = Some(std::time::Instant::now());
+        }
+        if let StartOutcome::Refused { message } = self.start().await {
+            eprintln!("could not restart the issues worker: {message}");
+        }
+        true
     }
 
     async fn start_once(self: &Arc<Self>) -> StartOutcome {
@@ -3457,6 +3503,11 @@ impl IssuesBridge {
     }
 
     pub fn command(self: &Arc<Self>, command: &IssuesCommand) -> Result<(), String> {
+        // An operator Stop is remembered before the worker is reached, so a
+        // worker that dies in the same instant is still not restarted.
+        if matches!(command, IssuesCommand::Stop) {
+            self.auto_resume_suspended.store(true, Ordering::SeqCst);
+        }
         let owners = self.owners();
         if owners.is_empty() {
             return Err("No issues worker is running for this checkout.".to_string());
@@ -3798,6 +3849,15 @@ impl IssuesBridge {
                     continue;
                 }
                 bridge.sync_now().await;
+            }
+        });
+        let bridge = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(AUTO_RESUME_INTERVAL_MS));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                bridge.supervise_once().await;
             }
         });
         let bridge = Arc::clone(self);

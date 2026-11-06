@@ -946,21 +946,24 @@ fn root_problem(root: &Path) -> Option<String> {
 /* Forge projection                                                          */
 /* ------------------------------------------------------------------------ */
 
-#[derive(Clone, Debug)]
-struct ForgeFact {
-    url: String,
-    state: String,
-    version: Option<String>,
+/// One forge fact a read resolved for one issue URL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForgeFact {
+    pub url: String,
+    pub state: String,
+    pub version: Option<String>,
 }
 
-#[derive(Clone, Debug)]
-struct ForgeAnswer {
-    state: String,
-    version: Option<String>,
+/// The cached answer for one URL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForgeAnswer {
+    pub state: String,
+    pub version: Option<String>,
 }
 
-type ForgeReadFuture = Pin<Box<dyn Future<Output = Result<Vec<ForgeFact>, String>> + Send>>;
-type ForgeReader = Arc<dyn Fn(Vec<String>) -> ForgeReadFuture + Send + Sync>;
+/// One batch read: receives the URLs that still need an answer.
+pub type ForgeReadFuture = Pin<Box<dyn Future<Output = Result<Vec<ForgeFact>, String>> + Send>>;
+pub type ForgeReader = Arc<dyn Fn(Vec<String>) -> ForgeReadFuture + Send + Sync>;
 
 struct ForgeInner {
     facts: HashMap<String, ForgeAnswer>,
@@ -975,7 +978,8 @@ struct ForgeInner {
     reading: bool,
 }
 
-struct ForgeProjection {
+/// The per-family cache of resolved forge facts.
+pub struct ForgeProjection {
     inner: Mutex<ForgeInner>,
     reader: Option<ForgeReader>,
     interval_ms: i64,
@@ -983,7 +987,7 @@ struct ForgeProjection {
 }
 
 impl ForgeProjection {
-    fn new(reader: Option<ForgeReader>, seed: Vec<ForgeFact>) -> Self {
+    pub fn new(reader: Option<ForgeReader>, seed: Vec<ForgeFact>) -> Self {
         let mut inner = ForgeInner {
             facts: HashMap::new(),
             asked: None,
@@ -1017,7 +1021,7 @@ impl ForgeProjection {
         }
     }
 
-    fn fact(&self, url: &str) -> Option<ForgeAnswer> {
+    pub fn fact(&self, url: &str) -> Option<ForgeAnswer> {
         self.inner
             .lock()
             .ok()
@@ -1134,12 +1138,43 @@ impl ForgeProjection {
         true
     }
 
-    fn apply(&self, urls: Vec<String>, facts: Vec<ForgeFact>, now: i64) {
+    /// The URLs this cycle must read: pending answers and unreadable URLs.
+    /// A resolved fact is cached and never requested again.
+    pub fn pending_urls(&self, urls: Vec<String>) -> Vec<String> {
+        let Ok(inner) = self.inner.lock() else {
+            return urls;
+        };
+        urls.into_iter()
+            .filter(|url| {
+                inner.unreadable.contains(url)
+                    || inner
+                        .facts
+                        .get(url)
+                        .map(|answer| answer.state != "implemented")
+                        .unwrap_or(true)
+            })
+            .collect()
+    }
+
+    pub fn apply(&self, urls: Vec<String>, facts: Vec<ForgeFact>, now: i64) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
-        let mut next = HashMap::new();
-        let mut unreadable = HashSet::new();
+        // Keep every resolved answer the read did not ask about. Only the
+        // URLs of this cycle are replaced by what the read returned.
+        let asked: HashSet<String> = urls.iter().cloned().collect();
+        let mut next: HashMap<String, ForgeAnswer> = inner
+            .facts
+            .iter()
+            .filter(|(url, _)| !asked.contains(*url))
+            .map(|(url, answer)| (url.clone(), answer.clone()))
+            .collect();
+        let mut unreadable: HashSet<String> = inner
+            .unreadable
+            .iter()
+            .filter(|url| !asked.contains(*url))
+            .cloned()
+            .collect();
         for fact in facts {
             if fact.state == "unreadable" {
                 unreadable.insert(fact.url);
@@ -1161,7 +1196,7 @@ impl ForgeProjection {
                 },
             );
         }
-        inner.asked = Some(urls.into_iter().collect());
+        inner.asked = Some(asked);
         inner.answered = next.keys().cloned().collect();
         inner.facts = next;
         inner.unreadable = unreadable;
@@ -2264,7 +2299,18 @@ impl Adapter {
         if !forge.due(now, has_clients) {
             return;
         }
-        let urls = self.forge_urls();
+        let all_urls = self.forge_urls();
+        let urls = forge.pending_urls(all_urls.clone());
+        if urls.is_empty() {
+            if all_urls.is_empty() {
+                forge.note_empty_read(now);
+            } else {
+                // Every URL is already resolved: finish the cycle without a
+                // request and keep the cached answers.
+                forge.apply(Vec::new(), Vec::new(), now);
+            }
+            return;
+        }
         let Some(reader) = forge.reader.clone() else {
             return;
         };
@@ -3700,6 +3746,51 @@ fn merge_repo_issues(states: &[RepoState]) -> Vec<Value> {
     rows
 }
 
+/// The facts a previous dashboard run already resolved, so a restart reads
+/// only the URLs that are still pending or unreadable.
+fn seed_forge_facts(flavor: RepoFlavor, state_dir: &Path, repo_dir: &Path) -> Vec<ForgeFact> {
+    let directory = state_dir
+        .join(flavor.directory())
+        .join(flavor.directory())
+        .join(crate::journal::journal_key(repo_dir));
+    let mut states = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(directory.join("state.json")) {
+        if let Some(state) = parse_repo_state(flavor, &text) {
+            states.push(state);
+        }
+    }
+    for worker in worker_state_directories(&directory) {
+        if let Ok(text) = std::fs::read_to_string(worker.join("state.json")) {
+            if let Some(state) = parse_repo_state(flavor, &text) {
+                states.push(state);
+            }
+        }
+    }
+    merge_repo_issues(&states)
+        .into_iter()
+        .filter_map(|issue| {
+            let url = issue.get("url").and_then(Value::as_str)?.to_string();
+            let state = issue.get("state").and_then(Value::as_str)?;
+            match state {
+                "implemented" => Some(ForgeFact {
+                    url,
+                    state: "implemented".to_string(),
+                    version: issue
+                        .get("version")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                }),
+                "unknown" => Some(ForgeFact {
+                    url,
+                    state: "unreadable".to_string(),
+                    version: None,
+                }),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 fn newest_cycle_id(states: &[RepoState]) -> Option<String> {
     let mut newest: Option<String> = None;
     for state in states {
@@ -3831,7 +3922,10 @@ impl RepoFamily {
             preflight_override,
             preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
             agent_environment,
-            forge: ForgeProjection::new(forge_reader, Vec::new()),
+            forge: ForgeProjection::new(
+                forge_reader,
+                seed_forge_facts(flavor, state_dir, repo_dir),
+            ),
             now,
             mutable: Arc::new(Mutex::new(RepoMutable {
                 preview_starting: false,
