@@ -79,6 +79,7 @@ fn event(now: i64, minutes_ago: i64, text: &str, kind: &str, instance: &Instance
         scope: None,
         level: None,
         detail: None,
+        skipped_ms: None,
         instance: Some(instance.clone()),
     }
 }
@@ -987,6 +988,117 @@ fn a_full_disk_session_persistence_error_is_not_a_finding() {
     assert!(findings
         .iter()
         .any(|finding| finding.quote.starts_with("Disk flush failed.")));
+}
+
+#[test]
+fn a_skipped_judgment_candidate_is_not_a_finding() {
+    let root = production_root("judgment-candidate");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let candidate = |model: &str, status: u32| {
+        format!(
+            "judgment candidate failed: {model} API error ({status}): \
+             {{\"error\":{{\"message\":\"User not found.\",\"code\":{status}}}}}"
+        )
+    };
+    let mut skipped = event(
+        now,
+        1,
+        &candidate("openrouter/typesafe/jev-1.14", 401),
+        "omp-log",
+        &instance,
+    );
+    skipped.level = Some("warn".to_string());
+    skipped.skipped_ms = Some(300_000);
+    let mut unskipped = event(
+        now,
+        2,
+        &candidate("openrouter/typesafe/jev-1.15", 401),
+        "omp-log",
+        &instance,
+    );
+    unskipped.level = Some("warn".to_string());
+    let mut unrelated = event(now, 3, "Stream retry failed", "omp-log", &instance);
+    unrelated.level = Some("warn".to_string());
+    unrelated.skipped_ms = Some(300_000);
+
+    let findings = analyze_evidence(&[skipped, unskipped, unrelated], window, window);
+
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings
+        .iter()
+        .all(|finding| finding.category == "omp-warn"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.quote.contains("jev-1.15")));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.quote == "Stream retry failed"));
+}
+
+#[test]
+fn the_judgment_skip_interval_comes_from_the_omp_log_record() {
+    let root = scratch("judgment-skip-parse");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let logs = root.join("omp-logs");
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let record = |model: &str, skip: Option<i64>| {
+        let mut record = json!({
+            "timestamp": iso_from_ms(now),
+            "level": "warn",
+            "pid": 4242,
+            "message": "judgment candidate failed",
+            "candidate": model,
+            "status": 401,
+            "error": format!(
+                "{model} API error (401): {{\"error\":{{\"message\":\"User not found.\",\"code\":401}}}}"
+            ),
+        });
+        if let Some(skip) = skip {
+            record["skippedForMs"] = json!(skip);
+        }
+        record.to_string()
+    };
+    write(
+        &logs.join("omp.fixture.log"),
+        &format!(
+            "{}\n{}\n",
+            record("openrouter/typesafe/jev-1.14", Some(300_000)),
+            record("openrouter/typesafe/jev-1.15", None)
+        ),
+    );
+    let owner = instance.pid;
+    let process_info = move |_pid: u32| Some(vec![owner]);
+    let self_pids: HashSet<u32> = HashSet::new();
+
+    let (events, malformed, unattributed) = read_omp_evidence(&OmpOptions {
+        window,
+        logs_dir: Some(&logs),
+        instances: &[instance],
+        self_pids: &self_pids,
+        process_info: Some(&process_info),
+    });
+
+    assert_eq!(malformed, 0);
+    assert_eq!(unattributed, 0);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0].skipped_ms, Some(300_000));
+    assert_eq!(events[1].skipped_ms, None);
+    assert!(
+        events[0].text.contains("jev-1.14 API error (401)"),
+        "{events:?}"
+    );
+    let findings = analyze_evidence(&events, window, window);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].quote.contains("jev-1.15"), "{findings:?}");
 }
 
 #[test]

@@ -2347,6 +2347,10 @@ pub struct EvidenceEvent {
     pub level: Option<String>,
     /// The body an `omp-log` record carried past its message.
     pub detail: Option<String>,
+    /// The interval an `omp-log` record named for skipping the component that
+    /// failed, when it named one. omp's judgment logs it per candidate it
+    /// cannot use.
+    pub skipped_ms: Option<i64>,
     /// Project the evidence belongs to, when attribution resolved it.
     pub instance: Option<Instance>,
 }
@@ -2442,6 +2446,7 @@ fn read_journal_file(
             scope: scope.clone(),
             level: None,
             detail: None,
+            skipped_ms: None,
             instance: Some(instance.clone()),
         });
         identities.push(crate::jsjson::stringify(&json!([
@@ -2619,6 +2624,7 @@ pub fn read_omp_evidence(options: &OmpOptions<'_>) -> (Vec<EvidenceEvent>, usize
                     .get("text")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                skipped_ms: record.get("skippedForMs").and_then(Value::as_i64),
                 instance: Some(owner),
             });
         }
@@ -2776,6 +2782,25 @@ fn host_storage_failure(event: &EvidenceEvent) -> bool {
     line.starts_with(SESSION_PERSISTENCE_ERROR) && line.contains(ENOSPC_CODE)
 }
 
+const JUDGMENT_CANDIDATE_FAILED: &str = "judgment candidate failed";
+
+/// omp's judgment tries its candidate models in turn. A candidate the provider
+/// rejects — an account with no key answers `401 User not found.` — is logged
+/// once as a warning carrying the interval omp skips that candidate for, and
+/// the judgment then continues with another candidate. That is provider or
+/// account state plus a recovery omp performs itself, never a defect a
+/// repository change could fix, so it is not a finding. A candidate failure
+/// that names no skip is not a recovery, and it still files.
+fn skipped_judgment_candidate(event: &EvidenceEvent) -> bool {
+    if event.kind != "omp-log" || event.level.as_deref() != Some("warn") {
+        return false;
+    }
+    let line = normalize_evidence_line(&event.text);
+    let failed =
+        line == JUDGMENT_CANDIDATE_FAILED || line.starts_with("judgment candidate failed: ");
+    failed && event.skipped_ms.is_some_and(|ms| ms > 0)
+}
+
 fn event_key(event: &EvidenceEvent) -> String {
     match &event.instance {
         Some(instance) => format!("{}:{}", instance.repo_dir, instance.port),
@@ -2890,6 +2915,7 @@ pub fn analyze_evidence(
                 if !recovered_stream_warning(event)
                     && !interrupted_python_runner(event)
                     && !host_storage_failure(event)
+                    && !skipped_judgment_candidate(event)
                 {
                     add(&format!("omp-{level}"), event, &mut findings);
                 }

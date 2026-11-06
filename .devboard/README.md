@@ -2771,7 +2771,12 @@ runner traceback that ends in any other exception still files its `omp-warn` rec
 `Session persistence error.` whose cause is `ENOSPC` is the host filesystem being full: the peer
 keeps its session in memory, no repository change can free the disk, and filing would spend the
 cycle's budget and write more bytes to the same full disk, so it is never a finding; a session
-persistence failure with any other cause still files its `omp-error` record.
+persistence failure with any other cause still files its `omp-error` record. An omp
+`judgment candidate failed` warning that names the interval omp skips that candidate for is its
+judge stepping past a model provider that rejects the account's credential — operator state no
+repository change can configure — and the judge continues with another candidate, so it is never a
+finding; a candidate failure that names no skip is not a recovery and still files its `omp-warn`
+record.
 
 The ledger outlives a forge change: an entry may name an issue filed through another forge, or
 through the same project under a different instance. The delivery reports the URLs its configured
