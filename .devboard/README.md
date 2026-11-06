@@ -2646,7 +2646,10 @@ whose commit no release contains yet keeps the attempt time and the reason on it
 Shipped cell's tooltip shows that reason. The row is resolved again only when the published
 release list changes, which retries every unresolved row at once, or after six hours, so an
 unchanged read costs no forge call for a row it already failed to resolve. A release the row was
-waiting for fills the version and clears the reason.
+waiting for fills the version and clears the reason. The periodic read asks the forge for the
+`dead-code` label instead of paging every issue and reading each match back, and the open-issue
+titles its duplicate guard needs are read once at cycle start, so one sync stays well inside its
+30-second deadline against a large history.
 
 ### Single Responsibility
 

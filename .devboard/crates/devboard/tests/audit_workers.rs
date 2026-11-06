@@ -312,6 +312,7 @@ struct DeadForge {
     releases: Mutex<Vec<dead::Release>>,
     closing: Mutex<Vec<String>>,
     closing_calls: AtomicU64,
+    open_title_calls: AtomicU64,
 }
 
 impl dead::ForgeClient for DeadForge {
@@ -320,6 +321,7 @@ impl dead::ForgeClient for DeadForge {
     }
 
     fn list_open_issue_titles(&self) -> dead::ForgeFuture<'_, Vec<String>> {
+        self.open_title_calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             Ok(self
                 .issues
@@ -1036,6 +1038,56 @@ async fn dead_code_room_zero_files_nothing_and_records_the_skip() {
     assert!(api::read_activity(&directory)
         .join("\n")
         .contains("no filing room"));
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn dead_code_reads_open_titles_once_per_cycle_not_on_every_sync() {
+    let fixture = Fixture::new("dead-titles");
+    fixture.write("src/a.ts", "export const dead = 1;\n");
+    let forge = Arc::new(DeadForge::default());
+    let seen = Arc::new(Mutex::new(Value::Null));
+    let seen_for_peer = Arc::clone(&seen);
+    let connect = fake_connect(move |prompt| {
+        let seen = Arc::clone(&seen_for_peer);
+        Box::pin(async move {
+            let directory = prompt_directory(&prompt, "/dead-code-removal ");
+            let request: Value = serde_json::from_str(
+                &std::fs::read_to_string(directory.join("request.json")).expect("a request"),
+            )
+            .expect("request JSON");
+            *seen.lock().expect("the request") = request;
+            Ok(())
+        })
+    });
+    let worker = dead_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    // The periodic read never walks the open issue history.
+    assert_eq!(forge.open_title_calls.load(Ordering::SeqCst), 0);
+    // A title created after the sync is still in the cycle's duplicate check.
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(dead::ForgeIssue {
+            number: 9,
+            title: "Fresh open title".to_string(),
+            url: "https://forge.test/acme/fixture/issues/9".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            closed_at: None,
+            body: String::new(),
+        });
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    assert_eq!(forge.open_title_calls.load(Ordering::SeqCst), 1);
+    let request = seen.lock().expect("the request").clone();
+    let titles = request["knownTitles"].as_array().expect("known titles");
+    assert!(
+        titles.iter().any(|title| title == "Fresh open title"),
+        "{titles:?}"
+    );
     worker.stop().await;
 }
 

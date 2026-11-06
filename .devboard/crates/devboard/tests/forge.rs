@@ -1558,7 +1558,97 @@ fn processing_labels_and_titles_normalize_for_duplicate_comparison() {
 // Composite forge issue client
 
 #[tokio::test]
-async fn list_labelled_reads_only_the_matching_issues() {
+async fn list_labelled_asks_the_gitea_forge_for_the_label() {
+    let labelled = |number: i64, labels: Value| {
+        json!({
+            "number": number,
+            "title": format!("Issue {number}"),
+            "html_url": format!("https://gitea.test/owner/name/issues/{number}"),
+            "created_at": "2024-01-02T03:04:05Z",
+            "state": "open",
+            "body": format!("body {number}"),
+            "labels": labels,
+        })
+    };
+    let server =
+        StubServer::start(
+            move |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                    "permissions": {"pull": true, "push": true, "admin": false},
+                })),
+                ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+                ("GET", "/api/v1/repos/owner/name/issues") => {
+                    if !request.query.contains("labels=dead-code") {
+                        // An unfiltered page means the read walked the whole
+                        // history instead of asking the forge for the label.
+                        return text_response(500, "unfiltered page");
+                    }
+                    if request.query.contains("page=1") {
+                        // A forge that honours the filter answers with the match
+                        // alone, in one page of the whole 1,397-issue history.
+                        json_response(json!([labelled(7, json!([{"name": "dead-code"}]))]))
+                    } else {
+                        json_response(json!([]))
+                    }
+                }
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let repo = git_repo("list-labelled", "git@localhost:owner/name.git");
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[
+            ("DEVBOARD_GITEA_URL", server.base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]),
+        transport: Some(default_transport(5_000)),
+        exec: None,
+        run: None,
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+
+    let documents = client
+        .list_labelled(IssueQueryState::All, "dead-code")
+        .await
+        .expect("a labelled read");
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].number, 7);
+    assert_eq!(documents[0].body, "body 7");
+    assert_eq!(documents[0].labels, vec!["dead-code".to_string()]);
+    // The label filter runs on the forge and the listed row carries the body, so
+    // the read never walks the whole history and never reads an issue back.
+    let listed: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/api/v1/repos/owner/name/issues")
+        .collect();
+    assert_eq!(
+        listed.len(),
+        2,
+        "the labelled page and the page that ends it"
+    );
+    for request in &listed {
+        assert!(request.query.contains("state=all"), "{}", request.query);
+        assert!(
+            request.query.contains("labels=dead-code"),
+            "{}",
+            request.query
+        );
+    }
+    for number in [7, 8, 9] {
+        assert!(
+            server
+                .find("GET", &format!("/api/v1/repos/owner/name/issues/{number}"))
+                .is_none(),
+            "issue {number} is not read back"
+        );
+    }
+}
+
+#[tokio::test]
+async fn list_labelled_keeps_only_labelled_rows_when_the_filter_is_ignored() {
     let labelled = |number: i64, labels: Value| {
         json!({
             "number": number,
@@ -1588,14 +1678,11 @@ async fn list_labelled_reads_only_the_matching_issues() {
                         json_response(json!([]))
                     }
                 }
-                ("GET", "/api/v1/repos/owner/name/issues/7") => {
-                    json_response(labelled(7, json!([{"name": "dead-code"}])))
-                }
                 _ => text_response(500, "unexpected"),
             },
         )
         .await;
-    let repo = git_repo("list-labelled", "git@localhost:owner/name.git");
+    let repo = git_repo("list-labelled-unfiltered", "git@localhost:owner/name.git");
     let client = ForgeIssuesClient::new(ForgeIssuesOptions {
         repo_dir: repo,
         environment: environment(&[
@@ -1616,17 +1703,11 @@ async fn list_labelled_reads_only_the_matching_issues() {
     assert_eq!(documents.len(), 1);
     assert_eq!(documents[0].number, 7);
     assert_eq!(documents[0].body, "body 7");
-    assert_eq!(documents[0].labels, vec!["dead-code".to_string()]);
-    // One list pass plus one read for the single match; the 1,397-issue
-    // checkout this protects against would otherwise issue one read per issue.
     assert!(server
         .find("GET", "/api/v1/repos/owner/name/issues/7")
-        .is_some());
-    assert!(server
-        .find("GET", "/api/v1/repos/owner/name/issues/8")
         .is_none());
     assert!(server
-        .find("GET", "/api/v1/repos/owner/name/issues/9")
+        .find("GET", "/api/v1/repos/owner/name/issues/8")
         .is_none());
 }
 

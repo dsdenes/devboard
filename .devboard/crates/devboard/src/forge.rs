@@ -1193,15 +1193,47 @@ pub async fn gitea_list_issues(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<Vec<GiteaIssueDocument>, GiteaError> {
+    gitea_list_issues_matching(target, state, None, transport, options).await
+}
+
+/// Every issue in the requested state carrying `label`, ascending, with its body.
+///
+/// The forge filters by label and every listed row carries its body, so a
+/// labelled read costs one page per page of matches. Walking the whole issue
+/// history and then reading each match individually made one periodic read
+/// thousands of requests long, which starved the forge until the read deadline
+/// expired. The rows are filtered again here, so a forge that ignores the
+/// parameter still yields only the labelled issues.
+pub async fn gitea_list_labelled_issues(
+    target: &GiteaTarget,
+    state: IssueQueryState,
+    label: &str,
+    transport: &Transport,
+    options: &GiteaCallOptions,
+) -> Result<Vec<GiteaIssueDocument>, GiteaError> {
+    gitea_list_issues_matching(target, state, Some(label), transport, options).await
+}
+
+async fn gitea_list_issues_matching(
+    target: &GiteaTarget,
+    state: IssueQueryState,
+    label: Option<&str>,
+    transport: &Transport,
+    options: &GiteaCallOptions,
+) -> Result<Vec<GiteaIssueDocument>, GiteaError> {
     let mut issues = Vec::new();
     let mut seen = HashSet::new();
     for page in 1..=GITEA_MAX_PAGES {
-        let path = format!(
+        let mut path = format!(
             "{}/issues?state={}&type=issues&limit={}&page={page}",
             repo_path(target),
             state.as_str(),
             GITEA_PAGE_SIZE
         );
+        if let Some(label) = label {
+            path.push_str("&labels=");
+            path.push_str(&encode_uri_component(label));
+        }
         let document = gitea_json(target, &path, None, transport, options).await?;
         let Some(entries) = document.as_array() else {
             break;
@@ -1217,8 +1249,11 @@ pub async fn gitea_list_issues(
             if !seen.insert(issue.number) {
                 continue;
             }
-            issues.push(issue);
             added += 1;
+            if label.is_some_and(|label| !issue.labels.iter().any(|value| value == label)) {
+                continue;
+            }
+            issues.push(issue);
         }
         // A server that ignores the page parameter repeats the first response;
         // treating a page without new issues as the end keeps this loop finite.
@@ -4856,15 +4891,28 @@ impl ForgeIssuesClient {
 
     /// Every issue in `state` carrying `label`, with its body.
     ///
-    /// The list rows already carry their labels, so only a matching issue is
-    /// read individually. Reading every issue's body one request at a time
-    /// turned one periodic read into thousands of requests and starved the
-    /// forge until the read deadline expired.
+    /// The forge filters by label and every listed row carries its body, so the
+    /// read costs one page per page of matches. Walking the whole issue history
+    /// and then reading each match individually turned one periodic read into
+    /// tens of sequential requests, which starved the forge until the read
+    /// deadline expired.
     pub async fn list_labelled(
         &self,
         state: IssueQueryState,
         label: &str,
     ) -> Result<Vec<ForgeIssueDocument>, ForgeIssueError> {
+        if self.forge == Forge::Gitea {
+            let target = self.gitea_target(RequiredAccess::Read).await?;
+            let issues = gitea_list_labelled_issues(
+                &target,
+                state,
+                label,
+                &self.transport,
+                &GiteaCallOptions::default(),
+            )
+            .await?;
+            return Ok(issues.into_iter().map(gitea_document).collect());
+        }
         let mut documents = Vec::new();
         for row in self.list_all(state).await? {
             if !row.labels.iter().any(|value| value == label) {
