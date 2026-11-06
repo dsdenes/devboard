@@ -4611,6 +4611,7 @@ pub struct AcpDedup {
     pub command: String,
     pub repo_dir: PathBuf,
     pub environment: HashMap<String, String>,
+    /// The silence bound: a turn that reports no event for this long is dead.
     pub timeout_ms: u64,
     /// The dashboard STATE_DIR holding `providers/`; `None` uses the base
     /// environment as one attempt.
@@ -4619,8 +4620,20 @@ pub struct AcpDedup {
 
 const WATCHDOG_DEDUP_PROMPT: &str = include_str!("../../../../prompts/watchdog-dedup.md");
 
-/// The default peer deadline: four minutes.
+/// The default peer silence bound: four minutes without a single event.
+///
+/// The bound is silence, not the length of the turn: one audit lists the open
+/// set and reads the issues it needs, and a forge that answers slowly makes a
+/// productive turn take minutes without ever stalling.
 pub const DEDUP_PEER_TIMEOUT_MS: u64 = 240_000;
+
+/// The ceiling on one whole turn, progress or not: fifteen minutes.
+///
+/// A peer that keeps reporting events but never finishes is still stopped, so
+/// one turn can never hold the watchdog cycle forever. A turn the silence
+/// bound or this ceiling ends keeps every decision it recorded, so a late stop
+/// never refiles an issue the turn already filed.
+pub const DEDUP_PEER_CEILING_MS: u64 = 900_000;
 
 /// A provider message that means the key was rejected.
 fn credential_rejection(text: &str) -> bool {
@@ -4681,8 +4694,11 @@ impl AcpDedup {
                         .map_err(|error| error.to_string())?;
                 let future = connection.run(&prompt_for_peer);
                 tokio::pin!(future);
-                let deadline =
-                    tokio::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
+                let silence = Duration::from_millis(timeout_ms.max(1));
+                let started = tokio::time::Instant::now();
+                let ceiling = started + Duration::from_millis(DEDUP_PEER_CEILING_MS);
+                let mut quiet_until = started + silence;
+                let mut open = true;
                 let mut text = String::new();
                 let mut stderr = String::new();
                 loop {
@@ -4703,32 +4719,43 @@ impl AcpDedup {
                                 }
                             };
                         }
-                        event = events.recv() => {
+                        event = events.recv(), if open => {
                             match event {
-                                Some(crate::acp::AcpEvent::Text(chunk)) => text.push_str(&chunk),
-                                Some(crate::acp::AcpEvent::Stderr(chunk)) => {
-                                    stderr.push_str(&chunk);
-                                    if stderr.len() > 2_000 {
-                                        let cut = stderr.len() - 2_000;
-                                        let boundary = (0..=cut)
-                                            .rev()
-                                            .find(|index| stderr.is_char_boundary(*index))
-                                            .unwrap_or(0);
-                                        stderr = stderr[boundary..].to_string();
+                                Some(event) => {
+                                    quiet_until = tokio::time::Instant::now() + silence;
+                                    match event {
+                                        crate::acp::AcpEvent::Text(chunk) => text.push_str(&chunk),
+                                        crate::acp::AcpEvent::Stderr(chunk) => {
+                                            stderr.push_str(&chunk);
+                                            if stderr.len() > 2_000 {
+                                                let cut = stderr.len() - 2_000;
+                                                let boundary = (0..=cut)
+                                                    .rev()
+                                                    .find(|index| stderr.is_char_boundary(*index))
+                                                    .unwrap_or(0);
+                                                stderr = stderr[boundary..].to_string();
+                                            }
+                                        }
+                                        crate::acp::AcpEvent::Question(_) => {
+                                            connection.close();
+                                            return Err("the dedup peer asked a question; refusing".to_string());
+                                        }
+                                        _ => {}
                                     }
                                 }
-                                Some(crate::acp::AcpEvent::Question(_)) => {
-                                    connection.close();
-                                    return Err("the dedup peer asked a question; refusing".to_string());
-                                }
-                                Some(_) => {}
-                                None => {}
+                                None => open = false,
                             }
                         }
-                        _ = tokio::time::sleep_until(deadline) => {
+                        _ = tokio::time::sleep_until(quiet_until) => {
                             connection.close();
                             return Err(format!(
-                                "the dedup peer timed out after {timeout_ms}ms"
+                                "the dedup peer stayed silent for {timeout_ms}ms"
+                            ));
+                        }
+                        _ = tokio::time::sleep_until(ceiling) => {
+                            connection.close();
+                            return Err(format!(
+                                "the dedup peer ran longer than {DEDUP_PEER_CEILING_MS}ms"
                             ));
                         }
                     }
@@ -5484,140 +5511,141 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                     }
                 },
             };
-            match runner.run(&request, &dedup_run_dir) {
-                Err(error) => {
-                    let reason = diagnostic_line(&error);
-                    if failure.is_none() {
-                        failure = Some(format!("the deduplication agent failed: {reason}"));
-                    }
-                    gate_blocked = true;
-                    for fingerprint in &candidates {
+            let stopped = match runner.run(&request, &dedup_run_dir) {
+                Ok(_) => None,
+                Err(error) => Some(diagnostic_line(&error)),
+            };
+            let records = read_dedup_records(&dedup_run_dir);
+            let reads = read_dedup_reads(&dedup_run_dir);
+            open_issues_read = reads.last().copied().unwrap_or(0);
+            // A turn that stops after recording a decision keeps it: those
+            // records are what the turn decided, so only a turn that recorded
+            // nothing at all fails the gate.
+            let gate_reason = match &stopped {
+                Some(reason) if records.is_empty() => {
+                    Some(format!("the deduplication agent failed: {reason}"))
+                }
+                None if reads.is_empty() && records.is_empty() => {
+                    Some("the deduplication turn read no open issue".to_string())
+                }
+                _ => None,
+            };
+            if let Some(reason) = gate_reason {
+                let decision_reason = stopped.unwrap_or_else(|| reason.clone());
+                if failure.is_none() {
+                    failure = Some(reason.clone());
+                }
+                gate_blocked = true;
+                for fingerprint in &candidates {
+                    mark_pending(&mut ledger, fingerprint);
+                    decisions.push(json!({
+                        "fingerprint": fingerprint,
+                        "category": ledger.get(fingerprint).map(|entry| entry.category.clone()).unwrap_or_else(|| "unknown".to_string()),
+                        "decision": "failed",
+                        "reason": decision_reason,
+                    }));
+                }
+                log(&format!("deduplication failed: {reason}"));
+            } else {
+                if let Some(reason) = &stopped {
+                    log(&format!(
+                        "deduplication stopped after {} recorded decision(s): {reason}",
+                        records.len()
+                    ));
+                }
+                let mut by_fingerprint: HashMap<String, DedupRecord> = HashMap::new();
+                for record in records {
+                    by_fingerprint.insert(record.fingerprint.clone(), record);
+                }
+                for fingerprint in &candidates {
+                    let Some(entry) = ledger.get(fingerprint).cloned() else {
+                        continue;
+                    };
+                    let Some(record) = by_fingerprint.get(fingerprint) else {
+                        let reason = stopped.clone().unwrap_or_else(|| {
+                            "the deduplication turn recorded no decision".to_string()
+                        });
+                        if stopped.is_none() && filing_room > 0 && failure.is_none() {
+                            failure = Some(reason.clone());
+                        }
                         mark_pending(&mut ledger, fingerprint);
                         decisions.push(json!({
                             "fingerprint": fingerprint,
-                            "category": ledger.get(fingerprint).map(|entry| entry.category.clone()).unwrap_or_else(|| "unknown".to_string()),
+                            "category": entry.category,
                             "decision": "failed",
                             "reason": reason,
                         }));
-                    }
-                    log(&format!("deduplication failed: {reason}"));
-                }
-                Ok(_) => {
-                    let records = read_dedup_records(&dedup_run_dir);
-                    let mut by_fingerprint: HashMap<String, DedupRecord> = HashMap::new();
-                    for record in records {
-                        by_fingerprint.insert(record.fingerprint.clone(), record);
-                    }
-                    let reads = read_dedup_reads(&dedup_run_dir);
-                    open_issues_read = reads.last().copied().unwrap_or(0);
-                    if reads.is_empty() {
-                        let reason = "the deduplication turn read no open issue".to_string();
-                        if failure.is_none() {
-                            failure = Some(reason.clone());
-                        }
-                        gate_blocked = true;
-                        for fingerprint in &candidates {
-                            mark_pending(&mut ledger, fingerprint);
-                            decisions.push(json!({
+                        continue;
+                    };
+                    if record.action == "filed" {
+                        if let Some(url) = &record.url {
+                            unique_candidates.push(fingerprint.clone());
+                            mark_filed(&mut ledger, fingerprint, url, now);
+                            let _ = save_ledger(&state_dir, &ledger);
+                            report_issues.push(json!({
+                                "url": url,
+                                "category": entry.category,
                                 "fingerprint": fingerprint,
-                                "category": ledger.get(fingerprint).map(|entry| entry.category.clone()).unwrap_or_else(|| "unknown".to_string()),
-                                "decision": "failed",
-                                "reason": reason,
+                                "line": entry.line,
                             }));
-                        }
-                        log(&format!("deduplication failed: {reason}"));
-                    } else {
-                        for fingerprint in &candidates {
-                            let Some(entry) = ledger.get(fingerprint).cloned() else {
-                                continue;
-                            };
-                            let Some(record) = by_fingerprint.get(fingerprint) else {
-                                let reason = "the deduplication turn recorded no decision";
-                                if filing_room > 0 && failure.is_none() {
-                                    failure = Some(reason.to_string());
-                                }
-                                mark_pending(&mut ledger, fingerprint);
-                                decisions.push(json!({
-                                    "fingerprint": fingerprint,
-                                    "category": entry.category,
-                                    "decision": "failed",
-                                    "reason": reason,
-                                }));
-                                continue;
-                            };
-                            if record.action == "filed" {
-                                if let Some(url) = &record.url {
-                                    unique_candidates.push(fingerprint.clone());
-                                    mark_filed(&mut ledger, fingerprint, url, now);
-                                    let _ = save_ledger(&state_dir, &ledger);
-                                    report_issues.push(json!({
-                                        "url": url,
-                                        "category": entry.category,
-                                        "fingerprint": fingerprint,
-                                        "line": entry.line,
-                                    }));
-                                    decisions.push(json!({
-                                        "fingerprint": fingerprint,
-                                        "category": entry.category,
-                                        "decision": "unique",
-                                    }));
-                                    log(&format!(
-                                        "filed {url} for {}: {}",
-                                        entry.category, entry.line
-                                    ));
-                                    continue;
-                                }
-                            }
-                            if record.action == "duplicate" {
-                                match &record.issue {
-                                    Some(issue) => {
-                                        mark_duplicate(&mut ledger, fingerprint, issue, now)
-                                    }
-                                    None => ledger.remove_pending(fingerprint),
-                                }
-                                let mut decision = json!({
-                                    "fingerprint": fingerprint,
-                                    "category": entry.category,
-                                    "decision": "duplicate",
-                                });
-                                if let Some(issue) = &record.issue {
-                                    decision["issue"] = json!(issue);
-                                }
-                                if let Some(representative) = &record.representative {
-                                    decision["representative"] = json!(representative);
-                                }
-                                decisions.push(decision);
-                                continue;
-                            }
-                            let reason = "the deduplication turn recorded no filed issue";
-                            if filing_room > 0 && failure.is_none() {
-                                failure = Some(reason.to_string());
-                            }
-                            mark_pending(&mut ledger, fingerprint);
                             decisions.push(json!({
                                 "fingerprint": fingerprint,
                                 "category": entry.category,
-                                "decision": "failed",
-                                "reason": reason,
+                                "decision": "unique",
                             }));
+                            log(&format!(
+                                "filed {url} for {}: {}",
+                                entry.category, entry.line
+                            ));
+                            continue;
                         }
-                        let count_of = |wanted: &str| -> usize {
-                            decisions
-                                .iter()
-                                .filter(|decision| {
-                                    decision.get("decision").and_then(Value::as_str) == Some(wanted)
-                                })
-                                .count()
-                        };
-                        log(&format!(
-                            "deduplication: {} candidate(s), {} unique, {} duplicate, {} failed",
-                            candidates.len(),
-                            unique_candidates.len(),
-                            count_of("duplicate"),
-                            count_of("failed")
-                        ));
                     }
+                    if record.action == "duplicate" {
+                        match &record.issue {
+                            Some(issue) => mark_duplicate(&mut ledger, fingerprint, issue, now),
+                            None => ledger.remove_pending(fingerprint),
+                        }
+                        let mut decision = json!({
+                            "fingerprint": fingerprint,
+                            "category": entry.category,
+                            "decision": "duplicate",
+                        });
+                        if let Some(issue) = &record.issue {
+                            decision["issue"] = json!(issue);
+                        }
+                        if let Some(representative) = &record.representative {
+                            decision["representative"] = json!(representative);
+                        }
+                        decisions.push(decision);
+                        continue;
+                    }
+                    let reason = "the deduplication turn recorded no filed issue";
+                    if filing_room > 0 && failure.is_none() {
+                        failure = Some(reason.to_string());
+                    }
+                    mark_pending(&mut ledger, fingerprint);
+                    decisions.push(json!({
+                        "fingerprint": fingerprint,
+                        "category": entry.category,
+                        "decision": "failed",
+                        "reason": reason,
+                    }));
                 }
+                let count_of = |wanted: &str| -> usize {
+                    decisions
+                        .iter()
+                        .filter(|decision| {
+                            decision.get("decision").and_then(Value::as_str) == Some(wanted)
+                        })
+                        .count()
+                };
+                log(&format!(
+                    "deduplication: {} candidate(s), {} unique, {} duplicate, {} failed",
+                    candidates.len(),
+                    unique_candidates.len(),
+                    count_of("duplicate"),
+                    count_of("failed")
+                ));
             }
         }
     }

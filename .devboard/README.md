@@ -2850,11 +2850,16 @@ duplicates of one another produce at most one issue for the group, named by its 
 `report.json`. Filing caps are applied after deduplication, so only unique candidates consume
 room; previously filed entries keep their dispositions and their recurrence comments.
 
-The gate fails closed. If the agent cannot be started, exits nonzero, or times out, the cycle
-creates no issue and makes no comment, keeps every candidate pending, records the reason in
-`report.json`, and exits nonzero. A candidate whose tool call failed has no record and stays
-pending. The next cycle retries the same candidates through the agent. There is no whole-answer
-coverage check and no re-ask for a rewritten answer.
+The gate fails closed. If the agent cannot be started, exits nonzero, or stops before recording a
+single decision, the cycle creates no issue and makes no comment, keeps every candidate pending,
+records the reason in `report.json`, and exits nonzero. A turn its bounds end keeps every decision
+it recorded: a filed candidate keeps its issue and a recorded duplicate stays suppressed, while a
+candidate with no record stays pending. The peer's deadline is silence, not the length of the turn
+— four minutes without a single event — so a forge that answers slowly never kills a productive
+turn, and one whole turn is capped at fifteen minutes so a peer that never finishes cannot hold the
+cycle. A candidate whose tool call failed has no record and stays pending. The next cycle retries
+the same candidates through the agent. There is no whole-answer coverage check and no re-ask for a
+rewritten answer.
 
 `report.json` carries a `deduplication` section with the number of candidates requested, the
 number of open issues the agent read, every candidate's disposition (`unique`, `duplicate` with

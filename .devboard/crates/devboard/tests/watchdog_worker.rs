@@ -173,6 +173,45 @@ impl DedupRunner for RoomDedup {
     }
 }
 
+/// A deduplication turn that records what it decided and then stops the way
+/// the peer's silence bound or turn ceiling stops it.
+struct StoppedDedup {
+    /// How many candidates the turn decided before it stopped.
+    decisions: usize,
+    /// Whether the turn listed the open set before it stopped.
+    read: bool,
+    error: String,
+}
+
+impl DedupRunner for StoppedDedup {
+    fn run(&self, request: &DedupRequest, run_dir: &Path) -> Result<String, String> {
+        std::fs::create_dir_all(run_dir).expect("the dedup directory");
+        let chosen = &request.candidates[..self.decisions.min(request.candidates.len())];
+        let records: String = chosen
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                format!(
+                    "{}\n",
+                    serde_json::to_string(&json!({
+                        "fingerprint": candidate.fingerprint,
+                        "action": "filed",
+                        "url": format!("https://github.com/acme/fixture/issues/{}", 100 + index),
+                    }))
+                    .expect("a record")
+                )
+            })
+            .collect();
+        if !records.is_empty() {
+            write(&run_dir.join("dedup-records.jsonl"), &records);
+        }
+        if self.read {
+            write(&run_dir.join("dedup-reads.jsonl"), "{\"count\":2}\n");
+        }
+        Err(self.error.clone())
+    }
+}
+
 fn production_root(label: &str) -> PathBuf {
     let root = scratch(label);
     std::fs::create_dir_all(root.join(".devboard").join(".tmp")).expect("a harness");
@@ -1240,6 +1279,106 @@ fn filing_caps_limit_the_room_and_keep_the_rest_pending() {
     assert_eq!(second.report.action(), "capped");
     assert_eq!(load_ledger(&state_dir).pending_filing.len(), 1);
     assert_eq!(*rooms.rooms.lock().expect("rooms"), vec![1, 0]);
+}
+
+#[test]
+fn a_turn_that_stopped_after_recording_keeps_its_decisions() {
+    let root = production_root("dedup-stopped");
+    let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);
+    std::fs::create_dir_all(&state_dir).expect("a watchdog state");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let events = vec![
+        event(now, 1, "first stopped error", "server-error", &instance),
+        event(now, 2, "second stopped error", "server-error", &instance),
+    ];
+    let error = "the dedup peer ran longer than 900000ms".to_string();
+    let deps = CycleDeps {
+        discover: Arc::new(move |_root: &Path| vec![instance.clone()]),
+        collect: Arc::new(
+            move |_root: &Path, _i: &[Instance], _w: Window| Collection {
+                events: events.clone(),
+                malformed: 0,
+                unattributed: 0,
+            },
+        ),
+        gh: Arc::new(|_argv: &[String], _stdin: &str| GhOutcome::default()),
+        delivery: Some(Arc::new(RecordingDelivery::new())),
+        dedup: Some(Arc::new(StoppedDedup {
+            decisions: 1,
+            read: true,
+            error: error.clone(),
+        })),
+    };
+    let mut options = CycleOptions::new(root.clone());
+    options.state_dir = Some(state_dir.clone());
+    options.now_ms = now;
+    let result = run_cycle(&options, &deps).expect("the cycle");
+
+    assert_eq!(result.report.action(), "filed");
+    assert_eq!(result.report.reason(), Some("filed 1 issue(s)"));
+    assert_eq!(result.report.issues().len(), 1);
+    let ledger = load_ledger(&state_dir);
+    assert_eq!(
+        ledger.pending_filing.len(),
+        1,
+        "only the undecided candidate"
+    );
+    let undecided = result.report.value["deduplication"]["decisions"]
+        .as_array()
+        .expect("decisions")
+        .iter()
+        .find(|decision| decision["decision"] == json!("failed"))
+        .expect("the undecided candidate");
+    assert_eq!(undecided["reason"], json!(error));
+    let log = std::fs::read_to_string(result.run_dir.expect("the run dir").join("coordinator.log"))
+        .expect("the log");
+    assert!(
+        log.contains("deduplication stopped after 1 recorded decision(s)"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_turn_that_recorded_nothing_still_fails_the_cycle() {
+    let root = production_root("dedup-silent");
+    let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);
+    std::fs::create_dir_all(&state_dir).expect("a watchdog state");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let events = vec![
+        event(now, 1, "first silent error", "server-error", &instance),
+        event(now, 2, "second silent error", "server-error", &instance),
+    ];
+    let deps = CycleDeps {
+        discover: Arc::new(move |_root: &Path| vec![instance.clone()]),
+        collect: Arc::new(
+            move |_root: &Path, _i: &[Instance], _w: Window| Collection {
+                events: events.clone(),
+                malformed: 0,
+                unattributed: 0,
+            },
+        ),
+        gh: Arc::new(|_argv: &[String], _stdin: &str| GhOutcome::default()),
+        delivery: Some(Arc::new(RecordingDelivery::new())),
+        dedup: Some(Arc::new(StoppedDedup {
+            decisions: 0,
+            read: false,
+            error: "the dedup peer stayed silent for 240000ms".to_string(),
+        })),
+    };
+    let mut options = CycleOptions::new(root.clone());
+    options.state_dir = Some(state_dir.clone());
+    options.now_ms = now;
+    let result = run_cycle(&options, &deps).expect("the cycle");
+
+    assert_eq!(result.report.action(), "failed");
+    assert_eq!(
+        result.report.reason(),
+        Some("the deduplication agent failed: the dedup peer stayed silent for 240000ms")
+    );
+    assert!(result.report.issues().is_empty());
+    assert_eq!(load_ledger(&state_dir).pending_filing.len(), 2);
 }
 
 // ---------------------------------------------------------------------------
