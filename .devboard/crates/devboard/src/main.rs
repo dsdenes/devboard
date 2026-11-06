@@ -49,6 +49,38 @@ async fn run() -> anyhow::Result<()> {
     }
 }
 
+/// Re-executes this server once without a credential an older harness left in
+/// its environment.
+///
+/// A pre-cutover process started its replacement with the dashboard token in
+/// the environment. The new process ignores it, but `/proc/<pid>/environ` is
+/// the initial block, so only a fresh `execve` can drop it. The marker keeps a
+/// process that already cleaned itself from looping.
+fn clear_inherited_credentials() -> anyhow::Result<()> {
+    const MARKER: &str = "DEVBOARD_CREDENTIALS_CLEARED";
+    if std::env::var_os(MARKER).is_some() {
+        return Ok(());
+    }
+    if devboard::relaunch::inherited_credential_variables().is_empty() {
+        return Ok(());
+    }
+    let program = devboard::relaunch::own_program();
+    let mut command = std::process::Command::new(program);
+    command.args(std::env::args_os().skip(1)).env(MARKER, "1");
+    devboard::relaunch::drop_obsolete_credential_variables(&mut command);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let error = command.exec();
+        anyhow::bail!("dropping an inherited dashboard credential: {error}");
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
 /// A stopping dashboard ends its children, its Discover staging, and its
 /// state file before the process goes away.
 fn install_signal_shutdown(server: &std::sync::Arc<Server>) {
@@ -88,6 +120,7 @@ fn install_signal_shutdown(server: &std::sync::Arc<Server>) {
 }
 
 async fn serve_command(args: &[String]) -> anyhow::Result<()> {
+    clear_inherited_credentials()?;
     let harness_dir = devboard::version::running_harness_dir();
     // Discovery runs for the repository this dashboard will serve, never for
     // the launcher's working directory.
@@ -607,6 +640,7 @@ fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
     let log_path = state_dir.join("dashboard.log");
     let log = std::fs::File::create(&log_path).context("creating the dashboard log")?;
     let mut command = Command::new(&program);
+    devboard::relaunch::drop_obsolete_credential_variables(&mut command);
     command
         .arg("serve")
         .arg("--port")

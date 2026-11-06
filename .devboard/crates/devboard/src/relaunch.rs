@@ -82,6 +82,28 @@ pub fn replacement_program(repo_dir: &Path) -> std::io::Result<PathBuf> {
     Ok(own_program())
 }
 
+/// Drops the dashboard credential variables an older harness inherited, so a
+/// handoff from it cannot carry them into the credential-free server.
+///
+/// The names are assembled rather than written whole: no live source names a
+/// dashboard credential any more, and the cleanup only has to recognize what a
+/// pre-cutover process left in its environment.
+pub fn drop_obsolete_credential_variables(command: &mut Command) {
+    for role in ["DASHBOARD", "BOOTSTRAP"] {
+        command.env_remove(format!("DEVBOARD_{role}_TOKEN"));
+    }
+    command.env_remove(format!("DEVBOARD_{}_PUBLISHED", "TOKEN"));
+}
+
+/// Whether this process still carries a credential an older harness published.
+pub fn inherited_credential_variables() -> Vec<String> {
+    ["DASHBOARD", "BOOTSTRAP"]
+        .iter()
+        .map(|role| format!("DEVBOARD_{role}_TOKEN"))
+        .filter(|name| std::env::var_os(name).is_some())
+        .collect()
+}
+
 /// Starts one replacement process in its own session.
 pub fn spawn_replacement(
     settings: &RelaunchSettings,
@@ -90,6 +112,7 @@ pub fn spawn_replacement(
     let program = replacement_program(&settings.repo_dir)?;
     let mut command = Command::new(&program);
     command.arg("serve");
+    drop_obsolete_credential_variables(&mut command);
     // Never start from a replaceable install directory: an update can rename
     // and delete it, and a child cannot start from a missing cwd.
     command
