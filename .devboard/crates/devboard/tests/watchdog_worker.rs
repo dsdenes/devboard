@@ -1534,3 +1534,105 @@ fn a_rejected_dedup_key_rotates_and_other_failures_stop() {
     assert_eq!(tried, ["first", "second"]);
     assert_eq!(DEDUP_PEER_TIMEOUT_MS, 240_000);
 }
+
+#[test]
+fn a_cycle_applies_state_worktree_and_build_retention() {
+    let root = production_root("retention");
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q", "."]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    write(&root.join("tracked.txt"), "one\n");
+    git(&["add", "tracked.txt"]);
+    git(&["commit", "-qm", "initial"]);
+    git(&["branch", "-m", "main"]);
+    let worktree = root.join(".worktree/merged");
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        worktree.to_str().expect("a utf-8 path"),
+        "-b",
+        "merged-branch",
+    ]);
+
+    let now = epoch_ms();
+    let id = "55555555-6666-7777-8888-999999999999";
+    let agents = root
+        .join(".devboard/.tmp/providers/agents")
+        .join(format!("opencode-go-{id}"));
+    let transcript = agents.join("sessions/project/old.jsonl");
+    write(&transcript, "old");
+    set_mtime(&transcript, now - 8 * 24 * 60 * 60 * 1000);
+    write(
+        &root.join(".devboard/.tmp/providers/credentials.json"),
+        &format!("{{\"version\":1,\"subscriptions\":[{{\"id\":\"{id}\"}}]}}\n"),
+    );
+
+    let deps_directory = root.join(".devboard/target/debug/deps");
+    let old_artifact = deps_directory.join("libfoo-aaaaaaaaaaaaaaaa.rlib");
+    let new_artifact = deps_directory.join("libfoo-bbbbbbbbbbbbbbbb.rlib");
+    write(&old_artifact, "old");
+    write(&new_artifact, "new");
+    set_mtime(&old_artifact, now - 2 * 3_600_000);
+    set_mtime(&new_artifact, now - 3_600_000);
+
+    let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let deps = CycleDeps {
+        discover: Arc::new(move |_root: &Path| vec![instance.clone()]),
+        collect: Arc::new(|_root: &Path, _i: &[Instance], _w: Window| Collection::default()),
+        gh: Arc::new(|_argv: &[String], _stdin: &str| GhOutcome::default()),
+        delivery: None,
+        dedup: None,
+    };
+    let mut options = CycleOptions::new(root.clone());
+    options.state_dir = Some(state_dir.clone());
+    options.now_ms = now;
+    options.build_running = Some(|| false);
+    let result = run_cycle(&options, &deps).expect("the cycle");
+
+    let run_dir = result.run_dir.expect("the run directory");
+    let report: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("report.json")).expect("the report"),
+    )
+    .expect("report JSON");
+    let cleanup_removed = report["cleanup"]["roots"]
+        .as_array()
+        .expect("cleanup roots")
+        .iter()
+        .flat_map(|root| root["removed"].as_array().cloned().unwrap_or_default())
+        .any(|candidate| candidate["path"] == json!(transcript.to_string_lossy()));
+    assert!(
+        cleanup_removed,
+        "the cleanup section names the old transcript"
+    );
+    assert!(!transcript.exists());
+    let worktrees = report["worktrees"]["removed"]
+        .as_array()
+        .expect("worktrees");
+    assert!(
+        worktrees
+            .iter()
+            .any(|candidate| candidate["kind"] == json!("worktree")
+                && candidate["path"] == json!(worktree.to_string_lossy())),
+        "{worktrees:?}"
+    );
+    assert!(!worktree.exists());
+    let builds = report["builds"]["removed"].as_array().expect("builds");
+    assert!(
+        builds
+            .iter()
+            .any(|candidate| candidate["path"] == json!(old_artifact.to_string_lossy())),
+        "{builds:?}"
+    );
+    assert!(!old_artifact.exists() && new_artifact.exists());
+}

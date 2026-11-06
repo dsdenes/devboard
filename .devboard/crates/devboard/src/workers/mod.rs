@@ -5,6 +5,7 @@
 //! dashboard.
 
 pub mod api_standards;
+pub mod builds;
 pub mod consistent_naming;
 pub mod dead_code;
 pub mod design;
@@ -17,6 +18,7 @@ pub mod scout;
 pub mod single_responsibility;
 pub mod startup;
 pub mod watchdog;
+pub mod worktrees;
 
 use std::path::Path;
 

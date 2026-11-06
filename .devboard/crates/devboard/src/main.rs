@@ -858,6 +858,50 @@ fn cleanup_command(args: &[String]) -> anyhow::Result<()> {
             eprintln!("cleanup: {}: {error}", entry.state_dir.display());
         }
     }
+    for candidate in &report.worktrees.candidates {
+        if dry_run {
+            println!(
+                "cleanup: would remove worktree {} ({})",
+                candidate.path.display(),
+                candidate.kind.as_str()
+            );
+        }
+    }
+    for candidate in &report.worktrees.removed {
+        println!(
+            "cleanup: removed worktree {} ({})",
+            candidate.path.display(),
+            candidate.kind.as_str()
+        );
+    }
+    for error in &report.worktrees.errors {
+        eprintln!("cleanup: worktrees: {error}");
+    }
+    if let Some(skipped) = &report.worktrees.skipped {
+        eprintln!("cleanup: worktrees skipped: {skipped}");
+    }
+    for candidate in &report.builds.candidates {
+        if dry_run {
+            println!(
+                "cleanup: would remove build {} ({})",
+                candidate.path.display(),
+                candidate.kind.as_str()
+            );
+        }
+    }
+    for candidate in &report.builds.removed {
+        println!(
+            "cleanup: removed build {} ({})",
+            candidate.path.display(),
+            candidate.kind.as_str()
+        );
+    }
+    for error in &report.builds.errors {
+        eprintln!("cleanup: builds: {error}");
+    }
+    if let Some(skipped) = &report.builds.skipped {
+        eprintln!("cleanup: builds skipped: {skipped}");
+    }
     let roots = report.roots.len();
     let files: u64 = report.roots.iter().map(|entry| entry.files).sum();
     let bytes: u64 = report.roots.iter().map(|entry| entry.bytes).sum();

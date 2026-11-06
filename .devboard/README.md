@@ -2838,11 +2838,15 @@ indicator are unchanged.
 ### State-directory cleanup
 
 Every cycle sweeps each covered state directory. Covered directories are the canonical checkout's
-`.devboard/.tmp`, every `*/.devboard/.tmp` directly under the canonical root's parent, and the
-`STATE_DIR` of every live dashboard the cycle discovers, de-duplicated by real path. Entries older
-than seven days are deleted; these are never deleted at any age:
+`.devboard/.tmp`, every `*/.devboard/.tmp` directly under the canonical root's parent, every
+`<root>/.worktree/*/.devboard/.tmp` for the root the sweep runs against, and the `STATE_DIR` of
+every live dashboard the cycle discovers, de-duplicated by real path. Entries older than seven
+days are deleted; these are never deleted at any age:
 
-- `.tmp/state/`, `.tmp/journal/`, and `.tmp/providers/`.
+- `.tmp/state/`, `.tmp/journal/`, and `.tmp/worktree-cleanup/`.
+- `.tmp/providers/credentials.json`, `.tmp/providers/selection.json`, and, in every selection
+  directory that is not removed, `agent.db*`, `models.db*`, `skill-descriptions.db*`,
+  `config.yml`, `mcp.json`, and `devboard-mcp.ts`. The transcript tree has its own rule below.
 - `.tmp/watchdog/state.json`, `latest.json`, `lock`, `worker.json`, `settings.json`,
   `projection.json`, and `control/`.
 - `.tmp/orchestrator/state.json`, `ledger.json`, and `lock`.
@@ -2860,12 +2864,54 @@ than seven days are deleted; these are never deleted at any age:
   `.tmp/scout/lock` a running Auto Scout holds. A lock whose owner is gone is swept, and the
   rest of `.tmp/scout/` — stale scans and issue bodies — follows the ordinary age rule.
 
+#### Provider transcripts
+
+Inside every covered state directory, `providers/agents/` obeys one rule. A transcript
+`<selection>/sessions/<project>/<stem>.jsonl`, its sibling directory `<project>/<stem>/`, and a
+file under `<selection>/blobs/` are removed once the unit's newest file is older than seven days
+(`7 * 24 * 60 * 60 * 1000` ms). Two floors always win: no file younger than 24 hours is ever a
+candidate, and once a tree holds more than 1,000 transcripts the newest 1,000 by mtime are never
+candidates at any size. After the age pass, `providers/agents/` is capped at `1_073_741_824`
+bytes: the oldest remaining units are evicted until the tree fits or only floored units remain. A
+selection directory `providers/agents/<dir>` is removed in full when `<dir>` with one trailing
+`-watchdog-dedup` stripped matches no `subscriptions[].id` in `providers/credentials.json` and no
+file inside it is younger than 24 hours; a directory whose identifier matches a subscription is
+never removed, and a missing or unparseable credentials file removes none.
+
+#### Worktrees and branches
+
+The same pass removes an abandoned worktree under `<root>/.worktree/`. A worktree leaves only when
+its HEAD branch is an ancestor of `main`, `git -C <path> status --porcelain` is empty, no live
+process has its working directory inside it, and it is neither the sweep's own directory nor the
+checkout a running dashboard serves. There is no idle gate. A dirty worktree, an unmerged
+worktree, a detached HEAD, and a worktree a live process holds always stay. A registered worktree
+leaves through `git worktree remove` (never `--force`); an unregistered directory with a `.git`
+file in the same clean, merged state leaves through directory removal after `git worktree prune`,
+which runs on every real pass. `.worktree/.test-tmp` and any directory without `.git` are never
+touched. When a worktree leaves, `git branch -d` deletes its merged branch. A branch with unmerged
+commits and no worktree checkout is kept until it is idle 30 days; then `git format-patch
+main..<branch>` is written under `.devboard/.tmp/worktree-cleanup/branches/<branch>.patch` and the
+branch is deleted. A branch checked out in any worktree is never deleted.
+
+#### Build output
+
+Under `.devboard/target/debug/deps`, files named `<stem>-<16 hex>.<ext>` are grouped by
+`<stem>.<ext>`; only the newest file by mtime in each group survives and the rest are removed. If
+`target/debug` still exceeds `21_474_836_480` bytes afterwards, the whole directory is removed.
+Neither step runs while a `cargo` or `rustc` process is alive; the `cargo run` wrapper that
+started a manual sweep is not a concurrent build. The dedup step leaves `target/debug/devboard`
+and every file outside `deps`; only the cap backstop removes them. A missing or unreadable
+`target/debug/deps` is reported, not treated as empty.
+
 Run the sweep by hand from `.devboard`:
 
 ```bash
-devboard cleanup --dry-run --root <root>    # print candidates; change nothing
-devboard cleanup --once --root <root>       # sweep under the retention exceptions
+devboard cleanup --dry-run --root <root> --json    # print every candidate; change nothing
+devboard cleanup --once --root <root> --json       # remove exactly those candidates
 ```
+
+The JSON carries `roots` (state directories), `worktrees`, and `builds`; a dry run's `candidates`
+are the paths the following real pass reports in `removed`.
 
 The manual watchdog CLI remains:
 

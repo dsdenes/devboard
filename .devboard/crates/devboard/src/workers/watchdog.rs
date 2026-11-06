@@ -53,6 +53,15 @@ pub const JOURNAL_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub const JOURNAL_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// Age-based retention for everything else a state directory accumulates.
 pub const CLEANUP_RETENTION_MS: i64 = JOURNAL_RETENTION_MS;
+/// Provider transcripts, their sibling session directories, and blobs older
+/// than this are candidates at every sweep.
+pub const PROVIDER_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// Nothing under `providers/agents/` younger than this is ever a candidate.
+pub const PROVIDER_FLOOR_MS: i64 = 24 * 60 * 60 * 1000;
+/// The newest transcripts, by modification instant, are never candidates.
+pub const PROVIDER_NEWEST_FLOOR: usize = crate::agent_sessions::SESSION_MAX_FILES;
+/// The most bytes `providers/agents/` may keep after one sweep.
+pub const PROVIDER_MAX_BYTES: u64 = 1_073_741_824;
 /// The detached worker's control poll.
 pub const CONTROL_POLL_MS: u64 = 250;
 /// The verification stub that answers every deduplication call.
@@ -1625,6 +1634,7 @@ pub enum CleanupSource {
     Canonical,
     Sibling,
     Instance,
+    Worktree,
 }
 
 impl CleanupSource {
@@ -1633,6 +1643,7 @@ impl CleanupSource {
             Self::Canonical => "canonical",
             Self::Sibling => "sibling",
             Self::Instance => "instance",
+            Self::Worktree => "worktree",
         }
     }
 }
@@ -1688,6 +1699,8 @@ pub struct CleanupReport {
     pub cutoff: String,
     pub dry_run: bool,
     pub roots: Vec<CleanupRootReport>,
+    pub worktrees: crate::workers::worktrees::WorktreeCleanupReport,
+    pub builds: crate::workers::builds::BuildCleanupReport,
 }
 
 fn real_directory(path: &Path) -> Option<PathBuf> {
@@ -1740,6 +1753,26 @@ pub fn covered_state_dirs(root: &Path, instances: &[Instance]) -> Vec<CoveredSta
                 &mut covered,
             );
         }
+    }
+    let worktrees = root.join(".worktree");
+    let mut worktree_names: Vec<String> = std::fs::read_dir(&worktrees)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    worktree_names.sort();
+    for name in worktree_names {
+        if name == ".test-tmp" {
+            continue;
+        }
+        add(
+            &worktrees.join(name).join(".devboard").join(".tmp"),
+            CleanupSource::Worktree,
+            &mut covered,
+        );
     }
     for instance in instances {
         let state_dir = if instance.state_dir.is_empty() {
@@ -1887,6 +1920,27 @@ fn sweep_visit(
     (false, bytes)
 }
 
+/// The provider transcript retention rule: age, two floors, a byte cap, and
+/// the orphan selection-directory rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderRetention {
+    pub retention_ms: i64,
+    pub floor_ms: i64,
+    pub newest_floor: usize,
+    pub max_bytes: u64,
+}
+
+impl Default for ProviderRetention {
+    fn default() -> Self {
+        Self {
+            retention_ms: PROVIDER_RETENTION_MS,
+            floor_ms: PROVIDER_FLOOR_MS,
+            newest_floor: PROVIDER_NEWEST_FLOOR,
+            max_bytes: PROVIDER_MAX_BYTES,
+        }
+    }
+}
+
 /// One state directory. Every file or symlink older than the cutoff is a
 /// candidate; a directory is one when it would be empty and its own mtime,
 /// read before any deletion, is older.
@@ -1895,6 +1949,24 @@ pub fn sweep_state_dir(
     now_ms: i64,
     dry_run: bool,
     watchdog_run_dir: Option<&Path>,
+) -> CleanupRootReport {
+    sweep_state_dir_with(
+        state_dir,
+        now_ms,
+        dry_run,
+        watchdog_run_dir,
+        &ProviderRetention::default(),
+    )
+}
+
+/// `sweep_state_dir` with an explicit provider rule, so a test can inject a
+/// cap or a retention window.
+pub fn sweep_state_dir_with(
+    state_dir: &Path,
+    now_ms: i64,
+    dry_run: bool,
+    watchdog_run_dir: Option<&Path>,
+    retention: &ProviderRetention,
 ) -> CleanupRootReport {
     let cutoff = now_ms - CLEANUP_RETENTION_MS;
     let mut report = CleanupRootReport {
@@ -1934,13 +2006,13 @@ pub fn sweep_state_dir(
         );
     }
 
-    let total: u64 = report
-        .candidates
-        .iter()
-        .map(|candidate| candidate.bytes)
-        .sum();
     if dry_run {
-        report.bytes = total;
+        sweep_provider_agents(&directory, now_ms, dry_run, retention, &mut report);
+        report.bytes = report
+            .candidates
+            .iter()
+            .map(|candidate| candidate.bytes)
+            .sum();
         report.files = report
             .candidates
             .iter()
@@ -1985,7 +2057,361 @@ pub fn sweep_state_dir(
             }
         }
     }
+    sweep_provider_agents(&directory, now_ms, dry_run, retention, &mut report);
     report
+}
+
+/// True only for a real directory, never a symlink to one.
+fn is_real_directory(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
+}
+
+fn entry_mtime_ms(path: &Path) -> i64 {
+    std::fs::symlink_metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Every entry's apparent size under one path, directories included, as
+/// `du -sb` counts it.
+pub fn apparent_tree_bytes(path: &Path) -> u64 {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !metadata.is_dir() {
+        return metadata.len();
+    }
+    let mut bytes = metadata.len();
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            bytes += apparent_tree_bytes(&entry.path());
+        }
+    }
+    bytes
+}
+
+/// The newest modification instant of any file under one path, or zero when
+/// it holds no file.
+fn newest_file_ms(path: &Path) -> i64 {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.is_file() {
+        return entry_mtime_ms(path);
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| newest_file_ms(&entry.path()))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The subscription identifiers a credentials file names, or `None` when the
+/// file is missing or unusable. `None` removes no selection directory.
+fn subscription_ids(credentials: &Path) -> Option<HashSet<String>> {
+    let text = std::fs::read_to_string(credentials).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let subscriptions = value.get("subscriptions")?.as_array()?;
+    Some(
+        subscriptions
+            .iter()
+            .filter_map(|subscription| {
+                subscription
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect(),
+    )
+}
+
+/// One evictable piece of the provider tree: a transcript plus its sibling
+/// session directory, one orphaned session directory, or one blob file.
+#[derive(Clone, Debug)]
+struct ProviderUnit {
+    /// The newest file instant in the unit; the 24-hour floor reads it.
+    mtime: i64,
+    /// The transcript instant, which ranks the newest-transcript floor.
+    transcript_mtime: i64,
+    /// Apparent bytes the unit holds.
+    bytes: u64,
+    /// The entries a removal deletes, with the kind and report bytes.
+    entries: Vec<(PathBuf, CleanupCandidateKind, u64)>,
+}
+
+fn provider_units(selection: &Path) -> Vec<ProviderUnit> {
+    let mut units = Vec::new();
+    let sessions = selection.join("sessions");
+    let mut projects: Vec<std::ffi::OsString> = std::fs::read_dir(&sessions)
+        .map(|entries| entries.flatten().map(|entry| entry.file_name()).collect())
+        .unwrap_or_default();
+    projects.sort();
+    for project_name in projects {
+        let project = sessions.join(&project_name);
+        if !is_real_directory(&project) {
+            continue;
+        }
+        let mut names: Vec<std::ffi::OsString> = match std::fs::read_dir(&project) {
+            Ok(entries) => entries.flatten().map(|entry| entry.file_name()).collect(),
+            Err(_) => continue,
+        };
+        names.sort();
+        let mut paired: HashSet<std::ffi::OsString> = HashSet::new();
+        for name in &names {
+            let Some(name_text) = name.to_str() else {
+                continue;
+            };
+            let Some(stem) = name_text.strip_suffix(".jsonl") else {
+                continue;
+            };
+            let transcript = project.join(name);
+            if !transcript.is_file() {
+                continue;
+            }
+            let sibling = project.join(stem);
+            let transcript_mtime = entry_mtime_ms(&transcript);
+            let sibling_newest = newest_file_ms(&sibling);
+            let sibling_bytes = if is_real_directory(&sibling) {
+                apparent_tree_bytes(&sibling)
+            } else {
+                0
+            };
+            let mut entries = vec![(
+                transcript,
+                CleanupCandidateKind::File,
+                std::fs::symlink_metadata(project.join(name))
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0),
+            )];
+            if is_real_directory(&sibling) {
+                entries.push((sibling, CleanupCandidateKind::Directory, 0));
+            }
+            units.push(ProviderUnit {
+                mtime: transcript_mtime.max(sibling_newest),
+                transcript_mtime,
+                bytes: entries[0].2 + sibling_bytes,
+                entries,
+            });
+            paired.insert(std::ffi::OsString::from(stem));
+        }
+        for name in names {
+            let Some(name_text) = name.to_str() else {
+                continue;
+            };
+            if name_text.ends_with(".jsonl") || paired.contains(&name) {
+                continue;
+            }
+            let path = project.join(&name);
+            if !is_real_directory(&path) {
+                continue;
+            }
+            units.push(ProviderUnit {
+                mtime: newest_file_ms(&path),
+                transcript_mtime: 0,
+                bytes: apparent_tree_bytes(&path),
+                entries: vec![(path, CleanupCandidateKind::Directory, 0)],
+            });
+        }
+    }
+    let blobs = selection.join("blobs");
+    let mut pending = vec![blobs];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut names: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        names.sort();
+        for path in names {
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if metadata.is_file() {
+                units.push(ProviderUnit {
+                    mtime: entry_mtime_ms(&path),
+                    transcript_mtime: 0,
+                    bytes: metadata.len(),
+                    entries: vec![(path, CleanupCandidateKind::File, metadata.len())],
+                });
+            }
+        }
+    }
+    units
+}
+
+fn provider_candidate(
+    report: &mut CleanupRootReport,
+    path: &Path,
+    kind: CleanupCandidateKind,
+    bytes: u64,
+) {
+    report.candidates.push(CleanupCandidate {
+        path: path.to_path_buf(),
+        bytes,
+        kind,
+    });
+}
+
+fn remove_provider_entry(report: &mut CleanupRootReport, candidate: &CleanupCandidate) {
+    let removed = if candidate.kind == CleanupCandidateKind::Directory {
+        std::fs::remove_dir_all(&candidate.path)
+    } else {
+        std::fs::remove_file(&candidate.path)
+    };
+    match removed {
+        Ok(()) => {
+            if candidate.kind == CleanupCandidateKind::Directory {
+                report.directories += 1;
+            } else {
+                report.files += 1;
+            }
+            report.bytes += candidate.bytes;
+            report.removed.push(candidate.clone());
+        }
+        Err(error) => report
+            .errors
+            .push(format!("{}: {error}", candidate.path.display())),
+    }
+}
+
+/// Applies the provider rule inside one state directory.
+///
+/// Orphan selection directories leave first, then every transcript unit,
+/// sibling session directory, and blob older than the retention window. The
+/// 24-hour floor and the newest-transcript floor protect both passes. The cap
+/// then evicts the oldest remaining units until the tree fits.
+fn sweep_provider_agents(
+    directory: &Path,
+    now_ms: i64,
+    dry_run: bool,
+    retention: &ProviderRetention,
+    report: &mut CleanupRootReport,
+) {
+    let providers = directory.join("providers");
+    let agents = providers.join("agents");
+    if !is_real_directory(&agents) {
+        return;
+    }
+    let ids = subscription_ids(&providers.join("credentials.json"));
+    let mut names: Vec<std::ffi::OsString> = match std::fs::read_dir(&agents) {
+        Ok(entries) => entries.flatten().map(|entry| entry.file_name()).collect(),
+        Err(_) => return,
+    };
+    names.sort();
+    let mut units: Vec<ProviderUnit> = Vec::new();
+    let mut remaining = apparent_tree_bytes(&agents);
+    for name in names {
+        let selection = agents.join(&name);
+        if !is_real_directory(&selection) {
+            continue;
+        }
+        if let Some(ids) = &ids {
+            let name_text = name.to_string_lossy();
+            let base = name_text
+                .strip_suffix("-watchdog-dedup")
+                .unwrap_or(&name_text);
+            let known = ids
+                .iter()
+                .any(|id| base == id.as_str() || base.ends_with(&format!("-{id}")));
+            let newest = newest_file_ms(&selection);
+            if !known && newest < now_ms - retention.floor_ms {
+                let candidate = CleanupCandidate {
+                    path: selection.clone(),
+                    bytes: 0,
+                    kind: CleanupCandidateKind::Directory,
+                };
+                remaining = remaining.saturating_sub(apparent_tree_bytes(&selection));
+                if dry_run {
+                    report.candidates.push(candidate);
+                } else {
+                    remove_provider_entry(report, &candidate);
+                }
+                continue;
+            }
+        }
+        units.extend(provider_units(&selection));
+    }
+
+    let mut transcripts: Vec<(i64, PathBuf)> = units
+        .iter()
+        .filter(|unit| unit.transcript_mtime > 0)
+        .map(|unit| (unit.transcript_mtime, unit.entries[0].0.clone()))
+        .collect();
+    transcripts.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    let ranks: HashMap<PathBuf, usize> = transcripts
+        .into_iter()
+        .enumerate()
+        .map(|(rank, (_, path))| (path, rank))
+        .collect();
+    // The floor protects the newest 1,000 transcripts of a larger set. A tree
+    // holding 1,000 or fewer transcripts has no floored transcript, so the
+    // ordinary age rule still removes an old one.
+    let floor_applies = ranks.len() > retention.newest_floor;
+
+    let rank = |unit: &ProviderUnit| -> usize {
+        ranks.get(&unit.entries[0].0).copied().unwrap_or(usize::MAX)
+    };
+    let above_floor = |unit: &ProviderUnit| -> bool {
+        unit.mtime < now_ms - retention.floor_ms
+            && !(floor_applies && rank(unit) < retention.newest_floor)
+    };
+    let cutoff = now_ms - retention.retention_ms;
+
+    let mut evicted: HashSet<PathBuf> = HashSet::new();
+    for unit in &units {
+        if above_floor(unit) && unit.mtime < cutoff {
+            remaining = remaining.saturating_sub(unit.bytes);
+            evicted.insert(unit.entries[0].0.clone());
+        }
+    }
+    if remaining > retention.max_bytes {
+        let mut order: Vec<&ProviderUnit> = units
+            .iter()
+            .filter(|unit| !evicted.contains(&unit.entries[0].0) && above_floor(unit))
+            .collect();
+        order.sort_by(|left, right| {
+            left.mtime
+                .cmp(&right.mtime)
+                .then(left.entries[0].0.cmp(&right.entries[0].0))
+        });
+        for unit in order {
+            if remaining <= retention.max_bytes {
+                break;
+            }
+            remaining = remaining.saturating_sub(unit.bytes);
+            evicted.insert(unit.entries[0].0.clone());
+        }
+    }
+
+    for unit in &units {
+        if !evicted.contains(&unit.entries[0].0) {
+            continue;
+        }
+        for (path, kind, bytes) in &unit.entries {
+            if dry_run {
+                provider_candidate(report, path, *kind, *bytes);
+            } else {
+                let candidate = CleanupCandidate {
+                    path: path.clone(),
+                    bytes: *bytes,
+                    kind: *kind,
+                };
+                remove_provider_entry(report, &candidate);
+            }
+        }
+    }
 }
 
 fn is_protected(directory: &Path, path: &Path, watchdog_run_dir: Option<&Path>) -> bool {
@@ -2069,11 +2495,10 @@ fn is_protected(directory: &Path, path: &Path, watchdog_run_dir: Option<&Path>) 
             }
         }
     }
-    if base == "providers"
-        && (path.join("credentials.json").exists() || path.join("agents").is_dir())
-    {
-        return true;
-    }
+    // The provider tree is durable: credentials and the selection marker at
+    // every age, and each selection's databases, config, and MCP files. Its
+    // transcript tree has its own age, floor, cap, and orphan rule, enforced
+    // after the ordinary walk.
     let mut prefixes: Vec<PathBuf> = [
         "state",
         "journal",
@@ -2082,6 +2507,7 @@ fn is_protected(directory: &Path, path: &Path, watchdog_run_dir: Option<&Path>) 
         "flow",
         "coach",
         "goal-drafts",
+        "worktree-cleanup",
     ]
     .into_iter()
     .map(|name| directory.join(name))
@@ -2103,6 +2529,28 @@ pub fn run_cleanup(
     covered: Option<&[CoveredStateDir]>,
     watchdog_run_dir: Option<&Path>,
 ) -> CleanupReport {
+    run_cleanup_with(
+        root,
+        now_ms,
+        dry_run,
+        instances,
+        covered,
+        watchdog_run_dir,
+        &crate::workers::builds::build_process_alive,
+    )
+}
+
+/// `run_cleanup` with an explicit live-build predicate, so a test never
+/// depends on the machine's process table.
+pub fn run_cleanup_with(
+    root: &Path,
+    now_ms: i64,
+    dry_run: bool,
+    instances: &[Instance],
+    covered: Option<&[CoveredStateDir]>,
+    watchdog_run_dir: Option<&Path>,
+    build_running: &dyn Fn() -> bool,
+) -> CleanupReport {
     let owned;
     let entries: &[CoveredStateDir] = match covered {
         Some(entries) => entries,
@@ -2119,11 +2567,24 @@ pub fn run_cleanup(
             report
         })
         .collect();
+    // The state directories are swept first, so a worktree's `.tmp` is gone
+    // before the worktree itself leaves. A dry run reports the same
+    // candidates and changes nothing.
+    let worktrees =
+        crate::workers::worktrees::run_worktree_cleanup(root, now_ms, dry_run, instances);
+    let builds = crate::workers::builds::run_build_cleanup_with(
+        root,
+        dry_run,
+        crate::workers::builds::TARGET_DEBUG_MAX_BYTES,
+        build_running,
+    );
     CleanupReport {
         now: iso_from_ms(now_ms),
         cutoff: iso_from_ms(now_ms - CLEANUP_RETENTION_MS),
         dry_run,
         roots,
+        worktrees,
+        builds,
     }
 }
 
@@ -4351,6 +4812,8 @@ pub struct CycleOptions {
     /// The dashboard STATE_DIR whose `providers/` holds the dedup key.
     pub provider_state_dir: Option<PathBuf>,
     pub environment: HashMap<String, String>,
+    /// Test seam; production reads the process table.
+    pub build_running: Option<fn() -> bool>,
 }
 
 impl CycleOptions {
@@ -4364,6 +4827,7 @@ impl CycleOptions {
             settings: None,
             provider_state_dir: None,
             environment: std::env::vars().collect(),
+            build_running: None,
         }
     }
 }
@@ -4542,6 +5006,47 @@ fn cleanup_json(report: &CleanupReport) -> Value {
         "cutoff": report.cutoff,
         "dryRun": report.dry_run,
         "roots": roots,
+        "worktrees": worktree_cleanup_json(&report.worktrees),
+        "builds": build_cleanup_json(&report.builds),
+    })
+}
+
+fn worktree_candidate_json(candidate: &crate::workers::worktrees::WorktreeCandidate) -> Value {
+    json!({
+        "kind": candidate.kind.as_str(),
+        "path": candidate.path.to_string_lossy(),
+        "branch": candidate.branch,
+        "bytes": candidate.bytes,
+    })
+}
+
+fn worktree_cleanup_json(report: &crate::workers::worktrees::WorktreeCleanupReport) -> Value {
+    json!({
+        "candidates": report.candidates.iter().map(worktree_candidate_json).collect::<Vec<Value>>(),
+        "removed": report.removed.iter().map(worktree_candidate_json).collect::<Vec<Value>>(),
+        "errors": report.errors,
+        "pruned": report.pruned,
+        "skipped": report.skipped,
+    })
+}
+
+fn build_candidate_json(candidate: &crate::workers::builds::BuildCandidate) -> Value {
+    json!({
+        "kind": candidate.kind.as_str(),
+        "path": candidate.path.to_string_lossy(),
+        "bytes": candidate.bytes,
+    })
+}
+
+fn build_cleanup_json(report: &crate::workers::builds::BuildCleanupReport) -> Value {
+    json!({
+        "candidates": report.candidates.iter().map(build_candidate_json).collect::<Vec<Value>>(),
+        "removed": report.removed.iter().map(build_candidate_json).collect::<Vec<Value>>(),
+        "bytesBefore": report.bytes_before,
+        "bytesAfter": report.bytes_after,
+        "capRemoved": report.cap_removed,
+        "errors": report.errors,
+        "skipped": report.skipped,
     })
 }
 
@@ -4663,14 +5168,25 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
         }
     }
 
-    let cleanup = run_cleanup(
-        &root,
-        now,
-        dry_run,
-        &instances,
-        Some(&covered),
-        Some(&run_dir),
-    );
+    let cleanup = match options.build_running {
+        Some(build_running) => run_cleanup_with(
+            &root,
+            now,
+            dry_run,
+            &instances,
+            Some(&covered),
+            Some(&run_dir),
+            &build_running,
+        ),
+        None => run_cleanup(
+            &root,
+            now,
+            dry_run,
+            &instances,
+            Some(&covered),
+            Some(&run_dir),
+        ),
+    };
     for entry in &cleanup.roots {
         log(&format!(
             "cleanup {}: {} {} file(s), {} directory/directories, {} byte(s){}",
@@ -5292,6 +5808,8 @@ fn report_value(parts: &ReportParts<'_>) -> Value {
     value["malformed"] = json!(parts.malformed);
     value["unattributed"] = json!(parts.unattributed);
     value["cleanup"] = cleanup_json(parts.cleanup);
+    value["worktrees"] = worktree_cleanup_json(&parts.cleanup.worktrees);
+    value["builds"] = build_cleanup_json(&parts.cleanup.builds);
     value["deduplication"] = json!({
         "requested": parts.requested,
         "openIssuesRead": parts.open_issues_read,
@@ -6030,6 +6548,7 @@ pub fn production_cycle(request: &CycleRunRequest) -> anyhow::Result<Report> {
         settings: Some(request.settings.clone()),
         provider_state_dir: Some(request.provider_state_dir.clone()),
         environment: std::env::vars().collect(),
+        build_running: None,
     };
     let deps = CycleDeps::production();
     Ok(run_cycle(&options, &deps)?.report)
@@ -6607,6 +7126,7 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
             settings: Some(settings),
             provider_state_dir: Some(owner_state_dir.clone()),
             environment: std::env::vars().collect(),
+            build_running: None,
         };
         let result = run_cycle(&options, &CycleDeps::production());
         let exit_code = match result {
