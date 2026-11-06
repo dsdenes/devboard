@@ -1808,15 +1808,27 @@ async fn gitea_design_issues(
         flow_id: None,
         timeout_ms: Some(timeout_ms),
     };
-    let issues = crate::forge::gitea_list_issues(&target, state, &transport, &options)
-        .await
-        .map_err(|error| error.to_string())?;
+    // The open listing answers the duplicate-title check and must carry every
+    // open issue. Every other state is asked of the forge by the design label,
+    // so the read never pages the whole board to discard other families' issues.
+    let issues = match state {
+        crate::forge::IssueQueryState::Open => {
+            crate::forge::gitea_list_issues(&target, state, &transport, &options).await
+        }
+        _ => {
+            crate::forge::gitea_list_labelled_issues(
+                &target,
+                state,
+                DESIGN_LABEL,
+                &transport,
+                &options,
+            )
+            .await
+        }
+    }
+    .map_err(|error| error.to_string())?;
     Ok(issues
         .into_iter()
-        .filter(|issue| {
-            state == crate::forge::IssueQueryState::Open
-                || issue.labels.iter().any(|label| label == DESIGN_LABEL)
-        })
         .map(|issue| DesignForgeIssue {
             number: issue.number,
             title: issue.title,
