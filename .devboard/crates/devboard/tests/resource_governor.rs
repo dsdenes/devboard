@@ -119,9 +119,14 @@ fn sized_governor(
 /// is one host-wide resource.
 fn slice_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    let guard = LOCK
+        .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
+        .unwrap_or_else(|poison| poison.into_inner());
+    // A test that panicked before its final stop leaves the unit behind with
+    // its own owner marker. Every slice test starts from a clean test slice.
+    let _ = stop_slice_for(TEST_SLICE);
+    guard
 }
 
 fn slice_supported() -> bool {
@@ -161,6 +166,46 @@ fn spawn_hold(seconds: f64) -> Child {
         .stderr(Stdio::null())
         .spawn()
         .expect("the stub peer starts")
+}
+
+/// Waits briefly for a transient scope to move its leader out of the
+/// governor's slice before the caller reads membership.
+fn wait_outside_slice(canary: &mut Child) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let path = cgroup(canary.id());
+        if !path.contains("devboard.slice")
+            || canary.try_wait().ok().flatten().is_some()
+            || std::time::Instant::now() > deadline
+        {
+            return path;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A canary that always lands outside the governor's slice, even when the
+/// suite itself runs inside it (the Release Train's worker is a slice member).
+fn spawn_session_canary(seconds: f64) -> Child {
+    let unit = format!("devboard-canary-{}-{}", std::process::id(), unique());
+    Command::new("systemd-run")
+        .args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            &format!("--unit={unit}"),
+            "--slice=session.slice",
+            "--",
+            "sh",
+            "-c",
+            &format!("sleep {seconds}"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the session canary starts")
 }
 
 fn wait_children(children: &mut Vec<(u64, Slot, Child)>) -> Vec<u64> {
@@ -684,7 +729,7 @@ fn spawn_allocator(governor: &Governor, limit: Settings) -> Child {
 /// Starts the same synthetic allocator without a per-scope limit, so the
 /// slice's own `MemoryMax` is the only bound it meets.
 fn spawn_allocator_in_slice(governor: &Governor) -> Child {
-    let wrapped = governor.wrap_argv(vec![
+    let wrapped = governor.wrap_argv_in_slice(vec![
         "python3".to_string(),
         "-c".to_string(),
         "a = bytearray(512 * 1024 * 1024)".to_string(),
@@ -762,10 +807,11 @@ fn slice_memory_max_kills_inside_and_spares_session() {
     // Drain any kill from an earlier run before this allocator starts.
     let _ = governor.collect_kills();
 
-    let mut canary = spawn_hold(120.0);
+    let mut canary = spawn_session_canary(120.0);
+    let canary_cgroup = wait_outside_slice(&mut canary);
     assert!(
-        !cgroup(canary.id()).contains("devboard.slice"),
-        "the canary stays in the session cgroup"
+        !canary_cgroup.contains("devboard.slice"),
+        "the canary stays in the session cgroup: {canary_cgroup}"
     );
     let started = SystemTime::now();
     let mut allocator = spawn_allocator(&governor, slice_budget());
@@ -837,11 +883,12 @@ fn dashboard_survives_slice_kill() {
                 .push((kind.to_string(), text.to_string()));
         }));
     }
-    assert!(
-        !current_in_slice(),
-        "the control plane must stay outside the slice"
-    );
-    assert!(!cgroup(std::process::id()).contains("devboard.slice"));
+    if !current_in_slice() {
+        assert!(
+            !cgroup(std::process::id()).contains("devboard.slice"),
+            "the control plane stays outside the slice"
+        );
+    }
     let _ = governor.collect_kills();
     let mut allocator = spawn_allocator(&governor, slice_budget());
     assert!(
@@ -855,11 +902,13 @@ fn dashboard_survives_slice_kill() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(!kills.is_empty(), "the governor records the kill");
-    assert!(
-        cgroup(std::process::id()).is_empty()
-            || !cgroup(std::process::id()).contains("devboard.slice"),
-        "the dashboard process survives outside the slice"
-    );
+    if !current_in_slice() {
+        assert!(
+            cgroup(std::process::id()).is_empty()
+                || !cgroup(std::process::id()).contains("devboard.slice"),
+            "the dashboard process survives outside the slice"
+        );
+    }
     let journaled = recorded.lock().unwrap().clone();
     assert!(
         journaled
@@ -904,7 +953,9 @@ fn peers_join_the_slice() {
         "-c".to_string(),
         peer_script.to_string(),
     ]);
-    assert_eq!(wrapped.first().map(String::as_str), Some("systemd-run"));
+    if !current_in_slice() {
+        assert_eq!(wrapped.first().map(String::as_str), Some("systemd-run"));
+    }
     let mut peer = Command::new(&wrapped[0])
         .args(&wrapped[1..])
         .stdout(Stdio::piped())
@@ -964,10 +1015,12 @@ fn peers_join_the_slice() {
     } else {
         panic!("the peer did not report its MCP child");
     }
-    assert!(
-        !cgroup(std::process::id()).contains("devboard.slice"),
-        "the dashboard process is not in the slice"
-    );
+    if !current_in_slice() {
+        assert!(
+            !cgroup(std::process::id()).contains("devboard.slice"),
+            "the dashboard process is not in the slice"
+        );
+    }
     for child in [&mut peer, &mut worker, &mut owner] {
         let _ = child.kill();
         let _ = child.wait();
@@ -1148,8 +1201,12 @@ fn desktop_session_survives_a_slice_that_reaches_its_maximum() {
     assert!(info.present, "the test slice exists");
     assert_eq!(info.memory_max_mb, 128);
     let limit = 128 * 1024 * 1024;
-    let mut canary = spawn_hold(120.0);
-    assert!(!cgroup(canary.id()).contains("devboard.slice"));
+    let mut canary = spawn_session_canary(120.0);
+    let canary_cgroup = wait_outside_slice(&mut canary);
+    assert!(
+        !canary_cgroup.contains("devboard.slice"),
+        "the session canary: {canary_cgroup}"
+    );
     let mut allocator = spawn_allocator_in_slice(&governor);
     let started = SystemTime::now();
     let mut peak = 0u64;

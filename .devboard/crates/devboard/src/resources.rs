@@ -915,18 +915,37 @@ impl Governor {
     /// governor's slice. The wrapper execs the command, keeping its pid, its
     /// stdio, and its process group.
     pub fn wrap_argv(&self, argv: Vec<String>) -> Vec<String> {
-        self.wrap_argv_inner(argv, None)
+        self.wrap_argv_inner(argv, None, false)
     }
 
     /// Like [`Self::wrap_argv`], but the transient scope carries its own hard
     /// memory limit. The slice tests use this to prove the kernel kill without
-    /// changing the budget the dashboard runs with.
+    /// changing the budget the dashboard runs with. A scope is created even
+    /// when this process already belongs to the slice, because the limit is
+    /// what the caller wants to prove.
     pub fn wrap_argv_with_limit(&self, argv: Vec<String>, settings: Settings) -> Vec<String> {
-        self.wrap_argv_inner(argv, Some(settings))
+        self.wrap_argv_inner(argv, Some(settings), true)
     }
 
-    fn wrap_argv_inner(&self, argv: Vec<String>, limit: Option<Settings>) -> Vec<String> {
-        if !self.needs_wrapper() || argv.is_empty() {
+    /// Wraps a child in this governor's slice even when this process already
+    /// belongs to it. The slice tests use this to place an allocator in their
+    /// own slice while the release suite itself runs inside `devboard.slice`.
+    pub fn wrap_argv_in_slice(&self, argv: Vec<String>) -> Vec<String> {
+        self.wrap_argv_inner(argv, None, true)
+    }
+
+    fn wrap_argv_inner(
+        &self,
+        argv: Vec<String>,
+        limit: Option<Settings>,
+        force: bool,
+    ) -> Vec<String> {
+        let wrap = if force {
+            self.slice_enabled && self.slice_info().present
+        } else {
+            self.needs_wrapper()
+        };
+        if !wrap || argv.is_empty() {
             return argv;
         }
         let mut wrapped = vec![
