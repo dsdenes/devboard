@@ -1072,3 +1072,165 @@ async fn forge_projection_reads_only_unresolved_urls() {
         Some("1.2.3")
     );
 }
+
+fn release_worker_state(pid: u32, state_dir: &Path) -> Value {
+    json!({
+        "version": 1,
+        "pid": pid,
+        "startedAt": devboard::journal::now_iso8601(),
+        "root": "",
+        "stateDir": state_dir.to_string_lossy(),
+        "lifecycle": "running",
+        "enabled": true,
+        "paused": false,
+        "argv": ["devboard", "worker", "release-train"],
+        "lastRunAt": null,
+        "nextRunAt": null,
+        "lastError": null,
+        "notice": null,
+        "updatedAt": devboard::journal::now_iso8601(),
+    })
+}
+
+/// Starts a stand-in worker process and returns its pid; the caller kills it.
+fn stand_in_worker() -> u32 {
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a stand-in worker");
+    let pid = child.id();
+    // The stand-in must outlive this call; nothing reaps it.
+    std::mem::forget(child);
+    pid
+}
+
+fn kill_stand_in(pid: u32) {
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+fn write_release_worker(state: &Path, pid: u32, owner_state: &Path) {
+    let directory = state.join("release-train");
+    write_json(
+        &directory.join("lock.1.41.5"),
+        json!({
+            "pid": pid,
+            "startedAt": devboard::journal::now_iso8601(),
+            "repo": "",
+            "stateDir": owner_state.to_string_lossy(),
+            "harnessVersion": "1.41.5",
+            "argv": ["devboard", "worker", "release-train"],
+        }),
+    );
+    write_json(
+        &directory.join("workers/1.41.5/worker.json"),
+        release_worker_state(pid, owner_state),
+    );
+}
+
+#[tokio::test]
+async fn a_release_worker_of_another_state_dir_reads_running_and_start_is_a_noop() {
+    let root = scratch("release-foreign");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let foreign = root.join("foreign-state");
+    std::fs::create_dir_all(repo.join(".devboard")).expect("a harness directory");
+    std::fs::create_dir_all(&foreign).expect("a foreign state directory");
+
+    let recorded: RecordedSpawns = Arc::new(Mutex::new(Vec::new()));
+    let recorded_spawn = Arc::clone(&recorded);
+    devboard::agents_mode::set_spawn(&app, move |argv, environment| {
+        recorded_spawn
+            .lock()
+            .expect("recorded spawns")
+            .push((argv.to_vec(), environment.clone()));
+        None
+    });
+
+    let pid = stand_in_worker();
+    write_release_worker(&state, pid, &foreign);
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("release-train")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    assert!(find(&all, "error").is_empty(), "start refused: {all:?}");
+    assert!(
+        recorded.lock().expect("recorded spawns").is_empty(),
+        "a second release worker started: {all:?}"
+    );
+    let snapshot = agent(&all, "release-train").expect("a release-train snapshot");
+    assert_eq!(snapshot["lifecycle"], "running", "{all:?}");
+    assert_eq!(snapshot["attached"], true);
+    assert_eq!(snapshot["owned"], false, "{all:?}");
+    let notice = snapshot["notice"].as_str().unwrap_or_default();
+    assert!(
+        notice.contains("another dashboard")
+            && notice.contains(&foreign.to_string_lossy().into_owned()),
+        "the page does not say which dashboard owns the worker: {all:?}"
+    );
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StopAgent {
+            id: Some(json!("release-train")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let errors = find(&all, "error");
+    assert_eq!(errors.len(), 1, "stop did not name the owner: {all:?}");
+    let message = errors[0]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("another dashboard") && message.contains("cannot stop it"),
+        "stop did not name the owner: {all:?}"
+    );
+
+    kill_stand_in(pid);
+}
+
+#[tokio::test]
+async fn a_release_worker_of_this_state_dir_is_owned() {
+    let root = scratch("release-own");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    std::fs::create_dir_all(repo.join(".devboard")).expect("a harness directory");
+
+    let pid = stand_in_worker();
+    write_release_worker(&state, pid, &state);
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let state_frame = all
+        .iter()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .expect("an agentsState frame");
+    let snapshot = state_frame
+        .get("agents")
+        .and_then(Value::as_array)
+        .expect("an agents list")
+        .iter()
+        .find(|agent| agent.get("id").and_then(Value::as_str) == Some("release-train"))
+        .expect("a release-train snapshot");
+    assert_eq!(snapshot["lifecycle"], "running", "{all:?}");
+    assert_eq!(snapshot["attached"], true);
+    assert_eq!(snapshot["owned"], true);
+    assert_eq!(snapshot["notice"], Value::Null);
+
+    kill_stand_in(pid);
+}

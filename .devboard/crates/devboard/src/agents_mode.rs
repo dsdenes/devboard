@@ -8114,6 +8114,17 @@ struct ReleaseMutable {
     stop_requested: bool,
     start_error: Option<String>,
     takeover: bool,
+    /// Names a worker another dashboard's STATE_DIR owns, so a Start that
+    /// cannot act on it says why instead of doing nothing.
+    notice: Option<String>,
+}
+
+/// The notice a page reads while a worker of another dashboard's STATE_DIR owns
+/// this root; the prefix is what a later snapshot clears.
+const FOREIGN_WORKER_NOTICE: &str = "Release Train is running for this root from another dashboard";
+
+fn foreign_worker_notice(state_dir: &str) -> String {
+    format!("{FOREIGN_WORKER_NOTICE} (STATE_DIR {state_dir}).")
 }
 
 struct ReleaseFamily {
@@ -8154,16 +8165,38 @@ impl ReleaseFamily {
                 stop_requested: false,
                 start_error: None,
                 takeover: false,
+                notice: None,
             })),
             start_lock: tokio::sync::Mutex::new(()),
         }
     }
 
-    fn owners(&self) -> Vec<LockOwner> {
+    /// Every live Release Train worker for this root, whichever dashboard's
+    /// STATE_DIR started it. A worker of another STATE_DIR still holds the
+    /// root's release cadence, so the page reads it as running.
+    fn all_owners(&self) -> Vec<LockOwner> {
         live_lock_owners(&self.directory.join("lock"))
+    }
+
+    /// The live workers this dashboard may signal: the ones its own STATE_DIR
+    /// started.
+    fn owners(&self) -> Vec<LockOwner> {
+        self.all_owners()
             .into_iter()
-            .filter(|owner| resolved(Path::new(&owner.state_dir)) == resolved(&self.state_dir))
+            .filter(|owner| self.owns(owner))
             .collect()
+    }
+
+    /// A live worker another dashboard's STATE_DIR owns, which this one cannot
+    /// stop and must not start a second of.
+    fn foreign_owner(&self) -> Option<LockOwner> {
+        self.all_owners()
+            .into_iter()
+            .find(|owner| !self.owns(owner))
+    }
+
+    fn owns(&self, owner: &LockOwner) -> bool {
+        resolved(Path::new(&owner.state_dir)) == resolved(&self.state_dir)
     }
 
     fn control_for(&self, owner: &LockOwner) -> PathBuf {
@@ -8176,13 +8209,23 @@ impl ReleaseFamily {
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         let shared = read_json(&self.directory.join("state.json")).unwrap_or(Value::Null);
-        let owners = self.owners();
+        let owners = self.all_owners();
+        let own: Vec<LockOwner> = owners
+            .iter()
+            .filter(|owner| self.owns(owner))
+            .cloned()
+            .collect();
+        let foreign = owners.iter().find(|owner| !self.owns(owner)).cloned();
         let records = release_worker_states(&self.directory);
-        let attached = owners.iter().any(|owner| {
-            records
-                .iter()
-                .any(|record| record.pid == owner.pid && record.lifecycle != "stopped")
-        });
+        let published = |owners: &[LockOwner]| {
+            owners.iter().any(|owner| {
+                records
+                    .iter()
+                    .any(|record| record.pid == owner.pid && record.lifecycle != "stopped")
+            })
+        };
+        let attached = published(&owners);
+        let owned = published(&own);
         let active = records
             .iter()
             .find(|record| {
@@ -8199,6 +8242,10 @@ impl ReleaseFamily {
             if mutable.starting && attached {
                 mutable.starting = false;
                 mutable.starting_since = None;
+            }
+            if attached {
+                // A worker that published late is running; the five-second proof
+                // error described its publication, not its life.
                 mutable.start_error = None;
             }
             if mutable.starting {
@@ -8213,8 +8260,18 @@ impl ReleaseFamily {
                     }
                 }
             }
-            if mutable.stop_requested && !attached {
+            if mutable.stop_requested && own.is_empty() {
                 mutable.stop_requested = false;
+            }
+            if let Some(foreign) = foreign.as_ref() {
+                mutable.notice = Some(foreign_worker_notice(&foreign.state_dir));
+            } else if mutable
+                .notice
+                .as_ref()
+                .map(|notice| notice.starts_with(FOREIGN_WORKER_NOTICE))
+                .unwrap_or(false)
+            {
+                mutable.notice = None;
             }
         }
         let mutable = self.mutable.lock().expect("release-train state");
@@ -8354,7 +8411,7 @@ impl ReleaseFamily {
                         .map(|record| record.enabled)
                         .unwrap_or(false)
                     && lifecycle != "stopped",
-                owned: attached,
+                owned,
                 attached,
                 minutes: settings.interval_minutes,
                 last_run_at: active
@@ -8387,7 +8444,10 @@ impl ReleaseFamily {
                     scan_id: Some(scan_id),
                     entries: activity,
                 },
-                notice: active.as_ref().and_then(|record| record.notice.clone()),
+                notice: mutable
+                    .notice
+                    .clone()
+                    .or_else(|| active.as_ref().and_then(|record| record.notice.clone())),
                 error,
                 timer: None,
                 workers,
@@ -8406,6 +8466,7 @@ impl ReleaseFamily {
             if let Ok(mut mutable) = self.mutable.lock() {
                 mutable.preview_starting = true;
                 mutable.start_error = None;
+                mutable.notice = None;
             }
         }
     }
@@ -8423,6 +8484,16 @@ impl ReleaseFamily {
             if mutable.starting {
                 return AgentResult::ok();
             }
+        }
+        if let Some(foreign) = self.foreign_owner() {
+            // Another dashboard owns the root's cadence; a second worker would
+            // compete for the same release. Start is a no-op that says so.
+            let notice = foreign_worker_notice(&foreign.state_dir);
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.notice = Some(notice);
+                mutable.start_error = None;
+            }
+            return AgentResult::ok();
         }
         if self.owners().is_empty() {
             return self.spawn_worker().await;
@@ -8542,6 +8613,12 @@ impl ReleaseFamily {
     fn stop(&self) -> AgentResult {
         let owners = self.owners();
         if owners.is_empty() {
+            if let Some(foreign) = self.foreign_owner() {
+                return AgentResult::failure(format!(
+                    "Release Train is running from another dashboard (STATE_DIR {}); this dashboard cannot stop it.",
+                    foreign.state_dir
+                ));
+            }
             return AgentResult::failure(
                 "No Release Train worker is running for this repository.".to_string(),
             );

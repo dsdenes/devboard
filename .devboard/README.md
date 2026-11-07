@@ -2217,7 +2217,10 @@ All seven continuous agents publish the same lifecycle: `stopped`, `starting`, `
 `stopping` from the moment Stop is accepted until the worker exits. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
-Start is a no-op with a notice.
+Start is a no-op with a notice. The notice is the page's `agent-notice` line, rendered while a live
+worker is `attached` and `owned` is false, and it names the `STATE_DIR` that owns the worker; the
+Release Train answers the same way, and its Start spawns no second worker. `agent-start` is
+disabled while the lifecycle reads `starting`, so an in-flight start is never dispatched twice.
 
 All background-agent pages share `data-testid="agent-page"` and `data-agent`, the header
 `agent-header`, the lifecycle badge `agent-lifecycle`, `agent-sync-at`, exactly one of
@@ -2225,7 +2228,8 @@ All background-agent pages share `data-testid="agent-page"` and `data-agent`, th
 `agent-cadence`, `agent-last-run`, `agent-next-run`, `agent-save-cadence`, `agent-limit-hour`,
 `agent-limit-pending`, `agent-save-limits`, `agent-issues-count`, `agent-issues`, and the pinned
 `agent-activity-bar`. No shared page renders a separate detail panel. Alerts use one position:
-`agent-error`, `agent-sync-error`, and `agent-settings-error`, each with `role="alert"`.
+`agent-error`, `agent-sync-error`, and `agent-settings-error`, each with `role="alert"`;
+`agent-notice` is a separate `role="status"` line above them.
 Start/Stop is the only filled primary control.
 The header row carries the page identity, the lifecycle badge, the last-read clock, and
 Start/Stop. Its settings footer is one band `role="group"` named `Cadence and filing limits` with

@@ -185,7 +185,7 @@
             data-agent={agentId}
             data-id={agentId}
             data-command={`issues.${agentId}.start`}
-            disabled={!connection.open || blocked || snapshot === null}
+            disabled={!connection.open || blocked || snapshot === null || lifecycle === "starting"}
           >
             Start
           </CommandButton>
@@ -346,6 +346,10 @@
       </div>
     {/if}
 
+    {#if snapshot !== null && snapshot.attached && !snapshot.owned && snapshot.notice !== null}
+      <p class="agent-notice" data-testid="agent-notice" role="status">{snapshot.notice}</p>
+    {/if}
+
     {#if snapshot?.error !== null || sync.error !== null || settingsError !== null}
       <div class="agent-page__alerts">
         {#if sync.error !== null}
@@ -438,6 +442,17 @@
   .agent-blocked p {
     font-size: 12px;
     margin: 0;
+  }
+
+  /* A live worker this dashboard does not own: why Start starts nothing. */
+  .agent-notice {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    margin: 0;
+    padding: 8px 12px;
   }
 
   /* Two overline groups, each ending in its own save control. */
