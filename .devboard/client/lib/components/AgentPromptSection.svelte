@@ -59,10 +59,13 @@
 </details>
 
 <style>
+  /* A flex item in the scrolling agent column: `overflow: hidden` would let it
+     shrink to a few pixels and clip the open body, so it keeps its own height. */
   .agent-prompt {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 4px;
+    flex: 0 0 auto;
     overflow: hidden;
   }
 

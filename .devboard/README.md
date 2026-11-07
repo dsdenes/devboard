@@ -2352,7 +2352,10 @@ page renders one prompt section `data-testid="agent-prompt"`. It is a `<details>
 closed on every page load, its summary (`agent-prompt-summary`) carrying `Prompt`, the prompt
 file path as a mono code chip when the descriptor names one, and a chevron, with all of its
 content (`agent-prompt-body`) hidden until the operator opens it. A reload, tab restore, or
-reconnect renders it closed again; opening it changes no file and no agent state.
+reconnect renders it closed again; opening it changes no file and no agent state. Inside the
+scrolling agent column the disclosure never shrinks below its own content, so the summary keeps
+its full height while closed and an open body stays inside the disclosure rather than being
+clipped; the column scrolls when the page does not fit.
 
 Auto Scout, Design System, and Dead Code read the effective prompt file their worker command
 opens: `.devboard/prompts/scout-recommendations.md`, `.devboard/prompts/design-system.md`, and
