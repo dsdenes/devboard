@@ -744,7 +744,16 @@ async fn a_slow_owner_launcher_is_not_a_dead_owner() {
         final_state = Some(state);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let state = final_state.expect("a sample");
+    let mut state = final_state.expect("a sample");
+    // A loaded host may start the exec yet not finish it inside the first
+    // second; the claim is still the owner's own, and the run stays running.
+    let claim_deadline = std::time::Instant::now() + Duration::from_millis(5000);
+    while owner_pid_of(&state).is_none() && std::time::Instant::now() < claim_deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        state = owner_state(&repo, &path).expect("the running owner state");
+        assert_eq!(state["run"]["status"], "running", "{state}");
+        assert_eq!(state["run"]["error"], Value::Null, "{state}");
+    }
     let pid = owner_pid_of(&state).expect("the owner published its identity");
     let recorded: Vec<String> = state["owner"]["argv"]
         .as_array()
