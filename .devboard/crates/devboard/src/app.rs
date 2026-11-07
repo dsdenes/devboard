@@ -480,6 +480,10 @@ impl App {
                 crate::providers::USAGE_TTL_MS,
             ));
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // `interval` fires immediately; the first push belongs one period
+            // later, so a fresh connection never receives an unsolicited
+            // providersState before its own replay and first command.
+            timer.tick().await;
             loop {
                 timer.tick().await;
                 let Some(app) = weak.upgrade() else {

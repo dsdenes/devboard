@@ -789,3 +789,39 @@ async fn the_background_refresh_checks_stale_usage() {
         devboard::providers::iso_timestamp(1_700_000_060_000)
     );
 }
+
+#[tokio::test]
+async fn a_fresh_connection_receives_no_unsolicited_provider_state() {
+    let root = fixture_root("startup-usage");
+    let state = root.join("state");
+    std::fs::create_dir_all(root.join("repo/.devboard")).expect("a harness directory");
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: root.join("repo/adrs"),
+        repo_dir: root.join("repo"),
+        goal_file: root.join("repo/GOAL.md"),
+        static_dir: None,
+        agent_command: "true".to_string(),
+        state_dir: state.clone(),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
+    let app = App::new(config, journal);
+    let (conn, mut inbox) = connection();
+    app.register(conn.clone()).await;
+
+    // The usage push belongs one period after startup; the immediate interval
+    // tick must not answer a connection that sent nothing.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let providers: Vec<Value> = all_frames(&mut inbox)
+        .iter()
+        .filter_map(|frame| serde_json::from_str::<Value>(frame).ok())
+        .filter(|frame| frame["type"] == "providersState")
+        .collect();
+    assert!(
+        providers.is_empty(),
+        "an unsolicited provider frame arrived before the first period: {providers:?}"
+    );
+}
