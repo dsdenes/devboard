@@ -2092,6 +2092,16 @@ const TRANSIENT_PATTERNS: &[&str] = &[
     "unavailable",
 ];
 
+/// The refusal Gitea answers when its own authentication middleware could not
+/// verify the presented token.
+///
+/// Gitea returns this body with HTTP 401 for a token it does not accept and for
+/// one its access-token store could not read, so a locked or slow token table
+/// under load answers exactly this message. One refusal therefore never proves
+/// the credential is unusable, and treating it as permanent stopped a periodic
+/// read and raised a credential alarm for a fault that clears by itself.
+const GITEA_REFUSAL_PATTERN: &str = "invalid username, password or token";
+
 /// Classifies one failed periodic read from its diagnostic. An unrecognized
 /// failure is transient: another attempt may fix a fault the forge does not
 /// name.
@@ -2102,6 +2112,13 @@ pub fn classify_forge_read_failure(message: &str) -> ForgeReadFailureKind {
         .any(|pattern| message.contains(pattern))
     {
         return ForgeReadFailureKind::RateLimit;
+    }
+    // A Gitea refusal spends the retry schedule before it is reported, because
+    // the forge answers it for a token it could not read and for one it does
+    // not accept alike. A genuinely unusable credential still surfaces once the
+    // schedule is exhausted with the fifth consecutive refusal.
+    if message.contains(GITEA_REFUSAL_PATTERN) {
+        return ForgeReadFailureKind::Transient;
     }
     if PERMANENT_PATTERNS
         .iter()

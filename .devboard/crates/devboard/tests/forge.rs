@@ -969,6 +969,63 @@ async fn read_retry_uses_the_documented_delays_and_stops_on_permanent_failures()
     assert!(delays.lock().expect("delays").is_empty());
 }
 
+/// Gitea answers this body when its authentication middleware could not read
+/// the token, so one refusal is a forge fault rather than a verdict on the
+/// credential and the read spends the shared retry schedule first.
+#[tokio::test]
+async fn a_gitea_refusal_is_retried_before_a_credential_failure_is_reported() {
+    let refused = "GET /repos/owner/name/issues?state=all&type=issues&limit=50&page=1 failed \
+                   (HTTP 401): invalid username, password or token";
+    assert_eq!(
+        classify_forge_read_failure(refused),
+        ForgeReadFailureKind::Transient
+    );
+    // Every other forge keeps its 401 a credential verdict on the first try.
+    assert_eq!(
+        classify_forge_read_failure(
+            "GET /repos/owner/name/issues failed (HTTP 401): Bad credentials"
+        ),
+        ForgeReadFailureKind::Permanent
+    );
+    assert_eq!(
+        classify_forge_read_failure(
+            "GET /api/v4/projects/1/issues failed (HTTP 401): Unauthorized"
+        ),
+        ForgeReadFailureKind::Permanent
+    );
+
+    let (sleep, delays) = recording_sleep();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let mut retry = ForgeReadRetry::new();
+    let counter = attempts.clone();
+    let result = read_with_retry(&mut retry, &sleep, move || {
+        let counter = counter.clone();
+        async move {
+            let attempt = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt == 1 {
+                Err(refused.to_string())
+            } else {
+                Ok(attempt)
+            }
+        }
+    })
+    .await;
+    assert_eq!(result, Ok(2));
+    assert_eq!(*delays.lock().expect("delays"), vec![1_000]);
+
+    // A refusal that never clears is still reported, with its own detail, once
+    // the five attempts are spent.
+    let (sleep, delays) = recording_sleep();
+    let mut retry = ForgeReadRetry::new();
+    let result: Result<(), String> =
+        read_with_retry(&mut retry, &sleep, || async { Err(refused.to_string()) }).await;
+    assert_eq!(result, Err(refused.to_string()));
+    assert_eq!(
+        *delays.lock().expect("delays"),
+        vec![1_000, 2_000, 4_000, 8_000]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // GitHub release reads and version resolution
 

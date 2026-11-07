@@ -2282,6 +2282,13 @@ limit, abuse detection, or HTTP 429) surface on the first attempt without a retr
 still never raises `agent-error`. Forge writes, Start and Stop preflights, agent turns, and user
 commands are never retried.
 
+A Gitea `HTTP 401` carrying `invalid username, password or token` is the one refusal that is
+retried. Gitea answers that exact body when its own token store could not be read — a locked or
+slow access-token table under load — as well as for a token it does not accept, so one refusal
+proves nothing about the credential. The read spends the same 1, 2, 4, and 8 second schedule and
+reports the refusal only when the fifth consecutive attempt is refused too. A GitHub or GitLab
+401 stays a credential verdict on the first attempt.
+
 ### Transport
 
 Browser-to-backend state and controls use the WebSocket from
@@ -3824,7 +3831,8 @@ failure keeps the last known rows and the last success time, records no reason, 
 and retries after 1, 2, 4, and 8 seconds; only the fifth consecutive transport failure writes that
 attempt's reason to `agent-sync-error`, after which the next attempt waits the 60-second cadence. A
 permanent failure (unusable credentials, a missing repository, a malformed answer, or missing forge
-configuration) surfaces on the first attempt. The reason clears on the next successful read, and a
+configuration) surfaces on the first attempt; a Gitea 401 refusal is the exception above and
+spends the retry schedule first. The reason clears on the next successful read, and a
 failed read names the forge, never GitHub, so a Gitea failure never claims a GitHub read. Opening
 the page retries at
 once: each open reads the forge through the shared dashboard reader when its interval allows and
