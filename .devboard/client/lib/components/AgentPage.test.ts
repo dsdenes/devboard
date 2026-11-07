@@ -13,8 +13,10 @@ afterAll(() => {
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the testing library load after registration.
-const { cleanup, render, within } = await import("@testing-library/svelte");
+const { cleanup, fireEvent, render, within } = await import("@testing-library/svelte");
 const { agents } = await import("../agents.svelte");
+// Loaded after the DOM globals, like every other store the component reads.
+const { connection } = await import("../connection.svelte");
 const { default: AgentPage } = await import("./AgentPage.svelte");
 
 afterEach(() => {
@@ -81,4 +83,26 @@ test("Start is disabled while the agent is starting", () => {
   );
   const start = within(view.container).getByTestId("agent-start");
   expect(start.hasAttribute("disabled")).toBe(true);
+});
+
+test("both settings Save controls are disabled and send nothing with the socket closed", async () => {
+  const previous = connection.state;
+  connection.state = "closed";
+  try {
+    const view = present(releaseSnapshot({ attached: false, owned: false, notice: null }));
+    const cadenceField = within(view.container).getByTestId("agent-cadence") as HTMLInputElement;
+    await fireEvent.input(cadenceField, { target: { value: "42" } });
+    expect(cadenceField.value).toBe("42");
+    const cadence = within(view.container).getByTestId("agent-save-cadence");
+    const limits = within(view.container).getByTestId("agent-save-limits");
+    expect(cadence.hasAttribute("disabled")).toBe(true);
+    expect(limits.hasAttribute("disabled")).toBe(true);
+    await fireEvent.click(cadence);
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+    expect(view.container.querySelector('[data-slot="button-busy"]')).toBeNull();
+    // The refused save never claims the field's value as saved.
+    expect(cadenceField.value).toBe("42");
+  } finally {
+    connection.state = previous;
+  }
 });

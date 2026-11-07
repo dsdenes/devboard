@@ -265,6 +265,7 @@
               command={() => saveSettings(`agent.cadence.${agentId}`)}
               data-testid="agent-save-cadence"
               data-command={`issues.${agentId}.settings.cadence`}
+              disabled={!connection.open || snapshot === null}
             >
               Save cadence
             </CommandButton>
@@ -310,6 +311,7 @@
               command={() => saveSettings(`agent.limits.${agentId}`)}
               data-testid="agent-save-limits"
               data-command={`issues.${agentId}.settings.limits`}
+              disabled={!connection.open || snapshot === null}
             >
               Save limits
             </CommandButton>
