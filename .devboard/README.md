@@ -428,7 +428,7 @@ card, every other failure in the notice stack above the page.
 The status bar's OS notifications control (`os-notifications`) is a separate channel, off by
 default. Its first click asks the browser for notification permission; after a grant it reads
 `OS notifications on`, after a denial or a blocked site it reads `OS notifications blocked`, and
-a dismissed prompt leaves it off. While it is on, the open dashboard raises one desktop
+a dismissed prompt leaves it off. While it is on, the open dashboard raises one OS
 notification per pending agent question in Goal, Discover, Flow, and Issues — a lifecycle lane,
 a manual run, goal creation, revision, skills preparation, a Discover agent, a Flow session,
 Flow goal creation, a Flow conversation, or an issues draft elaboration — carrying the dashboard's

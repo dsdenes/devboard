@@ -7,7 +7,7 @@ import type {
 
 /**
  * The OS notification channel is separate from the in-app `NotificationStore`:
- * it raises one desktop notification per pending agent question, and nothing
+ * it raises one OS notification per pending agent question, and nothing
  * else. It is driven by the full question set observed after every server
  * frame, so a repeated snapshot, a poll, or a reconnect cannot raise a second
  * notification for a question the page already announced.
@@ -250,13 +250,13 @@ export class OsNotificationController {
 
   get title(): string {
     if (this.state === "on") {
-      return "OS notifications are on. Click to stop desktop notifications for agent questions.";
+      return "OS notifications are on. Click to stop OS notifications for agent questions.";
     }
     if (this.state === "blocked") {
       return "OS notifications are blocked. Allow notifications for this site in the browser "
         + "to turn them on.";
     }
-    return "OS notifications are off. Click to allow and receive a desktop notification for "
+    return "OS notifications are off. Click to allow and receive an OS notification for "
       + "every pending agent question.";
   }
 
