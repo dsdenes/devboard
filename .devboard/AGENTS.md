@@ -58,7 +58,10 @@ the artifact digest, installs it beside its own binary, and replaces itself with
 click: every connected page waits for the replacement and reloads once. An unreachable, invalid,
 or mismatched manifest leaves the running process serving and is journaled once per attempt. The
 reload control (`data-testid="reload-devboard"`) appears only when a replacement could not start
-and retries the same launcher. Never restart a dashboard by hand and never symlink a host.
+and retries the same launcher. The MATE top-panel Devboard icon
+(`desktop/devboard-launcher.py`) is the sanctioned operator path: it sweeps this host's stray
+dashboards, keeps the newest ready one, and starts or restarts exactly one. Never restart a
+dashboard by hand outside that icon, and never symlink a host.
 
 ## Restart the source interface after every change
 
@@ -66,7 +69,8 @@ A canonical source dashboard never installs or replaces itself on an update chec
 successful publish, `devboard publish` writes a source-refresh request into each live dashboard's
 own `STATE_DIR`; the dashboard verifies the embedded client digest and replaces itself through the
 ordinary handoff. Editing a source file, rebuilding `dist`, a page reload, and an update check
-never restart it. Never stop or relaunch a source dashboard by hand.
+never restart it. Never stop or relaunch a source dashboard by hand outside the panel icon's
+sweep, which keeps the newest ready dashboard and ends only this host directory's strays.
 
 ## Commit messages
 

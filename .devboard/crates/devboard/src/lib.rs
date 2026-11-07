@@ -35,6 +35,7 @@ pub mod goal_run;
 pub mod http;
 pub mod idempotency;
 pub mod installed_skills;
+pub mod instances;
 pub mod issues_mode;
 pub mod journal;
 pub mod jsjson;

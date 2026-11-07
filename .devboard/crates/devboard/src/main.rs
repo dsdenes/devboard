@@ -30,6 +30,7 @@ async fn run() -> anyhow::Result<()> {
         Some("watchdog") => watchdog_command(&args),
         Some("worker") => worker_command(&args).await,
         Some("resources") => resources_command(&args[1..]).await,
+        Some("instances") => devboard::instances::command(&args[1..]).await,
         Some("acp-stub") => devboard::acp_stub::run_stub(&args[1..]),
         Some("mcp") => devboard::mcp_server::run_server().await,
         Some("bench") => bench_command(&args).await,
@@ -44,7 +45,7 @@ async fn run() -> anyhow::Result<()> {
         Some("preflight") => preflight_command(&args),
         Some("forge-auth") => std::process::exit(devboard::forge_auth::main(&args[1..]).await),
         Some(other) => anyhow::bail!(
-            "unknown command {other}; expected serve, version, install, update, doctor, cleanup, watchdog, worker, resources, acp-stub, mcp, bench, publish, release-suite, check-runtime, gate-prepush, hooks, preflight, or forge-auth"
+            "unknown command {other}; expected serve, version, install, update, doctor, cleanup, watchdog, worker, resources, instances, acp-stub, mcp, bench, publish, release-suite, check-runtime, gate-prepush, hooks, preflight, or forge-auth"
         ),
     }
 }
@@ -191,6 +192,32 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             let _ = devboard::relaunch::write_ready_marker(std::path::Path::new(&ready_file), port);
         }
     }
+    // One dashboard per host directory. The guard is taken after a confirmed
+    // replacement announces readiness — the process it replaces still holds
+    // the lock until it exits — and before any listener, state write, or
+    // worker. A second start is refused here and never signals the owner.
+    let replacement = readiness.is_some();
+    std::env::remove_var("DEVBOARD_REPLACEMENT_READY_FILE");
+    let guard_owner = devboard::instances::GuardOwner {
+        pid: std::process::id(),
+        port: config.port,
+        repo_dir: devboard::instances::canonical_host_dir(&config.repo_dir)
+            .to_string_lossy()
+            .into_owned(),
+        state_dir: config.state_dir.to_string_lossy().into_owned(),
+        started_at: devboard::workers::watchdog::now_iso(),
+    };
+    let guard = if devboard::instances::fixture_bypass(&config.repo_dir) {
+        None
+    } else {
+        match devboard::instances::acquire_host_guard(&config.repo_dir, replacement, &guard_owner)?
+        {
+            devboard::instances::GuardAdmission::Acquired(guard) => Some(guard),
+            devboard::instances::GuardAdmission::Refused(message) => {
+                anyhow::bail!("{message}")
+            }
+        }
+    };
     let mut listener = None;
     for _attempt in 0..50 {
         match devboard::http::bind(&config.hostname, config.port).await {
@@ -218,6 +245,13 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         .local_addr()
         .map(|address| address.port())
         .unwrap_or(config.port);
+    if let Some(guard) = &guard {
+        let bound = devboard::instances::GuardOwner {
+            port: config.port,
+            ..guard_owner.clone()
+        };
+        let _ = guard.record(&bound);
+    }
     let running_version =
         devboard::version::read_harness_version(&devboard::version::running_harness_dir())
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
@@ -239,14 +273,11 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     server.app.start_resource_watcher();
     {
         let app = std::sync::Arc::downgrade(&server.app);
-        let config = server.config.clone();
         server.app.set_restart_hook(std::sync::Arc::new(move || {
-            let settings = devboard::relaunch::RelaunchSettings::from_config(&config);
-            devboard::relaunch::relaunch(&settings, None).map_err(|error| error.to_string())?;
-            if let Some(app) = app.upgrade() {
-                app.shared.shutdown.notify_waiters();
-            }
-            std::process::exit(0);
+            let Some(app) = app.upgrade() else {
+                return Err("the dashboard is shutting down".to_string());
+            };
+            app.restart_confirmed()
         }));
     }
     install_signal_shutdown(&server);

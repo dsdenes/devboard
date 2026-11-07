@@ -1060,6 +1060,33 @@ impl App {
         }
     }
 
+    /// Replaces this process through a confirmed handoff.
+    ///
+    /// The CLI's restart hook uses this instead of an immediate exit: the
+    /// replacement announces readiness while this process still holds both the
+    /// dashboard port and the host guard, so the handoff never leaves the host
+    /// with two dashboards. A failed replacement keeps this process serving
+    /// and reports through the ordinary error path.
+    pub fn restart_confirmed(self: &Arc<Self>) -> Result<(), String> {
+        let app = self.clone();
+        tokio::spawn(async move {
+            let settings = crate::relaunch::RelaunchSettings::from_config(app.config());
+            let ready_file = app
+                .config()
+                .state_dir
+                .join("replacement")
+                .join(format!("ready-{}.json", std::process::id()));
+            match crate::relaunch::relaunch_confirmed(&settings, &ready_file, 15_000, None).await {
+                Ok(()) => {
+                    app.shared.shutdown.notify_waiters();
+                    std::process::exit(0);
+                }
+                Err(error) => app.replacement_failed(&error),
+            }
+        });
+        Ok(())
+    }
+
     /// The one failure path a restart and an automatic replacement share: the
     /// handoff files go, the old process keeps serving, and every page is told
     /// both versions and the failure.

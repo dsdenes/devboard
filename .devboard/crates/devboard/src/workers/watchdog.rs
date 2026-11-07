@@ -364,7 +364,7 @@ pub fn pid_alive(pid: u32) -> bool {
 
 /// The instant a live process started, in epoch milliseconds, derived from
 /// `/proc/<pid>/stat` and the kernel's own uptime.
-fn process_started_at(pid: u32) -> Option<i64> {
+pub(crate) fn process_started_at(pid: u32) -> Option<i64> {
     if !cfg!(target_os = "linux") || pid == 0 {
         return None;
     }
@@ -1428,7 +1428,7 @@ pub fn is_verification_fixture(repo_dir: &str, env: &HashMap<String, String>) ->
 }
 
 /// The live watchdog verification seeds a scratch dashboard on purpose.
-const WATCHDOG_FIXTURE_ENV: &str = "DEVBOARD_WATCHDOG_FIXTURE";
+pub const WATCHDOG_FIXTURE_ENV: &str = "DEVBOARD_WATCHDOG_FIXTURE";
 
 /// `Number(value)` for an environment value, `None` for NaN.
 fn number(value: &str) -> Option<f64> {
@@ -1554,10 +1554,6 @@ pub fn instances_from_processes_including(
         else {
             continue;
         };
-        let key = format!("{}\u{0}{}", repo_dir, port as u32);
-        if !seen.insert(key) {
-            continue;
-        }
         let state_dir = serve
             .state_dir
             .map(PathBuf::from)
@@ -1573,6 +1569,12 @@ pub fn instances_from_processes_including(
             port
         };
         if port.fract() != 0.0 || port <= 0.0 {
+            continue;
+        }
+        // Two ephemeral starts carry `--port 0` on the command line; their
+        // markers name different bound ports, so the key uses the resolved one.
+        let key = format!("{}\u{0}{}", repo_dir, port as u32);
+        if !seen.insert(key) {
             continue;
         }
         let journal = journal_file(&state_dir, Path::new(&repo_dir));

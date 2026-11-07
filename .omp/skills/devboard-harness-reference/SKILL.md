@@ -627,6 +627,18 @@ dashboard for that host; without `--port` it installs only and prints the `devbo
 command. `devboard update [host] [--port N]` installs the newest release without a browser click
 and leaves one dashboard serving.
 
+One dashboard serves each host directory. A second `devboard serve` for a host directory that a
+live dashboard already serves exits nonzero and names that dashboard's pid, port, and repository;
+the guard is one OS lock under `<host>/.devboard/.tmp`, so a killed dashboard never blocks the
+next start, and a confirmed replacement (a start carrying
+`DEVBOARD_REPLACEMENT_READY_FILE`) waits for the old process to exit and then takes over.
+`devboard instances status --repo-dir <dir> --json` lists the live dashboards of one host
+directory, and `devboard instances sweep --repo-dir <dir> [--state-dir <dir>]` keeps the newest
+one that answers `/ready`, stops every other dashboard of that host directory after a bounded
+probe grace, and runs the orphan reaper for it. The MATE top-panel Devboard icon
+(`desktop/devboard-launcher.py`) runs that sweep before it starts or restarts exactly one
+dashboard.
+
 `devboard doctor [host]` compares every managed file byte-for-byte, checks release access, the
 installed version and staleness, the running dashboard's pid and port, the `.devboard` and `.omp`
 layout, and the last update failure; it exits nonzero and names the failing check, while an
