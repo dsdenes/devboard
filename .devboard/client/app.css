@@ -3413,7 +3413,13 @@ a.code-chip--link:focus-visible {
 }
 
 .issues-draft-row__delete {
+  align-items: center;
   color: var(--muted-foreground);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
 }
 
 .issues-draft-row__delete:hover:not(:disabled) {
