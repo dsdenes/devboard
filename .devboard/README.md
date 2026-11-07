@@ -474,11 +474,13 @@ The report stays inside the server's 8000-unit bound. The action identity is
 are not part of it. Two breaches of one identity in a page session post once and show one card,
 while a different identity gets its own card and POST. Every filing sends an `idempotency-key`
 derived from the identity, so a reload or a second page uses the same key and the server's
-24-hour replay cache returns the issue already filed instead of creating a duplicate. After the
-POST resolves the card exposes `Open issue` with the returned issue URL and no `File issue`
-control, and the card stays in notification history. With reporting disabled the guard sends no
-request and the card states `Issue not filed: reporting is disabled.` with no link. A failed
-POST states `Issue not filed: <detail>` and offers a `File issue` retry that replaces the message
+24-hour replay cache returns the issue already filed instead of creating a duplicate. Until the
+first version frame states whether reporting is available, a breach files; a resolved disabled
+capability sends no request. After the POST resolves the card exposes `Open issue` with the
+returned issue URL and no `File issue` control, and the card stays in notification history. With
+reporting disabled the guard sends no request and the card states
+`Issue not filed: reporting is disabled.` with no link. A failed POST states
+`Issue not filed: <detail>` and offers a `File issue` retry that replaces the message
 with the issue link; the guard never monitors its own filing request.
 
 The status bar's OS notifications control (`os-notifications`) is a separate channel, off by

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { ConnectionStore } from "./connection.svelte";
+import { fileFeedback, writeGoalDraft } from "./feedback-transport";
+import { GoalDraftsStore } from "./goal-drafts.svelte";
 import { notifications } from "./notifications.svelte";
 import { slowUiActionIdempotencyKey } from "./notification-issue";
 import {
@@ -179,7 +181,7 @@ test("a frame at 1001 ms neither cancels nor duplicates the filed issue", async 
   });
 });
 
-test("a fast startAgent acknowledgement is not filed while the action behind it is", () => {
+test("head-of-line queueing: a fast startAgent acknowledgement is not filed while the action behind it is", () => {
   const sink = new FakeSink();
   const guard = guarded(sink);
   guard.dispatch({ type: "startAgent", id: "scout" }, "operator");
@@ -306,7 +308,7 @@ test("a failed filing keeps its detail and a retry replaces it with the issue li
   });
 });
 
-test("the guard never monitors its own filing request", async () => {
+test("no recursion: the guard never monitors its own filing request", async () => {
   const sink = new FakeSink();
   const guard = guarded(sink);
   guard.dispatch({ type: "startAgent", id: "scout" }, "operator");
@@ -320,7 +322,7 @@ test("the guard never monitors its own filing request", async () => {
   expect(sink.notices).toHaveLength(1);
 });
 
-test("a reconnect clears every pending action without filing", () => {
+test("restart exclusion: a reconnect clears every pending action without filing", () => {
   installGlobals();
   const sink = new FakeSink();
   slowUiAction.install(sink, { now: () => DISPATCHED_AT });
@@ -425,3 +427,67 @@ function restoreGlobals(): void {
     else target[key] = value;
   }
 }
+
+test("an operator POST is registered and completes only when its response arrives", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  const action = guard.dispatchHttp("POST /feedback");
+  expect(action).not.toBeNull();
+
+  guard.observe({ type: "versionState", running: "1", installed: "1", latest: "1", stale: false });
+  jest.advanceTimersByTime(999);
+  expect(sink.posts).toHaveLength(0);
+  action?.complete();
+  jest.advanceTimersByTime(2_000);
+  expect(sink.posts).toHaveLength(0);
+
+  guard.dispatchHttp("POST /feedback");
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  expect(sink.posts).toHaveLength(1);
+  expect(sink.notices[0]?.text).toBe(
+    "Slow UI action: POST /feedback exceeded the 1000 ms budget.",
+  );
+  expect(sink.posts[0]?.report.split("\n")[0]).toBe(
+    "Slow UI action: POST /feedback exceeded the 1000 ms budget.",
+  );
+  expect(sink.posts[0]?.report).toContain("Command: POST /feedback");
+  expect(sink.posts[0]?.report).toContain("Subject: (none)");
+});
+
+test("one endpoint identity files once while another endpoint files its own issue", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  guard.dispatchHttp("POST /feedback");
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  guard.dispatchHttp("POST /feedback");
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  expect(sink.posts).toHaveLength(1);
+
+  guard.dispatchHttp("POST /goal-proposals");
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  expect(sink.posts).toHaveLength(2);
+  expect(sink.posts[1]?.report).toContain("Command: POST /goal-proposals");
+});
+
+test("the two operator POST helpers register their endpoint actions", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  slowUiAction.install(sink, { now: () => DISPATCHED_AT });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
+  try {
+    void fileFeedback({ action: "REPORT", report: "Slow report" });
+    void writeGoalDraft({ report: "Slow draft" });
+    void new GoalDraftsStore().createDraft("Slow draft");
+    jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  expect(sink.notices.map((notice) => notice.command)).toEqual([
+    "POST /feedback",
+    "POST /goal-proposals",
+  ]);
+  expect(sink.posts).toHaveLength(2);
+  guard.reset();
+});

@@ -33,6 +33,11 @@ export interface SlowUiActionContext {
   capturedAt: string;
 }
 
+/** Completes one HTTP action when its response arrives. */
+export interface SlowUiActionTicket {
+  complete(): void;
+}
+
 /** One breached action, as the notice card and the report describe it. */
 export interface SlowUiActionNotice {
   identity: string;
@@ -59,6 +64,7 @@ export interface SlowUiActionSink {
 
 interface PendingAction {
   command: Record<string, unknown>;
+  http: boolean;
   commandName: string;
   subject: string;
   identity: string;
@@ -324,6 +330,7 @@ export class SlowUiActionGuard {
     const identity = actionIdentity(record.type, subject, context.route);
     const action: PendingAction = {
       command: record,
+      http: false,
       commandName: record.type,
       subject,
       identity,
@@ -336,13 +343,38 @@ export class SlowUiActionGuard {
     this.#pending.add(action);
   }
 
+  /**
+   * Registers one operator-initiated HTTP mutation. The response, whatever its
+   * status, is the first answer; the caller completes the ticket when it
+   * arrives. The guard's own filing never comes through here.
+   */
+  dispatchHttp(endpoint: string): SlowUiActionTicket | null {
+    const sink = this.#sink;
+    if (sink === null) return null;
+    const context = sink.captureContext();
+    const action: PendingAction = {
+      command: { type: endpoint },
+      http: true,
+      commandName: endpoint,
+      subject: "",
+      identity: actionIdentity(endpoint, "", context.route),
+      label: endpoint,
+      route: context.route,
+      dispatchedAt: new Date(this.#now()).toISOString(),
+      timer: null,
+    };
+    action.timer = setTimeout(() => this.#breach(action), this.#budgetMs);
+    this.#pending.add(action);
+    return { complete: () => this.#finish(action) };
+  }
+
   /** Completes every pending action the frame answers. */
   observe(frame: unknown): void {
     if (typeof frame !== "object" || frame === null || Array.isArray(frame)) return;
     const record = frame as Record<string, unknown>;
     if (typeof record.type !== "string") return;
     for (const action of [...this.#pending]) {
-      if (!answers(action, record)) continue;
+      if (action.http || !answers(action, record)) continue;
       this.#finish(action);
     }
   }

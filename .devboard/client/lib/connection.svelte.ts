@@ -53,7 +53,7 @@ export class ConnectionStore {
   private openHandlers: Array<() => void> = [];
   /** First open registers first-paint reads; later opens are reconnects. */
   private hasOpened = false;
-  /** Set while `onopen` runs, so surface requests inherit the open's origin. */
+  /** The origin the current open's six first-paint sends register under. */
   private openingOrigin: SlowUiActionOrigin | null = null;
 
   get open(): boolean {
