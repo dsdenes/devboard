@@ -21,8 +21,9 @@ use devboard::publish::{
 };
 use devboard::release::MANIFEST_ASSET;
 use devboard::workers::release_train::{
-    activity_path, check_release_train, empty_state, merge_state, parse_iso_millis, read_result,
-    read_settings, read_state, read_worker_state, release_history, release_train_directory,
+    activity_path, check_release_train, empty_state, gate_git_anonymous_environment,
+    gate_git_environment, merge_state, parse_iso_millis, read_result, read_settings, read_state,
+    read_worker_state, release_history, release_train_directory, release_train_git,
     release_train_owners, release_train_worker_states, request_path, run_directory, runs_directory,
     state_path, verify_shipped, versioned_control_directory, versioned_lock_path,
     versioned_worker_state_path, write_command, write_state, AgentLifecycle, Clock, ForgeRelease,
@@ -405,8 +406,22 @@ fn an_http_origin_or_a_missing_token_resolves_no_credential() {
     assert!(gitea_git_credential(&fixture.repo, &gitea_environment()).is_none());
 }
 
-#[tokio::test]
-async fn the_gate_fetches_through_the_gitea_credential() {
+/// One credential whose rewrite target is the fixture's local bare `origin`, so
+/// a gate fetch reaches it without a network.
+fn local_gitea_credential(fixture: &Fixture) -> GiteaGitCredential {
+    GiteaGitCredential {
+        url: fixture
+            .root
+            .join("origin.git")
+            .to_string_lossy()
+            .into_owned(),
+        remote_url: "ssh://ds@localhost:2223/dsdenes/devboard.git".to_string(),
+        base_url: "http://localhost:3001".to_string(),
+        header: "Authorization: token secret-token".to_string(),
+    }
+}
+#[test]
+fn the_gate_fetches_the_ssh_origin_through_the_gitea_rewrite() {
     let fixture = fixture("gate-credential-fetch", true);
     git(
         &fixture.repo,
@@ -418,23 +433,180 @@ async fn the_gate_fetches_through_the_gitea_credential() {
         ],
     );
     let options = ReleaseTrainGateOptions {
-        credential: Some(GiteaGitCredential {
-            url: fixture
-                .root
-                .join("origin.git")
-                .to_string_lossy()
-                .into_owned(),
-            remote_url: "ssh://ds@localhost:2223/dsdenes/devboard.git".to_string(),
-            base_url: "http://localhost:3001".to_string(),
-            header: "Authorization: token secret-token".to_string(),
-        }),
+        credential: Some(local_gitea_credential(&fixture)),
         ..ReleaseTrainGateOptions::default()
     };
-    // The plain SSH origin cannot be fetched here; the credential redirects
-    // the fetch to the local bare repository, so a successful gate proves the
+    // The plain SSH origin cannot be fetched here; the rewrite redirects the
+    // fetch to the local bare repository, so a successful gate proves the
     // override reached `git fetch`.
     let gate = check_release_train(&fixture.repo, options);
     assert!(matches!(gate, ReleaseTrainGate::Nothing { .. }), "{gate:?}");
+}
+
+#[test]
+fn a_public_remote_is_read_without_presenting_the_credential() {
+    let fixture = fixture("gate-anonymous-fetch", true);
+    git(
+        &fixture.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://ds@localhost:2223/dsdenes/devboard.git",
+        ],
+    );
+    let presented = Arc::new(AtomicUsize::new(0));
+    let run_with_credential: GateGit = {
+        let presented = presented.clone();
+        Arc::new(move |_args: &[&str]| {
+            presented.fetch_add(1, Ordering::SeqCst);
+            GitOutcome {
+                code: 1,
+                stdout: String::new(),
+                stderr: "the credential was presented".to_string(),
+            }
+        })
+    };
+    let options = ReleaseTrainGateOptions {
+        credential: Some(local_gitea_credential(&fixture)),
+        run_with_credential: Some(run_with_credential),
+        ..ReleaseTrainGateOptions::default()
+    };
+    let gate = check_release_train(&fixture.repo, options);
+    assert!(matches!(gate, ReleaseTrainGate::Nothing { .. }), "{gate:?}");
+    assert_eq!(
+        presented.load(Ordering::SeqCst),
+        0,
+        "a public remote was read without the credential"
+    );
+}
+
+#[test]
+fn a_refused_anonymous_fetch_is_retried_with_the_credential() {
+    let fixture = fixture("gate-credential-retry", true);
+    git(
+        &fixture.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://ds@localhost:2223/dsdenes/devboard.git",
+        ],
+    );
+    let credential = local_gitea_credential(&fixture);
+    let refused = Arc::new(AtomicUsize::new(0));
+    let real = release_train_git(&fixture.repo, None);
+    let run: GateGit = {
+        let refused = refused.clone();
+        let real = real.clone();
+        Arc::new(move |args: &[&str]| {
+            if args.first() == Some(&"fetch") {
+                refused.fetch_add(1, Ordering::SeqCst);
+                return GitOutcome {
+                    code: 128,
+                    stdout: String::new(),
+                    stderr: "fatal: could not read Username for 'http://localhost:3001': terminal prompts disabled"
+                        .to_string(),
+                };
+            }
+            real(args)
+        })
+    };
+    let options = ReleaseTrainGateOptions {
+        credential: Some(credential.clone()),
+        run: Some(run),
+        run_with_credential: Some(release_train_git(&fixture.repo, Some(&credential))),
+        ..ReleaseTrainGateOptions::default()
+    };
+    // The refused anonymous attempt is not the answer: the credential attempt
+    // reads the same refs and the gate proceeds from its success.
+    let gate = check_release_train(&fixture.repo, options);
+    assert!(matches!(gate, ReleaseTrainGate::Nothing { .. }), "{gate:?}");
+    assert_eq!(refused.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_fetch_refused_both_ways_reports_the_credential_attempt() {
+    let fixture = fixture("gate-both-refused", true);
+    let run: GateGit = Arc::new(|_args: &[&str]| GitOutcome {
+        code: 128,
+        stdout: String::new(),
+        stderr:
+            "fatal: could not read Username for 'http://localhost:3001': terminal prompts disabled"
+                .to_string(),
+    });
+    let run_with_credential: GateGit = Arc::new(|_args: &[&str]| GitOutcome {
+        code: 128,
+        stdout: String::new(),
+        stderr: "fatal: Authentication failed for 'http://localhost:3001/dsdenes/devboard.git/'"
+            .to_string(),
+    });
+    let options = ReleaseTrainGateOptions {
+        run: Some(run),
+        run_with_credential: Some(run_with_credential),
+        ..ReleaseTrainGateOptions::default()
+    };
+    match check_release_train(&fixture.repo, options) {
+        ReleaseTrainGate::Error { detail } => {
+            assert!(
+                detail.starts_with("could not fetch origin/main and its tags: "),
+                "{detail}"
+            );
+            assert!(detail.contains("Authentication failed"), "{detail}");
+        }
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_anonymous_gate_environment_carries_the_rewrite_but_not_the_token() {
+    let credential = GiteaGitCredential {
+        url: "http://localhost:3001/dsdenes/devboard.git".to_string(),
+        remote_url: "ssh://ds@localhost:2223/dsdenes/devboard.git".to_string(),
+        base_url: "http://localhost:3001".to_string(),
+        header: "Authorization: token secret-token".to_string(),
+    };
+    let entry = |environment: &[(String, String)], key: &str| {
+        environment
+            .iter()
+            .find(|(entry, _)| entry == key)
+            .map(|(_, value)| value.clone())
+    };
+    let anonymous = gate_git_anonymous_environment(Some(&credential));
+    assert_eq!(
+        entry(&anonymous, "GIT_TERMINAL_PROMPT").as_deref(),
+        Some("0")
+    );
+    assert_eq!(entry(&anonymous, "GIT_CONFIG_COUNT").as_deref(), Some("1"));
+    assert_eq!(
+        entry(&anonymous, "GIT_CONFIG_KEY_0").as_deref(),
+        Some("url.http://localhost:3001/dsdenes/devboard.git.insteadOf")
+    );
+    assert_eq!(
+        entry(&anonymous, "GIT_CONFIG_VALUE_0").as_deref(),
+        Some("ssh://ds@localhost:2223/dsdenes/devboard.git")
+    );
+    assert!(entry(&anonymous, "GIT_CONFIG_KEY_1").is_none());
+    assert!(!anonymous
+        .iter()
+        .any(|(_, value)| value.contains("secret-token")));
+    let credentialed = gate_git_environment(Some(&credential));
+    assert_eq!(
+        entry(&credentialed, "GIT_CONFIG_COUNT").as_deref(),
+        Some("2")
+    );
+    assert_eq!(
+        entry(&credentialed, "GIT_CONFIG_KEY_1").as_deref(),
+        Some("http.http://localhost:3001.extraHeader")
+    );
+    assert_eq!(
+        entry(&credentialed, "GIT_CONFIG_VALUE_1").as_deref(),
+        Some("Authorization: token secret-token")
+    );
+    assert_eq!(
+        gate_git_anonymous_environment(None),
+        vec![("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())]
+    );
 }
 
 /* ------------------------------------------------------------------------ */

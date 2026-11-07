@@ -1525,9 +1525,13 @@ pub struct ReleaseTrainGateOptions {
     pub remote: String,
     pub branch: String,
     pub fetch: bool,
-    /// The Gitea HTTP credential a fetch of an SSH origin needs.
+    /// The Gitea HTTP credential a fetch of an SSH origin needs. It is
+    /// presented only when the anonymous attempt cannot read the refs.
     pub credential: Option<GiteaGitCredential>,
     pub run: Option<GateGit>,
+    /// The runner for the retry that presents `credential`. A caller that
+    /// injects `run` must inject this one too to exercise the retry.
+    pub run_with_credential: Option<GateGit>,
 }
 
 impl Default for ReleaseTrainGateOptions {
@@ -1538,40 +1542,72 @@ impl Default for ReleaseTrainGateOptions {
             fetch: true,
             credential: None,
             run: None,
+            run_with_credential: None,
         }
     }
 }
 
-/// The environment overrides one git invocation needs to read the canonical
-/// remote: the configured origin URL is rewritten to the Gitea HTTP address,
-/// and the token rides an `Authorization` header scoped to that address.
-pub fn gate_git_environment(credential: Option<&GiteaGitCredential>) -> Vec<(String, String)> {
-    let Some(credential) = credential else {
-        return Vec::new();
-    };
-    vec![
-        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
-        ("GIT_CONFIG_COUNT".to_string(), "2".to_string()),
-        (
-            "GIT_CONFIG_KEY_0".to_string(),
-            format!("url.{}.insteadOf", credential.url),
-        ),
-        (
-            "GIT_CONFIG_VALUE_0".to_string(),
-            credential.remote_url.clone(),
-        ),
-        (
-            "GIT_CONFIG_KEY_1".to_string(),
+/// The config entries one git invocation needs to reach the canonical remote:
+/// `origin` is rewritten to the configured Gitea HTTP address, so a detached
+/// worker reads the repository without an SSH agent. The token header is added
+/// only for the attempt that presents the credential.
+fn gate_git_entries(
+    credential: &GiteaGitCredential,
+    with_credential: bool,
+) -> Vec<(String, String)> {
+    let mut entries = vec![(
+        format!("url.{}.insteadOf", credential.url),
+        credential.remote_url.clone(),
+    )];
+    if with_credential {
+        entries.push((
             format!("http.{}.extraHeader", credential.base_url),
-        ),
-        ("GIT_CONFIG_VALUE_1".to_string(), credential.header.clone()),
-    ]
+            credential.header.clone(),
+        ));
+    }
+    entries
 }
 
-/// The default runner: one `git -C <repoDir>` invocation.
-pub fn release_train_git(repo_dir: &Path, credential: Option<&GiteaGitCredential>) -> GateGit {
+fn gate_git_environment_with(
+    credential: Option<&GiteaGitCredential>,
+    with_credential: bool,
+) -> Vec<(String, String)> {
+    // A worker holds no terminal: a prompt only hangs or fails the read.
+    let mut environment = vec![("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())];
+    let Some(credential) = credential else {
+        return environment;
+    };
+    let entries = gate_git_entries(credential, with_credential);
+    environment.push(("GIT_CONFIG_COUNT".to_string(), entries.len().to_string()));
+    for (index, (key, value)) in entries.into_iter().enumerate() {
+        environment.push((format!("GIT_CONFIG_KEY_{index}"), key));
+        environment.push((format!("GIT_CONFIG_VALUE_{index}"), value));
+    }
+    environment
+}
+
+/// The environment overrides one git invocation needs to read the canonical
+/// remote with the configured credential: the origin rewrite plus the token's
+/// `Authorization` header scoped to the Gitea address.
+pub fn gate_git_environment(credential: Option<&GiteaGitCredential>) -> Vec<(String, String)> {
+    gate_git_environment_with(credential, true)
+}
+
+/// The same overrides without the token.
+///
+/// A public repository reads through the rewrite alone, and git has no
+/// anonymous fallback of its own once a presented `extraHeader` is refused: it
+/// asks for a username and dies on the disabled prompt. The credential-free
+/// attempt goes first for exactly that reason.
+pub fn gate_git_anonymous_environment(
+    credential: Option<&GiteaGitCredential>,
+) -> Vec<(String, String)> {
+    gate_git_environment_with(credential, false)
+}
+
+/// One `git -C <repoDir>` command run with the given environment overrides.
+fn gate_git_runner(repo_dir: &Path, environment: Vec<(String, String)>) -> GateGit {
     let repo_dir = repo_dir.to_path_buf();
-    let environment = gate_git_environment(credential);
     Arc::new(move |args: &[&str]| {
         let output = std::process::Command::new("git")
             .arg("-C")
@@ -1592,6 +1628,30 @@ pub fn release_train_git(repo_dir: &Path, credential: Option<&GiteaGitCredential
             },
         }
     })
+}
+
+/// The default runner: one `git -C <repoDir>` invocation that presents the
+/// configured credential.
+pub fn release_train_git(repo_dir: &Path, credential: Option<&GiteaGitCredential>) -> GateGit {
+    gate_git_runner(repo_dir, gate_git_environment(credential))
+}
+
+/// The default anonymous runner: the same invocation without the token.
+pub fn release_train_git_anonymous(
+    repo_dir: &Path,
+    credential: Option<&GiteaGitCredential>,
+) -> GateGit {
+    gate_git_runner(repo_dir, gate_git_anonymous_environment(credential))
+}
+
+/// The fetch outcome: the anonymous attempt, retried once with the credential
+/// when the repository could not be read without it.
+fn gate_fetch(run: &GateGit, run_with_credential: Option<&GateGit>, args: &[&str]) -> GitOutcome {
+    let fetched = run(args);
+    match run_with_credential {
+        Some(run) if fetched.code != 0 => run(args),
+        _ => fetched,
+    }
 }
 
 fn first_line(text: &str) -> String {
@@ -1649,19 +1709,32 @@ fn merged_tags(run: &GateGit, target: &str) -> Result<Vec<ReleaseTrainTag>, Rele
 /// One deterministic answer for the tracked branch: release, nothing, or
 /// failure.
 pub fn check_release_train(repo_dir: &Path, options: ReleaseTrainGateOptions) -> ReleaseTrainGate {
+    let injected = options.run.is_some();
+    let credential = options.credential.as_ref();
     let run = options
         .run
-        .unwrap_or_else(|| release_train_git(repo_dir, options.credential.as_ref()));
+        .unwrap_or_else(|| release_train_git_anonymous(repo_dir, credential));
+    // Only the default path builds the credential attempt from the configured
+    // credential: an injected runner pair stays exactly what the caller gave.
+    let run_with_credential = match options.run_with_credential {
+        Some(run) => Some(run),
+        None if injected => None,
+        None => credential.map(|credential| release_train_git(repo_dir, Some(credential))),
+    };
     let target_ref = format!("refs/remotes/{}/{}", options.remote, options.branch);
     if options.fetch {
         let fetch_ref = format!("+refs/heads/{}:{}", options.branch, target_ref);
-        let fetched = run(&[
-            "fetch",
-            "--prune",
-            &options.remote,
-            &fetch_ref,
-            "+refs/tags/*:refs/tags/*",
-        ]);
+        let fetched = gate_fetch(
+            &run,
+            run_with_credential.as_ref(),
+            &[
+                "fetch",
+                "--prune",
+                &options.remote,
+                &fetch_ref,
+                "+refs/tags/*:refs/tags/*",
+            ],
+        );
         if fetched.code != 0 {
             return gate_failure(
                 &format!(
