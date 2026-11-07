@@ -269,6 +269,9 @@ pub async fn relaunch_confirmed(
     }
     let Some((marker_pid, probe_port)) = marker else {
         let _ = child.kill();
+        // A timed-out attempt leaves no marker behind: the next attempt names
+        // its own file, so a stale one would only accumulate.
+        let _ = std::fs::remove_file(ready_file);
         return Err(
             "the replacement did not become ready; the running server keeps serving".to_string(),
         );

@@ -629,7 +629,9 @@ once that listener answers the authenticated probe with the replacement's pid, e
 receives `serverRestarting` and reloads once, and the applied commit is recorded in
 `<STATE_DIR>/source-refresh/applied.json` so re-delivering the same publish never restarts again.
 The replacement cannot answer on the dashboard port before the old process exits, which is why it
-proves readiness on its own listener.
+proves readiness on its own listener. It writes that marker as soon as it can answer, before the
+process-table scan of its startup reaping pass: the scan can outlast a caller's readiness deadline
+on a busy host, and it never proves anything about the handoff.
 
 The interval is 60,000 ms and is configurable with `DEVBOARD_SOURCE_REFRESH_INTERVAL_MS`; values
 below 1,000 ms are raised to 1,000 ms. An invalid or unreadable request, a failed replacement
