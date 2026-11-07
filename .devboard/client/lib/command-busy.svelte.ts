@@ -7,9 +7,16 @@
  * control leaves busy the moment the value differs. A value that never arrives
  * within the ceiling releases the label and surfaces a `role="status"` notice.
  *
- * Evidence must be a primitive or a stable reference that does not return to
- * its pre-command value; a snapshot field or an object identity is right, a
- * freshly allocated array is not.
+ * A confirmation is permanent for its dispatch. Reading the control's state is
+ * how a render observes the confirming frame, so that first differing value
+ * clears the latch instead of leaving it to re-test the same comparison: a
+ * value that later returns to its pre-dispatch value — an Issues lifecycle
+ * going back to `stopped` — never re-shows the busy word or repeats the
+ * ceiling notice, and only `start()` arms the control again.
+ *
+ * Evidence must be a primitive or a stable reference, so a read that did not
+ * change does not spuriously confirm; unlike the latch, the value may return
+ * to its pre-command value once the confirmation was observed.
  */
 
 /** Longest a control waits for a confirming frame before releasing its label. */
@@ -83,13 +90,7 @@ export class CommandBusy<E> {
 
   /** True from the activation until evidence, the ceiling, or a dismissal. */
   get busy(): boolean {
-    return (
-      this.#active &&
-      !this.#expired &&
-      !this.#dismissed &&
-      this.#sameSubject() &&
-      Object.is(this.#evidence(), this.#baseline)
-    );
+    return this.#awaiting() && !this.#expired && !this.#dismissed;
   }
 
   /** The present-participle busy word of the resting label. */
@@ -102,9 +103,7 @@ export class CommandBusy<E> {
    * replaces another message; the control renders it beside itself.
    */
   get notice(): string | null {
-    if (!this.#active || !this.#expired || this.#dismissed) return null;
-    if (!this.#sameSubject()) return null;
-    if (!Object.is(this.#evidence(), this.#baseline)) return null;
+    if (!this.#awaiting() || !this.#expired || this.#dismissed) return null;
     const label = this.#label().trim();
     return label.length === 0
       ? "The action received no answer."
@@ -130,6 +129,25 @@ export class CommandBusy<E> {
     this.#clearTimer();
     this.#active = false;
     this.#dismissed = true;
+  }
+
+  /**
+   * Whether the latch still waits for its answer, settling the confirmation
+   * the first time the evidence differs from the dispatch baseline.
+   *
+   * Reading this control is how a render observes the confirming frame, and a
+   * confirmation lasts for its dispatch: the latch and its ceiling timer are
+   * cleared here, so a later value that matches the baseline again re-arms
+   * nothing. Only `start()` arms the latch.
+   */
+  #awaiting(): boolean {
+    if (!this.#active || !this.#sameSubject()) return false;
+    if (!Object.is(this.#evidence(), this.#baseline)) {
+      this.#clearTimer();
+      this.#active = false;
+      return false;
+    }
+    return true;
   }
 
   #sameSubject(): boolean {
