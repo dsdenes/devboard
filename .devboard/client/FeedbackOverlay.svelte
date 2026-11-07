@@ -10,8 +10,16 @@
   import CommandNotice from "./lib/components/CommandNotice.svelte";
   import { createCommandBusy } from "./lib/command-busy.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
-  import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../lib/endpoints.ts";
-  import { draftPathFromHref } from "../lib/goal-proposals.ts";
+  import { fileFeedback, writeGoalDraft } from "./lib/feedback-transport.ts";
+  import {
+    MARGIN,
+    PANEL_ESTIMATED_HEIGHT,
+    PANEL_WIDTH,
+    anchorFor,
+    clampPlacement,
+    viewportRect,
+    type Rect,
+  } from "./lib/overlay-placement.ts";
 
   /**
    * Operator issue reporter. The activity bar's three issue actions start a
@@ -19,9 +27,10 @@
    * action opens a free-text panel anchored beside the picked element; the
    * removal and redesign shortcuts file a fixed-instruction issue for the
    * picked element at once and stay armed. Every filing posts the captured DOM
-   * context to the server, which files a GitHub issue for an implementation
-   * agent. The component owns the overlay; the shell owns the controls and the
-   * armed action.
+   * context through `./lib/feedback-transport.ts`, which files an issue for an
+   * implementation agent; panel geometry lives in `./lib/overlay-placement.ts`.
+   * The component owns the overlay's pointer bookkeeping, selection phase,
+   * composer, and markup; the shell owns the controls and the armed action.
    *
    * The same panel answers questions: `Ask`, or Enter in the composer, sends
    * the question and the captured context over the WebSocket to a background
@@ -33,13 +42,8 @@
   type Action = FeedbackAction;
   type Phase = FeedbackPhase;
 
-  type Rect = { top: number; left: number; width: number; height: number };
   type Toast = { ok: boolean; text: string; url?: string };
 
-  const PANEL_WIDTH = 380;
-  const PANEL_ESTIMATED_HEIGHT = 390;
-  const GAP = 12;
-  const MARGIN = 8;
   const MAX_DOM_EXCERPT = 4000;
   const MAX_VISIBLE_TEXT = 1500;
   const MAX_SELECTOR = 500;
@@ -103,6 +107,11 @@
 
   const drag = { pointerId: -1, offsetX: 0, offsetY: 0 };
 
+  /** The panel's measured height, or the placement module's estimate before it renders. */
+  function panelHeight(): number {
+    return panelElement?.getBoundingClientRect().height ?? PANEL_ESTIMATED_HEIGHT;
+  }
+
   let sending = $derived(phase === "sending");
   // Every selection mode intercepts clicks; a filing in flight keeps doing so
   // so the click that started it never activates the element it selected.
@@ -111,34 +120,6 @@
   );
   let picking = $derived(selecting && !sending);
   let hint = $derived(action !== null && selecting ? HINTS[action] : null);
-
-  function viewportRect(element: Element): Rect {
-    const box = element.getBoundingClientRect();
-    return { top: box.top, left: box.left, width: box.width, height: box.height };
-  }
-
-  /** Places the panel beside the element, flipping and clamping to stay visible. */
-  function anchorFor(rect: Rect): { top: number; left: number } {
-    const roomRight = window.innerWidth - rect.left - rect.width - GAP;
-    const left =
-      roomRight >= PANEL_WIDTH ? rect.left + rect.width + GAP : rect.left - PANEL_WIDTH - GAP;
-    return {
-      left: Math.min(Math.max(left, MARGIN), window.innerWidth - PANEL_WIDTH - MARGIN),
-      top: Math.min(
-        Math.max(rect.top, MARGIN),
-        Math.max(MARGIN, window.innerHeight - PANEL_ESTIMATED_HEIGHT - MARGIN),
-      ),
-    };
-  }
-
-  /** Keeps a dragged panel on screen, never under the viewport edge. */
-  function clampPlacement(top: number, left: number): { top: number; left: number } {
-    const height = panelElement?.getBoundingClientRect().height ?? PANEL_ESTIMATED_HEIGHT;
-    return {
-      left: Math.min(Math.max(left, MARGIN), Math.max(MARGIN, window.innerWidth - PANEL_WIDTH - MARGIN)),
-      top: Math.min(Math.max(top, MARGIN), Math.max(MARGIN, window.innerHeight - height - MARGIN)),
-    };
-  }
 
   function startDrag(event: PointerEvent): void {
     if (event.button !== 0 || panel === null) return;
@@ -154,7 +135,11 @@
 
   function moveDrag(event: PointerEvent): void {
     if (!dragging || event.pointerId !== drag.pointerId) return;
-    panel = clampPlacement(event.clientY - drag.offsetY, event.clientX - drag.offsetX);
+    panel = clampPlacement(
+      event.clientY - drag.offsetY,
+      event.clientX - drag.offsetX,
+      panelHeight(),
+    );
     moved = true;
   }
 
@@ -176,7 +161,7 @@
     const move = moves[event.key];
     if (move === undefined) return;
     event.preventDefault();
-    panel = clampPlacement(panel.top + move[0], panel.left + move[1]);
+    panel = clampPlacement(panel.top + move[0], panel.left + move[1], panelHeight());
     moved = true;
   }
 
@@ -530,39 +515,9 @@
     const rect = viewportRect(target);
     marker = rect;
     panel = moved && panel !== null
-      ? clampPlacement(panel.top, panel.left)
+      ? clampPlacement(panel.top, panel.left, panelHeight())
       : anchorFor(rect);
     void fitPanel();
-  }
-
-  /** Posts one submission and returns the filed issue URL, or the error text. */
-  async function post(payload: Record<string, unknown>): Promise<
-    { ok: true; url: string } | { ok: false; error: string }
-  > {
-    try {
-      const response = await fetch(FEEDBACK_ENDPOINT, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const body = (await response.json().catch(() => null)) as {
-        links?: { issue?: { href?: unknown } };
-        detail?: unknown;
-      } | null;
-      const href = body?.links?.issue?.href;
-      if (!response.ok || typeof href !== "string") {
-        return {
-          ok: false,
-          error:
-            typeof body?.detail === "string"
-              ? body.detail
-              : `The server refused the report (${response.status}).`,
-        };
-      }
-      return { ok: true, url: href };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
   }
 
   /** Files a removal or redesign issue for one element and stays armed. */
@@ -571,7 +526,7 @@
     marker = null;
     dismissToast();
     phase = "sending";
-    const response = await post({ action: kind, report: "", ...captured(element) });
+    const response = await fileFeedback({ action: kind, report: "", ...captured(element) });
     const noun = kind === "REMOVE" ? "Removal" : "Redesign";
     if (response.ok) {
       showToast({ ok: true, text: `${noun} issue filed.`, url: response.url });
@@ -582,37 +537,6 @@
     phase = "picking";
     selector = "";
     document.body.style.cursor = "crosshair";
-  }
-
-  /** Writes one proposed-goal draft and returns the draft path, or the error. */
-  async function postGoal(
-    payload: Record<string, unknown>,
-  ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
-    try {
-      const response = await fetch(GOAL_PROPOSALS_ENDPOINT, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const body = (await response.json().catch(() => null)) as {
-        links?: { draft?: { href?: unknown } };
-        detail?: unknown;
-      } | null;
-      const href = body?.links?.draft?.href;
-      const path = typeof href === "string" ? draftPathFromHref(href) : null;
-      if (!response.ok || path === null) {
-        return {
-          ok: false,
-          error:
-            typeof body?.detail === "string"
-              ? body.detail
-              : `The server refused the proposal (${response.status}).`,
-        };
-      }
-      return { ok: true, path };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
   }
 
   /** Saves the composer text as a raw goal draft and returns to picking. */
@@ -631,7 +555,7 @@
     goalPending = true;
     errorMessage = null;
     dismissToast();
-    const response = await postGoal({
+    const response = await writeGoalDraft({
       report,
       turns: turnsPayload(),
       ...captured(element),
@@ -658,7 +582,7 @@
     dismissToast();
     phase = "sending";
     errorMessage = null;
-    const response = await post({
+    const response = await fileFeedback({
       action: "REPORT",
       report,
       turns: turnsPayload(),
