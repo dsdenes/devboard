@@ -59,6 +59,12 @@ export class AgentsStore {
   private readonly seen = new Set<string>();
   private readonly lastError = new Map<string, string | null>();
   private readonly lastNotice = new Map<string, string | null>();
+  /**
+   * Increments on every accepted snapshot for an agent, including one whose
+   * values repeat. A command control latches this instead of a domain field,
+   * so every answering frame releases its busy word.
+   */
+  private readonly revisions = $state<Record<string, number>>({});
   /** Settings sent per agent, kept until a snapshot echoes them. */
   private readonly pendingSettings = new Map<
     string,
@@ -91,6 +97,16 @@ export class AgentsStore {
 
   lifecycle(id: string): string {
     return this.snapshots[id]?.lifecycle ?? "stopped";
+  }
+
+  /**
+   * The number of accepted `agentState` frames for an agent. It changes on
+   * every answering frame, even one that repeats the current values, so a
+   * Start or Stop control never waits for the ceiling after the server
+   * answered.
+   */
+  revision(id: string): number {
+    return this.revisions[id] ?? 0;
   }
 
   /**
@@ -206,6 +222,7 @@ export class AgentsStore {
     }
     const first = !this.seen.has(snapshot.id);
     this.seen.add(snapshot.id);
+    this.revisions[snapshot.id] = (this.revisions[snapshot.id] ?? 0) + 1;
     const previousError = this.lastError.get(snapshot.id) ?? null;
     this.snapshots[snapshot.id] = snapshot;
     if (snapshot.detail.panel === "activity") {

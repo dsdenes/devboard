@@ -1888,10 +1888,15 @@ impl ProviderService {
         Ok(())
     }
 
-    /// Resolves the peer binding. Refuses before any process exists when no
-    /// subscription can serve a peer.
+    /// Resolves the peer binding from the cached usage report. Refuses before
+    /// any process exists when no subscription can serve a peer.
+    ///
+    /// Selection never waits for the usage endpoint: a Start must answer on
+    /// the cached report, and a stale report is refreshed by
+    /// [`ProviderService::background_refresh`] on its own tick. A key whose
+    /// cached report is missing is treated as unknown headroom, exactly as a
+    /// failed check is.
     pub async fn select(&self) -> Result<PeerBinding, ProviderUnavailable> {
-        self.refresh(false).await;
         let ranked = self.ranked();
         let decision = decide_provider(&ranked, !ranked.is_empty());
         let (subscription, usage, fallback) = match decision {
@@ -1936,6 +1941,14 @@ impl ProviderService {
     /// The environment one ACP peer receives for the current selection.
     pub async fn select_environment(&self) -> Result<Env, ProviderUnavailable> {
         self.select().await.map(|binding| binding.env)
+    }
+
+    /// The dashboard's periodic usage check: fetches a subscription's usage
+    /// only when its cached report is at least one TTL old. The caller owns
+    /// the cadence and the resulting state push, so no Start or `getProviders`
+    /// request has to wait for the endpoint.
+    pub async fn background_refresh(&self) {
+        self.refresh(false).await;
     }
 
     /// The masked frame `getProviders` and every change answer with.

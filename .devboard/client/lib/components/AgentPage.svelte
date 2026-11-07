@@ -169,7 +169,7 @@
             variant="default"
             label="Stop"
             scope={() => agentId}
-            evidence={() => agents.lifecycle(agentId)}
+            evidence={() => agents.revision(agentId)}
             command={() => agents.stop(agentId)}
             data-testid="agent-stop"
             data-agent={agentId}
@@ -184,7 +184,7 @@
             variant="default"
             label="Start"
             scope={() => agentId}
-            evidence={() => agents.lifecycle(agentId)}
+            evidence={() => agents.revision(agentId)}
             command={() => agents.start(agentId)}
             data-testid="agent-start"
             data-agent={agentId}
@@ -353,7 +353,7 @@
       </div>
     {/if}
 
-    {#if snapshot !== null && snapshot.attached && !snapshot.owned && snapshot.notice !== null}
+    {#if snapshot !== null && snapshot.notice !== null}
       <p class="agent-notice" data-testid="agent-notice" role="status">{snapshot.notice}</p>
     {/if}
 

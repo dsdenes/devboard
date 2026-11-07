@@ -465,7 +465,33 @@ impl App {
         }
         app.terminate_restored_children();
         app.start_lease_refresh();
+        app.start_provider_refresh();
         app
+    }
+
+    /// Refreshes provider usage on the dashboard's own cadence. The Start path
+    /// only reads the cached report, so this task is the one place a stale
+    /// report is replaced. It makes no provider call while no client is
+    /// connected; the next client's `getProviders` refreshes first.
+    fn start_provider_refresh(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_millis(
+                crate::providers::USAGE_TTL_MS,
+            ));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                timer.tick().await;
+                let Some(app) = weak.upgrade() else {
+                    break;
+                };
+                if !app.shared.has_clients() {
+                    continue;
+                }
+                app.providers.background_refresh().await;
+                app.shared.send_all(app.providers.state_frame(), None);
+            }
+        });
     }
 
     pub fn config(&self) -> &Config {

@@ -1508,3 +1508,150 @@ async fn the_release_list_names_the_newest_release_whose_run_is_not_settled() {
     assert_eq!(releases[0]["commits"], json!(1));
     assert_eq!(releases[1]["version"], json!("1.41.5"));
 }
+
+#[tokio::test]
+async fn a_start_that_spawns_nothing_still_answers() {
+    let root = scratch("start-refusal");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let foreign = root.join("foreign-state");
+    std::fs::create_dir_all(repo.join(".devboard")).expect("a harness directory");
+    std::fs::create_dir_all(&foreign).expect("a foreign state directory");
+
+    let recorded: RecordedSpawns = Arc::new(Mutex::new(Vec::new()));
+    let recorded_spawn = Arc::clone(&recorded);
+    devboard::agents_mode::set_spawn(&app, move |argv, environment| {
+        recorded_spawn
+            .lock()
+            .expect("recorded spawns")
+            .push((argv.to_vec(), environment.clone()));
+        None
+    });
+
+    let pid = stand_in_worker();
+    // A live worker another STATE_DIR owns: this dashboard refuses to start a
+    // second one, and the refusal is the answer to the Start.
+    write_lock(&repo, &foreign, pid);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let before = agent(&frames(&mut inbox), "dead-code")
+        .expect("a dead-code snapshot")
+        .clone();
+    assert!(
+        before["notice"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("another dashboard")
+            || before["notice"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("STATE_DIR"),
+        "{before:?}"
+    );
+
+    let started = std::time::Instant::now();
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "a Start that spawns nothing waited for the ceiling"
+    );
+    let all = frames(&mut inbox);
+    let after = agent(&all, "dead-code").expect("the answering snapshot");
+    assert!(
+        recorded.lock().expect("recorded spawns").is_empty(),
+        "a foreign worker's dashboard spawned a second worker: {all:?}"
+    );
+    assert_ne!(
+        after["notice"], before["notice"],
+        "the Start that spawned nothing answered with the snapshot the client already had: {all:?}"
+    );
+    assert!(
+        after["notice"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("Start did nothing:"),
+        "{all:?}"
+    );
+
+    // A worker this dashboard owns and that is already running: Start still
+    // answers with the reason instead of leaving the control waiting.
+    write_lock(&repo, &state, pid);
+    let state_path = state
+        .join("dead-code")
+        .join(repo_key(&repo))
+        .join("state.json");
+    write_json(&state_path, dead_code_state(&root, &repo, &state, pid));
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let before = agent(&frames(&mut inbox), "dead-code")
+        .expect("a dead-code snapshot")
+        .clone();
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let after = agent(&all, "dead-code").expect("the answering snapshot");
+    assert_ne!(
+        after["notice"], before["notice"],
+        "a running family's Start answered with the unchanged snapshot: {all:?}"
+    );
+    assert!(
+        after["notice"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already running"),
+        "{all:?}"
+    );
+    assert!(recorded.lock().expect("recorded spawns").is_empty());
+
+    kill_stand_in(pid);
+}
+
+#[tokio::test]
+async fn an_unchanged_snapshot_is_not_rebroadcast() {
+    let root = scratch("quiet-poll");
+    let app = app_at(&root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let _ = frames(&mut inbox);
+
+    // The replay opens its settle window; every tick after it must find the
+    // same state and publish nothing.
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    for _ in 0..4 {
+        devboard::agents_mode::poll_once(&app);
+    }
+
+    let all = frames(&mut inbox);
+    assert!(
+        find(&all, "agentState").is_empty(),
+        "an unchanged snapshot was rebroadcast: {all:?}"
+    );
+}

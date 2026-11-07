@@ -47,6 +47,9 @@ carries no content of its own shows the resting label it was given.
   takes no second frame from a pointer or the keyboard while it waits.
 - Busy ends when the confirming server state arrives, and the control then renders the resting
   label from that state. No control flips a domain flag to fake immediacy.
+- The background-agent Start and Stop controls latch the agent's accepted-frame count, so any
+  answering `agentState` releases them — including a refusal snapshot whose `notice` changed but
+  whose lifecycle did not. A `starting` frame releases them the same way.
 - A control that only changes client state — a mode switch, a tab, an accordion, the palette, a
   notification dismiss, a dialog cancel — never enters busy and shows the pressed fill only. A
   disabled control never enters busy and keeps its 45% opacity.
@@ -741,9 +744,11 @@ percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `lim
 `DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
 URLs for tests and offline verification. On-demand reads fetch a key's usage at most once per
 60 seconds unless the operator forces a refresh; while at least one dashboard is connected, the
-server forces one refresh and pushes a fresh `providersState` every 60 seconds, so the dialog's
-usage never stays stale. With no client connected the periodic refresh makes no provider call, and
-the next client's `getProviders` refreshes first.
+dashboard's own background task refreshes a stale report and pushes a fresh `providersState` every
+60 seconds, so the dialog's usage never stays stale. With no client connected the periodic refresh
+makes no provider call, and the next client's `getProviders` refreshes first. Selection never waits
+on this endpoint: a peer start resolves its provider from the cached report and the background
+task is the only path that replaces it, so a slow or unreachable usage endpoint delays no Start.
 
 A detached worker outlives the credential list it was started with, so every agent it starts
 resolves the provider again instead of inheriting the worker's original key. The issue worker
@@ -2234,17 +2239,24 @@ further descriptor projects and validates unchanged.
 
 All seven continuous agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
-`stopping` from the moment Stop is accepted until the worker exits. A start that neither spawns a
+`stopping` from the moment Stop is accepted until the worker exits. A Start answers before its
+preflight can delay it: the server publishes the `starting` snapshot first, and the socket writes
+it while the preflight is still pending. A start that neither spawns a
 worker nor refuses within its preflight bound plus the preflight and abandonment graces is reset to
 `stopped` with `the <agent> start did not finish; press Start to retry.`, so a command whose answer
 was lost never leaves the agent starting; a worker that attaches ends `starting` on the next
 snapshot, whatever preview the page is still showing. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
-Start is a no-op with a notice. The notice is the page's `agent-notice` line, rendered while a live
-worker is `attached` and `owned` is false, and it names the `STATE_DIR` that owns the worker; the
+Start is a no-op with a notice. Every Start that spawns nothing still answers with a changed
+snapshot whose `notice` names the reason — `Start did nothing: …` for a foreign worker, an
+already-running worker, or a family already starting — so the control leaves `Starting…` on that
+frame instead of waiting for its ceiling. The notice is the page's `agent-notice` line, rendered for
+any non-null `notice` and, for a foreign worker, naming the `STATE_DIR` that owns it; the
 Release Train answers the same way, and its Start spawns no second worker. `agent-start` is
 disabled while the lifecycle reads `starting`, so an in-flight start is never dispatched twice.
+Provider usage never sits on this path: a Start resolves its provider from the cached usage report,
+and the dashboard refreshes a stale report on its own 60-second background tick.
 
 All background-agent pages share `data-testid="agent-page"` and `data-agent`, the header
 `agent-header`, the lifecycle badge `agent-lifecycle`, `agent-sync-at`, exactly one of
@@ -2347,6 +2359,12 @@ Browser-to-backend state and controls use the WebSocket from
 The server answers `agentsState` (all agents), `agentState` (one), and `agentPromptState` (one
 agent's prompt section), streams each activity-panel agent's activity as `agentActivity` with its
 agent id, and refuses an unknown id with an error naming it before spawning anything.
+Each socket has its own writer, so a frame is written as soon as the server produces it: a
+`starting` snapshot reaches the client while the Start preflight is still pending, and a
+connection's replay is not withheld until the whole replay has been built. The 250 ms poll
+fingerprints each family's durable state and rebuilds and serializes a snapshot only after the
+fingerprint changes; an idle dashboard rebroadcasts nothing. A `getAgents` read is answered from
+the same current snapshots and does not wait for a provider or a worker.
 `scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
 `GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.

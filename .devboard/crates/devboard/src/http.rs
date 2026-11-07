@@ -854,45 +854,62 @@ async fn upgrade(
 /// One connected client's outbound queue.
 pub type Outbox = tokio::sync::mpsc::UnboundedSender<String>;
 
-async fn run_socket(server: Arc<Server>, mut socket: axum::extract::ws::WebSocket) {
+async fn run_socket(server: Arc<Server>, socket: axum::extract::ws::WebSocket) {
+    use futures_util::{SinkExt, StreamExt};
+
     let (out, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let conn = Conn::new(out.clone());
+    let conn = Conn::new(out);
     server.app.register(conn.clone()).await;
+    // The writer is its own task. A frame crosses the socket as soon as the
+    // server produces it, even while this connection's command is still
+    // running — a Start publishes its starting snapshot before its preflight,
+    // and that snapshot is never withheld behind the preflight.
+    let (mut sink, mut stream) = socket.split();
+    let mut writer = tokio::spawn(async move {
+        while let Some(frame) = outgoing.recv().await {
+            if sink.send(Message::Text(frame.into())).await.is_err() {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+    });
+    // The connect replay is produced before any command is read, so a reply
+    // never overtakes a replayed frame.
     server.app.open(&conn).await;
     loop {
-        tokio::select! {
-            Some(frame) = outgoing.recv() => {
-                if socket.send(Message::Text(frame.into())).await.is_err() {
-                    break;
+        match stream.next().await {
+            Some(Ok(Message::Text(text))) => match parse_client_message(&text) {
+                Some(command) => server.app.command(&conn, command).await,
+                None => {
+                    let mut event = serde_json::Map::new();
+                    event.insert("type".into(), "error".into());
+                    event.insert("message".into(), "Invalid WebSocket message.".into());
+                    conn.send(serde_json::Value::Object(event));
                 }
+            },
+            Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {}
+            Some(Ok(Message::Binary(_))) => {
+                let mut event = serde_json::Map::new();
+                event.insert("type".into(), "error".into());
+                event.insert("message".into(), "Invalid WebSocket message.".into());
+                conn.send(serde_json::Value::Object(event));
             }
-            incoming = socket.recv() => {
-                match incoming {
-                    Some(Ok(Message::Text(text))) => {
-                        match parse_client_message(&text) {
-                            Some(command) => server.app.command(&conn, command).await,
-                            None => {
-                                let mut event = serde_json::Map::new();
-                                event.insert("type".into(), "error".into());
-                                event.insert("message".into(), "Invalid WebSocket message.".into());
-                                conn.send(serde_json::Value::Object(event));
-                            }
-                        }
-                    }
-                    Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {}
-                    Some(Ok(Message::Binary(_))) => {
-                        let mut event = serde_json::Map::new();
-                        event.insert("type".into(), "error".into());
-                        event.insert("message".into(), "Invalid WebSocket message.".into());
-                        conn.send(serde_json::Value::Object(event));
-                    }
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                }
-            }
+            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
         }
     }
     server.app.unregister(conn.id()).await;
     server.app.close(&conn).await;
+    // Dropping the last sender this surface holds ends the writer, which
+    // closes the socket after every queued frame is written. A mode may keep
+    // a clone for a later push; that clone must not pin this task forever, so
+    // a writer still waiting after the grace is stopped.
+    drop(conn);
+    if tokio::time::timeout(std::time::Duration::from_millis(250), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
 }
 
 /// Unused import guard: axum's `IntoResponse` is part of the response type.

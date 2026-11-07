@@ -692,8 +692,57 @@ fn worker_state_directories(root: &Path) -> Vec<PathBuf> {
     entries
 }
 
+/// A metadata-only fingerprint of a directory tree: every entry's path, size,
+/// modification time, and kind. The poll compares it to the previous tick so
+/// an unchanged family is not projected or serialized again. File contents are
+/// never read, and a symlink is never followed into a directory.
+fn tree_signature(root: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    while let Some((directory, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            seen += 1;
+            if seen > 4096 {
+                return hasher.finish();
+            }
+            let path = entry.path();
+            path.to_string_lossy().hash(&mut hasher);
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            metadata.len().hash(&mut hasher);
+            if let Ok(modified) = metadata.modified() {
+                let nanos = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or(0);
+                nanos.hash(&mut hasher);
+            }
+            let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+            is_dir.hash(&mut hasher);
+            if is_dir && depth < 8 {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    hasher.finish()
+}
+
 fn resolved(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The notice a Start publishes when it spawns nothing. It outranks the
+/// steady foreign-owner notice so the answer to that Start is visibly a new
+/// snapshot, not the one the client already had.
+fn is_start_refusal(notice: &str) -> bool {
+    notice.starts_with("Start did nothing:")
 }
 
 fn canonical_process_path(path: &Path) -> PathBuf {
@@ -2173,6 +2222,10 @@ struct AgentsMode {
     prompts: PromptController,
     adapters: Vec<Adapter>,
     signatures: Mutex<HashMap<&'static str, String>>,
+    /// The cheap state signature each family's last snapshot was built from.
+    /// The 250 ms poll rebuilds and serializes a family only after this
+    /// changes, so an idle dashboard does no projection work at all.
+    poll_signatures: Mutex<HashMap<&'static str, u64>>,
     /// Broadcasts wait out the connect replay's settle window.
     settle_until: Mutex<i64>,
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -2384,6 +2437,29 @@ impl Adapter {
             family.poll_activity(shared);
         }
     }
+
+    /// A cheap fingerprint of everything the family's snapshot reads from
+    /// disk. Metadata only: the projection and its serialization run only
+    /// after this changes.
+    fn poll_signature(&self) -> u64 {
+        match self {
+            Adapter::Repo(family) => family.poll_signature(),
+            Adapter::Watchdog(family) => family.poll_signature(),
+            Adapter::Mcp(family) => family.poll_signature(),
+            Adapter::Release(family) => family.poll_signature(),
+        }
+    }
+
+    /// Whether the snapshot changes with time alone, so it must be rebuilt on
+    /// every tick regardless of the file fingerprint.
+    fn rebuild_always(&self) -> bool {
+        match self {
+            Adapter::Repo(family) => family.rebuild_always(),
+            Adapter::Watchdog(family) => family.rebuild_always(),
+            Adapter::Mcp(family) => family.rebuild_always(),
+            Adapter::Release(family) => family.rebuild_always(),
+        }
+    }
 }
 
 /// One Start command's preview: the family reads `starting` from the moment the
@@ -2539,6 +2615,7 @@ impl AgentsMode {
             shared,
             adapters: ordered,
             signatures: Mutex::new(HashMap::new()),
+            poll_signatures: Mutex::new(HashMap::new()),
             settle_until: Mutex::new(0),
             has_clients: Arc::new(move || shared_for_clients.has_clients()),
         })
@@ -2611,8 +2688,26 @@ impl AgentsMode {
         }
         for adapter in &self.adapters {
             adapter.poll_activity(&self.shared);
-            self.publish_if_changed(adapter);
+            if self.poll_should_rebuild(adapter) {
+                self.publish_if_changed(adapter);
+            }
         }
+    }
+
+    /// Whether the poll owes this family a projection. A family whose state
+    /// fingerprint is unchanged is neither rebuilt nor serialized, and a
+    /// family with an in-flight start, stop, or timer read is always rebuilt
+    /// because its snapshot changes with time alone.
+    fn poll_should_rebuild(&self, adapter: &Adapter) -> bool {
+        let signature = adapter.poll_signature();
+        let changed = {
+            let Ok(mut signatures) = self.poll_signatures.lock() else {
+                return true;
+            };
+            let previous = signatures.insert(adapter.id(), signature);
+            previous != Some(signature)
+        };
+        changed || adapter.rebuild_always()
     }
 
     fn publish_if_changed(&self, adapter: &Adapter) {
@@ -3001,6 +3096,15 @@ pub fn set_preflight_timeout(app: &Arc<App>, family: &str, timeout_ms: u64) {
                 cell.store(timeout_ms.max(1), Ordering::SeqCst);
             }
         }
+    }
+}
+
+/// Runs one background-agent poll tick. Tests use it to prove an idle
+/// dashboard rebroadcasts nothing.
+pub fn poll_once(app: &Arc<App>) {
+    if let Some(mode) = mode_for(app) {
+        let weak = Arc::downgrade(&mode);
+        mode.poll(&weak);
     }
 }
 
@@ -4065,6 +4169,26 @@ impl RepoFamily {
             .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
     }
 
+    /// The durable state and worker scratch this family's snapshot reads.
+    fn poll_signature(&self) -> u64 {
+        let scratch = self
+            .repo_dir
+            .join(".devboard")
+            .join(".tmp")
+            .join(self.family_id.directory());
+        tree_signature(&self.repo_state_directory()) ^ tree_signature(&scratch)
+    }
+
+    fn rebuild_always(&self) -> bool {
+        let Ok(mutable) = self.mutable.lock() else {
+            return true;
+        };
+        mutable.starting
+            || mutable.preview_starting
+            || mutable.stop_requested
+            || !mutable.stopping.is_empty()
+    }
+
     fn all_owners(&self) -> Vec<LockOwner> {
         live_lock_owners(&self.lock_path())
     }
@@ -4237,18 +4361,35 @@ impl RepoFamily {
                 mutable.stop_requested = false;
             }
             if let Some(foreign) = foreign.as_ref() {
-                mutable.notice = Some(format!(
-                    "this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
-                    self.family_id.worker_label(),
-                    foreign.pid,
-                    foreign.state_dir,
-                    self.state_dir.display()
-                ));
+                if !mutable.notice.as_deref().is_some_and(is_start_refusal) {
+                    mutable.notice = Some(format!(
+                        "this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
+                        self.family_id.worker_label(),
+                        foreign.pid,
+                        foreign.state_dir,
+                        self.state_dir.display()
+                    ));
+                }
             } else if mutable
                 .notice
                 .as_ref()
-                .map(|notice| notice.starts_with("this checkout already has"))
+                .map(|notice| {
+                    notice.starts_with("this checkout already has")
+                        || notice.starts_with("Start did nothing: this checkout already has")
+                })
                 .unwrap_or(false)
+            {
+                mutable.notice = None;
+            }
+            // A refusal that named a running worker or a starting one stops
+            // applying once that condition is gone.
+            if owners.is_empty()
+                && !mutable.starting
+                && !mutable.preview_starting
+                && mutable
+                    .notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.starts_with("Start did nothing: the "))
             {
                 mutable.notice = None;
             }
@@ -4662,6 +4803,19 @@ impl RepoFamily {
 
     async fn start(&self) -> AgentResult {
         let _guard = self.start_lock.lock().await;
+        {
+            // A Start's own preview is not a spawn: a second command must say
+            // that the family is already starting instead of running a second
+            // preflight and a second worker.
+            let mut mutable = self.mutable.lock().expect("family state");
+            if mutable.starting {
+                mutable.notice = Some(format!(
+                    "Start did nothing: the {} worker is already starting for this dashboard.",
+                    self.family_id.worker_label()
+                ));
+                return AgentResult::ok();
+            }
+        }
         for _ in 0..1000 {
             let owners = if self.family_id == RepoFamilyId::Scout {
                 self.owned_owners()
@@ -4671,7 +4825,7 @@ impl RepoFamily {
             if owners.is_empty() {
                 if let Some(foreign) = self.foreign_owner() {
                     let notice = format!(
-                        "this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
+                        "Start did nothing: this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
                         self.family_id.worker_label(),
                         foreign.pid,
                         foreign.state_dir,
@@ -4690,7 +4844,7 @@ impl RepoFamily {
             if self.family_id != RepoFamilyId::Scout {
                 if let Some(foreign) = foreign {
                     let notice = format!(
-                        "this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
+                        "Start did nothing: this checkout already has a {} worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
                         self.family_id.worker_label(),
                         foreign.pid,
                         foreign.state_dir,
@@ -4711,6 +4865,18 @@ impl RepoFamily {
                     .collect()
             };
             if stopping.is_empty() {
+                let notice = format!(
+                    "Start did nothing: the {} worker (pid {}) is already running for this dashboard.",
+                    self.family_id.worker_label(),
+                    owners
+                        .iter()
+                        .map(|owner| owner.pid.to_string())
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                );
+                if let Ok(mut mutable) = self.mutable.lock() {
+                    mutable.notice = Some(notice);
+                }
                 return AgentResult::ok();
             }
             let mut all_stopped = true;
@@ -4897,6 +5063,7 @@ impl RepoFamily {
             let mut mutable = self.mutable.lock().expect("family state");
             mutable.stop_requested = true;
             mutable.start_error = None;
+            mutable.notice = None;
         }
         for owner in owners {
             self.schedule_stop_proof(owner.pid);
@@ -6401,6 +6568,34 @@ impl WatchdogFamily {
             .collect()
     }
 
+    fn poll_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut timer = std::collections::hash_map::DefaultHasher::new();
+        if let Ok(mutable) = self.mutable.lock() {
+            if let Some(gate) = &mutable.timer_gate {
+                gate.unit.hash(&mut timer);
+                gate.state.hash(&mut timer);
+                gate.blocked.hash(&mut timer);
+                gate.error.hash(&mut timer);
+            }
+            mutable.timer_reading.hash(&mut timer);
+        }
+        tree_signature(&self.directory) ^ timer.finish()
+    }
+
+    fn rebuild_always(&self) -> bool {
+        let Ok(mutable) = self.mutable.lock() else {
+            return true;
+        };
+        mutable.starting
+            || mutable.preview_starting
+            || mutable.start_pending
+            || mutable.stop_requested
+            || !mutable.stopping.is_empty()
+            || mutable.timer_reading
+    }
+
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         if self.forge_urls().is_empty() {
@@ -6474,15 +6669,30 @@ impl WatchdogFamily {
                 mutable.stopping.clear();
             }
             if let Some(foreign) = foreign.as_ref() {
-                mutable.notice = Some(format!(
-                    "Watchdog is running for this root from another dashboard (STATE_DIR {}).",
-                    foreign.state_dir
-                ));
+                if !mutable.notice.as_deref().is_some_and(is_start_refusal) {
+                    mutable.notice = Some(format!(
+                        "Watchdog is running for this root from another dashboard (STATE_DIR {}).",
+                        foreign.state_dir
+                    ));
+                }
             } else if mutable
                 .notice
                 .as_ref()
-                .map(|notice| notice.starts_with("Watchdog is running"))
+                .map(|notice| {
+                    notice.starts_with("Watchdog is running")
+                        || notice.starts_with("Start did nothing: Watchdog is running")
+                })
                 .unwrap_or(false)
+            {
+                mutable.notice = None;
+            }
+            if owners.is_empty()
+                && !mutable.starting
+                && !mutable.start_pending
+                && mutable
+                    .notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.starts_with("Start did nothing: the "))
             {
                 mutable.notice = None;
             }
@@ -6589,10 +6799,10 @@ impl WatchdogFamily {
                 pending,
                 sync: self.forge.sync(now),
                 detail: Detail::Cycles(cycles),
-                notice: active
-                    .as_ref()
-                    .and_then(|state| state.notice.clone())
-                    .or_else(|| mutable.notice.clone()),
+                notice: mutable
+                    .notice
+                    .clone()
+                    .or_else(|| active.as_ref().and_then(|state| state.notice.clone())),
                 error: mutable
                     .start_error
                     .clone()
@@ -6813,8 +7023,10 @@ impl WatchdogFamily {
     async fn start(&self) -> AgentResult {
         let _guard = self.start_lock.lock().await;
         {
-            let mutable = self.mutable.lock().expect("watchdog state");
+            let mut mutable = self.mutable.lock().expect("watchdog state");
             if mutable.start_pending {
+                mutable.notice =
+                    Some("Start did nothing: the Watchdog worker is already starting.".to_string());
                 return AgentResult::ok();
             }
         }
@@ -6825,13 +7037,24 @@ impl WatchdogFamily {
                 .find(|owner| resolved(Path::new(&owner.state_dir)) != resolved(&self.state_dir))
             {
                 let notice = format!(
-                    "Watchdog is running for this root from another dashboard (STATE_DIR {}).",
+                    "Start did nothing: Watchdog is running for this root from another dashboard (STATE_DIR {}).",
                     foreign.state_dir
                 );
                 if let Ok(mut mutable) = self.mutable.lock() {
                     mutable.notice = Some(notice);
                 }
                 return AgentResult::ok();
+            }
+            let notice = format!(
+                "Start did nothing: the Watchdog worker (pid {}) is already running for this root.",
+                owners
+                    .iter()
+                    .map(|owner| owner.pid.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            );
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.notice = Some(notice);
             }
             return AgentResult::ok();
         }
@@ -6975,6 +7198,7 @@ impl WatchdogFamily {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.stop_requested = true;
             mutable.start_error = None;
+            mutable.notice = None;
         }
         self.schedule_stop_proof(owners.iter().map(|owner| owner.pid).collect());
         AgentResult::ok()
@@ -7550,6 +7774,20 @@ impl McpFamily {
             .collect()
     }
 
+    fn poll_signature(&self) -> u64 {
+        tree_signature(&self.directory)
+    }
+
+    fn rebuild_always(&self) -> bool {
+        let Ok(mutable) = self.mutable.lock() else {
+            return true;
+        };
+        mutable.starting
+            || mutable.preview_starting
+            || mutable.stop_requested
+            || !mutable.stopping.is_empty()
+    }
+
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         if self.forge_urls().is_empty() {
@@ -7625,6 +7863,16 @@ impl McpFamily {
             }
             if !attached {
                 mutable.stopping.clear();
+            }
+            if owners.is_empty()
+                && !mutable.starting
+                && !mutable.preview_starting
+                && mutable
+                    .notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.starts_with("Start did nothing: the "))
+            {
+                mutable.notice = None;
             }
         }
         let mutable = self.mutable.lock().expect("mcp state");
@@ -7731,10 +7979,10 @@ impl McpFamily {
                 pending,
                 sync: self.forge.sync(now),
                 detail: Detail::Cycles(cycles),
-                notice: active
-                    .as_ref()
-                    .and_then(|state| state.notice.clone())
-                    .or_else(|| mutable.notice.clone()),
+                notice: mutable
+                    .notice
+                    .clone()
+                    .or_else(|| active.as_ref().and_then(|state| state.notice.clone())),
                 error: mutable
                     .start_error
                     .clone()
@@ -7803,12 +8051,27 @@ impl McpFamily {
     async fn start(&self) -> AgentResult {
         let _guard = self.start_lock.lock().await;
         {
-            let mutable = self.mutable.lock().expect("mcp state");
+            let mut mutable = self.mutable.lock().expect("mcp state");
             if mutable.starting {
+                mutable.notice = Some(
+                    "Start did nothing: the MCP optimizer worker is already starting.".to_string(),
+                );
                 return AgentResult::ok();
             }
         }
-        if !self.owners().is_empty() {
+        let owners = self.owners();
+        if !owners.is_empty() {
+            let notice = format!(
+                "Start did nothing: the MCP optimizer worker (pid {}) is already running for this repository.",
+                owners
+                    .iter()
+                    .map(|owner| owner.pid.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            );
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.notice = Some(notice);
+            }
             return AgentResult::ok();
         }
         self.spawn_worker().await
@@ -7907,6 +8170,7 @@ impl McpFamily {
         }
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.start_error = None;
+            mutable.notice = None;
         }
         if failures.is_empty() {
             AgentResult::ok()
@@ -8303,6 +8567,17 @@ impl ReleaseFamily {
             .join("control")
     }
 
+    fn poll_signature(&self) -> u64 {
+        tree_signature(&self.directory)
+    }
+
+    fn rebuild_always(&self) -> bool {
+        let Ok(mutable) = self.mutable.lock() else {
+            return true;
+        };
+        mutable.starting || mutable.preview_starting || mutable.stop_requested
+    }
+
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         let shared = read_json(&self.directory.join("state.json")).unwrap_or(Value::Null);
@@ -8378,12 +8653,29 @@ impl ReleaseFamily {
                 mutable.stop_requested = false;
             }
             if let Some(foreign) = foreign.as_ref() {
-                mutable.notice = Some(foreign_worker_notice(&foreign.state_dir));
+                if !mutable.notice.as_deref().is_some_and(is_start_refusal) {
+                    mutable.notice = Some(foreign_worker_notice(&foreign.state_dir));
+                }
             } else if mutable
                 .notice
                 .as_ref()
-                .map(|notice| notice.starts_with(FOREIGN_WORKER_NOTICE))
+                .map(|notice| {
+                    notice.starts_with(FOREIGN_WORKER_NOTICE)
+                        || notice.starts_with(
+                            "Start did nothing: Release Train is running for this root from another dashboard",
+                        )
+                })
                 .unwrap_or(false)
+            {
+                mutable.notice = None;
+            }
+            if own.is_empty()
+                && !mutable.starting
+                && !mutable.preview_starting
+                && mutable
+                    .notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.starts_with("Start did nothing: the "))
             {
                 mutable.notice = None;
             }
@@ -8571,23 +8863,47 @@ impl ReleaseFamily {
     async fn start(&self) -> AgentResult {
         let _guard = self.start_lock.lock().await;
         {
-            let mutable = self.mutable.lock().expect("release state");
+            let mut mutable = self.mutable.lock().expect("release state");
             if mutable.starting {
+                mutable.notice = Some(
+                    "Start did nothing: the Release Train worker is already starting.".to_string(),
+                );
                 return AgentResult::ok();
             }
         }
         if let Some(foreign) = self.foreign_owner() {
             // Another dashboard owns the root's cadence; a second worker would
             // compete for the same release. Start is a no-op that says so.
-            let notice = foreign_worker_notice(&foreign.state_dir);
+            let notice = format!(
+                "Start did nothing: {}",
+                foreign_worker_notice(&foreign.state_dir)
+            );
             if let Ok(mut mutable) = self.mutable.lock() {
                 mutable.notice = Some(notice);
                 mutable.start_error = None;
             }
             return AgentResult::ok();
         }
-        if self.owners().is_empty() {
+        let owners = self.owners();
+        if owners.is_empty() {
             return self.spawn_worker().await;
+        }
+        if owners
+            .iter()
+            .any(|owner| owner.harness_version == self.running_version)
+        {
+            let notice = format!(
+                "Start did nothing: the Release Train worker (pid {}) is already running for this dashboard.",
+                owners
+                    .iter()
+                    .map(|owner| owner.pid.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            );
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.notice = Some(notice);
+            }
+            return AgentResult::ok();
         }
         self.takeover().await
     }
@@ -8728,6 +9044,7 @@ impl ReleaseFamily {
         }
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.start_error = None;
+            mutable.notice = None;
         }
         if failures.is_empty() {
             AgentResult::ok()

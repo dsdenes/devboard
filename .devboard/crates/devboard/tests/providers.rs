@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use devboard::app::Conn;
+use devboard::app::{App, Conn};
+use devboard::config::Config;
+use devboard::journal::Journal;
 use devboard::protocol::Command;
 use devboard::providers::{
     load_subscriptions, save_subscriptions, ProviderId, ProviderOptions, ProviderService,
@@ -614,5 +617,175 @@ fn injected_transport_errors_stay_unknown() {
     assert_eq!(
         view.subscriptions[0].error.as_deref(),
         Some("The usage check timed out.")
+    );
+}
+
+#[tokio::test]
+async fn a_start_never_waits_for_the_usage_transport() {
+    use std::future::pending;
+
+    let root = fixture_root("start-usage");
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[subscription("go", ProviderId::OpenCodeGo, "go-key-0001")],
+    )
+    .expect("credentials");
+
+    // The injected transport never answers: any await on it would hang.
+    let transport: Transport = Arc::new(|_request| -> TransportFuture {
+        Box::pin(async move { pending::<Result<UsageResponse, TransportError>>().await })
+    });
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(transport),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    let service = Arc::new(ProviderService::with_options(
+        &state,
+        root.join("repo"),
+        options,
+    ));
+
+    // Selection reads the cached report and returns even though no usage read
+    // has ever completed.
+    let selected = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        service.select_environment(),
+    )
+    .await
+    .expect("select_environment awaited the usage transport")
+    .expect("a selection");
+    assert_eq!(
+        selected
+            .get("OPENCODE_API_KEY")
+            .and_then(|value| value.as_deref()),
+        Some("go-key-0001")
+    );
+
+    // The same environment powers a Start; the spawn happens without the
+    // transport answering.
+    std::fs::create_dir_all(root.join("repo/.devboard")).expect("a harness directory");
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: root.join("repo/adrs"),
+        repo_dir: root.join("repo"),
+        goal_file: root.join("repo/GOAL.md"),
+        static_dir: None,
+        agent_command: "true".to_string(),
+        state_dir: state.clone(),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
+    let app = App::new(config, journal);
+    let spawned = Arc::new(AtomicBool::new(false));
+    let spawned_for_start = Arc::clone(&spawned);
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        spawned_for_start.store(true, Ordering::SeqCst);
+        Some(std::process::id())
+    });
+    let preflight: devboard::agents_mode::PreflightCallback =
+        Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+    devboard::agents_mode::set_preflight(&app, "dead-code", preflight);
+    let service_for_start = Arc::clone(&service);
+    devboard::agents_mode::set_agent_environment(&app, move || {
+        let service = Arc::clone(&service_for_start);
+        Box::pin(async move {
+            service
+                .select_environment()
+                .await
+                .map(|environment| {
+                    environment
+                        .into_iter()
+                        .filter_map(|(key, value)| value.map(|value| (key, value)))
+                        .collect()
+                })
+                .map_err(|error| error.to_string())
+        })
+    });
+
+    let (conn, mut inbox) = connection();
+    app.register(conn.clone()).await;
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        devboard::agents_mode::handle(
+            &app,
+            &conn,
+            &Command::StartAgent {
+                id: Some(json!("dead-code")),
+            },
+        ),
+    )
+    .await
+    .expect("a start waited for the usage transport");
+    assert!(
+        spawned.load(Ordering::SeqCst),
+        "the start never reached its spawn"
+    );
+    let all = all_frames(&mut inbox);
+    let refused: Vec<Value> = all
+        .iter()
+        .filter_map(|frame| serde_json::from_str::<Value>(frame).ok())
+        .filter(|frame| frame["type"] == "error")
+        .collect();
+    assert!(refused.is_empty(), "start refused: {refused:?}");
+}
+
+#[tokio::test]
+async fn the_background_refresh_checks_stale_usage() {
+    let root = fixture_root("background-usage");
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[subscription("go", ProviderId::OpenCodeGo, "go-key-0001")],
+    )
+    .expect("credentials");
+    let clock = Arc::new(AtomicI64::new(1_700_000_000_000));
+    let clock_for_service = Arc::clone(&clock);
+    let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(stub_transport(calls.clone())),
+        now_ms: Some(Arc::new(move || clock_for_service.load(Ordering::SeqCst))),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    let service = ProviderService::with_options(&state, root.join("repo"), options);
+
+    // The background path is the only reader here: no Start and no
+    // getProviders command is sent.
+    service.background_refresh().await;
+    assert_eq!(calls.lock().expect("calls").len(), 1);
+    let first = service.view().subscriptions[0]
+        .last_checked_at
+        .clone()
+        .expect("a checked time");
+    assert_eq!(first, devboard::providers::iso_timestamp(1_700_000_000_000));
+
+    // A report younger than the TTL is reused without a provider call.
+    clock.fetch_add(59_000, Ordering::SeqCst);
+    service.background_refresh().await;
+    assert_eq!(calls.lock().expect("calls").len(), 1);
+
+    // One TTL later the background path refreshes the cached report.
+    clock.fetch_add(1_000, Ordering::SeqCst);
+    service.background_refresh().await;
+    assert_eq!(calls.lock().expect("calls").len(), 2);
+    let refreshed = service.view().subscriptions[0]
+        .last_checked_at
+        .clone()
+        .expect("a refreshed time");
+    assert_eq!(
+        refreshed,
+        devboard::providers::iso_timestamp(1_700_000_060_000)
     );
 }
