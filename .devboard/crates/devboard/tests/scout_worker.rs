@@ -691,6 +691,82 @@ async fn a_transient_read_failure_keeps_the_last_rows_and_retries_shortly() {
     worker.stop().await;
 }
 
+/// A forge that answers in 39 seconds is slow, not broken: the read's deadline
+/// expires, and the worker must keep the last rows and read again on its normal
+/// cadence instead of spending the failure schedule and raising the
+/// "the forge read did not finish within" error notification that files a board
+/// issue.
+#[tokio::test]
+async fn a_slow_forge_read_never_raises_the_error_alarm() {
+    struct SlowForge;
+    impl ScoutForge for SlowForge {
+        fn list_issues(&self) -> ForgeFuture<Vec<ScoutForgeIssue>> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(Vec::new())
+            })
+        }
+        fn list_open_issue_titles(&self) -> ForgeFuture<Vec<String>> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(Vec::new())
+            })
+        }
+        fn list_releases(&self) -> ForgeFuture<Vec<GitHubRelease>> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(Vec::new())
+            })
+        }
+        fn closing_client(&self) -> &dyn ClosingCommitClient {
+            &NullClosing
+        }
+    }
+    struct NullClosing;
+    impl ClosingCommitClient for NullClosing {
+        fn closing_commit(&self, _n: i64) -> ClientFuture<'_, Option<String>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn resolve_commit(&self, _s: String) -> ClientFuture<'_, Option<String>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn containing_release_tags(
+            &self,
+            _c: String,
+            _r: Vec<GitHubRelease>,
+        ) -> ClientFuture<'_, Vec<String>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+    let repo = scratch("slow-read");
+    let mut options = ScoutWorkerOptions::new(&repo, repo.join(".devboard").join("state"));
+    options.harness_version = Some("test-version".to_string());
+    options.forge = Some(Arc::new(SlowForge));
+    options.agent = Some(Arc::new(|_context| Box::pin(async { Ok(()) })));
+    options.read_timeout_ms = Some(20);
+    options.sync_ms = Some(1000);
+    let worker = ScoutWorker::new(options);
+    assert!(worker.start("acme/fixture"));
+    for _ in 0..6 {
+        worker.refresh().await;
+    }
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, "stale");
+    assert!(
+        state.sync.error.is_none(),
+        "latency is not a read failure: {:?}",
+        state.sync.error
+    );
+    assert!(
+        state.last_error.is_none(),
+        "the sixth slow read still raises no error: {:?}",
+        state.last_error
+    );
+    assert!(state.notice.is_none(), "no notice for a slow forge");
+    assert!(state.next_attempt_at.is_none());
+    worker.stop().await;
+}
+
 #[tokio::test]
 async fn run_reaches_a_stopped_state_and_exits_after_a_stop_command() {
     let repo = scratch("run");

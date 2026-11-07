@@ -22,10 +22,10 @@ use sha2::{Digest, Sha256};
 use crate::acp::{AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent};
 use crate::forge::{
     classify_forge_read_failure, git, gitea_closing_commits, gitea_json, gitea_list_issues,
-    gitea_list_labelled_issues, gitea_list_releases, origin_forge_with, resolve_shipped_version,
-    ClosingCommitClient, ClosingCommitIssue, Forge, ForgeReadFailureKind, ForgeReadRetry,
-    GitHubRelease, IssueQueryState, IssueState, RepositoryGitHub, RepositoryGitHubOptions,
-    VersionResolution,
+    gitea_list_labelled_issues, gitea_list_releases, is_forge_read_latency, origin_forge_with,
+    resolve_shipped_version, ClosingCommitClient, ClosingCommitIssue, Forge, ForgeReadFailureKind,
+    ForgeReadRetry, GitHubRelease, IssueQueryState, IssueState, RepositoryGitHub,
+    RepositoryGitHubOptions, VersionResolution,
 };
 use crate::journal::journal_key;
 use crate::providers::{create_worker_provider_environment, ProviderOptions};
@@ -3250,6 +3250,26 @@ impl ScoutWorker {
         let now = (self.clock)();
         let kind = classify_forge_read_failure(detail);
         let mut runtime = lock_unpoisoned(&self.runtime);
+        // A read that ran out of time is a slow forge, not a broken one. The
+        // last read's rows still describe the repository, the four short retries
+        // only add pages to the walk that stalled, and the fifth attempt would
+        // raise an error notification that files a board issue and returns as
+        // more work for the same forge. Keep the card stale with no reason and
+        // read again on the normal cadence; a read that actually failed still
+        // spends the failure schedule.
+        if kind == ForgeReadFailureKind::Transient && is_forge_read_latency(detail) {
+            runtime.state.sync = ScoutSync {
+                state: "stale".to_string(),
+                at: runtime.state.sync.at.clone(),
+                error: None,
+            };
+            runtime.state.next_attempt_at = None;
+            runtime.next_sync_at = now + self.sync_ms as i64;
+            self.publish_locked(&mut runtime);
+            drop(runtime);
+            (self.log)(&format!("the forge read is slow: {detail}"));
+            return;
+        }
         let delay = if kind == ForgeReadFailureKind::Transient {
             runtime.retry.record(kind)
         } else {

@@ -3922,15 +3922,19 @@ forges answer the labelled set — the GitHub read passes `--label scout` and th
 `labels=scout` — so one sync costs a page per page of matches instead of a walk of the whole issue
 history; a forge that ignores the filter is filtered again client-side. One
 periodic read, including every `gh` child it starts and the release resolution that follows it, is
-bounded to 30 seconds; a read that does not finish is a retryable transport failure and releases
-the worker, so the retry schedule reads again (or, once exhausted, the next interval does). A
+bounded to 30 seconds; a read that does not finish inside that bound is latency, not a transport
+failure. Its requests were still in flight, so the last read's rows and success time still stand:
+the worker keeps them, records no reason, reads as `stale`, and reads again on the 60-second
+cadence. A slow forge therefore never spends the retry schedule, never writes `agent-sync-error`,
+and never raises the error notification that files a board issue against a forge already behind. A
 closed issue whose version does not resolve is attempted at most
 once every six hours, and a newly published release retries every unresolved row at once. Each
 attempt records its time and, when it fails, the reason on the row; the rows that have waited
 longest are attempted first, and the whole resolution shares the read's deadline, so a stubborn
-issue cannot hold `syncing` and starve the remaining rows or the next scan. A transient read
-failure keeps the last known rows and the last success time, records no reason, reads as `stale`,
-and retries after 1, 2, 4, and 8 seconds; only the fifth consecutive transport failure writes that
+issue cannot hold `syncing` and starve the remaining rows or the next scan. A transport read
+failure — a refused or reset connection, a `5xx` answer, or an unclassified error — keeps the last
+known rows and the last success time, records no reason, reads as `stale`, and retries after 1, 2,
+4, and 8 seconds; only the fifth consecutive transport failure writes that
 attempt's reason to `agent-sync-error`, after which the next attempt waits the 60-second cadence. A
 permanent failure (unusable credentials, a missing repository, a malformed answer, or missing forge
 configuration) surfaces on the first attempt; a Gitea 401 refusal is the exception above and

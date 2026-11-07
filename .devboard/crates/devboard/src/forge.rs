@@ -2252,6 +2252,21 @@ pub fn classify_forge_read_failure(message: &str) -> ForgeReadFailureKind {
     ForgeReadFailureKind::Transient
 }
 
+/// True when a read ran out of time instead of failing.
+///
+/// A read that outlives its deadline, or one request inside it that hits its
+/// own bound, describes a forge that is slow rather than broken: the requests
+/// were still in flight, and the answer, when it arrives, is the same answer a
+/// faster forge gives. A periodic read treats this as latency — it keeps the
+/// rows of the last successful read and reads again on its normal cadence —
+/// because a stalled forge must not escalate into a fault, must not be fed four
+/// extra walks of the pages that stalled, and must never raise an error
+/// notification that files a board issue and adds load to the same forge.
+pub fn is_forge_read_latency(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("did not finish within") || message.contains("timed out")
+}
+
 /// One agent's consecutive transient failures. A success resets the schedule.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ForgeReadRetry {
