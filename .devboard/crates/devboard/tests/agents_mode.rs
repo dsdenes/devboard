@@ -1422,3 +1422,89 @@ async fn a_release_worker_of_this_state_dir_is_owned() {
 
     kill_stand_in(pid);
 }
+
+#[tokio::test]
+async fn the_release_list_names_the_newest_release_whose_run_is_not_settled() {
+    let root = scratch("release-history");
+    let app = app_at(&root);
+    let state = root.join("state");
+    let target = "a".repeat(40);
+    write_json(
+        &state.join("release-train/state.json"),
+        json!({
+            "version": 1,
+            "repo": "",
+            "root": "",
+            "release": {
+                "version": "1.42.1",
+                "url": "https://forge.test/releases/tag/v1.42.1",
+                "at": "2026-11-07T19:51:42.111Z",
+                "sha": target,
+                "range": format!("v1.42.0..{target}"),
+            },
+            "failure": null,
+            "gate": null,
+            "runs": [
+                {
+                    "id": "new",
+                    "startedAt": "2026-11-07T19:18:10.515Z",
+                    "endedAt": null,
+                    "state": "running",
+                    "range": format!("v1.42.0..{target}"),
+                    "target": target,
+                    "version": "1.42.1",
+                    "url": null,
+                    "detail": null,
+                    "commits": 1,
+                    "peer": null,
+                },
+                {
+                    "id": "old",
+                    "startedAt": "2026-11-07T01:01:40.570Z",
+                    "endedAt": "2026-11-07T01:27:12.552Z",
+                    "state": "released",
+                    "range": format!("v1.41.4..{target}"),
+                    "target": target,
+                    "version": "1.41.5",
+                    "url": "https://forge.test/releases/tag/v1.41.5",
+                    "detail": null,
+                    "commits": 4,
+                    "peer": null,
+                },
+            ],
+            "activity": [],
+            "updatedAt": "2026-11-07T19:51:42.111Z",
+        }),
+    );
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let snapshot = all
+        .iter()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .and_then(|frame| frame.get("agents"))
+        .and_then(Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("id").and_then(Value::as_str) == Some("release-train"))
+        })
+        .unwrap_or_else(|| panic!("a release-train snapshot: {all:?}"));
+    let releases = snapshot["releases"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no releases: {all:?}"));
+    assert_eq!(releases.len(), 2, "{all:?}");
+    assert_eq!(releases[0]["version"], json!("1.42.1"), "{all:?}");
+    assert_eq!(
+        releases[0]["at"],
+        json!("2026-11-07T19:51:42.111Z"),
+        "the newest release keeps the shared record's time"
+    );
+    assert_eq!(
+        releases[0]["url"],
+        json!("https://forge.test/releases/tag/v1.42.1")
+    );
+    assert_eq!(releases[0]["commits"], json!(1));
+    assert_eq!(releases[1]["version"], json!("1.41.5"));
+}

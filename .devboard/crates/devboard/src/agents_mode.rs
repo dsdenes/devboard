@@ -8202,16 +8202,6 @@ fn release_settings(directory: &Path) -> BasicSettings {
     })
 }
 
-fn release_run_commit_count(directory: &Path, id: &str) -> Option<u64> {
-    let request = read_json(&directory.join("runs").join(id).join("request.json"))?;
-    let count = request.get("releaseCommits")?.as_array()?.len() as u64;
-    if count > 0 {
-        Some(count)
-    } else {
-        None
-    }
-}
-
 struct ReleaseMutable {
     preview_starting: bool,
     starting: bool,
@@ -8458,30 +8448,7 @@ impl ReleaseFamily {
                     .unwrap_or_else(|| "running".to_string()),
             })
             .collect();
-        let releases: Vec<Value> = runs
-            .iter()
-            .filter_map(|run| {
-                if run.get("state").and_then(Value::as_str) != Some("released") {
-                    return None;
-                }
-                let version = run.get("version").and_then(Value::as_str)?;
-                let id = run.get("id").and_then(Value::as_str).unwrap_or("");
-                let commits = match run.get("commits").and_then(Value::as_u64) {
-                    Some(count) => Some(count),
-                    None => release_run_commit_count(&self.directory, id),
-                };
-                Some(json!({
-                    "at": run
-                        .get("endedAt")
-                        .and_then(Value::as_str)
-                        .or_else(|| run.get("startedAt").and_then(Value::as_str))
-                        .unwrap_or(""),
-                    "version": version,
-                    "commits": commits,
-                    "url": run.get("url").cloned().unwrap_or(Value::Null),
-                }))
-            })
-            .collect();
+        let releases = crate::workers::release_train::release_history(&self.directory, &shared);
         let gate_state = gate.get("state").and_then(Value::as_str);
         let gate_detail = gate.get("detail").and_then(Value::as_str);
         let sync = match gate_state {

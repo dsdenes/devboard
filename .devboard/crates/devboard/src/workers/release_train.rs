@@ -11,7 +11,7 @@
 //! the family's run lease, and one directory per run. The dashboard reads the
 //! files without a worker and writes commands as individual JSON files.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -435,6 +435,13 @@ impl ReleaseTrainRunState {
             ReleaseTrainRunState::Error => "error",
         }
     }
+
+    /// Whether the run has ended. A state that is not `running` was settled by
+    /// the worker that owned the run, so a later write carrying `running` is
+    /// only a stale copy of the earlier snapshot.
+    fn settled(self) -> bool {
+        self != ReleaseTrainRunState::Running
+    }
 }
 
 /// The newest verified release.
@@ -786,6 +793,44 @@ fn newer<T: Clone>(mine: &Option<T>, disk: &Option<T>, at: impl Fn(&T) -> &str) 
     }
 }
 
+/// The further-along of two records of one run.
+///
+/// A worker that read the shared state before another worker settled a run
+/// still holds the `running` copy, and every earlier merge preferred the
+/// writer's own copy — so the settled result disappeared from the shared
+/// history and the page listed an older release as the newest. The settled
+/// record now always wins whichever worker writes last; among two settled
+/// records the later end wins, and a tie keeps this worker's view.
+fn merge_run(mine: &ReleaseTrainRun, disk: &ReleaseTrainRun) -> ReleaseTrainRun {
+    if mine.state.settled() != disk.state.settled() {
+        return if mine.state.settled() {
+            mine.clone()
+        } else {
+            disk.clone()
+        };
+    }
+    if !mine.state.settled() {
+        // Both are still running: keep the copy that names the agent peer, so
+        // a pre-peer snapshot cannot erase the live run's detail.
+        return if mine.peer.is_none() && disk.peer.is_some() {
+            disk.clone()
+        } else {
+            mine.clone()
+        };
+    }
+    let ended = |run: &ReleaseTrainRun| {
+        run.ended_at
+            .as_deref()
+            .and_then(parse_iso_millis)
+            .unwrap_or(0)
+    };
+    if ended(disk) > ended(mine) {
+        disk.clone()
+    } else {
+        mine.clone()
+    }
+}
+
 /// The union of this worker's shared state with what another live worker wrote
 /// after this worker read its snapshot.
 pub fn merge_state(
@@ -796,7 +841,7 @@ pub fn merge_state(
     let mut runs: Vec<ReleaseTrainRun> = Vec::new();
     for run in disk.runs.iter().chain(mine.runs.iter()) {
         if let Some(existing) = runs.iter_mut().find(|entry| entry.id == run.id) {
-            *existing = run.clone();
+            *existing = merge_run(run, existing);
         } else {
             runs.push(run.clone());
         }
@@ -3942,42 +3987,78 @@ pub fn release_train_worker_states(directory: &Path) -> Vec<ReleaseTrainWorkerRe
 }
 
 /// One row of the page's verified-release list.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReleaseHistoryRow {
-    pub at: String,
-    pub version: String,
-    pub commits: Option<i64>,
-    pub url: Option<String>,
+fn release_row(at: &str, version: &str, commits: Option<i64>, url: Option<&str>) -> Value {
+    json!({
+        "at": at,
+        "version": version,
+        "commits": commits,
+        "url": url,
+    })
 }
 
 /// The verified releases, newest first, as the page lists them.
-pub fn release_history(
-    directory: &Path,
-    shared: Option<&ReleaseTrainState>,
-) -> Vec<ReleaseHistoryRow> {
-    let Some(shared) = shared else {
-        return Vec::new();
-    };
-    let mut rows = Vec::new();
-    for run in &shared.runs {
-        if run.state != ReleaseTrainRunState::Released {
+///
+/// The newest verified release always appears: its run record can be missing —
+/// a shared-state merge regressed it to `running`, or it was trimmed out of the
+/// bounded history — while the shared `release` record still names it, so that
+/// record supplies the row its run no longer does.
+pub fn release_history(directory: &Path, shared: &Value) -> Vec<Value> {
+    let runs: Vec<&Value> = shared
+        .get("runs")
+        .and_then(Value::as_array)
+        .map(|entries| entries.iter().collect())
+        .unwrap_or_default();
+    let mut rows: Vec<Value> = Vec::new();
+    let mut listed: HashSet<&str> = HashSet::new();
+    for run in &runs {
+        if run.get("state").and_then(Value::as_str) != Some("released") {
             continue;
         }
-        let Some(version) = run.version.clone() else {
+        let Some(version) = run.get("version").and_then(Value::as_str) else {
             continue;
         };
-        let commits = run
-            .commits
-            .or_else(|| read_run_commit_count(directory, &run.id));
-        rows.push(ReleaseHistoryRow {
-            at: run
-                .ended_at
-                .clone()
-                .unwrap_or_else(|| run.started_at.clone()),
+        let commits = run.get("commits").and_then(Value::as_i64).or_else(|| {
+            let id = run.get("id").and_then(Value::as_str).unwrap_or("");
+            read_run_commit_count(directory, id)
+        });
+        let at = run
+            .get("endedAt")
+            .and_then(Value::as_str)
+            .or_else(|| run.get("startedAt").and_then(Value::as_str))
+            .unwrap_or("");
+        rows.push(release_row(
+            at,
             version,
             commits,
-            url: run.url.clone(),
-        });
+            run.get("url").and_then(Value::as_str),
+        ));
+        listed.insert(version);
+    }
+    if let Some(release) = shared.get("release") {
+        let version = release.get("version").and_then(Value::as_str);
+        let at = release.get("at").and_then(Value::as_str);
+        if let (Some(version), Some(at)) = (version, at) {
+            if listed.insert(version) {
+                let commits = runs
+                    .iter()
+                    .find(|run| run.get("version").and_then(Value::as_str) == Some(version))
+                    .and_then(|run| {
+                        run.get("commits").and_then(Value::as_i64).or_else(|| {
+                            let id = run.get("id").and_then(Value::as_str).unwrap_or("");
+                            read_run_commit_count(directory, id)
+                        })
+                    });
+                rows.insert(
+                    0,
+                    release_row(
+                        at,
+                        version,
+                        commits,
+                        release.get("url").and_then(Value::as_str),
+                    ),
+                );
+            }
+        }
     }
     rows
 }

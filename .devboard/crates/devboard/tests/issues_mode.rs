@@ -1070,6 +1070,9 @@ async fn a_drain_stopped_family_is_adopted_by_the_newest_version() {
         Arc::clone(&sink),
     ));
 
-    assert!(bridge.supervise_once().await, "the drained family is resumed");
+    assert!(
+        bridge.supervise_once().await,
+        "the drained family is resumed"
+    );
     assert_eq!(spawns.load(Ordering::SeqCst), 1);
 }

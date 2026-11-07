@@ -12,6 +12,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use serde_json::json;
+
 use devboard::forge::{gitea_git_credential, GiteaGitCredential};
 use devboard::publish::{
     PublishArgs, PublishReport, SourceRefreshReport, SourceRefreshRequest, MANIFEST_CHECKSUM_ASSET,
@@ -19,16 +21,17 @@ use devboard::publish::{
 };
 use devboard::release::MANIFEST_ASSET;
 use devboard::workers::release_train::{
-    activity_path, check_release_train, empty_state, parse_iso_millis, read_result, read_settings,
-    read_state, read_worker_state, release_history, release_train_directory, release_train_owners,
-    release_train_worker_states, request_path, run_directory, runs_directory, state_path,
-    verify_shipped, versioned_control_directory, versioned_lock_path, versioned_worker_state_path,
-    write_command, write_state, AgentLifecycle, Clock, ForgeRelease, GateGit, GitOutcome,
-    PublishFuture, ReadRetry, ReleaseRunInput, ReleaseRunResult, ReleaseRunTimeouts,
-    ReleaseTrainCommand, ReleaseTrainCommit, ReleaseTrainFailure, ReleaseTrainGate,
-    ReleaseTrainGateOptions, ReleaseTrainRequest, ReleaseTrainRun, ReleaseTrainRunState,
-    ReleaseTrainTag, ReleaseTrainWorker, ReleaseTrainWorkerOptions, ReleaseVerification,
-    ReleaseVerificationOptions, ReleaseVerificationPhase, RunFuture, RunReleaseFn, VerifyFn,
+    activity_path, check_release_train, empty_state, merge_state, parse_iso_millis, read_result,
+    read_settings, read_state, read_worker_state, release_history, release_train_directory,
+    release_train_owners, release_train_worker_states, request_path, run_directory, runs_directory,
+    state_path, verify_shipped, versioned_control_directory, versioned_lock_path,
+    versioned_worker_state_path, write_command, write_state, AgentLifecycle, Clock, ForgeRelease,
+    GateGit, GitOutcome, PublishFuture, ReadRetry, ReleaseRunInput, ReleaseRunResult,
+    ReleaseRunTimeouts, ReleaseTrainCommand, ReleaseTrainCommit, ReleaseTrainFailure,
+    ReleaseTrainGate, ReleaseTrainGateOptions, ReleaseTrainRelease, ReleaseTrainRequest,
+    ReleaseTrainRun, ReleaseTrainRunState, ReleaseTrainTag, ReleaseTrainWorker,
+    ReleaseTrainWorkerOptions, ReleaseVerification, ReleaseVerificationOptions,
+    ReleaseVerificationPhase, RunFuture, RunReleaseFn, VerifyFn,
 };
 
 const START_ISO: &str = "2026-11-02T10:00:00.000Z";
@@ -1442,14 +1445,141 @@ async fn release_history_reads_the_request_of_a_legacy_run() {
             peer: None,
         },
     ];
-    let rows = release_history(&directory, Some(&state));
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].version, "1.0.0");
-    assert_eq!(rows[0].commits, Some(2));
-    assert_eq!(
-        rows[0].url.as_deref(),
-        Some("https://forge.test/releases/tag/v1.0.0")
+    let rows = release_history(
+        &directory,
+        &serde_json::to_value(&state).expect("state JSON"),
     );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["version"], json!("1.0.0"));
+    assert_eq!(rows[0]["commits"], json!(2));
+    assert_eq!(
+        rows[0]["url"],
+        json!("https://forge.test/releases/tag/v1.0.0")
+    );
+}
+
+#[test]
+fn release_history_lists_the_newest_release_without_its_settled_run() {
+    let workspace = workspace("history-newest");
+    let directory = release_train_directory(&workspace.state_dir);
+    let running = run_directory(&directory, "running");
+    std::fs::create_dir_all(&running).expect("a run directory");
+    std::fs::write(
+        request_path(&directory, "running"),
+        serde_json::to_string(&ReleaseTrainRequest {
+            format: 1,
+            run_id: "running".to_string(),
+            range: format!("v1.0.0..{}", "a".repeat(40)),
+            target: "a".repeat(40),
+            version: "1.1.0".to_string(),
+            previous: Some("v1.0.0".to_string()),
+            commits: Vec::new(),
+            release_commits: vec![
+                ReleaseTrainCommit {
+                    sha: "b".to_string(),
+                    subject: "fix: b".to_string(),
+                    merge: false,
+                },
+                ReleaseTrainCommit {
+                    sha: "c".to_string(),
+                    subject: "fix: c".to_string(),
+                    merge: false,
+                },
+                ReleaseTrainCommit {
+                    sha: "d".to_string(),
+                    subject: "fix: d".to_string(),
+                    merge: false,
+                },
+            ],
+        })
+        .expect("request JSON"),
+    )
+    .expect("the running run's request");
+    let mut state = empty_state("", &workspace.root.to_string_lossy(), start_ms());
+    state.release = Some(ReleaseTrainRelease {
+        version: "1.1.0".to_string(),
+        url: "https://forge.test/releases/tag/v1.1.0".to_string(),
+        at: "2026-11-02T10:30:00.000Z".to_string(),
+        sha: "a".repeat(40),
+        range: format!("v1.0.0..{}", "a".repeat(40)),
+    });
+    state.runs = vec![
+        ReleaseTrainRun {
+            id: "running".to_string(),
+            started_at: "2026-11-02T10:00:00.000Z".to_string(),
+            ended_at: None,
+            state: ReleaseTrainRunState::Running,
+            range: format!("v1.0.0..{}", "a".repeat(40)),
+            target: "a".repeat(40),
+            version: Some("1.1.0".to_string()),
+            url: None,
+            detail: None,
+            commits: Some(3),
+            peer: None,
+        },
+        ReleaseTrainRun {
+            id: "settled".to_string(),
+            started_at: "2026-11-02T09:00:00.000Z".to_string(),
+            ended_at: Some("2026-11-02T09:30:00.000Z".to_string()),
+            state: ReleaseTrainRunState::Released,
+            range: format!("v0.9.0..{}", "e".repeat(40)),
+            target: "e".repeat(40),
+            version: Some("1.0.0".to_string()),
+            url: Some("https://forge.test/releases/tag/v1.0.0".to_string()),
+            detail: None,
+            commits: Some(1),
+            peer: None,
+        },
+    ];
+    let rows = release_history(
+        &directory,
+        &serde_json::to_value(&state).expect("state JSON"),
+    );
+    assert_eq!(rows.len(), 2, "the newest release is listed exactly once");
+    assert_eq!(rows[0]["version"], json!("1.1.0"));
+    assert_eq!(rows[0]["at"], json!("2026-11-02T10:30:00.000Z"));
+    assert_eq!(rows[0]["commits"], json!(3));
+    assert_eq!(
+        rows[0]["url"],
+        json!("https://forge.test/releases/tag/v1.1.0")
+    );
+    assert_eq!(rows[1]["version"], json!("1.0.0"));
+}
+
+#[test]
+fn merge_state_keeps_a_settled_run_over_a_stale_running_copy() {
+    let run = |state: ReleaseTrainRunState, ended_at: Option<&str>| ReleaseTrainRun {
+        id: "run-1".to_string(),
+        started_at: "2026-11-02T10:00:00.000Z".to_string(),
+        ended_at: ended_at.map(str::to_string),
+        state,
+        range: format!("v1.0.0..{}", "a".repeat(40)),
+        target: "a".repeat(40),
+        version: Some("1.1.0".to_string()),
+        url: Some("https://forge.test/releases/tag/v1.1.0".to_string()),
+        detail: None,
+        commits: Some(1),
+        peer: None,
+    };
+    let mut settled = empty_state("", "/repo", start_ms());
+    settled.runs = vec![run(
+        ReleaseTrainRunState::Released,
+        Some("2026-11-02T10:30:00.000Z"),
+    )];
+    let mut stale = empty_state("", "/repo", start_ms());
+    stale.runs = vec![run(ReleaseTrainRunState::Running, None)];
+
+    for merged in [
+        merge_state(&stale, &settled, &[]),
+        merge_state(&settled, &stale, &[]),
+    ] {
+        assert_eq!(merged.runs.len(), 1);
+        assert_eq!(merged.runs[0].state, ReleaseTrainRunState::Released);
+        assert_eq!(
+            merged.runs[0].ended_at.as_deref(),
+            Some("2026-11-02T10:30:00.000Z")
+        );
+    }
 }
 
 /* ------------------------------------------------------------------------ */
