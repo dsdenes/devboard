@@ -1687,7 +1687,8 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         );
     }
 
-    preflight.published = refresh_main(&args, runner.as_ref(), &preflight.remote, &log).await?;
+    preflight.published =
+        refresh_main(&args, runner.as_ref(), &preflight.remote, &log, &sleeper).await?;
     // A client bundle older than the checkout is rebuilt from the released
     // sources before anything is proven or tagged.
     if dist_is_stale(&args.harness_root)? {
@@ -2180,48 +2181,78 @@ async fn preflight(args: &PublishArgs, runner: &dyn CommandRunner) -> Result<Pre
     })
 }
 
+/// How many times publish reads the remote `main` before it refuses a checkout
+/// that is ahead of or diverged from it.
+///
+/// An integration landing merges into the canonical checkout's `main` and then
+/// pushes it, so a release that starts in that window sees a local tip the
+/// remote does not carry yet. That push settles the checkout, so publish waits
+/// for it instead of failing a release nothing is wrong with.
+const MAIN_SETTLE_ATTEMPTS: u32 = 12;
+
+/// The pause between those reads.
+const MAIN_SETTLE_DELAY: Duration = Duration::from_secs(5);
+
 /// Fetches the canonical `main` and fast-forwards without discarding work.
 async fn refresh_main(
     args: &PublishArgs,
     runner: &dyn CommandRunner,
     remote: &str,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
+    sleeper: &Arc<dyn Sleeper>,
 ) -> Result<String> {
     let git = Git::new(runner, &args.repo_dir, &args.environment);
     (log)(&format!("fetching {remote}/main"));
-    let fetched = git
-        .run(&[
-            "fetch",
-            "--prune",
-            remote,
-            &format!("+refs/heads/main:refs/remotes/{remote}/main"),
-        ])
-        .await;
-    if fetched.code != 0 {
-        bail!(
-            "could not fetch {remote}/main: {}",
-            first_line(if fetched.stderr.is_empty() {
-                fetched.stdout.as_str()
-            } else {
-                fetched.stderr.as_str()
-            })
-        );
-    }
-
-    let head = git
-        .must(&["rev-parse", "HEAD"], "could not read HEAD")
-        .await?;
-    let tip = git
-        .must(
-            &["rev-parse", &format!("{remote}/main")],
-            &format!("could not read {remote}/main"),
-        )
-        .await?;
-    if head != tip {
-        if !git.is_ancestor(&head, &tip).await {
+    let mut remaining = MAIN_SETTLE_ATTEMPTS;
+    let mut waited = false;
+    loop {
+        let fetched = git
+            .run(&[
+                "fetch",
+                "--prune",
+                remote,
+                &format!("+refs/heads/main:refs/remotes/{remote}/main"),
+            ])
+            .await;
+        if fetched.code != 0 {
             bail!(
-                "local main is ahead of or diverged from {remote}/main; integrate and push the worktree first"
+                "could not fetch {remote}/main: {}",
+                first_line(if fetched.stderr.is_empty() {
+                    fetched.stdout.as_str()
+                } else {
+                    fetched.stderr.as_str()
+                })
             );
+        }
+
+        let head = git
+            .must(&["rev-parse", "HEAD"], "could not read HEAD")
+            .await?;
+        let tip = git
+            .must(
+                &["rev-parse", &format!("{remote}/main")],
+                &format!("could not read {remote}/main"),
+            )
+            .await?;
+        if head == tip {
+            (log)(&format!("main is at {}", short_sha(&head)));
+            break;
+        }
+        if !git.is_ancestor(&head, &tip).await {
+            remaining -= 1;
+            if remaining == 0 {
+                bail!(
+                    "local main is ahead of or diverged from {remote}/main; integrate and push the worktree first"
+                );
+            }
+            if !waited {
+                waited = true;
+                (log)(&format!(
+                    "local main is ahead of {remote}/main; waiting for the landing push to settle"
+                ));
+            }
+            sleeper.sleep(MAIN_SETTLE_DELAY).await;
+            continue;
         }
         let dirty = git
             .must(
@@ -2265,8 +2296,7 @@ async fn refresh_main(
                 })
             );
         }
-    } else {
-        (log)(&format!("main is at {}", short_sha(&head)));
+        break;
     }
 
     git.must(

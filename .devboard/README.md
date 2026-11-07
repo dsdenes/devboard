@@ -2050,9 +2050,10 @@ at a time.
 
 The Release Train's release agent fetches canonical `main` and runs `cargo run -p devboard --
 publish` from the integration checkout. That path refuses a worktree, a branch other than `main`,
-or a checkout ahead of or diverged from its canonical remote; fetches and fast-forwards `main`
-without discarding uncommitted work; rebuilds the client and refreshes the embedded asset copy;
-derives the version from the commits after the newest reachable `v<version>` tag; proves the
+or a checkout ahead of or diverged from its canonical remote, after it re-reads `origin/main` for
+up to a minute so an integration landing's in-flight push settles; fetches and fast-forwards
+`main` without discarding uncommitted work; rebuilds the client and refreshes the embedded asset
+copy; derives the version from the commits after the newest reachable `v<version>` tag; proves the
 configured Gitea credential may create the release, so a revoked or read-only token fails before
 the version bump, the tag push, and the dispatch instead of leaving a released tag with no
 manifest; bumps the workspace version, commits it, and pushes the commit and tag to Gitea; a push

@@ -833,6 +833,37 @@ impl Sleeper for FakeSleeper {
     }
 }
 
+/// A sleeper standing in for an integration landing's in-flight push: the
+/// canonical checkout's `main` moves to the remote on the first wait, exactly
+/// as a landing does moments after it merges.
+struct LandingPusher {
+    clock: Arc<FakeClock>,
+    repo: PathBuf,
+    sleeps: AtomicUsize,
+}
+
+impl LandingPusher {
+    fn new(clock: Arc<FakeClock>, repo: PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            clock,
+            repo,
+            sleeps: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl Sleeper for LandingPusher {
+    fn sleep<'a>(&'a self, _duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let clock = self.clock.clone();
+        Box::pin(async move {
+            if self.sleeps.fetch_add(1, Ordering::SeqCst) == 0 {
+                git_output(&self.repo, &["push", "-q", "origin", "main"]);
+            }
+            clock.advance(1);
+        })
+    }
+}
+
 /// The gate every publish test uses: no real suite runs, and the verdict is
 /// the one the test asked for. It asserts the gate receives the harness
 /// workspace.
@@ -986,13 +1017,37 @@ async fn an_ahead_or_diverged_main_is_refused() {
     commit_message(&app, "feat: local only");
     let gitea = StubServer::start(|_| not_found()).await;
     let gh = StubServer::start(|_| not_found()).await;
-    let error = publish(test_args(&app, &gitea, &gh, None))
-        .await
-        .expect_err("an ahead main is refused");
+    let mut args = test_args(&app, &gitea, &gh, None);
+    // The settle window is real time in production; a fake sleeper keeps this
+    // refusal immediate.
+    let clock = FakeClock::new(0);
+    args.clock = Some(clock.clone());
+    args.sleeper = Some(Arc::new(FakeSleeper { clock, step: 5_000 }));
+    let error = publish(args).await.expect_err("an ahead main is refused");
     assert!(
         format!("{error:#}").contains("ahead of or diverged"),
         "{error:#}"
     );
+}
+
+#[tokio::test]
+async fn an_in_flight_landing_that_pushes_lets_the_release_run() {
+    let live = live("landing", release_assets()).await;
+    commit_file(&live.seed, "README.md", "landing\n", "feat: the landing");
+    let clock = FakeClock::new(0);
+    let sleeper = LandingPusher::new(clock.clone(), live.seed.clone());
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.clock = Some(clock);
+    args.sleeper = Some(sleeper.clone());
+    let report = publish(args).await.expect("the landing push settles");
+
+    assert!(report.published, "the release ships once main is pushed");
+    assert_eq!(report.version, "1.1.0");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        report.commit
+    );
+    assert!(sleeper.sleeps.load(Ordering::SeqCst) >= 1);
 }
 
 #[tokio::test]
