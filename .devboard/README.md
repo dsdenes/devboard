@@ -3496,6 +3496,14 @@ is open. The
 five-minute cooldown remains: an issue in cooldown is retried when it expires, and other issues
 keep running and start normally.
 
+A start the resource governor defers is never a failure: the issue stays queued, the deferral is
+recorded with its reason under `<STATE_DIR>/resources/`, and the Overview states it in
+`data-testid="issues-deferral"` as `issue #<n> deferred: …`. That line is the deferral in force,
+not a message: the worker recomputes it on every pass and drops it as soon as no start is
+deferred — a peer ends, the queue empties, or the worker pauses or stops — so the Overview never
+keeps claiming peers that no longer run. Operator feedback keeps its own
+`data-testid="issues-notice"` line.
+
 `Check now` clears every cooldown and polls immediately; while paused it writes a notice and polls
 nothing. Lifecycle is `running` while any peer runs, `pausing` while paused with any peer,
 `paused` when paused with none, `failed` when enabled and unpaused with no peer and an unhandled

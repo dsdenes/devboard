@@ -143,6 +143,11 @@ export class IssuesStore {
     return this.snapshot?.notice ?? null;
   }
 
+  /** The start the governor defers right now, or null when none waits. */
+  get deferral(): string | null {
+    return this.snapshot?.deferral ?? null;
+  }
+
   /** Open issues waiting for an agent; a running issue is not pending. */
   get pending(): number {
     return queueCounts(this.queue).pending;

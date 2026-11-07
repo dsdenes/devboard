@@ -248,6 +248,7 @@ async fn an_unstarted_checkout_publishes_the_stopped_state_frame() {
         "lastExitCode": null,
         "finishedAt": null,
         "notice": null,
+        "deferral": null,
         "updatedAt": null,
         "workers": [],
         "sync": {"intervalMs": 30000, "lastSyncAt": null, "error": null},

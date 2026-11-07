@@ -1173,6 +1173,11 @@ struct IssuesState {
     last_exit_code: Option<i64>,
     finished_at: Option<String>,
     notice: Option<String>,
+    /// The start this pass had to defer, or none. It is recomputed on every
+    /// pass, so a resolved deferral never outlives the condition that caused
+    /// it, and a reader never sees a claim about peers that no longer run.
+    #[serde(default)]
+    deferral: Option<String>,
     updated_at: String,
 }
 
@@ -1202,6 +1207,7 @@ fn empty_state(repo: &str, root: &str, interval_ms: u64, lifecycle: &str) -> Iss
         last_exit_code: None,
         finished_at: None,
         notice: None,
+        deferral: None,
         updated_at: iso_now(),
     }
 }
@@ -1375,7 +1381,10 @@ fn parse_state(text: &str) -> Option<IssuesState> {
             return None;
         }
     }
-    if !nullable_string(object.get("finishedAt")) || !nullable_string(object.get("notice")) {
+    if !nullable_string(object.get("finishedAt"))
+        || !nullable_string(object.get("notice"))
+        || !nullable_string(object.get("deferral"))
+    {
         return None;
     }
     let updated_at = object.get("updatedAt").and_then(Value::as_str)?;
@@ -1435,6 +1444,10 @@ fn parse_state(text: &str) -> Option<IssuesState> {
             .map(str::to_string),
         notice: object
             .get("notice")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        deferral: object
+            .get("deferral")
             .and_then(Value::as_str)
             .map(str::to_string),
         updated_at: updated_at.to_string(),
@@ -3101,16 +3114,24 @@ impl IssuesBridge {
             None
         };
         let poll = active.as_ref().map(|state| state.poll.clone());
-        let (last_error, last_exit_code, finished_at, notice, updated_at) = match active.as_ref() {
-            Some(state) => (
-                state.last_error.clone(),
-                state.last_exit_code,
-                state.finished_at.clone(),
-                state.notice.clone(),
-                Some(state.updated_at.clone()),
-            ),
-            None => (None, None, None, None, None),
-        };
+        // A deferral belongs to a worker this dashboard is attached to: the
+        // line a stopped worker left behind describes nothing that still waits.
+        let (last_error, last_exit_code, finished_at, notice, deferral, updated_at) =
+            match active.as_ref() {
+                Some(state) => (
+                    state.last_error.clone(),
+                    state.last_exit_code,
+                    state.finished_at.clone(),
+                    state.notice.clone(),
+                    if attached {
+                        state.deferral.clone()
+                    } else {
+                        None
+                    },
+                    Some(state.updated_at.clone()),
+                ),
+                None => (None, None, None, None, None, None),
+            };
         let mut map = Map::new();
         map.insert(
             "present".into(),
@@ -3183,6 +3204,10 @@ impl IssuesBridge {
         map.insert(
             "notice".into(),
             notice.map(Value::String).unwrap_or(Value::Null),
+        );
+        map.insert(
+            "deferral".into(),
+            deferral.map(Value::String).unwrap_or(Value::Null),
         );
         map.insert(
             "updatedAt".into(),
@@ -5106,8 +5131,14 @@ impl IssuesWorker {
 
     async fn maybe_trigger(&mut self) {
         if self.stopping || self.state.paused || !self.state.enabled {
+            // Nothing is being deferred while no start is attempted, so a
+            // line that claimed otherwise is stale and is dropped here.
+            if self.state.deferral.take().is_some() {
+                self.publish();
+            }
             return;
         }
+        let mut deferral: Option<String> = None;
         let queue = self.state.queue.clone();
         for issue in queue {
             if self.active.len() >= MAX_CONCURRENT_PEERS {
@@ -5156,12 +5187,11 @@ impl IssuesWorker {
                             governor.record_deferral("issue", &label, &reason);
                             release_issue_claim(&self.repo_dir, issue.number);
                             self.claiming.remove(&issue.number);
-                            self.state.notice = Some(format!(
+                            deferral = Some(format!(
                                 "issue #{} deferred: {}",
                                 issue.number,
                                 reason.message()
                             ));
-                            self.publish();
                             break;
                         }
                     }
@@ -5174,6 +5204,7 @@ impl IssuesWorker {
             }
         }
         self.state.lifecycle = self.settled_lifecycle();
+        self.state.deferral = deferral;
         self.publish();
     }
 
@@ -6022,6 +6053,7 @@ impl IssuesWorker {
         self.state.last_error = None;
         self.state.lifecycle = "stopped".into();
         self.state.notice = None;
+        self.state.deferral = None;
         self.publish();
         if let Some((path, token)) = self.lock.take() {
             release_lock(&path, &token);
@@ -6633,6 +6665,23 @@ mod tests {
         assert!(worker.dismissed.contains_key(&10));
         let until = worker.dismissed[&10];
         assert!(until > std::time::Instant::now());
+    }
+
+    #[tokio::test]
+    async fn a_resolved_deferral_leaves_no_line_behind() {
+        let (repo, state) = unit_root("deferral-resolved");
+        let mut worker = worker(&repo, &state);
+        worker.state.deferral = Some(
+            "issue #7 deferred: 12 agent peer(s) already run at the cap of 12; the start is deferred"
+                .to_string(),
+        );
+        // This pass starts nothing: the queue is empty and this process holds
+        // no governor, so no deferral is in force when it ends.
+        worker.maybe_trigger().await;
+        assert_eq!(worker.state.deferral, None);
+        let published =
+            read_state(&versioned_state_path(&state, &repo, Some("1.2.3"))).expect("the state");
+        assert_eq!(published.deferral, None);
     }
 }
 

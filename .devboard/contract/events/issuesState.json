@@ -19,6 +19,7 @@
     "lastExitCode": null,
     "finishedAt": null,
     "notice": null,
+    "deferral": null,
     "updatedAt": null,
     "workers": [],
     "sync": {

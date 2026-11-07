@@ -236,6 +236,11 @@
               </dd>
             </div>
           </dl>
+          {#if issues.deferral !== null}
+            <p class="issues-notice" data-testid="issues-deferral" role="status">
+              {issues.deferral}
+            </p>
+          {/if}
           {#if issues.notice !== null}
             <p class="issues-notice" data-testid="issues-notice" role="status">{issues.notice}</p>
           {/if}

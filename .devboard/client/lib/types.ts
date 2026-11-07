@@ -108,6 +108,12 @@ export interface IssuesSnapshot {
   lastExitCode: number | null;
   finishedAt: string | null;
   notice: string | null;
+  /**
+   * The start the worker has to defer right now, or null. The worker
+   * recomputes it every pass, so it never describes a peer that has ended;
+   * optional so a client paired with an older server still validates.
+   */
+  deferral?: string | null;
   updatedAt: string | null;
   /** Every live issues worker, whatever version started it. */
   workers?: Array<{
