@@ -21,7 +21,6 @@ struct Args {
     window_seconds: u64,
     corpus: PathBuf,
     typescript: PathBuf,
-    token: String,
     rust_bin: PathBuf,
     contract_bin: PathBuf,
     iterations: u64,
@@ -36,7 +35,6 @@ fn parse_args() -> anyhow::Result<Args> {
         window_seconds: 60,
         corpus: harness.join("contract"),
         typescript: harness.clone(),
-        token: "contract-token".to_string(),
         rust_bin: harness.join("target/debug/devboard"),
         contract_bin: harness.join("target/debug/devboard-contract"),
         iterations: MIN_COMPARISONS,
@@ -54,7 +52,6 @@ fn parse_args() -> anyhow::Result<Args> {
             "--typescript" => {
                 args.typescript = PathBuf::from(value.context("--typescript needs a path")?)
             }
-            "--token" => args.token = value.context("--token needs a value")?,
             "--rust" => args.rust_bin = PathBuf::from(value.context("--rust needs a path")?),
             "--contract" => {
                 args.contract_bin = PathBuf::from(value.context("--contract needs a path")?)
@@ -93,14 +90,14 @@ async fn main() -> anyhow::Result<()> {
     seed_fixture(&args.corpus, &layout.rust_repo_dir())?;
     let rust_port = free_port().await?;
     let mut rust = spawn_rust(&args, rust_port, &layout)?;
-    wait_ready(rust_port, &args.token, Duration::from_secs(30)).await?;
+    wait_ready(rust_port, Duration::from_secs(30)).await?;
 
     let cutover = match &args.cutover {
         Some(path) => devboard_shadow::Cutover::load(path)?,
         None => devboard_shadow::Cutover::default(),
     };
     eprintln!("shadow: the Rust dashboard is ready");
-    let mut rust_socket = connect(rust_port, &args.token).await?;
+    let mut rust_socket = connect(rust_port).await?;
     drain(&mut rust_socket).await;
 
     let started = Instant::now();
@@ -265,7 +262,6 @@ fn spawn_rust(args: &Args, port: u16, layout: &ShadowLayout) -> anyhow::Result<C
             "--static-dir",
             &args.corpus.join("fixtures/static").to_string_lossy(),
         ])
-        .args(["--token", &args.token])
         .env("DEVBOARD_UPDATE_INTERVAL_MS", "3600000")
         .env("DEVBOARD_RUNNING_VERSION", "0.0.0-contract")
         // The baseline recorded a clean machine: no forge feedback, no host
@@ -284,19 +280,21 @@ fn spawn_rust(args: &Args, port: u16, layout: &ShadowLayout) -> anyhow::Result<C
         .env_remove("DEVBOARD_GITEA_TOKEN")
         .env_remove("DEVBOARD_RELEASE_URL")
         .env_remove("DEVBOARD_FEEDBACK_TIMEOUT_MS")
+        // The launcher's GOAL_FILE names its own host document and would win
+        // over the fixture goal the seeded repository carries.
+        .env_remove("GOAL_FILE")
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
         .context("starting the Rust dashboard")
 }
 
-async fn wait_ready(port: u16, token: &str, bound: Duration) -> anyhow::Result<()> {
+async fn wait_ready(port: u16, bound: Duration) -> anyhow::Result<()> {
     let started = Instant::now();
     let client = reqwest::Client::new();
     while started.elapsed() < bound {
         if client
             .get(format!("http://127.0.0.1:{port}/ready"))
-            .header("authorization", format!("Bearer {token}"))
             .send()
             .await
             .map(|response| response.status().is_success())
@@ -312,11 +310,8 @@ async fn wait_ready(port: u16, token: &str, bound: Duration) -> anyhow::Result<(
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn connect(port: u16, token: &str) -> anyhow::Result<Socket> {
-    let mut request = format!("ws://127.0.0.1:{port}/ws").into_client_request()?;
-    request
-        .headers_mut()
-        .insert("authorization", format!("Bearer {token}").parse()?);
+async fn connect(port: u16) -> anyhow::Result<Socket> {
+    let request = format!("ws://127.0.0.1:{port}/ws").into_client_request()?;
     let (socket, _response) = tokio_tungstenite::connect_async(request).await?;
     Ok(socket)
 }
