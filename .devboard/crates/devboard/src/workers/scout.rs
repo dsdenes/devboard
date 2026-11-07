@@ -22,9 +22,10 @@ use sha2::{Digest, Sha256};
 use crate::acp::{AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent};
 use crate::forge::{
     classify_forge_read_failure, git, gitea_closing_commits, gitea_json, gitea_list_issues,
-    gitea_list_releases, origin_forge_with, resolve_shipped_version, ClosingCommitClient,
-    ClosingCommitIssue, Forge, ForgeReadFailureKind, ForgeReadRetry, GitHubRelease,
-    IssueQueryState, IssueState, RepositoryGitHub, RepositoryGitHubOptions, VersionResolution,
+    gitea_list_labelled_issues, gitea_list_releases, origin_forge_with, resolve_shipped_version,
+    ClosingCommitClient, ClosingCommitIssue, Forge, ForgeReadFailureKind, ForgeReadRetry,
+    GitHubRelease, IssueQueryState, IssueState, RepositoryGitHub, RepositoryGitHubOptions,
+    VersionResolution,
 };
 use crate::journal::journal_key;
 use crate::providers::{create_worker_provider_environment, ProviderOptions};
@@ -37,6 +38,9 @@ use crate::workers::startup::{inherited_state_path, versioned_state_files};
 use crate::workers::WorkerInvocation;
 
 pub const SCOUT_DIRECTORY: &str = "scout";
+/// The one label every Auto Scout issue carries, and the label its reads ask
+/// the forge for.
+pub const SCOUT_LABEL: &str = "scout";
 pub const STATE_VERSION: i64 = 2;
 pub const SCAN_VERSION: i64 = 2;
 /// A scan's agent phase ends after this long without a session update, and its
@@ -2146,7 +2150,7 @@ impl ScoutForge for GitHubScoutForge {
             "--repo".to_string(),
             self.repository.clone(),
             "--label".to_string(),
-            "scout".to_string(),
+            SCOUT_LABEL.to_string(),
             "--state".to_string(),
             "all".to_string(),
             "--limit".to_string(),
@@ -2314,12 +2318,18 @@ impl ScoutForge for GiteaScoutForge {
         let transport = self.transport.clone();
         let options = self.options.clone();
         Box::pin(async move {
-            let issues = gitea_list_issues(&target, IssueQueryState::All, &transport, &options)
-                .await
-                .map_err(|error| error.message)?;
+            let issues = gitea_list_labelled_issues(
+                &target,
+                IssueQueryState::All,
+                SCOUT_LABEL,
+                &transport,
+                &options,
+            )
+            .await
+            .map_err(|error| error.message)?;
             Ok(issues
                 .into_iter()
-                .filter(|issue| issue.labels.iter().any(|label| label == "scout"))
+                .filter(|issue| issue.labels.iter().any(|label| label == SCOUT_LABEL))
                 .map(|issue| ScoutForgeIssue {
                     number: issue.number,
                     title: issue.title,

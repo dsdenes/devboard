@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use devboard::forge::*;
+use devboard::workers::scout::{GiteaScoutForge, ScoutForge};
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------
@@ -1818,6 +1819,73 @@ async fn list_labelled_keeps_only_labelled_rows_when_the_filter_is_ignored() {
     assert!(server
         .find("GET", "/api/v1/repos/owner/name/issues/8")
         .is_none());
+}
+
+/// The Auto Scout read asks the forge for its own label, so one periodic sync
+/// costs one page of matches instead of one page per page of the whole issue
+/// history. Under the dashboard's own load the whole-history walk outlived the
+/// read deadline and raised the "forge read did not finish" notification.
+#[tokio::test]
+async fn auto_scout_reads_only_the_scout_labelled_set() {
+    let issue = |number: i64, labels: Value| {
+        json!({
+            "number": number,
+            "title": format!("Issue {number}"),
+            "html_url": format!("https://gitea.test/owner/name/issues/{number}"),
+            "created_at": "2024-01-02T03:04:05Z",
+            "state": "open",
+            "body": format!("body {number}"),
+            "labels": labels,
+        })
+    };
+    let server =
+        StubServer::start(
+            move |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name/issues") => {
+                    if !request.query.contains("labels=scout") {
+                        // Unfiltered means the read walked the whole history.
+                        return text_response(500, "unfiltered page");
+                    }
+                    if request.query.contains("page=1") {
+                        json_response(json!([
+                            issue(7, json!([{"name": "scout"}])),
+                            issue(8, json!([{"name": "dead-code"}])),
+                        ]))
+                    } else {
+                        json_response(json!([]))
+                    }
+                }
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let forge = GiteaScoutForge::new(
+        GiteaTarget {
+            base_url: server.base.clone(),
+            project: "owner/name".to_string(),
+            token: Some("secret".to_string()),
+        },
+        git_repo("scout-labelled-read", "git@localhost:owner/name.git"),
+        5_000,
+    );
+
+    let read = forge.list_issues().await.expect("a scout read");
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].number, 7);
+    let listed: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/api/v1/repos/owner/name/issues")
+        .collect();
+    assert_eq!(
+        listed.len(),
+        2,
+        "the labelled page and the page that ends it"
+    );
+    for request in &listed {
+        assert!(request.query.contains("state=all"), "{}", request.query);
+        assert!(request.query.contains("labels=scout"), "{}", request.query);
+    }
 }
 
 #[tokio::test]

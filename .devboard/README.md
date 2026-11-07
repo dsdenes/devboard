@@ -3828,7 +3828,10 @@ exact link and the checkout's landed reference.
 ### Periodic check
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
-and immediately on Start; the table, states, and versions reflect a change within one interval. One
+and immediately on Start; the table, states, and versions reflect a change within one interval. Both
+forges answer the labelled set — the GitHub read passes `--label scout` and the Gitea read sends
+`labels=scout` — so one sync costs a page per page of matches instead of a walk of the whole issue
+history; a forge that ignores the filter is filtered again client-side. One
 periodic read, including every `gh` child it starts and the release resolution that follows it, is
 bounded to 30 seconds; a read that does not finish is a retryable transport failure and releases
 the worker, so the retry schedule reads again (or, once exhausted, the next interval does). A
