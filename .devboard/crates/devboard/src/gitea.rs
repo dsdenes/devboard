@@ -10,11 +10,38 @@ pub struct GiteaTarget {
     pub token: Option<String>,
 }
 
+/// Why one request reached no HTTP response at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportFailure {
+    /// The connection never opened, so nothing reached the forge and a retry
+    /// cannot file a second issue.
+    Connect,
+    /// The attempt ran past its deadline before any answer arrived.
+    Timeout,
+    /// Any other transport failure: the forge may have received the request,
+    /// so an automatic retry could duplicate it.
+    Other,
+}
+
+impl TransportFailure {
+    /// True when the forge answered nothing at all — an unreachable or slow
+    /// upstream, never a failure this server produced.
+    pub fn answered_nothing(self) -> bool {
+        match self {
+            Self::Connect | Self::Timeout => true,
+            Self::Other => false,
+        }
+    }
+}
+
 /// One failure from the Gitea API.
 #[derive(Debug, Clone)]
 pub struct GiteaError {
     pub status: Option<u16>,
     pub message: String,
+    /// Set when the request reached no HTTP response: the socket condition,
+    /// not a refusal the forge itself produced.
+    pub transport: Option<TransportFailure>,
 }
 
 impl std::fmt::Display for GiteaError {
@@ -82,6 +109,50 @@ fn message_from_body(body: &str) -> String {
     crate::feedback::truncate(first, 300)
 }
 
+/// One request the forge never answered, classified by its socket condition.
+fn transport_error(error: reqwest::Error) -> GiteaError {
+    let transport = if error.is_timeout() {
+        TransportFailure::Timeout
+    } else if error.is_connect() {
+        TransportFailure::Connect
+    } else {
+        TransportFailure::Other
+    };
+    GiteaError {
+        status: None,
+        message: cause_chain(&error),
+        transport: Some(transport),
+    }
+}
+
+/// A client that could not be built sent nothing, so it carries no transport
+/// classification.
+fn client_error(error: reqwest::Error) -> GiteaError {
+    GiteaError {
+        status: None,
+        message: cause_chain(&error),
+        transport: None,
+    }
+}
+
+/// The error's own line plus every distinct cause beneath it.
+///
+/// `reqwest` renders a failed send as `error sending request for url (…)`,
+/// which names no cause at all; the socket answer below it — `Connection
+/// refused`, `operation timed out` — is what makes the journal actionable.
+fn cause_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut cause = std::error::Error::source(error);
+    while let Some(error) = cause {
+        let text = error.to_string();
+        if !text.is_empty() && !parts.iter().any(|part| part == &text) {
+            parts.push(text);
+        }
+        cause = std::error::Error::source(error);
+    }
+    parts.join(": ")
+}
+
 /// Files one issue and returns it.
 pub async fn create_issue(
     target: &GiteaTarget,
@@ -93,10 +164,7 @@ pub async fn create_issue(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout_ms.max(1)))
         .build()
-        .map_err(|error| GiteaError {
-            status: None,
-            message: error.to_string(),
-        })?;
+        .map_err(client_error)?;
     let path = format!("{}/issues", repo_path(target));
     let mut request = client
         .post(api_url(target, &path))
@@ -111,10 +179,7 @@ pub async fn create_issue(
     if let Some(token) = target.token.as_deref().filter(|token| !token.is_empty()) {
         request = request.header("Authorization", format!("token {token}"));
     }
-    let response = request.send().await.map_err(|error| GiteaError {
-        status: None,
-        message: error.to_string(),
-    })?;
+    let response = request.send().await.map_err(transport_error)?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -125,11 +190,13 @@ pub async fn create_issue(
                 status.as_u16(),
                 message_from_body(&text)
             ),
+            transport: None,
         });
     }
     let document: Value = serde_json::from_str(&text).map_err(|error| GiteaError {
         status: None,
         message: format!("POST {path} returned invalid JSON: {error}"),
+        transport: None,
     })?;
     let number = document.get("number").and_then(Value::as_u64);
     let title = document.get("title").and_then(Value::as_str);
@@ -143,6 +210,7 @@ pub async fn create_issue(
         _ => Err(GiteaError {
             status: None,
             message: "the created issue has no number or URL".to_string(),
+            transport: None,
         }),
     }
 }
@@ -158,10 +226,7 @@ pub async fn comment_issue(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout_ms.max(1)))
         .build()
-        .map_err(|error| GiteaError {
-            status: None,
-            message: error.to_string(),
-        })?;
+        .map_err(client_error)?;
     let path = format!("{}/issues/{number}/comments", repo_path(target));
     let mut request = client
         .post(api_url(target, &path))
@@ -174,10 +239,7 @@ pub async fn comment_issue(
     if let Some(token) = target.token.as_deref().filter(|token| !token.is_empty()) {
         request = request.header("Authorization", format!("token {token}"));
     }
-    let response = request.send().await.map_err(|error| GiteaError {
-        status: None,
-        message: error.to_string(),
-    })?;
+    let response = request.send().await.map_err(transport_error)?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -188,6 +250,7 @@ pub async fn comment_issue(
                 status.as_u16(),
                 message_from_body(&text)
             ),
+            transport: None,
         });
     }
     Ok(())
@@ -202,10 +265,7 @@ pub async fn issue_state(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout_ms.max(1)))
         .build()
-        .map_err(|error| GiteaError {
-            status: None,
-            message: error.to_string(),
-        })?;
+        .map_err(client_error)?;
     let path = format!("{}/issues/{number}", repo_path(target));
     let mut request = client
         .get(api_url(target, &path))
@@ -213,10 +273,7 @@ pub async fn issue_state(
     if let Some(token) = target.token.as_deref().filter(|token| !token.is_empty()) {
         request = request.header("Authorization", format!("token {token}"));
     }
-    let response = request.send().await.map_err(|error| GiteaError {
-        status: None,
-        message: error.to_string(),
-    })?;
+    let response = request.send().await.map_err(transport_error)?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -227,11 +284,13 @@ pub async fn issue_state(
                 status.as_u16(),
                 message_from_body(&text)
             ),
+            transport: None,
         });
     }
     let document: Value = serde_json::from_str(&text).map_err(|error| GiteaError {
         status: None,
         message: format!("GET {path} returned invalid JSON: {error}"),
+        transport: None,
     })?;
     let state = document.get("state").and_then(Value::as_str);
     match state {

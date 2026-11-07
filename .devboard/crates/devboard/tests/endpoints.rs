@@ -53,6 +53,17 @@ async fn start_failing(label: &str) -> Fixture {
 }
 
 async fn start_with(label: &str, failing: bool) -> Fixture {
+    start_against(label, failing, None, 5000).await
+}
+
+/// One fixture whose dashboard sends reports to `forge` instead of the stub,
+/// with `timeout_ms` as the delivery deadline.
+async fn start_against(
+    label: &str,
+    failing: bool,
+    forge: Option<&str>,
+    timeout_ms: u64,
+) -> Fixture {
     let root = fixture_root(label);
     let repo = root.join("repo");
     let calls: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -99,10 +110,12 @@ async fn start_with(label: &str, failing: bool) -> Fixture {
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
         feedback: Some(FeedbackConfig {
-            base_url: format!("http://127.0.0.1:{stub_port}"),
+            base_url: forge
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("http://127.0.0.1:{stub_port}")),
             repo: "dsdenes/devboard".to_string(),
             token: None,
-            timeout_ms: 5000,
+            timeout_ms,
         }),
     };
     let listener = devboard::http::bind("127.0.0.1", 0)
@@ -332,6 +345,181 @@ async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
     );
     fixture.handle.abort();
     fixture.stub.abort();
+}
+
+#[tokio::test]
+async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error() {
+    let forge = format!("http://127.0.0.1:{}", closed_port().await);
+    let fixture = start_against("feedback-unreachable", false, Some(&forge), 500).await;
+    let response = client()
+        .post(format!("{}/feedback", fixture.base))
+        .headers(bearer())
+        .json(&json!({"report": "Fix the header"}))
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 502);
+    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(body["detail"], "The issue could not be filed.");
+
+    let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
+    let text = std::fs::read_to_string(&journal).expect("the journal");
+    assert!(
+        text.contains("\"kind\":\"activity\""),
+        "a forge that answered nothing is a delayed delivery: {text}"
+    );
+    assert!(
+        text.contains(
+            "feedback delivery delayed: POST /feedback: Issue creation failed: error sending request for url"
+        ),
+        "the journal names the transport failure: {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase().contains("connection refused"),
+        "the journal names the socket answer below the request line: {text}"
+    );
+    assert!(
+        !text.contains("\"kind\":\"server-error\""),
+        "the endpoint served, so its failure is no server error: {text}"
+    );
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+#[tokio::test]
+async fn a_forge_that_never_answers_times_out_as_a_delayed_delivery() {
+    let silent = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a silent listener");
+    let forge = format!(
+        "http://127.0.0.1:{}",
+        silent.local_addr().expect("an address").port()
+    );
+    let fixture = start_against("feedback-silent", false, Some(&forge), 250).await;
+    let response = client()
+        .post(format!("{}/feedback", fixture.base))
+        .headers(bearer())
+        .json(&json!({"report": "Fix the header"}))
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 504);
+    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(body["detail"], "Issue creation timed out after 250 ms.");
+
+    let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
+    let text = std::fs::read_to_string(&journal).expect("the journal");
+    assert!(
+        text.contains("\"kind\":\"activity\""),
+        "a missed deadline is a delayed delivery: {text}"
+    );
+    assert!(
+        text.contains("Issue creation timed out after 250 ms."),
+        "the journal names the deadline: {text}"
+    );
+    assert!(
+        !text.contains("\"kind\":\"server-error\""),
+        "the endpoint served, so its failure is no server error: {text}"
+    );
+    fixture.handle.abort();
+    fixture.stub.abort();
+    drop(silent);
+}
+
+/// A loopback port whose listener was closed again, so nothing accepts.
+async fn closed_port() -> u16 {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a listener");
+    let port = listener.local_addr().expect("an address").port();
+    drop(listener);
+    port
+}
+
+/// The report every delivery test files, and the target that answers its POST.
+fn one_report(
+    port: u16,
+) -> (
+    devboard::feedback::FeedbackSubmission,
+    devboard::gitea::GiteaTarget,
+) {
+    let submission =
+        devboard::feedback::parse_feedback_submission(&json!({"report": "Fix the header"}))
+            .expect("a submission");
+    let target = devboard::gitea::GiteaTarget {
+        base_url: format!("http://127.0.0.1:{port}"),
+        project: "dsdenes/devboard".to_string(),
+        token: None,
+    };
+    (submission, target)
+}
+
+fn recording_sleep() -> (devboard::forge::Sleep, Arc<Mutex<Vec<u64>>>) {
+    let delays: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = delays.clone();
+    let sleep: devboard::forge::Sleep = Arc::new(move |millis| {
+        seen.lock().expect("delays").push(millis);
+        Box::pin(async {})
+    });
+    (sleep, delays)
+}
+
+#[tokio::test]
+async fn a_refused_connection_spends_the_retry_schedule_before_the_delivery_fails() {
+    let (submission, target) = one_report(closed_port().await);
+    let (sleep, delays) = recording_sleep();
+    let error = devboard::feedback::file_feedback_issue(&submission, &target, None, 60_000, &sleep)
+        .await
+        .expect_err("the forge never answered");
+    assert_eq!(error.status, 502);
+    assert!(
+        error.transient,
+        "an unreachable forge is a delayed delivery"
+    );
+    assert_eq!(error.message, "The issue could not be filed.");
+    assert_eq!(
+        *delays.lock().expect("delays"),
+        vec![1_000, 2_000, 4_000, 8_000]
+    );
+    let diagnostic = error.diagnostic.to_ascii_lowercase();
+    assert!(diagnostic.contains("connection refused"), "{diagnostic}");
+}
+
+#[tokio::test]
+async fn a_refused_connection_that_opens_on_the_retry_files_the_report() {
+    let port = closed_port().await;
+    let delays: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = delays.clone();
+    let sleep: devboard::forge::Sleep = Arc::new(move |millis| {
+        seen.lock().expect("delays").push(millis);
+        Box::pin(async move {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .expect("the retry forge");
+            tokio::spawn(async move {
+                let app = axum::Router::new().route(
+                    "/api/v1/repos/dsdenes/devboard/issues",
+                    post(|Json(body): Json<Value>| async move {
+                        Json(json!({
+                            "number": 1,
+                            "title": body.get("title").cloned().unwrap_or(Value::Null),
+                            "html_url": "https://gitea.test/dsdenes/devboard/issues/1",
+                        }))
+                    }),
+                );
+                let _ = axum::serve(listener, app).await;
+            });
+        })
+    });
+    let (submission, target) = one_report(port);
+    let filed = devboard::feedback::file_feedback_issue(&submission, &target, None, 60_000, &sleep)
+        .await
+        .expect("the retried delivery");
+    assert_eq!(
+        filed.pointer("/links/issue/href").and_then(Value::as_str),
+        Some("https://gitea.test/dsdenes/devboard/issues/1")
+    );
+    assert_eq!(*delays.lock().expect("delays"), vec![1_000]);
 }
 
 #[tokio::test]

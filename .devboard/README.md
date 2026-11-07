@@ -3947,7 +3947,7 @@ dashboard, its journal, and the forge. The server reads it on every request, ech
 on that request's response — including the `101` a `/ws` upgrade answers with, which carries it on
 the upgrade's own headers because the upgrade assembles that response itself — forwards it on the
 outbound Gitea issue request `POST /feedback` makes, and records it as the scope of the
-`server-error` journal record a failed mutating request writes. A value is 1–200 printable ASCII
+journal record a failed mutating request writes. A value is 1–200 printable ASCII
 characters with no spaces or control characters;
 surrounding whitespace is trimmed, and an empty, oversized, or non-printable value is refused with
 `400` before any handler runs. A request without the header keeps today's behavior: no outbound
@@ -4024,11 +4024,16 @@ detail "An internal error occurred.": `POST /feedback` and
 client.
 
 A failed Gitea delivery answers `502` with the fixed Problem JSON detail "The issue could not be
-filed.", and a delivery that runs past its bound answers `504` with the timeout detail. The
-upstream error text, which names the Gitea request path and carries the first line of the
-upstream response, reaches only the `server-error` journal record prefixed with the endpoint, so
-no stack trace or other implementation internal is ever returned. A refused payload keeps its
-own `400` detail.
+filed.", and a delivery that runs past its bound answers `504` with the timeout detail. A
+connection that never opened is retried on the shared 1, 2, 4, and 8 second transient schedule
+before the delivery fails, because the forge never saw that request and a retry cannot file a
+second issue; every attempt and every pause stays inside the same bound. The upstream error text,
+which names the Gitea request path, carries the socket answer beneath it — `Connection refused` or
+`operation timed out` — and the first line of an upstream response, reaches only the journal,
+prefixed with the endpoint, so no stack trace or other implementation internal is ever returned. A
+forge that answers nothing at all is a transient delivery delay: it is recorded as an `activity`
+record naming the delay and never as a `server-error`. A refused payload keeps its own `400`
+detail.
 
 ## Container
 

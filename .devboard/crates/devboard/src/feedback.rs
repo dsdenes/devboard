@@ -3,6 +3,8 @@
 //! The validation messages are contract: every refusal is the same text the
 //! TypeScript endpoint answers, so the corpus compares them.
 
+use std::time::{Duration, Instant};
+
 use serde_json::Value;
 
 /// The repository that receives every reported UI issue.
@@ -36,6 +38,9 @@ pub struct RequestError {
     /// The failure's own text. The client reads `message`; only the journal
     /// records this, and it is `None` when `message` already names the cause.
     pub diagnostic: Option<String>,
+    /// True when the forge answered nothing at all, so the failure is a
+    /// delayed delivery rather than an error this server produced.
+    pub transient: bool,
 }
 
 impl RequestError {
@@ -44,6 +49,7 @@ impl RequestError {
             status: 400,
             message: message.into(),
             diagnostic: None,
+            transient: false,
         }
     }
 
@@ -54,6 +60,7 @@ impl RequestError {
             status: 500,
             message: message.into(),
             diagnostic: None,
+            transient: false,
         }
     }
 
@@ -64,6 +71,7 @@ impl RequestError {
             status: error.status,
             message: error.message,
             diagnostic: Some(error.diagnostic),
+            transient: error.transient,
         }
     }
 
@@ -619,45 +627,92 @@ pub fn feedback_body(submission: &FeedbackSubmission) -> String {
 /// The fixed Problem detail a failed delivery answers.
 const DELIVERY_ERROR_DETAIL: &str = "The issue could not be filed.";
 
-/// A delivery failure: the API refused the request or timed out.
+/// A delivery failure: the API refused the request, answered nothing, or ran
+/// past its deadline.
 #[derive(Debug, Clone)]
 pub struct DeliveryError {
     pub status: u16,
     pub message: String,
     pub diagnostic: String,
+    /// True when the forge answered nothing at all — an unreachable or slow
+    /// upstream, never a failure this server produced.
+    pub transient: bool,
 }
 
 /// Files one report and returns the created issue document.
+///
+/// A connection that never opened is retried on the shared transient schedule,
+/// because the forge never saw that request and a retry cannot file a second
+/// issue. Every attempt and every pause stays inside `timeout_ms`, so the
+/// endpoint's documented bound still holds.
 pub async fn file_feedback_issue(
     submission: &FeedbackSubmission,
     target: &crate::gitea::GiteaTarget,
     flow_id: Option<&str>,
     timeout_ms: u64,
+    sleep: &crate::forge::Sleep,
 ) -> Result<Value, DeliveryError> {
     let title = feedback_title(submission);
     let body = feedback_body(submission);
-    match crate::gitea::create_issue(target, &title, &body, flow_id, timeout_ms).await {
-        Ok(issue) => Ok(serde_json::json!({
-            "title": title,
-            "links": {"issue": {"href": issue.url}},
-        })),
-        Err(error) => {
-            let timed_out = error.message.to_ascii_lowercase().contains("timed out")
-                || error.message.to_ascii_lowercase().contains("timeout");
-            if timed_out {
-                let detail = format!("Issue creation timed out after {timeout_ms} ms.");
-                Err(DeliveryError {
-                    status: 504,
-                    message: detail.clone(),
-                    diagnostic: detail,
-                })
-            } else {
-                Err(DeliveryError {
-                    status: 502,
-                    message: DELIVERY_ERROR_DETAIL.to_string(),
-                    diagnostic: format!("Issue creation failed: {}", first_line(&error.message)),
-                })
-            }
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    let mut delays = crate::forge::FORGE_READ_RETRY_DELAYS_MS.iter().copied();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(timed_out(timeout_ms, None));
         }
+        let attempt_timeout = remaining.as_millis().clamp(1, u128::from(u64::MAX)) as u64;
+        let error =
+            match crate::gitea::create_issue(target, &title, &body, flow_id, attempt_timeout).await
+            {
+                Ok(issue) => {
+                    return Ok(serde_json::json!({
+                        "title": title,
+                        "links": {"issue": {"href": issue.url}},
+                    }))
+                }
+                Err(error) => error,
+            };
+        if error.transport != Some(crate::gitea::TransportFailure::Connect) {
+            return Err(delivery_error(error, timeout_ms));
+        }
+        let Some(delay) = delays.next() else {
+            return Err(delivery_error(error, timeout_ms));
+        };
+        if deadline.saturating_duration_since(Instant::now()) <= Duration::from_millis(delay) {
+            return Err(delivery_error(error, timeout_ms));
+        }
+        sleep(delay).await;
+    }
+}
+
+/// One failed delivery, kept apart from the client's fixed detail.
+fn delivery_error(error: crate::gitea::GiteaError, timeout_ms: u64) -> DeliveryError {
+    match error.transport {
+        Some(crate::gitea::TransportFailure::Timeout) => {
+            timed_out(timeout_ms, Some(&error.message))
+        }
+        transport => DeliveryError {
+            status: 502,
+            message: DELIVERY_ERROR_DETAIL.to_string(),
+            diagnostic: format!("Issue creation failed: {}", first_line(&error.message)),
+            transient: transport.is_some_and(crate::gitea::TransportFailure::answered_nothing),
+        },
+    }
+}
+
+/// One missed delivery deadline: the client reads the bound, the journal also
+/// keeps the socket condition when the attempt named one.
+fn timed_out(timeout_ms: u64, cause: Option<&str>) -> DeliveryError {
+    let detail = format!("Issue creation timed out after {timeout_ms} ms.");
+    let diagnostic = match cause {
+        Some(cause) => format!("{detail} {}", first_line(cause)),
+        None => detail.clone(),
+    };
+    DeliveryError {
+        status: 504,
+        message: detail,
+        diagnostic,
+        transient: true,
     }
 }

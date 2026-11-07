@@ -1144,9 +1144,15 @@ impl App {
         let outcome = self
             .idempotency
             .run("feedback", key.as_deref(), || async {
-                crate::feedback::file_feedback_issue(&submission, &target, flow_id, timeout_ms)
-                    .await
-                    .map_err(crate::feedback::RequestError::delivery)
+                crate::feedback::file_feedback_issue(
+                    &submission,
+                    &target,
+                    flow_id,
+                    timeout_ms,
+                    &crate::forge::real_sleep(),
+                )
+                .await
+                .map_err(crate::feedback::RequestError::delivery)
             })
             .await;
         match outcome {
@@ -1159,12 +1165,18 @@ impl App {
                 Replies::json(headers, filed, 201, &[("Location", href.as_str())])
             }
             Err(error) => {
-                if error.status == 502 || error.status == 504 {
+                let detail = format!("POST /feedback: {}", error.journal_detail());
+                if error.transient {
+                    // The endpoint served and the forge answered nothing: an
+                    // unreachable or slow upstream delays a report, so it is
+                    // recorded as activity and never as a server error.
                     self.shared.journal.write(
-                        "server-error",
-                        &format!("POST /feedback: {}", error.journal_detail()),
+                        "activity",
+                        &format!("feedback delivery delayed: {detail}"),
                         flow_id,
                     );
+                } else if error.status == 502 || error.status == 504 {
+                    self.shared.journal.write("server-error", &detail, flow_id);
                 }
                 Replies::problem(headers, error.status, &error.message, &[])
             }
