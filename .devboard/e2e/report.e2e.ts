@@ -27,8 +27,10 @@ test("the report overlay files an issue the UI links and the suite closes", asyn
 
   const panel = page.locator('[role="dialog"][aria-label="Report a UI issue"]');
   await expect(panel).toBeVisible();
-  await panel.locator('textarea[aria-label="Issue description"]').fill(report);
-  await panel.locator(".feedback-actions button").first().click();
+  const composer = panel.locator('textarea[aria-label="Issue description"]');
+  await composer.fill(report);
+  // Enter files the report; asking the agent stays an explicit click.
+  await composer.press("Enter");
 
   const response = await filed;
   expect(response.status()).toBe(201);

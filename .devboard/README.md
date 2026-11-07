@@ -3955,25 +3955,26 @@ click or one double-click files at most one issue.
 
 `Report UI issue` enters element-selection mode: the element under the pointer is outlined, and a
 click opens a report panel anchored beside it, without filing anything yet. The panel shows the
-selected element's selector path; the report text is free-form. `File issue` posts the report and
-the captured context to `POST /feedback`, the server files the issue through the configured
-Gitea API, and the panel closes back into report selection mode so another
-element can be picked without leaving and re-entering the mode. A successful filing shows a
-`Report filed.` toast with an `Open issue` link to the created issue. `Esc`, the control again, or
-`Cancel` leaves the mode, a failed report stays in the panel with its error, and a click in
-selection mode never activates the element. The toast survives leaving the mode: a success
-dismisses itself after eight seconds, a failure stays until dismissed or replaced.
+selected element's selector path; the report text is free-form. `File issue`, or `Enter` in the
+composer (`Shift+Enter` inserts a newline), posts the report and the captured context to
+`POST /feedback`, the server files the issue through the configured Gitea API, and the panel
+closes back into report selection mode so another element can be picked without leaving and
+re-entering the mode. A successful filing shows a `Report filed.` toast with an `Open issue` link
+to the created issue. `Esc`, the control again, or `Cancel` leaves the mode, a failed report stays
+in the panel with its error, and a click in selection mode never activates the element. The toast
+survives leaving the mode: a success dismisses itself after eight seconds, a failure stays until
+dismissed or replaced.
 
-The panel also answers questions. `Ask`, or `Enter` in the composer (`Shift+Enter` inserts a
-newline), sends the typed question and the captured element context — route, URL, selector,
-viewport, visible text, DOM excerpt, and capture time — over the existing WebSocket to a
-background ACP agent started from `AGENT_COMMAND`. The agent runs in the host repository root,
-and its answer streams into a compact transcript in the same panel as plain text, with preserved
-line breaks and no Markdown interpretation. Every prompt tells it the conversation is `read-only`:
-never edit files, run mutating commands, file issues, commit, or push. It also tells it to answer
-in at most `three short sentences` and about 400 characters in plain text. That is a prompt-level
-rule, not a sandbox. A turn that streams no text or activity for 120 seconds ends with an error,
-and one turn stops at 15 minutes even while it keeps reporting progress.
+The panel also answers questions. `Ask` sends the typed question and the captured element
+context — route, URL, selector, viewport, visible text, DOM excerpt, and capture time — over the
+existing WebSocket to a background ACP agent started from `AGENT_COMMAND`. The agent runs in the
+host repository root, and its answer streams into a compact transcript in the same panel as plain
+text, with preserved line breaks and no Markdown interpretation. Every prompt tells it the
+conversation is `read-only`: never edit files, run mutating commands, file issues, commit, or
+push. It also tells it to answer in at most `three short sentences` and about 400 characters in
+plain text. That is a prompt-level rule, not a sandbox. A turn that streams no text or activity
+for 120 seconds ends with an error, and one turn stops at 15 minutes even while it keeps reporting
+progress.
 
 One conversation exists `per selected element`, and only while its panel is open. Escape, `×`,
 `Cancel`, a new pick, a successful filing, or a lost connection closes it: the server kills the
@@ -3984,7 +3985,7 @@ buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A fai
 agent, a prompt the agent never answered inside its deadline, or a rejected prompt shows the error
 in the panel, keeps the question and earlier answers, and accepts the next question: the failed
 turn's question returns to the composer, so `File issue`, `Ask`, and `Goal` are enabled again and
-one click or one `Enter` re-asks it. `Ask` never calls `POST /feedback` and creates no issue.
+one `Ask` click re-asks it. `Ask` never calls `POST /feedback` and creates no issue.
 
 Filing or proposing from a panel that has answered questions carries the visible Ask conversation
 into the issue or draft as a `## Ask conversation` block between the request and
