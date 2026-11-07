@@ -91,6 +91,16 @@ export function notificationIdempotencyKey(item: AppNotification): string {
 }
 
 /**
+ * The `Idempotency-Key` one slow UI action files under. The action identity is
+ * identical in every page session, so a reload or a second window posts the
+ * same key and the server replays the issue already filed instead of creating
+ * a duplicate inside its 24-hour retention window.
+ */
+export function slowUiActionIdempotencyKey(identity: string): string {
+  return `slow-ui-action:${fnv1a64(identity)}`;
+}
+
+/**
  * FNV-1a over the fingerprint's UTF-8 bytes: a fixed 16-hex-digit key that is
  * pure ASCII, well inside the header's 255-character bound.
  */
@@ -120,6 +130,46 @@ export function notificationIssueRequest(
     viewport: context.viewport,
     captured_at: context.capturedAt,
   };
+}
+
+/**
+ * Files one slow UI action through the existing `/feedback` endpoint. The
+ * report is already bounded and its first line becomes the issue title. The
+ * keyed request lets the server's 24-hour replay cache guarantee one issue per
+ * action identity across page sessions.
+ */
+export async function fileSlowUiAction(
+  report: string,
+  idempotencyKey: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  try {
+    const response = await fetchImpl(FEEDBACK_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": idempotencyKey,
+      },
+      body: JSON.stringify({ action: "REPORT", report }),
+    });
+    const body = (await response.json().catch(() => null)) as {
+      links?: { issue?: { href?: unknown } };
+      detail?: unknown;
+    } | null;
+    const href = body?.links?.issue?.href;
+    if (!response.ok || typeof href !== "string") {
+      return {
+        ok: false,
+        error:
+          typeof body?.detail === "string"
+            ? body.detail
+            : `The server refused the report (${response.status}).`,
+      };
+    }
+    return { ok: true, url: href };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 type FetchLike = typeof fetch;

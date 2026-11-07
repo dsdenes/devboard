@@ -30,9 +30,11 @@
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { mcpTools } from "./lib/mcp-tools.svelte";
   import { notifications } from "./lib/notifications.svelte";
+  import { fileSlowUiAction } from "./lib/notification-issue";
   import { collectPendingQuestions, osNotifications } from "./lib/os-notifications.svelte";
   import { providers } from "./lib/providers.svelte";
   import { resources } from "./lib/resources.svelte";
+  import { slowUiAction, type SlowUiActionContext } from "./lib/slow-ui-action";
   import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
   import { MINIMUM_VIEWPORT, viewport } from "./lib/viewport.svelte";
 
@@ -200,6 +202,29 @@
     }
   }
 
+  /**
+   * The page context one breached action carries into its issue. The element
+   * the operator was using is the target; the body stands in when focus is
+   * outside the document.
+   */
+  function captureSlowActionContext(): SlowUiActionContext {
+    const active = document.activeElement;
+    const target = active instanceof HTMLElement ? active : document.body;
+    const selector =
+      target === document.body || target.id.length === 0
+        ? target.tagName.toLowerCase()
+        : `#${target.id}`;
+    return {
+      route: window.location.pathname,
+      url: window.location.href,
+      selector,
+      domExcerpt: (target.outerHTML ?? "").slice(0, 4000),
+      visibleText: ((target as HTMLElement).innerText ?? target.textContent ?? "").slice(0, 1500),
+      viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
+      capturedAt: new Date().toISOString(),
+    };
+  }
+
   function handleFlowTabEvents(message: Record<string, unknown>): void {
     if (message.type === "flowConversationStarted" && typeof message.widgetId === "string") {
       const widget = flow.widget(message.widgetId);
@@ -343,12 +368,20 @@
         collectPendingQuestions({ goal, discover, flow, issues, goalDrafts }),
       );
     });
+    slowUiAction.install({
+      reportingEnabled: () => !connection.feedbackResolved || connection.feedbackEnabled,
+      captureContext: captureSlowActionContext,
+      show: (notice) => notifications.push("Performance", "notice", notice.text)?.id ?? 0,
+      update: (id, issue) => notifications.setIssue(id, issue),
+      file: (report, key) => fileSlowUiAction(report, key),
+    });
     connection.connect();
     connection.startPolling();
 
     return () => {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", handleKeydown, true);
+      slowUiAction.reset();
       connection.dispose();
     };
   });

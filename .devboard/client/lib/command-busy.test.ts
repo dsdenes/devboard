@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-import { busyWord, createCommandBusy } from "./command-busy.svelte";
+import { COMMAND_CEILING_MS, busyWord, createCommandBusy } from "./command-busy.svelte";
 
 const WORDS: Array<[string, string]> = [
   ["Start", "Starting…"],
@@ -215,6 +215,27 @@ test("an answered dispatch never repeats its ceiling notice after the evidence r
     expect(command.busy).toBe(false);
     jest.advanceTimersByTime(5);
     expect(command.notice).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("the 10-second ceiling still governs the control after a slow notice", () => {
+  jest.useFakeTimers();
+  try {
+    const box = { value: 1 };
+    const command = createCommandBusy({ label: "Start", evidence: () => box.value });
+    expect(COMMAND_CEILING_MS).toBe(10_000);
+    command.start();
+    jest.advanceTimersByTime(1_100);
+    expect(command.busy).toBe(true);
+    expect(command.notice).toBeNull();
+    jest.advanceTimersByTime(8_899);
+    expect(command.busy).toBe(true);
+    expect(command.notice).toBeNull();
+    jest.advanceTimersByTime(1);
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBe("Start received no answer.");
   } finally {
     jest.useRealTimers();
   }

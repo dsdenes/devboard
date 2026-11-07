@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { SlowUiActionContext } from "../slow-ui-action";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 
@@ -17,6 +18,7 @@ const { cleanup, fireEvent, render, waitFor } = await import("@testing-library/s
 const { tick } = await import("svelte");
 const { notifications } = await import("../notifications.svelte");
 const { notificationFiler } = await import("../notification-issue");
+const { slowUiAction } = await import("../slow-ui-action");
 const { default: NotificationRegion } = await import("./NotificationRegion.svelte");
 
 type PendingRequest = {
@@ -56,6 +58,7 @@ afterEach(() => {
   cleanup();
   notifications.clear();
   notificationFiler.reset();
+  slowUiAction.uninstall();
   document.body.replaceChildren();
   globalThis.fetch = originalFetch;
 });
@@ -174,4 +177,98 @@ test("disabled reporting sends no automatic request and reveals the retry button
   const button = view.getByLabelText("File an issue from this notification") as HTMLButtonElement;
   expect(button.textContent).toBe("File issue");
   expect(view.container.querySelector(".notification__link")).toBeNull();
+});
+
+test("a slow action notice links its issue and stays in history", async () => {
+  const item = notifications.push(
+    "Performance",
+    "notice",
+    "Slow UI action: startAgent scout exceeded the 1000 ms budget.",
+  );
+  if (item === null) throw new Error("the notice was not stored");
+  notifications.setIssue(item.id, { status: "filed", href: issueHref });
+  const view = render(NotificationRegion, { props: { feedbackenabled: true } });
+  await tick();
+
+  expect(view.getByText(/Slow UI action: startAgent scout/)).toBeTruthy();
+  const link = view.getByText("Open issue") as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe(issueHref);
+  expect(view.container.querySelector(".notification__file")).toBeNull();
+  expect(notifications.items.find((entry) => entry.id === item.id)?.issue).toEqual({
+    status: "filed",
+    href: issueHref,
+  });
+  expect(pending).toHaveLength(0);
+});
+
+test("a disabled slow action notice states why and offers no link or filing control", async () => {
+  const item = notifications.push(
+    "Performance",
+    "notice",
+    "Slow UI action: startAgent scout exceeded the 1000 ms budget.",
+  );
+  if (item === null) throw new Error("the notice was not stored");
+  notifications.setIssue(item.id, { status: "disabled" });
+  const view = render(NotificationRegion, { props: { feedbackenabled: false } });
+  await tick();
+
+  expect(view.container.querySelector(".notification__error")?.textContent).toContain(
+    "Issue not filed: reporting is disabled.",
+  );
+  expect(view.container.querySelector(".notification__link")).toBeNull();
+  expect(view.container.querySelector(".notification__file")).toBeNull();
+});
+
+test("a slow action filing failure offers a retry that links the issue", async () => {
+  const posts: Array<{ report: string; key: string }> = [];
+  let outcome: { ok: true; url: string } | { ok: false; error: string } = {
+    ok: false,
+    error: "The issue could not be filed.",
+  };
+  const page: SlowUiActionContext = {
+    route: "/",
+    url: "http://localhost:3001/",
+    selector: "#issues-start",
+    domExcerpt: "<button>Start</button>",
+    visibleText: "Start",
+    viewport: "1365x768 @1x",
+    capturedAt: "2026-11-07T12:00:00.000Z",
+  };
+  slowUiAction.install(
+    {
+      reportingEnabled: () => true,
+      captureContext: () => page,
+      show: (notice) => {
+        const created = notifications.push("Performance", "notice", notice.text);
+        return created?.id ?? 0;
+      },
+      update: (id, issue) => notifications.setIssue(id, issue),
+      file: async (report, key) => {
+        posts.push({ report, key });
+        return outcome;
+      },
+    },
+    { budgetMs: 1 },
+  );
+  slowUiAction.dispatch({ type: "startAgent", id: "scout" }, "operator");
+
+  const view = render(NotificationRegion, { props: { feedbackenabled: true } });
+  await waitFor(() => {
+    expect(view.container.querySelector(".notification__error")?.textContent).toContain(
+      "Issue not filed: The issue could not be filed.",
+    );
+  });
+  expect(view.container.querySelector(".notification__link")).toBeNull();
+  expect(posts).toHaveLength(1);
+
+  outcome = { ok: true, url: issueHref };
+  const button = view.getByLabelText("File an issue from this notification") as HTMLButtonElement;
+  await fireEvent.click(button);
+  await waitFor(() => {
+    expect(view.container.querySelector(".notification__link")?.getAttribute("href")).toBe(issueHref);
+  });
+  expect(view.container.querySelector(".notification__error")).toBeNull();
+  expect(view.container.querySelector(".notification__file")).toBeNull();
+  expect(posts).toHaveLength(2);
+  expect(posts[1]?.key).toBe(posts[0]?.key);
 });
