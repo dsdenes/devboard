@@ -2287,7 +2287,17 @@ A permanent failure — unusable credentials, a missing repository, an answer th
 expected JSON, or missing forge configuration — and a rate-limited answer (a primary or secondary
 limit, abuse detection, or HTTP 429) surface on the first attempt without a retry. A rate limit
 still never raises `agent-error`. Forge writes, Start and Stop preflights, agent turns, and user
-commands are never retried.
+commands are never retried as operations: a failed Start or Stop is a new operator action, not a
+scheduled attempt.
+
+A Start preflight's Gitea read is the one exception inside an operation. It runs through the
+shared Gitea client and spends this same 1, 2, 4, and 8 second schedule while the preflight's
+20-second deadline lasts, so a fast transient refusal — a locked access-token table's `HTTP 401`,
+a `5xx`, or a reset connection — earns another attempt instead of refusing Start. A read that
+stalls reports the request it was making, for example
+`GET /repos/<owner>/<name> failed: the request timed out after 19750 ms`, and Start answers a
+bounded refusal that says the repository could not be read before Start's deadline; only a
+permanent answer is reported as a missing prerequisite.
 
 A Gitea `HTTP 401` carrying `invalid username, password or token` is the one refusal that is
 retried. Gitea answers that exact body when its own token store could not be read — a locked or
@@ -3798,7 +3808,10 @@ scans again.
 
 Auto Scout's Start preflight uses the same 20-second deadline as Issues mode: a `gh` permission
 probe that does not settle is killed at the deadline, Start answers a bounded refusal naming it,
-and the cleared task lets the next Start run the preflight again and spawn the worker.
+and the cleared task lets the next Start run the preflight again and spawn the worker. A Gitea
+origin is read through the shared Gitea client instead: the preflight asks
+`/api/v1/repos/<owner>/<name>` for the token's permissions, reports the request and its bound when
+the read stalls, and retries a fast transient refusal within the same deadline.
 
 Auto Scout's persisted settings live at
 `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,

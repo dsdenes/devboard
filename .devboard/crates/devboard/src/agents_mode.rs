@@ -41,6 +41,12 @@ const AGENT_PREFLIGHT_TIMEOUT_MS: u64 = 20_000;
 /// How much later than the preflight's own budget the outer guard fires, so a
 /// slow step's named error wins over the generic refusal.
 const PREFLIGHT_BUDGET_GRACE_MS: u64 = 1_000;
+/// How much of a preflight step's window its request leaves unspent, so the
+/// request's own named timeout reports before the step's generic deadline.
+const PREFLIGHT_REQUEST_MARGIN_MS: u64 = 250;
+/// The least window a retry needs to earn another attempt: a fast refusal
+/// leaves the whole window, while a stalled request leaves none.
+const PREFLIGHT_RETRY_WINDOW_MS: u64 = 2_000;
 
 /// One Start preflight's wall clock, shared by every forge step it runs.
 ///
@@ -66,6 +72,15 @@ impl PreflightBudget {
             .deadline
             .saturating_duration_since(tokio::time::Instant::now());
         u64::try_from(left.as_millis()).unwrap_or(u64::MAX).max(1)
+    }
+
+    /// The bound one forge request may spend: the step's remaining window, short
+    /// of its end by [`PREFLIGHT_REQUEST_MARGIN_MS`], so the request's own named
+    /// timeout reports before the step's generic deadline does.
+    pub fn request_ms(&self) -> u64 {
+        self.remaining_ms()
+            .saturating_sub(PREFLIGHT_REQUEST_MARGIN_MS)
+            .max(1)
     }
 
     /// Runs one step under the remaining budget, naming the step on expiry.
@@ -4998,23 +5013,9 @@ impl RepoFamily {
         budget: PreflightBudget,
     ) -> Result<(), String> {
         if remote.forge == "gitea" {
-            let base_url = gitea_base_url(remote, &self.environment).ok_or_else(|| {
-                "missing prerequisite: the Gitea address is not configured (set DEVBOARD_GITEA_URL or use an HTTP(S) origin)".to_string()
-            })?;
-            let token = configured_gitea_token(&self.environment)
-                .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
-            let document = budget
-                .run(
-                    "reading the Gitea repository",
-                    gitea_repository(&base_url, &remote.project, &token, budget.remaining_ms()),
-                )
-                .await
-                .map_err(|error| {
-                    format!(
-                        "missing prerequisite: the Gitea repository {} could not be read: {error}",
-                        remote.project
-                    )
-                })?;
+            let (target, base_url) = gitea_preflight_target(remote, &self.environment)?;
+            let transport = crate::forge::default_transport(budget.remaining_ms());
+            let document = gitea_repository_within(budget, &target, &transport).await?;
             let permissions = document.get("permissions").cloned().unwrap_or(Value::Null);
             let writable = permissions.get("push").and_then(Value::as_bool) == Some(true)
                 || permissions.get("admin").and_then(Value::as_bool) == Some(true);
@@ -5059,65 +5060,70 @@ impl RepoFamily {
         budget: PreflightBudget,
     ) -> Result<(), String> {
         if remote.forge == "gitea" {
-            let base_url = gitea_base_url(remote, &self.environment).ok_or_else(|| {
-                "missing prerequisite: the Gitea address is not configured (set DEVBOARD_GITEA_URL or use an HTTP(S) origin)".to_string()
-            })?;
-            let token = configured_gitea_token(&self.environment)
-                .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
-            let labels = budget
-                .run(
-                    &format!("reading the labels of {}", remote.project),
-                    gitea_json(
-                        &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
-                        &token,
-                        budget.remaining_ms(),
-                    ),
-                )
-                .await?;
-            let has_label = labels
-                .as_array()
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .any(|entry| entry.get("name").and_then(Value::as_str) == Some(label))
-                })
-                .unwrap_or(false);
-            if has_label {
+            let (target, _) = gitea_preflight_target(remote, &self.environment)?;
+            let transport = crate::forge::default_transport(budget.remaining_ms());
+            let target_ref = &target;
+            let transport_ref = &transport;
+            let labels = {
+                let call = crate::forge::GiteaCallOptions {
+                    flow_id: None,
+                    timeout_ms: Some(budget.request_ms()),
+                };
+                budget
+                    .run(
+                        &format!("reading the labels of {}", remote.project),
+                        async move {
+                            crate::forge::gitea_labels(target_ref, transport_ref, &call)
+                                .await
+                                .map_err(|error| error.message)
+                        },
+                    )
+                    .await?
+            };
+            if labels.iter().any(|entry| entry.name == label) {
                 return Ok(());
             }
-            let created = budget
-                .run(
-                    &format!("creating the \"{label}\" label"),
-                    gitea_post(
-                        &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
-                        &token,
-                        &json!({"name": label, "color": color, "description": description}),
-                        budget.remaining_ms(),
-                    ),
-                )
-                .await;
+            let created = {
+                let call = crate::forge::GiteaCallOptions {
+                    flow_id: None,
+                    timeout_ms: Some(budget.request_ms()),
+                };
+                budget
+                    .run(&format!("creating the \"{label}\" label"), async move {
+                        crate::forge::gitea_create_label(
+                            target_ref,
+                            label,
+                            color,
+                            description,
+                            transport_ref,
+                            &call,
+                        )
+                        .await
+                        .map(|entry| entry.id)
+                        .map_err(|error| error.message)
+                    })
+                    .await
+            };
             if created.is_ok() {
                 return Ok(());
             }
-            let after = budget
-                .run(
-                    &format!("re-reading the labels of {}", remote.project),
-                    gitea_json(
-                        &format!("{base_url}/api/v1/repos/{}/labels", remote.project),
-                        &token,
-                        budget.remaining_ms(),
-                    ),
-                )
-                .await?;
-            let present = after
-                .as_array()
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .any(|entry| entry.get("name").and_then(Value::as_str) == Some(label))
-                })
-                .unwrap_or(false);
-            if present {
+            let after = {
+                let call = crate::forge::GiteaCallOptions {
+                    flow_id: None,
+                    timeout_ms: Some(budget.request_ms()),
+                };
+                budget
+                    .run(
+                        &format!("re-reading the labels of {}", remote.project),
+                        async move {
+                            crate::forge::gitea_labels(target_ref, transport_ref, &call)
+                                .await
+                                .map_err(|error| error.message)
+                        },
+                    )
+                    .await?
+            };
+            if after.iter().any(|entry| entry.name == label) {
                 return Ok(());
             }
             return Err(format!(
@@ -5664,62 +5670,83 @@ struct GhOutcome {
     stderr: String,
 }
 
-async fn gitea_json(url: &str, token: &str, timeout_ms: u64) -> Result<Value, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms.max(1)))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let response = client
-        .get(url)
-        .header("Authorization", format!("token {token}"))
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!("{status}: {}", first_line(&text).unwrap_or(text)));
-    }
-    serde_json::from_str(&text).map_err(|error| error.to_string())
-}
-
-async fn gitea_repository(
-    base_url: &str,
-    project: &str,
-    token: &str,
-    timeout_ms: u64,
-) -> Result<Value, String> {
-    gitea_json(
-        &format!("{base_url}/api/v1/repos/{project}"),
-        token,
-        timeout_ms,
+/// One Gitea target for a preflight, built from the checkout's origin and the
+/// configured credential.
+fn gitea_preflight_target(
+    remote: &ForgeRemote,
+    environment: &HashMap<String, String>,
+) -> Result<(crate::forge::GiteaTarget, String), String> {
+    let base_url = gitea_base_url(remote, environment).ok_or_else(|| {
+        "missing prerequisite: the Gitea address is not configured (set DEVBOARD_GITEA_URL or use an HTTP(S) origin)".to_string()
+    })?;
+    let token = configured_gitea_token(environment)
+        .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
+    let target = crate::forge::gitea_target(
+        None,
+        Some(&remote.project),
+        Some(&base_url),
+        Some(&token),
+        environment,
     )
-    .await
+    .map_err(|error| format!("missing prerequisite: {}", error.message))?;
+    Ok((target, base_url))
 }
 
-async fn gitea_post(
-    url: &str,
-    token: &str,
-    body: &Value,
-    timeout_ms: u64,
-) -> Result<Value, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms.max(1)))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let response = client
-        .post(url)
-        .header("Authorization", format!("token {token}"))
-        .json(body)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!("{status}: {}", first_line(&text).unwrap_or(text)));
+/// Why one preflight could not read the repository. A permanent refusal names
+/// the missing fact; a stall, a refused credential, or a 5xx answer is a
+/// transient fault the next Start retries, so it is never reported as a
+/// missing prerequisite.
+fn gitea_read_failure(
+    project: &str,
+    kind: crate::forge::ForgeReadFailureKind,
+    reason: &str,
+) -> String {
+    match kind {
+        crate::forge::ForgeReadFailureKind::Permanent => format!(
+            "missing prerequisite: the Gitea repository {project} could not be read: {reason}"
+        ),
+        _ => format!(
+            "the Gitea repository {project} could not be read before Start's deadline: {reason}; press Start to retry."
+        ),
     }
-    serde_json::from_str(&text).map_err(|error| error.to_string())
+}
+
+/// Reads the repository document through the shared Gitea client. A fast
+/// transient refusal spends the shared retry schedule while the budget lasts,
+/// and a stalled request reports the request it was making instead of the
+/// step's generic deadline.
+async fn gitea_repository_within(
+    budget: PreflightBudget,
+    target: &crate::forge::GiteaTarget,
+    transport: &crate::forge::Transport,
+) -> Result<Value, String> {
+    let mut retry = crate::forge::ForgeReadRetry::new();
+    loop {
+        let call = crate::forge::GiteaCallOptions {
+            flow_id: None,
+            timeout_ms: Some(budget.request_ms()),
+        };
+        let attempt = budget
+            .run("reading the Gitea repository", async {
+                crate::forge::gitea_repository(target, transport, &call)
+                    .await
+                    .map(|repository| repository.document)
+                    .map_err(|error| error.message)
+            })
+            .await;
+        let reason = match attempt {
+            Ok(document) => return Ok(document),
+            Err(reason) => reason,
+        };
+        let kind = crate::forge::classify_forge_read_failure(&reason);
+        let Some(delay) = retry.record(kind) else {
+            return Err(gitea_read_failure(&target.project, kind, &reason));
+        };
+        if budget.remaining_ms() <= delay + PREFLIGHT_RETRY_WINDOW_MS {
+            return Err(gitea_read_failure(&target.project, kind, &reason));
+        }
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
 }
 
 fn read_rest_skill(
@@ -6759,7 +6786,7 @@ impl WatchdogFamily {
         let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
             match override_preflight {
                 Some(callback) => callback(request),
-                None => Box::pin(self.preflight_watchdog()),
+                None => Box::pin(self.preflight_watchdog(PreflightBudget::new(timeout_ms))),
             };
         let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
             Some(result) => result,
@@ -7004,7 +7031,7 @@ impl WatchdogFamily {
         AgentResult::ok()
     }
 
-    async fn preflight_watchdog(&self) -> Result<String, String> {
+    async fn preflight_watchdog(&self, budget: PreflightBudget) -> Result<String, String> {
         if let Some(problem) = root_problem(&self.repo_dir) {
             return Err(problem);
         }
@@ -7042,19 +7069,9 @@ impl WatchdogFamily {
                 ));
             }
         } else {
-            let base_url = gitea_base_url(&remote, &self.environment).ok_or_else(|| {
-                "missing prerequisite: the Gitea address is not configured (set DEVBOARD_GITEA_URL or use an HTTP(S) origin)".to_string()
-            })?;
-            let token = configured_gitea_token(&self.environment)
-                .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
-            let document = gitea_repository(&base_url, &remote.project, &token, 20_000)
-                .await
-                .map_err(|error| {
-                    format!(
-                        "missing prerequisite: the Gitea repository {} could not be read: {error}",
-                        remote.project
-                    )
-                })?;
+            let (target, base_url) = gitea_preflight_target(&remote, &self.environment)?;
+            let transport = crate::forge::default_transport(budget.remaining_ms());
+            let document = gitea_repository_within(budget, &target, &transport).await?;
             let permissions = document.get("permissions").cloned().unwrap_or(Value::Null);
             let writable = permissions.get("push").and_then(Value::as_bool) == Some(true)
                 || permissions.get("admin").and_then(Value::as_bool) == Some(true);
@@ -7721,7 +7738,7 @@ impl McpFamily {
         let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
             match override_preflight {
                 Some(callback) => callback(request),
-                None => Box::pin(self.preflight_mcp()),
+                None => Box::pin(self.preflight_mcp(PreflightBudget::new(timeout_ms))),
             };
         let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
             Some(result) => result,
@@ -7917,7 +7934,7 @@ impl McpFamily {
         }
     }
 
-    async fn preflight_mcp(&self) -> Result<String, String> {
+    async fn preflight_mcp(&self, budget: PreflightBudget) -> Result<String, String> {
         let remote = {
             if let Some(problem) = root_problem(&self.repo_dir) {
                 return Err(problem);
@@ -7958,19 +7975,9 @@ impl McpFamily {
             }
             return Ok(remote.project);
         }
-        let base_url = gitea_base_url(&remote, &self.environment).ok_or_else(|| {
-            "missing prerequisite: the Gitea address is not configured (set DEVBOARD_GITEA_URL or use an HTTP(S) origin)".to_string()
-        })?;
-        let token = configured_gitea_token(&self.environment)
-            .ok_or_else(|| "missing prerequisite: GITEA_TOKEN is not set".to_string())?;
-        let document = gitea_repository(&base_url, &remote.project, &token, 20_000)
-            .await
-            .map_err(|error| {
-                format!(
-                    "missing prerequisite: the Gitea repository {} could not be read: {error}",
-                    remote.project
-                )
-            })?;
+        let (target, base_url) = gitea_preflight_target(&remote, &self.environment)?;
+        let transport = crate::forge::default_transport(budget.remaining_ms());
+        let document = gitea_repository_within(budget, &target, &transport).await?;
         let permissions = document.get("permissions").cloned().unwrap_or(Value::Null);
         let writable = permissions.get("push").and_then(Value::as_bool) == Some(true)
             || permissions.get("admin").and_then(Value::as_bool) == Some(true);
@@ -8671,5 +8678,120 @@ mod forge_tests {
         let sync = projection.sync(1_000);
         assert_eq!(sync.state, "error");
         assert_eq!(sync.error.as_deref(), Some("bad credentials"));
+    }
+}
+
+#[cfg(test)]
+mod gitea_preflight_tests {
+    use super::*;
+    use crate::forge::{HttpError, HttpFuture, HttpRequest, HttpResponse, Transport};
+    use std::sync::atomic::AtomicUsize;
+
+    /// A target as `gitea_preflight_target` builds it from a resolved remote.
+    fn target() -> crate::forge::GiteaTarget {
+        crate::forge::GiteaTarget {
+            base_url: "http://forge.test".to_string(),
+            project: "acme/fixture".to_string(),
+            token: Some("token".to_string()),
+        }
+    }
+
+    /// A transport that answers each call from `answers` in order and counts
+    /// the requests it saw.
+    fn transport(
+        answers: Vec<Result<HttpResponse, HttpError>>,
+    ) -> (Transport, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let urls = Arc::new(Mutex::new(Vec::new()));
+        let counter = Arc::clone(&seen);
+        let recorded = Arc::clone(&urls);
+        let answers = Arc::new(Mutex::new(answers));
+        let transport: Transport = Arc::new(move |request: HttpRequest| {
+            let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            recorded.lock().expect("urls").push(request.url.clone());
+            let answer = answers
+                .lock()
+                .expect("answers")
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| Ok(json_response(200, &json!({}))));
+            Box::pin(async move { answer }) as HttpFuture
+        });
+        (transport, seen, urls)
+    }
+
+    fn json_response(status: u16, body: &Value) -> HttpResponse {
+        HttpResponse {
+            status,
+            headers: Vec::new(),
+            body: body.to_string().into_bytes(),
+        }
+    }
+
+    fn repository(payload: Value) -> Result<HttpResponse, HttpError> {
+        Ok(json_response(200, &payload))
+    }
+
+    #[tokio::test]
+    async fn a_writable_repository_passes_through_the_shared_client() {
+        let (transport, calls, urls) =
+            transport(vec![repository(json!({"permissions": {"push": true}}))]);
+        let document = gitea_repository_within(PreflightBudget::new(5_000), &target(), &transport)
+            .await
+            .expect("a writable repository");
+        assert_eq!(document["permissions"]["push"], json!(true));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            urls.lock().expect("urls").as_slice(),
+            ["http://forge.test/api/v1/repos/acme/fixture"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_locked_token_table_refusal_is_retried_inside_the_budget() {
+        let refusal = Ok(json_response(
+            401,
+            &json!({"message": "invalid username, password or token"}),
+        ));
+        let (transport, calls, _) = transport(vec![
+            refusal,
+            repository(json!({"permissions": {"push": true}})),
+        ]);
+        let document = gitea_repository_within(PreflightBudget::new(5_000), &target(), &transport)
+            .await
+            .expect("the second attempt reads the repository");
+        assert_eq!(document["permissions"]["push"], json!(true));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_read_names_the_request_and_is_not_a_missing_prerequisite() {
+        let (transport, _, _) = transport(vec![Err(HttpError::Timeout)]);
+        let error = gitea_repository_within(PreflightBudget::new(400), &target(), &transport)
+            .await
+            .expect_err("a stalled read refuses");
+        assert!(
+            error.starts_with("the Gitea repository acme/fixture could not be read before Start's deadline: GET /repos/acme/fixture failed: the request timed out after "),
+            "{error}"
+        );
+        assert!(error.ends_with("; press Start to retry."), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_repository_stays_a_missing_prerequisite() {
+        let (transport, calls, _) = transport(vec![Ok(json_response(
+            404,
+            &json!({"message": "not found"}),
+        ))]);
+        let error = gitea_repository_within(PreflightBudget::new(5_000), &target(), &transport)
+            .await
+            .expect_err("a missing repository refuses");
+        assert!(
+            error.starts_with(
+                "missing prerequisite: the Gitea repository acme/fixture could not be read: GET /repos/acme/fixture failed (HTTP 404): not found"
+            ),
+            "{error}"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
