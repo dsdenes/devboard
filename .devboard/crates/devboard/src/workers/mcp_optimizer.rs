@@ -1064,6 +1064,27 @@ pub fn family_tag(key: &str) -> String {
     hex::encode(digest)[..12].to_string()
 }
 
+/// The directory one family owns inside a run. A family key is a command
+/// signature and can run to thousands of bytes, so the readable stem is
+/// bounded well below the 255-byte component limit and the family's stable
+/// digest keeps two long keys sharing a stem apart. The name is ASCII, so the
+/// bounds in characters and bytes agree.
+pub fn family_directory_name(key: &str) -> String {
+    const STEM: usize = 100;
+    let stem: String = key
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .take(STEM)
+        .collect();
+    format!("{stem}-{}", family_tag(key))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenIssue {
     pub number: u64,
@@ -5066,18 +5087,9 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
         }
         let mut work: Vec<Work> = Vec::new();
         for (index, family) in to_synthesize.iter().enumerate() {
-            let sanitized = family
-                .key
-                .chars()
-                .map(|character| {
-                    if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
-                        character
-                    } else {
-                        '-'
-                    }
-                })
-                .collect::<String>();
-            let directory = run_dir.join("families").join(sanitized);
+            let directory = run_dir
+                .join("families")
+                .join(family_directory_name(&family.key));
             std::fs::create_dir_all(&directory)?;
             let paths = SynthesisPaths {
                 tool_log_path: directory.join("tool-log.jsonl"),

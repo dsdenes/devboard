@@ -469,6 +469,66 @@ async fn one_cycle_collects_a_fixture_and_files_each_selected_family() {
     assert_eq!(status.issues.len(), 2);
 }
 
+/// A family key is a command signature and runs to thousands of bytes, so the
+/// directory one family owns cannot be the key itself: a 255-byte component
+/// limit turned the whole cycle into "File name too long".
+#[tokio::test]
+async fn a_family_key_longer_than_a_path_component_still_runs_its_cycle() {
+    let fixture = Fixture::new("long-family");
+    let pad = "x".repeat(320);
+    let first = format!("bun run {pad} one");
+    let second = format!("bun run {pad} two");
+    write_transcript(
+        &fixture.state_dir,
+        &fixture.repo_dir,
+        "a1",
+        &[(first.as_str(), false)],
+    );
+    write_transcript(
+        &fixture.state_dir,
+        &fixture.repo_dir,
+        "a2",
+        &[(second.as_str(), false)],
+    );
+    let delivery = memory_delivery(Vec::new());
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let mut options = CycleOptions::new(&fixture.repo_dir, &fixture.state_dir);
+    options.now = Some(now());
+    options.delivery = Some(delivery);
+    options.synthesize = Some(stub_synthesis(prompts.clone()));
+    options.settings = Some(Settings {
+        interval_minutes: 60,
+        max_per_hour: Some(10),
+        max_pending: Some(20),
+        max_issues_per_cycle: 20,
+        allowlist: vec!["bun ".to_string()],
+    });
+    let result = run_cycle(options).await.expect("the long family's cycle");
+    assert_eq!(result.report.action, "filed", "{:?}", result.report.reason);
+    assert_eq!(result.report.selected.len(), 2);
+    let families = result.run_dir.expect("the run directory").join("families");
+    let mut directories: Vec<PathBuf> = std::fs::read_dir(&families)
+        .expect("the family directories")
+        .map(|entry| entry.expect("the family entry").path())
+        .collect();
+    directories.sort();
+    assert_eq!(directories.len(), 2);
+    for directory in &directories {
+        let name = directory
+            .file_name()
+            .expect("the family directory name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.len() <= 255, "{name}");
+        assert!(
+            directory.join("tool-log.jsonl").is_file(),
+            "{}",
+            directory.display()
+        );
+    }
+    assert_ne!(directories[0], directories[1]);
+}
+
 #[tokio::test]
 async fn the_cycle_cap_grants_filing_room_to_only_that_many_families() {
     let fixture = Fixture::new("cap");
