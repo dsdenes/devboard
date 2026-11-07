@@ -2728,7 +2728,10 @@ nothing and is recorded, never claimed as a filing. The issue lands in the origi
 through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
 `forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue
 is open and `implemented` once it is closed, and records a failed sync in `agent-sync-error`
-without dropping rows.
+without dropping rows. That sync reads only the `single-responsibility` labelled set, which the
+forge filters server-side; the open-issue titles its duplicate guard needs are read once at cycle
+start, where a slow forge keeps the last known titles instead of failing the cycle, so one sync
+stays inside its 30-second deadline against a large issue history.
 
 Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
 the skill is missing, unreadable, or resolves outside the repository, the state directory is
