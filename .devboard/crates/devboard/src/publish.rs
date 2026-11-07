@@ -902,6 +902,31 @@ fn first_line(text: &str) -> String {
         .to_string()
 }
 
+/// How many trailing lines a failed command is reported with.
+const FAILURE_DETAIL_LINES: usize = 3;
+
+/// The last lines a failed command printed.
+///
+/// A `git push` answers with the remote's progress first, so the reason it
+/// refused is at the end of stderr, not at the start: a report built from the
+/// first line names `remote: ** Checking 2 references` instead of the refusal.
+fn failure_detail(outcome: &CommandOutcome) -> String {
+    let text = if outcome.stderr.trim().is_empty() {
+        outcome.stdout.as_str()
+    } else {
+        outcome.stderr.as_str()
+    };
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return "no diagnostic".to_string();
+    }
+    lines[lines.len().saturating_sub(FAILURE_DETAIL_LINES)..].join(" / ")
+}
+
 // ---------------------------------------------------------------------------
 // HTTP API access
 
@@ -1121,11 +1146,13 @@ impl Api {
         Ok(Some(response.json()?))
     }
 
-    async fn gitea_tag_commit(&self, tag: &str) -> Result<Option<String>> {
+    /// The `object` a forge git ref names, or `None` when the ref is absent.
+    async fn gitea_ref_object(&self, kind: &str, name: &str) -> Result<Option<Value>> {
         let path = format!(
-            "{}/git/refs/tags/{}",
+            "{}/git/refs/{}/{}",
             gitea::repo_path(&self.gitea),
-            encode_component(tag)
+            kind,
+            encode_component(name)
         );
         let response = self.gitea_request("GET", &path, None).await?;
         if response.status == 404 {
@@ -1139,19 +1166,18 @@ impl Api {
                 failure_message(&response)
             );
         }
-        let document = response.json()?;
-        let object = document.get("object");
-        let sha = object
-            .and_then(|value| value.get("sha"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        Ok(response.json()?.get("object").cloned())
+    }
+
+    async fn gitea_tag_commit(&self, tag: &str) -> Result<Option<String>> {
+        let Some(object) = self.gitea_ref_object("tags", tag).await? else {
+            return Ok(None);
+        };
+        let sha = object.get("sha").and_then(Value::as_str).unwrap_or("");
         if sha.is_empty() {
             return Ok(None);
         }
-        let kind = object
-            .and_then(|value| value.get("type"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let kind = object.get("type").and_then(Value::as_str).unwrap_or("");
         if kind != "tag" {
             return Ok(Some(sha.to_string()));
         }
@@ -1167,6 +1193,16 @@ impl Api {
             .and_then(Value::as_str)
             .unwrap_or("");
         Ok((!commit.is_empty()).then(|| commit.to_string()))
+    }
+
+    /// The commit the forge's branch names, or `None` when the branch is
+    /// absent.
+    async fn gitea_branch_commit(&self, branch: &str) -> Result<Option<String>> {
+        let Some(object) = self.gitea_ref_object("heads", branch).await? else {
+            return Ok(None);
+        };
+        let sha = object.get("sha").and_then(Value::as_str).unwrap_or("");
+        Ok((!sha.is_empty()).then(|| sha.to_string()))
     }
 
     async fn gitea_published_versions(&self) -> Result<Vec<String>> {
@@ -1918,15 +1954,28 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         ])
         .await;
     if pushed.code != 0 {
-        bail!(
-            "could not push main and {tag} to {}: {}",
-            preflight.remote,
-            first_line(if pushed.stderr.is_empty() {
-                pushed.stdout.as_str()
-            } else {
-                pushed.stderr.as_str()
-            })
-        );
+        // A forge can accept both refs and then lose the push's answer, so a
+        // nonzero exit is not evidence that nothing landed: the refs the forge
+        // carries decide, and a push they already carry never fails a release
+        // that shipped.
+        match push_landed(&api, &git, &tag, &commit).await {
+            Ok(true) => (log)(&format!(
+                "{} carries {} and {tag}; the push exited nonzero after the refs moved",
+                preflight.remote,
+                short_sha(&commit)
+            )),
+            Ok(false) => bail!(
+                "could not push main and {tag} to {}: {}",
+                preflight.remote,
+                failure_detail(&pushed)
+            ),
+            Err(error) => bail!(
+                "could not push main and {tag} to {}: {}; {} refs unreadable: {error:#}",
+                preflight.remote,
+                failure_detail(&pushed),
+                preflight.remote
+            ),
+        }
     }
 
     // A release that fails before its GitHub release exists must not leave its
@@ -3106,6 +3155,29 @@ async fn mirror_carries(git: &Git<'_>, commit: &str) -> (String, bool) {
     }
     let carries = git.is_ancestor(commit, &sha).await;
     (sha, carries)
+}
+
+// ---------------------------------------------------------------------------
+// Canonical remote push
+
+/// Whether the canonical remote carries a push that exited nonzero: its tag
+/// names the released commit and its `main` names that commit or a descendant
+/// of it.
+///
+/// A forge can accept both refs and then lose the push's answer, so a nonzero
+/// exit is not evidence that the push did not land; the refs the forge reads
+/// are. `publish` only ever runs on `main`, so the branch is not a parameter.
+async fn push_landed(api: &Api, git: &Git<'_>, tag: &str, commit: &str) -> Result<bool> {
+    if api.gitea_tag_commit(tag).await?.as_deref() != Some(commit) {
+        return Ok(false);
+    }
+    let Some(head) = api.gitea_branch_commit("main").await? else {
+        return Ok(false);
+    };
+    if head == commit {
+        return Ok(true);
+    }
+    Ok(git.is_ancestor(commit, &head).await)
 }
 
 // ---------------------------------------------------------------------------

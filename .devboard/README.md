@@ -2052,9 +2052,13 @@ without discarding uncommitted work; rebuilds the client and refreshes the embed
 derives the version from the commits after the newest reachable `v<version>` tag; proves the
 configured Gitea credential may create the release, so a revoked or read-only token fails before
 the version bump, the tag push, and the dispatch instead of leaving a released tag with no
-manifest; bumps the workspace version, commits it, and pushes the commit and tag to Gitea;
-dispatches `.github/workflows/release.yml` for that tag when it has no usable run and waits for
-the run;
+manifest; bumps the workspace version, commits it, and pushes the commit and tag to Gitea; a push
+that exits nonzero is verified from the refs the forge carries — the released tag's commit and
+`main`, read through the API rather than the git transport whose answer was lost — so a forge that
+accepted both refs and then failed to answer the push never fails a release that landed, while a
+push the forge does not carry fails with the refusal git printed rather than the remote's first
+progress line; dispatches `.github/workflows/release.yml` for that tag when it has no usable run and
+waits for the run;
 verifies every platform archive and installer on the GitHub release and the checksums on the Gitea
 release; publishes `devboard-manifest.json` to that Gitea release; pushes the `github` mirror
 remote's `main` and the release tags, then proves `main` is the published commit or a descendant

@@ -210,6 +210,8 @@ struct StoredRelease {
 struct GiteaData {
     releases: BTreeMap<String, StoredRelease>,
     refs: HashMap<String, String>,
+    /// The commit the forge's `main` names, once a push reached it.
+    head: String,
     next_id: u64,
     credential: GiteaCredential,
 }
@@ -249,6 +251,7 @@ impl GiteaStub {
         let state = Arc::new(Mutex::new(GiteaData {
             releases,
             refs: seeded.into_iter().collect(),
+            head: String::new(),
             next_id,
             credential: GiteaCredential::Writable,
         }));
@@ -265,6 +268,13 @@ impl GiteaStub {
 
     fn set_credential(&self, credential: GiteaCredential) {
         self.state.lock().expect("gitea").credential = credential;
+    }
+
+    /// Records the refs a push delivered to the forge.
+    fn accepted(&self, tag: &str, commit: &str) {
+        let mut data = self.state.lock().expect("gitea");
+        data.refs.insert(tag.to_string(), commit.to_string());
+        data.head = commit.to_string();
     }
 
     fn release_bytes(&self, tag: &str, name: &str) -> Option<Vec<u8>> {
@@ -380,6 +390,17 @@ fn gitea_route(
                 return json_response(json!({"name": name}));
             }
         }
+    }
+    if request.method == "GET" && path == format!("{repo}/git/refs/heads/main") {
+        let data = state.lock().expect("gitea");
+        if data.head.is_empty() {
+            return not_found();
+        }
+        let sha = data.head.clone();
+        return json_response(json!({
+            "ref": "refs/heads/main",
+            "object": {"sha": sha, "type": "commit"},
+        }));
     }
     if let Some(rest) = path.strip_prefix(&format!("{repo}/git/refs/tags/")) {
         let tag = percent_decode(rest);
@@ -1325,6 +1346,152 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
     );
     assert!(second.source_refresh.written.is_empty());
     assert_eq!(second.source_refresh.applied.len(), 1);
+}
+
+/// The tag an origin push carries, when the invocation is one.
+fn origin_push_tag(invocation: &CommandInvocation) -> Option<String> {
+    if invocation.program != "git" {
+        return None;
+    }
+    let position = invocation.args.iter().position(|arg| arg == "push")?;
+    if invocation.args.get(position + 1).map(String::as_str) != Some("origin") {
+        return None;
+    }
+    invocation
+        .args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("refs/tags/"))
+        .map(|rest| rest.split(':').next().unwrap_or(rest).to_string())
+}
+
+/// A runner whose origin push is answered as a forge that loses the answer:
+/// with `landed` it runs the real push first, so the refs reach the forge
+/// exactly as they would and only the exit status is lost.
+struct PushAnswerRunner {
+    stub: GiteaStub,
+    origin: PathBuf,
+    landed: bool,
+    answered: AtomicUsize,
+}
+
+impl PushAnswerRunner {
+    fn new(stub: GiteaStub, origin: PathBuf, landed: bool) -> Arc<Self> {
+        Arc::new(Self {
+            stub,
+            origin,
+            landed,
+            answered: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl CommandRunner for PushAnswerRunner {
+    fn run<'a>(
+        &'a self,
+        invocation: CommandInvocation,
+    ) -> Pin<Box<dyn Future<Output = CommandOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(tag) = origin_push_tag(&invocation) else {
+                return ProcessRunner.run(invocation).await;
+            };
+            if self.landed {
+                let outcome = ProcessRunner.run(invocation).await;
+                assert_eq!(
+                    outcome.code, 0,
+                    "the fixture push lands: {}",
+                    outcome.stderr
+                );
+                let commit = git_output(&self.origin, &["rev-parse", "main"]);
+                self.stub.accepted(&tag, &commit);
+            }
+            self.answered.fetch_add(1, Ordering::SeqCst);
+            let stderr = if self.landed {
+                "remote: ** Checking 2 references\n".to_string()
+            } else {
+                let lines = [
+                    "remote: ** Checking 2 references".to_string(),
+                    "remote: ** Checking references succeeded".to_string(),
+                    "To origin".to_string(),
+                    format!(" ! [rejected]        {tag} -> {tag} (already exists)"),
+                    "error: failed to push some refs to 'origin'".to_string(),
+                ];
+                format!("{}\n", lines.join("\n"))
+            };
+            CommandOutcome {
+                code: 1,
+                stdout: String::new(),
+                stderr,
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_push_the_forge_already_accepted_does_not_fail_the_release() {
+    let live = live("landed-push", release_assets()).await;
+    let runner = PushAnswerRunner::new(live.gitea_stub.clone(), live.origin.clone(), true);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.runner = Some(runner.clone());
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = lines.clone();
+    args.log = Some(Arc::new(move |line: &str| {
+        recorded.lock().expect("log").push(line.to_string());
+    }));
+
+    let report = publish(args)
+        .await
+        .expect("the refs the forge carries decide the push, not its exit status");
+    let commit = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    assert!(report.published);
+    assert_eq!(report.tag, "v1.1.0");
+    assert_eq!(report.commit, commit);
+    assert_eq!(runner.answered.load(Ordering::SeqCst), 1);
+    assert_eq!(git_output(&live.origin, &["rev-parse", "main"]), commit);
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        commit
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 1);
+    assert!(
+        live.gitea_stub
+            .release_bytes("v1.1.0", "devboard-manifest.json")
+            .is_some(),
+        "the release continues past the push"
+    );
+    let lines = lines.lock().expect("log").clone();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("the push exited nonzero after the refs moved")),
+        "{lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_push_names_the_refusal_not_the_progress_line() {
+    let live = live("refused-push", release_assets()).await;
+    let runner = PushAnswerRunner::new(live.gitea_stub.clone(), live.origin.clone(), false);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.runner = Some(runner.clone());
+
+    let error = publish(args)
+        .await
+        .expect_err("a push the forge does not carry fails the release");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("could not push main and v1.1.0"),
+        "{message}"
+    );
+    assert!(
+        message.contains("error: failed to push some refs"),
+        "{message}"
+    );
+    assert!(message.contains("[rejected]"), "{message}");
+    assert!(!message.contains("Checking 2 references"), "{message}");
+    assert_eq!(runner.answered.load(Ordering::SeqCst), 1);
+    assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
 /// A record-and-delegate runner: `bun run build` writes the bundle itself, and
