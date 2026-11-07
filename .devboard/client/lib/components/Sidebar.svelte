@@ -89,7 +89,7 @@
     if (tab.id === "overview") {
       return discoverSuiteRunState(
         discover.runningAll,
-        discover.suiteFailed !== null,
+        discover.allFailed !== null,
         discover.question !== null,
       );
     }

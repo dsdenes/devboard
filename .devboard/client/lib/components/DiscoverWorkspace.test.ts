@@ -79,7 +79,7 @@ function resetDiscover(): void {
   discover.active = false;
   discover.activeAgent = null;
   discover.runningAll = false;
-  discover.suiteFailed = null;
+  discover.allFailed = null;
   discover.question = null;
   discover.agentQuestions = {};
   discover.activity = [];
