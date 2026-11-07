@@ -2228,7 +2228,11 @@ further descriptor projects and validates unchanged.
 
 All seven continuous agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
-`stopping` from the moment Stop is accepted until the worker exits. A stopped agent is never
+`stopping` from the moment Stop is accepted until the worker exits. A start that neither spawns a
+worker nor refuses within its preflight bound plus the preflight and abandonment graces is reset to
+`stopped` with `the <agent> start did not finish; press Start to retry.`, so a command whose answer
+was lost never leaves the agent starting; a worker that attaches ends `starting` on the next
+snapshot, whatever preview the page is still showing. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
 Start is a no-op with a notice. The notice is the page's `agent-notice` line, rendered while a live

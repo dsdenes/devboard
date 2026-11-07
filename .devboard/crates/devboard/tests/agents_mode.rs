@@ -161,6 +161,42 @@ fn write_lock_started_at(repo: &Path, state_dir: &Path, pid: u32, started_at: &s
     );
 }
 
+/// The machine-scoped Watchdog holds its lock under the repository's own
+/// `.devboard/.tmp/watchdog`, not under a per-repository key.
+fn write_watchdog_lock(repo: &Path, state_dir: &Path, pid: u32) {
+    write_json(
+        &repo.join(".devboard/.tmp/watchdog/lock"),
+        json!({
+            "pid": pid,
+            "startedAt": devboard::journal::now_iso8601(),
+            "repo": repo.to_string_lossy(),
+            "stateDir": state_dir.to_string_lossy(),
+            "harnessVersion": null,
+            "argv": ["devboard", "worker", "watchdog"],
+        }),
+    );
+}
+
+/// A start preflight that never settles, so the only way its Start ends is the
+/// command itself being dropped.
+fn hanging_preflight() -> devboard::agents_mode::PreflightCallback {
+    Arc::new(|_request| Box::pin(std::future::pending()))
+}
+
+/// A live stand-in worker that outlives the call without being reaped.
+fn stand_in_watchdog() -> u32 {
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a stand-in worker");
+    let pid = child.id();
+    std::mem::forget(child);
+    pid
+}
+
 #[tokio::test]
 async fn family_snapshots_and_prompts_replay_in_registry_order() {
     let root = scratch("snapshots");
@@ -707,6 +743,158 @@ async fn a_worker_that_dies_without_publishing_reports_the_proof_failure() {
         "{all:?}"
     );
     assert_eq!(failed["lifecycle"], "stopped", "{all:?}");
+}
+
+#[tokio::test]
+async fn a_start_whose_command_was_dropped_resets_after_its_bound() {
+    let root = scratch("dropped-start");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    // A hundred-and-fifty-millisecond preflight outlasts the test's patience,
+    // so the drop is what leaves the bookkeeping behind; its window
+    // (preflight, grace, abandonment) closes inside the same test.
+    devboard::agents_mode::set_preflight(&app, "watchdog", hanging_preflight());
+    devboard::agents_mode::set_preflight_timeout(&app, "watchdog", 150);
+
+    let (conn, _inbox) = connection_for(&app).await;
+    let dropped = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        devboard::agents_mode::handle(
+            &app,
+            &conn,
+            &Command::StartAgent {
+                id: Some(json!("watchdog")),
+            },
+        ),
+    )
+    .await;
+    assert!(
+        dropped.is_err(),
+        "the hanging preflight must outlast the test's patience"
+    );
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("watchdog")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let pending = agent(&all, "watchdog").expect("a watchdog snapshot");
+    assert_eq!(pending["lifecycle"], "starting", "{all:?}");
+
+    // The dropped command never ran its cleanup, so the bound the start armed
+    // is what clears it: the preflight window, its grace, and the abandonment
+    // grace.
+    tokio::time::sleep(std::time::Duration::from_millis(3_400)).await;
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("watchdog")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let abandoned = agent(&all, "watchdog").expect("a watchdog snapshot");
+    assert_eq!(abandoned["lifecycle"], "stopped", "{all:?}");
+    assert_eq!(
+        abandoned["error"],
+        json!("the Watchdog start did not finish; press Start to retry."),
+        "{all:?}"
+    );
+
+    // A reset family starts again: the same command, a preflight that answers,
+    // and a worker that publishes its lock.
+    let spawned: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let spawned_for = Arc::clone(&spawned);
+    let repo_for_spawn = repo.clone();
+    let state_for_spawn = state.clone();
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let pid = stand_in_watchdog();
+        write_watchdog_lock(&repo_for_spawn, &state_for_spawn, pid);
+        spawned_for.lock().expect("spawned pids").push(pid);
+        Some(pid)
+    });
+    let ready: devboard::agents_mode::PreflightCallback =
+        Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+    devboard::agents_mode::set_preflight(&app, "watchdog", ready);
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("watchdog")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    assert!(find(&all, "error").is_empty(), "start refused: {all:?}");
+    let running = agent(&all, "watchdog").expect("a watchdog snapshot");
+    assert_eq!(running["lifecycle"], "running", "{all:?}");
+    assert_eq!(running["attached"], true, "{all:?}");
+
+    for pid in spawned.lock().expect("spawned pids").iter() {
+        unsafe {
+            libc::kill(*pid as i32, libc::SIGKILL);
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_attached_worker_clears_a_preview_its_own_start_still_shows() {
+    let root = scratch("stale-preview");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    // A bound far past the test keeps the abandonment reset out of the way: the
+    // attachment is the only thing that can retire the preview.
+    devboard::agents_mode::set_preflight(&app, "watchdog", hanging_preflight());
+    devboard::agents_mode::set_preflight_timeout(&app, "watchdog", 600_000);
+
+    // A Start that is still in flight — its preflight has not answered — while a
+    // worker of this root exists, which is exactly what a second dashboard's
+    // start leaves behind for this one to read.
+    let starting_app = Arc::clone(&app);
+    let (start_conn, _start_inbox) = connection_for(&app).await;
+    let start = tokio::spawn(async move {
+        devboard::agents_mode::handle(
+            &starting_app,
+            &start_conn,
+            &Command::StartAgent {
+                id: Some(json!("watchdog")),
+            },
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let pid = stand_in_watchdog();
+    write_watchdog_lock(&repo, &state, pid);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("watchdog")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let attached = agent(&all, "watchdog").expect("a watchdog snapshot");
+    assert_eq!(attached["lifecycle"], "running", "{all:?}");
+    assert_eq!(attached["attached"], true, "{all:?}");
+
+    start.abort();
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
 }
 
 #[tokio::test]

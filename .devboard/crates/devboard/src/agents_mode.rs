@@ -47,6 +47,11 @@ const PREFLIGHT_REQUEST_MARGIN_MS: u64 = 250;
 /// The least window a retry needs to earn another attempt: a fast refusal
 /// leaves the whole window, while a stalled request leaves none.
 const PREFLIGHT_RETRY_WINDOW_MS: u64 = 2_000;
+/// How long past its own preflight bound a Start may hold its family at
+/// `starting` before the snapshot names it and resets the state. A command
+/// whose future was dropped, and a start wedged behind an await that never
+/// settles, never run their own cleanup, so the snapshot is the only guard.
+const START_ABANDON_GRACE_MS: i64 = 2_000;
 
 /// One Start preflight's wall clock, shared by every forge step it runs.
 ///
@@ -134,6 +139,15 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// The instant by which a Start must have spawned its worker or refused.
+///
+/// It outlasts the preflight's own bound by the abandonment grace, so a
+/// preflight that refuses names itself instead of being reported as a start
+/// that never finished.
+fn start_deadline_at(now: i64, timeout_ms: u64) -> i64 {
+    now + timeout_ms as i64 + PREFLIGHT_BUDGET_GRACE_MS as i64 + START_ABANDON_GRACE_MS
 }
 
 fn iso_from_millis(ms: i64) -> String {
@@ -2372,6 +2386,18 @@ impl Adapter {
     }
 }
 
+/// One Start command's preview: the family reads `starting` from the moment the
+/// operator asks until the command answers, and the window closes however that
+/// command ends. A dropped connection, a cancelled command, or a panicking
+/// handler must not leave a preview behind, because `starting` disables Start.
+struct PreviewWindow<'a>(&'a Adapter);
+
+impl Drop for PreviewWindow<'_> {
+    fn drop(&mut self) {
+        self.0.clear_preview();
+    }
+}
+
 #[derive(Clone, Debug)]
 struct AgentResult {
     ok: bool,
@@ -2725,10 +2751,11 @@ impl AgentsMode {
                     return true;
                 };
                 adapter.preview_start();
+                let preview = PreviewWindow(adapter);
                 let pending = adapter.start();
                 self.publish_agent(adapter);
                 let result = pending.await;
-                adapter.clear_preview();
+                drop(preview);
                 self.finish(conn, adapter, result);
                 true
             }
@@ -3868,6 +3895,7 @@ struct RepoMutable {
     preview_starting: bool,
     starting: bool,
     starting_since: Option<i64>,
+    start_deadline: Option<i64>,
     /// The pid the last Start spawned, while that worker is the one being
     /// waited on. A live process proves the start; the lock proves attachment.
     started_pid: Option<u32>,
@@ -3946,6 +3974,7 @@ impl RepoFamily {
                 preview_starting: false,
                 starting: false,
                 starting_since: None,
+                start_deadline: None,
                 started_pid: None,
                 stop_requested: false,
                 start_error: None,
@@ -4167,12 +4196,30 @@ impl RepoFamily {
             let Ok(mut mutable) = self.mutable.lock() else {
                 return project_snapshot(self.descriptor, empty_repo_input(self.descriptor));
             };
-            if mutable.starting && !owners.is_empty() {
+            if (mutable.starting || mutable.preview_starting) && !owners.is_empty() {
+                // A worker is attached, so the start this preview announced has
+                // happened: the preview never outlives its own Start.
                 mutable.starting = false;
                 mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
             }
             if !owners.is_empty() {
                 mutable.start_error = None;
+            }
+            if mutable.starting
+                && mutable
+                    .start_deadline
+                    .is_some_and(|deadline| now > deadline)
+            {
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
+                mutable.start_error = Some(format!(
+                    "the {} start did not finish; press Start to retry.",
+                    self.descriptor.label
+                ));
             }
             if mutable.starting && !mutable.started_pid.is_some_and(pid_alive) {
                 if let Some(since) = mutable.starting_since {
@@ -4688,6 +4735,10 @@ impl RepoFamily {
             let mut mutable = self.mutable.lock().expect("family state");
             mutable.starting = true;
             mutable.starting_since = None;
+            mutable.start_deadline = Some(start_deadline_at(
+                (self.now)(),
+                self.preflight_timeout_ms.load(Ordering::SeqCst).max(1),
+            ));
             mutable.started_pid = None;
             mutable.start_error = None;
             mutable.notice = None;
@@ -4783,8 +4834,10 @@ impl RepoFamily {
                 // ensures its labels outlasts the five second window. The live
                 // pid is the proof; the lock only proves attachment.
                 let mut mutable = self.mutable.lock().expect("family state");
+                mutable.starting = true;
                 mutable.started_pid = Some(spawn_pid);
                 mutable.starting_since = Some((self.now)());
+                mutable.start_deadline = None;
                 AgentResult::ok()
             }
             None => {
@@ -6193,6 +6246,7 @@ struct WatchdogMutable {
     timer_reading: bool,
     starting: bool,
     starting_since: Option<i64>,
+    start_deadline: Option<i64>,
     start_pending: bool,
     start_cancelled: bool,
     stop_requested: bool,
@@ -6249,6 +6303,7 @@ impl WatchdogFamily {
                 timer_reading: false,
                 starting: false,
                 starting_since: None,
+                start_deadline: None,
                 start_pending: false,
                 start_cancelled: false,
                 stop_requested: false,
@@ -6375,12 +6430,30 @@ impl WatchdogFamily {
             let Ok(mut mutable) = self.mutable.lock() else {
                 return project_snapshot(self.descriptor, empty_repo_input(self.descriptor));
             };
-            if mutable.starting && attached {
+            if (mutable.starting || mutable.preview_starting) && attached {
+                // A worker is attached, so the start this preview announced has
+                // happened: the preview never outlives its own Start.
                 mutable.starting = false;
                 mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
             }
             if attached {
                 mutable.start_error = None;
+            }
+            if mutable.starting
+                && mutable
+                    .start_deadline
+                    .is_some_and(|deadline| now > deadline)
+            {
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
+                mutable.start_pending = false;
+                mutable.start_cancelled = false;
+                mutable.start_error =
+                    Some("the Watchdog start did not finish; press Start to retry.".to_string());
             }
             if mutable.starting {
                 if let Some(since) = mutable.starting_since {
@@ -6767,6 +6840,10 @@ impl WatchdogFamily {
             mutable.start_pending = true;
             mutable.starting = true;
             mutable.starting_since = None;
+            mutable.start_deadline = Some(start_deadline_at(
+                (self.now)(),
+                self.preflight_timeout_ms.load(Ordering::SeqCst).max(1),
+            ));
             mutable.start_cancelled = false;
             mutable.start_error = None;
             mutable.notice = None;
@@ -6812,7 +6889,9 @@ impl WatchdogFamily {
         }
         {
             let mut mutable = self.mutable.lock().expect("watchdog state");
+            mutable.starting = true;
             mutable.starting_since = Some((self.now)());
+            mutable.start_deadline = None;
         }
         match self.spawn_worker() {
             Some(_) => {
@@ -6838,6 +6917,7 @@ impl WatchdogFamily {
             mutable.start_pending = false;
             mutable.starting = false;
             mutable.starting_since = None;
+            mutable.start_deadline = None;
             mutable.start_cancelled = false;
         }
     }
@@ -7340,6 +7420,7 @@ struct McpMutable {
     preview_starting: bool,
     starting: bool,
     starting_since: Option<i64>,
+    start_deadline: Option<i64>,
     stop_requested: bool,
     start_error: Option<String>,
     notice: Option<String>,
@@ -7410,6 +7491,7 @@ impl McpFamily {
                 preview_starting: false,
                 starting: false,
                 starting_since: None,
+                start_deadline: None,
                 stop_requested: false,
                 start_error: None,
                 notice: None,
@@ -7502,12 +7584,29 @@ impl McpFamily {
             let Ok(mut mutable) = self.mutable.lock() else {
                 return project_snapshot(self.descriptor, empty_repo_input(self.descriptor));
             };
-            if mutable.starting && attached {
+            if (mutable.starting || mutable.preview_starting) && attached {
+                // A worker is attached, so the start this preview announced has
+                // happened: the preview never outlives its own Start.
                 mutable.starting = false;
                 mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
             }
             if attached {
                 mutable.start_error = None;
+            }
+            if mutable.starting
+                && mutable
+                    .start_deadline
+                    .is_some_and(|deadline| now > deadline)
+            {
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
+                mutable.start_error = Some(
+                    "the MCP optimizer start did not finish; press Start to retry.".to_string(),
+                );
             }
             if mutable.starting {
                 if let Some(since) = mutable.starting_since {
@@ -7720,6 +7819,10 @@ impl McpFamily {
             let mut mutable = self.mutable.lock().expect("mcp state");
             mutable.starting = true;
             mutable.starting_since = None;
+            mutable.start_deadline = Some(start_deadline_at(
+                (self.now)(),
+                self.preflight_timeout_ms.load(Ordering::SeqCst).max(1),
+            ));
             mutable.start_error = None;
             mutable.notice = None;
         }
@@ -7762,7 +7865,9 @@ impl McpFamily {
         );
         {
             let mut mutable = self.mutable.lock().expect("mcp state");
+            mutable.starting = true;
             mutable.starting_since = Some((self.now)());
+            mutable.start_deadline = None;
         }
         let environment = provider_environment(
             &self.environment,
@@ -8111,6 +8216,7 @@ struct ReleaseMutable {
     preview_starting: bool,
     starting: bool,
     starting_since: Option<i64>,
+    start_deadline: Option<i64>,
     stop_requested: bool,
     start_error: Option<String>,
     takeover: bool,
@@ -8162,6 +8268,7 @@ impl ReleaseFamily {
                 preview_starting: false,
                 starting: false,
                 starting_since: None,
+                start_deadline: None,
                 stop_requested: false,
                 start_error: None,
                 takeover: false,
@@ -8239,14 +8346,31 @@ impl ReleaseFamily {
             let Ok(mut mutable) = self.mutable.lock() else {
                 return project_snapshot(self.descriptor, empty_repo_input(self.descriptor));
             };
-            if mutable.starting && attached {
+            if (mutable.starting || mutable.preview_starting) && attached {
+                // A worker is attached, so the start this preview announced has
+                // happened: the preview never outlives its own Start.
                 mutable.starting = false;
                 mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
             }
             if attached {
                 // A worker that published late is running; the five-second proof
                 // error described its publication, not its life.
                 mutable.start_error = None;
+            }
+            if mutable.starting
+                && mutable
+                    .start_deadline
+                    .is_some_and(|deadline| now > deadline)
+            {
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
+                mutable.start_error = Some(
+                    "the Release Train start did not finish; press Start to retry.".to_string(),
+                );
             }
             if mutable.starting {
                 if let Some(since) = mutable.starting_since {
@@ -8575,6 +8699,8 @@ impl ReleaseFamily {
             let mut mutable = self.mutable.lock().expect("release state");
             mutable.starting = true;
             mutable.starting_since = None;
+            mutable.start_deadline =
+                Some(start_deadline_at((self.now)(), AGENT_PREFLIGHT_TIMEOUT_MS));
             mutable.start_error = None;
         }
         let argv = harness_argv(
@@ -8586,7 +8712,9 @@ impl ReleaseFamily {
         );
         {
             let mut mutable = self.mutable.lock().expect("release state");
+            mutable.starting = true;
             mutable.starting_since = Some((self.now)());
+            mutable.start_deadline = None;
         }
         let mut environment = provider_environment(
             &self.environment,
