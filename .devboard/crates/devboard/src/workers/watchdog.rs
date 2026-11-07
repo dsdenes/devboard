@@ -6135,6 +6135,23 @@ fn handoff_held(handoff: Option<i64>, grace_ms: i64, now: i64) -> bool {
     handoff.is_some_and(|at| now - at <= grace_ms)
 }
 
+/// Adds the owner and peer a draft run that is still running recorded. Such an
+/// owner outlives every dashboard, so it is protected whether or not a lease or
+/// handoff exists right now.
+fn add_running_draft_pids(state_dir: &Path, repo_dir: &Path, pids: &mut HashSet<u32>) {
+    for state in crate::goal_drafts::list_goal_draft_owner_states(state_dir, repo_dir) {
+        if state.run.status != crate::goal_drafts::GoalDraftStatus::Running {
+            continue;
+        }
+        for child in [state.owner.as_ref(), state.peer.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            pids.insert(child.pid);
+        }
+    }
+}
+
 /// Every pid a live detached run, goal-draft owner, or worker lock still
 /// holds.
 pub fn protected_pids(scopes: &[SupervisionScope]) -> HashSet<u32> {
@@ -6169,6 +6186,7 @@ pub fn protected_pids(scopes: &[SupervisionScope]) -> HashSet<u32> {
                 &mut pids,
             );
         }
+        add_running_draft_pids(&scope.state_dir, &scope.repo_dir, &mut pids);
         add_lock_pids(&scope.state_dir, LOCK_DEPTH, &mut pids);
         add_lock_pids(
             &scope.repo_dir.join(".devboard").join(".tmp"),

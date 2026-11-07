@@ -3,29 +3,24 @@
 //! The dashboard starts one owner per draft and never holds the ACP peer
 //! itself. The owner spawns the agent, streams its activity and question into
 //! the draft-keyed state file, and consumes answer/stop commands from the
-//! control directory beside it. Because the owner is in its own session, a
-//! replacement dashboard attaches to the same owners and the same agent
-//! processes.
-//!
-//! The owner watches the dashboard that supervises it. A reload writes a
-//! handoff marker before it exits, so the owner waits for the replacement to
-//! take the lease; any other exit ends the agent and records one `failed` run
-//! naming the interruption, which the next dashboard shows while leaving the
-//! draft startable.
+//! control directory beside it. Because the owner is in its own session, it
+//! survives any dashboard exit: the next dashboard adopts the same owner and
+//! agent without a reload handoff. Only Stop, a finished turn, or a real
+//! failure ends it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 use crate::acp::{AcpConnection, AcpConnectionOptions, AcpEvent, AcpId};
 use crate::goal_drafts::{
     append_activity_line, canonical_process_path, goal_draft_control_directory,
-    read_goal_draft_handoff, read_goal_draft_lease, read_goal_draft_owner_state,
-    recorded_child_alive, self_child, take_goal_draft_owner_commands, write_goal_draft_owner_state,
-    GoalDraftOwnerCommand, GoalDraftOwnerState, GoalDraftQuestion, GoalDraftRun, GoalDraftStatus,
-    RecordedChild, GOAL_DRAFT_INTERRUPTED, GOAL_DRAFT_OWNER_VERSION, HANDOFF_GRACE_MS,
+    read_goal_draft_owner_state, recorded_child_alive, self_child, take_goal_draft_owner_commands,
+    write_goal_draft_owner_state, GoalDraftOwnerCommand, GoalDraftOwnerState, GoalDraftQuestion,
+    GoalDraftRun, GoalDraftStatus, RecordedChild, GOAL_DRAFT_OWNER_EXITED,
+    GOAL_DRAFT_OWNER_VERSION,
 };
 use crate::workers::WorkerInvocation;
 
@@ -77,9 +72,11 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
         peer: None,
         peer_child: stored.peer.clone(),
         first_stderr: String::new(),
-        handoff_deadline: None,
         done: false,
     };
+    // The owner publishes the identity its liveness is judged by before it
+    // does anything else; the launcher that forked this process is never it.
+    owner.persist();
 
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -117,15 +114,6 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
             _ = ticker.tick() => {
                 for command in take_goal_draft_owner_commands(&owner.control) {
                     match command {
-                        GoalDraftOwnerCommand::Interrupt => {
-                            owner
-                                .finish(
-                                    GoalDraftStatus::Failed,
-                                    Some(GOAL_DRAFT_INTERRUPTED.to_string()),
-                                )
-                                .await;
-                            return Ok(());
-                        }
                         GoalDraftOwnerCommand::Stop => {
                             owner.finish(GoalDraftStatus::Stopped, None).await;
                             return Ok(());
@@ -138,15 +126,9 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
                 if owner.done {
                     return Ok(());
                 }
-                if !owner.check_supervisor() {
-                    owner
-                        .finish(
-                            GoalDraftStatus::Failed,
-                            Some(GOAL_DRAFT_INTERRUPTED.to_string()),
-                        )
-                        .await;
-                    return Ok(());
-                }
+                // A dashboard's exit never ends this owner: the agent and its
+                // prompt belong to this process, and the next dashboard
+                // adopts it as it stands.
             }
             Some(event) = events.recv() => {
                 owner.apply_event(event);
@@ -167,7 +149,7 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
                 owner
                     .finish(
                         GoalDraftStatus::Failed,
-                        Some(GOAL_DRAFT_INTERRUPTED.to_string()),
+                        Some(GOAL_DRAFT_OWNER_EXITED.to_string()),
                     )
                     .await;
                 return Ok(());
@@ -176,7 +158,7 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
                 owner
                     .finish(
                         GoalDraftStatus::Failed,
-                        Some(GOAL_DRAFT_INTERRUPTED.to_string()),
+                        Some(GOAL_DRAFT_OWNER_EXITED.to_string()),
                     )
                     .await;
                 return Ok(());
@@ -185,7 +167,7 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
     }
 }
 
-/// One draft's live owner: the peer, its run, and the supervisor it answers.
+/// One draft's live owner: the peer, its run, and the identity it publishes.
 struct Owner {
     repo_dir: PathBuf,
     state_dir: PathBuf,
@@ -198,7 +180,6 @@ struct Owner {
     peer: Option<Arc<AcpConnection>>,
     peer_child: Option<RecordedChild>,
     first_stderr: String,
-    handoff_deadline: Option<i64>,
     done: bool,
 }
 
@@ -288,41 +269,6 @@ impl Owner {
         self.persist();
     }
 
-    /// True while the lease, the launcher, or a promised replacement holds.
-    fn check_supervisor(&mut self) -> bool {
-        if let Some(lease) = read_goal_draft_lease(&self.state_dir, &self.repo_dir) {
-            if crate::supervision::live_process(lease.pid) {
-                self.supervisor_pid = Some(lease.pid);
-                self.handoff_deadline = None;
-                return true;
-            }
-        }
-        // Another live dashboard may hold this owner's lease while this
-        // manager stays alive; losing the lease must not end what the launcher
-        // still owns.
-        if self
-            .launcher_pid
-            .is_some_and(crate::supervision::live_process)
-        {
-            return true;
-        }
-        if self
-            .supervisor_pid
-            .is_some_and(crate::supervision::live_process)
-        {
-            return true;
-        }
-        if let Some(handoff) = read_goal_draft_handoff(&self.state_dir, &self.repo_dir) {
-            let deadline = *self
-                .handoff_deadline
-                .get_or_insert(handoff.at + HANDOFF_GRACE_MS);
-            if now_millis() < deadline {
-                return true;
-            }
-        }
-        false
-    }
-
     fn failure_detail(&self) -> String {
         if !self.first_stderr.is_empty() {
             return self.first_stderr.clone();
@@ -371,13 +317,6 @@ fn agent_command() -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "omp acp".to_string())
-}
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Ends the peer and proves it gone before the owner records its outcome.

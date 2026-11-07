@@ -24,12 +24,16 @@ pub const GOAL_PROPOSALS_DIRECTORY: &str = ".devboard/goal-proposals";
 /// Envelope version of the owner state file.
 pub const GOAL_DRAFT_OWNER_VERSION: u64 = 1;
 
-/// How long an owner waits for the replacement dashboard a reload promised.
-pub const HANDOFF_GRACE_MS: i64 = 8_000;
+/// How long a started run may take before its owner publishes its identity.
+/// The dashboard never judges a run by the argv of the launcher it forked.
+pub const OWNER_CLAIM_GRACE_MS: i64 = 10_000;
 
-/// The recorded error of an elaboration the server exit ended.
-pub const GOAL_DRAFT_INTERRUPTED: &str =
-    "The server exit interrupted the elaboration, so it was not resumed. Start the draft again.";
+/// The recorded error of a run no owner ever claimed.
+pub const GOAL_DRAFT_OWNER_DID_NOT_START: &str = "The elaboration owner did not start.";
+
+/// The recorded error of a run whose owner exited and whose one automatic
+/// restart also died.
+pub const GOAL_DRAFT_OWNER_EXITED: &str = "The elaboration owner exited before it finished.";
 
 /// The poll cadence the dashboard observes owners with.
 const POLL_MS: u64 = 150;
@@ -264,7 +268,6 @@ impl GoalDraftOwnerState {
 pub enum GoalDraftOwnerCommand {
     Answer { id: AcpId, value: String },
     Stop,
-    Interrupt,
 }
 
 impl GoalDraftOwnerCommand {
@@ -276,7 +279,6 @@ impl GoalDraftOwnerCommand {
                 "value": value,
             }),
             Self::Stop => json!({"type": "stop"}),
-            Self::Interrupt => json!({"type": "interrupt"}),
         }
     }
 
@@ -285,7 +287,6 @@ impl GoalDraftOwnerCommand {
         let record = parsed.as_object()?;
         match record.get("type")?.as_str()? {
             "stop" => Some(Self::Stop),
-            "interrupt" => Some(Self::Interrupt),
             "answer" => Some(Self::Answer {
                 id: AcpId::from_value(record.get("id")?)?,
                 value: record.get("value")?.as_str()?.to_string(),
@@ -565,6 +566,50 @@ pub fn write_goal_draft_owner_state(
 /// never consumes a stop or answer meant for its predecessor.
 pub fn reset_goal_draft_run(state_dir: &Path, repo_dir: &Path, path: &str) {
     let _ = std::fs::remove_dir_all(goal_draft_run_directory(state_dir, repo_dir, path));
+}
+
+/// The one automatic restart a run has already been given, so a second death
+/// is terminal instead of a loop. It lives beside the run's state, never on the
+/// wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GoalDraftAttempt {
+    /// When the restarted launcher was forked; the new claim's grace runs from
+    /// here, not from the original start.
+    at: i64,
+    /// Whether an owner had published its identity for this run before it.
+    claimed: bool,
+}
+
+fn goal_draft_attempt_path(state_dir: &Path, repo_dir: &Path, path: &str) -> PathBuf {
+    goal_draft_run_directory(state_dir, repo_dir, path).join("attempt.json")
+}
+
+fn read_goal_draft_attempt(
+    state_dir: &Path,
+    repo_dir: &Path,
+    path: &str,
+) -> Option<GoalDraftAttempt> {
+    let parsed = read_json(&goal_draft_attempt_path(state_dir, repo_dir, path))?;
+    let record = parsed.as_object()?;
+    if record.get("restarts")?.as_i64()? < 1 {
+        return None;
+    }
+    Some(GoalDraftAttempt {
+        at: record.get("at")?.as_i64()?,
+        claimed: record.get("claimed")?.as_bool()?,
+    })
+}
+
+fn write_goal_draft_attempt(
+    state_dir: &Path,
+    repo_dir: &Path,
+    path: &str,
+    attempt: GoalDraftAttempt,
+) {
+    let _ = write_json(
+        &goal_draft_attempt_path(state_dir, repo_dir, path),
+        &json!({"restarts": 1, "at": attempt.at, "claimed": attempt.claimed}),
+    );
 }
 
 pub fn read_goal_draft_handoff(state_dir: &Path, repo_dir: &Path) -> Option<GoalDraftHandoff> {
@@ -1041,18 +1086,21 @@ impl DraftWatcher {
         self.send_all(json!({"type": "issuesDrafts", "drafts": drafts}));
     }
 
-    fn persist_state(
+    /// Writes one run's state. The owner identity is never invented here: only
+    /// the owner process itself publishes it, in `owner`.
+    fn store_state(
         &mut self,
         path: &str,
         run: GoalDraftRun,
         owner: Option<RecordedChild>,
+        peer: Option<RecordedChild>,
     ) -> GoalDraftOwnerState {
         let updated_at = now_iso();
         let state = GoalDraftOwnerState {
             version: GOAL_DRAFT_OWNER_VERSION,
             run: run.clone(),
             owner,
-            peer: self.owners.get(path).and_then(|stored| stored.peer.clone()),
+            peer,
             launcher_pid: Some(std::process::id()),
             supervisor_pid: Some(std::process::id()),
             updated_at,
@@ -1063,33 +1111,163 @@ impl DraftWatcher {
         state
     }
 
-    /// Records the missing owner's run as the interrupted failure the next
-    /// dashboard shows; the draft stays in place and startable.
-    fn mark_interrupted(&mut self, state: &GoalDraftOwnerState) -> GoalDraftOwnerState {
+    /// Records one run that can no longer continue, keeping its activity. The
+    /// latest durable bytes win, so a line the owner wrote as it died survives.
+    fn fail_run(&mut self, state: &GoalDraftOwnerState, error: &str) -> bool {
+        let Some(path) = state.run.path.clone() else {
+            return false;
+        };
+        let durable = read_goal_draft_owner_state(&self.state_dir, &self.repo_dir, &path);
+        if let Some(durable) = &durable {
+            // The owner recorded its own outcome while this decision was made.
+            if durable.run.status != GoalDraftStatus::Running {
+                return false;
+            }
+        }
+        let latest = durable.unwrap_or_else(|| state.clone());
+        // An owner that claimed while this decision was being made is alive.
+        if state_owner_alive(&latest) {
+            return false;
+        }
         let updated_at = now_iso();
         let next = GoalDraftOwnerState {
-            version: state.version,
+            version: latest.version,
             run: GoalDraftRun {
                 status: GoalDraftStatus::Failed,
-                path: state.run.path.clone(),
-                started_at: state.run.started_at.clone(),
+                path: Some(path.clone()),
+                started_at: latest.run.started_at.clone(),
                 finished_at: Some(updated_at.clone()),
-                error: Some(GOAL_DRAFT_INTERRUPTED.to_string()),
-                activity: state.run.activity.clone(),
+                error: Some(error.to_string()),
+                activity: latest.run.activity.clone(),
                 question: None,
             },
-            owner: state.owner.clone(),
+            owner: latest.owner.clone(),
             peer: None,
-            launcher_pid: state.launcher_pid,
-            supervisor_pid: state.supervisor_pid,
+            launcher_pid: latest.launcher_pid,
+            supervisor_pid: latest.supervisor_pid,
             updated_at,
         };
-        if let Some(path) = next.run.path.as_deref() {
-            write_goal_draft_owner_state(&self.state_dir, &self.repo_dir, path, &next);
-            self.owners.insert(path.to_string(), next.clone());
-            self.runs.insert(path.to_string(), next.run.clone());
+        write_goal_draft_owner_state(&self.state_dir, &self.repo_dir, &path, &next);
+        self.owners.insert(path.clone(), next.clone());
+        self.runs.insert(path.clone(), next.run.clone());
+        self.emit_state(&path);
+        true
+    }
+
+    /// Forks one owner for one draft. The forked argv belongs to the launcher;
+    /// the owner's own process publishes the identity liveness is judged by.
+    fn spawn_run_owner(&self, path: &str) -> Option<u32> {
+        let argv = owner_argv(
+            &self.owner_executable,
+            &self.repo_dir,
+            &self.state_dir,
+            path,
+        );
+        let mut environment: HashMap<String, String> = std::env::vars().collect();
+        environment.insert("AGENT_COMMAND".into(), self.agent_command.clone());
+        environment.insert("STATE_DIR".into(), self.state_dir.display().to_string());
+        environment.insert("REPO_DIR".into(), self.repo_dir.display().to_string());
+        let cwd = canonical_process_path(&self.repo_dir);
+        spawn_owner(&argv, &cwd, &environment)
+    }
+
+    /// Gives a run whose owner is gone its one automatic restart from the
+    /// draft, keeping the recorded activity as the prefix of the new run.
+    /// Returns true when the run reached a terminal failure instead.
+    fn restart_run(&mut self, state: &GoalDraftOwnerState, claimed: bool) -> bool {
+        let Some(path) = state.run.path.clone() else {
+            return false;
+        };
+        let durable = read_goal_draft_owner_state(&self.state_dir, &self.repo_dir, &path);
+        if let Some(durable) = &durable {
+            if durable.run.status != GoalDraftStatus::Running {
+                return false;
+            }
         }
-        next
+        let latest = durable.unwrap_or_else(|| state.clone());
+        if state_owner_alive(&latest) {
+            return false;
+        }
+        // A missing draft is never restarted; the refusal a start gives is the
+        // recorded cause.
+        if let Err(error) = read_goal_draft(&self.repo_dir, Some(&Value::String(path.clone()))) {
+            return self.fail_run(&latest, &error.message);
+        }
+        write_goal_draft_attempt(
+            &self.state_dir,
+            &self.repo_dir,
+            &path,
+            GoalDraftAttempt {
+                at: now_millis(),
+                claimed,
+            },
+        );
+        // The dead owner's agent would otherwise keep editing the same draft.
+        if let Some(peer) = latest.peer.clone() {
+            if recorded_child_alive(&peer) {
+                crate::supervision::signal_process_group(peer.pid, libc::SIGTERM);
+            }
+        }
+        self.store_state(&path, latest.run.clone(), None, None);
+        self.emit_state(&path);
+        match self.spawn_run_owner(&path) {
+            Some(_) => false,
+            None => {
+                let error = if claimed {
+                    GOAL_DRAFT_OWNER_EXITED
+                } else {
+                    GOAL_DRAFT_OWNER_DID_NOT_START
+                };
+                let stored = self.owners.get(&path).cloned().unwrap_or(latest);
+                self.fail_run(&stored, error)
+            }
+        }
+    }
+
+    /// Decides one running run whose owner has not claimed yet or has died.
+    /// The first loss gets one automatic restart; the second is terminal.
+    fn supervise_run(&mut self, state: &GoalDraftOwnerState) -> bool {
+        if state.run.status != GoalDraftStatus::Running || state_owner_alive(state) {
+            return false;
+        }
+        let Some(path) = state.run.path.clone() else {
+            return false;
+        };
+        let attempt = read_goal_draft_attempt(&self.state_dir, &self.repo_dir, &path);
+        match attempt {
+            Some(attempt) => {
+                if state.owner.is_some() {
+                    // The restarted owner claimed and then exited.
+                    return self.fail_run(state, GOAL_DRAFT_OWNER_EXITED);
+                }
+                if now_millis() - attempt.at < OWNER_CLAIM_GRACE_MS {
+                    return false;
+                }
+                let error = if attempt.claimed {
+                    GOAL_DRAFT_OWNER_EXITED
+                } else {
+                    GOAL_DRAFT_OWNER_DID_NOT_START
+                };
+                self.fail_run(state, error)
+            }
+            None => {
+                if state.owner.is_some() {
+                    return self.restart_run(state, true);
+                }
+                let started = state
+                    .run
+                    .started_at
+                    .as_deref()
+                    .and_then(crate::agent_sessions::parse_instant_text)
+                    .unwrap_or(0);
+                if now_millis() - started < OWNER_CLAIM_GRACE_MS {
+                    // The launcher was forked a moment ago; an owner may still
+                    // publish its identity.
+                    return false;
+                }
+                self.restart_run(state, false)
+            }
+        }
     }
 
     fn owner_alive(&self, path: &str) -> bool {
@@ -1153,106 +1331,66 @@ impl DraftWatcher {
         self.supervises = true;
     }
 
-    /// Attaches to every durable run before the Drafts page is served.
+    /// Attaches to every durable run before the Drafts page is served. A live
+    /// owner is adopted as it stands: no handoff is required, and a dead owner
+    /// is left for the supervising poll to restart or fail truthfully.
     fn begin(&mut self) {
         if self.begun {
             return;
         }
         self.begun = true;
         let states = list_goal_draft_owner_states(&self.state_dir, &self.repo_dir);
-        let handoff = read_goal_draft_handoff(&self.state_dir, &self.repo_dir);
-        let mut adoptable = false;
+        let mut live_owner = false;
         for state in &states {
             let Some(path) = state.run.path.clone() else {
                 continue;
             };
             self.owners.insert(path.clone(), state.clone());
             self.runs.insert(path.clone(), state.run.clone());
-            if state.run.status != GoalDraftStatus::Running {
-                continue;
-            }
-            if !state_owner_alive(state) {
-                self.mark_interrupted(state);
-                continue;
-            }
-            if handoff.is_some() {
-                adoptable = true;
+            if state.run.status == GoalDraftStatus::Running && state_owner_alive(state) {
+                live_owner = true;
             }
         }
-
-        if adoptable {
-            let now = now_millis();
-            write_goal_draft_lease(
-                &self.state_dir,
-                &self.repo_dir,
-                &GoalDraftLease {
-                    pid: std::process::id(),
-                    updated_at: now,
-                    instance: Some(self.instance.clone()),
-                },
-            );
-            self.last_lease_ms = now;
-            remove_goal_draft_handoff(&self.state_dir, &self.repo_dir);
-            self.supervises = true;
+        // A reload hint describes a handoff this dashboard does not need; an
+        // adoption never depends on it.
+        remove_goal_draft_handoff(&self.state_dir, &self.repo_dir);
+        if !live_owner {
             return;
         }
-
-        remove_goal_draft_handoff(&self.state_dir, &self.repo_dir);
         let lease = read_goal_draft_lease(&self.state_dir, &self.repo_dir);
         if self.lease_held_by_another(&lease) {
             return;
         }
-        for state in &states {
-            let Some(path) = state.run.path.as_deref() else {
-                continue;
-            };
-            if state.run.status != GoalDraftStatus::Running {
-                continue;
-            }
-            if !state_owner_alive(state) {
-                continue;
-            }
-            if state
-                .launcher_pid
-                .is_some_and(crate::supervision::live_process)
-            {
-                continue;
-            }
-            write_goal_draft_owner_command(
-                &goal_draft_control_directory(&self.state_dir, &self.repo_dir, path),
-                &GoalDraftOwnerCommand::Interrupt,
-            );
-        }
+        self.take_lease();
     }
 
-    /// Re-reads every owner's run; publishes only what changed.
+    /// Re-reads every owner's run; publishes only what changed. Only the
+    /// dashboard holding the lease decides a lost owner's fate.
     fn refresh(&mut self) {
         self.begin();
         let states = list_goal_draft_owner_states(&self.state_dir, &self.repo_dir);
         let mut seen: HashSet<String> = HashSet::new();
         let mut terminal_transition = false;
+        let mut running: Vec<GoalDraftOwnerState> = Vec::new();
         for stored in states {
             let Some(path) = stored.run.path.clone() else {
                 continue;
             };
             seen.insert(path.clone());
+            self.owners.insert(path.clone(), stored.clone());
+            if stored.run.status == GoalDraftStatus::Running {
+                running.push(stored.clone());
+            }
             let previous = self.runs.get(&path).cloned();
-            let current =
-                if stored.run.status == GoalDraftStatus::Running && !state_owner_alive(&stored) {
-                    self.mark_interrupted(&stored)
-                } else {
-                    stored
-                };
-            self.owners.insert(path.clone(), current.clone());
-            if previous.as_ref() == Some(&current.run) {
+            if previous.as_ref() == Some(&stored.run) {
                 continue;
             }
-            self.runs.insert(path.clone(), current.run.clone());
+            self.runs.insert(path.clone(), stored.run.clone());
             self.emit_state(&path);
             if previous
                 .as_ref()
                 .is_some_and(|run| run.status == GoalDraftStatus::Running)
-                && current.run.status != GoalDraftStatus::Running
+                && stored.run.status != GoalDraftStatus::Running
             {
                 terminal_transition = true;
             }
@@ -1276,23 +1414,21 @@ impl DraftWatcher {
             if self.lease_held_by_another(&lease) {
                 self.supervises = false;
             }
-        } else if self
-            .runs
-            .values()
-            .any(|run| run.status == GoalDraftStatus::Running)
-        {
+        } else if !running.is_empty() {
             self.take_lease();
+        }
+        if self.supervises {
+            for state in &running {
+                if self.supervise_run(state) {
+                    terminal_transition = true;
+                }
+            }
+            if !running.is_empty() {
+                self.write_lease();
+            }
         }
         if terminal_transition {
             self.publish_drafts();
-        }
-        if self.supervises
-            && self
-                .runs
-                .values()
-                .any(|run| run.status == GoalDraftStatus::Running)
-        {
-            self.write_lease();
         }
     }
 
@@ -1308,11 +1444,13 @@ impl DraftWatcher {
             }
         };
         let path = draft.path;
-        let running = self
+        // A running run is the supervisor's to restart or fail; a client start
+        // never forks a second owner for it.
+        if self
             .runs
             .get(&path)
-            .is_some_and(|run| run.status == GoalDraftStatus::Running);
-        if running && self.owner_alive(&path) {
+            .is_some_and(|run| run.status == GoalDraftStatus::Running)
+        {
             return StartOutcome::Refused {
                 message: "This draft is being elaborated.".to_string(),
                 stopped: false,
@@ -1329,29 +1467,17 @@ impl DraftWatcher {
             question: None,
         };
         reset_goal_draft_run(&self.state_dir, &self.repo_dir, &path);
-        self.persist_state(&path, run.clone(), None);
+        self.store_state(&path, run.clone(), None, None);
         self.take_lease();
 
-        let argv = owner_argv(
-            &self.owner_executable,
-            &self.repo_dir,
-            &self.state_dir,
-            &path,
-        );
-        let mut environment: HashMap<String, String> = std::env::vars().collect();
-        environment.insert("AGENT_COMMAND".into(), self.agent_command.clone());
-        environment.insert("STATE_DIR".into(), self.state_dir.display().to_string());
-        environment.insert("REPO_DIR".into(), self.repo_dir.display().to_string());
-        let cwd = canonical_process_path(&self.repo_dir);
-        let pid = spawn_owner(&argv, &cwd, &environment);
-        let Some(pid) = pid else {
+        let Some(_) = self.spawn_run_owner(&path) else {
             let failed = GoalDraftRun {
                 status: GoalDraftStatus::Failed,
                 finished_at: Some(now_iso()),
                 error: Some("the elaboration peer could not be started".to_string()),
-                ..run.clone()
+                ..run
             };
-            self.persist_state(&path, failed, None);
+            self.store_state(&path, failed, None, None);
             self.emit_state(&path);
             self.publish_drafts();
             return StartOutcome::Refused {
@@ -1359,15 +1485,6 @@ impl DraftWatcher {
                 stopped: false,
             };
         };
-        self.persist_state(
-            &path,
-            run,
-            Some(RecordedChild {
-                pid,
-                argv,
-                cwd: cwd.display().to_string(),
-            }),
-        );
         self.emit_state(&path);
         self.publish_drafts();
         StartOutcome::Started
@@ -1382,14 +1499,8 @@ impl DraftWatcher {
         if run.status != GoalDraftStatus::Running {
             return false;
         }
-        if !self.owner_alive(path) {
-            if let Some(state) = self.owners.get(path).cloned() {
-                self.mark_interrupted(&state);
-                self.emit_state(path);
-                self.publish_drafts();
-            }
-            return false;
-        }
+        // A queued Stop is consumed by whichever owner claims the run; a run
+        // whose owner is gone is restarted by the supervisor and stops then.
         write_goal_draft_owner_command(
             &goal_draft_control_directory(&self.state_dir, &self.repo_dir, path),
             &GoalDraftOwnerCommand::Stop,
