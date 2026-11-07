@@ -2555,6 +2555,38 @@ pub fn default_release_agent_runner(
     })
 }
 
+/// The detail one failed verification records, composed with what the run
+/// already reported.
+///
+/// A release that did not publish leaves no tag naming its commit, so the
+/// verification's tag phase reads that absence back as a missing tag. The
+/// run's own failure is the cause, and naming the tag phase beside it would
+/// report a phantom second failure. A GitHub or Gitea phase failure still says
+/// something the run's report did not, so it always stands beside it.
+fn failed_release_detail(
+    stopped: bool,
+    cause: Option<&str>,
+    reported: Option<&str>,
+    phase: ReleaseVerificationPhase,
+    detail: &str,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if stopped {
+        parts.push("stopped during the release run".to_string());
+    }
+    let tag_withdrawn = cause.is_some() || reported.is_some();
+    if let Some(cause) = cause {
+        parts.push(cause.to_string());
+    }
+    if let Some(report) = reported {
+        parts.push(report.to_string());
+    }
+    if phase != ReleaseVerificationPhase::Tag || !tag_withdrawn {
+        parts.push(detail.to_string());
+    }
+    parts.join("; ")
+}
+
 async fn run_release_agent(
     input: ReleaseRunInput,
     verify: VerifyFn,
@@ -2727,21 +2759,16 @@ async fn run_release_agent(
                 .map(str::trim)
                 .filter(|detail| !detail.is_empty())
                 .map(str::to_string);
-            let mut parts: Vec<String> = Vec::new();
-            if stopped {
-                parts.push("stopped during the release run".to_string());
-            }
-            let tags_withdrawn = agent_error.is_some();
-            if let Some(error) = agent_error {
-                parts.push(error);
-            }
-            if let Some(report) = reported {
-                parts.push(report);
-            }
-            if phase != ReleaseVerificationPhase::Tag || !tags_withdrawn {
-                parts.push(detail);
-            }
-            ReleaseRunResult::failed(parts.join("; "))
+            // A peer that reports a failed publish withdraws the tag it
+            // created just as the native publish does, so its report is the
+            // cause this tag phase reads back.
+            ReleaseRunResult::failed(failed_release_detail(
+                stopped,
+                agent_error.as_deref(),
+                reported.as_deref(),
+                phase,
+                &detail,
+            ))
         }
     }
 }
@@ -2827,26 +2854,18 @@ async fn run_release_and_verify(
                 .map(str::trim)
                 .filter(|detail| !detail.is_empty())
                 .map(str::to_string);
-            let mut parts: Vec<String> = Vec::new();
-            if stopped {
-                parts.push("stopped during the release run".to_string());
-            }
             // A publish that failed withdraws the tag it created, so the tag
             // phase then reads that withdrawal back as a missing tag. The
             // publish error is the cause, and naming the tag phase beside it
             // would report a phantom second failure. A GitHub or Gitea phase
             // failure still says something the publish error did not.
-            let tags_withdrawn = agent_error.is_some();
-            if let Some(error) = agent_error {
-                parts.push(error);
-            }
-            if let Some(report) = reported {
-                parts.push(report);
-            }
-            if phase != ReleaseVerificationPhase::Tag || !tags_withdrawn {
-                parts.push(detail);
-            }
-            ReleaseRunResult::failed(parts.join("; "))
+            ReleaseRunResult::failed(failed_release_detail(
+                stopped,
+                agent_error.as_deref(),
+                reported.as_deref(),
+                phase,
+                &detail,
+            ))
         }
     }
 }
@@ -3993,4 +4012,51 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
         std::process::exit(code);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{failed_release_detail, ReleaseVerificationPhase};
+
+    #[test]
+    fn a_reported_failure_does_not_repeat_the_withdrawn_tag_phase() {
+        assert_eq!(
+            failed_release_detail(
+                false,
+                None,
+                Some("release suite: structural failure (compile error), nothing tagged or dispatched"),
+                ReleaseVerificationPhase::Tag,
+                "tag binding: no release tag names or contains a9a3f33 for v1.39.0",
+            ),
+            "release suite: structural failure (compile error), nothing tagged or dispatched"
+        );
+    }
+
+    #[test]
+    fn a_github_phase_failure_stands_beside_the_reported_failure() {
+        assert_eq!(
+            failed_release_detail(
+                false,
+                None,
+                Some("the release workflow concluded failure"),
+                ReleaseVerificationPhase::Github,
+                "GitHub assets: the release v1.39.0 does not exist",
+            ),
+            "the release workflow concluded failure; GitHub assets: the release v1.39.0 does not exist"
+        );
+    }
+
+    #[test]
+    fn a_tag_phase_failure_stands_alone_when_the_run_reported_nothing() {
+        assert_eq!(
+            failed_release_detail(
+                true,
+                None,
+                None,
+                ReleaseVerificationPhase::Tag,
+                "tag binding: no release tag names or contains a9a3f33 for v1.39.0",
+            ),
+            "stopped during the release run; tag binding: no release tag names or contains a9a3f33 for v1.39.0"
+        );
+    }
 }

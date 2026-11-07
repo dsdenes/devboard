@@ -1320,6 +1320,66 @@ async fn a_failed_publish_records_its_error_without_the_withdrawn_tag_phase() {
     worker.stop().await;
 }
 
+/// A peer that reported a failed publish never created the tag naming the
+/// target, so the verification's tag phase reads that absence back. The record
+/// of the release agent's run must name the peer's report alone, never a
+/// phantom tag failure beside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_reported_failure_records_its_report_without_the_withdrawn_tag_phase() {
+    let root = scratch_root("agent-withdrawn-tag");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).expect("a repo");
+    let run_dir = root.join("run");
+    std::fs::create_dir_all(&run_dir).expect("a run directory");
+    let report = "release suite: structural failure (compile error), nothing tagged or \
+                  dispatched: No space left on device";
+    std::fs::write(
+        run_dir.join("result.json"),
+        serde_json::json!({"ok": false, "detail": report}).to_string(),
+    )
+    .expect("the result document");
+    let input = ReleaseRunInput {
+        request: ReleaseTrainRequest {
+            format: 1,
+            run_id: "run-1".to_string(),
+            range: "v1.0.0..abc".to_string(),
+            target: "a".repeat(40),
+            version: "1.0.0".to_string(),
+            previous: Some("v1.0.0".to_string()),
+            commits: Vec::new(),
+            release_commits: Vec::new(),
+        },
+        activity: Arc::new(|_line: &str| {}),
+        stopping: Arc::new(|| false),
+        run_dir: run_dir.clone(),
+        repo_dir: repo.clone(),
+        state_dir: root.join("state"),
+        agent_command: format!("{} acp-stub", env!("CARGO_BIN_EXE_devboard")),
+        register_peer: Arc::new(|_peer| {}),
+    };
+    let verify: VerifyFn = Arc::new(|options| {
+        Box::pin(async move {
+            ReleaseVerification::Failed {
+                phase: ReleaseVerificationPhase::Tag,
+                version: options.version.clone(),
+                detail: format!(
+                    "tag binding: no release tag names or contains {} for v{}",
+                    &options.target[..7],
+                    options.version
+                ),
+            }
+        })
+    });
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify,
+        std::collections::HashMap::new(),
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(60), run(input))
+        .await
+        .expect("the stub agent ends the run");
+    assert_eq!(result, ReleaseRunResult::failed(report));
+}
+
 #[tokio::test]
 async fn release_history_reads_the_request_of_a_legacy_run() {
     let workspace = workspace("history");
