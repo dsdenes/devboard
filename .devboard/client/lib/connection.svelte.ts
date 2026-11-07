@@ -1,4 +1,5 @@
 import { notifications } from "./notifications.svelte";
+import { slowUiAction, type SlowUiActionOrigin } from "./slow-ui-action";
 import { isInvalidFrameError, reloadOnceForStaleBundle } from "./stale-bundle";
 import type { VersionState } from "./types";
 
@@ -12,6 +13,9 @@ interface Envelope {
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+/** Commands a surface repeats on a timer; their repeat is never an action. */
+const POLL_COMMANDS = new Set(["getVersion", "getMcpTools", "getGoalDrafts"]);
 
 function isVersionState(value: Record<string, unknown>): boolean {
   return (
@@ -34,6 +38,8 @@ export class ConnectionStore {
   version = $state<VersionState | null>(null);
   /** True when the server has a Gitea address for harness-owned reporting. */
   feedbackEnabled = $state(false);
+  /** True once a version frame has stated whether reporting is available. */
+  feedbackResolved = $state(false);
   restarting = $state(false);
   awaitingRestart = $state(false);
   upgradePending = $state(false);
@@ -45,6 +51,10 @@ export class ConnectionStore {
   private notifiedLoss = false;
   private handlers: Array<(message: Envelope) => void> = [];
   private openHandlers: Array<() => void> = [];
+  /** First open registers first-paint reads; later opens are reconnects. */
+  private hasOpened = false;
+  /** The origin the current open's six first-paint sends register under. */
+  private openingOrigin: SlowUiActionOrigin | null = null;
 
   get open(): boolean {
     return this.state === "open";
@@ -63,15 +73,33 @@ export class ConnectionStore {
     this.openHandlers.push(handler);
   }
 
-  send(command: unknown): boolean {
+  /**
+   * Sends one command and registers an operator or first-paint dispatch with
+   * the latency guard. A send while the socket is restarting, awaiting a
+   * replacement, or reconnecting is a reconnect send and starts no action;
+   * polling repeats are refresh sends for the same reason.
+   */
+  send(command: unknown, origin: SlowUiActionOrigin = "operator"): boolean {
     if (this.socket === undefined || this.socket.readyState !== WebSocket.OPEN) {
       this.lastError = "Not connected to the server.";
       notifications.push("Connection", "error", this.lastError);
       return false;
     }
+    const resolved = this.#origin(command, origin);
     this.lastError = null;
     this.socket.send(JSON.stringify(command));
+    slowUiAction.dispatch(command, resolved);
     return true;
+  }
+
+  #origin(command: unknown, requested: SlowUiActionOrigin): SlowUiActionOrigin {
+    if (this.restarting || this.awaitingRestart || this.state !== "open") return "reconnect";
+    if (this.openingOrigin !== null) return this.openingOrigin;
+    if (requested !== "operator") return requested;
+    if (typeof command !== "object" || command === null) return "refresh";
+    const type = (command as Record<string, unknown>).type;
+    if (type === "restartServer") return "reconnect";
+    return typeof type === "string" && POLL_COMMANDS.has(type) ? "refresh" : "operator";
   }
 
   connect(): void {
@@ -90,13 +118,26 @@ export class ConnectionStore {
       this.lastError = null;
       this.notifiedLoss = false;
       this.upgradePending = false;
-      for (const handler of this.openHandlers) handler();
-      current.send(JSON.stringify({ type: "listRecords" }));
-      current.send(JSON.stringify({ type: "getGoal" }));
-      current.send(JSON.stringify({ type: "getSkills" }));
-      current.send(JSON.stringify({ type: "getProject" }));
-      current.send(JSON.stringify({ type: "getVersion" }));
-      current.send(JSON.stringify({ type: "getProviders" }));
+      const opening: SlowUiActionOrigin = this.hasOpened ? "reconnect" : "initial";
+      this.hasOpened = true;
+      // The open handlers reconcile stores after a reconnect; their sends are
+      // not operator actions. Only the six first-paint reads are registered.
+      this.openingOrigin = "reconnect";
+      try {
+        for (const handler of this.openHandlers) handler();
+      } finally {
+        this.openingOrigin = opening;
+      }
+      try {
+        this.send({ type: "listRecords" }, opening);
+        this.send({ type: "getGoal" }, opening);
+        this.send({ type: "getSkills" }, opening);
+        this.send({ type: "getProject" }, opening);
+        this.send({ type: "getVersion" }, opening);
+        this.send({ type: "getProviders" }, opening);
+      } finally {
+        this.openingOrigin = null;
+      }
     };
 
     current.onmessage = (event) => {
@@ -109,6 +150,7 @@ export class ConnectionStore {
       if (!isObject(message) || typeof message.type !== "string") return;
       const envelope = message as Envelope;
       this.handle(envelope);
+      slowUiAction.observe(envelope);
       for (const handler of this.handlers) handler(envelope);
     };
 
@@ -123,6 +165,7 @@ export class ConnectionStore {
 
     current.onclose = () => {
       this.state = "closed";
+      slowUiAction.reset();
       if (this.awaitingRestart) {
         void this.waitForRestart();
         return;
@@ -160,9 +203,11 @@ export class ConnectionStore {
         replacement,
       };
       this.feedbackEnabled = message.feedbackEnabled === true;
+      this.feedbackResolved = true;
       return;
     }
     if (message.type === "serverRestarting") {
+      slowUiAction.reset();
       this.awaitingRestart = true;
       this.restarting = true;
       this.upgradePending = false;
@@ -207,6 +252,7 @@ export class ConnectionStore {
 
   requestRestart(): void {
     if (this.restarting) return;
+    slowUiAction.reset();
     this.restarting = true;
     this.awaitingRestart = true;
     if (!this.send({ type: "restartServer" })) {
@@ -244,6 +290,7 @@ export class ConnectionStore {
 
   dispose(): void {
     this.disposed = true;
+    slowUiAction.reset();
     if (this.retryTimer !== undefined) clearTimeout(this.retryTimer);
     this.socket?.close();
   }

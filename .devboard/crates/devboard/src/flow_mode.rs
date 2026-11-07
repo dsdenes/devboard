@@ -3971,6 +3971,7 @@ impl FlowMode {
                             command,
                             self.repo_dir().to_string_lossy().into_owned(),
                         )
+                        .with_starter("Flow")
                         .with_env(environment);
                         match AcpConnection::connect(options).await {
                             Ok((connection, events)) => {
@@ -5139,6 +5140,7 @@ impl FlowMode {
         };
         let options =
             AcpConnectionOptions::new(command, self.repo_dir().to_string_lossy().into_owned())
+                .with_starter("Flow")
                 .with_env(environment)
                 .with_permission_policy(PermissionPolicy::ReadOnly);
         let connected = AcpConnection::connect(options).await;

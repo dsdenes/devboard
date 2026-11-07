@@ -1188,6 +1188,13 @@ fn nullable_string(value: Option<&Value>) -> bool {
     }
 }
 
+/// True for a deferral line written into `notice` by an older harness. It
+/// describes a start that is not in force, so it is never shown as a notice.
+fn is_deferral_shaped(text: &str) -> bool {
+    let text = text.trim_end();
+    text.contains("deferred:") && text.ends_with("the start is deferred")
+}
+
 fn empty_state(repo: &str, root: &str, interval_ms: u64, lifecycle: &str) -> IssuesState {
     IssuesState {
         version: STATE_VERSION,
@@ -3122,8 +3129,12 @@ impl IssuesBridge {
                     state.last_error.clone(),
                     state.last_exit_code,
                     state.finished_at.clone(),
-                    state.notice.clone(),
-                    if attached {
+                    state
+                        .notice
+                        .as_deref()
+                        .filter(|notice| !is_deferral_shaped(notice))
+                        .map(str::to_string),
+                    if attached && state.lifecycle != "stopped" {
                         state.deferral.clone()
                     } else {
                         None
@@ -4437,10 +4448,11 @@ struct IssuesWorker {
     events: tokio::sync::mpsc::UnboundedSender<WorkerEvent>,
     receptor: tokio::sync::mpsc::UnboundedReceiver<WorkerEvent>,
     list_issues: TrackerRead,
-    /// Test seams. Production leaves both empty and reads the tracker and the
-    /// forge through their real paths.
+    /// Test seams. Production leaves these empty and reads the tracker, the
+    /// forge, and the process-wide governor through their real paths.
     issue_state_override: Option<IssueStateFn>,
     processing_override: Option<ProcessingFn>,
+    governor_override: Option<Arc<crate::resources::Governor>>,
 }
 
 impl IssuesWorker {
@@ -4481,6 +4493,7 @@ impl IssuesWorker {
             list_issues: tracker,
             issue_state_override: None,
             processing_override: None,
+            governor_override: None,
         }
     }
 
@@ -5195,10 +5208,14 @@ impl IssuesWorker {
             // The global cap admits this issue's peer before the run opens.
             // A deferral leaves the issue queued for the next tick; it is
             // never marked failed.
-            let permit = match crate::resources::global() {
+            let governor = self
+                .governor_override
+                .clone()
+                .or_else(|| crate::resources::global().cloned());
+            let permit = match governor {
                 Some(governor) => {
                     let label = format!("issue #{}", issue.number);
-                    match governor.try_acquire("issue", &label) {
+                    match governor.try_acquire("issue", "Issues", &label) {
                         Ok(slot) => Some(slot),
                         Err(reason) => {
                             governor.record_deferral("issue", &label, &reason);
@@ -5358,6 +5375,7 @@ impl IssuesWorker {
             self.agent_command.clone(),
             self.repo_dir.display().to_string(),
         )
+        .with_starter("Issues")
         .with_env(environment);
         let options = match permit {
             Some(permit) => options.with_permit(permit),
@@ -6684,12 +6702,78 @@ mod tests {
         assert!(until > std::time::Instant::now());
     }
 
+    struct FlatMemory {
+        total_mb: u64,
+        available_mb: u64,
+    }
+
+    impl crate::resources::MemoryReader for FlatMemory {
+        fn total_mb(&self) -> u64 {
+            self.total_mb
+        }
+
+        fn available_mb(&self) -> Option<u64> {
+            Some(self.available_mb)
+        }
+
+        fn cpu_count(&self) -> u32 {
+            8
+        }
+    }
+
+    #[tokio::test]
+    async fn the_deferral_names_every_live_starter() {
+        let (repo, state) = unit_root("deferral-starters");
+        let governor = crate::resources::Governor::new(
+            &state.join("governor"),
+            crate::resources::GovernorOptions::in_memory(
+                Arc::new(FlatMemory {
+                    total_mb: 65_536,
+                    available_mb: 60_000,
+                }),
+                BTreeMap::from([("DEVBOARD_MAX_AGENT_PEERS".to_string(), "2".to_string())]),
+            ),
+        );
+        let watchdog = governor
+            .try_acquire("watchdog", "Watchdog", "run 1")
+            .expect("the first slot");
+        let scout = governor
+            .try_acquire("scout", "Auto Scout", "run 2")
+            .expect("the second slot");
+        assert_eq!(watchdog.starter(), "Watchdog");
+        assert_eq!(scout.starter(), "Auto Scout");
+
+        let mut worker = worker(&repo, &state);
+        worker.agent_command = "/bin/false".to_string();
+        worker.governor_override = Some(governor);
+        let queued = issue(7, &[]);
+        worker.state.queue = vec![worker.queued(&queued)];
+
+        worker.maybe_trigger().await;
+        let expected = "issue #7 deferred: 2 agent peer(s) already run at the cap of 2 \
+                        (Auto Scout 1, Watchdog 1); the start is deferred";
+        assert_eq!(worker.state.deferral.as_deref(), Some(expected));
+        let published =
+            read_state(&versioned_state_path(&state, &repo, Some("1.2.3"))).expect("the state");
+        assert_eq!(published.deferral.as_deref(), Some(expected));
+
+        // One slot frees; the next pass admits the queued issue and drops the
+        // line without a worker restart.
+        drop(scout);
+        worker.maybe_trigger().await;
+        assert_eq!(worker.state.deferral, None);
+        let published =
+            read_state(&versioned_state_path(&state, &repo, Some("1.2.3"))).expect("the state");
+        assert_eq!(published.deferral, None);
+    }
+
     #[tokio::test]
     async fn a_resolved_deferral_leaves_no_line_behind() {
         let (repo, state) = unit_root("deferral-resolved");
         let mut worker = worker(&repo, &state);
         worker.state.deferral = Some(
-            "issue #7 deferred: 12 agent peer(s) already run at the cap of 12; the start is deferred"
+            "issue #7 deferred: 12 agent peer(s) already run at the cap of 12 (Issues 12); \
+             the start is deferred"
                 .to_string(),
         );
         // This pass starts nothing: the queue is empty and this process holds

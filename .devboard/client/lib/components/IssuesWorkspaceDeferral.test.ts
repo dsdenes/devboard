@@ -13,7 +13,8 @@ const { issues } = await import("../issues.svelte");
 const OVERVIEW = { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" };
 
 const DEFERRAL =
-  "issue #1453 deferred: 12 agent peer(s) already run at the cap of 12; the start is deferred";
+  "issue #1453 deferred: 24 agent peer(s) already run at the cap of 24 " +
+  "(Watchdog 12, Auto Scout 12); the start is deferred";
 
 /** A snapshot with a live worker and no open work. */
 function snapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -68,4 +69,13 @@ test("a resolved deferral leaves no line behind", () => {
   expect(view.getByTestId("issues-notice").textContent?.trim()).toBe(
     "Check now is unavailable while paused.",
   );
+});
+
+test("a deferral-shaped notice from an older harness is never shown", () => {
+  issues.handleEvent(snapshot({ deferral: null, notice: DEFERRAL }));
+
+  const view = render(IssuesWorkspace, { props: { tab: OVERVIEW } });
+
+  expect(view.queryByTestId("issues-deferral")).toBeNull();
+  expect(view.queryByTestId("issues-notice")).toBeNull();
 });

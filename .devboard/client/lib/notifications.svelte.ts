@@ -1,3 +1,5 @@
+import type { NotificationIssueState } from "./types";
+
 export type Severity = "error" | "warning" | "notice" | "success";
 
 /** How long a card stays open in the live notification region. */
@@ -13,6 +15,8 @@ export interface AppNotification {
   source: string;
   text: string;
   at: string;
+  /** The card's own issue filing, when it files one without a click. */
+  issue?: NotificationIssueState;
 }
 
 const HISTORY_LIMIT = 200;
@@ -34,9 +38,9 @@ export class NotificationStore {
 
   constructor(private readonly autoCloseMs: number = AUTO_CLOSE_MS) {}
 
-  push(source: string, severity: Severity, text: string): void {
+  push(source: string, severity: Severity, text: string): AppNotification | null {
     const message = text.trim();
-    if (message.length === 0) return;
+    if (message.length === 0) return null;
     this.counter += 1;
     const item: AppNotification = {
       id: this.counter,
@@ -52,6 +56,15 @@ export class NotificationStore {
       item.id,
       setTimeout(() => this.close(item.id), this.autoCloseMs),
     );
+    return item;
+  }
+
+  /** Records what one card's issue filing produced; history keeps the state. */
+  setIssue(id: number, issue: NotificationIssueState): void {
+    const update = (item: AppNotification): AppNotification =>
+      item.id === id ? { ...item, issue } : item;
+    this.items = this.items.map(update);
+    this.live = this.live.map(update);
   }
 
   /** Removes a notification everywhere, including the history. */

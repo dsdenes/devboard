@@ -2539,6 +2539,7 @@ pub fn default_scan_agent() -> ScanAgent {
         Box::pin(async move {
             let options =
                 AcpConnectionOptions::new(context.command.clone(), context.cwd.to_string_lossy())
+                    .with_starter("Auto Scout")
                     .with_env(context.env.clone());
             let (connection, mut receiver) = AcpConnection::connect(options)
                 .await

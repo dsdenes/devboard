@@ -1,6 +1,17 @@
 export type Mode = "goal" | "issues" | "flow" | "discover" | "devboard";
 export type Theme = "dark" | "light";
 
+/**
+ * What a notification card's own issue filing has done. `disabled` means the
+ * dashboard has no reporting address; `failed` carries the server's reason and
+ * offers a retry.
+ */
+export type NotificationIssueState =
+  | { status: "pending" }
+  | { status: "filed"; href: string }
+  | { status: "failed"; detail: string }
+  | { status: "disabled" };
+
 export interface AdrRecord {
   file: string;
   title: string;

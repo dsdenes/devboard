@@ -535,6 +535,7 @@ async fn connect_peer(
     String,
 > {
     let options = AcpConnectionOptions::new(command, cwd.display().to_string())
+        .with_starter("Run owner")
         .with_permission_policy(permission);
     let _ = owner;
     let (peer, events) = AcpConnection::connect(options)

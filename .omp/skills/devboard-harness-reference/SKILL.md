@@ -1,3 +1,10 @@
+---
+name: devboard-harness-reference
+description: The Devboard harness reference moved from .devboard/README.md. Use on demand for the interface, mode, worker, release, container, and WebSocket contracts.
+metadata:
+  devboard-builtin: "true"
+---
+
 # Devboard
 
 Local browser interface for a repository's goal, Flow implementation, and Discover artifacts.
@@ -5,6 +12,16 @@ It renders one full-viewport, dark-first administration workspace with an activi
 contextual sidebar, one workspace page per mode, resizable split panes, read-only document views, xterm
 terminals, a command palette, and a status bar. Every mode is a client-side view over the existing
 WebSocket contract; the server still owns all work and durable state.
+
+## Project-scoped skills
+
+The package ships seven project-scoped skills, canonical under `.devboard/omp/skills/` and
+installed as real files into `<host>/.omp/skills/`: `devboard-ui-ux`,
+`devboard-restful-api-implementation`, `devboard-single-responsibility-principle`,
+`devboard-consistent-naming`, `devboard-architectural-layering`, `devboard-gh-stack`, and
+`devboard-harness-reference`. Long-term agent instructions live only in `AGENTS.md` (read every
+run) or in a `.omp/skills/<name>/SKILL.md` skill (read on demand). This document is the reference
+that skill carries; it is not an instruction file.
 
 ## Interface
 
@@ -435,6 +452,53 @@ Notifications never replace mode content or steal focus, and several arrivals ar
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's
 card, every other failure in the notice stack above the page.
+
+### Background latency guard
+
+Every operator-initiated WebSocket command and every operator-initiated `POST /feedback` or
+`POST /goal-proposals` runs under a background 1000 ms latency budget, and so do the six
+first-paint reads a socket open sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
+`getVersion`, `getProviders`). An action is complete when the first inbound frame that answers it
+arrives; a frame for another action or a broadcast does not complete it. The guard is
+observational: it never changes the 10-second command ceiling, a server timeout, a retry
+schedule, a polling interval, the busy control, or the request lifecycle. It does not dismiss a
+busy state, clear a control's timer, or abort a request.
+
+The `getVersion` 3-second poll, the `getMcpTools` 5-second poll, the goal-drafts 2-second
+refresh, a polling surface's repeat request, and every send issued while the socket is
+restarting, awaiting a replacement, or reconnecting are excluded; a reconnect clears every
+pending action without filing. A send a surface repeats on a timer is a refresh, not an operator
+action.
+
+At 1000 ms unanswered the guard raises one notice-severity card naming the action and the budget
+and files one issue through the existing `/feedback` path. A confirming frame at 999 ms files
+nothing; no frame at 1000 ms files exactly one issue; a frame at 1001 ms neither cancels nor
+duplicates that filing. The report's first line is
+`Slow UI action: <label> exceeded the 1000 ms budget.`, which becomes the issue title under the
+server's `[ui] ` prefix, and the report names the wire command or endpoint, the action's subject,
+the route, the 1000 ms budget, the ISO dispatch time, and the captured UI context. It closes with
+exactly this instruction:
+
+`Do not hide this slowness with a UI trick. Do not add optimistic rendering, a spinner, a
+skeleton, a cache, a debounce, a retry, a longer timeout, or a relaxed budget. Reproduce the same
+action, measure which part of the system consumed the time, find the root cause, and fix it
+systematically. Add a regression test that fails on the slow path. Do not remove, raise, or bypass
+this detector.`
+
+The report stays inside the server's 8000-unit bound. The action identity is
+`<command or endpoint>|<subject>|<route>`, where the subject is the command's identifying field
+(`id`, `run_id`, `path`, `name`, or `url`) and empty when it has none; elapsed time and timestamp
+are not part of it. Two breaches of one identity in a page session post once and show one card,
+while a different identity gets its own card and POST. Every filing sends an `idempotency-key`
+derived from the identity, so a reload or a second page uses the same key and the server's
+24-hour replay cache returns the issue already filed instead of creating a duplicate. Until the
+first version frame states whether reporting is available, a breach files; a resolved disabled
+capability sends no request. After the POST resolves the card exposes `Open issue` with the
+returned issue URL and no `File issue` control, and the card stays in notification history. With
+reporting disabled the guard sends no request and the card states
+`Issue not filed: reporting is disabled.` with no link. A failed POST states
+`Issue not filed: <detail>` and offers a `File issue` retry that replaces the message
+with the issue link; the guard never monitors its own filing request.
 
 The status bar's OS notifications control (`os-notifications`) is a separate channel, off by
 default. Its first click asks the browser for notification permission; after a grant it reads
@@ -3535,10 +3599,15 @@ keep running and start normally.
 
 A start the resource governor defers is never a failure: the issue stays queued, the deferral is
 recorded with its reason under `<STATE_DIR>/resources/`, and the Overview states it in
-`data-testid="issues-deferral"` as `issue #<n> deferred: …`. That line is the deferral in force,
-not a message: the worker recomputes it on every pass and drops it as soon as no start is
+`data-testid="issues-deferral"` as
+`issue #<n> deferred: <A> agent peer(s) already run at the cap of <C> (<starter> <count>, ...); the start is deferred`.
+`<C>` is the effective saved cap, `<A>` is the number of live governed slots, and each `<starter>`
+is the starter name recorded on the slots that starter created. Groups are ordered by count
+descending, then starter name ascending, and the counts sum to `<A>`. That line is the deferral in
+force, not a message: the worker recomputes it on every pass and drops it as soon as no start is
 deferred — a peer ends, the queue empties, or the worker pauses or stops — so the Overview never
-keeps claiming peers that no longer run. Operator feedback keeps its own
+keeps claiming peers that no longer run. A deferral-shaped value an older harness left in
+`notice` is never rendered as a notice. Operator feedback keeps its own
 `data-testid="issues-notice"` line.
 
 `Check now` clears every cooldown and polls immediately; while paused it writes a notice and polls
