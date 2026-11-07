@@ -3409,7 +3409,12 @@ impl IssuesBridge {
         let Some(state) = self.current_state() else {
             return false;
         };
-        if !state.enabled || state.paused || state.lifecycle == "stopped" {
+        // A drain is the newest version's retirement of this worker, not an
+        // operator stop: when no worker is live the newest version adopts the
+        // family. Without this a drain whose replacement never started leaves
+        // the queue stopped with every slot free.
+        let drained = state.pause_source.as_deref() == Some("drain");
+        if !drained && (!state.enabled || state.paused || state.lifecycle == "stopped") {
             return false;
         }
         {

@@ -1038,3 +1038,38 @@ async fn a_newer_harness_spawns_its_own_worker_then_drains_the_older_one() {
 
     drop(owner);
 }
+
+/// A drain whose replacement never started leaves the newest state stopped
+/// with no live owner. The newest version adopts the family instead of
+/// leaving the queue stopped with every slot free.
+#[tokio::test]
+async fn a_drain_stopped_family_is_adopted_by_the_newest_version() {
+    let (repo, state) = scratch("drain-resume");
+    let mut document = state_document(&repo, "stopped", json!([]));
+    document["enabled"] = json!(false);
+    document["paused"] = json!(false);
+    document["pauseSource"] = json!("drain");
+    write_state(&repo, &state, &document);
+
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&spawns);
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(move |_argv, _env| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Some(std::process::id())
+            }),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    ));
+
+    assert!(bridge.supervise_once().await, "the drained family is resumed");
+    assert_eq!(spawns.load(Ordering::SeqCst), 1);
+}
