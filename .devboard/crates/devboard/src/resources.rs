@@ -687,6 +687,45 @@ impl Governor {
         Ok(settings)
     }
 
+    /// Applies one `setResources` update and persists the result.
+    ///
+    /// Each argument is the client's field: absent or `null` keeps the value
+    /// already in force. The decode and the cap rule are the governor's own,
+    /// so the refusal text a client sees has one owner.
+    pub fn apply_update(
+        &self,
+        max_agent_peers: Option<&Value>,
+        memory_high_mb: Option<&Value>,
+        memory_max_mb: Option<&Value>,
+        memory_reserve_mb: Option<&Value>,
+    ) -> Result<Settings, String> {
+        let number = |value: Option<&Value>, label: &str| -> Result<Option<u64>, String> {
+            match value {
+                None | Some(Value::Null) => Ok(None),
+                Some(value) => value
+                    .as_u64()
+                    .map(Some)
+                    .ok_or_else(|| format!("{label} must be a whole number of megabytes.")),
+            }
+        };
+        let mut settings = self.settings();
+        if let Some(value) = number(max_agent_peers, "Max concurrent agents")? {
+            settings.max_agent_peers = value
+                .try_into()
+                .map_err(|_| "Max concurrent agents must be between 1 and 64.".to_string())?;
+        }
+        if let Some(value) = number(memory_high_mb, "Memory high")? {
+            settings.memory_high_mb = value;
+        }
+        if let Some(value) = number(memory_max_mb, "Memory max")? {
+            settings.memory_max_mb = value;
+        }
+        if let Some(value) = number(memory_reserve_mb, "Reserve")? {
+            settings.memory_reserve_mb = value;
+        }
+        self.save(settings)
+    }
+
     /* -------------------------------------------------------------------- */
     /* Admission                                                             */
     /* -------------------------------------------------------------------- */
@@ -1586,5 +1625,107 @@ Pages inactive:                           2000.\n\
 Pages speculative:                         500.\n\
 Pages purgeable:                           250.\n";
         assert_eq!(parse_vm_stat(text, 16_384), Some(61_440_000));
+    }
+
+    /// The governor the update tests build: fixed host facts, no slice.
+    struct TestMemory {
+        total_mb: u64,
+        available_mb: u64,
+        cpus: u32,
+    }
+
+    impl MemoryReader for TestMemory {
+        fn total_mb(&self) -> u64 {
+            self.total_mb
+        }
+
+        fn available_mb(&self) -> Option<u64> {
+            Some(self.available_mb)
+        }
+
+        fn cpu_count(&self) -> u32 {
+            self.cpus
+        }
+    }
+
+    /// A scratch state directory inside the repository.
+    fn scratch(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0);
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.test-tmp")
+            .join(format!(
+                "resources-{label}-{}",
+                nanos ^ NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir_all(&root).expect("the scratch directory");
+        root
+    }
+
+    fn test_governor(directory: &Path) -> Arc<Governor> {
+        Governor::new(
+            directory,
+            GovernorOptions::in_memory(
+                Arc::new(TestMemory {
+                    total_mb: 64_000,
+                    available_mb: 60_000,
+                    cpus: 16,
+                }),
+                BTreeMap::new(),
+            ),
+        )
+    }
+
+    #[test]
+    fn an_update_refuses_a_zero_peer_cap_before_writing() {
+        let directory = scratch("update-refused");
+        let governor = test_governor(&directory);
+        let zero = json!(0);
+        let refused = governor.apply_update(Some(&zero), None, None, None);
+        assert_eq!(
+            refused,
+            Err("Max concurrent agents must be between 1 and 64.".to_string())
+        );
+        assert!(!settings_path(&directory).exists());
+        assert_eq!(governor.settings(), governor.defaults());
+    }
+
+    #[test]
+    fn an_update_persists_the_merged_settings_and_reports_them() {
+        let directory = scratch("update-saved");
+        let governor = test_governor(&directory);
+        let peers = json!(2);
+        let high = json!(512);
+        let max = json!(1_024);
+        let reserve = json!(256);
+        let saved = governor
+            .apply_update(Some(&peers), Some(&high), Some(&max), Some(&reserve))
+            .expect("the update validates");
+        assert_eq!(
+            saved,
+            Settings {
+                max_agent_peers: 2,
+                memory_high_mb: 512,
+                memory_max_mb: 1_024,
+                memory_reserve_mb: 256,
+            }
+        );
+        assert_eq!(governor.settings(), saved);
+        let text = fs::read_to_string(settings_path(&directory)).expect("the settings file");
+        assert!(text.contains("\"maxAgentPeers\": 2"));
+        assert!(text.contains("\"memoryReserveMb\": 256"));
+        let frame = governor.state_event();
+        assert_eq!(frame["state"]["saved"]["maxAgentPeers"], 2);
+        assert_eq!(frame["state"]["effective"]["memoryMaxMb"], 1_024);
+        // An absent field keeps the value already in force.
+        let peers = json!(3);
+        let kept = governor
+            .apply_update(Some(&peers), None, None, None)
+            .expect("the update validates");
+        assert_eq!(kept.max_agent_peers, 3);
+        assert_eq!(kept.memory_max_mb, 1_024);
     }
 }

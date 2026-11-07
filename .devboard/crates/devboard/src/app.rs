@@ -678,34 +678,12 @@ impl App {
                 memory_max_mb,
                 memory_reserve_mb,
             } => {
-                let number = |value: &Option<Value>, label: &str| -> Result<Option<u64>, String> {
-                    match value {
-                        None | Some(Value::Null) => Ok(None),
-                        Some(value) => value
-                            .as_u64()
-                            .map(Some)
-                            .ok_or_else(|| format!("{label} must be a whole number of megabytes.")),
-                    }
-                };
-                let update = (|| -> Result<crate::resources::Settings, String> {
-                    let mut settings = self.resources.settings();
-                    if let Some(value) = number(&max_agent_peers, "Max concurrent agents")? {
-                        settings.max_agent_peers = value.try_into().map_err(|_| {
-                            "Max concurrent agents must be between 1 and 64.".to_string()
-                        })?;
-                    }
-                    if let Some(value) = number(&memory_high_mb, "Memory high")? {
-                        settings.memory_high_mb = value;
-                    }
-                    if let Some(value) = number(&memory_max_mb, "Memory max")? {
-                        settings.memory_max_mb = value;
-                    }
-                    if let Some(value) = number(&memory_reserve_mb, "Reserve")? {
-                        settings.memory_reserve_mb = value;
-                    }
-                    Ok(settings)
-                })();
-                match update.and_then(|settings| self.resources.save(settings)) {
+                match self.resources.apply_update(
+                    max_agent_peers.as_ref(),
+                    memory_high_mb.as_ref(),
+                    memory_max_mb.as_ref(),
+                    memory_reserve_mb.as_ref(),
+                ) {
                     Ok(_) => self.broadcast(self.resources.state_event()),
                     Err(message) => conn.send(json!({"type": "error", "message": message})),
                 }
