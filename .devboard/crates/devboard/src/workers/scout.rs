@@ -2867,7 +2867,6 @@ impl ScoutWorker {
         )
         .and_then(|path| load_state(&path));
         let now = (self.clock)();
-        let mut last_error: Option<String> = None;
         let owned_by_this_version = match &previous {
             None => true,
             Some(previous) => match &previous.worker {
@@ -2877,13 +2876,14 @@ impl ScoutWorker {
                 }
             },
         };
+        // A scan the previous worker left `running` is closed as the interruption it was. It
+        // never becomes this worker's last error: the new worker started no scan and failed
+        // nothing, and the process that owns this state has no way to act on a scan it did not
+        // start. Only an error this worker records raises the page's error alert.
         if let Some(previous) = &previous {
             if let Some(scan) = &previous.scan {
                 if owned_by_this_version {
                     self.close_interrupted_scan(&scan.scan_id);
-                    last_error = Some(
-                        "the previous scan was interrupted; it is recorded as failed".to_string(),
-                    );
                 }
             }
         }
@@ -2938,7 +2938,6 @@ impl ScoutWorker {
         state.newest_scan_id = previous
             .as_ref()
             .and_then(|state| state.newest_scan_id.clone());
-        state.last_error = last_error;
         state.notice = previous.as_ref().and_then(|state| state.notice.clone());
         state.updated_at = iso_from_millis(now);
 

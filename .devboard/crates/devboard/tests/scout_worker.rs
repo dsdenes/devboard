@@ -14,7 +14,8 @@ use devboard::workers::scout::{
     activity_path, control_directory, lock_path, read_scan_claim, read_scan_file, read_settings,
     read_state, request_path, scan_directory, scans_directory, settings_path, state_path,
     version_lock_path, versioned_control_directory, versioned_state_path, write_command,
-    ForgeFuture, ScoutCommand, ScoutForge, ScoutForgeIssue, ScoutWorker, ScoutWorkerOptions,
+    write_scan_file, ForgeFuture, ScoutCommand, ScoutForge, ScoutForgeIssue, ScoutScanFile,
+    ScoutScanRecord, ScoutWorker, ScoutWorkerOptions, ScoutWorkerRecord,
 };
 use serde_json::{json, Value};
 
@@ -887,6 +888,76 @@ async fn two_versions_share_one_checkout_and_one_scan_slot() {
     newer.stop().await;
     assert!(!version_lock_path(&lock_path(&repo), Some("0.0.9")).exists());
     assert!(!version_lock_path(&lock_path(&repo), Some("1.0.0")).exists());
+}
+
+#[tokio::test]
+async fn a_fresh_worker_closes_a_dead_workers_scan_without_an_error() {
+    let repo = scratch("interrupted-scan");
+    let state_dir = repo.join(".devboard").join("state");
+    let started_at = "2026-11-05T14:01:50.922Z";
+    let mut previous = published_state(
+        &repo,
+        started_at,
+        "scan-interrupted",
+        (10, 5),
+        "v1",
+        "2026-11-05T14:14:47.576Z",
+    );
+    previous.worker = Some(ScoutWorkerRecord {
+        pid: u32::MAX,
+        started_at: "2026-11-05T14:01:24.899Z".to_string(),
+        state_dir: state_dir.to_string_lossy().into_owned(),
+        harness_version: Some("0.0.1".to_string()),
+        argv: Vec::new(),
+    });
+    previous.scan = Some(ScoutScanRecord {
+        scan_id: "scan-interrupted".to_string(),
+        started_at: started_at.to_string(),
+        requested: 1,
+    });
+    write_published_state(&state_dir, &repo, Some("0.0.1"), &previous);
+    let directory = scan_directory(&repo, "scan-interrupted");
+    write_scan_file(
+        &directory,
+        &ScoutScanFile {
+            version: 2,
+            scan_id: "scan-interrupted".to_string(),
+            repo: "acme/fixture".to_string(),
+            root: repo.to_string_lossy().into_owned(),
+            status: "running".to_string(),
+            started_at: started_at.to_string(),
+            finished_at: None,
+            requested: 1,
+            filed: 0,
+            prompt: "/scout-recommendations".to_string(),
+            acp: None,
+            error: None,
+            shortfall: None,
+            worker_pid: u32::MAX,
+            harness_version: Some("0.0.1".to_string()),
+        },
+    )
+    .expect("the running scan record");
+
+    let worker = worker(
+        &repo,
+        FixtureForge::default(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_error, None,
+        "a recovered interruption is not the running worker's error"
+    );
+    assert_eq!(state.newest_scan_id.as_deref(), Some("scan-interrupted"));
+    let scan = read_scan_file(&directory).expect("the closed record");
+    assert_eq!(scan.status, "failed");
+    assert_eq!(
+        scan.error.as_deref(),
+        Some("the worker that owned this scan exited")
+    );
+    worker.stop().await;
 }
 
 /* ------------------------------------------------------------------------ */
