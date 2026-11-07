@@ -453,6 +453,53 @@ Flow blockers and verification results also remain in their mode context. A Disc
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's
 card, every other failure in the notice stack above the page.
 
+### Background latency guard
+
+Every operator-initiated WebSocket command and every operator-initiated `POST /feedback` or
+`POST /goal-proposals` runs under a background 1000 ms latency budget, and so do the six
+first-paint reads a socket open sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
+`getVersion`, `getProviders`). An action is complete when the first inbound frame that answers it
+arrives; a frame for another action or a broadcast does not complete it. The guard is
+observational: it never changes the 10-second command ceiling, a server timeout, a retry
+schedule, a polling interval, the busy control, or the request lifecycle. It does not dismiss a
+busy state, clear a control's timer, or abort a request.
+
+The `getVersion` 3-second poll, the `getMcpTools` 5-second poll, the goal-drafts 2-second
+refresh, a polling surface's repeat request, and every send issued while the socket is
+restarting, awaiting a replacement, or reconnecting are excluded; a reconnect clears every
+pending action without filing. A send a surface repeats on a timer is a refresh, not an operator
+action.
+
+At 1000 ms unanswered the guard raises one notice-severity card naming the action and the budget
+and files one issue through the existing `/feedback` path. A confirming frame at 999 ms files
+nothing; no frame at 1000 ms files exactly one issue; a frame at 1001 ms neither cancels nor
+duplicates that filing. The report's first line is
+`Slow UI action: <label> exceeded the 1000 ms budget.`, which becomes the issue title under the
+server's `[ui] ` prefix, and the report names the wire command or endpoint, the action's subject,
+the route, the 1000 ms budget, the ISO dispatch time, and the captured UI context. It closes with
+exactly this instruction:
+
+`Do not hide this slowness with a UI trick. Do not add optimistic rendering, a spinner, a
+skeleton, a cache, a debounce, a retry, a longer timeout, or a relaxed budget. Reproduce the same
+action, measure which part of the system consumed the time, find the root cause, and fix it
+systematically. Add a regression test that fails on the slow path. Do not remove, raise, or bypass
+this detector.`
+
+The report stays inside the server's 8000-unit bound. The action identity is
+`<command or endpoint>|<subject>|<route>`, where the subject is the command's identifying field
+(`id`, `run_id`, `path`, `name`, or `url`) and empty when it has none; elapsed time and timestamp
+are not part of it. Two breaches of one identity in a page session post once and show one card,
+while a different identity gets its own card and POST. Every filing sends an `idempotency-key`
+derived from the identity, so a reload or a second page uses the same key and the server's
+24-hour replay cache returns the issue already filed instead of creating a duplicate. Until the
+first version frame states whether reporting is available, a breach files; a resolved disabled
+capability sends no request. After the POST resolves the card exposes `Open issue` with the
+returned issue URL and no `File issue` control, and the card stays in notification history. With
+reporting disabled the guard sends no request and the card states
+`Issue not filed: reporting is disabled.` with no link. A failed POST states
+`Issue not filed: <detail>` and offers a `File issue` retry that replaces the message
+with the issue link; the guard never monitors its own filing request.
+
 The status bar's OS notifications control (`os-notifications`) is a separate channel, off by
 default. Its first click asks the browser for notification permission; after a grant it reads
 `OS notifications on`, after a denial or a blocked site it reads `OS notifications blocked`, and

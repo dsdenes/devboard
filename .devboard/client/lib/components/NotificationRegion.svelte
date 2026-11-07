@@ -8,6 +8,7 @@
     type NotificationFiling,
   } from "../notification-issue";
   import { notifications, type AppNotification } from "../notifications.svelte";
+  import { slowUiAction } from "../slow-ui-action";
   import Button from "./ui/button.svelte";
   import CommandButton from "./CommandButton.svelte";
   import IconButton from "./ui/icon-button.svelte";
@@ -80,6 +81,11 @@
 
   /** Files one notification by hand: the warning button and the error retry. */
   async function fileIssue(item: AppNotification): Promise<void> {
+    if (item.issue !== undefined) {
+      await slowUiAction.retry(item.id);
+      filedSeq += 1;
+      return;
+    }
     if (item.severity === "error") {
       await notificationFiler.file(item, () => captureContext(item));
       filedSeq += 1;
@@ -105,6 +111,9 @@
 
   /** Why this card names no issue, if it does. */
   function failureDetail(item: AppNotification): string | null {
+    if (item.issue?.status === "failed") return item.issue.detail;
+    if (item.issue?.status === "disabled") return REPORTING_DISABLED_DETAIL;
+    if (item.issue !== undefined) return null;
     if (item.severity === "error") {
       const outcome = errorFiling(item);
       if (outcome?.status === "failed") return outcome.detail;
@@ -116,6 +125,9 @@
 
   /** The filed issue this card links to, from the shared or the manual state. */
   function issueHref(item: AppNotification): string | undefined {
+    if (item.issue !== undefined) {
+      return item.issue.status === "filed" ? item.issue.href : undefined;
+    }
     if (item.severity === "error") {
       const outcome = errorFiling(item);
       return outcome?.status === "filed" ? outcome.href : undefined;
@@ -125,6 +137,7 @@
 
   /** Whether this card offers the manual filing button. */
   function showsFilingButton(item: AppNotification): boolean {
+    if (item.issue !== undefined) return item.issue.status === "failed";
     if (item.severity === "error") {
       const outcome = errorFiling(item);
       return outcome === undefined ? !feedbackenabled : outcome.status === "failed";

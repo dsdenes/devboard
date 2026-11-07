@@ -1,4 +1,5 @@
 import { connection } from "./connection.svelte";
+import { slowUiAction } from "./slow-ui-action";
 import { GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
 import { draftPathFromHref } from "../../lib/goal-proposals.ts";
 import type {
@@ -177,12 +178,14 @@ export class GoalDraftsStore {
     if (report.trim().length === 0 || this.draftCreating) return false;
     this.draftCreating = true;
     this.draftCreateError = null;
+    const action = slowUiAction.dispatchHttp(`POST ${GOAL_PROPOSALS_ENDPOINT}`);
     try {
       const response = await fetch(GOAL_PROPOSALS_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ report }),
       });
+      action?.complete();
       const body = (await response.json().catch(() => null)) as {
         links?: { draft?: { href?: unknown } };
         detail?: unknown;
@@ -203,6 +206,7 @@ export class GoalDraftsStore {
       this.startDraft(path);
       return true;
     } catch (error) {
+      action?.complete();
       this.draftCreateError = error instanceof Error ? error.message : String(error);
       return false;
     } finally {

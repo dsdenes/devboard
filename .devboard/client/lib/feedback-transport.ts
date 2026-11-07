@@ -1,5 +1,6 @@
 import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
 import { draftPathFromHref } from "../../lib/goal-proposals.ts";
+import { slowUiAction } from "./slow-ui-action";
 
 /**
  * The client side of the feedback overlay's two mutations. Each endpoint owns
@@ -21,15 +22,18 @@ type Reply = { response: Response; body: ReplyBody } | { error: string };
 
 /** Posts one JSON payload and decodes its body; a transport failure is returned. */
 async function post(endpoint: string, payload: Record<string, unknown>): Promise<Reply> {
+  const action = slowUiAction.dispatchHttp(`POST ${endpoint}`);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
+    action?.complete();
     const body = (await response.json().catch(() => null)) as ReplyBody;
     return { response, body };
   } catch (error) {
+    action?.complete();
     return { error: error instanceof Error ? error.message : String(error) };
   }
 }

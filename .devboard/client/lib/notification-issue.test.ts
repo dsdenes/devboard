@@ -8,6 +8,8 @@ import {
   notificationIdempotencyKey,
   notificationIssueRequest,
   notificationReport,
+  fileSlowUiAction,
+  slowUiActionIdempotencyKey,
   type NotificationContext,
 } from "./notification-issue";
 
@@ -291,5 +293,56 @@ describe("manual notification filing", () => {
     expect(calls).toHaveLength(2);
     // A manual warning filing never joins the automatic error identities.
     expect(filer.state(warning)).toBeUndefined();
+  });
+});
+
+describe("slow UI action filing", () => {
+  test("posts the bounded report under the stable action key", async () => {
+    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ input, init });
+      return created("http://localhost:3001/dsdenes/devboard/issues/88");
+    }) as typeof fetch;
+    const key = slowUiActionIdempotencyKey("startAgent|scout|/issues");
+    const outcome = await fileSlowUiAction(
+      "Slow UI action: startAgent scout exceeded the 1000 ms budget.",
+      key,
+      fetchImpl,
+    );
+
+    expect(outcome).toEqual({
+      ok: true,
+      url: "http://localhost:3001/dsdenes/devboard/issues/88",
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBe("/feedback");
+    expect(calls[0]?.init?.headers).toEqual({
+      "content-type": "application/json",
+      "idempotency-key": key,
+    });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      action: "REPORT",
+      report: "Slow UI action: startAgent scout exceeded the 1000 ms budget.",
+    });
+    expect(key).toMatch(/^slow-ui-action:[0-9a-f]{16}$/);
+  });
+
+  test("returns the server detail and keeps the same key for one identity", async () => {
+    const keys: string[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      keys.push((init?.headers as Record<string, string>)["idempotency-key"] ?? "");
+      return refused("The Gitea reporting address is not configured.");
+    }) as typeof fetch;
+    const identity = "stopAgent|scout|/issues";
+
+    const outcome = await fileSlowUiAction("Slow report", slowUiActionIdempotencyKey(identity), fetchImpl);
+    expect(outcome).toEqual({
+      ok: false,
+      error: "The Gitea reporting address is not configured.",
+    });
+    await fileSlowUiAction("Slow report", slowUiActionIdempotencyKey(identity), fetchImpl);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).toBe(slowUiActionIdempotencyKey(identity));
   });
 });
