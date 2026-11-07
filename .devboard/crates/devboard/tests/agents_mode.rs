@@ -53,7 +53,7 @@ fn app_at(root: &Path) -> Arc<App> {
     let config = Config {
         hostname: "127.0.0.1".to_string(),
         port: 0,
-        addr_dir: root.join("repo/adrs"),
+        adrs_dir: root.join("repo/adrs"),
         repo_dir: root.join("repo"),
         goal_file: root.join("repo/GOAL.md"),
         static_dir: None,

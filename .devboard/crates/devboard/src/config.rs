@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub hostname: String,
     pub port: u16,
-    pub addr_dir: PathBuf,
+    pub adrs_dir: PathBuf,
     pub repo_dir: PathBuf,
     pub goal_file: PathBuf,
     /// The client directory to serve; `None` serves the embedded build.
@@ -76,11 +76,11 @@ impl Config {
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(8080);
-        let addr_dir = env::var("ADRS_DIR")
+        let adrs_dir = env::var("ADRS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/repo/adrs"));
         let repo_dir = env::var("REPO_DIR").map(PathBuf::from).unwrap_or_else(|_| {
-            addr_dir
+            adrs_dir
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("/repo"))
@@ -96,7 +96,7 @@ impl Config {
         Self {
             hostname,
             port,
-            addr_dir,
+            adrs_dir,
             repo_dir,
             goal_file,
             static_dir,

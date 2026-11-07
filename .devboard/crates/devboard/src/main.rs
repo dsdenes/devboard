@@ -155,7 +155,7 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
                 config.repo_dir = PathBuf::from(value.context("--repo-dir needs a value")?);
             }
             "--adrs-dir" => {
-                config.addr_dir = PathBuf::from(value.context("--adrs-dir needs a value")?);
+                config.adrs_dir = PathBuf::from(value.context("--adrs-dir needs a value")?);
             }
             "--static-dir" => {
                 config.static_dir =

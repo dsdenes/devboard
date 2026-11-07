@@ -839,7 +839,7 @@ pub fn dashboard_config(
     devboard::config::Config {
         hostname: "127.0.0.1".to_string(),
         port: 0,
-        addr_dir: repo_dir.join("adrs"),
+        adrs_dir: repo_dir.join("adrs"),
         repo_dir: repo_dir.to_path_buf(),
         goal_file: repo_dir.join("GOAL.md"),
         static_dir: Some(static_dir.to_path_buf()),

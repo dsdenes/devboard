@@ -419,8 +419,8 @@ pub fn next_activity(update: &Value, stream: Option<&ActivityStream>) -> Option<
 }
 
 /// The prompt that starts one ADR resolution turn.
-pub fn agent_prompt(adr_dir: &str, file: &str) -> String {
-    let trimmed = adr_dir.trim_end_matches(['/', '\\']);
+pub fn agent_prompt(adrs_dir: &str, file: &str) -> String {
+    let trimmed = adrs_dir.trim_end_matches(['/', '\\']);
     let path = format!("{trimmed}/{file}");
     format!(
         "/adr-resolve {path}\n\nResolve only {path}.\nDo not open, read, or resolve any other \

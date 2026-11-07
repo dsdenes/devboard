@@ -2514,7 +2514,7 @@ impl GoalRun {
             .as_ref()
             .map(|record| record.file.clone())
             .unwrap_or_default();
-        let prompt = crate::acp::agent_prompt(&app.config().addr_dir.to_string_lossy(), &file);
+        let prompt = crate::acp::agent_prompt(&app.config().adrs_dir.to_string_lossy(), &file);
         self.run_lane_peer(app, lane, &prompt).await;
         let failed = lane.failure().is_some();
         lane.set_status(if failed {
@@ -3306,7 +3306,7 @@ impl GoalRun {
             let connection = Arc::new(connection);
             *lock(&run.agent) = Some(Arc::clone(&connection));
             let prompt =
-                crate::acp::agent_prompt(&app.config().addr_dir.to_string_lossy(), &run.file);
+                crate::acp::agent_prompt(&app.config().adrs_dir.to_string_lossy(), &run.file);
             self.drive_manual_events(app, &run, events, &connection, &prompt)
                 .await?;
             let record = read_record(app, &run.file);
@@ -4522,7 +4522,7 @@ fn authoring_refusal(app: &Arc<App>, messages: &[&str; 3]) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn read_records(app: &Arc<App>) -> Result<(Vec<Value>, Value), String> {
-    crate::records::read_records(&app.config().addr_dir)
+    crate::records::read_records(&app.config().adrs_dir)
 }
 
 fn read_record(app: &Arc<App>, file: &str) -> Option<Value> {

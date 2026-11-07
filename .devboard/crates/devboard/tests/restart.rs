@@ -36,7 +36,7 @@ impl Fixture {
         let config = Config {
             hostname: "127.0.0.1".to_string(),
             port: 0,
-            addr_dir: repo_dir.join("adrs"),
+            adrs_dir: repo_dir.join("adrs"),
             repo_dir,
             goal_file: root.join("repo").join("GOAL.md"),
             static_dir: None,

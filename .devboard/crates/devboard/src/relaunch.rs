@@ -29,7 +29,7 @@ impl RelaunchSettings {
         Self {
             hostname: config.hostname.clone(),
             port: config.port,
-            adrs_dir: config.addr_dir.clone(),
+            adrs_dir: config.adrs_dir.clone(),
             repo_dir: config.repo_dir.clone(),
             goal_file: config.goal_file.clone(),
             state_dir: config.state_dir.clone(),

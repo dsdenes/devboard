@@ -818,7 +818,7 @@ fn app_config(repo: &Path, state: &Path) -> Config {
     Config {
         hostname: "127.0.0.1".to_string(),
         port: 0,
-        addr_dir: repo.join("adrs"),
+        adrs_dir: repo.join("adrs"),
         repo_dir: repo.to_path_buf(),
         goal_file: repo.join("GOAL.md"),
         static_dir: None,

@@ -37,7 +37,7 @@ async fn start(label: &str) -> Instance {
     let config = Config {
         hostname: "127.0.0.1".to_string(),
         port: 0,
-        addr_dir: root.join("repo/adrs"),
+        adrs_dir: root.join("repo/adrs"),
         repo_dir: root.join("repo"),
         goal_file: root.join("repo/GOAL.md"),
         static_dir: Some(root.join("static")),
@@ -434,7 +434,7 @@ async fn the_embedded_client_serves_without_a_static_directory() {
     let config = Config {
         hostname: "127.0.0.1".to_string(),
         port: 0,
-        addr_dir: root.join("repo/adrs"),
+        adrs_dir: root.join("repo/adrs"),
         repo_dir: root.join("repo"),
         goal_file: root.join("repo/GOAL.md"),
         static_dir: None,

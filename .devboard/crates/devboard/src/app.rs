@@ -612,7 +612,7 @@ impl App {
                 }
                 Ok(())
             }
-            Command::ListRecords => match crate::records::read_records(&self.config().addr_dir) {
+            Command::ListRecords => match crate::records::read_records(&self.config().adrs_dir) {
                 Ok((records, next)) => {
                     conn.send(json!({"type": "records", "records": records, "next": next}));
                     Ok(())
