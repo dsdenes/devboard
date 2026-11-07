@@ -491,11 +491,13 @@ task-start fetch already named `origin/main`. The canonical sync verdict is the 
 `[ahead N]` or `[behind N]` marker means the work is unfinished. The turn is never reported done
 without that unmarked line.
 
-`git merge --ff-only <integration-ref>` is permitted only when the status line carries no
-`[ahead N]` marker, where it is a pure catch-up. An `[ahead N]` marker forbids it — beside a
-`[behind M]` marker the merge fails with `Diverging branches can't be fast-forwarded` — so
-integrate with `git rebase origin/main` instead, resolve every conflict, and rerun the checks the
-rebase invalidates. The `Diverging branches can't be fast-forwarded` hint means the branch is
+`git merge --ff-only <integration-ref>` is permitted only when the status line carries a
+`[behind N]` marker without an `[ahead N]` marker, where it is a pure catch-up. An unmarked line
+already proves the integration tip is contained, so the merge there only prints
+`Already up to date` and is skipped. An `[ahead N]` marker forbids it — beside a `[behind M]`
+marker the merge fails with `Diverging branches can't be fast-forwarded` — so integrate with
+`git rebase origin/main` instead, resolve every conflict, and rerun the checks the rebase
+invalidates. The `Diverging branches can't be fast-forwarded` hint means the branch is
 diverged: rebase it, and never answer it with a fetch, a second `--ff-only` merge, or a `--no-ff`
 merge. Never repeat a refused `--ff-only` merge. When the line carries `[ahead N]`,
 one `git merge-base --is-ancestor <integration-ref> HEAD` confirms containment: exit 0 means the
@@ -529,10 +531,12 @@ git rebase main
 git merge --ff-only <task-branch>
 ```
 
-The status line decides whether the first merge may run: with no `[ahead N]` marker it
-fast-forwards `main` to the fetched tip. An `[ahead N]` marker means the canonical checkout itself
-carries unpublished commits, so that fast-forward is forbidden: rebase `main` onto `origin/main`,
-rerun the checks the rebase invalidates, and read the line again before starting the sequence.
+The status line decides whether the first merge may run: only a `[behind N]` marker means the
+canonical checkout lacks the fetched tip, so that merge fast-forwards `main` to it. An unmarked
+`## main...origin/main` line already proves `main` equals the fetched tip, so the merge is skipped
+there. An `[ahead N]` or `[ahead N, behind M]` marker means the canonical checkout itself carries
+unpublished commits, so that fast-forward is forbidden: rebase `main` onto `origin/main`, rerun the
+checks the rebase invalidates, and read the line again before starting the sequence.
 
 The third line is unconditional and runs in the task worktree: it rebases the task branch onto the
 canonical checkout's `main` — not `origin/main` — which is a no-op when `main` is already
