@@ -3969,7 +3969,8 @@ and its answer streams into a compact transcript in the same panel as plain text
 line breaks and no Markdown interpretation. Every prompt tells it the conversation is `read-only`:
 never edit files, run mutating commands, file issues, commit, or push. It also tells it to answer
 in at most `three short sentences` and about 400 characters in plain text. That is a prompt-level
-rule, not a sandbox.
+rule, not a sandbox. A turn that streams no text or activity for 120 seconds ends with an error,
+and one turn stops at 15 minutes even while it keeps reporting progress.
 
 One conversation exists `per selected element`, and only while its panel is open. Escape, `×`,
 `Cancel`, a new pick, a successful filing, or a lost connection closes it: the server kills the

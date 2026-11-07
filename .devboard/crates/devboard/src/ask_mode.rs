@@ -15,24 +15,27 @@
 //! the turn settles.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::acp::PermissionPolicy;
+use crate::acp::{AcpActivity, PermissionPolicy};
 use crate::app::{App, Conn};
-use crate::detached_run::{DetachedPeer, DetachedPeerOptions, TextCallback};
+use crate::detached_run::{ActivityCallback, DetachedPeer, DetachedPeerOptions, TextCallback};
 use crate::protocol::Command;
 
 /// The longest conversation id a client may name.
 const MAX_CONVERSATION_ID: usize = 200;
 /// The longest question a client may ask.
 const MAX_QUESTION: usize = 4000;
-/// Wall-clock bound for one conversation turn, in Unix milliseconds.
-pub const ASK_TURN_TIMEOUT_MS: u64 = 120_000;
+/// How long a turn may stream no text or activity before it is dead.
+pub const ASK_TURN_SILENCE_MS: u64 = 120_000;
+/// The outer bound on one turn, even while it keeps reporting progress.
+pub const ASK_TURN_MAX_MS: u64 = 15 * 60_000;
 /// Bounds shared with the client's capture, in their wire order; a larger
 /// value is refused.
 const ASK_CONTEXT_LIMITS: [(&str, usize); 7] = [
@@ -178,6 +181,15 @@ fn timeout_label(timeout_ms: u64) -> String {
     }
 }
 
+/// A long bound in minutes, so the outer deadline reads naturally.
+fn minutes_label(timeout_ms: u64) -> String {
+    if timeout_ms >= 60_000 && timeout_ms % 60_000 == 0 {
+        format!("{} minutes", timeout_ms / 60_000)
+    } else {
+        timeout_label(timeout_ms)
+    }
+}
+
 /// The prompt's invariant instruction block, repeated on every turn.
 fn instructions() -> [&'static str; 3] {
     [READ_ONLY_SENTENCE, BREVITY_SENTENCE, PLAIN_SENTENCE]
@@ -255,6 +267,8 @@ struct Conversation {
     turn: u64,
     /// The prompt of the turn in flight, so a replacement can re-attach.
     last_prompt: Option<String>,
+    /// When the live turn last streamed text or activity.
+    last_progress: Instant,
 }
 
 impl Conversation {
@@ -269,6 +283,7 @@ impl Conversation {
             closed: false,
             turn: 0,
             last_prompt: None,
+            last_progress: Instant::now(),
         }
     }
 
@@ -327,7 +342,8 @@ pub struct AskMode {
     command: String,
     instance: String,
     harness_version: Option<String>,
-    turn_timeout: Duration,
+    turn_silence: Duration,
+    turn_max: Duration,
     inner: Mutex<Inner>,
 }
 
@@ -405,7 +421,8 @@ impl AskMode {
             command: config.agent_command.clone(),
             instance: app.instance.clone(),
             harness_version: app.running_version.clone(),
-            turn_timeout: Duration::from_millis(ASK_TURN_TIMEOUT_MS.max(1)),
+            turn_silence: Duration::from_millis(ASK_TURN_SILENCE_MS.max(1)),
+            turn_max: Duration::from_millis(ASK_TURN_MAX_MS.max(ASK_TURN_SILENCE_MS)),
             inner: Mutex::new(Inner { conversations }),
         }
     }
@@ -438,17 +455,17 @@ impl AskMode {
             .is_some_and(|conversation| conversation.live(turn, socket_id))
     }
 
-    /// Builds the detached handle for one conversation's peer.
-    fn detached(self: &Arc<Self>, socket: &Conn, id: &str, attach_only: bool) -> Arc<DetachedPeer> {
+    /// Relays one assistant chunk and records it as turn progress.
+    fn text_callback(self: &Arc<Self>, socket: &Conn, id: &str) -> TextCallback {
         let mode = Arc::clone(self);
-        let conversation_id = id.to_string();
-        let text_id = conversation_id.clone();
+        let text_id = id.to_string();
         let text_socket = socket.clone();
-        let on_text: TextCallback = Arc::new(move |text: String| {
+        Arc::new(move |text: String| {
             let frame = {
                 let mut state = lock(&mode.inner);
                 match state.conversations.get_mut(&text_id) {
                     Some(conversation) if conversation.busy && !conversation.closed => {
+                        conversation.last_progress = Instant::now();
                         conversation.answer.push_str(&text);
                         Some(json!({
                             "type": "askChunk",
@@ -462,12 +479,63 @@ impl AskMode {
             if let Some(frame) = frame {
                 text_socket.send(frame);
             }
-        });
+        })
+    }
+
+    /// Treats peer activity as turn progress without relaying it.
+    fn activity_callback(self: &Arc<Self>, id: &str) -> ActivityCallback {
+        let mode = Arc::clone(self);
+        let activity_id = id.to_string();
+        Arc::new(move |_activity: AcpActivity| {
+            let mut state = lock(&mode.inner);
+            if let Some(conversation) = state.conversations.get_mut(&activity_id) {
+                if conversation.busy && !conversation.closed {
+                    conversation.last_progress = Instant::now();
+                }
+            }
+        })
+    }
+
+    /// Waits for one turn, ending it when the peer stops reporting progress
+    /// or when the outer bound passes while it still reports.
+    async fn await_turn<F>(self: &Arc<Self>, id: &str, future: F) -> TurnOutcome
+    where
+        F: Future<Output = TurnOutcome>,
+    {
+        tokio::pin!(future);
+        let max_deadline = Instant::now() + self.turn_max;
+        let mut ticker = tokio::time::interval(Duration::from_millis(100));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                outcome = &mut future => return outcome,
+                _ = ticker.tick() => {
+                    let silent_for = {
+                        let state = lock(&self.inner);
+                        state
+                            .conversations
+                            .get(id)
+                            .map(|conversation| conversation.last_progress.elapsed())
+                            .unwrap_or(self.turn_silence)
+                    };
+                    if silent_for >= self.turn_silence {
+                        return TurnOutcome::Expired(Expiry::Silence);
+                    }
+                    if Instant::now() >= max_deadline {
+                        return TurnOutcome::Expired(Expiry::Max);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Builds the detached handle for one conversation's peer.
+    fn detached(self: &Arc<Self>, socket: &Conn, id: &str, attach_only: bool) -> Arc<DetachedPeer> {
         let mut options = DetachedPeerOptions::new(
             self.repo_dir.clone(),
             self.state_dir.clone(),
             "ask",
-            conversation_id.clone(),
+            id.to_string(),
             self.instance.clone(),
             self.command.clone(),
             self.repo_dir.to_string_lossy().into_owned(),
@@ -475,7 +543,8 @@ impl AskMode {
         .permission(PermissionPolicy::Deny)
         .multi(true)
         .attach_only(attach_only)
-        .text(on_text);
+        .activity(self.activity_callback(id))
+        .text(self.text_callback(socket, id));
         options.harness_version = self.harness_version.clone();
         DetachedPeer::new(options)
     }
@@ -570,6 +639,7 @@ impl AskMode {
             let turn = conversation.turn;
             conversation.busy = true;
             conversation.answer.clear();
+            conversation.last_progress = Instant::now();
             conversation.transcript.push(TranscriptEntry {
                 role: Role::Developer,
                 text: request.question.clone(),
@@ -585,20 +655,17 @@ impl AskMode {
         };
         self.persist(&id);
 
-        let outcome = match tokio::time::timeout(
-            self.turn_timeout,
-            self.run_turn(app, socket, &id, turn, first_turn, &prompt),
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => TurnOutcome::Expired,
-        };
+        let outcome = self
+            .await_turn(
+                &id,
+                self.run_turn(app, socket, &id, turn, first_turn, &prompt),
+            )
+            .await;
 
         match outcome {
             TurnOutcome::Done => self.complete(&id, turn, socket),
             TurnOutcome::Failed(message) => self.fail(&id, turn, socket, &message),
-            TurnOutcome::Expired => self.expire(&id, turn, socket),
+            TurnOutcome::Expired(expiry) => self.expire(&id, turn, socket, expiry),
             TurnOutcome::Dropped => {}
         }
     }
@@ -644,28 +711,6 @@ impl AskMode {
             .into_iter()
             .filter_map(|(key, value)| value.map(|value| (key, value)))
             .collect();
-        let mode = Arc::clone(self);
-        let text_id = id.to_string();
-        let text_socket = socket.clone();
-        let on_text: TextCallback = Arc::new(move |text: String| {
-            let frame = {
-                let mut state = lock(&mode.inner);
-                match state.conversations.get_mut(&text_id) {
-                    Some(conversation) if conversation.busy && !conversation.closed => {
-                        conversation.answer.push_str(&text);
-                        Some(json!({
-                            "type": "askChunk",
-                            "conversationId": conversation.id,
-                            "text": text,
-                        }))
-                    }
-                    _ => None,
-                }
-            };
-            if let Some(frame) = frame {
-                text_socket.send(frame);
-            }
-        });
         let mut options = DetachedPeerOptions::new(
             self.repo_dir.clone(),
             self.state_dir.clone(),
@@ -678,7 +723,8 @@ impl AskMode {
         .permission(PermissionPolicy::Deny)
         .multi(true)
         .env(environment)
-        .text(on_text);
+        .activity(self.activity_callback(id))
+        .text(self.text_callback(socket, id));
         options.harness_version = self.harness_version.clone();
         let created = DetachedPeer::new(options);
         {
@@ -767,7 +813,7 @@ impl AskMode {
     }
 
     /// Ends a turn the deadline invalidated, dropping its peer.
-    fn expire(&self, id: &str, turn: u64, socket: &Conn) {
+    fn expire(&self, id: &str, turn: u64, socket: &Conn, expiry: Expiry) {
         let frame = {
             let mut state = lock(&self.inner);
             let Some(conversation) = state.conversations.get_mut(id) else {
@@ -785,10 +831,7 @@ impl AskMode {
             json!({
                 "type": "askError",
                 "conversationId": conversation.id,
-                "message": format!(
-                    "The ask agent did not answer within {}.",
-                    timeout_label(ASK_TURN_TIMEOUT_MS)
-                ),
+                "message": expiry_message(expiry),
             })
         };
         self.persist(id);
@@ -875,8 +918,31 @@ enum TurnOutcome {
     Dropped,
     /// The peer or the provider selection refused the turn.
     Failed(String),
-    /// The deadline ended the turn.
-    Expired,
+    /// A bound ended the turn.
+    Expired(Expiry),
+}
+
+/// Which bound ended a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expiry {
+    /// The peer streamed nothing for the silence window.
+    Silence,
+    /// The turn reached its outer bound while still reporting progress.
+    Max,
+}
+
+/// The ask error a bound produces.
+fn expiry_message(expiry: Expiry) -> String {
+    match expiry {
+        Expiry::Silence => format!(
+            "The ask agent did not answer within {}.",
+            timeout_label(ASK_TURN_SILENCE_MS)
+        ),
+        Expiry::Max => format!(
+            "The ask agent did not finish within {}.",
+            minutes_label(ASK_TURN_MAX_MS)
+        ),
+    }
 }
 
 fn send_error(socket: &Conn, conversation_id: &str, message: &str) {
@@ -970,11 +1036,118 @@ mod tests {
             .expect("a valid ask")
     }
 
+    /// One mode with a busy conversation and short test bounds.
+    fn mode_with_timeouts(silence: Duration, max: Duration) -> Arc<AskMode> {
+        let mut conversation = Conversation::new("conversation".to_string());
+        conversation.busy = true;
+        let mut conversations = HashMap::new();
+        conversations.insert("conversation".to_string(), conversation);
+        Arc::new(AskMode {
+            state_dir: PathBuf::from("state"),
+            repo_dir: PathBuf::from("repo"),
+            command: "omp acp".to_string(),
+            instance: "test".to_string(),
+            harness_version: None,
+            turn_silence: silence,
+            turn_max: max,
+            inner: Mutex::new(Inner { conversations }),
+        })
+    }
+
+    fn last_progress(mode: &AskMode) -> Instant {
+        lock(&mode.inner)
+            .conversations
+            .get("conversation")
+            .expect("the fixture conversation")
+            .last_progress
+    }
+
     #[test]
-    fn the_deadline_label_matches_the_typescript_message() {
-        assert_eq!(timeout_label(ASK_TURN_TIMEOUT_MS), "120 seconds");
+    fn the_deadline_labels_name_each_bound() {
+        assert_eq!(timeout_label(ASK_TURN_SILENCE_MS), "120 seconds");
         assert_eq!(timeout_label(1_500), "1500ms");
         assert_eq!(timeout_label(1_000), "1 seconds");
+        assert_eq!(minutes_label(ASK_TURN_MAX_MS), "15 minutes");
+        assert_eq!(
+            expiry_message(Expiry::Silence),
+            "The ask agent did not answer within 120 seconds."
+        );
+        assert_eq!(
+            expiry_message(Expiry::Max),
+            "The ask agent did not finish within 15 minutes."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_turn_expires_after_the_silence_window() {
+        let mode = mode_with_timeouts(Duration::from_millis(80), Duration::from_secs(5));
+        let outcome = mode
+            .await_turn("conversation", std::future::pending::<TurnOutcome>())
+            .await;
+        assert!(matches!(outcome, TurnOutcome::Expired(Expiry::Silence)));
+    }
+
+    #[tokio::test]
+    async fn a_turn_reporting_progress_outlives_the_silence_window() {
+        let mode = mode_with_timeouts(Duration::from_millis(80), Duration::from_secs(5));
+        let progress = Arc::clone(&mode);
+        let future = async move {
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                lock(&progress.inner)
+                    .conversations
+                    .get_mut("conversation")
+                    .expect("the fixture conversation")
+                    .last_progress = Instant::now();
+            }
+            TurnOutcome::Done
+        };
+        let outcome = mode.await_turn("conversation", future).await;
+        assert!(matches!(outcome, TurnOutcome::Done));
+    }
+
+    #[tokio::test]
+    async fn a_turn_reporting_progress_still_hits_the_outer_bound() {
+        let mode = mode_with_timeouts(Duration::from_secs(5), Duration::from_millis(150));
+        let progress = Arc::clone(&mode);
+        let future = async move {
+            for _ in 0..100 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                lock(&progress.inner)
+                    .conversations
+                    .get_mut("conversation")
+                    .expect("the fixture conversation")
+                    .last_progress = Instant::now();
+            }
+            TurnOutcome::Done
+        };
+        let outcome = mode.await_turn("conversation", future).await;
+        assert!(matches!(outcome, TurnOutcome::Expired(Expiry::Max)));
+    }
+
+    #[tokio::test]
+    async fn streamed_text_and_activity_mark_turn_progress() {
+        let mode = mode_with_timeouts(Duration::from_secs(5), Duration::from_secs(10));
+        let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+        let socket = Conn::new(outbox);
+
+        let before = last_progress(&mode);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        mode.text_callback(&socket, "conversation")("An answer.".to_string());
+        assert!(last_progress(&mode) > before);
+        let frame = inbox.try_recv().expect("one askChunk frame");
+        let frame: Value = serde_json::from_str(&frame).expect("a JSON frame");
+        assert_eq!(frame["type"], "askChunk");
+        assert_eq!(frame["text"], "An answer.");
+
+        let before = last_progress(&mode);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        mode.activity_callback("conversation")(AcpActivity {
+            text: "Reading the captured element".to_string(),
+            append: false,
+        });
+        assert!(last_progress(&mode) > before);
+        assert!(inbox.try_recv().is_err(), "activity stays off the wire");
     }
 
     #[test]
