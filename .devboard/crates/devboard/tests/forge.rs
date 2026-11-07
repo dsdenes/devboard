@@ -852,6 +852,71 @@ async fn gitea_auth_resolves_through_the_api_and_refuses_with_the_contract_text(
     );
 }
 
+#[tokio::test]
+async fn a_refused_credential_resolves_a_public_repository_anonymously() {
+    let server = StubServer::start(|request| {
+        if request.headers.contains_key("authorization") {
+            return text_response(401, r#"{"message":"invalid username, password or token"}"#);
+        }
+        match request.path.as_str() {
+            "/api/v1/repos/owner/name" => json_response(json!({
+                "permissions": {"pull": true, "push": false, "admin": false},
+            })),
+            _ => text_response(500, "unexpected anonymous request"),
+        }
+    })
+    .await;
+    let exec = default_exec();
+    let mut options = ResolveOptions::new(
+        Forge::Gitea,
+        "localhost",
+        "owner/name",
+        temp_dir("auth-refused"),
+    );
+    options.env = environment(&[("GITEA_TOKEN", "secret")]);
+    options.base_url = Some(server.base.clone());
+    options.gitea_transport = Some(default_transport(5_000));
+
+    // The probe presents the credential and is refused, the anonymous probe
+    // reads the public view, and the account probe is never attempted with a
+    // credential the forge already refused.
+    let auth = resolve_forge_auth(&exec, &options)
+        .await
+        .into_result()
+        .expect("the public view resolves");
+    assert_eq!(auth.login, "anonymous");
+    assert_eq!(auth.token, None);
+    assert_eq!(auth.source, "public repository");
+    assert_eq!(auth.permission, Permission::Pull);
+    assert!(!auth.can_write);
+    let probes: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/api/v1/repos/owner/name")
+        .collect();
+    assert_eq!(probes.len(), 2);
+    assert_eq!(
+        probes[0].headers.get("authorization").map(String::as_str),
+        Some("token secret")
+    );
+    assert!(!probes[1].headers.contains_key("authorization"));
+
+    // A write has no anonymous form: the refusal is named, never a missing
+    // credential, because one was configured and the forge refused it.
+    options.required = RequiredAccess::Write;
+    let refused = resolve_forge_auth(&exec, &options)
+        .await
+        .into_result()
+        .expect_err("write refusal");
+    assert_eq!(
+        refused.error,
+        format!(
+            "the Gitea credential was refused for owner/name on {}: GET /repos/owner/name failed (HTTP 401): invalid username, password or token; writing needs a token the forge accepts",
+            server.base
+        )
+    );
+}
+
 #[test]
 fn auth_environment_pins_the_selected_identity() {
     let base = environment(&[
@@ -1958,6 +2023,197 @@ async fn forge_issue_client_reads_closes_and_caches_its_credential() {
         String::from_utf8(patch.body).expect("utf8"),
         r#"{"state":"closed"}"#
     );
+}
+
+#[tokio::test]
+async fn a_refused_credential_never_blocks_a_public_read_and_never_retries_a_write() {
+    let server = StubServer::start(|request| {
+        if request.path.ends_with("/issues") && request.headers.contains_key("authorization") {
+            return text_response(401, r#"{"message":"invalid username, password or token"}"#);
+        }
+        if request.path.ends_with("/issues/7") && request.method == "PATCH" {
+            return text_response(401, r#"{"message":"invalid username, password or token"}"#);
+        }
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                "permissions": {"pull": true, "push": true, "admin": false},
+            })),
+            ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+            ("GET", "/api/v1/repos/owner/name/issues") => {
+                if request.query.contains("page=1") {
+                    json_response(json!([issue_value(7, "Seven", "open")]))
+                } else {
+                    json_response(json!([]))
+                }
+            }
+            _ => text_response(500, "unexpected"),
+        }
+    })
+    .await;
+    let repo = git_repo("issues-client-refusal", "git@localhost:owner/name.git");
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[
+            ("DEVBOARD_GITEA_URL", server.base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]),
+        transport: Some(default_transport(5_000)),
+        exec: None,
+        run: None,
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+
+    // The credential was accepted when this client resolved it, and the forge
+    // refuses it for every later read, as a rotated token is refused.
+    let open = client
+        .list(IssueQueryState::Open, None)
+        .await
+        .expect("list");
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].number, 7);
+    let list_requests: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path.ends_with("/issues"))
+        .filter(|request| request.query.contains("page=1"))
+        .collect();
+    assert_eq!(
+        list_requests.len(),
+        2,
+        "one refused read, one anonymous read"
+    );
+    assert_eq!(
+        list_requests[0]
+            .headers
+            .get("authorization")
+            .map(String::as_str),
+        Some("token secret")
+    );
+    assert!(!list_requests[1].headers.contains_key("authorization"));
+
+    // A write has no anonymous form: the refused credential is reported, and
+    // the request is never repeated without it.
+    let refused = client
+        .close(7, CloseReason::NotPlanned)
+        .await
+        .expect_err("a refused write");
+    assert!(refused
+        .message
+        .contains("invalid username, password or token"));
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.method == "PATCH")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_read_that_needs_the_refused_credential_reports_the_refusal() {
+    let server = StubServer::start(|request| {
+        if request.path.ends_with("/issues") {
+            return text_response(401, r#"{"message":"invalid username, password or token"}"#);
+        }
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                "permissions": {"pull": true, "push": true, "admin": false},
+            })),
+            ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+            _ => text_response(500, "unexpected"),
+        }
+    })
+    .await;
+    let repo = git_repo("issues-client-private", "git@localhost:owner/name.git");
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[
+            ("DEVBOARD_GITEA_URL", server.base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]),
+        transport: Some(default_transport(5_000)),
+        exec: None,
+        run: None,
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+
+    let error = client
+        .list(IssueQueryState::Open, None)
+        .await
+        .expect_err("a private repository needs the credential");
+    assert!(error.message.contains("HTTP 401"), "{}", error.message);
+    assert!(
+        error
+            .message
+            .contains("invalid username, password or token"),
+        "{}",
+        error.message
+    );
+    // The refusal is retried anonymously once, and the second refusal is what
+    // the caller sees; there is no third attempt.
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.path.ends_with("/issues"))
+            .filter(|request| request.query.contains("page=1"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn a_failed_credential_probe_is_not_remembered() {
+    let probes = Arc::new(AtomicUsize::new(0));
+    let counted = probes.clone();
+    let server =
+        StubServer::start(
+            move |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => {
+                    if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return text_response(500, "the forge is restarting");
+                    }
+                    json_response(json!({
+                        "permissions": {"pull": true, "push": true, "admin": false},
+                    }))
+                }
+                ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+                ("GET", "/api/v1/repos/owner/name/issues") => json_response(json!([])),
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let repo = git_repo("issues-client-recovery", "git@localhost:owner/name.git");
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[
+            ("DEVBOARD_GITEA_URL", server.base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]),
+        transport: Some(default_transport(5_000)),
+        exec: None,
+        run: None,
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+
+    // One forge that cannot answer must not keep the client blind for its
+    // lifetime: the failed probe is not remembered, so the next read resolves
+    // the credential again and succeeds.
+    let error = client
+        .list(IssueQueryState::Open, None)
+        .await
+        .expect_err("a forge that cannot answer");
+    assert!(error.message.contains("HTTP 500"), "{}", error.message);
+    let open = client
+        .list(IssueQueryState::Open, None)
+        .await
+        .expect("the next read resolves again");
+    assert!(open.is_empty());
+    assert_eq!(probes.load(Ordering::SeqCst), 2, "two repository probes");
 }
 
 // ---------------------------------------------------------------------------

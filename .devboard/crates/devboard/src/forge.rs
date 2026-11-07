@@ -928,8 +928,15 @@ fn encode_uri_component(value: &str) -> String {
     out
 }
 
-fn gitea_headers(target: &GiteaTarget, accept: &str) -> Vec<(String, String)> {
+fn gitea_headers(
+    target: &GiteaTarget,
+    accept: &str,
+    with_credential: bool,
+) -> Vec<(String, String)> {
     let mut headers = vec![("Accept".to_string(), accept.to_string())];
+    if !with_credential {
+        return headers;
+    }
     if let Some(token) = target.token.as_deref().filter(|token| !token.is_empty()) {
         headers.push(("Authorization".to_string(), format!("token {token}")));
     }
@@ -963,6 +970,15 @@ fn json_body(value: &Value) -> Vec<u8> {
 
 /// One API call; a non-2xx status becomes a `GiteaError` with the server
 /// message.
+///
+/// A GET that presents a credential the forge refuses is retried once without
+/// it. Gitea answers HTTP 401 for a token it does not accept, even for a public
+/// repository, and it answers the same way while its token store cannot answer
+/// at all: a busy database fails the token lookup and the credential is
+/// reported as invalid. A public repository still reads without it, so neither
+/// refusal costs a read its data, and a resource that really needs the
+/// credential refuses the anonymous attempt too and the first refusal is what
+/// the caller sees. A write has no anonymous form, so it is never retried.
 pub async fn gitea_request(
     target: &GiteaTarget,
     path: &str,
@@ -971,31 +987,48 @@ pub async fn gitea_request(
     accept: Option<&str>,
     options: &GiteaCallOptions,
 ) -> Result<HttpResponse, GiteaError> {
-    let init = init.unwrap_or_default();
+    gitea_request_with(target, path, init, transport, accept, options, true).await
+}
+
+async fn gitea_request_with(
+    target: &GiteaTarget,
+    path: &str,
+    init: Option<GiteaRequestInit>,
+    transport: &Transport,
+    accept: Option<&str>,
+    options: &GiteaCallOptions,
+    anonymous_fallback: bool,
+) -> Result<HttpResponse, GiteaError> {
+    let mut init = init.unwrap_or_default();
     let method = init.method().to_string();
-    let mut headers = gitea_headers(target, accept.unwrap_or("application/json"));
-    if let Some(flow_id) = options.flow_id.as_deref() {
-        headers.push(("X-Flow-ID".to_string(), flow_id.to_string()));
-    }
-    if init.body.is_some() {
-        let has_content_type = headers
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
-        if !has_content_type {
-            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+    let presented = target
+        .token
+        .as_deref()
+        .is_some_and(|token| !token.is_empty());
+    // Only a bodyless read has an anonymous form to retry.
+    let anonymous_retry = anonymous_fallback && presented && method == "GET" && init.body.is_none();
+    let response = send_gitea_request(
+        target,
+        path,
+        &method,
+        init.body.take(),
+        transport,
+        accept,
+        options,
+        true,
+    )
+    .await?;
+    if anonymous_retry && response.status == 401 {
+        let retried = send_gitea_request(
+            target, path, &method, None, transport, accept, options, false,
+        )
+        .await
+        .ok()
+        .filter(|retry| (200..300).contains(&retry.status));
+        if let Some(retry) = retried {
+            return Ok(retry);
         }
     }
-    let timeout_ms = options.timeout_ms.unwrap_or(GITEA_REQUEST_TIMEOUT_MS);
-    let request = HttpRequest {
-        method: method.clone(),
-        url: api_url(target, path),
-        headers,
-        body: init.body,
-        timeout_ms: Some(timeout_ms),
-    };
-    let response = transport(request).await.map_err(|error| {
-        GiteaError::new(transport_failure(&method, path, timeout_ms, &error), None)
-    })?;
     if (200..300).contains(&response.status) {
         return Ok(response);
     }
@@ -1010,6 +1043,46 @@ pub async fn gitea_request(
     ))
 }
 
+/// Sends one Gitea call, presenting the target's credential only when asked.
+async fn send_gitea_request(
+    target: &GiteaTarget,
+    path: &str,
+    method: &str,
+    body: Option<Vec<u8>>,
+    transport: &Transport,
+    accept: Option<&str>,
+    options: &GiteaCallOptions,
+    with_credential: bool,
+) -> Result<HttpResponse, GiteaError> {
+    let mut headers = gitea_headers(
+        target,
+        accept.unwrap_or("application/json"),
+        with_credential,
+    );
+    if let Some(flow_id) = options.flow_id.as_deref() {
+        headers.push(("X-Flow-ID".to_string(), flow_id.to_string()));
+    }
+    if body.is_some() {
+        let has_content_type = headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+    }
+    let timeout_ms = options.timeout_ms.unwrap_or(GITEA_REQUEST_TIMEOUT_MS);
+    let request = HttpRequest {
+        method: method.to_string(),
+        url: api_url(target, path),
+        headers,
+        body,
+        timeout_ms: Some(timeout_ms),
+    };
+    transport(request)
+        .await
+        .map_err(|error| GiteaError::new(transport_failure(method, path, timeout_ms, &error), None))
+}
+
 /// One JSON API call.
 pub async fn gitea_json(
     target: &GiteaTarget,
@@ -1018,9 +1091,40 @@ pub async fn gitea_json(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<Value, GiteaError> {
+    gitea_json_with(target, path, init, transport, options, true).await
+}
+
+/// One credential-probe JSON call, which never falls back to an anonymous read.
+async fn gitea_json_authenticated(
+    target: &GiteaTarget,
+    path: &str,
+    init: Option<GiteaRequestInit>,
+    transport: &Transport,
+    options: &GiteaCallOptions,
+) -> Result<Value, GiteaError> {
+    gitea_json_with(target, path, init, transport, options, false).await
+}
+
+async fn gitea_json_with(
+    target: &GiteaTarget,
+    path: &str,
+    init: Option<GiteaRequestInit>,
+    transport: &Transport,
+    options: &GiteaCallOptions,
+    anonymous_fallback: bool,
+) -> Result<Value, GiteaError> {
     let init = init.unwrap_or_default();
     let method = init.method().to_string();
-    let response = gitea_request(target, path, Some(init), transport, None, options).await?;
+    let response = gitea_request_with(
+        target,
+        path,
+        Some(init),
+        transport,
+        None,
+        options,
+        anonymous_fallback,
+    )
+    .await?;
     let text = response_text(&response);
     serde_json::from_str(&text).map_err(|_| {
         let first = text
@@ -1067,7 +1171,8 @@ pub async fn gitea_repository(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<GiteaRepository, GiteaError> {
-    let document = gitea_json(target, &repo_path(target), None, transport, options).await?;
+    let document =
+        gitea_json_authenticated(target, &repo_path(target), None, transport, options).await?;
     Ok(GiteaRepository { document })
 }
 
@@ -1077,7 +1182,7 @@ pub async fn gitea_user(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<String, GiteaError> {
-    let document = gitea_json(target, "/user", None, transport, options).await?;
+    let document = gitea_json_authenticated(target, "/user", None, transport, options).await?;
     Ok(document
         .get("login")
         .and_then(Value::as_str)
@@ -3323,6 +3428,7 @@ async fn resolve_gitea_inner(
     token: &str,
 ) -> Result<AuthOutcome, GiteaError> {
     let required = options.required;
+    let mut token = token;
     let target = GiteaTarget {
         base_url: base_url.to_string(),
         project: options.project.clone(),
@@ -3333,7 +3439,34 @@ async fn resolve_gitea_inner(
         .clone()
         .unwrap_or_else(|| default_transport(GITEA_REQUEST_TIMEOUT_MS));
     let call_options = GiteaCallOptions::default();
-    let repository = gitea_repository(&target, &transport, &call_options).await?;
+    // A refusal while verifying the credential is not proof that it is
+    // unusable: Gitea answers HTTP 401 for a token it no longer accepts and for
+    // every token while its token store cannot answer. A public repository
+    // still answers without it, so the read resolves to the public view and a
+    // write still needs a credential the forge accepts.
+    let mut refused: Option<GiteaError> = None;
+    let repository = match gitea_repository(&target, &transport, &call_options).await {
+        Ok(repository) => repository,
+        Err(error) if !token.is_empty() && error.status == Some(401) => {
+            let anonymous = GiteaTarget {
+                base_url: target.base_url.clone(),
+                project: target.project.clone(),
+                token: None,
+            };
+            let repository = match gitea_repository(&anonymous, &transport, &call_options).await {
+                Ok(repository)
+                    if gitea_permission(repository.permissions()) != Permission::None =>
+                {
+                    repository
+                }
+                _ => return Err(error),
+            };
+            refused = Some(error);
+            token = "";
+            repository
+        }
+        Err(error) => return Err(error),
+    };
     let permission = gitea_permission(repository.permissions());
     if token.is_empty() {
         if permission == Permission::None {
@@ -3345,12 +3478,17 @@ async fn resolve_gitea_inner(
             }));
         }
         if required == RequiredAccess::Write {
-            return Ok(AuthOutcome::Failure(AuthFailure {
-                error: format!(
+            let error = match &refused {
+                Some(refusal) => format!(
+                    "the Gitea credential was refused for {} on {base_url}: {}; writing needs a token the forge accepts",
+                    options.project, refusal.message
+                ),
+                None => format!(
                     "no Gitea credential is configured for {} on {base_url}; writing needs GITEA_TOKEN",
                     options.project
                 ),
-            }));
+            };
+            return Ok(AuthOutcome::Failure(AuthFailure { error }));
         }
         return Ok(AuthOutcome::Resolved(ResolvedAuth {
             forge: Forge::Gitea,
@@ -4589,7 +4727,7 @@ pub struct ForgeIssuesClient {
     exec: Exec,
     run: ForgeRunner,
     timeout_ms: u64,
-    auth_cache: tokio::sync::Mutex<HashMap<RequiredAccess, AuthOutcome>>,
+    auth_cache: tokio::sync::Mutex<HashMap<RequiredAccess, ResolvedAuth>>,
 }
 
 impl ForgeIssuesClient {
@@ -4641,13 +4779,8 @@ impl ForgeIssuesClient {
 
     async fn auth(&self, required: RequiredAccess) -> Result<ResolvedAuth, ForgeIssueError> {
         let mut cache = self.auth_cache.lock().await;
-        if let Some(outcome) = cache.get(&required) {
-            return match outcome.clone() {
-                AuthOutcome::Resolved(auth) => Ok(auth),
-                AuthOutcome::Failure(failure) => {
-                    Err(ForgeIssueError::new(first_line(&failure.error)))
-                }
-            };
+        if let Some(auth) = cache.get(&required) {
+            return Ok(auth.clone());
         }
         let options = ResolveOptions {
             forge: self.forge,
@@ -4674,9 +4807,15 @@ impl ForgeIssuesClient {
             Err(error) => return Err(ForgeIssueError::new(error.message)),
             Ok(outcome) => outcome,
         };
-        cache.insert(required, outcome.clone());
+        // Only a resolved credential is remembered. A failure names a forge
+        // that could not answer as often as a credential it refuses, and one
+        // such attempt must not keep this process blind for its lifetime: the
+        // next call resolves the credential again.
         match outcome {
-            AuthOutcome::Resolved(auth) => Ok(auth),
+            AuthOutcome::Resolved(auth) => {
+                cache.insert(required, auth.clone());
+                Ok(auth)
+            }
             AuthOutcome::Failure(failure) => Err(ForgeIssueError::new(first_line(&failure.error))),
         }
     }

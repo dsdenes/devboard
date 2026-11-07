@@ -3223,7 +3223,12 @@ from those headers and parses only the matching file, so one read does not cost 
 - `issue_close` closes one issue through the repository's forge as `completed` or `not planned` and
   returns the resulting state. Every issue read and write shares one bounded forge client: a
   credential probe or forge command that outlives its deadline (60 seconds by default) fails the
-  call with a retryable timeout message instead of leaving it pending.
+  call with a retryable timeout message instead of leaving it pending. A Gitea read that presents a
+  credential the forge refuses with HTTP 401 is retried once without it, so a long-running worker
+  whose launcher's token was since rotated away still reads a public repository; a repository that
+  needs the credential answers 401 again and the refusal is reported, and a write is never retried
+  without it. Only a resolved credential is remembered, so a forge that could not answer is probed
+  again by the next call instead of failing this client for its lifetime.
 - `verification_run` runs only `test`, `check`, `build`, `typecheck`, or a `verify:<name>` present
   in `.devboard/package.json`, with `.devboard` as cwd, an optional bounded list of existing test
   paths, a 900-second deadline, and at most 16 KiB of captured output. It writes the check's complete
