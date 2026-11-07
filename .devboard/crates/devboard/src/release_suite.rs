@@ -17,6 +17,13 @@
 //! condition instead of claiming a compile error: no repository change frees
 //! the disk.
 //!
+//! One condition is retried instead of ending the run: the kernel refusing to
+//! start a freshly built test binary, which is what another build writing the
+//! same target directory does while that binary's executable bit is not yet
+//! set. The attempt ran no test at all, so nothing about it is quarantined; the
+//! run retries the whole suite and reports the condition, with the binary and
+//! the errno, only once the attempt budget is spent.
+//!
 //! Every skipped test files one deduplicated issue in the origin forge.
 //! Filing is best effort: an unreachable forge prints one failure line and
 //! never changes the run's exit code.
@@ -55,6 +62,10 @@ pub const TITLE_PREFIX: &str = "quarantine(test): ";
 const FENCE: &str = "````";
 /// What cargo, rustc, or a runner prints when the host filesystem is full.
 const STORAGE_FAILURE_MARKERS: [&str; 2] = ["No space left on device", "ENOSPC"];
+/// What cargo prints when the kernel refused to start a test binary.
+const EXEC_BLOCKED_MARKER: &str = "could not execute process";
+/// The errnos a binary still being written by another build raises.
+const EXEC_BLOCKED_ERRNOS: [&str; 2] = ["Permission denied", "Text file busy"];
 
 // ---------------------------------------------------------------------------
 // One test result
@@ -130,6 +141,30 @@ fn host_storage_failure(output: &str) -> Option<String> {
         .find(|line| line.starts_with("error") && named(line))
         .or_else(|| lines.iter().copied().find(|line| named(line)))
         .map(str::to_string)
+}
+
+/// The line that names a test binary the kernel refused to start because
+/// another build was writing it, or `None`.
+///
+/// cargo prints `error: test failed, to rerun pass …` and then
+/// `Caused by: could not execute process <path> (never executed)` with the
+/// errno on the following block. `Permission denied` is what a binary whose
+/// executable bit is not set yet raises, and `Text file busy` is the same race
+/// one step later; both name the binary, which the bare exit code cannot.
+fn exec_blocked(output: &str) -> Option<String> {
+    let lines: Vec<&str> = output.lines().map(str::trim).collect();
+    let index = lines
+        .iter()
+        .position(|line| line.contains(EXEC_BLOCKED_MARKER))?;
+    let line = lines[index];
+    let errno = lines[index + 1..]
+        .iter()
+        .take(4)
+        .find(|line| EXEC_BLOCKED_ERRNOS.iter().any(|errno| line.contains(errno)));
+    Some(match errno {
+        Some(errno) => format!("{line}: {errno}"),
+        None => line.to_string(),
+    })
 }
 
 /// The file a `Running …` header names, or `None` for an unrelated line.
@@ -299,6 +334,10 @@ pub struct AttemptRecord {
     pub names: Vec<String>,
     /// Set when the attempt failed for a reason no test's skip can address.
     pub structural: Option<String>,
+    /// Set when the kernel refused to start a freshly built test binary, the
+    /// signature of another build writing the same target directory. The
+    /// attempt ran no test, so the run retries it whole.
+    pub transient: Option<String>,
     /// The first concrete failure the structural reason names, carried so the
     /// release gate can refuse with it without parsing the reason's prose.
     pub error_line: Option<String>,
@@ -324,7 +363,8 @@ fn bound(text: &str, limit: usize) -> String {
 /// artifacts because the host filesystem is full are structural: none of them
 /// is a test that failed, so none of them may be retried or skipped into a
 /// pass. The full filesystem is reported as that host condition, never as a
-/// compile error.
+/// compile error. A binary the kernel refused to start is the one retryable
+/// case: another build was writing it, and the retry reads the finished file.
 pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> AttemptRecord {
     let parsed = parse_suite_output(stdout, stderr);
     let output = format!(
@@ -355,12 +395,18 @@ pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> At
         .count();
 
     let mut structural: Vec<String> = parsed.errors.clone();
+    let exec_line = exec_blocked(stderr).or_else(|| exec_blocked(stdout));
     let compile_line = first_error_line(stderr).or_else(|| first_error_line(stdout));
     let storage_line = host_storage_failure(stderr).or_else(|| host_storage_failure(stdout));
     let could_not_compile =
         stderr.contains("could not compile") || stdout.contains("could not compile");
     let mut error_line: Option<String> = None;
-    if let Some(line) = storage_line {
+    let mut transient: Option<String> = None;
+    if let Some(line) = exec_line {
+        let reason = format!("the runner could not execute a freshly built test binary: {line}");
+        error_line = Some(reason.clone());
+        transient = Some(reason);
+    } else if let Some(line) = storage_line {
         let reason = format!("the host filesystem is full: {line}");
         error_line = Some(reason.clone());
         structural.push(reason);
@@ -406,6 +452,7 @@ pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> At
         } else {
             Some(structural.join("; "))
         },
+        transient,
         error_line,
         output,
     }
@@ -459,7 +506,9 @@ fn failure_key(failure: &AttemptFailure) -> String {
 /// Drives the retry loop: stop at the first attempt with no failing test,
 /// quarantine a test on its third consecutive failure, never quarantine a test
 /// that passed in between, and give up after `max_attempts` whole-suite
-/// attempts. A structural failure ends the run immediately.
+/// attempts. A structural failure ends the run immediately; an attempt whose
+/// test binary the kernel refused to start is retried whole, because another
+/// build was still writing that binary.
 pub async fn run_quarantine_suite(
     attempts: &mut dyn SuiteAttempts,
     log: &(dyn Fn(&str) + Sync),
@@ -470,6 +519,7 @@ pub async fn run_quarantine_suite(
     let mut quarantined: BTreeMap<String, QuarantineReport> = BTreeMap::new();
     let mut universe: Vec<String> = Vec::new();
     let mut attempt_count = 0;
+    let mut unexecuted: Option<(String, Option<String>)> = None;
 
     for index in 1..=max_attempts {
         let allowed: Option<Vec<String>> = if quarantined.is_empty() {
@@ -502,6 +552,14 @@ pub async fn run_quarantine_suite(
         }
         let record = attempts.attempt(index, allowed.as_deref()).await;
         attempt_count = index;
+        if let Some(transient) = &record.transient {
+            log(&format!(
+                "attempt {index}/{max_attempts}: nothing ran, retrying: {transient}"
+            ));
+            unexecuted = Some((transient.clone(), record.error_line.clone()));
+            continue;
+        }
+        unexecuted = None;
         if let Some(structural) = &record.structural {
             log(&format!(
                 "attempt {index}/{max_attempts}: structural failure: {structural}"
@@ -574,6 +632,15 @@ pub async fn run_quarantine_suite(
         }
     }
 
+    if let Some((transient, error_line)) = unexecuted {
+        return SuiteOutcome {
+            code: 1,
+            attempts: attempt_count,
+            quarantined: quarantined.into_values().collect(),
+            structural: Some(transient),
+            error_line,
+        };
+    }
     SuiteOutcome {
         code: 1,
         attempts: attempt_count,
@@ -1413,6 +1480,56 @@ error: could not compile `fixture` (test \"issues_mode\") due to 1 previous erro
         );
     }
 
+    #[tokio::test]
+    async fn release_suite_retries_an_unexecuted_binary_before_it_refuses() {
+        let stderr = "\
+     Running tests/extension_commands.rs (target/debug/deps/extension_commands-dd68)
+error: test failed, to rerun pass `-p devboard --test extension_commands`
+
+Caused by:
+  could not execute process `/repo/.devboard/target/debug/deps/extension_commands-dd68` (never executed)
+
+Caused by:
+  Permission denied (os error 13)
+";
+        let mut options = ReleaseSuiteOptions::new(env!("CARGO_MANIFEST_DIR"));
+        options.runner = Some(Arc::new(StubRunner {
+            outcome: CommandOutcome {
+                code: 101,
+                stdout: String::new(),
+                stderr: stderr.to_string(),
+            },
+        }));
+        options.max_attempts = 2;
+        options.file_issues = false;
+        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = lines.clone();
+        options.log = Some(Arc::new(move |line: &str| {
+            captured.lock().expect("log lines").push(line.to_string());
+        }));
+        let report = run_suite(options).await.expect("a suite report");
+        assert_eq!(report.code, 1);
+        assert_eq!(report.attempts, 2);
+        let reason = report.error_line.expect("the refusal reason");
+        assert!(
+            reason.ends_with("Permission denied (os error 13)"),
+            "{reason}"
+        );
+        assert_eq!(report.structural.as_deref(), Some(reason.as_str()));
+        let lines = lines.lock().expect("log lines").clone();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("attempt 1/2: nothing ran, retrying:")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line
+                == "release suite: structural failure after 2 attempt(s); nothing was filed"),
+            "{lines:?}"
+        );
+    }
+
     struct FakeAttempts {
         records: VecDeque<AttemptRecord>,
         skipped: Arc<Mutex<Vec<String>>>,
@@ -1459,6 +1576,7 @@ error: could not compile `fixture` (test \"issues_mode\") due to 1 previous erro
             failures: names.iter().map(|name| failure(name)).collect(),
             names: names.iter().map(|name| (*name).to_string()).collect(),
             structural: None,
+            transient: None,
             error_line: None,
             output: String::new(),
         }
@@ -1473,7 +1591,29 @@ error: could not compile `fixture` (test \"issues_mode\") due to 1 previous erro
             failures: Vec::new(),
             names: names.iter().map(|name| (*name).to_string()).collect(),
             structural: None,
+            transient: None,
             error_line: None,
+            output: String::new(),
+        }
+    }
+
+    /// What a concurrent build in the same target directory leaves behind: a
+    /// binary that exists but whose executable bit is not set yet.
+    const UNEXECUTED: &str = "the runner could not execute a freshly built test binary: \
+could not execute process `/repo/.devboard/target/debug/deps/extension_commands-dd68` (never executed): \
+Permission denied (os error 13)";
+
+    fn unexecuted(index: u32) -> AttemptRecord {
+        AttemptRecord {
+            index,
+            code: 101,
+            pass: 0,
+            skip: 0,
+            failures: Vec::new(),
+            names: Vec::new(),
+            structural: None,
+            transient: Some(UNEXECUTED.to_string()),
+            error_line: Some(UNEXECUTED.to_string()),
             output: String::new(),
         }
     }
@@ -1584,6 +1724,7 @@ error: could not compile `fixture` (test \"issues_mode\") due to 1 previous erro
                 failures: vec![failure("one"), failure("two")],
                 names: names.iter().map(|name| (*name).to_string()).collect(),
                 structural: None,
+                transient: None,
                 error_line: None,
                 output: String::new(),
             }
@@ -1642,6 +1783,91 @@ error: could not compile `fixture` (test \"issues_mode\") due to 1 previous erro
             attempts.seen_filters.lock().expect("filters").len(),
             3,
             "the empty remaining set needs no fourth process"
+        );
+    }
+
+    #[test]
+    fn release_suite_classifies_an_unexecuted_binary_as_retryable() {
+        let stderr = "\
+     Running tests/extension_commands.rs (target/debug/deps/extension_commands-dd68)
+error: test failed, to rerun pass `-p devboard --test extension_commands`
+
+Caused by:
+  could not execute process `/repo/.devboard/target/debug/deps/extension_commands-dd68` (never executed)
+
+Caused by:
+  Permission denied (os error 13)
+     Running tests/forge.rs (target/debug/deps/forge-4cd4)
+error: test failed, to rerun pass `-p devboard --test forge`
+
+Caused by:
+  could not execute process `/repo/.devboard/target/debug/deps/forge-4cd4` (never executed)
+
+Caused by:
+  Permission denied (os error 13)
+error: 2 targets failed:
+    `-p devboard --test extension_commands`
+    `-p devboard --test forge`
+";
+        let record = classify_attempt(1, 101, "", stderr);
+        let transient = record.transient.expect("a retryable execution failure");
+        assert!(
+            transient.starts_with(
+                "the runner could not execute a freshly built test binary: \
+could not execute process"
+            ),
+            "{transient}"
+        );
+        assert!(transient.contains("extension_commands-dd68"), "{transient}");
+        assert!(
+            transient.ends_with("Permission denied (os error 13)"),
+            "{transient}"
+        );
+        assert_eq!(record.structural, None);
+        assert_eq!(record.error_line.as_deref(), Some(transient.as_str()));
+        assert!(record.failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn release_suite_retries_an_unexecuted_attempt_and_then_passes() {
+        let outcome = drive(vec![unexecuted(1), clean(2, &["passes"])], 9).await;
+        assert_eq!(outcome.code, 0);
+        assert_eq!(outcome.attempts, 2);
+        assert!(outcome.quarantined.is_empty());
+        assert_eq!(outcome.structural, None);
+    }
+
+    #[tokio::test]
+    async fn release_suite_reports_an_unexecuted_binary_once_the_budget_is_spent() {
+        let outcome = drive(vec![unexecuted(1), unexecuted(2)], 2).await;
+        assert_eq!(outcome.code, 1);
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(outcome.structural.as_deref(), Some(UNEXECUTED));
+        assert_eq!(outcome.error_line.as_deref(), Some(UNEXECUTED));
+    }
+
+    #[tokio::test]
+    async fn release_suite_keeps_a_streak_across_an_unexecuted_attempt() {
+        let outcome = drive(
+            vec![
+                failing(1, &["flaky"]),
+                unexecuted(2),
+                failing(3, &["flaky"]),
+                failing(4, &["flaky"]),
+                clean(5, &["flaky"]),
+            ],
+            RELEASE_SUITE_MAX_ATTEMPTS,
+        )
+        .await;
+        assert_eq!(outcome.code, 0);
+        assert_eq!(outcome.quarantined.len(), 1);
+        assert_eq!(
+            outcome.quarantined[0]
+                .attempts
+                .iter()
+                .map(|attempt| attempt.index)
+                .collect::<Vec<_>>(),
+            [1, 3, 4]
         );
     }
 

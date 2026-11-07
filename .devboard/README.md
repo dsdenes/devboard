@@ -596,7 +596,11 @@ exit code. A suite that cannot compile, or whose output names no test, is struct
 nonzero, files nothing, and prints the first concrete error line. A build that could not write its
 artifacts because the host filesystem is full is structural too, and its reason starts with
 `the host filesystem is full:` and quotes that write failure, never a compile error: no repository
-change frees the disk, and the release is refused until space is available.
+change frees the disk, and the release is refused until space is available. An attempt whose test
+binary the kernel refused to start is the one retried case: another build writing the same target
+directory leaves that binary without its executable bit, so the attempt ran no test at all. The run
+retries the whole suite and reports the condition only once the attempt budget is spent, with the
+binary path and the errno.
 
 ### Publish-only source refresh
 
