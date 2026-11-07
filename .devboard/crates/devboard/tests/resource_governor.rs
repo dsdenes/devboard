@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use devboard::resources::{
@@ -14,9 +14,20 @@ use devboard::resources::{
     DeferReason, Governor, GovernorOptions, MemoryReader, Settings, Slot,
 };
 
-/// The slice the tests own; it is separate from the production
-/// `devboard.slice` so a test never rewrites a live budget.
-const TEST_SLICE: &str = "devboard-resource-governor-test.slice";
+/// The slice this test process owns; it is separate from the production
+/// `devboard.slice` so a test never rewrites a live budget. The unit name
+/// carries the process id because the user manager is host-wide: a release
+/// suite, an operator's workspace run, and a second checkout running the same
+/// suite would otherwise stop and rewrite one another's slice mid-test.
+fn test_slice() -> &'static str {
+    static NAME: LazyLock<String> = LazyLock::new(|| {
+        format!(
+            "devboard-resource-governor-test-{}.slice",
+            std::process::id()
+        )
+    });
+    &NAME
+}
 
 /* ------------------------------------------------------------------------ */
 /* Fixtures                                                                  */
@@ -109,14 +120,15 @@ fn sized_governor(
             env: BTreeMap::new(),
             slice,
         },
-        TEST_SLICE,
+        test_slice(),
     );
     governor.save(settings).expect("the test settings validate");
     governor
 }
 
-/// Serializes every test that changes the transient slice, because the slice
-/// is one host-wide resource.
+/// Serializes every test in this process that changes its transient slice.
+/// The unit is per process, so the lock is what keeps the tests of one run
+/// from rewriting each other's budget.
 fn slice_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let guard = LOCK
@@ -125,7 +137,7 @@ fn slice_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poison| poison.into_inner());
     // A test that panicked before its final stop leaves the unit behind with
     // its own owner marker. Every slice test starts from a clean test slice.
-    let _ = stop_slice_for(TEST_SLICE);
+    let _ = stop_slice_for(test_slice());
     guard
 }
 
@@ -504,14 +516,14 @@ fn budget_policy_uses_the_host_minus_the_reserve() {
         );
         assert_eq!(slice_governor.slice_info().memory_max_mb, 512);
         let output = Command::new("systemctl")
-            .args(["--user", "show", TEST_SLICE, "-p", "MemoryMax", "--value"])
+            .args(["--user", "show", test_slice(), "-p", "MemoryMax", "--value"])
             .output()
             .expect("systemctl show runs");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
             (512 * 1024 * 1024).to_string()
         );
-        stop_slice_for(TEST_SLICE);
+        stop_slice_for(test_slice());
     }
 }
 
@@ -559,7 +571,7 @@ fn a_second_dashboard_joins_without_rewriting_the_budget() {
         })
         .expect("the owner still applies its own budget");
     assert_eq!(owner.slice_info().memory_max_mb, 1_536);
-    stop_slice_for(TEST_SLICE);
+    stop_slice_for(test_slice());
 }
 
 #[test]
@@ -677,7 +689,7 @@ fn settings_persist_across_restart() {
         let info = governor.slice_info();
         assert_eq!(info.memory_high_mb, 320);
         assert_eq!(info.memory_max_mb, 640);
-        stop_slice_for(TEST_SLICE);
+        stop_slice_for(test_slice());
     }
 }
 
@@ -1212,7 +1224,7 @@ fn desktop_session_survives_a_slice_that_reaches_its_maximum() {
     let mut peak = 0u64;
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let status = loop {
-        if let Some(path) = slice_cgroup_path_for(TEST_SLICE) {
+        if let Some(path) = slice_cgroup_path_for(test_slice()) {
             if let Ok(text) = std::fs::read_to_string(path.join("memory.current")) {
                 peak = peak.max(text.trim().parse::<u64>().unwrap_or(0));
             }
@@ -1247,7 +1259,7 @@ fn desktop_session_survives_a_slice_that_reaches_its_maximum() {
     }
     let _ = canary.kill();
     let _ = canary.wait();
-    stop_slice_for(TEST_SLICE);
+    stop_slice_for(test_slice());
 }
 
 #[test]
@@ -1317,7 +1329,7 @@ fn the_slice_defaults_follow_the_saved_budget() {
     assert_eq!(info.memory_max_mb, 2_000);
     // The slice properties are what `systemctl show` reports.
     let output = Command::new("systemctl")
-        .args(["--user", "show", TEST_SLICE, "-p", "MemoryMax"])
+        .args(["--user", "show", test_slice(), "-p", "MemoryMax"])
         .output()
         .expect("systemctl show runs");
     let text = String::from_utf8_lossy(&output.stdout);
@@ -1326,7 +1338,7 @@ fn the_slice_defaults_follow_the_saved_budget() {
         "{text}"
     );
     let _ = apply_slice_properties_for(
-        TEST_SLICE,
+        test_slice(),
         Settings {
             max_agent_peers: 1,
             memory_high_mb: 256,
@@ -1334,5 +1346,5 @@ fn the_slice_defaults_follow_the_saved_budget() {
             memory_reserve_mb: 128,
         },
     );
-    stop_slice_for(TEST_SLICE);
+    stop_slice_for(test_slice());
 }
