@@ -150,14 +150,17 @@ skill directory holding a `SKILL.md` appears whether hand-authored, prepared, Di
 or reached through a symlink, while a name only a Discover manifest carries and no directory backs
 produces no row.
 
-One click on a prepare-family row's delete control removes the whole `.omp/skills/<name>/`
-directory with no confirmation dialog. The row leaves without a reload, and a reload keeps it
-gone. Deleting removes exactly that skill's name from `skills.ignoredSkills` when it is there and
-writes no other settings key or exclusion entry; deleting an enabled skill writes no settings
-entry at all. The server refuses the command for a built-in, Discover, hand-authored, symlinked,
-or non-installed name, and for every name while Goal or Flow work is active; a refusal leaves the
-directory, the settings file, and the row unchanged. Creating a directory still adds its row
-after the next page load, and the sidebar entry count never changes.
+One click on a prepare-family row's delete control opens a `Delete skill` confirmation naming the
+skill; cancelling it dispatches nothing. Confirming removes the whole `.omp/skills/<name>/`
+directory, and the row leaves the table the moment the command dispatches, without waiting for the
+server and without a reload, so a reload afterwards keeps it gone. Deleting removes exactly that
+skill's name from `skills.ignoredSkills` when it is there and writes no other settings key or
+exclusion entry; deleting an enabled skill writes no settings entry at all. The server refuses the
+command for a built-in, Discover, hand-authored, symlinked, or non-installed name, and for every
+name while Goal or Flow work is active; a refusal leaves the directory, the settings file, and the
+row in place, because the authoritative frame that answers every attempt restores the row it had
+hidden. Creating a directory still adds its row after the next page load, and the sidebar entry
+count never changes.
 
 Rows are collapsible. Clicking a row anywhere outside the checkbox, clicking its disclosure
 button, or focusing the row and pressing Enter or Space expands it: one

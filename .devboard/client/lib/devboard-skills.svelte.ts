@@ -69,12 +69,17 @@ export class DevboardSkillsStore {
   }
 
   /**
-   * Asks the server to delete one prepare-family skill. The row leaves when
-   * the server's authoritative frame arrives, so a refused command leaves it
-   * in place instead of hiding a skill that still exists.
+   * Removes one prepare-family row immediately and asks the server to delete
+   * it. The server pushes the authoritative rows after every attempt, so a
+   * refused command puts the row back instead of hiding a skill that still
+   * exists; a socket that never took the command restores it at once.
    */
   deleteSkill(name: string): void {
-    connection.send({ type: "deleteSkill", name });
+    const previous = this.skills;
+    this.skills = this.skills.filter((row) => row.name !== name);
+    if (!connection.send({ type: "deleteSkill", name })) {
+      this.skills = previous;
+    }
   }
 
   handleEvent(message: Record<string, unknown>): void {
