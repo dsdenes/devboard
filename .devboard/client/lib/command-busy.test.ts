@@ -63,6 +63,27 @@ test("the ceiling releases the label and states the action received no answer", 
   }
 });
 
+test("a refused dispatch never waits for an answer or shows the ceiling notice", () => {
+  jest.useFakeTimers();
+  try {
+    const box = { value: 1 };
+    const command = createCommandBusy({
+      label: "Save limits",
+      evidence: () => box.value,
+      ceilingMs: 5,
+    });
+    command.start();
+    command.refuse();
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBeNull();
+    jest.advanceTimersByTime(5);
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("a new dispatch clears the previous ceiling notice", () => {
   jest.useFakeTimers();
   try {
@@ -140,6 +161,60 @@ test("a reused control never shows the ceiling notice on another subject", () =>
     expect(command.notice).toBeNull();
     family.id = "scout";
     expect(command.notice).toBe("Stop received no answer.");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a confirmation stays permanent when the evidence returns to its dispatch baseline", () => {
+  jest.useFakeTimers();
+  try {
+    const box = { value: 1 };
+    const command = createCommandBusy({
+      label: "Start",
+      evidence: () => box.value,
+      ceilingMs: 5,
+    });
+    command.start();
+    expect(command.busy).toBe(true);
+    // The Issues lifecycle answers the command.
+    box.value = 2;
+    expect(command.busy).toBe(false);
+    // Stop returns the lifecycle to its pre-dispatch value.
+    box.value = 1;
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBeNull();
+    // The answered dispatch never reaches its ceiling.
+    jest.advanceTimersByTime(5);
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBeNull();
+    // Only a new dispatch arms the control.
+    command.start();
+    expect(command.busy).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("an answered dispatch never repeats its ceiling notice after the evidence returns", () => {
+  jest.useFakeTimers();
+  try {
+    const box = { value: 1 };
+    const command = createCommandBusy({
+      label: "Start",
+      evidence: () => box.value,
+      ceilingMs: 5,
+    });
+    command.start();
+    jest.advanceTimersByTime(5);
+    expect(command.notice).toBe("Start received no answer.");
+    box.value = 2;
+    expect(command.notice).toBeNull();
+    box.value = 1;
+    expect(command.notice).toBeNull();
+    expect(command.busy).toBe(false);
+    jest.advanceTimersByTime(5);
+    expect(command.notice).toBeNull();
   } finally {
     jest.useRealTimers();
   }

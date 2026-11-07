@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -185,6 +185,105 @@ test("both settings Save controls are disabled and send nothing with the socket 
     // The refused save never claims the field's value as saved.
     expect(cadenceField.value).toBe("42");
   } finally {
+    connection.state = previous;
+  }
+});
+
+test("a frame without workers renders the page with no live worker row", () => {
+  const withoutWorkers = releaseSnapshot({});
+  delete withoutWorkers.workers;
+  const view = present(withoutWorkers);
+  expect(within(view.container).getByTestId("agent-header")).toBeTruthy();
+  expect(within(view.container).queryByTestId("agent-workers")).toBeNull();
+  expect(agents.snapshot("release-train")?.workers).toEqual([]);
+});
+
+/** Stub the socket so a test observes exactly what a Save control sent. */
+function recordSettingsSends(): { sent: unknown[]; restore: () => void } {
+  const previous = connection.send;
+  const sent: unknown[] = [];
+  connection.send = (command: unknown) => {
+    sent.push(command);
+    return true;
+  };
+  return {
+    sent,
+    restore: () => {
+      connection.send = previous;
+    },
+  };
+}
+
+function settingsFrames(sent: unknown[]): unknown[] {
+  return sent.filter(
+    (command) =>
+      typeof command === "object" &&
+      command !== null &&
+      "type" in command &&
+      command.type === "setAgentSettings",
+  );
+}
+
+test("Save limits with an invalid cadence states the refusal and never claims no answer", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const cadenceField = within(view.container).getByTestId("agent-cadence") as HTMLInputElement;
+    await fireEvent.input(cadenceField, { target: { value: "" } });
+    const limits = within(view.container).getByTestId("agent-save-limits");
+    await fireEvent.click(limits);
+    expect(within(view.container).getByTestId("agent-settings-error").textContent).toContain(
+      "The cadence must be an integer from 1 through 1440 minutes.",
+    );
+    // Nothing was dispatched, so the control is not busy and asks for no answer.
+    expect(settingsFrames(socket.sent)).toEqual([]);
+    expect(limits.hasAttribute("disabled")).toBe(false);
+    expect(limits.getAttribute("aria-busy")).toBeNull();
+    expect(view.container.querySelector('[data-slot="button-busy"]')).toBeNull();
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+    jest.advanceTimersByTime(10_000);
+    await Promise.resolve();
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
+test("Save limits dispatches one settings command and waits for its answer", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const limits = within(view.container).getByTestId("agent-save-limits");
+    await fireEvent.click(limits);
+    expect(settingsFrames(socket.sent)).toEqual([
+      {
+        type: "setAgentSettings",
+        id: "release-train",
+        minutes: 10,
+        maxPerHour: null,
+        maxPending: null,
+      },
+    ]);
+    expect(limits.getAttribute("aria-busy")).toBe("true");
+    expect(limits.textContent?.trim()).toBe("Saving…");
+    // No confirming frame arrives, so the ceiling is the only answer.
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+    jest.advanceTimersByTime(10_000);
+    await Promise.resolve();
+    expect(within(view.container).getByTestId("command-notice").textContent).toContain(
+      "Save limits received no answer.",
+    );
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
     connection.state = previous;
   }
 });

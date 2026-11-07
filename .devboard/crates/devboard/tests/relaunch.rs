@@ -55,6 +55,16 @@ fn serve_pid(state: &Path) -> Option<u32> {
     value["pid"].as_u64().map(|pid| pid as u32)
 }
 
+/// The startup passes the replacement journaled under its own state directory.
+fn startup_passes(state: &Path) -> usize {
+    std::fs::read_to_string(state.join("supervision/reaped.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|line| line["pass"] == "startup")
+        .count()
+}
+
 /// The spawned replacement is this test's child, so SIGTERM plus `waitpid`
 /// reaps it instead of leaving a zombie that `kill(pid, 0)` still reports.
 fn stop(pid: u32) {
@@ -116,5 +126,50 @@ async fn a_confirmed_replacement_becomes_ready_before_the_caller_releases_the_po
     }
     let pid = pid.expect("the replacement binds the dashboard port");
     assert_ne!(pid, std::process::id(), "the replacement serves");
+    stop(pid);
+}
+
+/// The replacement's startup reaping pass scans the process table and runs
+/// once its listener is bound, never before the marker: on a busy host that
+/// scan outlasts a caller's readiness deadline, and waiting for it turned every
+/// source refresh into an `update-error`.
+#[tokio::test]
+async fn a_confirmed_replacement_is_ready_before_its_startup_reaping_pass() {
+    let scratch = scratch("reaping");
+    let state = scratch.root.join("state");
+    let held = TcpListener::bind(("127.0.0.1", 0)).expect("a held dashboard port");
+    let port = held.local_addr().expect("an address").port();
+    let ready_file = state.join("replacement").join("ready.json");
+    let result = relaunch_confirmed(
+        &settings(&scratch.root, port),
+        &ready_file,
+        10_000,
+        Some("9.9.9"),
+    )
+    .await;
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+    assert_eq!(
+        startup_passes(&state),
+        0,
+        "the marker is written before the startup reaping pass"
+    );
+
+    drop(held);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut pid = serve_pid(&state);
+    while pid.is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        pid = serve_pid(&state);
+    }
+    let pid = pid.expect("the replacement binds the dashboard port");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while startup_passes(&state) == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        startup_passes(&state),
+        1,
+        "the startup reaping pass still runs once the port is bound"
+    );
     stop(pid);
 }

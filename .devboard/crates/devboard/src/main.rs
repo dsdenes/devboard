@@ -175,11 +175,12 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         );
     }
     std::fs::create_dir_all(&config.state_dir).context("creating the state directory")?;
-    // One orphan-reaping pass before this process serves. It never signals a
-    // live recorded child and journals the pass and every kill.
-    devboard::workers::watchdog::reap_on_startup(&config.state_dir, &config.repo_dir);
     // A confirmed replacement answers its own loopback readiness listener
-    // until it binds the dashboard port this process still holds.
+    // until it binds the dashboard port this process still holds. The marker
+    // is written before the startup reaping pass, whose process-table scan can
+    // take longer than a caller's readiness deadline on a busy host: readiness
+    // proves the replacement started and takes the port over, not that every
+    // startup step has finished.
     let mut readiness = None;
     if let Ok(ready_file) = std::env::var("DEVBOARD_REPLACEMENT_READY_FILE") {
         if !ready_file.is_empty() {
@@ -207,6 +208,12 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     if let Some(task) = readiness.take() {
         task.abort();
     }
+    // One orphan-reaping pass before this process serves. It never signals a
+    // live recorded child and journals the pass and every kill. It runs once
+    // the listener is bound, so a replacement holds the dashboard port as soon
+    // as the process it replaced exits; a client's request then waits in the
+    // backlog for the pass instead of failing on a closed port.
+    devboard::workers::watchdog::reap_on_startup(&config.state_dir, &config.repo_dir);
     config.port = listener
         .local_addr()
         .map(|address| address.port())

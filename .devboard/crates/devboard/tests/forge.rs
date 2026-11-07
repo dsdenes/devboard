@@ -469,6 +469,28 @@ async fn gitea_transport_failures_name_the_request_and_stay_transient() {
     );
 }
 
+/// A read that ran out of time is latency, not a fault: its requests were still
+/// in flight, and a periodic read must keep its last rows and read again on its
+/// normal cadence instead of raising the error notification that files a board
+/// issue.
+#[test]
+fn a_read_that_ran_out_of_time_is_latency_rather_than_a_fault() {
+    assert!(is_forge_read_latency(
+        "the forge read did not finish within 30000 ms"
+    ));
+    assert!(is_forge_read_latency(
+        "GET /repos/owner/name/issues failed: the request timed out after 30000 ms"
+    ));
+    assert!(!is_forge_read_latency(
+        "GET /repos/owner/name/issues failed: error sending request for url \
+         (http://gitea.test/api/v1/x)"
+    ));
+    assert!(!is_forge_read_latency(
+        "GET /repos/owner/name/issues failed: HTTP 500 internal server error"
+    ));
+    assert!(!is_forge_read_latency("bad credentials"));
+}
+
 #[tokio::test]
 async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
     let server = StubServer::start(|request| {

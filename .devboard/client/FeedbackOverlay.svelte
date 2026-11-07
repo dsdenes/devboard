@@ -32,11 +32,11 @@
    * The component owns the overlay's pointer bookkeeping, selection phase,
    * composer, and markup; the shell owns the controls and the armed action.
    *
-   * The same panel answers questions: `Ask`, or Enter in the composer, sends
-   * the question and the captured context over the WebSocket to a background
-   * ACP agent and streams its plain-text answer into the transcript. One
-   * conversation belongs to the picked element and lives only while its panel
-   * is open.
+   * Enter in the composer files the report, exactly as `File issue` does; the
+   * panel also answers questions: `Ask` sends the question and the captured
+   * context over the WebSocket to a background ACP agent and streams its
+   * plain-text answer into the transcript. One conversation belongs to the
+   * picked element and lives only while its panel is open.
    */
 
   type Action = FeedbackAction;
@@ -315,13 +315,17 @@
     focusComposer();
   }
 
-  /** Enter sends; Shift+Enter and an IME composition keep their newline. */
+  /**
+   * Enter files the report; Shift+Enter and an IME composition keep their
+   * newline. Asking stays an explicit `Ask` click, so the composer's default
+   * action matches the panel's primary control.
+   */
   function onComposerKeyDown(event: KeyboardEvent): void {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
       return;
     }
     event.preventDefault();
-    ask();
+    void send();
   }
 
   /** Events for a closed or replaced conversation never reach the transcript. */

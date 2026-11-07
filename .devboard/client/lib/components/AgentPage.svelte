@@ -122,7 +122,12 @@
     return Number.isInteger(parsed) && parsed >= 1 && parsed <= 100 ? parsed : undefined;
   }
 
-  function saveSettings(scope: string): void {
+  /**
+   * One save validates all three fields and sends one settings command.
+   * Returns false when it sent nothing: a refused save shows its own message
+   * and never claims the action received no answer.
+   */
+  function saveSettings(scope: string): boolean {
     const trimmed = cadenceText.trim();
     const minutes = Number(trimmed);
     if (
@@ -132,16 +137,16 @@
       minutes > 1440
     ) {
       settingsError = "The cadence must be an integer from 1 through 1440 minutes.";
-      return;
+      return false;
     }
     const perHour = parseLimit(maxPerHourText);
     const pending = parseLimit(maxPendingText);
     if (perHour === undefined || pending === undefined) {
       settingsError = "Both limits must be empty or integers from 1 through 100.";
-      return;
+      return false;
     }
     settingsError = null;
-    agents.saveSettings(agentId, minutes, perHour, pending, scope);
+    return agents.saveSettings(agentId, minutes, perHour, pending, scope);
   }
 </script>
 
@@ -164,7 +169,7 @@
             variant="default"
             label="Stop"
             scope={() => agentId}
-            evidence={() => agents.lifecycle(agentId)}
+            evidence={() => agents.revision(agentId)}
             command={() => agents.stop(agentId)}
             data-testid="agent-stop"
             data-agent={agentId}
@@ -179,7 +184,7 @@
             variant="default"
             label="Start"
             scope={() => agentId}
-            evidence={() => agents.lifecycle(agentId)}
+            evidence={() => agents.revision(agentId)}
             command={() => agents.start(agentId)}
             data-testid="agent-start"
             data-agent={agentId}
@@ -348,7 +353,7 @@
       </div>
     {/if}
 
-    {#if snapshot !== null && snapshot.attached && !snapshot.owned && snapshot.notice !== null}
+    {#if snapshot !== null && snapshot.notice !== null}
       <p class="agent-notice" data-testid="agent-notice" role="status">{snapshot.notice}</p>
     {/if}
 

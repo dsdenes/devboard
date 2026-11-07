@@ -12,6 +12,7 @@ use reqwest::{Method, StatusCode};
 struct Instance {
     base: String,
     root: PathBuf,
+    server: std::sync::Arc<Server>,
 }
 
 fn private_root(label: &str) -> PathBuf {
@@ -54,12 +55,14 @@ async fn start(label: &str) -> Instance {
     config.port = port;
     let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
     let server = Server::new(config, journal);
+    let handle = std::sync::Arc::clone(&server);
     tokio::spawn(async move {
         let _ = devboard::http::serve_on(listener, server).await;
     });
     Instance {
         base: format!("http://127.0.0.1:{port}"),
         root,
+        server: handle,
     }
 }
 
@@ -654,4 +657,122 @@ async fn the_readiness_probe_answers_without_a_credential_and_checks_the_pid() {
         .expect("the listener port");
     assert!(devboard::relaunch::probe_ready(port, Some(std::process::id())).await);
     assert!(!devboard::relaunch::probe_ready(port, Some(0)).await);
+}
+
+#[tokio::test]
+async fn a_starting_frame_arrives_while_the_preflight_is_pending() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let instance = start("start-frame").await;
+    let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release_for_preflight = std::sync::Arc::clone(&release);
+    let completed_for_preflight = std::sync::Arc::clone(&completed);
+    let preflight: devboard::agents_mode::PreflightCallback =
+        std::sync::Arc::new(move |_request| {
+            let release = std::sync::Arc::clone(&release_for_preflight);
+            let completed = std::sync::Arc::clone(&completed_for_preflight);
+            Box::pin(async move {
+                release.notified().await;
+                completed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok("owner/repository".to_string())
+            })
+        });
+    devboard::agents_mode::set_preflight(&instance.server.app, "dead-code", preflight);
+    devboard::agents_mode::set_agent_environment(&instance.server.app, || {
+        Box::pin(async { Ok(std::collections::HashMap::new()) })
+    });
+    devboard::agents_mode::set_spawn(&instance.server.app, |_argv, _environment| None);
+
+    let request = format!("{}/ws", instance.base.replace("http://", "ws://"))
+        .into_client_request()
+        .expect("a request");
+    let (mut socket, _response) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("an upgrade");
+    // The connect replay ends with the full agents frame; wait for it so the
+    // Start below is the only command in flight.
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await
+            .expect("a replay")
+            .expect("a frame")
+            .expect("a frame");
+        let Message::Text(text) = frame else {
+            continue;
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        if parsed["type"] == "agentsState" {
+            break;
+        }
+    }
+    // Each repository family also replays its own snapshot after the agents
+    // frame. Consume the Dead Code one so the Start below is the next frame
+    // this socket sees for that agent.
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await
+            .expect("a replayed agent snapshot")
+            .expect("a frame")
+            .expect("a frame");
+        let Message::Text(text) = frame else {
+            continue;
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        if parsed["type"] == "agentState" && parsed["agent"]["id"] == "dead-code" {
+            break;
+        }
+    }
+
+    let started = std::time::Instant::now();
+    socket
+        .send(Message::Text(
+            r#"{"type":"startAgent","id":"dead-code"}"#.into(),
+        ))
+        .await
+        .expect("a frame");
+
+    let starting = loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_millis(1000), socket.next())
+            .await
+            .expect("the starting frame was withheld behind the preflight")
+            .expect("a frame")
+            .expect("a frame");
+        let Message::Text(text) = frame else {
+            continue;
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        if parsed["type"] == "agentState" && parsed["agent"]["id"] == "dead-code" {
+            break parsed["agent"].clone();
+        }
+    };
+    assert!(started.elapsed() <= std::time::Duration::from_millis(1000));
+    assert_eq!(starting["lifecycle"], "starting");
+    assert!(
+        !completed.load(std::sync::atomic::Ordering::SeqCst),
+        "the starting frame was only written after the preflight finished"
+    );
+
+    release.notify_one();
+    let finished = loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await
+            .expect("the queued final snapshot was not delivered")
+            .expect("a frame")
+            .expect("a frame");
+        let Message::Text(text) = frame else {
+            continue;
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        if parsed["type"] == "agentState" && parsed["agent"]["id"] == "dead-code" {
+            break parsed["agent"].clone();
+        }
+    };
+    assert_ne!(
+        finished["lifecycle"], "starting",
+        "the final snapshot never replaced the starting preview"
+    );
+    let _ = socket.close(None).await;
 }

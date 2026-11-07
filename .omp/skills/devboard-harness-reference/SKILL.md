@@ -64,6 +64,9 @@ carries no content of its own shows the resting label it was given.
   takes no second frame from a pointer or the keyboard while it waits.
 - Busy ends when the confirming server state arrives, and the control then renders the resting
   label from that state. No control flips a domain flag to fake immediacy.
+- The background-agent Start and Stop controls latch the agent's accepted-frame count, so any
+  answering `agentState` releases them — including a refusal snapshot whose `notice` changed but
+  whose lifecycle did not. A `starting` frame releases them the same way.
 - A control that only changes client state — a mode switch, a tab, an accordion, the palette, a
   notification dismiss, a dialog cancel — never enters busy and shows the pressed fill only. A
   disabled control never enters busy and keeps its 45% opacity.
@@ -73,6 +76,10 @@ carries no content of its own shows the resting label it was given.
 - If no confirming state arrives within 10 seconds, the control returns to its resting label and a
   `role="status"` notice beside it states that the action received no answer and names the action
   in words. The notice is dismissed by its own control or by the next activation of that control.
+- A control that refuses locally — a validation error, or a socket that would not take the
+  envelope — dispatches nothing, so it never enters busy and never shows that ceiling notice; its
+  own refusal message is the answer. A save that nobody asked the server for is never reported as
+  an unanswered action.
 
 A control added later follows the same rule: use `Button`, or `CommandButton` when it dispatches,
 pass its resting label, and let the primitive paint the pressed fill and own the busy word. A raw
@@ -642,7 +649,9 @@ once that listener answers the authenticated probe with the replacement's pid, e
 receives `serverRestarting` and reloads once, and the applied commit is recorded in
 `<STATE_DIR>/source-refresh/applied.json` so re-delivering the same publish never restarts again.
 The replacement cannot answer on the dashboard port before the old process exits, which is why it
-proves readiness on its own listener.
+proves readiness on its own listener. It writes that marker as soon as it can answer, before the
+process-table scan of its startup reaping pass: the scan can outlast a caller's readiness deadline
+on a busy host, and it never proves anything about the handoff.
 
 The interval is 60,000 ms and is configurable with `DEVBOARD_SOURCE_REFRESH_INTERVAL_MS`; values
 below 1,000 ms are raised to 1,000 ms. An invalid or unreadable request, a failed replacement
@@ -752,9 +761,11 @@ percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `lim
 `DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
 URLs for tests and offline verification. On-demand reads fetch a key's usage at most once per
 60 seconds unless the operator forces a refresh; while at least one dashboard is connected, the
-server forces one refresh and pushes a fresh `providersState` every 60 seconds, so the dialog's
-usage never stays stale. With no client connected the periodic refresh makes no provider call, and
-the next client's `getProviders` refreshes first.
+dashboard's own background task refreshes a stale report and pushes a fresh `providersState` every
+60 seconds, so the dialog's usage never stays stale. With no client connected the periodic refresh
+makes no provider call, and the next client's `getProviders` refreshes first. Selection never waits
+on this endpoint: a peer start resolves its provider from the cached report and the background
+task is the only path that replaces it, so a slow or unreachable usage endpoint delays no Start.
 
 A detached worker outlives the credential list it was started with, so every agent it starts
 resolves the provider again instead of inheriting the worker's original key. The issue worker
@@ -2245,17 +2256,24 @@ further descriptor projects and validates unchanged.
 
 All seven continuous agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
-`stopping` from the moment Stop is accepted until the worker exits. A start that neither spawns a
+`stopping` from the moment Stop is accepted until the worker exits. A Start answers before its
+preflight can delay it: the server publishes the `starting` snapshot first, and the socket writes
+it while the preflight is still pending. A start that neither spawns a
 worker nor refuses within its preflight bound plus the preflight and abandonment graces is reset to
 `stopped` with `the <agent> start did not finish; press Start to retry.`, so a command whose answer
 was lost never leaves the agent starting; a worker that attaches ends `starting` on the next
 snapshot, whatever preview the page is still showing. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
-Start is a no-op with a notice. The notice is the page's `agent-notice` line, rendered while a live
-worker is `attached` and `owned` is false, and it names the `STATE_DIR` that owns the worker; the
+Start is a no-op with a notice. Every Start that spawns nothing still answers with a changed
+snapshot whose `notice` names the reason — `Start did nothing: …` for a foreign worker, an
+already-running worker, or a family already starting — so the control leaves `Starting…` on that
+frame instead of waiting for its ceiling. The notice is the page's `agent-notice` line, rendered for
+any non-null `notice` and, for a foreign worker, naming the `STATE_DIR` that owns it; the
 Release Train answers the same way, and its Start spawns no second worker. `agent-start` is
 disabled while the lifecycle reads `starting`, so an in-flight start is never dispatched twice.
+Provider usage never sits on this path: a Start resolves its provider from the cached usage report,
+and the dashboard refreshes a stale report on its own 60-second background tick.
 
 All background-agent pages share `data-testid="agent-page"` and `data-agent`, the header
 `agent-header`, the lifecycle badge `agent-lifecycle`, `agent-sync-at`, exactly one of
@@ -2358,6 +2376,12 @@ Browser-to-backend state and controls use the WebSocket from
 The server answers `agentsState` (all agents), `agentState` (one), and `agentPromptState` (one
 agent's prompt section), streams each activity-panel agent's activity as `agentActivity` with its
 agent id, and refuses an unknown id with an error naming it before spawning anything.
+Each socket has its own writer, so a frame is written as soon as the server produces it: a
+`starting` snapshot reaches the client while the Start preflight is still pending, and a
+connection's replay is not withheld until the whole replay has been built. The 250 ms poll
+fingerprints each family's durable state and rebuilds and serializes a snapshot only after the
+fingerprint changes; an idle dashboard rebroadcasts nothing. A `getAgents` read is answered from
+the same current snapshots and does not wait for a provider or a worker.
 `scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
 `GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.
@@ -2419,7 +2443,9 @@ through an agent or a direct file edit, never through the dashboard.
 `agent-limit-pending` are empty (unlimited) or an integer from 1 through 100; an empty field never
 renders as `0`. One `agent-save-cadence` or `agent-save-limits` click validates all three fields
 and persists them in one atomic settings write; a running worker applies the whole change without
-restart. The worker merges a cadence command into the settings it reads at apply time and writes
+restart. An invalid field sends nothing: `agent-settings-error` names the rule, and the control
+stays at its resting label instead of waiting for an answer the server was never asked for. The
+worker merges a cadence command into the settings it reads at apply time and writes
 only `intervalMinutes`, `maxPerHour`, and `maxPending`, so a save made after its last read keeps
 the allowlist and the per-cycle cap. Auto Scout defaults to 1 minute and never starts a scan
 sooner than the interval after the previous scan start; Watchdog defaults to 10 minutes, starts
@@ -3936,15 +3962,19 @@ forges answer the labelled set — the GitHub read passes `--label scout` and th
 `labels=scout` — so one sync costs a page per page of matches instead of a walk of the whole issue
 history; a forge that ignores the filter is filtered again client-side. One
 periodic read, including every `gh` child it starts and the release resolution that follows it, is
-bounded to 30 seconds; a read that does not finish is a retryable transport failure and releases
-the worker, so the retry schedule reads again (or, once exhausted, the next interval does). A
+bounded to 30 seconds; a read that does not finish inside that bound is latency, not a transport
+failure. Its requests were still in flight, so the last read's rows and success time still stand:
+the worker keeps them, records no reason, reads as `stale`, and reads again on the 60-second
+cadence. A slow forge therefore never spends the retry schedule, never writes `agent-sync-error`,
+and never raises the error notification that files a board issue against a forge already behind. A
 closed issue whose version does not resolve is attempted at most
 once every six hours, and a newly published release retries every unresolved row at once. Each
 attempt records its time and, when it fails, the reason on the row; the rows that have waited
 longest are attempted first, and the whole resolution shares the read's deadline, so a stubborn
-issue cannot hold `syncing` and starve the remaining rows or the next scan. A transient read
-failure keeps the last known rows and the last success time, records no reason, reads as `stale`,
-and retries after 1, 2, 4, and 8 seconds; only the fifth consecutive transport failure writes that
+issue cannot hold `syncing` and starve the remaining rows or the next scan. A transport read
+failure — a refused or reset connection, a `5xx` answer, or an unclassified error — keeps the last
+known rows and the last success time, records no reason, reads as `stale`, and retries after 1, 2,
+4, and 8 seconds; only the fifth consecutive transport failure writes that
 attempt's reason to `agent-sync-error`, after which the next attempt waits the 60-second cadence. A
 permanent failure (unusable credentials, a missing repository, a malformed answer, or missing forge
 configuration) surfaces on the first attempt; a Gitea 401 refusal is the exception above and
@@ -3977,25 +4007,26 @@ click or one double-click files at most one issue.
 
 `Report UI issue` enters element-selection mode: the element under the pointer is outlined, and a
 click opens a report panel anchored beside it, without filing anything yet. The panel shows the
-selected element's selector path; the report text is free-form. `File issue` posts the report and
-the captured context to `POST /feedback`, the server files the issue through the configured
-Gitea API, and the panel closes back into report selection mode so another
-element can be picked without leaving and re-entering the mode. A successful filing shows a
-`Report filed.` toast with an `Open issue` link to the created issue. `Esc`, the control again, or
-`Cancel` leaves the mode, a failed report stays in the panel with its error, and a click in
-selection mode never activates the element. The toast survives leaving the mode: a success
-dismisses itself after eight seconds, a failure stays until dismissed or replaced.
+selected element's selector path; the report text is free-form. `File issue`, or `Enter` in the
+composer (`Shift+Enter` inserts a newline), posts the report and the captured context to
+`POST /feedback`, the server files the issue through the configured Gitea API, and the panel
+closes back into report selection mode so another element can be picked without leaving and
+re-entering the mode. A successful filing shows a `Report filed.` toast with an `Open issue` link
+to the created issue. `Esc`, the control again, or `Cancel` leaves the mode, a failed report stays
+in the panel with its error, and a click in selection mode never activates the element. The toast
+survives leaving the mode: a success dismisses itself after eight seconds, a failure stays until
+dismissed or replaced.
 
-The panel also answers questions. `Ask`, or `Enter` in the composer (`Shift+Enter` inserts a
-newline), sends the typed question and the captured element context — route, URL, selector,
-viewport, visible text, DOM excerpt, and capture time — over the existing WebSocket to a
-background ACP agent started from `AGENT_COMMAND`. The agent runs in the host repository root,
-and its answer streams into a compact transcript in the same panel as plain text, with preserved
-line breaks and no Markdown interpretation. Every prompt tells it the conversation is `read-only`:
-never edit files, run mutating commands, file issues, commit, or push. It also tells it to answer
-in at most `three short sentences` and about 400 characters in plain text. That is a prompt-level
-rule, not a sandbox. A turn that streams no text or activity for 120 seconds ends with an error,
-and one turn stops at 15 minutes even while it keeps reporting progress.
+The panel also answers questions. `Ask` sends the typed question and the captured element
+context — route, URL, selector, viewport, visible text, DOM excerpt, and capture time — over the
+existing WebSocket to a background ACP agent started from `AGENT_COMMAND`. The agent runs in the
+host repository root, and its answer streams into a compact transcript in the same panel as plain
+text, with preserved line breaks and no Markdown interpretation. Every prompt tells it the
+conversation is `read-only`: never edit files, run mutating commands, file issues, commit, or
+push. It also tells it to answer in at most `three short sentences` and about 400 characters in
+plain text. That is a prompt-level rule, not a sandbox. A turn that streams no text or activity
+for 120 seconds ends with an error, and one turn stops at 15 minutes even while it keeps reporting
+progress.
 
 One conversation exists `per selected element`, and only while its panel is open. Escape, `×`,
 `Cancel`, a new pick, a successful filing, or a lost connection closes it: the server kills the
@@ -4006,7 +4037,7 @@ buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A fai
 agent, a prompt the agent never answered inside its deadline, or a rejected prompt shows the error
 in the panel, keeps the question and earlier answers, and accepts the next question: the failed
 turn's question returns to the composer, so `File issue`, `Ask`, and `Goal` are enabled again and
-one click or one `Enter` re-asks it. `Ask` never calls `POST /feedback` and creates no issue.
+one `Ask` click re-asks it. `Ask` never calls `POST /feedback` and creates no issue.
 
 Filing or proposing from a panel that has answered questions carries the visible Ask conversation
 into the issue or draft as a `## Ask conversation` block between the request and
