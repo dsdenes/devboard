@@ -1,9 +1,14 @@
-import { agentRegistry } from "../../lib/agent-registry.ts";
+import {
+  AgentRegistryError,
+  agentRegistry,
+  projectAgentSnapshot,
+} from "../../lib/agent-registry.ts";
 import type {
   AgentActivityDetail,
   AgentDescriptor,
   AgentPromptState,
   AgentSnapshot,
+  AgentSnapshotInput,
   RunQuestion,
 } from "./types";
 import { connection } from "./connection.svelte";
@@ -12,27 +17,6 @@ import { saveFeedback } from "./save-feedback.svelte";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isActivityDetail(value: unknown): value is AgentActivityDetail {
-  return (
-    isObject(value) &&
-    value.panel === "activity" &&
-    Array.isArray(value.entries) &&
-    value.entries.every((entry) => typeof entry === "string")
-  );
-}
-
-/** A snapshot is trusted only when it carries every shared fact. */
-function isSnapshot(value: unknown): value is AgentSnapshot {
-  if (!isObject(value)) return false;
-  if (typeof value.id !== "string" || typeof value.label !== "string") return false;
-  if (typeof value.lifecycle !== "string") return false;
-  if (!isObject(value.cadence) || typeof value.cadence.minutes !== "number") return false;
-  if (!isObject(value.limits) || !Array.isArray(value.issues)) return false;
-  if (!isObject(value.sync) || typeof value.sync.state !== "string") return false;
-  if (!isObject(value.detail) || typeof value.detail.panel !== "string") return false;
-  return true;
 }
 
 interface ActivityEntry {
@@ -198,42 +182,55 @@ export class AgentsStore {
     }
   }
 
+  /**
+   * A snapshot is stored only when the shared projection accepts it: it carries
+   * every fact the page reads, so no render path dereferences a missing field.
+   */
   private accept(value: unknown): void {
-    if (!isSnapshot(value)) return;
-    const first = !this.seen.has(value.id);
-    this.seen.add(value.id);
-    const previousError = this.lastError.get(value.id) ?? null;
-    this.snapshots[value.id] = value;
-    if (value.detail.panel === "activity" && isActivityDetail(value.detail)) {
-      const currentScan = this.activityScan[value.id] ?? null;
-      if (currentScan !== value.detail.scanId) {
-        this.activityScan[value.id] = value.detail.scanId;
-        this.activity[value.id] = [...value.detail.entries];
+    if (!isObject(value) || typeof value.id !== "string") return;
+    const descriptor = agentRegistry.get(value.id);
+    if (descriptor === undefined) return;
+    let snapshot: AgentSnapshot;
+    try {
+      snapshot = projectAgentSnapshot(descriptor, value as unknown as AgentSnapshotInput);
+    } catch (error) {
+      if (error instanceof AgentRegistryError) return;
+      throw error;
+    }
+    const first = !this.seen.has(snapshot.id);
+    this.seen.add(snapshot.id);
+    const previousError = this.lastError.get(snapshot.id) ?? null;
+    this.snapshots[snapshot.id] = snapshot;
+    if (snapshot.detail.panel === "activity") {
+      const currentScan = this.activityScan[snapshot.id] ?? null;
+      if (currentScan !== snapshot.detail.scanId) {
+        this.activityScan[snapshot.id] = snapshot.detail.scanId;
+        this.activity[snapshot.id] = [...snapshot.detail.entries];
       }
     }
-    if (value.error !== previousError) {
-      this.lastError.set(value.id, value.error);
-      if (!first && value.error !== null) {
-        notifications.push(value.label, "error", value.error);
+    if (snapshot.error !== previousError) {
+      this.lastError.set(snapshot.id, snapshot.error);
+      if (!first && snapshot.error !== null) {
+        notifications.push(snapshot.label, "error", snapshot.error);
       }
     }
-    const pending = this.pendingSettings.get(value.id);
+    const pending = this.pendingSettings.get(snapshot.id);
     if (
       pending !== undefined &&
       settingsSignature(
-        value.cadence.minutes,
-        value.limits.maxPerHour,
-        value.limits.maxPending,
+        snapshot.cadence.minutes,
+        snapshot.limits.maxPerHour,
+        snapshot.limits.maxPending,
       ) === pending.signature
     ) {
-      this.pendingSettings.delete(value.id);
-      saveFeedback.saved(pending.scope, `${value.label} settings saved.`);
+      this.pendingSettings.delete(snapshot.id);
+      saveFeedback.saved(pending.scope, `${snapshot.label} settings saved.`);
     }
-    const previousNotice = this.lastNotice.get(value.id) ?? null;
-    if (value.notice !== previousNotice) {
-      this.lastNotice.set(value.id, value.notice);
-      if (!first && value.notice !== null && value.notice.startsWith("Filed ")) {
-        notifications.push(value.label, "success", value.notice);
+    const previousNotice = this.lastNotice.get(snapshot.id) ?? null;
+    if (snapshot.notice !== previousNotice) {
+      this.lastNotice.set(snapshot.id, snapshot.notice);
+      if (!first && snapshot.notice !== null && snapshot.notice.startsWith("Filed ")) {
+        notifications.push(snapshot.label, "success", snapshot.notice);
       }
     }
   }

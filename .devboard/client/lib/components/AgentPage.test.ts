@@ -188,3 +188,12 @@ test("both settings Save controls are disabled and send nothing with the socket 
     connection.state = previous;
   }
 });
+
+test("a frame without workers renders the page with no live worker row", () => {
+  const withoutWorkers = releaseSnapshot({});
+  delete withoutWorkers.workers;
+  const view = present(withoutWorkers);
+  expect(within(view.container).getByTestId("agent-header")).toBeTruthy();
+  expect(within(view.container).queryByTestId("agent-workers")).toBeNull();
+  expect(agents.snapshot("release-train")?.workers).toEqual([]);
+});

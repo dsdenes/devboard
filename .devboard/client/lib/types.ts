@@ -202,6 +202,7 @@ export type {
   AgentReleaseRow,
   AgentScope,
   AgentSnapshot,
+  AgentSnapshotInput,
   AgentSync,
   AgentSyncState,
   AgentTimerGate,

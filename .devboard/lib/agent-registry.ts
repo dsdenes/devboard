@@ -31,6 +31,17 @@ export const AGENT_ISSUE_COLUMNS = [
   "version",
 ] as const;
 
+/** The legacy systemd timer's state vocabulary, shared by page and adapter. */
+export const AGENT_TIMER_STATES = [
+  "active",
+  "inactive",
+  "enabled",
+  "disabled",
+  "absent",
+  "unknown",
+] as const;
+export type AgentTimerState = (typeof AGENT_TIMER_STATES)[number];
+
 export type AgentScope = "repository" | "machine";
 
 /** An empty cap is unlimited; it is never zero. */
@@ -101,7 +112,7 @@ export interface AgentDocumentationEntry {
 export interface AgentTimerGate {
   unit: string;
   /** The legacy unit's state; `absent` when systemd or the unit is missing. */
-  state: "active" | "inactive" | "enabled" | "disabled" | "absent" | "unknown";
+  state: AgentTimerState;
   /** True while the legacy timer is active or enabled. */
   blocked: boolean;
   /** Why the last state read or disable failed, or null. */
@@ -480,15 +491,60 @@ function nullableTimestamp(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function normalizeIssue(row: AgentIssueRow): AgentIssueRow {
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+/** One filed-issue row; a row the table would read a missing field from throws. */
+function normalizeIssue(descriptor: AgentDescriptor, row: unknown): AgentIssueRow {
+  if (
+    !isRecord(row) ||
+    typeof row.title !== "string" ||
+    typeof row.url !== "string" ||
+    typeof row.filedAt !== "string"
+  ) {
+    throw new AgentRegistryError(
+      `${descriptor.id}: an issue row needs a title, a url, and a filedAt`,
+    );
+  }
+  const state = AGENT_ISSUE_STATES.find((candidate) => candidate === row.state) ?? "unknown";
   return {
     title: row.title,
     category: typeof row.category === "string" && row.category.length > 0 ? row.category : null,
     filedAt: row.filedAt,
     url: row.url,
-    state: AGENT_ISSUE_STATES.includes(row.state) ? row.state : "unknown",
+    state,
     version: typeof row.version === "string" && row.version.length > 0 ? row.version : null,
     note: typeof row.note === "string" && row.note.length > 0 ? row.note : null,
+  };
+}
+
+/** One cycle row, validated against every field the history line reads. */
+function normalizeCycle(descriptor: AgentDescriptor, value: unknown): AgentCycle {
+  if (!isRecord(value)) {
+    throw new AgentRegistryError(`${descriptor.id}: a cycle must be an object`);
+  }
+  const window = value.window;
+  if (
+    typeof value.at !== "string" ||
+    typeof value.action !== "string" ||
+    !isIntegerIn(value.findings, 0, Number.MAX_SAFE_INTEGER) ||
+    !Array.isArray(value.issues) ||
+    !value.issues.every((issue) => typeof issue === "string") ||
+    !isRecord(window) ||
+    !isNullableString(window.start) ||
+    !isNullableString(window.end) ||
+    !(value.reason === undefined || typeof value.reason === "string")
+  ) {
+    throw new AgentRegistryError(`${descriptor.id}: a cycle is outside the shared shape`);
+  }
+  return {
+    at: value.at,
+    window: { start: window.start, end: window.end },
+    action: value.action,
+    findings: value.findings,
+    issues: [...(value.issues as string[])],
+    ...(value.reason === undefined ? {} : { reason: value.reason }),
   };
 }
 
@@ -546,9 +602,9 @@ export function sortAgentIssues(rows: readonly AgentIssueRow[]): AgentIssueRow[]
 }
 
 /**
- * Validates one adapter snapshot and adds the descriptor's identity. The shared
- * bridge calls this for every agent, so a third descriptor is accepted exactly
- * like the first two.
+ * Validates one adapter snapshot and adds the descriptor's identity. The server
+ * adapter publishes its projection and the client store validates every frame
+ * through it, so both sides trust one shape.
  */
 export function projectAgentSnapshot(
   descriptor: AgentDescriptor,
@@ -574,11 +630,49 @@ export function projectAgentSnapshot(
   if (!isRecord(detail) || detail.panel !== descriptor.detail.panel) {
     throw new AgentRegistryError(`${descriptor.id}: detail panel does not match the descriptor`);
   }
-  if (detail.panel === "activity" && !Array.isArray(detail.entries)) {
-    throw new AgentRegistryError(`${descriptor.id}: activity detail needs entries`);
+  let projectedDetail: AgentDetail;
+  if (detail.panel === "activity") {
+    if (
+      !Array.isArray(detail.entries) ||
+      !detail.entries.every((entry) => typeof entry === "string") ||
+      !isNullableString(detail.scanId)
+    ) {
+      throw new AgentRegistryError(
+        `${descriptor.id}: activity detail is outside the shared shape`,
+      );
+    }
+    projectedDetail = {
+      panel: "activity",
+      scanId: detail.scanId,
+      entries: [...detail.entries],
+    };
+  } else {
+    if (!Array.isArray(detail.cycles)) {
+      throw new AgentRegistryError(`${descriptor.id}: cycle detail needs cycles`);
+    }
+    projectedDetail = {
+      panel: "cycles",
+      cycles: detail.cycles.map((cycle) => normalizeCycle(descriptor, cycle)),
+    };
   }
-  if (detail.panel === "cycles" && !Array.isArray(detail.cycles)) {
-    throw new AgentRegistryError(`${descriptor.id}: cycle detail needs cycles`);
+  let projectedTimer: AgentTimerGate | null = null;
+  if (input.timer !== undefined && input.timer !== null) {
+    const timer = input.timer;
+    if (
+      !isRecord(timer) ||
+      typeof timer.unit !== "string" ||
+      !AGENT_TIMER_STATES.includes(timer.state) ||
+      typeof timer.blocked !== "boolean" ||
+      !isNullableString(timer.error)
+    ) {
+      throw new AgentRegistryError(`${descriptor.id}: timer is outside the shared shape`);
+    }
+    projectedTimer = {
+      unit: timer.unit,
+      state: timer.state,
+      blocked: timer.blocked,
+      error: timer.error,
+    };
   }
   return {
     id: descriptor.id,
@@ -600,26 +694,18 @@ export function projectAgentSnapshot(
       maxPerHour: input.limits.maxPerHour,
       maxPending: input.limits.maxPending,
     },
-    issues: sortAgentIssues(input.issues.map(normalizeIssue)),
+    issues: sortAgentIssues(input.issues.map((row) => normalizeIssue(descriptor, row))),
     documentation: normalizeDocumentation(input.documentation),
     pending:
       typeof input.pending === "number" && Number.isInteger(input.pending) && input.pending >= 0
         ? input.pending
         : 0,
     sync: { state: sync.state, at: sync.at, error: sync.error },
-    detail: detail as AgentDetail,
+    detail: projectedDetail,
     releases: normalizeReleases(input.releases),
     notice: nullableTimestamp(input.notice),
     error: nullableTimestamp(input.error),
-    timer:
-      input.timer === undefined || input.timer === null
-        ? null
-        : {
-            unit: input.timer.unit,
-            state: input.timer.state,
-            blocked: input.timer.blocked === true,
-            error: nullableTimestamp(input.timer.error),
-          },
+    timer: projectedTimer,
     workers: normalizeWorkers(descriptor, input.workers),
   };
 }

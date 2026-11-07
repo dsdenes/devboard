@@ -84,21 +84,25 @@ function scout(minutes: number, maxPerHour: number | null, maxPending: number | 
     id: "scout",
     label: "Auto Scout",
     description: "",
-    scope: "issues",
+    scope: "repository",
     lifecycle: "running",
+    paused: false,
     enabled: true,
     owned: true,
     attached: true,
-    cadence: { minutes, lastRunAt: null, nextRunAt: null },
+    cadence: { minutes, defaultMinutes: 1, lastRunAt: null, nextRunAt: null },
     limits: { maxPerHour, maxPending },
     issues: [],
+    documentation: [],
+    releases: [],
     pending: 0,
-    sync: { state: "fresh", at: null, error: null },
-    detail: { panel: "none" },
+    sync: { state: "ok", at: null, error: null },
+    detail: { panel: "activity", scanId: null, entries: [] },
     notice: null,
     error: null,
     timer: null,
-  } as unknown as AgentSnapshot;
+    workers: [],
+  };
 }
 
 test("settings feedback waits for the snapshot that echoes the saved values", () => {
@@ -178,7 +182,7 @@ test("the Release Train count follows its release history, not its empty issue l
       { at: "2026-11-02T10:00:00.000Z", version: "1.1.0", commits: 4, url: null },
       { at: "2026-11-01T10:00:00.000Z", version: "1.0.0", commits: 2, url: null },
     ],
-  } as unknown as AgentSnapshot;
+  };
   socket.deliver({ type: "agentState", agent: releaseTrain });
   expect(store.count("release-train")).toBe(2);
 });
