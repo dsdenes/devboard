@@ -2222,6 +2222,10 @@ struct AgentsMode {
     prompts: PromptController,
     adapters: Vec<Adapter>,
     signatures: Mutex<HashMap<&'static str, String>>,
+    /// The last projected snapshot of each family. The poll replaces it when
+    /// the family changes, and a connect replay and `getAgents` answer from it
+    /// instead of rebuilding nine snapshots on the socket's critical path.
+    cached: Mutex<HashMap<&'static str, Value>>,
     /// The cheap state signature each family's last snapshot was built from.
     /// The 250 ms poll rebuilds and serializes a family only after this
     /// changes, so an idle dashboard does no projection work at all.
@@ -2266,9 +2270,9 @@ impl Adapter {
         }
     }
 
-    fn replay(&self, conn: &Conn, shared: &Shared) {
+    fn replay(&self, conn: &Conn, shared: &Shared, snapshot: Value) {
         match self {
-            Adapter::Repo(family) => family.replay(conn, shared),
+            Adapter::Repo(family) => family.replay(conn, shared, snapshot),
             Adapter::Watchdog(_) | Adapter::Mcp(_) | Adapter::Release(_) => {}
         }
     }
@@ -2615,6 +2619,7 @@ impl AgentsMode {
             shared,
             adapters: ordered,
             signatures: Mutex::new(HashMap::new()),
+            cached: Mutex::new(HashMap::new()),
             poll_signatures: Mutex::new(HashMap::new()),
             settle_until: Mutex::new(0),
             has_clients: Arc::new(move || shared_for_clients.has_clients()),
@@ -2712,6 +2717,7 @@ impl AgentsMode {
 
     fn publish_if_changed(&self, adapter: &Adapter) {
         let snapshot = adapter.snapshot();
+        self.store_projection(adapter, &snapshot);
         let text = crate::jsjson::stringify(&snapshot);
         let changed = {
             let Ok(mut signatures) = self.signatures.lock() else {
@@ -2735,12 +2741,29 @@ impl AgentsMode {
         }
     }
 
+    fn store_projection(&self, adapter: &Adapter, snapshot: &Value) {
+        if let Ok(mut cached) = self.cached.lock() {
+            cached.insert(adapter.id(), snapshot.clone());
+        }
+    }
+
+    /// The family's last projection, computed once when no tick has produced
+    /// one yet. The poll keeps it current, so a replay or a read never walks
+    /// nine families' state on the socket's critical path.
     fn project(&self, adapter: &Adapter) -> Value {
-        adapter.snapshot()
+        if let Ok(cached) = self.cached.lock() {
+            if let Some(value) = cached.get(adapter.id()) {
+                return value.clone();
+            }
+        }
+        let snapshot = adapter.snapshot();
+        self.store_projection(adapter, &snapshot);
+        snapshot
     }
 
     fn publish_agent(&self, adapter: &Adapter) {
-        let agent = self.project(adapter);
+        let agent = adapter.snapshot();
+        self.store_projection(adapter, &agent);
         let text = crate::jsjson::stringify(&agent);
         if let Ok(mut signatures) = self.signatures.lock() {
             signatures.insert(adapter.id(), text);
@@ -2755,9 +2778,13 @@ impl AgentsMode {
     }
 
     fn send_agent(&self, conn: &Conn, adapter: &Adapter) {
+        // A targeted read is a fresh projection; only the all-agents read
+        // answers from the poll's cache.
+        let agent = adapter.snapshot();
+        self.store_projection(adapter, &agent);
         conn.send(json!({
             "type": "agentState",
-            "agent": self.project(adapter),
+            "agent": agent,
         }));
     }
 
@@ -2769,28 +2796,41 @@ impl AgentsMode {
     }
 
     fn replay_agents(&self, conn: &Conn) {
+        self.replay_agents_inner(conn, true);
+    }
+
+    /// `getAgents` answers from the cached projections. The timer read belongs
+    /// to the connect replay, where the first snapshot must carry the gate; a
+    /// read never waits on it.
+    fn answer_get_agents(&self, conn: &Conn) {
+        self.replay_agents_inner(conn, false);
+    }
+
+    fn replay_agents_inner(&self, conn: &Conn, refresh_timer: bool) {
         if let Ok(mut settle) = self.settle_until.lock() {
             *settle = now_millis() + 1_000;
         }
-        for adapter in &self.adapters {
-            if let Adapter::Watchdog(family) = adapter {
-                family.refresh_timer_now();
+        if refresh_timer {
+            for adapter in &self.adapters {
+                if let Adapter::Watchdog(family) = adapter {
+                    family.refresh_timer_now();
+                }
             }
         }
         let snapshots = self.snapshot_all();
         conn.send(json!({
             "type": "agentsState",
-            "agents": snapshots,
+            "agents": snapshots.clone(),
         }));
         // A connect is the baseline the poll cadence compares against: the
         // frames this replay sent never repeat as unsolicited broadcasts.
         if let Ok(mut signatures) = self.signatures.lock() {
-            for adapter in &self.adapters {
-                signatures.insert(adapter.id(), crate::jsjson::stringify(&adapter.snapshot()));
+            for (adapter, snapshot) in self.adapters.iter().zip(snapshots.iter()) {
+                signatures.insert(adapter.id(), crate::jsjson::stringify(snapshot));
             }
         }
-        for adapter in &self.adapters {
-            adapter.replay(conn, &self.shared);
+        for (adapter, snapshot) in self.adapters.iter().zip(snapshots) {
+            adapter.replay(conn, &self.shared, snapshot);
         }
     }
 
@@ -2802,7 +2842,7 @@ impl AgentsMode {
     async fn handle(&self, conn: &Conn, command: &Command) -> bool {
         match command {
             Command::GetAgents => {
-                self.replay_agents(conn);
+                self.answer_get_agents(conn);
                 true
             }
             Command::GetAgent { id } => {
@@ -4621,8 +4661,7 @@ impl RepoFamily {
             .collect()
     }
 
-    fn replay(&self, conn: &Conn, shared: &Shared) {
-        let snapshot = self.snapshot();
+    fn replay(&self, conn: &Conn, shared: &Shared, snapshot: Value) {
         let mut frame = Map::new();
         frame.insert("type".to_string(), Value::String("agentState".to_string()));
         frame.insert("agent".to_string(), snapshot);

@@ -873,9 +873,16 @@ async fn run_socket(server: Arc<Server>, socket: axum::extract::ws::WebSocket) {
         }
         let _ = sink.close().await;
     });
-    // The connect replay is produced before any command is read, so a reply
-    // never overtakes a replayed frame.
-    server.app.open(&conn).await;
+    // The connect replay streams from its own task. It may spend seconds on
+    // the slow parts (a timer read, a prompt read), and a `getAgents` read
+    // must not wait behind it; the snapshot cache answers that read at once.
+    let opener = {
+        let server = Arc::clone(&server);
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            server.app.open(&conn).await;
+        })
+    };
     loop {
         match stream.next().await {
             Some(Ok(Message::Text(text))) => match parse_client_message(&text) {
@@ -897,6 +904,7 @@ async fn run_socket(server: Arc<Server>, socket: axum::extract::ws::WebSocket) {
             Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
         }
     }
+    opener.abort();
     server.app.unregister(conn.id()).await;
     server.app.close(&conn).await;
     // Dropping the last sender this surface holds ends the writer, which
