@@ -4542,6 +4542,33 @@ pub fn read_dedup_reads(run_dir: &Path) -> Vec<i64> {
     counts
 }
 
+/// The deduplication tool failures the turn recorded, oldest first, each as
+/// `<tool>: <first diagnostic line>`.
+pub fn read_dedup_errors(run_dir: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(run_dir.join("dedup-errors.jsonl")) else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let Some(error) = parsed.get("error").and_then(Value::as_str) else {
+            continue;
+        };
+        let tool = parsed
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or("the tool");
+        errors.push(format!("{tool}: {}", diagnostic_line(error)));
+    }
+    errors
+}
+
 /// The verification stub: answers every deduplication call deterministically.
 pub struct StubDedup {
     path: PathBuf,
@@ -5535,17 +5562,21 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
             };
             let records = read_dedup_records(&dedup_run_dir);
             let reads = read_dedup_reads(&dedup_run_dir);
+            let errors = read_dedup_errors(&dedup_run_dir);
+            let tool_failure = errors.last().cloned();
             open_issues_read = reads.last().copied().unwrap_or(0);
             // A turn that stops after recording a decision keeps it: those
             // records are what the turn decided, so only a turn that recorded
-            // nothing at all fails the gate.
+            // nothing at all fails the gate. A recorded tool failure names the
+            // cause: a refused forge read is not an empty open set.
             let gate_reason = match &stopped {
                 Some(reason) if records.is_empty() => {
                     Some(format!("the deduplication agent failed: {reason}"))
                 }
-                None if reads.is_empty() && records.is_empty() => {
-                    Some("the deduplication turn read no open issue".to_string())
-                }
+                None if reads.is_empty() && records.is_empty() => Some(match &tool_failure {
+                    Some(error) => format!("the deduplication agent failed: {error}"),
+                    None => "the deduplication turn read no open issue".to_string(),
+                }),
                 _ => None,
             };
             if let Some(reason) = gate_reason {
@@ -5580,9 +5611,12 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                         continue;
                     };
                     let Some(record) = by_fingerprint.get(fingerprint) else {
-                        let reason = stopped.clone().unwrap_or_else(|| {
-                            "the deduplication turn recorded no decision".to_string()
-                        });
+                        let reason = stopped
+                            .clone()
+                            .or_else(|| tool_failure.clone())
+                            .unwrap_or_else(|| {
+                                "the deduplication turn recorded no decision".to_string()
+                            });
                         if stopped.is_none() && filing_room > 0 && failure.is_none() {
                             failure = Some(reason.clone());
                         }

@@ -2850,6 +2850,14 @@ an open issue is suppressed silently: no issue, no comment. Its ledger entry rec
 `truncated: true` when an explicit `limit` or a forge read ceiling kept the older rows back, so an
 open issue below one `list` page is never invisible by silence.
 
+A deduplication tool call that fails records its failure in `<run-dir>/dedup-errors.jsonl` beside
+the read and decision files, naming the tool and the forge's own refusal. The cycle never reads
+that refusal as an empty open set: when a turn recorded no read and no decision, `report.json`
+names the recorded failure — `the deduplication agent failed: <tool>: <refusal>` — and a turn that
+read the open set but had no decision recorded for a candidate names the same failure in that
+candidate's `reason`. A refused credential therefore reports its HTTP status and message instead
+of reading as a repository with no open issue.
+
 Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
 that issue is closed, the next cycle that observes the same evidence sends the candidate to the
 agent again, and it is filed when the agent judges it unique. Candidates the agent marks

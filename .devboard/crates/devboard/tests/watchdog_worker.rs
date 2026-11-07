@@ -212,6 +212,34 @@ impl DedupRunner for StoppedDedup {
     }
 }
 
+/// A deduplication turn whose tool calls the forge refused: it records the
+/// refusal and decides nothing.
+struct RefusedDedup {
+    /// Whether the turn listed the open set before its decisions failed.
+    read: bool,
+    /// The tool whose call the forge refused.
+    tool: &'static str,
+    error: String,
+}
+
+impl DedupRunner for RefusedDedup {
+    fn run(&self, _request: &DedupRequest, run_dir: &Path) -> Result<String, String> {
+        std::fs::create_dir_all(run_dir).expect("the dedup directory");
+        if self.read {
+            write(&run_dir.join("dedup-reads.jsonl"), "{\"count\":3}\n");
+        }
+        write(
+            &run_dir.join("dedup-errors.jsonl"),
+            &format!(
+                "{}\n",
+                serde_json::to_string(&json!({"tool": self.tool, "error": self.error}))
+                    .expect("an error record")
+            ),
+        );
+        Ok(String::new())
+    }
+}
+
 fn production_root(label: &str) -> PathBuf {
     let root = scratch(label);
     std::fs::create_dir_all(root.join(".devboard").join(".tmp")).expect("a harness");
@@ -1416,6 +1444,106 @@ fn a_turn_that_recorded_nothing_still_fails_the_cycle() {
     );
     assert!(result.report.issues().is_empty());
     assert_eq!(load_ledger(&state_dir).pending_filing.len(), 2);
+}
+
+#[test]
+fn a_turn_whose_forge_refused_the_read_names_the_refusal() {
+    let root = production_root("dedup-refused");
+    let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);
+    std::fs::create_dir_all(&state_dir).expect("a watchdog state");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let events = vec![event(
+        now,
+        1,
+        "first refused error",
+        "server-error",
+        &instance,
+    )];
+    let refusal = "GET /repos/acme/fixture/issues?state=open&type=issues&limit=51&page=1 failed \
+                   (HTTP 401): invalid username, password or token"
+        .to_string();
+    let deps = CycleDeps {
+        discover: Arc::new(move |_root: &Path| vec![instance.clone()]),
+        collect: Arc::new(
+            move |_root: &Path, _i: &[Instance], _w: Window| Collection {
+                events: events.clone(),
+                malformed: 0,
+                unattributed: 0,
+            },
+        ),
+        gh: Arc::new(|_argv: &[String], _stdin: &str| GhOutcome::default()),
+        delivery: Some(Arc::new(RecordingDelivery::new())),
+        dedup: Some(Arc::new(RefusedDedup {
+            read: false,
+            tool: "issues_list",
+            error: refusal.clone(),
+        })),
+    };
+    let mut options = CycleOptions::new(root.clone());
+    options.state_dir = Some(state_dir.clone());
+    options.now_ms = now;
+    let result = run_cycle(&options, &deps).expect("the cycle");
+
+    let reason = format!("the deduplication agent failed: issues_list: {refusal}");
+    assert_eq!(result.report.action(), "failed");
+    assert_eq!(result.report.reason(), Some(reason.as_str()));
+    assert!(result.report.issues().is_empty());
+    assert_eq!(load_ledger(&state_dir).pending_filing.len(), 1);
+    assert_eq!(
+        result.report.value["deduplication"]["decisions"][0]["reason"],
+        json!(reason)
+    );
+}
+
+#[test]
+fn a_turn_that_read_the_open_set_still_names_the_refused_decision() {
+    let root = production_root("dedup-refused-decision");
+    let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);
+    std::fs::create_dir_all(&state_dir).expect("a watchdog state");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let events = vec![event(
+        now,
+        1,
+        "second refused error",
+        "server-error",
+        &instance,
+    )];
+    let refusal = "POST /repos/acme/fixture/issues failed (HTTP 401): invalid username, \
+                   password or token"
+        .to_string();
+    let deps = CycleDeps {
+        discover: Arc::new(move |_root: &Path| vec![instance.clone()]),
+        collect: Arc::new(
+            move |_root: &Path, _i: &[Instance], _w: Window| Collection {
+                events: events.clone(),
+                malformed: 0,
+                unattributed: 0,
+            },
+        ),
+        gh: Arc::new(|_argv: &[String], _stdin: &str| GhOutcome::default()),
+        delivery: Some(Arc::new(RecordingDelivery::new())),
+        dedup: Some(Arc::new(RefusedDedup {
+            read: true,
+            tool: "issue_create",
+            error: refusal.clone(),
+        })),
+    };
+    let mut options = CycleOptions::new(root.clone());
+    options.state_dir = Some(state_dir.clone());
+    options.now_ms = now;
+    let result = run_cycle(&options, &deps).expect("the cycle");
+
+    let reason = format!("issue_create: {refusal}");
+    assert_eq!(result.report.action(), "failed");
+    assert_eq!(result.report.reason(), Some(reason.as_str()));
+    assert!(result.report.issues().is_empty());
+    assert_eq!(load_ledger(&state_dir).pending_filing.len(), 1);
+    assert_eq!(
+        result.report.value["deduplication"]["decisions"][0]["reason"],
+        json!(reason)
+    );
 }
 
 // ---------------------------------------------------------------------------

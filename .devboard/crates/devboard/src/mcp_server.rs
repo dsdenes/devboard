@@ -1057,6 +1057,9 @@ pub async fn call_tool(context: &McpContext, name: Option<&Value>, args: Option<
             result
         }
         Err(error) => {
+            if dedup_tool(&name) {
+                record_dedup_error(context, &name, &error);
+            }
             let result = json!({"error": error});
             if mutating_tool(&name) {
                 log_tool_call(context, &name, &result);
@@ -2086,6 +2089,7 @@ fn design_release_request(
 
 const DEDUP_RECORD_FILE: &str = "dedup-records.jsonl";
 const DEDUP_READ_FILE: &str = "dedup-reads.jsonl";
+const DEDUP_ERROR_FILE: &str = "dedup-errors.jsonl";
 
 fn dedup_run_directory(context: &McpContext) -> Option<PathBuf> {
     let configured =
@@ -2109,6 +2113,30 @@ fn dedup_run_directory(context: &McpContext) -> Option<PathBuf> {
         None => absolute,
     };
     target.starts_with(&root).then_some(target)
+}
+
+/// The tools a deduplication turn decides with. Their failure is what leaves
+/// a turn with no read and no decision.
+fn dedup_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "issues_list" | "issue_get" | "issue_create" | "watchdog_duplicate_record"
+    )
+}
+
+/// Records one failed deduplication tool call beside the turn's reads and
+/// decisions. The cycle reports it when the turn recorded no decision, so a
+/// refused forge read names its cause instead of reading as an empty open
+/// set. A record failure never fails the tool call that produced it.
+fn record_dedup_error(context: &McpContext, tool: &str, error: &str) {
+    let Some(directory) = dedup_run_directory(context) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&directory);
+    let _ = append_line(
+        &directory.join(DEDUP_ERROR_FILE),
+        &json!({"tool": tool, "error": error, "at": now_iso()}),
+    );
 }
 
 /// Records one candidate this turn filed. `issue_create` is a deduplication

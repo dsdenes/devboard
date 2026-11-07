@@ -554,3 +554,98 @@ async fn a_dedup_run_records_the_issue_the_turn_files() {
     assert_eq!(posts, 1, "the refused call files nothing");
     server.abort();
 }
+
+/// Answers the two identity requests one Gitea read makes and refuses the
+/// issue read itself the way a rejected credential does.
+async fn stub_gitea_refused_read(request: axum::extract::Request) -> axum::response::Response {
+    let method = request.method().as_str().to_string();
+    let path = request.uri().path().to_string();
+    let (status, body) = match (method.as_str(), path.as_str()) {
+        ("GET", "/api/v1/user") => (200, json!({"login": "alice"}).to_string()),
+        ("GET", "/api/v1/repos/owner/name") => (
+            200,
+            json!({"permissions": {"pull": true, "push": false, "admin": false}}).to_string(),
+        ),
+        _ => (
+            401,
+            json!({"message": "invalid username, password or token"}).to_string(),
+        ),
+    };
+    axum::response::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .expect("a stub response")
+}
+
+#[tokio::test]
+async fn a_refused_dedup_read_is_recorded_for_the_cycle() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let app = axum::Router::new().fallback(stub_gitea_refused_read);
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mut context = fixture("dedup-refused-read");
+    let remote = format!("http://127.0.0.1:{port}/owner/name.git");
+    let added = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&context.repo_dir)
+        .args(["remote", "add", "origin", &remote])
+        .status()
+        .expect("git runs");
+    assert!(added.success(), "the fixture origin is added");
+    let run_dir = context
+        .state_dir
+        .join("watchdog")
+        .join("runs")
+        .join("cycle")
+        .join("dedup");
+    std::fs::create_dir_all(&run_dir).expect("the dedup run directory");
+    context.environment = HashMap::from([
+        ("GITEA_TOKEN".to_string(), "secret".to_string()),
+        (
+            "DEVBOARD_DEDUP_RUN_DIR".to_string(),
+            run_dir.to_string_lossy().into_owned(),
+        ),
+    ]);
+
+    let frames = drive(
+        &context,
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "tools/call",
+            "params": {
+                "name": "issues_list",
+                "arguments": {"state": "open"}
+            }
+        })],
+    )
+    .await;
+
+    let refused = reply(&frames, 50);
+    assert_eq!(refused["result"]["isError"], true);
+    let text = refused["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool text")
+        .to_string();
+    assert!(text.contains("HTTP 401"), "{text}");
+
+    let errors = devboard::workers::watchdog::read_dedup_errors(&run_dir);
+    assert_eq!(errors.len(), 1, "the refused read is recorded once");
+    assert!(
+        errors[0].starts_with("issues_list: GET "),
+        "the record names the tool and the request: {}",
+        errors[0]
+    );
+    assert!(
+        errors[0].contains("failed (HTTP 401): invalid username, password or token"),
+        "the record carries the forge's refusal: {}",
+        errors[0]
+    );
+    server.abort();
+}
