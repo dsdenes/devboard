@@ -1823,6 +1823,71 @@ async fn list_labelled_asks_the_gitea_forge_for_the_label() {
 }
 
 #[tokio::test]
+async fn the_design_forge_asks_the_gitea_forge_for_the_design_label() {
+    let labelled = |number: i64| {
+        json!({
+            "number": number,
+            "title": format!("Issue {number}"),
+            "html_url": format!("https://gitea.test/owner/name/issues/{number}"),
+            "created_at": "2024-01-02T03:04:05Z",
+            "state": "open",
+            "body": format!("## Category\n\ncolor {number}\n"),
+            "labels": [{"name": "design"}],
+        })
+    };
+    let server =
+        StubServer::start(
+            move |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                    "permissions": {"pull": true, "push": true, "admin": false},
+                })),
+                ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+                ("GET", "/api/v1/repos/owner/name/issues") => {
+                    if !request.query.contains("labels=design") {
+                        // An unfiltered page means the periodic read walked the
+                        // whole issue history instead of asking for the label.
+                        return text_response(500, "unfiltered page");
+                    }
+                    if request.query.contains("page=1") {
+                        json_response(json!([labelled(7)]))
+                    } else {
+                        json_response(json!([]))
+                    }
+                }
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let repo = git_repo("design-labelled", "git@localhost:owner/name.git");
+    let environment = environment(&[
+        ("DEVBOARD_GITEA_URL", server.base.as_str()),
+        ("GITEA_TOKEN", "secret"),
+    ]);
+    let forge =
+        devboard::workers::design::create_design_forge("owner/name", &repo, &environment, 5_000)
+            .expect("a design forge");
+
+    let issues = forge.list_issues().await.expect("a labelled read");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].number, 7);
+    assert_eq!(issues[0].body, "## Category\n\ncolor 7\n");
+    let listed: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/api/v1/repos/owner/name/issues")
+        .collect();
+    assert_eq!(
+        listed.len(),
+        2,
+        "the labelled page and the page that ends it"
+    );
+    for request in &listed {
+        assert!(request.query.contains("state=all"), "{}", request.query);
+        assert!(request.query.contains("labels=design"), "{}", request.query);
+    }
+}
+
+#[tokio::test]
 async fn list_labelled_keeps_only_labelled_rows_when_the_filter_is_ignored() {
     let labelled = |number: i64, labels: Value| {
         json!({

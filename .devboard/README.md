@@ -2513,9 +2513,12 @@ pending cap counts every open `design` issue, and one cycle files no more than t
 100. The agent enforces the room by reading the issue list through the MCP read tools and files
 nothing when it is zero, recording the skip in activity; clearing a cap resumes filing on the next
 cycle. A transient forge read failure keeps the last known rows and retries on the shared schedule;
-a permanent failure or a rate limit shows its reason at once. Age alone never blocks filing: a read
-that succeeded before the cycle keeps filing even when the audit outlasts the sync interval. Caps
-never block an audit, a documentation change, or its release.
+a permanent failure or a rate limit shows its reason at once. The periodic read asks the forge for
+the `design` label instead of paging every issue, and the open-issue titles its duplicate guard
+needs are read once at cycle start, so one sync stays inside its 30-second deadline against a large
+history. Age alone never blocks filing: a read that succeeded before the cycle keeps filing even
+when the audit outlasts the sync interval. Caps never block an audit, a documentation change, or
+its release.
 
 A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
 distinct interface surfaces or by an internal contradiction inside the documents. It may change

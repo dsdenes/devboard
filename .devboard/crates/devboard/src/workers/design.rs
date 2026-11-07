@@ -3610,17 +3610,21 @@ impl DesignWorkerInner {
         lock_unpoisoned(&self.forge).clone()
     }
 
+    /// The labelled issues and the release list, read together.
+    ///
+    /// The open-issue titles are not part of the periodic read: only a cycle
+    /// consumes them, so `begin_cycle` reads them where they are used. Keeping
+    /// that whole-history walk out of every sync keeps one periodic read inside
+    /// its deadline, and the two remaining requests share the deadline instead
+    /// of spending it one after the other.
     async fn read_forge(&self) -> Result<ForgeRead, String> {
         let Some(forge) = self.forge_client() else {
             return Err("no forge client is configured".to_string());
         };
-        let issues = forge.list_issues().await?;
-        let releases = forge.list_releases().await?;
-        let open_titles = forge.list_open_issue_titles().await?;
+        let (issues, releases) = tokio::join!(forge.list_issues(), forge.list_releases());
         Ok(ForgeRead {
-            issues,
-            releases,
-            open_titles,
+            issues: issues?,
+            releases: releases?,
         })
     }
 
@@ -3634,6 +3638,31 @@ impl DesignWorkerInner {
             Ok(result) => result,
             Err(_) => Err(format!(
                 "the forge read did not finish within {} ms",
+                self.options.read_timeout_ms
+            )),
+        }
+    }
+
+    /// The open-issue titles a cycle needs for its duplicate check.
+    ///
+    /// Best effort: a failure is logged and the last known titles stay in use,
+    /// so a slow forge never blocks a cycle.
+    async fn refresh_open_titles(&self) {
+        let Some(forge) = self.forge_client() else {
+            return;
+        };
+        match tokio::time::timeout(
+            Duration::from_millis(self.options.read_timeout_ms),
+            forge.list_open_issue_titles(),
+        )
+        .await
+        {
+            Ok(Ok(titles)) => *lock_unpoisoned(&self.open_titles) = titles,
+            Ok(Err(detail)) => {
+                (self.options.log)(&format!("could not read open issue titles: {detail}"))
+            }
+            Err(_) => (self.options.log)(&format!(
+                "could not read open issue titles: the forge read did not finish within {} ms",
                 self.options.read_timeout_ms
             )),
         }
@@ -3764,7 +3793,6 @@ impl DesignWorkerInner {
             state.last_error = None;
         }
         drop(state);
-        *lock_unpoisoned(&self.open_titles) = read.open_titles;
     }
 
     async fn resolve_provider_environment(&self) -> Result<HashMap<String, String>, String> {
@@ -3873,6 +3901,9 @@ impl DesignWorkerInner {
                 return;
             }
         };
+        // The duplicate-title check consumes the open titles, so they are read
+        // here, once per cycle, instead of on every periodic sync.
+        self.refresh_open_titles().await;
         let capacity = self.capacity();
         let known_titles = {
             let state = lock_unpoisoned(&self.state);
@@ -4542,7 +4573,6 @@ fn latest(left: Option<String>, right: Option<String>) -> Option<String> {
 struct ForgeRead {
     issues: Vec<DesignForgeIssue>,
     releases: Vec<ForgeRelease>,
-    open_titles: Vec<String>,
 }
 
 fn append_activity_line(lines: &mut Vec<String>, text: &str, append: bool) {

@@ -126,12 +126,14 @@ impl Drop for Fixture {
 
 struct FakeForge {
     issues: Mutex<Vec<DesignForgeIssue>>,
+    open_title_calls: AtomicU64,
 }
 
 impl FakeForge {
     fn new(issues: Vec<DesignForgeIssue>) -> Arc<Self> {
         Arc::new(Self {
             issues: Mutex::new(issues),
+            open_title_calls: AtomicU64::new(0),
         })
     }
 }
@@ -155,6 +157,7 @@ impl DesignForge for FakeForge {
     }
 
     fn list_open_issue_titles(&self) -> ForgeFuture<Vec<String>> {
+        self.open_title_calls.fetch_add(1, Ordering::SeqCst);
         let titles = self
             .issues
             .lock()
@@ -498,6 +501,55 @@ async fn the_limits_gate_the_cycle_and_a_settings_command_persists() {
     assert_eq!(persisted["intervalMinutes"], 90);
     assert_eq!(persisted["maxPerHour"], 4);
     assert!(persisted["maxPending"].is_null());
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn the_periodic_read_leaves_open_titles_to_the_cycle() {
+    let fixture = Fixture::new("titles");
+    let forge = FakeForge::new(vec![issue(
+        7,
+        "Existing accent drift",
+        ForgeIssueState::Open,
+    )]);
+    let clock = Clock::new(NOW);
+    let seen = Arc::new(Mutex::new(serde_json::Value::Null));
+    let seen_for_audit = Arc::clone(&seen);
+
+    let mut worker_options = options(&fixture, &clock);
+    worker_options.forge = Some(Arc::clone(&forge) as Arc<dyn DesignForge>);
+    worker_options.audit = Some(Arc::new(move |turn: AuditTurn| {
+        let seen = Arc::clone(&seen_for_audit);
+        Box::pin(async move {
+            let request: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(turn.directory.join("request.json")).expect("request"),
+            )
+            .expect("request JSON");
+            *seen.lock().expect("the request") = request;
+            Ok(())
+        })
+    }));
+
+    let worker = DesignWorker::new(worker_options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    // The periodic read never walks the open issue history.
+    assert_eq!(forge.open_title_calls.load(Ordering::SeqCst), 0);
+    // A title created after the sync is still in the cycle's duplicate check.
+    forge.issues.lock().expect("the forge issues").push(issue(
+        9,
+        "Fresh open title",
+        ForgeIssueState::Open,
+    ));
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    assert_eq!(forge.open_title_calls.load(Ordering::SeqCst), 1);
+    let request = seen.lock().expect("the request").clone();
+    let titles = request["knownTitles"].as_array().expect("known titles");
+    assert!(
+        titles.iter().any(|title| title == "Fresh open title"),
+        "{titles:?}"
+    );
     worker.stop().await;
 }
 
