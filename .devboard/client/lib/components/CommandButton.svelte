@@ -11,8 +11,12 @@
     evidence: () => unknown;
     /** Reactive read of the subject; a reused control never carries another's latch. */
     scope?: () => unknown;
-    /** Dispatches the WebSocket command once per activation. */
-    command: () => void;
+    /**
+     * Dispatches the WebSocket command once per activation. Returns false when
+     * it refused locally and sent nothing: the control then shows no busy word
+     * and no ceiling notice, because no answer was ever asked for.
+     */
+    command: () => boolean | void;
     /** Exact busy phrase, for a control whose label is a phrase. */
     busyLabel?: string;
   }
@@ -27,7 +31,9 @@
 
   function activate(): void {
     pending.start();
-    command();
+    // The baseline is captured before dispatch so an immediate answer is never
+    // missed; a refused dispatch releases the latch in the same activation.
+    if (command() === false) pending.refuse();
   }
 </script>
 

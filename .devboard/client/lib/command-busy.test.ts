@@ -63,6 +63,27 @@ test("the ceiling releases the label and states the action received no answer", 
   }
 });
 
+test("a refused dispatch never waits for an answer or shows the ceiling notice", () => {
+  jest.useFakeTimers();
+  try {
+    const box = { value: 1 };
+    const command = createCommandBusy({
+      label: "Save limits",
+      evidence: () => box.value,
+      ceilingMs: 5,
+    });
+    command.start();
+    command.refuse();
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBeNull();
+    jest.advanceTimersByTime(5);
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("a new dispatch clears the previous ceiling notice", () => {
   jest.useFakeTimers();
   try {

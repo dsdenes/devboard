@@ -56,6 +56,10 @@ carries no content of its own shows the resting label it was given.
 - If no confirming state arrives within 10 seconds, the control returns to its resting label and a
   `role="status"` notice beside it states that the action received no answer and names the action
   in words. The notice is dismissed by its own control or by the next activation of that control.
+- A control that refuses locally — a validation error, or a socket that would not take the
+  envelope — dispatches nothing, so it never enters busy and never shows that ceiling notice; its
+  own refusal message is the answer. A save that nobody asked the server for is never reported as
+  an unanswered action.
 
 A control added later follows the same rule: use `Button`, or `CommandButton` when it dispatches,
 pass its resting label, and let the primitive paint the pressed fill and own the busy word. A raw
@@ -2402,7 +2406,9 @@ through an agent or a direct file edit, never through the dashboard.
 `agent-limit-pending` are empty (unlimited) or an integer from 1 through 100; an empty field never
 renders as `0`. One `agent-save-cadence` or `agent-save-limits` click validates all three fields
 and persists them in one atomic settings write; a running worker applies the whole change without
-restart. The worker merges a cadence command into the settings it reads at apply time and writes
+restart. An invalid field sends nothing: `agent-settings-error` names the rule, and the control
+stays at its resting label instead of waiting for an answer the server was never asked for. The
+worker merges a cadence command into the settings it reads at apply time and writes
 only `intervalMinutes`, `maxPerHour`, and `maxPending`, so a save made after its last read keeps
 the allowlist and the per-cycle cap. Auto Scout defaults to 1 minute and never starts a scan
 sooner than the interval after the previous scan start; Watchdog defaults to 10 minutes, starts

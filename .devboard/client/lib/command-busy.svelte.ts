@@ -124,6 +124,18 @@ export class CommandBusy<E> {
     }, this.#ceilingMs);
   }
 
+  /**
+   * End a dispatch that sent nothing: a refused command never waits for a
+   * confirming frame, so it shows neither the busy word nor the ceiling
+   * notice. The refusal's own message is the answer.
+   */
+  refuse(): void {
+    this.#clearTimer();
+    this.#active = false;
+    this.#expired = false;
+    this.#dismissed = false;
+  }
+
   /** Clear the ceiling notice without sending anything. */
   dismiss(): void {
     this.#clearTimer();

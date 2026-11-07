@@ -115,21 +115,28 @@ export class AgentsStore {
     connection.send({ type: "stopAgent", id });
   }
 
+  /**
+   * One settings command for all three fields. Returns false when the socket
+   * refused the envelope, so the control never waits for an answer it never
+   * asked for.
+   */
   saveSettings(
     id: string,
     minutes: number,
     maxPerHour: number | null,
     maxPending: number | null,
     scope: string,
-  ): void {
+  ): boolean {
     if (
-      connection.send({ type: "setAgentSettings", id, minutes, maxPerHour, maxPending })
+      !connection.send({ type: "setAgentSettings", id, minutes, maxPerHour, maxPending })
     ) {
-      this.pendingSettings.set(id, {
-        signature: settingsSignature(minutes, maxPerHour, maxPending),
-        scope,
-      });
+      return false;
     }
+    this.pendingSettings.set(id, {
+      signature: settingsSignature(minutes, maxPerHour, maxPending),
+      scope,
+    });
+    return true;
   }
 
   disableTimer(id: string): void {
