@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use devboard::app::{App, Conn};
 use devboard::config::Config;
@@ -55,6 +56,14 @@ fn state_path(repo: &Path, state: &Path) -> PathBuf {
 
 fn control_directory(repo: &Path, state: &Path) -> PathBuf {
     state.join("issues").join(repo_key(repo)).join("control")
+}
+
+fn versioned_worker_directory(repo: &Path, state: &Path, version: &str) -> PathBuf {
+    state
+        .join("issues")
+        .join(repo_key(repo))
+        .join("workers")
+        .join(version)
 }
 
 fn lock_path(repo: &Path) -> PathBuf {
@@ -122,20 +131,33 @@ impl Drop for Owner {
 }
 
 fn spawn_owner(repo: &Path, state: &Path) -> Owner {
+    spawn_owner_at(repo, state, None, lock_path(repo))
+}
+
+/// A live owner of one harness version, holding that version's lock.
+fn spawn_versioned_owner(repo: &Path, state: &Path, version: &str) -> Owner {
+    let path = repo
+        .join(".devboard")
+        .join(".tmp")
+        .join("issues")
+        .join(format!("lock.{version}"));
+    spawn_owner_at(repo, state, Some(version), path)
+}
+
+fn spawn_owner_at(repo: &Path, state: &Path, version: Option<&str>, path: PathBuf) -> Owner {
     let child = std::process::Command::new("sleep")
         .arg("60")
         .current_dir(repo)
         .spawn()
         .expect("a child");
     let pid = child.id();
-    let path = lock_path(repo);
     std::fs::create_dir_all(path.parent().expect("a lock directory")).expect("a lock directory");
     let lock = json!({
         "pid": pid,
         "startedAt": devboard::journal::now_iso8601(),
         "repo": repo.display().to_string(),
         "stateDir": state.display().to_string(),
-        "harnessVersion": null,
+        "harnessVersion": version,
         "argv": ["sleep", "60"],
     });
     std::fs::write(&path, serde_json::to_string(&lock).expect("lock JSON")).expect("a lock");
@@ -943,4 +965,76 @@ async fn a_fresh_open_issue_read_publishes_the_issue_hook() {
     let bridge = IssuesBridge::new(settings);
     bridge.sync_now().await;
     assert_eq!(*seen.lock().expect("seen"), vec![vec![4]]);
+}
+
+/// A newer harness starts its own worker while an older one is live and then
+/// drains the older one. Attaching instead leaves the family paused with no
+/// worker that can start a queued issue.
+#[tokio::test]
+async fn a_newer_harness_spawns_its_own_worker_then_drains_the_older_one() {
+    let (repo, state) = scratch("takeover");
+    std::fs::write(
+        repo.join(".devboard").join("package.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"1.0.1\"}\n",
+    )
+    .expect("the harness manifest");
+    let owner = spawn_versioned_owner(&repo, &state, "1.0.0");
+    let older = versioned_worker_directory(&repo, &state, "1.0.0");
+    std::fs::create_dir_all(&older).expect("the older worker's state directory");
+    std::fs::write(
+        older.join("state.json"),
+        serde_json::to_string(&state_document(&repo, "pausing", json!([]))).expect("state JSON"),
+    )
+    .expect("the older worker's state");
+
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&spawns);
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(move |_argv, _env| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Some(std::process::id())
+            }),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    );
+    settings.running_version = Some("1.0.1".to_string());
+    let bridge = IssuesBridge::new(settings);
+    bridge.begin();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while spawns.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        spawns.load(Ordering::SeqCst),
+        1,
+        "the newest version starts its own worker"
+    );
+
+    let written = commands(&older.join("control"));
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert_eq!(written[0]["type"], "drain");
+    let marker: Value = serde_json::from_str(
+        &std::fs::read_to_string(older.join("drain.json")).expect("a drain marker"),
+    )
+    .expect("marker JSON");
+    assert_eq!(marker["by"], "1.0.1");
+    assert_eq!(marker["pid"], owner.pid);
+
+    // An operator Start attaches to the live worker and never duplicates it.
+    assert_eq!(
+        bridge.start().await,
+        StartOutcome::Started { attached: true }
+    );
+    assert_eq!(spawns.load(Ordering::SeqCst), 1);
+
+    drop(owner);
 }

@@ -3477,6 +3477,15 @@ impl IssuesBridge {
                 };
             }
         }
+        self.preflight_and_spawn().await
+    }
+
+    /// Runs the start preflight, then spawns this version's worker.
+    ///
+    /// Both an operator Start and the newest-version takeover start through
+    /// here, so a replacement never spawns without the preflight an operator
+    /// Start would run.
+    async fn preflight_and_spawn(self: &Arc<Self>) -> StartOutcome {
         let pending = (self.hooks.preflight)(PreflightRequest {
             repo_dir: self.repo_dir.clone(),
             state_dir: self.state_dir.clone(),
@@ -3912,7 +3921,10 @@ impl IssuesBridge {
         {
             return;
         }
-        let started = self.start().await;
+        // A live owner of this version already serves the family; otherwise
+        // this version starts its own worker before the older one drains, so
+        // the queue keeps moving while the older worker finishes its units.
+        let started = self.preflight_and_spawn().await;
         if let StartOutcome::Refused { message } = started {
             eprintln!(
                 "could not start the {} issues worker: {message}",
