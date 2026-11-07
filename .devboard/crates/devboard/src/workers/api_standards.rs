@@ -2354,6 +2354,7 @@ pub fn default_connect(options: PeerOptions) -> PeerConnectFuture {
             options.command.clone(),
             options.cwd.to_string_lossy().into_owned(),
         )
+        .with_starter("API Standards")
         .with_env(options.env.clone())
         .with_permission_policy(PermissionPolicy::Allow);
         let (connection, mut events) = AcpConnection::connect(connection_options)

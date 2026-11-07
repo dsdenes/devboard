@@ -17,6 +17,15 @@ export function isGoalIssue(issue: { labels?: string[] }): boolean {
   return issue.labels?.includes(GOAL_LABEL) === true;
 }
 
+/**
+ * True for a deferral line an older harness wrote into `notice`. It describes
+ * a start that is not in force, so the Overview never shows it as a notice.
+ */
+export function isDeferralShaped(text: string): boolean {
+  const trimmed = text.trimEnd();
+  return trimmed.includes("deferred:") && trimmed.endsWith("the start is deferred");
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -140,7 +149,8 @@ export class IssuesStore {
   }
 
   get notice(): string | null {
-    return this.snapshot?.notice ?? null;
+    const notice = this.snapshot?.notice ?? null;
+    return notice !== null && isDeferralShaped(notice) ? null : notice;
   }
 
   /** The start the governor defers right now, or null when none waits. */

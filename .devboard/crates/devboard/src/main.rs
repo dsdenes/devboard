@@ -301,10 +301,11 @@ async fn resources_command(args: &[String]) -> anyhow::Result<()> {
         "admit" => {
             let label = option_value(args, "label").unwrap_or_else(|| "manual".to_string());
             let kind = option_value(args, "kind").unwrap_or_else(|| "peer".to_string());
+            let starter = option_value(args, "starter").unwrap_or_else(|| kind.clone());
             let hold_ms = option_value(args, "hold-ms")
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0);
-            match governor.try_acquire(&kind, &label) {
+            match governor.try_acquire(&kind, &starter, &label) {
                 Ok(slot) => {
                     println!("admitted {}", slot.id());
                     if hold_ms > 0 {
@@ -341,7 +342,7 @@ async fn resources_command(args: &[String]) -> anyhow::Result<()> {
             let mut running: Vec<(devboard::resources::Slot, std::process::Child)> = Vec::new();
             while pending > 0 || !running.is_empty() {
                 while pending > 0 {
-                    match governor.try_acquire("stress", "stress") {
+                    match governor.try_acquire("stress", "Stress", "stress") {
                         Ok(slot) => {
                             let spawn_argv = governor.wrap_argv(argv.clone());
                             let child = std::process::Command::new(&spawn_argv[0])

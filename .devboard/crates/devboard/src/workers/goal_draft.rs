@@ -357,6 +357,7 @@ async fn connect_peer(
         .collect();
     let command = format!("{} --no-skills", agent_command());
     let options = AcpConnectionOptions::new(command, owner.repo_dir.display().to_string())
+        .with_starter("Goal draft")
         .with_env(environment);
     let (peer, events) = AcpConnection::connect(options)
         .await

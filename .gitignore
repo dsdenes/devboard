@@ -41,3 +41,4 @@ dist/
 /.omp/commands
 /.omp/extensions
 /.omp/mcp.json
+/.omp/skills/devboard-harness-reference

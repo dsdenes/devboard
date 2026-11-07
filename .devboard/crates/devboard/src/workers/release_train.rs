@@ -2695,6 +2695,7 @@ async fn run_release_agent(
         input.agent_command.clone(),
         input.repo_dir.to_string_lossy().into_owned(),
     )
+    .with_starter("Release Train")
     .with_env(peer_environment)
     .with_mcp_servers(mcp_servers)
     .with_permission_policy(crate::acp::PermissionPolicy::Deny);

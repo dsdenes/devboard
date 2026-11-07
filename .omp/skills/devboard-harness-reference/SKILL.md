@@ -1,3 +1,10 @@
+---
+name: devboard-harness-reference
+description: The Devboard harness reference moved from .devboard/README.md. Use on demand for the interface, mode, worker, release, container, and WebSocket contracts.
+metadata:
+  devboard-builtin: "true"
+---
+
 # Devboard
 
 Local browser interface for a repository's goal, Flow implementation, and Discover artifacts.
@@ -5,6 +12,16 @@ It renders one full-viewport, dark-first administration workspace with an activi
 contextual sidebar, one workspace page per mode, resizable split panes, read-only document views, xterm
 terminals, a command palette, and a status bar. Every mode is a client-side view over the existing
 WebSocket contract; the server still owns all work and durable state.
+
+## Project-scoped skills
+
+The package ships seven project-scoped skills, canonical under `.devboard/omp/skills/` and
+installed as real files into `<host>/.omp/skills/`: `devboard-ui-ux`,
+`devboard-restful-api-implementation`, `devboard-single-responsibility-principle`,
+`devboard-consistent-naming`, `devboard-architectural-layering`, `devboard-gh-stack`, and
+`devboard-harness-reference`. Long-term agent instructions live only in `AGENTS.md` (read every
+run) or in a `.omp/skills/<name>/SKILL.md` skill (read on demand). This document is the reference
+that skill carries; it is not an instruction file.
 
 ## Interface
 
@@ -2352,7 +2369,10 @@ page renders one prompt section `data-testid="agent-prompt"`. It is a `<details>
 closed on every page load, its summary (`agent-prompt-summary`) carrying `Prompt`, the prompt
 file path as a mono code chip when the descriptor names one, and a chevron, with all of its
 content (`agent-prompt-body`) hidden until the operator opens it. A reload, tab restore, or
-reconnect renders it closed again; opening it changes no file and no agent state.
+reconnect renders it closed again; opening it changes no file and no agent state. Inside the
+scrolling agent column the disclosure never shrinks below its own content, so the summary keeps
+its full height while closed and an open body stays inside the disclosure rather than being
+clipped; the column scrolls when the page does not fit.
 
 Auto Scout, Design System, and Dead Code read the effective prompt file their worker command
 opens: `.devboard/prompts/scout-recommendations.md`, `.devboard/prompts/design-system.md`, and
@@ -3506,10 +3526,15 @@ keep running and start normally.
 
 A start the resource governor defers is never a failure: the issue stays queued, the deferral is
 recorded with its reason under `<STATE_DIR>/resources/`, and the Overview states it in
-`data-testid="issues-deferral"` as `issue #<n> deferred: …`. That line is the deferral in force,
-not a message: the worker recomputes it on every pass and drops it as soon as no start is
+`data-testid="issues-deferral"` as
+`issue #<n> deferred: <A> agent peer(s) already run at the cap of <C> (<starter> <count>, ...); the start is deferred`.
+`<C>` is the effective saved cap, `<A>` is the number of live governed slots, and each `<starter>`
+is the starter name recorded on the slots that starter created. Groups are ordered by count
+descending, then starter name ascending, and the counts sum to `<A>`. That line is the deferral in
+force, not a message: the worker recomputes it on every pass and drops it as soon as no start is
 deferred — a peer ends, the queue empties, or the worker pauses or stops — so the Overview never
-keeps claiming peers that no longer run. Operator feedback keeps its own
+keeps claiming peers that no longer run. A deferral-shaped value an older harness left in
+`notice` is never rendered as a notice. Operator feedback keeps its own
 `data-testid="issues-notice"` line.
 
 `Check now` clears every cooldown and polls immediately; while paused it writes a notice and polls

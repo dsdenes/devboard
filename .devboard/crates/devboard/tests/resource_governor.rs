@@ -259,7 +259,7 @@ async fn concurrency_cap_defers_the_next_issue() {
     loop {
         while let Some(number) = pending.first().copied() {
             let label = format!("issue #{number}");
-            match governor.try_acquire("issue", &label) {
+            match governor.try_acquire("issue", "Issues", &label) {
                 Ok(slot) => {
                     pending.remove(0);
                     let child = spawn_hold(0.4);
@@ -298,6 +298,53 @@ async fn concurrency_cap_defers_the_next_issue() {
         .as_str()
         .unwrap_or("")
         .contains("deferred"));
+}
+
+#[test]
+fn slots_record_the_starter_and_status_exposes_it() {
+    let directory = scratch("slot-starters");
+    let governor = in_memory_governor(
+        &directory,
+        FakeMemory::new(96_000, 90_000, 32),
+        &[("DEVBOARD_MAX_AGENT_PEERS", "4")],
+    );
+    let watchdog = governor
+        .try_acquire("watchdog", "Watchdog", "run 1")
+        .expect("the first slot");
+    let scout = governor
+        .try_acquire("scout", "Auto Scout", "run 2")
+        .expect("the second slot");
+    assert_eq!(watchdog.starter(), "Watchdog");
+    assert_eq!(scout.starter(), "Auto Scout");
+
+    let status = governor.status_json();
+    let mut starters: Vec<&str> = status["slots"]
+        .as_array()
+        .expect("the live slots")
+        .iter()
+        .filter_map(|slot| slot["starter"].as_str())
+        .collect();
+    starters.sort_unstable();
+    assert_eq!(starters, ["Auto Scout", "Watchdog"]);
+
+    let slots = directory.join("resources").join("slots");
+    let mut files = 0;
+    for entry in std::fs::read_dir(&slots).expect("the slot files") {
+        let path = entry.expect("a slot file").path();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the slot record"))
+                .expect("a slot object");
+        assert!(
+            value
+                .get("starter")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "{} carries the starter",
+            path.display()
+        );
+        files += 1;
+    }
+    assert_eq!(files, 2, "both live slots are on disk");
 }
 
 #[tokio::test]
@@ -401,7 +448,7 @@ fn admission_defers_below_reserve() {
         ],
     );
     memory.set_available(1_000);
-    match governor.try_acquire("goal", "lane") {
+    match governor.try_acquire("goal", "Goal", "lane") {
         Err(DeferReason::Memory {
             available_mb,
             reserve_mb,
@@ -421,17 +468,17 @@ fn admission_defers_below_reserve() {
     }
     memory.set_available(2_048);
     let slot = governor
-        .try_acquire("goal", "lane")
+        .try_acquire("goal", "Goal", "lane")
         .expect("at the reserve admits");
     drop(slot);
     memory.set_available(500);
     assert!(matches!(
-        governor.try_acquire("goal", "lane"),
+        governor.try_acquire("goal", "Goal", "lane"),
         Err(DeferReason::Memory { .. })
     ));
     memory.set_available(4_096);
     governor
-        .try_acquire("goal", "lane")
+        .try_acquire("goal", "Goal", "lane")
         .expect("a recovered snapshot admits the deferred start");
     let deferrals = governor.read_deferrals();
     assert_eq!(deferrals[0]["reason"], "reserve");
@@ -931,14 +978,14 @@ fn dashboard_survives_slice_kill() {
     memory.set_available(10);
     assert!(
         matches!(
-            governor.try_acquire("goal", "after-kill"),
+            governor.try_acquire("goal", "Goal", "after-kill"),
             Err(DeferReason::Memory { .. })
         ),
         "a low memory snapshot still defers"
     );
     memory.set_available(60_000);
     governor
-        .try_acquire("goal", "after-kill")
+        .try_acquire("goal", "Goal", "after-kill")
         .expect("a new run starts after the budget recovers");
 }
 

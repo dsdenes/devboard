@@ -4722,6 +4722,7 @@ impl AcpDedup {
             self.command.clone(),
             self.repo_dir.to_string_lossy().into_owned(),
         )
+        .with_starter("Watchdog")
         .with_env(environment)
         .with_mcp_servers(mcp_servers)
         .with_permission_policy(crate::acp::PermissionPolicy::Deny);

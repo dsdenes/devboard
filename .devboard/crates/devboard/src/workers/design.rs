@@ -2822,6 +2822,7 @@ fn bounded_line(text: &str) -> String {
 pub async fn acp_audit_turn(command: String, turn: AuditTurn) -> Result<(), String> {
     let mcp_servers = session_mcp_servers(&turn.environment);
     let options = AcpConnectionOptions::new(command, turn.directory.to_string_lossy().into_owned())
+        .with_starter("Design System")
         .with_env(turn.environment.clone())
         .with_mcp_servers(mcp_servers)
         .with_permission_policy(PermissionPolicy::Allow);
