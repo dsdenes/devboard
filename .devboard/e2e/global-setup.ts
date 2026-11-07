@@ -193,10 +193,21 @@ async function warmUp(family: Family, prepared: Prepared): Promise<void> {
     stderr += chunk.toString();
   });
   const root = familyRuntimeRoot(family, prepared);
+  let published = false;
+  let waitError: unknown = null;
   try {
-    await waitFor(`${family} to publish state`, () => jsonFiles(root).length > 0 || !child.killed, 10_000);
+    // `killed` only reports that `kill()` ran, so the wait ends on the child's
+    // real end: a worker that exits before publishing published nothing.
+    await waitFor(
+      `${family} to publish state`,
+      () => jsonFiles(root).length > 0 || child.exitCode !== null || child.signalCode !== null,
+      10_000,
+    );
+    published = jsonFiles(root).length > 0;
     // Let the immediate cycle start and record its outcome, whatever it is.
     await sleep(1_500);
+  } catch (error) {
+    waitError = error;
   } finally {
     child.kill("SIGTERM");
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -209,6 +220,12 @@ async function warmUp(family: Family, prepared: Prepared): Promise<void> {
     clearTimeout(timer);
   }
   writeFileSync(log, stderr);
+  if (!published) {
+    const reason = waitError === null ? "" : `: ${String(waitError)}`;
+    throw new Error(
+      `${family} published no runtime state under ${root}; its warm-up log is ${log}${reason}`,
+    );
+  }
 }
 
 function settle(value: unknown, now: string, later: string): unknown {
