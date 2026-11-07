@@ -47,7 +47,15 @@ pub const LIMIT_MIN: i64 = 1;
 pub const LIMIT_MAX: i64 = 100;
 pub const TICK_MS: u64 = 1_000;
 const CONTROL_POLL_MS: u64 = 250;
-const RUN_TIMEOUT_MS: u64 = 60 * 60_000;
+/// How long the release peer may stay silent before the run is treated as
+/// stuck. A release legitimately compiles, rebuilds the client, runs the
+/// workspace suite up to nine times, and waits for the workflow, so the bound
+/// is silence rather than total runtime: a peer that keeps reporting progress
+/// is working and is never failed mid-release.
+const RUN_SILENCE_MS: u64 = 60 * 60_000;
+/// The outer bound on one release run, however busy its peer stays. It only
+/// stops a peer that reports progress forever without ever finishing.
+const RUN_MAX_MS: u64 = 4 * 60 * 60_000;
 const RUN_BUSY_NOTICE: &str = "Another Release Train run is active; this tick starts nothing.";
 pub const RUN_HISTORY_LIMIT: usize = 20;
 pub const ACTIVITY_MAX_ENTRIES: usize = 200;
@@ -2448,6 +2456,50 @@ pub struct ReleaseTrainRequest {
 
 pub type ActivityFn = Arc<dyn Fn(&str) + Send + Sync>;
 pub type StopFlag = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// The two bounds on one release run: how long its peer may stay silent, and
+/// how long the whole run may last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReleaseRunTimeouts {
+    pub silence: Duration,
+    pub max: Duration,
+}
+
+impl Default for ReleaseRunTimeouts {
+    fn default() -> Self {
+        Self {
+            silence: Duration::from_millis(RUN_SILENCE_MS),
+            max: Duration::from_millis(RUN_MAX_MS),
+        }
+    }
+}
+
+/// One bound in the words a failure detail uses.
+fn window_label(window: Duration) -> String {
+    let millis = window.as_millis() as u64;
+    if millis < 60_000 {
+        format!("{millis} ms")
+    } else {
+        format!("{} minutes", millis / 60_000)
+    }
+}
+
+/// What a run records when its peer stopped reporting progress.
+fn silence_detail(timeouts: ReleaseRunTimeouts) -> String {
+    format!(
+        "the release agent produced no output for {}",
+        window_label(timeouts.silence)
+    )
+}
+
+/// What a run records when it hit the outer bound while its peer was busy.
+fn max_detail(timeouts: ReleaseRunTimeouts) -> String {
+    format!(
+        "the release agent did not finish within {}",
+        window_label(timeouts.max)
+    )
+}
+
 pub type RunFuture = Pin<Box<dyn Future<Output = ReleaseRunResult> + Send>>;
 pub type RunReleaseFn = Arc<dyn Fn(ReleaseRunInput) -> RunFuture + Send + Sync>;
 pub type PublishFuture =
@@ -2472,6 +2524,8 @@ pub struct ReleaseRunInput {
     pub state_dir: PathBuf,
     /// The command the default release path names in its diagnostics.
     pub agent_command: String,
+    /// How long the peer may stay silent, and how long the run may last.
+    pub timeouts: ReleaseRunTimeouts,
     /// Records the peer this run started, so the state names it and Stop can
     /// close it.
     pub register_peer: Arc<dyn Fn(ReleasePeer) + Send + Sync>,
@@ -2664,7 +2718,12 @@ async fn run_release_agent(
     let prompt = format!("/release-train {}", input.run_dir.to_string_lossy());
     let future = connection.run(&prompt);
     tokio::pin!(future);
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(RUN_TIMEOUT_MS);
+    // Two bounds: the peer may work for hours as long as it keeps reporting
+    // progress, but a peer that reports nothing for the silence window is
+    // stuck, and one that reports forever still ends at the outer bound.
+    let started = tokio::time::Instant::now();
+    let max_deadline = started + input.timeouts.max;
+    let mut silence_deadline = started + input.timeouts.silence;
     let mut agent_error: Option<String> = None;
     let mut text = String::new();
     loop {
@@ -2682,6 +2741,10 @@ async fn run_release_agent(
                 break;
             }
             event = events.recv() => {
+                // Every frame — a message chunk, a tool update, or a stderr
+                // line — proves the peer is alive, so it pushes the silence
+                // bound out even while one long publish keeps it working.
+                let reported = event.is_some();
                 match event {
                     Some(crate::acp::AcpEvent::Text(chunk)) => text.push_str(&chunk),
                     Some(crate::acp::AcpEvent::Question(question)) => {
@@ -2704,12 +2767,18 @@ async fn run_release_agent(
                     Some(_) => {}
                     None => {}
                 }
+                if reported {
+                    silence_deadline = tokio::time::Instant::now() + input.timeouts.silence;
+                }
             }
-            _ = tokio::time::sleep_until(deadline) => {
+            _ = tokio::time::sleep_until(silence_deadline) => {
                 connection.close();
-                agent_error = Some(
-                    "the release agent did not finish within 60 minutes".to_string(),
-                );
+                agent_error = Some(silence_detail(input.timeouts));
+                break;
+            }
+            _ = tokio::time::sleep_until(max_deadline) => {
+                connection.close();
+                agent_error = Some(max_detail(input.timeouts));
                 break;
             }
             _ = tokio::time::sleep(Duration::from_millis(100)) => {
@@ -2788,17 +2857,15 @@ async fn run_release_and_verify(
     ));
     let mut publish_args = crate::publish::PublishArgs::new(input.repo_dir.clone());
     publish_args.environment = environment.clone();
-    publish_args.wait_timeout = Duration::from_millis(RUN_TIMEOUT_MS);
+    publish_args.wait_timeout = input.timeouts.silence;
     publish_args.log = {
         let activity = input.activity.clone();
         Some(Arc::new(move |line: &str| activity(line)) as Arc<dyn Fn(&str) + Send + Sync>)
     };
     let mut agent_error: Option<String> = None;
     let mut published = None;
-    match tokio::time::timeout(Duration::from_millis(RUN_TIMEOUT_MS), publish(publish_args)).await {
-        Err(_) => {
-            agent_error = Some("the release agent did not finish within 60 minutes".to_string())
-        }
+    match tokio::time::timeout(input.timeouts.max, publish(publish_args)).await {
+        Err(_) => agent_error = Some(max_detail(input.timeouts)),
         Ok(Err(error)) => agent_error = Some(format!("{error:#}")),
         Ok(Ok(report)) => published = Some(report),
     }
@@ -2926,6 +2993,9 @@ pub struct ReleaseTrainWorkerOptions {
     pub tick_ms: Option<u64>,
     pub manual: bool,
     pub now: Option<Clock>,
+    /// How long a release run may stay silent, and how long it may last. The
+    /// tests shorten both; production keeps the defaults.
+    pub timeouts: Option<ReleaseRunTimeouts>,
     pub gate: Option<Arc<dyn Fn(&Path) -> Result<ReleaseTrainGate, String> + Send + Sync>>,
     pub run_release: Option<RunReleaseFn>,
     pub publish: Option<PublishFn>,
@@ -2945,6 +3015,7 @@ impl ReleaseTrainWorkerOptions {
             tick_ms: None,
             manual: false,
             now: None,
+            timeouts: None,
             gate: None,
             run_release: None,
             publish: None,
@@ -2964,6 +3035,7 @@ pub struct ReleaseTrainWorker {
     agent_command: String,
     tick_ms: u64,
     clock: Clock,
+    timeouts: ReleaseRunTimeouts,
     gate: Arc<dyn Fn(&Path) -> Result<ReleaseTrainGate, String> + Send + Sync>,
     run_release: RunReleaseFn,
     verify: VerifyFn,
@@ -2993,6 +3065,7 @@ impl ReleaseTrainWorker {
                 .or_else(|| crate::version::read_harness_version(&repo_dir.join(".devboard")))
         });
         let clock: Clock = options.now.unwrap_or_else(|| Arc::new(now_millis));
+        let timeouts = options.timeouts.unwrap_or_default();
         let directory = release_train_directory(&state_dir);
         let version_control_directory =
             versioned_control_directory(&directory, harness_version.as_deref());
@@ -3039,6 +3112,7 @@ impl ReleaseTrainWorker {
                 .unwrap_or_else(|| "omp acp".to_string()),
             tick_ms: options.tick_ms.unwrap_or(TICK_MS).max(20),
             clock,
+            timeouts,
             gate,
             run_release,
             verify,
@@ -3518,6 +3592,7 @@ impl ReleaseTrainWorker {
             repo_dir: self.repo_dir.clone(),
             state_dir: self.state_dir.clone(),
             agent_command: self.agent_command.clone(),
+            timeouts: self.timeouts,
             register_peer: {
                 let inner = self.inner.clone();
                 let run_id = run_id.clone();

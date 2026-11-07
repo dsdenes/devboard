@@ -533,7 +533,7 @@ impl Stub {
             self.stream(&format!("Working on {first_line}"));
         }
 
-        self.sleep_ms(self.number_argument("delay-ms"));
+        self.sleep_ms_with_progress(self.number_argument("delay-ms"));
 
         if let Some(file) = &file {
             if !revising {
@@ -1408,6 +1408,32 @@ impl Stub {
             if delay.is_finite() && delay > 0.0 {
                 thread::sleep(Duration::from_millis(delay as u64));
             }
+        }
+    }
+
+    /// Sleeps for the delay, streaming one assistant chunk every `--tick-ms`
+    /// when the peer was given one. A test uses it to prove that a peer which
+    /// keeps reporting progress is never treated as a stuck run.
+    fn sleep_ms_with_progress(&self, delay: Option<f64>) {
+        let Some(delay) = delay.filter(|delay| delay.is_finite() && *delay > 0.0) else {
+            return;
+        };
+        let tick = self
+            .number_argument("tick-ms")
+            .filter(|tick| tick.is_finite() && *tick > 0.0);
+        let Some(tick) = tick else {
+            self.sleep_ms(Some(delay));
+            return;
+        };
+        let tick = Duration::from_millis(tick as u64).max(Duration::from_millis(1));
+        let mut remaining = Duration::from_millis(delay as u64);
+        let mut sent = 0;
+        while remaining > Duration::ZERO {
+            let slice = remaining.min(tick);
+            thread::sleep(slice);
+            remaining -= slice;
+            sent += 1;
+            self.stream(&format!("Still releasing ({sent})"));
         }
     }
 

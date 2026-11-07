@@ -1976,6 +1976,12 @@ component that dispatches it.
 - The gate starts exactly one `omp acp` release agent only for a non-empty range and hands it the
   whole range. At most one run exists per repository: a second worker of the same harness version
   refuses to start, and a cadence tick during an active run starts nothing.
+- One run is bounded by silence, not by total runtime. Every frame the peer reports — a message
+  chunk, a tool update, or a stderr line — pushes the bound out, so a release that compiles,
+  rebuilds the client, runs the workspace suite, and waits for its workflow is never failed for
+  taking longer than an hour. A peer that reports nothing for 60 minutes is closed and the run
+  records `the release agent produced no output for 60 minutes`; a peer that reports progress
+  forever still ends at a four-hour outer bound.
 - A worker writes the shared state as a merge with a fresh read taken under the family's run
   lease, never as a whole-object overwrite of the snapshot it read at start. A takeover starts the
   newer version's worker while the drained one is still settling, so the two writers overlap by

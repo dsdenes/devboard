@@ -24,11 +24,11 @@ use devboard::workers::release_train::{
     release_train_worker_states, request_path, run_directory, runs_directory, state_path,
     verify_shipped, versioned_control_directory, versioned_lock_path, versioned_worker_state_path,
     write_command, write_state, AgentLifecycle, Clock, ForgeRelease, GateGit, GitOutcome,
-    PublishFuture, ReadRetry, ReleaseRunInput, ReleaseRunResult, ReleaseTrainCommand,
-    ReleaseTrainCommit, ReleaseTrainFailure, ReleaseTrainGate, ReleaseTrainGateOptions,
-    ReleaseTrainRequest, ReleaseTrainRun, ReleaseTrainRunState, ReleaseTrainTag,
-    ReleaseTrainWorker, ReleaseTrainWorkerOptions, ReleaseVerification, ReleaseVerificationOptions,
-    ReleaseVerificationPhase, RunFuture, RunReleaseFn, VerifyFn,
+    PublishFuture, ReadRetry, ReleaseRunInput, ReleaseRunResult, ReleaseRunTimeouts,
+    ReleaseTrainCommand, ReleaseTrainCommit, ReleaseTrainFailure, ReleaseTrainGate,
+    ReleaseTrainGateOptions, ReleaseTrainRequest, ReleaseTrainRun, ReleaseTrainRunState,
+    ReleaseTrainTag, ReleaseTrainWorker, ReleaseTrainWorkerOptions, ReleaseVerification,
+    ReleaseVerificationOptions, ReleaseVerificationPhase, RunFuture, RunReleaseFn, VerifyFn,
 };
 
 const START_ISO: &str = "2026-11-02T10:00:00.000Z";
@@ -1355,6 +1355,7 @@ async fn a_peer_reported_failure_records_its_report_without_the_withdrawn_tag_ph
         repo_dir: repo.clone(),
         state_dir: root.join("state"),
         agent_command: format!("{} acp-stub", env!("CARGO_BIN_EXE_devboard")),
+        timeouts: ReleaseRunTimeouts::default(),
         register_peer: Arc::new(|_peer| {}),
     };
     let verify: VerifyFn = Arc::new(|options| {
@@ -1724,6 +1725,7 @@ async fn the_release_agent_is_one_omp_peer_named_in_the_state_and_stopped_by_sto
         repo_dir: repo.clone(),
         state_dir: root.join("state"),
         agent_command: stub,
+        timeouts: ReleaseRunTimeouts::default(),
         register_peer: {
             let registered = registered.clone();
             Arc::new(move |peer| *registered.lock().unwrap() = Some(peer))
@@ -1771,4 +1773,119 @@ async fn the_release_agent_is_one_omp_peer_named_in_the_state_and_stopped_by_sto
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let alive = std::path::Path::new(&format!("/proc/{}", peer.pid)).exists();
     assert!(!alive, "the release peer survived Stop");
+}
+
+/// One run input for the real `acp-stub`, with the bounds the test names.
+fn stub_run_input(root: &Path, stub: String, timeouts: ReleaseRunTimeouts) -> ReleaseRunInput {
+    let run_dir = root.join("run");
+    std::fs::create_dir_all(&run_dir).expect("a run directory");
+    ReleaseRunInput {
+        request: ReleaseTrainRequest {
+            format: 1,
+            run_id: "run-1".to_string(),
+            range: "v1.0.0..abc".to_string(),
+            target: "a".repeat(40),
+            version: "1.1.0".to_string(),
+            previous: Some("v1.0.0".to_string()),
+            commits: Vec::new(),
+            release_commits: Vec::new(),
+        },
+        activity: Arc::new(|_line: &str| {}),
+        stopping: Arc::new(|| false),
+        run_dir,
+        repo_dir: root.join("repo"),
+        state_dir: root.join("state"),
+        agent_command: stub,
+        timeouts,
+        register_peer: Arc::new(|_peer| {}),
+    }
+}
+
+/// A release legitimately compiles, rebuilds the client, runs the workspace
+/// suite up to nine times, and waits for the workflow, so one run can last well
+/// past an hour. The bound is silence: a peer that keeps reporting progress is
+/// working, and it is never failed for taking longer than the silence window.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_release_peer_that_keeps_reporting_progress_is_never_timed_out() {
+    let root = scratch_root("release-agent-progress");
+    std::fs::create_dir_all(root.join("repo")).expect("a repo");
+    let stub = format!(
+        "{} acp-stub --delay-ms=1500 --tick-ms=100",
+        env!("CARGO_BIN_EXE_devboard")
+    );
+    let input = stub_run_input(
+        &root,
+        stub,
+        ReleaseRunTimeouts {
+            silence: std::time::Duration::from_millis(500),
+            max: std::time::Duration::from_secs(60),
+        },
+    );
+    let verify: VerifyFn = Arc::new(|options| {
+        Box::pin(async move {
+            ReleaseVerification::Ok {
+                version: options.version.clone(),
+                url: "https://forge.test/releases/tag/v1.1.0".to_string(),
+            }
+        })
+    });
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify,
+        std::collections::HashMap::new(),
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), run(input))
+        .await
+        .expect("the busy peer outlives the silence window and ends its turn");
+    assert_eq!(
+        result,
+        ReleaseRunResult::Ok {
+            version: "1.1.0".to_string(),
+            url: "https://forge.test/releases/tag/v1.1.0".to_string(),
+        }
+    );
+}
+
+/// The other half of that bound: a peer that reports nothing is stuck, and the
+/// run names the silence it observed instead of the total runtime it happened
+/// to reach.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_release_peer_that_reports_nothing_fails_with_the_silence_detail() {
+    let root = scratch_root("release-agent-silent");
+    std::fs::create_dir_all(root.join("repo")).expect("a repo");
+    let stub = format!(
+        "{} acp-stub --delay-ms=60000",
+        env!("CARGO_BIN_EXE_devboard")
+    );
+    let input = stub_run_input(
+        &root,
+        stub,
+        ReleaseRunTimeouts {
+            silence: std::time::Duration::from_millis(300),
+            max: std::time::Duration::from_secs(60),
+        },
+    );
+    let verify: VerifyFn = Arc::new(|options| {
+        Box::pin(async move {
+            ReleaseVerification::Failed {
+                phase: ReleaseVerificationPhase::Tag,
+                version: options.version.clone(),
+                detail: format!(
+                    "tag binding: no release tag names or contains {} for v{}",
+                    &options.target[..7],
+                    options.version
+                ),
+            }
+        })
+    });
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify,
+        std::collections::HashMap::new(),
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), run(input))
+        .await
+        .expect("the silent peer is closed at the silence bound");
+    assert_eq!(
+        result,
+        ReleaseRunResult::failed("the release agent produced no output for 300 ms")
+    );
 }
