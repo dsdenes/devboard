@@ -32,10 +32,17 @@
 </script>
 
 <!-- Composes the one button primitive with its in-flight state and ceiling
-     notice; it renders no button of its own. -->
-<Button {...rest} {label} busyLabel={busyLabel} busy={pending.busy} onclick={activate}>
-  {@render children?.()}
-</Button>
+     notice; it renders no button of its own. The caller's content is forwarded
+     as the primitive's `children`, so a control with no content of its own
+     still shows its resting label. -->
+<Button
+  {...rest}
+  {label}
+  busyLabel={busyLabel}
+  busy={pending.busy}
+  onclick={activate}
+  children={children}
+/>
 {#if pending.notice !== null}
   <CommandNotice text={pending.notice} ondismiss={() => pending.dismiss()} />
 {/if}

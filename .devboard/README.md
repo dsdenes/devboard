@@ -35,7 +35,8 @@ Every button in the interface is the one primitive in
 element; a bespoke control such as a sidebar row, a choice, a palette item, or a status item uses
 that primitive's `bare` form and keeps its own class and geometry. `IconButton` is the square icon
 form built from the same variant table, and `CommandButton` composes the primitive for a control
-that dispatches a WebSocket command; it renders no button of its own.
+that dispatches a WebSocket command; it renders no button of its own, and a control it wraps that
+carries no content of its own shows the resting label it was given.
 
 - An activation paints a pressed fill immediately, from pointer-down until pointer-up and while
   `Enter` or `Space` activates the control, in both the dark and the light theme. The pressed rule
