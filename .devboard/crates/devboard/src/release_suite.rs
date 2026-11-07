@@ -12,7 +12,10 @@
 //! itself — a file that does not compile, a runner that crashes, output that
 //! names no test — is structural, and no skip can address it: it ends the run
 //! with a nonzero code, prints the first concrete error line, and files
-//! nothing.
+//! nothing. A build that could not write its artifacts because the host
+//! filesystem is full is structural too, and its reason names that host
+//! condition instead of claiming a compile error: no repository change frees
+//! the disk.
 //!
 //! Every skipped test files one deduplicated issue in the origin forge.
 //! Filing is best effort: an unreachable forge prints one failure line and
@@ -50,6 +53,8 @@ pub const BODY_LIMIT: usize = 60_000;
 /// The prefix every quarantine issue title carries.
 pub const TITLE_PREFIX: &str = "quarantine(test): ";
 const FENCE: &str = "````";
+/// What cargo, rustc, or a runner prints when the host filesystem is full.
+const STORAGE_FAILURE_MARKERS: [&str; 2] = ["No space left on device", "ENOSPC"];
 
 // ---------------------------------------------------------------------------
 // One test result
@@ -102,6 +107,29 @@ pub fn first_error_line(output: &str) -> Option<String> {
         }
         Some(line.to_string())
     })
+}
+
+/// The line that names a build which could not write its artifacts because the
+/// host filesystem is full, or `None`.
+///
+/// cargo reports that as `error: could not compile …` with
+/// `Caused by: No space left on device`, so the marker decides, not the
+/// compiler's summary line. A concrete `error:` line that carries the marker
+/// wins over a bare `Caused by:` line, because it names what failed to write.
+fn host_storage_failure(output: &str) -> Option<String> {
+    let named = |line: &str| {
+        !line.is_empty()
+            && STORAGE_FAILURE_MARKERS
+                .iter()
+                .any(|marker| line.contains(marker))
+    };
+    let lines: Vec<&str> = output.lines().map(str::trim).collect();
+    lines
+        .iter()
+        .copied()
+        .find(|line| line.starts_with("error") && named(line))
+        .or_else(|| lines.iter().copied().find(|line| named(line)))
+        .map(str::to_string)
 }
 
 /// The file a `Running …` header names, or `None` for an unrelated line.
@@ -271,6 +299,9 @@ pub struct AttemptRecord {
     pub names: Vec<String>,
     /// Set when the attempt failed for a reason no test's skip can address.
     pub structural: Option<String>,
+    /// The first concrete failure the structural reason names, carried so the
+    /// release gate can refuse with it without parsing the reason's prose.
+    pub error_line: Option<String>,
     /// The runner's console output, bounded for diagnostics.
     pub output: String,
 }
@@ -288,9 +319,12 @@ fn bound(text: &str, limit: usize) -> String {
 
 /// Sorts one attempt's output into per-test results or a structural failure.
 ///
-/// A compiler error, output that names no test, a crashed runner, and an exit
-/// code that contradicts the parsed results are structural: none of them is a
-/// test that failed, so none of them may be retried or skipped into a pass.
+/// A compiler error, output that names no test, a crashed runner, an exit code
+/// that contradicts the parsed results, and a build that could not write its
+/// artifacts because the host filesystem is full are structural: none of them
+/// is a test that failed, so none of them may be retried or skipped into a
+/// pass. The full filesystem is reported as that host condition, never as a
+/// compile error.
 pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> AttemptRecord {
     let parsed = parse_suite_output(stdout, stderr);
     let output = format!(
@@ -322,19 +356,33 @@ pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> At
 
     let mut structural: Vec<String> = parsed.errors.clone();
     let compile_line = first_error_line(stderr).or_else(|| first_error_line(stdout));
+    let storage_line = host_storage_failure(stderr).or_else(|| host_storage_failure(stdout));
     let could_not_compile =
         stderr.contains("could not compile") || stdout.contains("could not compile");
-    if could_not_compile {
-        structural.push(match &compile_line {
-            Some(line) => format!("the suite could not compile: {line}"),
-            None => "the suite could not compile".to_string(),
-        });
+    let mut error_line: Option<String> = None;
+    if let Some(line) = storage_line {
+        let reason = format!("the host filesystem is full: {line}");
+        error_line = Some(reason.clone());
+        structural.push(reason);
+    } else if could_not_compile {
+        match &compile_line {
+            Some(line) => {
+                structural.push(format!("the suite could not compile: {line}"));
+                error_line = Some(line.clone());
+            }
+            None => structural.push("the suite could not compile".to_string()),
+        }
     } else if parsed.cases.is_empty() {
-        structural.push(match &compile_line {
-            Some(line) => format!("the suite could not compile: {line}"),
-            None if code == 0 => "the runner's result named no test".to_string(),
-            None => format!("the runner exited {code} without a failing test result"),
-        });
+        match (&compile_line, code) {
+            (Some(line), _) => {
+                structural.push(format!("the suite could not compile: {line}"));
+                error_line = Some(line.clone());
+            }
+            (None, 0) => structural.push("the runner's result named no test".to_string()),
+            (None, _) => structural.push(format!(
+                "the runner exited {code} without a failing test result"
+            )),
+        }
     } else if code != 0 && failures.is_empty() {
         structural.push(format!(
             "the runner exited {code} without a failing test result"
@@ -358,6 +406,7 @@ pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> At
         } else {
             Some(structural.join("; "))
         },
+        error_line,
         output,
     }
 }
@@ -389,6 +438,8 @@ pub struct SuiteOutcome {
     pub quarantined: Vec<QuarantineReport>,
     /// Set when the run ended on a structural failure.
     pub structural: Option<String>,
+    /// The first concrete failure the structural reason names.
+    pub error_line: Option<String>,
 }
 
 /// One whole-suite attempt, injectable so the loop is testable.
@@ -445,6 +496,7 @@ pub async fn run_quarantine_suite(
                     attempts: attempt_count,
                     quarantined: quarantined.into_values().collect(),
                     structural: None,
+                    error_line: None,
                 };
             }
         }
@@ -462,6 +514,7 @@ pub async fn run_quarantine_suite(
                 attempts: attempt_count,
                 quarantined: quarantined.into_values().collect(),
                 structural: Some(structural.clone()),
+                error_line: record.error_line.clone(),
             };
         }
         if universe.is_empty() {
@@ -495,6 +548,7 @@ pub async fn run_quarantine_suite(
                 attempts: attempt_count,
                 quarantined: quarantined.into_values().collect(),
                 structural: None,
+                error_line: None,
             };
         }
         let reached: Vec<(String, AttemptFailure, Vec<AttemptLine>)> = consecutive
@@ -525,6 +579,7 @@ pub async fn run_quarantine_suite(
         attempts: attempt_count,
         quarantined: quarantined.into_values().collect(),
         structural: None,
+        error_line: None,
     }
 }
 
@@ -997,11 +1052,7 @@ pub async fn run_suite(options: ReleaseSuiteOptions) -> Result<ReleaseSuiteRepor
     )
     .await;
 
-    let error_line = outcome
-        .structural
-        .as_ref()
-        .and_then(|reason| reason.split("could not compile: ").nth(1))
-        .map(str::to_string);
+    let error_line = outcome.error_line.clone();
 
     if let Some(structural) = &outcome.structural {
         (log)(&format!(
@@ -1068,6 +1119,7 @@ pub async fn run_suite(options: ReleaseSuiteOptions) -> Result<ReleaseSuiteRepor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publish::CommandOutcome;
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -1280,6 +1332,87 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
             .is_some_and(|reason| reason.contains("exited 0")));
     }
 
+    #[test]
+    fn release_suite_names_a_full_host_filesystem_instead_of_a_compile_error() {
+        let stderr = "\
+   Compiling fixture v0.1.0 (/repo/fixture)
+error: failed to write work product index to `target/debug/incremental/issues_mode-0g8403di8ac6z/s-hnwtllhtml-05xbdro-working/work-products.bin`: No space left on device (os error 28)
+
+error: could not compile `fixture` (test \"issues_mode\") due to 1 previous error
+
+Caused by:
+  No space left on device (os error 28)
+";
+        let record = classify_attempt(1, 101, "", stderr);
+        let structural = record.structural.expect("a structural failure");
+        assert!(
+            structural.starts_with("the host filesystem is full: error: failed to write"),
+            "{structural}"
+        );
+        assert!(!structural.contains("could not compile"), "{structural}");
+        let line = record.error_line.expect("the concrete error line");
+        assert!(line.contains("work-products.bin"), "{line}");
+        assert!(line.contains("No space left on device"), "{line}");
+        assert!(record.failures.is_empty());
+    }
+
+    struct StubRunner {
+        outcome: CommandOutcome,
+    }
+
+    impl CommandRunner for StubRunner {
+        fn run<'a>(&'a self, _invocation: CommandInvocation) -> BoxFuture<'a, CommandOutcome> {
+            let outcome = self.outcome.clone();
+            Box::pin(async move { outcome })
+        }
+    }
+
+    #[tokio::test]
+    async fn release_suite_reports_a_full_disk_as_the_host_condition() {
+        let stderr = "\
+error: failed to write work product index to `target/debug/incremental/issues_mode-0123/s-abc-working/work-products.bin`: No space left on device (os error 28)
+
+error: could not compile `fixture` (test \"issues_mode\") due to 1 previous error
+";
+        let mut options = ReleaseSuiteOptions::new(env!("CARGO_MANIFEST_DIR"));
+        options.runner = Some(Arc::new(StubRunner {
+            outcome: CommandOutcome {
+                code: 101,
+                stdout: String::new(),
+                stderr: stderr.to_string(),
+            },
+        }));
+        options.file_issues = false;
+        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = lines.clone();
+        options.log = Some(Arc::new(move |line: &str| {
+            captured.lock().expect("log lines").push(line.to_string());
+        }));
+        let report = run_suite(options).await.expect("a suite report");
+        assert_eq!(report.code, 1);
+        assert_eq!(report.attempts, 1);
+        let structural = report.structural.expect("a structural failure");
+        assert!(
+            structural.starts_with("the host filesystem is full: error: failed to write"),
+            "{structural}"
+        );
+        assert!(!structural.contains("could not compile"), "{structural}");
+        let reason = report.error_line.expect("the refusal reason");
+        assert_eq!(reason, structural);
+        let lines = lines.lock().expect("log lines").clone();
+        assert!(
+            lines.iter().any(|line| line
+                == "release suite: structural failure after 1 attempt(s); nothing was filed"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("the host filesystem is full")),
+            "{lines:?}"
+        );
+    }
+
     struct FakeAttempts {
         records: VecDeque<AttemptRecord>,
         skipped: Arc<Mutex<Vec<String>>>,
@@ -1326,6 +1459,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
             failures: names.iter().map(|name| failure(name)).collect(),
             names: names.iter().map(|name| (*name).to_string()).collect(),
             structural: None,
+            error_line: None,
             output: String::new(),
         }
     }
@@ -1339,6 +1473,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
             failures: Vec::new(),
             names: names.iter().map(|name| (*name).to_string()).collect(),
             structural: None,
+            error_line: None,
             output: String::new(),
         }
     }
@@ -1449,6 +1584,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
                 failures: vec![failure("one"), failure("two")],
                 names: names.iter().map(|name| (*name).to_string()).collect(),
                 structural: None,
+                error_line: None,
                 output: String::new(),
             }
         }
