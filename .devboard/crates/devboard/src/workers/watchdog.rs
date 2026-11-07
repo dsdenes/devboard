@@ -3243,6 +3243,23 @@ fn host_storage_failure(event: &EvidenceEvent) -> bool {
     line.starts_with(SESSION_PERSISTENCE_ERROR) && line.contains(ENOSPC_CODE)
 }
 
+const AGENT_STORAGE_PERF_FAILED: &str = "AgentStorage failed to record model perf: ";
+const SQLITE_LOCKED: &str = "database is locked";
+
+/// Recording a model's performance is best-effort bookkeeping omp writes to its
+/// own local SQLite store. Concurrent peers on one host open that database
+/// together, so a write can lose the lock; omp warns once and the turn
+/// continues. That is transient host contention plus a recovery omp performs
+/// itself, never a repository defect, so it is not a finding. The same record
+/// failing for any other reason still files its `omp-warn` record.
+fn locked_agent_storage(event: &EvidenceEvent) -> bool {
+    if event.kind != "omp-log" || event.level.as_deref() != Some("warn") {
+        return false;
+    }
+    let line = normalize_evidence_line(&event.text);
+    line.starts_with(AGENT_STORAGE_PERF_FAILED) && line.contains(SQLITE_LOCKED)
+}
+
 const JUDGMENT_CANDIDATE_FAILED: &str = "judgment candidate failed";
 
 /// omp's judgment tries its candidate models in turn. A candidate the provider
@@ -3388,6 +3405,7 @@ pub fn analyze_evidence(
                 if !recovered_stream_warning(event)
                     && !interrupted_python_runner(event)
                     && !host_storage_failure(event)
+                    && !locked_agent_storage(event)
                     && !skipped_judgment_candidate(event)
                     && !denied_codex_account(event)
                 {

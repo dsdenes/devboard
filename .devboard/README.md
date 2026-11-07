@@ -2799,7 +2799,11 @@ runner traceback that ends in any other exception still files its `omp-warn` rec
 `Session persistence error.` whose cause is `ENOSPC` is the host filesystem being full: the peer
 keeps its session in memory, no repository change can free the disk, and filing would spend the
 cycle's budget and write more bytes to the same full disk, so it is never a finding; a session
-persistence failure with any other cause still files its `omp-error` record. An omp
+persistence failure with any other cause still files its `omp-error` record. An
+`AgentStorage failed to record model perf: SQLiteError: database is locked` warning is the peer's
+own best-effort performance bookkeeping losing a write lock to another concurrent peer on the same
+host, and the turn continues, so it is never a finding; the same record failing for any other
+reason still files its `omp-warn` record. An omp
 `judgment candidate failed` warning that names the interval omp skips that candidate for is its
 judge stepping past a model provider that rejects the account's credential — operator state no
 repository change can configure — and the judge continues with another candidate, so it is never a
