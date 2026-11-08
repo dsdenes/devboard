@@ -185,9 +185,19 @@ const RESPONSE_TYPES: Record<string, string[]> = {
   setResources: ["resourcesState", "error"],
 };
 
-/** The command's identifying value, or an empty string when it carries none. */
+/**
+ * The command's identifying value, or an empty string when it carries none.
+ * The field that confirms the action names it: an answering frame echoes that
+ * same field, so a subject read from another one could never be matched — an
+ * answer carries both the draft path it belongs to and the question id, and
+ * only the frame's field confirms it.
+ */
 export function actionSubject(command: Record<string, unknown>): string {
-  for (const field of SUBJECT_FIELDS) {
+  const type = command.type;
+  const confirming = typeof type === "string" ? COMPLETION_SUBJECT[type] : undefined;
+  const fields: readonly string[] =
+    confirming === undefined ? SUBJECT_FIELDS : [confirming, ...SUBJECT_FIELDS];
+  for (const field of fields) {
     const value = command[field];
     if (typeof value === "string" && value.length > 0) return value;
     if (typeof value === "number" && Number.isFinite(value)) return String(value);

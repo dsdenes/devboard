@@ -209,6 +209,65 @@ test("an unrelated frame or a broadcast for another action does not complete it"
   expect(sink.notices).toHaveLength(1);
 });
 
+test("a draft answer completes on the state frame that answers it", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  // The wire command names the draft path and the question it answers; the
+  // answering frame echoes only the path.
+  guard.dispatch(
+    { type: "answerGoalDraft", path: ".devboard/goal-proposals/a.md", id: 9, value: "Alpha" },
+    "operator",
+  );
+
+  jest.advanceTimersByTime(400);
+  guard.observe({
+    type: "issuesDraftState",
+    draft: { path: ".devboard/goal-proposals/a.md", status: "running", question: null },
+  });
+  jest.advanceTimersByTime(2000);
+
+  expect(sink.notices).toHaveLength(0);
+  expect(sink.posts).toHaveLength(0);
+});
+
+test("a draft answer stays pending until its own draft answers it", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  guard.dispatch(
+    { type: "answerGoalDraft", path: ".devboard/goal-proposals/a.md", id: 9, value: "Alpha" },
+    "operator",
+  );
+
+  guard.observe({
+    type: "issuesDraftState",
+    draft: { path: ".devboard/goal-proposals/b.md", status: "running", question: null },
+  });
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+
+  expect(sink.notices).toHaveLength(1);
+  expect(sink.notices[0]?.subject).toBe(".devboard/goal-proposals/a.md");
+});
+
+test("a draft answer is identified by the draft it answers, not its question id", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  guard.dispatch({ type: "answerGoalDraft", path: "drafts/a.md", id: 9, value: "Alpha" }, "operator");
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+
+  expect(sink.notices[0]?.subject).toBe("drafts/a.md");
+  expect(sink.notices[0]?.label).toBe("answerGoalDraft drafts/a.md");
+  expect(sink.posts[0]?.report).toContain("Subject: drafts/a.md");
+  expect(sink.posts[0]?.key).toBe(
+    slowUiActionIdempotencyKey(actionIdentity("answerGoalDraft", "drafts/a.md", "/issues")),
+  );
+
+  // Question 9 in another draft is another action, so it files its own card.
+  guard.dispatch({ type: "answerGoalDraft", path: "drafts/b.md", id: 9, value: "Alpha" }, "operator");
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  expect(sink.notices).toHaveLength(2);
+  expect(sink.notices[1]?.label).toBe("answerGoalDraft drafts/b.md");
+});
+
 test("one identity files once while a different identity files its own issue", () => {
   const sink = new FakeSink();
   const guard = guarded(sink);
@@ -353,6 +412,10 @@ test("the subject reads the identifying field and leaves elapsed time out", () =
   expect(actionSubject({ type: "startAgent", id: "scout" })).toBe("scout");
   expect(actionSubject({ type: "getIssuesRun", runId: "run-1" })).toBe("run-1");
   expect(actionSubject({ type: "getGoalDraft", path: "drafts/a.md" })).toBe("drafts/a.md");
+  expect(actionSubject({ type: "answerGoalDraft", path: "drafts/a.md", id: 9 })).toBe(
+    "drafts/a.md",
+  );
+  expect(actionSubject({ type: "closeIssue", number: 1535 })).toBe("1535");
   expect(actionSubject({ type: "getVersion" })).toBe("");
   expect(actionIdentity("startAgent", "scout", "/issues")).toBe("startAgent|scout|/issues");
   expect(slowActionReport(
