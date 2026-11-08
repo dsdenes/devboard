@@ -806,13 +806,15 @@ durable state file under `<stateDir>/state/` carries no key material.
 Usage is read from `https://opencode.ai/zen/go/v1/usage` (`rolling`, `weekly`, and `monthly`
 percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `limit`).
 `DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
-URLs for tests and offline verification. On-demand reads fetch a key's usage at most once per
-60 seconds unless the operator forces a refresh; while at least one dashboard is connected, the
-dashboard's own background task refreshes a stale report and pushes a fresh `providersState` every
-60 seconds, so the dialog's usage never stays stale. With no client connected the periodic refresh
-makes no provider call, and the next client's `getProviders` refreshes first. Selection never waits
-on this endpoint: a peer start resolves its provider from the cached report and the background
-task is the only path that replaces it, so a slow or unreachable usage endpoint delays no Start.
+URLs for tests and offline verification. A key's usage is fetched at most once per 60 seconds
+unless the operator forces a refresh. A `getProviders` read answers the cached report
+and never waits for the usage endpoint; when it finds cached usage older than 60 seconds it wakes
+the dashboard's own background task. That task refreshes a stale report and pushes a fresh
+`providersState` every 60 seconds while at least one dashboard is connected, so the dialog's
+usage never stays stale. With no client connected the periodic refresh makes no provider call; a
+read that finds a stale report wakes it on demand. Selection never waits on this endpoint: a peer
+start resolves its provider from the cached report and the background task is the only path that
+replaces it, so a slow or unreachable usage endpoint delays no Start.
 
 A detached worker outlives the credential list it was started with, so every agent it starts
 resolves the provider again instead of inheriting the worker's original key. The issue worker

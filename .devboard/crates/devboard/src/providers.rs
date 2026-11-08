@@ -1347,6 +1347,10 @@ pub struct ProviderService {
     inner: Mutex<Inner>,
     /// One in-flight fetch per provider key, whatever asks while it runs.
     inflight: Mutex<HashMap<String, UsageFuture>>,
+    /// Wakes the dashboard's background refresh loop when a read finds cached
+    /// usage it should replace, so the read itself never waits for the
+    /// usage endpoint.
+    refresh_wake: Arc<tokio::sync::Notify>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1441,7 +1445,13 @@ impl ProviderService {
                 usage: HashMap::new(),
             }),
             inflight: Mutex::new(HashMap::new()),
+            refresh_wake: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// The handle the background refresh loop waits on.
+    pub fn refresh_wake(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.refresh_wake)
     }
 
     pub fn repo_dir(&self) -> &Path {
@@ -1562,6 +1572,24 @@ impl ProviderService {
         }
     }
 
+    /// Whether one subscription's cached usage is missing or older than the TTL.
+    fn usage_is_stale(inner: &Inner, subscription: &StoredSubscription, now: i64) -> bool {
+        match inner.usage.get(&subscription.id) {
+            None => true,
+            Some(cached) => now - cached.checked_at_ms >= USAGE_TTL_MS as i64,
+        }
+    }
+
+    /// Whether a background refresh would replace any cached report now.
+    fn has_stale_usage(&self) -> bool {
+        let now = (self.now_ms)();
+        let inner = lock(&self.inner);
+        inner
+            .subscriptions
+            .iter()
+            .any(|subscription| Self::usage_is_stale(&inner, subscription, now))
+    }
+
     /// Reads every subscription whose cached usage is older than the TTL, or
     /// all of them when the operator forces a refresh.
     pub async fn refresh(&self, force: bool) {
@@ -1571,15 +1599,7 @@ impl ProviderService {
             inner
                 .subscriptions
                 .iter()
-                .filter(|subscription| {
-                    if force {
-                        return true;
-                    }
-                    match inner.usage.get(&subscription.id) {
-                        None => true,
-                        Some(cached) => now - cached.checked_at_ms >= USAGE_TTL_MS as i64,
-                    }
-                })
+                .filter(|subscription| force || Self::usage_is_stale(&inner, subscription, now))
                 .cloned()
                 .collect()
         };
@@ -1966,10 +1986,14 @@ impl ProviderService {
     pub async fn handle(&self, conn: &Conn, command: &Command) -> bool {
         match command {
             Command::GetProviders => {
-                // A query answers its own client; only a change or an explicit
-                // refresh publishes to every client.
-                self.refresh(false).await;
+                // A read answers the cached view and never waits for a usage
+                // endpoint. A stale report wakes the dashboard's background
+                // loop, which refreshes it and pushes the state it answers
+                // with; only an explicit refresh publishes to every client.
                 conn.send(self.state_frame());
+                if self.has_stale_usage() {
+                    self.refresh_wake.notify_one();
+                }
                 true
             }
             Command::RefreshProviders => {

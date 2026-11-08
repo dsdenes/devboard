@@ -790,6 +790,94 @@ async fn the_background_refresh_checks_stale_usage() {
     );
 }
 
+/// A usage endpoint that never answers must not hold the provider read: the
+/// cached view answers. This test compiles against the base handler, where the
+/// read awaited the transport, and fails there on the timeout.
+#[tokio::test]
+async fn a_read_never_waits_for_the_usage_transport() {
+    use std::future::pending;
+
+    let root = fixture_root("read-usage");
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[subscription("go", ProviderId::OpenCodeGo, "go-key-0001")],
+    )
+    .expect("credentials");
+    // The injected transport never answers: any await on it would hang.
+    let transport: Transport = Arc::new(|_request| -> TransportFuture {
+        Box::pin(async move { pending::<Result<UsageResponse, TransportError>>().await })
+    });
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(transport),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    let service = ProviderService::with_options(&state, root.join("repo"), options);
+
+    let (conn, mut inbox) = connection();
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        service.handle(&conn, &Command::GetProviders),
+    )
+    .await
+    .expect("getProviders awaited the usage transport");
+
+    let answer = frame(&mut inbox);
+    assert_eq!(answer["type"], "providersState");
+    assert_eq!(answer["subscriptions"][0]["status"], "unknown");
+}
+
+/// A read with a stale cache answers the cached status and makes no provider
+/// call at all: the replacement belongs to the background loop.
+#[tokio::test]
+async fn a_stale_read_serves_the_cached_usage_without_a_provider_call() {
+    let root = fixture_root("read-cached");
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[subscription("go", ProviderId::OpenCodeGo, "go-key-0001")],
+    )
+    .expect("credentials");
+    let clock = Arc::new(AtomicI64::new(1_700_000_000_000));
+    let clock_for_service = Arc::clone(&clock);
+    let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(stub_transport(calls.clone())),
+        now_ms: Some(Arc::new(move || clock_for_service.load(Ordering::SeqCst))),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    let service = ProviderService::with_options(&state, root.join("repo"), options);
+    service.refresh(true).await;
+    assert_eq!(calls.lock().expect("calls").len(), 1);
+
+    // One TTL later the cached report is stale: the read answers it anyway.
+    clock.fetch_add(61_000, Ordering::SeqCst);
+    let wake = service.refresh_wake();
+    let (conn, mut inbox) = connection();
+    assert!(service.handle(&conn, &Command::GetProviders).await);
+    assert_eq!(
+        calls.lock().expect("calls").len(),
+        1,
+        "a read fetched usage"
+    );
+    let answer = frame(&mut inbox);
+    assert_eq!(answer["type"], "providersState");
+    assert_eq!(answer["subscriptions"][0]["status"], "near-limit");
+    tokio::time::timeout(std::time::Duration::from_millis(50), wake.notified())
+        .await
+        .expect("a stale read never asked for a background refresh");
+}
+
 #[tokio::test]
 async fn a_fresh_connection_receives_no_unsolicited_provider_state() {
     let root = fixture_root("startup-usage");

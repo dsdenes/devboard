@@ -499,12 +499,13 @@ impl App {
         app
     }
 
-    /// Refreshes provider usage on the dashboard's own cadence. The Start path
-    /// only reads the cached report, so this task is the one place a stale
-    /// report is replaced. It makes no provider call while no client is
-    /// connected; the next client's `getProviders` refreshes first.
+    /// Refreshes provider usage on the dashboard's own cadence. The Start and
+    /// read paths only use the cached report, so this task is the one place a
+    /// stale report is replaced; a read that finds one wakes it immediately.
+    /// It makes no provider call while no client is connected.
     fn start_provider_refresh(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
+        let wake = self.providers.refresh_wake();
         tokio::spawn(async move {
             let mut timer = tokio::time::interval(std::time::Duration::from_millis(
                 crate::providers::USAGE_TTL_MS,
@@ -515,11 +516,16 @@ impl App {
             // providersState before its own replay and first command.
             timer.tick().await;
             loop {
-                timer.tick().await;
+                let demanded = tokio::select! {
+                    _ = timer.tick() => false,
+                    _ = wake.notified() => true,
+                };
                 let Some(app) = weak.upgrade() else {
                     break;
                 };
-                if !app.shared.has_clients() {
+                // A read asked for this one; only the periodic tick waits for
+                // a connected client.
+                if !demanded && !app.shared.has_clients() {
                     continue;
                 }
                 app.providers.background_refresh().await;
