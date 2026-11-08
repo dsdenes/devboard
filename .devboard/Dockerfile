@@ -7,7 +7,6 @@ WORKDIR /src
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY shadow ./shadow
 COPY omp ./omp
 COPY prompts ./prompts
 COPY templates ./templates
