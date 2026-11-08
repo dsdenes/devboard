@@ -3846,14 +3846,20 @@ pending question.
 
 The peers are not held by the server process. One detached owner process per draft carries each
 running elaboration, persists its run under `STATE_DIR`, and consumes that draft's answer and Stop
-commands, so a version reload hands every running elaboration to the replacement: the reload
-control writes a handoff before this server exits, and the replacement attaches to the same
-owners, peers, prompts, activity, and pending questions before it serves the Draft goals page. An
-answer or Stop after the reload reaches the original peer for its own draft, and no second peer
-or second question appears. Any other dashboard exit, abrupt or not, ends every owner and its peer
-within ten seconds and records one `failed` run per interrupted draft whose error names that the
-server exit interrupted the elaboration; each draft stays listed and startable, and nothing
-resumes automatically.
+commands. A live owner survives any dashboard exit, abrupt or not, and the next dashboard adopts
+that same owner, peer, prompt, activity, and pending question without a reload handoff; the reload
+control still writes a handoff hint, but adoption never depends on it. An answer or Stop after the
+exit reaches the original peer for its own draft, and no second peer or second question appears.
+
+When a run's owner is really gone, the dashboard that supervises the drafts gives it exactly one
+automatic restart from the same draft: it starts one new owner and keeps the run's recorded
+activity as the prefix of the new activity. The run stays `running` across that restart, and no
+client starts it. A run that cannot continue records the actual cause and leaves its draft listed
+and startable: `The elaboration owner did not start.` when no owner ever claims the run, and
+`The elaboration owner exited before it finished.` when the owner, or its one automatic restart,
+exits before the elaboration finishes. A `running` record whose draft file is gone starts no owner
+and records the same `No draft at <path>.` message a start refusal uses, and nothing claims a
+server exit that did not happen.
 
 `.devboard/prompts/goal-draft.md` is the elaboration contract and
 `.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes
