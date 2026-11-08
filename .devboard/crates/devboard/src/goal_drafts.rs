@@ -39,6 +39,12 @@ pub const GOAL_DRAFT_OWNER_EXITED: &str = "The elaboration owner exited before i
 const POLL_MS: u64 = 150;
 /// The owners are told their supervisor is alive at this cadence, not every poll.
 const LEASE_INTERVAL_MS: i64 = 400;
+/// How long an accepted answer waits for its owner to record it. The reply
+/// carries that applied state, so the wait stays inside the page's 1000 ms
+/// latency budget; an owner slower than this is genuinely slow.
+const ANSWER_APPLIED_DEADLINE_MS: u64 = 700;
+/// The cadence the reply reads the durable owner state at while it waits.
+const ANSWER_APPLIED_POLL_MS: u64 = 10;
 
 /// One draft as the drafts view lists it.
 #[derive(Debug, Clone)]
@@ -1671,9 +1677,74 @@ fn watcher_for(repo_dir: &Path, state_dir: &Path) -> Arc<Mutex<DraftWatcher>> {
 // ---------------------------------------------------------------------------
 // Command dispatch
 
+/// Waits until the draft's owner records the answer it was handed, so the
+/// reply that confirms the answer carries the state the owner applied.
+async fn wait_for_applied_answer(state_dir: &Path, repo_dir: &Path, path: &str) {
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_millis(ANSWER_APPLIED_DEADLINE_MS);
+    loop {
+        let applied = read_goal_draft_owner_state(state_dir, repo_dir, path).is_some_and(|state| {
+            state.run.question.is_none() || state.run.status != GoalDraftStatus::Running
+        });
+        if applied {
+            return;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        let pause = remaining.min(std::time::Duration::from_millis(ANSWER_APPLIED_POLL_MS));
+        tokio::time::sleep(pause).await;
+    }
+}
+
+/// Applies one draft answer and answers with the run state its owner applied.
+async fn answer(
+    conn: &Conn,
+    repo_dir: &Path,
+    state_dir: &Path,
+    path: Option<&Value>,
+    id: Option<&Value>,
+    value: Option<&Value>,
+) -> bool {
+    let path_text = path.and_then(Value::as_str);
+    let valid_id = matches!(id, Some(Value::String(_)) | Some(Value::Number(_)));
+    let value_text = value.and_then(Value::as_str);
+    let (Some(path_text), Some(id_value), Some(value_text)) =
+        (path_text, id.filter(|_| valid_id), value_text)
+    else {
+        send_draft_error(
+            conn,
+            path_text,
+            "An answer needs its draft path, question id, and value.",
+        );
+        return true;
+    };
+    let shared = watcher_for(repo_dir, state_dir);
+    {
+        let mut watcher = watch_lock(&shared);
+        watcher.subscribe(conn);
+        if !watcher.answer(path_text, id_value, value_text) {
+            send_draft_error(
+                conn,
+                Some(path_text),
+                "That question is no longer waiting for an answer.",
+            );
+            return true;
+        }
+    }
+    // The owner applies the answer on its own tick. The reply carries the
+    // applied run state, so the page stops waiting for its next poll: this
+    // response is the only frame it reads before then.
+    wait_for_applied_answer(state_dir, repo_dir, path_text).await;
+    let mut watcher = watch_lock(&shared);
+    watcher.refresh();
+    true
+}
+
 /// Applies one draft command. Returns `false` when the command belongs to
 /// another handler.
-pub fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Command) -> bool {
+pub async fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Command) -> bool {
     use crate::command::Command;
     let handles = matches!(
         command,
@@ -1688,8 +1759,19 @@ pub fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Command) -
         return false;
     }
     let state_dir = crate::supervision::default_supervision_state_directory();
-    let watcher = watcher_for(repo_dir, &state_dir);
-    let mut watcher = watch_lock(&watcher);
+    if let Command::AnswerGoalDraft { path, id, value } = command {
+        return answer(
+            conn,
+            repo_dir,
+            &state_dir,
+            path.as_ref(),
+            id.as_ref(),
+            value.as_ref(),
+        )
+        .await;
+    }
+    let shared = watcher_for(repo_dir, &state_dir);
+    let mut watcher = watch_lock(&shared);
     watcher.subscribe(conn);
 
     match command {
@@ -1736,29 +1818,6 @@ pub fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Command) -
             };
             if let Err(error) = watcher.delete(Some(&Value::String(path.to_string()))) {
                 conn.send(json!({"type": "error", "message": error.message}));
-            }
-        }
-        Command::AnswerGoalDraft { path, id, value } => {
-            let path_text = path.as_ref().and_then(Value::as_str);
-            let id_value = id.as_ref();
-            let valid_id = matches!(id_value, Some(Value::String(_)) | Some(Value::Number(_)));
-            let value_text = value.as_ref().and_then(Value::as_str);
-            let (Some(path_text), Some(id_value), Some(value_text)) =
-                (path_text, id_value.filter(|_| valid_id), value_text)
-            else {
-                send_draft_error(
-                    conn,
-                    path_text,
-                    "An answer needs its draft path, question id, and value.",
-                );
-                return true;
-            };
-            if !watcher.answer(path_text, id_value, value_text) {
-                send_draft_error(
-                    conn,
-                    Some(path_text),
-                    "That question is no longer waiting for an answer.",
-                );
             }
         }
         _ => return false,

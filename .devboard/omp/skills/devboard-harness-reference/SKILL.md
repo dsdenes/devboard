@@ -498,9 +498,12 @@ systematically. Add a regression test that fails on the slow path. Do not remove
 this detector.`
 
 The report stays inside the server's 8000-unit bound. The action identity is
-`<command or endpoint>|<subject>|<route>`, where the subject is the command's identifying field
-(`id`, `run_id`, `path`, `name`, or `url`) and empty when it has none; elapsed time and timestamp
-are not part of it. Two breaches of one identity in a page session post once and show one card,
+`<command or endpoint>|<subject>|<route>`, where the subject is the field that confirms the
+command — `path` for a goal-draft command, `id` for an agent command, `runId` for a run read — so
+the frame that answers the action is the one whose subject equals the action's. A command with no
+declared confirming field reads the first present of `id`, `run_id`, `path`, `name`, or `url`, and
+none makes the subject empty; elapsed time and timestamp are not part of it. Two breaches of one
+identity in a page session post once and show one card,
 while a different identity gets its own card and POST. Every filing sends an `idempotency-key`
 derived from the identity, so a reload or a second page uses the same key and the server's
 24-hour replay cache returns the issue already filed instead of creating a duplicate. Until the
@@ -3857,8 +3860,12 @@ runs, only its own row shows the disabled start control, whose title is
 `This draft is being elaborated.`; every other draft stays startable. Each peer's activity streams
 only into its own run's `issues-draft-activity`, its `ask` question renders only for that
 draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
-pending question is refused without reaching any peer. Stop closes only the selected draft's peer,
-records `stopped`, keeps that draft, and leaves every other elaboration running. A successful or
+pending question is refused without reaching any peer. An answer's reply carries that draft's run
+state once its owner records the answer — normally within the owner's 200 ms tick — so the page
+clears the question from the reply instead of waiting for its next list poll; when the owner has not
+recorded it within 700 ms the reply carries no state and the page's poll reports it. Stop closes
+only the selected draft's peer, records `stopped`, keeps that draft, and leaves every other
+elaboration running. A successful or
 failed run closes only its own peer before recording `succeeded` or `failed`; a failed peer keeps
 its draft, shows its error there, and accepts a retry as a new peer. A successful completion
 removes its draft from the list when the agent deleted the file, without clearing another draft's

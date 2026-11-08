@@ -497,6 +497,50 @@ async fn start_streams_activity_answers_a_question_and_stops() {
     assert!(stored["peer"].is_null());
 }
 
+/// The page answers over one HTTP request, so that reply must carry the state
+/// that confirms the answer: it is the only frame the page reads before its
+/// next poll, and the poll cadence is longer than the UI latency budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_answer_replies_with_its_applied_state() {
+    let _serial = serial().await;
+    let repo = repo_root("answer-reply");
+    let path = write_draft(&repo, "ask.md", "# Ask\n\nSTUB-QUESTION\nSTUB-HANG\n");
+    let app = app(&repo);
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(
+        &conn,
+        Command::StartGoalDraft {
+            path: Some(json!(path)),
+        },
+    )
+    .await;
+    let asked = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDraftState" && frame["draft"]["question"].is_object(),
+        15000,
+    )
+    .await;
+    let id = asked["draft"]["question"]["id"].clone();
+
+    let frames = app
+        .dispatch_captured(Command::AnswerGoalDraft {
+            path: Some(json!(path)),
+            id: Some(id),
+            value: Some(json!("Alpha")),
+        })
+        .await;
+    let answered = frames.iter().find(|frame| {
+        frame["type"] == "issuesDraftState"
+            && frame["draft"]["path"] == json!(path)
+            && frame["draft"]["question"] == Value::Null
+    });
+    assert!(
+        answered.is_some(),
+        "the reply carries the applied state: {frames:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_draft_refuses_a_stop() {
     let _serial = serial().await;

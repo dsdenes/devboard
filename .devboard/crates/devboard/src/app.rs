@@ -914,7 +914,7 @@ impl App {
                 if self.providers.handle(conn, &other).await {
                     return Ok(());
                 }
-                if crate::goal_drafts::handle(conn, &self.config().repo_dir, &other) {
+                if crate::goal_drafts::handle(conn, &self.config().repo_dir, &other).await {
                     return Ok(());
                 }
                 Err(format!("{} is not implemented yet", other.name()))
