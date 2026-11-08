@@ -35,6 +35,8 @@ pub const RELEASE_WORKFLOW: &str = "release.yml";
 pub const CI_WORKFLOW: &str = "devboard-ci.yml";
 /// The GitHub workflow that builds the artifacts from the canonical source.
 pub const BUILD_WORKFLOW: &str = "devboard-build.yml";
+/// Git's empty-tree object identifier, the tree the release tag names.
+pub const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// The temporary GitHub branch one release's build is dispatched from.
 pub fn build_ref(tag: &str) -> String {
     format!("refs/heads/devboard-build/{tag}")
@@ -1475,29 +1477,20 @@ impl Api {
         Ok(())
     }
 
-    /// Creates an empty tree, a parentless commit over it, and points `tag` at
-    /// that commit. The release tag carries no harness source.
+    /// Creates a parentless commit over the empty tree and points `tag` at it.
+    /// The release tag carries no harness source.
+    ///
+    /// GitHub refuses `POST /git/trees` with an empty `tree`, so the commit
+    /// names git's well-known empty-tree object directly.
     async fn github_retag_empty(&self, tag: &str, version: &str) -> Result<String> {
         let repository = github_repo_path(&self.github_repo);
-        let tree = self
-            .github_json(
-                "POST",
-                &format!("/repos/{repository}/git/trees"),
-                Some(json!({"tree": []})),
-                "application/vnd.github+json",
-            )
-            .await?;
-        let tree_sha = tree
-            .get("sha")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("the empty tree has no identifier"))?;
         let commit = self
             .github_json(
                 "POST",
                 &format!("/repos/{repository}/git/commits"),
                 Some(json!({
                     "message": format!("Devboard {version}"),
-                    "tree": tree_sha,
+                    "tree": EMPTY_TREE_SHA,
                     "parents": [],
                 })),
                 "application/vnd.github+json",

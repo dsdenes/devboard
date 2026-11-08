@@ -20,8 +20,8 @@ use devboard::publish::{
     acquire_release_lock, commit_level, deliver_source_refresh, dist_digest, next_release_version,
     parse_subject, publish, subject_rule, verify_release_bundle, Clock, CommandInvocation,
     CommandOutcome, CommandRunner, CommitRecord, DashboardInstance, ProcessRunner, PublishArgs,
-    ReleaseLevel, ReleaseLockOptions, Sleeper, SourceRefreshOptions, RELEASE_INSTALLERS,
-    RELEASE_TARGETS,
+    ReleaseLevel, ReleaseLockOptions, Sleeper, SourceRefreshOptions, EMPTY_TREE_SHA,
+    RELEASE_INSTALLERS, RELEASE_TARGETS,
 };
 use devboard::release_suite::{
     BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport,
@@ -1352,6 +1352,14 @@ async fn a_landing_that_pushes_during_the_suite_is_integrated_and_released() {
     );
     assert_eq!(live.github_stub.tag_commit(), Some("e".repeat(40)));
     assert!(live.github_stub.build_ref_deleted());
+    let commit_request = live
+        .github_server
+        .find("POST", "/repos/dsdenes/devboard/git/commits")
+        .expect("the empty release commit");
+    assert!(
+        String::from_utf8_lossy(&commit_request.body).contains(EMPTY_TREE_SHA),
+        "the release commit names git's empty tree"
+    );
     assert_eq!(live.github_stub.dispatch_count(), 1);
     assert!(
         live.gitea_stub
