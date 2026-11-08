@@ -678,6 +678,14 @@ fn worker_version_key(version: Option<&str>) -> String {
         .collect()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// State-tree walks this thread performed. A projection answers from one
+    /// walk, so a test proves the count without depending on another test's
+    /// families, which run on their own threads.
+    static STATE_TREE_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn worker_state_directories(root: &Path) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(root.join("workers"))
         .map(|directory| {
@@ -3950,6 +3958,22 @@ fn merge_repo_issues(states: &[RepoState]) -> Vec<Value> {
     rows
 }
 
+/// Every issue URL the given states already carry: the forge's read set.
+fn forge_urls_of(states: &[RepoState]) -> Vec<String> {
+    merge_repo_issues(states)
+        .into_iter()
+        .filter_map(|issue| issue.get("url").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+/// The most recently updated state of one read of the family's tree.
+fn current_state_of(states: &[RepoState]) -> Option<RepoState> {
+    states
+        .iter()
+        .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+        .cloned()
+}
+
 /// The facts a previous dashboard run already resolved, so a restart reads
 /// only the URLs that are still pending or unreadable.
 fn seed_forge_facts(family_id: RepoFamilyId, state_dir: &Path, repo_dir: &Path) -> Vec<ForgeFact> {
@@ -4205,6 +4229,8 @@ impl RepoFamily {
     }
 
     fn all_states(&self) -> Vec<RepoState> {
+        #[cfg(test)]
+        STATE_TREE_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut states = Vec::new();
         if let Ok(text) = std::fs::read_to_string(self.legacy_state_path()) {
             if let Some(state) = parse_repo_state(self.family_id, &text) {
@@ -4219,12 +4245,6 @@ impl RepoFamily {
             }
         }
         states
-    }
-
-    fn current_state(&self) -> Option<RepoState> {
-        self.all_states()
-            .into_iter()
-            .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
     }
 
     /// The durable state and worker scratch this family's snapshot reads.
@@ -4251,17 +4271,32 @@ impl RepoFamily {
         live_lock_owners(&self.lock_path())
     }
 
+    /// Whether one live worker was started for this dashboard's state.
+    fn owns(&self, owner: &LockOwner) -> bool {
+        resolved(Path::new(&owner.state_dir)) == resolved(&self.state_dir)
+    }
+
     fn owned_owners(&self) -> Vec<LockOwner> {
-        self.all_owners()
-            .into_iter()
-            .filter(|owner| resolved(Path::new(&owner.state_dir)) == resolved(&self.state_dir))
+        self.owned_owners_of(&self.all_owners())
+    }
+
+    /// The owners this dashboard started, read from one lock-directory scan so
+    /// a snapshot that asks twice never re-reads the same directory.
+    fn owned_owners_of(&self, owners: &[LockOwner]) -> Vec<LockOwner> {
+        owners
+            .iter()
+            .filter(|owner| self.owns(owner))
+            .cloned()
             .collect()
     }
 
     fn foreign_owner(&self) -> Option<LockOwner> {
-        self.all_owners()
-            .into_iter()
-            .find(|owner| resolved(Path::new(&owner.state_dir)) != resolved(&self.state_dir))
+        self.foreign_owner_of(&self.all_owners())
+    }
+
+    /// The first owner another dashboard started, from that same one scan.
+    fn foreign_owner_of(&self, owners: &[LockOwner]) -> Option<LockOwner> {
+        owners.iter().find(|owner| !self.owns(owner)).cloned()
     }
 
     fn control_for(&self, owner: &LockOwner) -> PathBuf {
@@ -4309,13 +4344,16 @@ impl RepoFamily {
 
     fn snapshot(&self) -> Value {
         let now = (self.now)();
-        if self.family_id.uses_forge() && self.forge_urls().is_empty() {
+        // One read of the family's state tree answers the forge URLs and the
+        // projection it feeds: a Start's answer walks that tree once, never
+        // once per question.
+        let states = self.all_states();
+        if self.family_id.uses_forge() && forge_urls_of(&states).is_empty() {
             self.forge.note_empty_read(now);
         }
-        let owners = self.owned_owners();
         let all_owners = self.all_owners();
-        let foreign = self.foreign_owner();
-        let states = self.all_states();
+        let owners = self.owned_owners_of(&all_owners);
+        let foreign = self.foreign_owner_of(&all_owners);
         let by_pid: HashMap<u32, RepoState> = states
             .iter()
             .filter_map(|state| {
@@ -4463,7 +4501,7 @@ impl RepoFamily {
             && attached_states
                 .iter()
                 .all(|state| state.lifecycle == "stopped");
-        let state = self.current_state();
+        let state = current_state_of(&states);
         let lifecycle = if mutable.starting || mutable.preview_starting {
             "starting".to_string()
         } else if mutable.stop_requested {
@@ -4673,10 +4711,7 @@ impl RepoFamily {
     }
 
     fn forge_urls(&self) -> Vec<String> {
-        merge_repo_issues(&self.all_states())
-            .into_iter()
-            .filter_map(|issue| issue.get("url").and_then(Value::as_str).map(str::to_string))
-            .collect()
+        forge_urls_of(&self.all_states())
     }
 
     fn replay(&self, conn: &Conn, shared: &Shared, snapshot: Value) {
@@ -9339,5 +9374,112 @@ mod gitea_preflight_tests {
             "{error}"
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod state_tree_walks {
+    //! A Start's answer frame is the family's projection, so the state-tree
+    //! read behind it decides the action's latency. One projection answers
+    //! from one walk: a second walk for the forge's URL set doubled the
+    //! dominant term of the answer and pushed `startAgent` towards the
+    //! client's one-second budget on a populated checkout.
+
+    use super::*;
+
+    fn fixture_root(label: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("state-walks-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo")).expect("a fixture repo");
+        std::fs::create_dir_all(root.join("state")).expect("a fixture state");
+        root
+    }
+
+    /// One family whose state tree holds `versions` worker state documents,
+    /// each carrying one issue of its own.
+    fn family_with_versions(label: &str, versions: usize) -> RepoFamily {
+        let root = fixture_root(label);
+        let state_dir = root.join("state");
+        let repo_dir = root.join("repo");
+        let family_dir = state_dir
+            .join("scout")
+            .join(crate::journal::journal_key(&repo_dir));
+        for index in 0..versions {
+            let directory = family_dir.join("workers").join(format!("1.{index}.0"));
+            std::fs::create_dir_all(&directory).expect("a version directory");
+            std::fs::write(directory.join("state.json"), state_document(index))
+                .expect("a state document");
+        }
+        let spawn: SpawnFn =
+            Arc::new(|_argv: &[String], _environment: HashMap<String, String>| None);
+        let environment: Arc<AgentEnvironment> =
+            Arc::new(|| Box::pin(async { Ok(HashMap::new()) }));
+        RepoFamily::new(
+            RepoFamilyId::Scout,
+            &repo_dir,
+            &state_dir,
+            &HashMap::new(),
+            "true",
+            None,
+            Arc::new(Mutex::new(environment)),
+            Arc::new(Mutex::new(spawn)),
+            Arc::new(Mutex::new(None)),
+            None,
+            Arc::new(|| 0),
+        )
+    }
+
+    fn state_document(index: usize) -> String {
+        json!({
+            "version": 2,
+            "repo": "owner/repository",
+            "root": "/fixture",
+            "lifecycle": "stopped",
+            "enabled": false,
+            "worker": Value::Null,
+            "limits": {"maxPerHour": 50, "maxPending": 5},
+            "intervalMinutes": 15,
+            "issues": [{
+                "number": index + 1,
+                "title": format!("An issue {index}"),
+                "url": format!("http://forge.invalid/issues/{}", index + 1),
+                "createdAt": "2026-11-02T22:40:15+01:00",
+                "state": "pending",
+                "category": "clarity",
+                "version": Value::Null,
+                "versionAttemptAt": Value::Null,
+                "versionError": Value::Null,
+            }],
+            "openTitles": [],
+            "sync": {"state": "ok", "at": "2026-11-02T21:42:09.881Z", "error": Value::Null},
+            "newestScanId": Value::Null,
+            "nextAttemptAt": Value::Null,
+            "lastError": Value::Null,
+            "notice": Value::Null,
+            "updatedAt": format!("2026-11-02T22:40:1{index}.000Z"),
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_projection_answers_from_one_state_tree_walk() {
+        let family = family_with_versions("one-walk", 3);
+        STATE_TREE_WALKS.with(|walks| walks.set(0));
+        let snapshot = family.snapshot();
+        let walks = STATE_TREE_WALKS.with(|walks| walks.get());
+        assert_eq!(
+            walks, 1,
+            "the projection walked the state tree {walks} times"
+        );
+        let issues = snapshot["issues"].as_array().expect("an issue list");
+        assert_eq!(
+            issues.len(),
+            3,
+            "every worker version's issues belong to the projection"
+        );
+        assert_eq!(family.forge_urls().len(), 3);
     }
 }
