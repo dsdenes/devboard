@@ -1427,6 +1427,16 @@ impl Api {
         Ok(())
     }
 
+    /// The host GitHub accepts release-asset uploads on.
+    fn github_upload_base(&self) -> String {
+        let base = self.github_base.trim_end_matches('/');
+        if base == "https://api.github.com" {
+            "https://uploads.github.com".to_string()
+        } else {
+            base.to_string()
+        }
+    }
+
     /// Uploads one release asset by its release identifier.
     async fn github_upload_release_asset(
         &self,
@@ -1439,7 +1449,9 @@ impl Api {
             github_repo_path(&self.github_repo),
             encode_component(name)
         );
-        let url = format!("{}{}", self.github_base.trim_end_matches('/'), path);
+        // GitHub uploads assets through `uploads.github.com`, not the API
+        // host; the API host answers the same POST with 404.
+        let url = format!("{}{}", self.github_upload_base(), path);
         let mut headers = self.github_headers("application/vnd.github+json");
         headers.push((
             "Content-Type".to_string(),
@@ -4602,6 +4614,27 @@ mod tests {
         assert_eq!(instances[0].harness, root.join(".devboard"));
         assert!(instances[0].state_dir.ends_with(".devboard/.tmp"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_asset_uploads_use_the_uploads_host() {
+        let api = Api {
+            transport: Arc::new(ReqwestTransport::new()),
+            gitea: GiteaTarget {
+                base_url: "http://gitea.test".to_string(),
+                project: "dsdenes/devboard".to_string(),
+                token: None,
+            },
+            github_base: "https://api.github.com".to_string(),
+            github_repo: "dsdenes/devboard".to_string(),
+            github_token: None,
+        };
+        assert_eq!(api.github_upload_base(), "https://uploads.github.com");
+        let local = Api {
+            github_base: "http://127.0.0.1:9".to_string(),
+            ..api
+        };
+        assert_eq!(local.github_upload_base(), "http://127.0.0.1:9");
     }
 
     #[test]
