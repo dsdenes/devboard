@@ -459,11 +459,13 @@ Every operator-initiated REST action and every operator-initiated `POST /reports
 first-paint reads a page load sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
 `getVersion`, `getProviders`). Those six are dispatched before every mode read on the same open,
 so they hold the page's first six browser connections and a slow mode read never queues one of
-them behind it. An action is complete when the first inbound frame that answers it
-arrives; a frame for another action or a broadcast does not complete it. The guard is
-observational: it never changes the 10-second command ceiling, a server timeout, a retry
-schedule, a polling interval, the busy control, or the request lifecycle. It does not dismiss a
-busy state, clear a control's timer, or abort a request.
+them behind it. An action is complete when its first answer arrives — the frame that answers it,
+or the response to the request that carried it, whatever its status. A frame for another action
+or a broadcast does not complete it. A request that never answers keeps its budget and still
+files, so a lost or refused connection, a problem document, and a 304 file nothing while an
+unanswered read is still reported. The guard is observational: it never changes the 10-second
+command ceiling, a server timeout, a retry schedule, a polling interval, the busy control, or the
+request lifecycle. It does not dismiss a busy state, clear a control's timer, or abort a request.
 
 The `getVersion` 1000 ms poll, the `getMcpTools` 1000 ms poll, the goal-drafts 1000 ms
 refresh, poll, a polling surface's repeat request, and every send issued while the connection is
