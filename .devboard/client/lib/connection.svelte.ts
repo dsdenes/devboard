@@ -213,12 +213,12 @@ export class ConnectionStore {
     this.upgradePending = false;
     const opening: SlowUiActionOrigin = this.hasOpened ? "reconnect" : "initial";
     this.hasOpened = true;
-    this.openingOrigin = "reconnect";
-    try {
-      for (const handler of this.openHandlers) handler();
-    } finally {
-      this.openingOrigin = opening;
-    }
+    // The six first-paint reads take the page's first six connections. A
+    // browser opens six per origin, so a read dispatched after the surfaces'
+    // reads waits for a slot behind them: a 2 ms records read queued behind a
+    // slow issues, agents, or goal-drafts read and breached its 1000 ms
+    // first-paint budget. The surfaces' replay reads follow, in order.
+    this.openingOrigin = opening;
     try {
       this.send({ type: "listRecords" }, opening);
       this.send({ type: "getGoal" }, opening);
@@ -226,6 +226,8 @@ export class ConnectionStore {
       this.send({ type: "getProject" }, opening);
       this.send({ type: "getVersion" }, opening);
       this.send({ type: "getProviders" }, opening);
+      this.openingOrigin = "reconnect";
+      for (const handler of this.openHandlers) handler();
     } finally {
       this.openingOrigin = null;
     }

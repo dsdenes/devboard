@@ -156,6 +156,56 @@ test("no_command_frames", async () => {
   store.dispose();
 });
 
+test("first_paint_reads_precede_surface_reads", async () => {
+  // A browser opens six connections to one origin and queues the rest. The
+  // six first-paint reads must take those six, because a read that queues
+  // behind a slow mode read breaches its 1000 ms budget even when its own
+  // handler answers in milliseconds.
+  const requests: string[] = [];
+  setGlobal("fetch", async (input: RequestInfo | URL) => {
+    requests.push(String(input));
+    return new Response(JSON.stringify({ frames: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  setGlobal(
+    "WebSocket",
+    class Untracked {
+      constructor() {
+        throw new Error("no command socket may be constructed");
+      }
+    },
+  );
+  setGlobal("window", {
+    setInterval: () => 1,
+    clearInterval: () => undefined,
+    setTimeout: () => 1,
+    clearTimeout: () => undefined,
+  });
+  setGlobal("document", fakeDocument("visible"));
+  setGlobal("location", { protocol: "http:", host: "test.invalid", reload: () => undefined });
+
+  const store = new ConnectionStore();
+  store.onOpen(() => {
+    store.send({ type: "getIssues" }, "refresh");
+    store.send({ type: "getAgents" }, "refresh");
+  });
+  store.connect();
+  await settle();
+  expect(requests).toEqual([
+    "/records",
+    "/goal",
+    "/skills",
+    "/project",
+    "/version",
+    "/providers",
+    "/issues",
+    "/agents",
+  ]);
+  store.dispose();
+});
+
 test("stale_bundle_reloads_once", async () => {
   let reloads = 0;
   setGlobal("sessionStorage", fakeStorage());

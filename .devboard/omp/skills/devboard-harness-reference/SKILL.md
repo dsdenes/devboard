@@ -457,7 +457,9 @@ card, every other failure in the notice stack above the page.
 Every operator-initiated REST action and every operator-initiated `POST /reports` or
 `POST /goal-proposals` runs under a background 1000 ms latency budget, and so do the six
 first-paint reads a page load sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
-`getVersion`, `getProviders`). An action is complete when the first inbound frame that answers it
+`getVersion`, `getProviders`). Those six are dispatched before every mode read on the same open,
+so they hold the page's first six browser connections and a slow mode read never queues one of
+them behind it. An action is complete when the first inbound frame that answers it
 arrives; a frame for another action or a broadcast does not complete it. The guard is
 observational: it never changes the 10-second command ceiling, a server timeout, a retry
 schedule, a polling interval, the busy control, or the request lifecycle. It does not dismiss a
