@@ -72,6 +72,86 @@ fn gitea_stub(archive: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
     (base, handle)
 }
 
+/// One public GitHub release: the latest-release listing, its manifest asset,
+/// and the platform archive, all over the same unauthenticated origin.
+fn github_stub(archive: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let target = devboard::release::current_target().unwrap();
+    let archive_name = format!("devboard-{target}.tar.xz");
+    let archive_url = format!("{base}/assets/{archive_name}");
+    let digest = sha256(&archive);
+    let manifest = serde_json::to_vec(&json!({
+        "version": "1.2.3",
+        "tag": "v1.2.3",
+        "assets": [{
+            "target": target,
+            "url": archive_url,
+            "sha256": digest,
+        }],
+    }))
+    .unwrap();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let read = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+            let (status, content_type, payload) = if request.starts_with(
+                "GET /dsdenes/devboard/releases/latest/download/devboard-manifest.json",
+            ) || request
+                .starts_with("GET /assets/devboard-manifest.json")
+            {
+                ("200 OK", "application/json", manifest.clone())
+            } else if request.contains("/assets/devboard-") {
+                ("200 OK", "application/octet-stream", archive.clone())
+            } else {
+                ("404 Not Found", "text/plain", b"no".to_vec())
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                payload.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(&payload).unwrap();
+        }
+    });
+    (base, handle)
+}
+
+/// A host with no Gitea configuration reads and installs the public GitHub
+/// release alone.
+#[tokio::test]
+async fn the_public_github_release_installs_without_gitea() {
+    let directory = root("github-public");
+    let bytes = archive();
+    let (base, handle) = github_stub(bytes);
+    let mut environment = std::collections::HashMap::new();
+    environment.insert("DEVBOARD_GITHUB_API_URL".to_string(), base.clone());
+    environment.insert(
+        "DEVBOARD_RELEASE_REPO".to_string(),
+        "dsdenes/devboard".to_string(),
+    );
+    environment.insert(
+        "DEVBOARD_GITHUB_DOWNLOAD_URL".to_string(),
+        format!("{base}/dsdenes/devboard"),
+    );
+    let source = devboard::updates::manifest_source(&environment).expect("a public source");
+    assert_eq!(source.forge, devboard::release::ReleaseForge::GitHub);
+    let release = devboard::release::latest_manifest(&source)
+        .await
+        .expect("the public manifest");
+    assert_eq!(release.version, "1.2.3");
+    let prefix = directory.join("prefix");
+    let state = directory.join("state");
+    let installed = devboard::release::install_release(&source, &release, &prefix, &state)
+        .await
+        .expect("the public artifact installs");
+    assert_eq!(installed, "1.2.3");
+    assert!(prefix.join("bin/devboard").is_file());
+    handle.join().unwrap();
+}
+
 #[tokio::test]
 async fn a_failed_github_asset_falls_back_to_the_gitea_artifact() {
     let directory = root("fallback");
@@ -101,6 +181,8 @@ async fn a_failed_github_asset_falls_back_to_the_gitea_artifact() {
         token: None,
         timeout_ms: 5_000,
         local_dir: None,
+        forge: devboard::release::ReleaseForge::Gitea,
+        download_base: String::new(),
     };
     let prefix = directory.join("prefix");
     let installed =
@@ -148,6 +230,8 @@ async fn a_local_release_directory_installs_offline() {
         token: None,
         timeout_ms: 1_000,
         local_dir: Some(directory.clone()),
+        forge: devboard::release::ReleaseForge::Gitea,
+        download_base: String::new(),
     };
     let release = devboard::release::latest_manifest(&source).await.unwrap();
     assert_eq!(release.version, "9.9.9");
@@ -222,6 +306,8 @@ async fn a_refused_credential_still_reads_a_public_release() {
         token: Some("stale-token".to_string()),
         timeout_ms: 5_000,
         local_dir: None,
+        forge: devboard::release::ReleaseForge::Gitea,
+        download_base: String::new(),
     };
     let release = devboard::release::latest_manifest(&source)
         .await
@@ -240,6 +326,8 @@ async fn a_private_release_still_reports_a_refused_credential() {
         token: Some("stale-token".to_string()),
         timeout_ms: 5_000,
         local_dir: None,
+        forge: devboard::release::ReleaseForge::Gitea,
+        download_base: String::new(),
     };
     let error = devboard::release::latest_manifest(&source)
         .await

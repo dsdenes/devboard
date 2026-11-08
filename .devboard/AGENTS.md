@@ -33,14 +33,16 @@ Every agent flow this harness runs follows four rules, and a change that breaks 
 
 This checkout builds and releases the harness; hosts run an installed copy.
 
-- The harness is one Rust binary built by cargo-dist. GitHub Releases carries the platform
-  archives and installers; Gitea is the forge and the authority for the release manifest.
+- The harness is one Rust binary built by cargo-dist. GitHub Releases is the public install,
+  update, and doctor surface: a host with no Gitea reads its release manifest, archives, and
+  installer. Gitea is the local forge and the publishing authority; the Release Train builds the
+  artifacts from the canonical tagged Gitea commit, and Gitea is never a consumer dependency.
 - `<host>/.devboard` holds the host's harness directory and state; `devboard install` writes the
   managed `.omp/commands`, `.omp/extensions`, `.omp/skills/devboard-*`, `AGENTS.md`, and
   `.gitignore` lines as real files. It is never a symlink to this checkout.
 - Fix the harness here, then release it through the Release Train. An installed host reads the
-  Gitea manifest and replaces itself without an operator click; do not edit an installed copy by
-  hand.
+  public GitHub release manifest and replaces itself without an operator click; do not edit an
+  installed copy by hand.
 - This checkout runs omp against its tracked `.omp/` mirror, and no install or update path
   refreshes it. Change `.devboard/omp/`, run `install.sh`, and commit both trees together;
   `cargo test --workspace` plus `devboard doctor` fail when the mirror is missing a file,
@@ -53,7 +55,8 @@ devboard install <host>   # real wrapper dirs, skills, AGENTS.md, gitignore line
 devboard doctor <host>    # exit 0 when every managed file matches the release
 ```
 
-A running dashboard reads the Gitea release manifest immediately and every 60 seconds, verifies
+A running dashboard reads the public GitHub release manifest immediately and every 60 seconds
+(and the Gitea manifest when `DEVBOARD_GITEA_URL` is configured), verifies
 the artifact digest, installs it beside its own binary, and replaces itself without an operator
 click: every connected page waits for the replacement and reloads once. An unreachable, invalid,
 or mismatched manifest leaves the running process serving and is journaled once per attempt. The
@@ -61,7 +64,9 @@ reload control (`data-testid="reload-devboard"`) appears only when a replacement
 and retries the same launcher. The MATE top-panel Devboard icon
 (`desktop/devboard-launcher.py`) is the sanctioned operator path: it sweeps this host's stray
 dashboards, keeps the newest ready one, and starts or restarts exactly one. Never restart a
-dashboard by hand outside that icon, and never symlink a host.
+dashboard by hand outside that icon, and never symlink a host. The reaper signals only processes
+of the host directory it runs for: a dashboard, worker, or run belonging to another host
+directory is never signalled.
 
 ## Restart the source interface after every change
 
@@ -121,19 +126,27 @@ Before a commit that changes the harness:
 cargo fmt --check --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+bun run check
+bun test
 bun run build && bun scripts/embed-client.mjs   # only when the client changed
 ```
+
+A client change is verified with `cd .devboard && bun test`. `.gitea/workflows/devboard-ci.yml`
+runs the Rust checks and the embedded-client build, not the client suite, so a client change must
+pass `bun test` locally before it lands.
 
 A client change lands together with the refreshed, committed `crates/devboard/assets`: the binary
 embeds that copy, the release workflow builds the tagged commit without re-embedding it, and both
 the CI check and `devboard publish` refuse a tree whose committed copy differs from the rebuilt
 bundle.
 
-Merge into `main` and push. A push releases nothing: `.github/workflows/release.yml` runs only on
-`workflow_dispatch`, which `devboard publish` performs. The Release Train background agent watches
+Merge into `main` and push. A push releases nothing: `.github/workflows/devboard-build.yml` runs
+only when `devboard publish` dispatches it at the temporary build ref, and `devboard publish`
+pushes the release tag only after the target commit's `devboard-ci.yml` run concludes success. The Release Train background agent watches
 canonical `main` on its 10-minute default cadence, batches every non-merge commit since the newest
 release tag into one release, starts one agent only when that range is non-empty, and retries a
-failed release on a later tick. That agent tags the commit, dispatches the cargo-dist workflow,
-and verifies the GitHub assets and the Gitea manifest before recording the version. No
+failed release on a later tick. That agent tags the commit, dispatches `devboard-build.yml` from the
+canonical commit, verifies the GitHub assets against the Gitea manifest, moves the GitHub release
+tag to an empty-tree commit, and records the version. No
 implementation agent, design agent, or manual step publishes a version; the train is the only
 releaser.

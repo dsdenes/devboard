@@ -94,24 +94,63 @@ pub fn manifest_source(
             token: None,
             timeout_ms: 30_000,
             local_dir: Some(path),
+            forge: release::ReleaseForge::Gitea,
+            download_base: String::new(),
         });
     }
-    let base_url = gitea_base(environment)?;
+    let repository = environment
+        .get("DEVBOARD_RELEASE_REPO")
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| release::RELEASE_REPOSITORY.to_string());
+    if let Some(base_url) = gitea_base(environment) {
+        let token = environment
+            .get("GITEA_TOKEN")
+            .or_else(|| environment.get("DEVBOARD_GITEA_TOKEN"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        return Some(ManifestSource {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            repository,
+            token,
+            timeout_ms: 30_000,
+            local_dir: None,
+            forge: release::ReleaseForge::Gitea,
+            download_base: String::new(),
+        });
+    }
+    // A host that cannot reach Gitea installs, updates, and passes doctor
+    // from the public GitHub release. The read is unauthenticated unless the
+    // environment already carries a public token; no token command runs here.
+    let base_url = environment
+        .get("DEVBOARD_GITHUB_API_URL")
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://api.github.com".to_string());
+    let download_base = environment
+        .get("DEVBOARD_GITHUB_DOWNLOAD_URL")
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if base_url == "https://api.github.com" {
+                format!("https://github.com/{repository}")
+            } else {
+                format!("{base_url}/{repository}")
+            }
+        });
     let token = environment
-        .get("GITEA_TOKEN")
-        .or_else(|| environment.get("DEVBOARD_GITEA_TOKEN"))
+        .get("GH_TOKEN")
+        .or_else(|| environment.get("GITHUB_TOKEN"))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     Some(ManifestSource {
-        base_url: base_url.trim_end_matches('/').to_string(),
-        repository: environment
-            .get("DEVBOARD_RELEASE_REPO")
-            .cloned()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| release::RELEASE_REPOSITORY.to_string()),
+        base_url,
+        repository,
         token,
         timeout_ms: 30_000,
         local_dir: None,
+        forge: release::ReleaseForge::GitHub,
+        download_base,
     })
 }
 

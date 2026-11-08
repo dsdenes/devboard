@@ -92,8 +92,10 @@ No harness path is a symlink, a rerun adds nothing, and `devboard doctor` compar
 skill with the released artifact. The canonical `.devboard/` in this checkout is the source tree,
 never an installed copy.
 
-Every installed dashboard reads the Gitea release manifest at startup and every 60 seconds, and
-installs a newer artifact next to its own binary. When the install completes, the server replaces
+Every installed dashboard reads the public GitHub release manifest at startup and every 60
+seconds, and installs a newer artifact next to its own binary. Gitea is the local forge and the
+publishing authority; it is not a consumer dependency, so a host with no Gitea installs, updates,
+and passes `devboard doctor` from the public GitHub release alone. When the install completes, the server replaces
 itself with the installed version without an operator click: every connected page receives the
 replacement event, waits for the new process, and reloads once. An unreachable, invalid, or
 mismatched manifest leaves the running process serving and is journaled once per attempt. The
@@ -156,9 +158,15 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   harness version refuses to start while one is live; a cadence tick or Check now during an active
   run starts nothing. After a run ends, the next due tick may start one.
 - **Batching.** One run publishes exactly one version for every non-merge commit since the newest
-  release tag, using the existing Conventional Commit derivation: one cargo-dist release of the
-  platform archives and installers on GitHub Releases, one Gitea release for the same tag carrying
-  `devboard-manifest.json` and the checksums, and one tag naming the released commit.
+  release tag, using the existing Conventional Commit derivation: one canonical cargo-dist build
+  from the tagged Gitea commit, one GitHub release of the platform archives, installer, checksums,
+  and `devboard-manifest.json`, one Gitea release for the same tag carrying the manifest and
+  checksums, and one tag naming the released commit. The GitHub release tag names an empty-tree
+  commit and GitHub's `main` never reaches the released commit.
+- **CI gate.** `devboard publish` pushes the branch first, reads the target commit's
+  `devboard-ci.yml` run on Gitea, and pushes the tag only after that run concludes `success`. A
+  settled failure or a run still absent after the bounded wait leaves the range unreleased,
+  records the run id and conclusion, and retries on the next tick.
 - **Retry.** A failing workflow conclusion, a missing GitHub release artifact, a missing Gitea
   manifest, or a rejected derived version records the failure with its detail, ships nothing, and
   leaves the range unreleased. The next due tick starts a new run without operator action. When

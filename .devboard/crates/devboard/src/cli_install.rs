@@ -950,7 +950,14 @@ pub fn doctor_with_env(
     let mut failures = Vec::new();
     for failure in std::mem::take(&mut report.failures) {
         if let Some(label) = failure.strip_suffix(" differs from the installed copy") {
-            if is_git_tracked(&host, label) {
+            // The `devboard-` prefixed skills are package-owned: the package
+            // always wins their name, so a tracked difference is a failure,
+            // never host drift. Any other differing package file a host tracks
+            // is the host's content and is reported as drift.
+            let marked_skill = label
+                .strip_prefix(".omp/skills/")
+                .is_some_and(|skill| skill.starts_with(MANAGED_SKILL_PREFIX));
+            if !marked_skill && is_git_tracked(&host, label) {
                 report
                     .drift
                     .push(format!("{label} is tracked by the host; left unchanged"));
@@ -1142,7 +1149,10 @@ fn doctor_git_root(host: &Path, report: &mut DoctorReport) {
             let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let top = fs::canonicalize(&top).unwrap_or_else(|_| PathBuf::from(&top));
             if top != host {
-                report.failures.push(format!(
+                // A fixture host under a checkout is a real install target too;
+                // the nested path is reported so an operator sees it, but it
+                // does not fail an otherwise healthy payload.
+                report.drift.push(format!(
                     "git: {} is not the checkout root ({} is)",
                     host.display(),
                     top.display()
@@ -1215,6 +1225,11 @@ fn doctor_release(
         return None;
     }
     let source = crate::updates::manifest_source(environment)?;
+    // A default public GitHub read is opportunistic: until the first release
+    // carries the manifest, a host with no forge configured still passes.
+    let default_public = source.forge == crate::release::ReleaseForge::GitHub
+        && !environment.contains_key("DEVBOARD_GITHUB_API_URL")
+        && !environment.contains_key("DEVBOARD_GITHUB_DOWNLOAD_URL");
     let outcome = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1231,7 +1246,13 @@ fn doctor_release(
             Some(release)
         }
         Some(Err(error)) => {
-            report.failures.push(format!("release: {error}"));
+            if default_public && error.contains("HTTP 404") {
+                report
+                    .drift
+                    .push("release: no public release manifest is published yet".to_string());
+            } else {
+                report.failures.push(format!("release: {error}"));
+            }
             None
         }
         None => {

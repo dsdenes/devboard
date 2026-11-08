@@ -613,12 +613,13 @@ every agent write and eventually exhausts the dev server's heap.
 
 ## Install
 
-The harness ships as native binaries built by cargo-dist. GitHub Releases carries the platform
-archives publicly: Linux x64 and arm64 for both gnu and musl, macOS x64 and arm64, plus the shell
-and PowerShell installers. Gitea is the forge where version control happens and the authority for
-release metadata: every published tag carries one Gitea release whose `devboard-manifest.json`
-asset names the version and every platform artifact with its SHA-256. Nothing publishes or reads
-an npm package.
+The harness ships as native binaries built by cargo-dist. GitHub Releases is the public install,
+update, and doctor surface: it carries Linux x64 and arm64 for both gnu and musl, macOS x64 and
+arm64, the shell installer, the checksums, and a `devboard-manifest.json`. The Release Train
+builds those artifacts from the canonical tagged Gitea commit. Gitea is the local forge and the
+publishing authority — where version control, CI, and release metadata happen — and is never a
+consumer dependency: a host with no Gitea installs, updates, and passes doctor from the public
+GitHub release alone. Nothing publishes or reads an npm package.
 
 A clean machine installs the harness with the released one-command installer:
 
@@ -660,13 +661,16 @@ registration and is not probed.
 
 ### Updates
 
-Every installed dashboard reads the Gitea release manifest at startup and every 60 seconds,
-downloads the artifact for its platform, verifies the manifest's SHA-256, installs it beside the
-running binary, and replaces the process without an operator click. Every connected page receives
+Every installed dashboard reads the public GitHub release manifest —
+`/releases/latest/download/devboard-manifest.json` — at startup and every 60 seconds, downloads the
+artifact for its platform, verifies the manifest's SHA-256, installs it beside the running binary,
+and replaces the process without an operator click. It reads the Gitea manifest instead when
+`DEVBOARD_GITEA_URL` names a Gitea instance, so a private or Gitea-only deployment still updates. Every connected page receives
 the replacement event, waits for the new process, and reloads once. An unreachable, invalid, or
 mismatched manifest leaves the running process serving and is journaled once per attempt. The
 `DEVBOARD_UPDATE_INTERVAL_MS` and `DEVBOARD_UPDATE_BACKOFF_MAX_MS` variables tune the cadence and
-the backoff ceiling; `DEVBOARD_GITEA_URL` names the Gitea instance and `GITEA_TOKEN` its token. A
+the backoff ceiling; `DEVBOARD_GITEA_URL` names an optional Gitea instance and `GITEA_TOKEN` its
+token. Without either, the public GitHub read needs no credential. A
 credential Gitea refuses is dropped for that read: the release metadata of a public repository
 needs none, so a token the forge has since rotated away — still exported to a dashboard that
 started before the rotation — cannot fail the check, because the read is retried without the

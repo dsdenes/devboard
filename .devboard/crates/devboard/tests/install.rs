@@ -43,6 +43,36 @@ impl Drop for Scratch {
     }
 }
 
+/// A local release at the installed version, so doctor proves its checks
+/// without a network or an inherited forge configuration.
+fn local_release(host: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let release = host.join(".test-release");
+    fs::create_dir_all(&release).unwrap();
+    let target = devboard::release::current_target().unwrap();
+    let bytes = b"the platform artifact";
+    let digest: String = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fs::write(release.join(format!("devboard-{target}.tar.xz")), bytes).unwrap();
+    fs::write(
+        release.join("devboard-manifest.json"),
+        serde_json::to_string(&serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "tag": format!("v{}", env!("CARGO_PKG_VERSION")),
+            "assets": [{
+                "target": target,
+                "url": format!("https://github.test/devboard-{target}.tar.xz"),
+                "sha256": digest,
+            }],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    release
+}
+
 /// Doctor with the inherited forge configuration removed: a fixture proves
 /// its own checks, never the developer's network.
 fn doctor(host: &Path) -> anyhow::Result<devboard::cli_install::DoctorReport> {
@@ -56,6 +86,10 @@ fn doctor(host: &Path) -> anyhow::Result<devboard::cli_install::DoctorReport> {
     ] {
         environment.remove(key);
     }
+    environment.insert(
+        "DEVBOARD_RELEASE_URL".to_string(),
+        local_release(host).display().to_string(),
+    );
     devboard::cli_install::doctor_with_env(Some(host), &environment)
 }
 
@@ -221,6 +255,97 @@ fn doctor_passes_then_fails_on_a_one_byte_managed_skill_edit() {
             .failures
             .iter()
             .any(|failure| failure.contains(&expected)),
+        "{:?}",
+        report.failures
+    );
+}
+
+#[test]
+fn install_restores_a_tracked_package_owned_skill() {
+    let scratch = Scratch::new("tracked-marked-skill");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+    let name = cli_install::managed_skill_names()[0].clone();
+    let target = host.join(".omp/skills").join(&name).join("SKILL.md");
+    fs::write(&target, b"host owned edit\n").unwrap();
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["add", "-f", &format!(".omp/skills/{name}/SKILL.md")])
+        .status()
+        .unwrap();
+    assert!(status.success(), "the fixture tracks the marked skill");
+
+    let report = cli_install::install(Some(host), false).unwrap();
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        fs::read(
+            package_dir()
+                .join("omp/skills")
+                .join(&name)
+                .join("SKILL.md")
+        )
+        .unwrap(),
+        "the package wins a marked name even when the host tracks it"
+    );
+    assert!(
+        !report.drift.iter().any(|entry| entry.contains(&name)),
+        "{:?}",
+        report.drift
+    );
+}
+
+#[test]
+fn doctor_fails_a_tracked_marked_skill_but_only_drifts_a_host_skill() {
+    let scratch = Scratch::new("tracked-marked-doctor");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+
+    let name = cli_install::managed_skill_names()[0].clone();
+    let target = host.join(".omp/skills").join(&name).join("SKILL.md");
+    let mut bytes = fs::read(&target).unwrap();
+    bytes[0] ^= 0x01;
+    fs::write(&target, &bytes).unwrap();
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["add", "-f", &format!(".omp/skills/{name}/SKILL.md")])
+        .status()
+        .unwrap();
+    assert!(status.success(), "the fixture tracks the marked skill");
+
+    let report = doctor(host).unwrap();
+    assert!(
+        !report.ok(),
+        "a tracked marked skill is package-owned: {:?}",
+        report.drift
+    );
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.contains(&format!(".omp/skills/{name}/SKILL.md"))),
+        "{:?}",
+        report.failures
+    );
+
+    // An unmarked host skill belongs to the host: it never fails doctor.
+    let host_skill = host.join(".omp/skills/host-notes/SKILL.md");
+    fs::create_dir_all(host_skill.parent().unwrap()).unwrap();
+    fs::write(&host_skill, b"host owned\n").unwrap();
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(host)
+        .args(["add", "-f", ".omp/skills/host-notes/SKILL.md"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let report = doctor(host).unwrap();
+    assert!(
+        !report
+            .failures
+            .iter()
+            .any(|failure| failure.contains("host-notes")),
         "{:?}",
         report.failures
     );

@@ -147,9 +147,17 @@ fn parse_version(value: &str) -> (u64, u64, u64, bool) {
     (major, minor, patch, stable)
 }
 
-/// One Gitea target for the manifest read.
+/// Which forge a release read talks to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseForge {
+    Gitea,
+    GitHub,
+}
+
+/// One forge target for the manifest read.
 #[derive(Debug, Clone)]
 pub struct ManifestSource {
+    /// The Gitea origin or the GitHub API base.
     pub base_url: String,
     pub repository: String,
     pub token: Option<String>,
@@ -158,6 +166,11 @@ pub struct ManifestSource {
     /// artifacts, for offline verification. When set, every read is a local
     /// file read.
     pub local_dir: Option<PathBuf>,
+    /// The forge the read talks to.
+    pub forge: ReleaseForge,
+    /// The public download root a GitHub manifest is read from, e.g.
+    /// `https://github.com/owner/repo`. Empty for a Gitea or local source.
+    pub download_base: String,
 }
 
 impl ManifestSource {
@@ -230,8 +243,8 @@ async fn get_release_response(
     send_release_request(client, url, accept, None).await
 }
 
-/// Reads the newest release's manifest from Gitea, or from a local release
-/// directory when `DEVBOARD_RELEASE_URL` names one.
+/// Reads the newest release's manifest from Gitea or GitHub, or from a local
+/// release directory when `DEVBOARD_RELEASE_URL` names one.
 pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
     if let Some(directory) = &source.local_dir {
         let path = directory.join(MANIFEST_ASSET);
@@ -242,6 +255,14 @@ pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, Str
         return ReleaseInfo::from_manifest(&manifest)
             .ok_or_else(|| format!("{} is not a release manifest", path.display()));
     }
+    match source.forge {
+        ReleaseForge::Gitea => latest_gitea_manifest(source).await,
+        ReleaseForge::GitHub => latest_github_manifest(source).await,
+    }
+}
+
+/// Reads the newest release's manifest from Gitea.
+async fn latest_gitea_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
     let client = source.client();
     let url = source.api(&format!("{}/releases/latest", source.repo_path()));
     let response =
@@ -290,6 +311,36 @@ pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, Str
         release.tag = tag.to_string();
     }
     Ok(release)
+}
+
+/// Reads the newest public release's manifest from GitHub.
+///
+/// A host that cannot reach Gitea installs, updates, and passes doctor from
+/// the public GitHub release alone. The read is the release's own download
+/// address — `releases/latest/download/devboard-manifest.json` — never the API,
+/// so it needs no credential and cannot be rate-limited by an API quota.
+async fn latest_github_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
+    let client = source.client();
+    let base = if source.download_base.trim().is_empty() {
+        format!("https://github.com/{}", source.repository)
+    } else {
+        source.download_base.trim_end_matches('/').to_string()
+    };
+    let url = format!("{base}/releases/latest/download/{MANIFEST_ASSET}");
+    let response = get_release_response(
+        &client,
+        &url,
+        "application/octet-stream",
+        source.token.as_deref(),
+    )
+    .await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("GET {url} failed (HTTP {})", status.as_u16()));
+    }
+    let manifest: Value = response.json().await.map_err(|error| error.to_string())?;
+    ReleaseInfo::from_manifest(&manifest)
+        .ok_or_else(|| "the public release manifest is invalid".to_string())
 }
 
 /// The GitHub API token a release uses.
@@ -410,6 +461,8 @@ pub(crate) async fn download_release_asset(
         token: source.token.clone(),
         timeout_ms: source.timeout_ms,
         local_dir: None,
+        forge: ReleaseForge::Gitea,
+        download_base: String::new(),
     };
     let bytes = match gitea_asset_bytes(&fallback, release, asset).await {
         Ok(bytes) => bytes,

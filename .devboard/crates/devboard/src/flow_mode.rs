@@ -3564,6 +3564,9 @@ impl FlowMode {
         }
         self.broadcast(json!({"type": "flowStopped"}));
         self.publish();
+        // The change set is complete, so its review list is classified now,
+        // before a page can accept a widget the next analysis would rename.
+        self.schedule_analysis();
         self.spawn_tick();
     }
 
@@ -3788,7 +3791,11 @@ impl FlowMode {
             if quiet {
                 // A restored session recomputes its review list without
                 // spawning a peer; the analyst runs again only after the
-                // implementation starts.
+                // implementation starts. A review list the analyst already
+                // produced stays: a tick that lands just after the final
+                // checkpoint replays the same change set, and replacing the
+                // widgets the page is reviewing would rename the ids under an
+                // accepted widget, an open conversation, or a conclusion.
                 let widgets = {
                     let mut inner = self.lock();
                     let Some(current) = inner
@@ -3798,7 +3805,9 @@ impl FlowMode {
                     else {
                         return;
                     };
-                    current.widgets = reconcile(&[], &files, current);
+                    if current.widgets.is_empty() {
+                        current.widgets = reconcile(&[], &files, current);
+                    }
                     let widgets = current.widgets.clone();
                     current
                         .accepted
@@ -3808,7 +3817,16 @@ impl FlowMode {
                 self.persist();
                 self.persist_artifacts();
                 self.broadcast(json!({"type": "flowWidgets", "widgets": widgets}));
-            } else {
+            } else if self
+                .lock()
+                .session
+                .as_ref()
+                .is_some_and(|current| current.status != "running")
+            {
+                // While the implementation keeps writing the change set, each
+                // analysis would name a different diff and its ids would churn
+                // under a page already reviewing them. The review list is
+                // classified once the peer stops, over the completed diff.
                 self.schedule_analysis();
             }
         }
@@ -4041,6 +4059,41 @@ impl FlowMode {
             // to the new session and gets its own turn.
             if self.lock().analyst_pending {
                 self.lock().analyst_pending = false;
+                self.start_analyst();
+            }
+            return Ok(());
+        }
+        // The implementation kept committing while the analyst ran, so this
+        // answer may describe a diff the session no longer carries. Applying
+        // it would rename the widgets the page is reviewing under an accepted
+        // widget, an open conversation, or a conclusion; analyze the current
+        // diff instead. The worktree itself is read, not the last recorded
+        // hash: a commit the watchdog has not seen yet is still a stale answer.
+        let analyzed_hash = diff_hash(&files);
+        let fresh = self.compute_diff(&session).await;
+        let stale_diff = fresh
+            .as_ref()
+            .is_some_and(|fresh| diff_hash(fresh) != analyzed_hash);
+        if stale_diff {
+            // Record the newer diff so the retry analyzes it instead of
+            // spinning on the snapshot this turn captured.
+            let fresh = fresh.unwrap_or_default();
+            let fresh_hash = diff_hash(&fresh);
+            let retry = {
+                let mut inner = self.lock();
+                if let Some(current) = inner
+                    .session
+                    .as_mut()
+                    .filter(|current| current.id == session.id)
+                {
+                    current.files = fresh;
+                    current.last_diff_hash = Some(fresh_hash);
+                }
+                let pending = inner.analyst_pending;
+                inner.analyst_pending = false;
+                !pending
+            };
+            if retry {
                 self.start_analyst();
             }
             return Ok(());

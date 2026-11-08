@@ -27,7 +27,8 @@ fn canonical(path: &Path) -> PathBuf {
 
 /// The registered `command` and `args` for `mcpServers.devboard`.
 fn registration() -> (String, Vec<String>) {
-    let text = fs::read_to_string(package_dir().join("omp/mcp.json")).expect("the shipped mcp.json");
+    let text =
+        fs::read_to_string(package_dir().join("omp/mcp.json")).expect("the shipped mcp.json");
     let config: serde_json::Value = serde_json::from_str(&text).expect("mcp.json is JSON");
     let server = &config["mcpServers"]["devboard"];
     let command = server["command"].as_str().expect("a command").to_string();
@@ -81,7 +82,8 @@ fn run_preflight(cwd: &Path, args: &[&str], environment: &[(&str, &str)]) -> Out
         .expect("the shipped preflight runs")
 }
 
-const HANDSHAKE: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n\
+const HANDSHAKE: &[u8] =
+    b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n\
 {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
 
 /// The initialize and tools/list answers, when the probe served the protocol.
@@ -194,7 +196,11 @@ fn stderr_text(output: &Output) -> String {
 #[test]
 fn the_real_registration_answers_initialize_and_tools_list_from_the_repo_root() {
     let root = repo_root();
-    for cwd in [root.clone(), root.join(".devboard"), root.join(".devboard/crates")] {
+    for cwd in [
+        root.clone(),
+        root.join(".devboard"),
+        root.join(".devboard/crates"),
+    ] {
         assert!(cwd.is_dir(), "{} is a directory", cwd.display());
         let output = run_probe(&cwd, &[], HANDSHAKE);
         assert_eq!(
@@ -211,8 +217,8 @@ fn the_real_registration_answers_initialize_and_tools_list_from_the_repo_root() 
             "{} wrote a diagnostic",
             cwd.display()
         );
-        let (name, version, tools) = handshake(&output)
-            .unwrap_or_else(|| panic!("{} served the protocol", cwd.display()));
+        let (name, version, tools) =
+            handshake(&output).unwrap_or_else(|| panic!("{} served the protocol", cwd.display()));
         assert_eq!(name, "devboard", "from {}", cwd.display());
         assert_eq!(version, env!("CARGO_PKG_VERSION"), "from {}", cwd.display());
         assert!(
@@ -268,7 +274,11 @@ fn devboard_bin_wins_over_a_harness_directory() {
     let explicit = canonical(&fixture.path().join("explicit/devboard"));
     let explicit_text = explicit.to_string_lossy().to_string();
 
-    let output = run_probe(fixture.path(), &[("DEVBOARD_BIN", &explicit_text)], HANDSHAKE);
+    let output = run_probe(
+        fixture.path(),
+        &[("DEVBOARD_BIN", &explicit_text)],
+        HANDSHAKE,
+    );
     assert_eq!(
         stub_stdout(&output),
         "explicit mcp",
@@ -284,7 +294,12 @@ fn the_git_top_level_finds_the_checkout_from_a_nested_subdirectory() {
     let nested = fixture.mkdir("one/two");
 
     let output = run_probe(&nested, &[], HANDSHAKE);
-    assert_eq!(stub_stdout(&output), "nested mcp", "{}", stderr_text(&output));
+    assert_eq!(
+        stub_stdout(&output),
+        "nested mcp",
+        "{}",
+        stderr_text(&output)
+    );
 }
 
 #[test]
@@ -294,10 +309,7 @@ fn the_pi_coding_agent_prefix_resolves_before_path() {
     fixture.stub("pathbin/devboard", "path");
     let agent = fixture.mkdir("agent");
     let agent_text = agent.to_string_lossy().to_string();
-    let path = format!(
-        "{}:/usr/bin:/bin",
-        fixture.path().join("pathbin").display()
-    );
+    let path = format!("{}:/usr/bin:/bin", fixture.path().join("pathbin").display());
 
     let output = run_probe(
         fixture.path(),
@@ -316,10 +328,7 @@ fn the_pi_coding_agent_prefix_resolves_before_path() {
 fn a_path_devboard_is_used_only_when_no_harness_directory_yields_a_candidate() {
     let fixture = Fixture::new("path");
     fixture.stub("pathbin/devboard", "path");
-    let path = format!(
-        "{}:/usr/bin:/bin",
-        fixture.path().join("pathbin").display()
-    );
+    let path = format!("{}:/usr/bin:/bin", fixture.path().join("pathbin").display());
 
     let output = run_probe(fixture.path(), &[("PATH", &path)], HANDSHAKE);
     assert_eq!(stub_stdout(&output), "path mcp", "{}", stderr_text(&output));
@@ -377,7 +386,12 @@ fn the_preflight_resolves_the_checkout_from_the_repo_root_and_its_project_argume
             cwd.display(),
             stderr_text(&output)
         );
-        assert_eq!(stderr_text(&output), "", "{} wrote a diagnostic", cwd.display());
+        assert_eq!(
+            stderr_text(&output),
+            "",
+            "{} wrote a diagnostic",
+            cwd.display()
+        );
         let result: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|error| panic!("{} printed JSON: {error}", cwd.display()));
         let expected = canonical(&cwd.join(&argument));
@@ -407,10 +421,7 @@ fn devboard_bin_wins_over_a_path_devboard_in_the_preflight() {
     fixture.stub("explicit/devboard", "explicit");
     let explicit = canonical(&fixture.path().join("explicit/devboard"));
     let explicit_text = explicit.to_string_lossy().to_string();
-    let path = format!(
-        "{}:/usr/bin:/bin",
-        fixture.path().join("pathbin").display()
-    );
+    let path = format!("{}:/usr/bin:/bin", fixture.path().join("pathbin").display());
 
     let output = run_preflight(
         fixture.path(),

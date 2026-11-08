@@ -31,10 +31,11 @@ request is the whole unresolved range; never recompute a different one and never
   --wait-timeout 1800`. The `--repo .` names the checkout root, not the harness directory.
 
   Run it in the foreground with no output consumer and keep it alive until it exits. It runs the
-  release suite before tagging, waits for the cargo-dist release workflow it dispatches for the
-  checked-out `main` tip, reads the tag that workflow created, verifies the GitHub archives and
-  installers and the Gitea manifest, and reports every dashboard. It never requires a push and
-  never needs a manual workflow run.
+  release suite before tagging, pushes the branch, waits for that commit's `devboard-ci.yml` run
+  to conclude success, then pushes the tag. It dispatches `devboard-build.yml` from the canonical
+  commit, verifies the GitHub archives, installer, checksums, and manifest against the Gitea
+  manifest, moves the GitHub release tag to an empty-tree commit, and reports every dashboard. It
+  never requires a push and never needs a manual workflow run.
 - Never push, force-push, retag, delete a release or tag, or publish a package yourself. Never
   call cargo-dist, the GitHub API, the Gitea API, or a workflow endpoint directly for the release.
   `devboard publish` is the only release command.

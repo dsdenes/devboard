@@ -31,6 +31,14 @@ use crate::release_suite;
 
 /// The workflow cargo-dist generates for the GitHub release host.
 pub const RELEASE_WORKFLOW: &str = "release.yml";
+/// The Gitea workflow whose success gates the release tag.
+pub const CI_WORKFLOW: &str = "devboard-ci.yml";
+/// The GitHub workflow that builds the artifacts from the canonical source.
+pub const BUILD_WORKFLOW: &str = "devboard-build.yml";
+/// The temporary GitHub branch one release's build is dispatched from.
+pub fn build_ref(tag: &str) -> String {
+    format!("refs/heads/devboard-build/{tag}")
+}
 /// The manifest checksum asset the release carries beside the manifest.
 pub const MANIFEST_CHECKSUM_ASSET: &str = "devboard-manifest.json.sha256";
 /// The lock path variable shared by concurrent release jobs.
@@ -1197,12 +1205,63 @@ impl Api {
 
     /// The commit the forge's branch names, or `None` when the branch is
     /// absent.
-    async fn gitea_branch_commit(&self, branch: &str) -> Result<Option<String>> {
-        let Some(object) = self.gitea_ref_object("heads", branch).await? else {
-            return Ok(None);
-        };
-        let sha = object.get("sha").and_then(Value::as_str).unwrap_or("");
-        Ok((!sha.is_empty()).then(|| sha.to_string()))
+    /// The `devboard-ci.yml` runs of one commit, from the newest read.
+    async fn gitea_ci_runs(&self, commit: &str) -> Result<Vec<WorkflowRun>> {
+        let mut runs = Vec::new();
+        for page in 1..=10u32 {
+            let path = format!(
+                "{}/actions/runs?limit=50&page={page}",
+                gitea::repo_path(&self.gitea)
+            );
+            let document = self.gitea_json("GET", &path, None).await?;
+            let Some(entries) = document
+                .get("workflow_runs")
+                .and_then(Value::as_array)
+                .or_else(|| document.as_array())
+            else {
+                break;
+            };
+            if entries.is_empty() {
+                break;
+            }
+            let mut added = 0usize;
+            for entry in entries {
+                let workflow = entry
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(|path| path.split('@').next().unwrap_or(path));
+                if workflow != Some(CI_WORKFLOW) {
+                    continue;
+                }
+                let Some(head_sha) = entry.get("head_sha").and_then(Value::as_str) else {
+                    continue;
+                };
+                if head_sha != commit {
+                    continue;
+                }
+                let Some(id) = entry.get("id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                runs.push(WorkflowRun {
+                    id,
+                    head_sha: head_sha.to_string(),
+                    status: entry
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    conclusion: entry
+                        .get("conclusion")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                });
+                added += 1;
+            }
+            if added == 0 {
+                break;
+            }
+        }
+        Ok(runs)
     }
 
     async fn gitea_published_versions(&self) -> Result<Vec<String>> {
@@ -1307,11 +1366,11 @@ impl Api {
         Ok(())
     }
 
-    async fn github_runs(&self, commit: &str) -> Result<Vec<WorkflowRun>> {
+    async fn github_runs(&self, workflow: &str, commit: &str) -> Result<Vec<WorkflowRun>> {
         let path = format!(
             "/repos/{}/actions/workflows/{}/runs?head_sha={}&per_page=50",
             github_repo_path(&self.github_repo),
-            encode_component(RELEASE_WORKFLOW),
+            encode_component(workflow),
             encode_component(commit)
         );
         let document = self
@@ -1332,7 +1391,13 @@ impl Api {
         Ok(workflow_jobs(&document))
     }
 
-    async fn github_dispatch(&self, workflow: &str, reference: &str) -> Result<()> {
+    /// Dispatches one workflow at a ref, with optional inputs.
+    async fn github_dispatch_at(
+        &self,
+        workflow: &str,
+        reference: &str,
+        inputs: Option<Value>,
+    ) -> Result<()> {
         if self.github_token.as_deref().unwrap_or("").is_empty() {
             bail!("GH_TOKEN is required to dispatch the release workflow");
         }
@@ -1341,13 +1406,12 @@ impl Api {
             github_repo_path(&self.github_repo),
             encode_component(workflow)
         );
+        let body = match inputs {
+            Some(inputs) => json!({ "ref": reference, "inputs": inputs }),
+            None => json!({ "ref": reference }),
+        };
         let response = self
-            .github_request(
-                "POST",
-                &path,
-                Some(json!({ "ref": reference })),
-                "application/vnd.github+json",
-            )
+            .github_request("POST", &path, Some(body), "application/vnd.github+json")
             .await?;
         if !(200..300).contains(&response.status) {
             return Err(anyhow::Error::new(GithubDispatchError {
@@ -1355,6 +1419,116 @@ impl Api {
                 url: format!("{}{}", self.github_base.trim_end_matches('/'), path),
                 message: failure_message(&response),
             }));
+        }
+        Ok(())
+    }
+
+    /// Uploads one release asset by its release identifier.
+    async fn github_upload_release_asset(
+        &self,
+        release_id: u64,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        let path = format!(
+            "/repos/{}/releases/{release_id}/assets?name={}",
+            github_repo_path(&self.github_repo),
+            encode_component(name)
+        );
+        let url = format!("{}{}", self.github_base.trim_end_matches('/'), path);
+        let mut headers = self.github_headers("application/vnd.github+json");
+        headers.push((
+            "Content-Type".to_string(),
+            "application/octet-stream".to_string(),
+        ));
+        let response = self
+            .send(HttpRequest {
+                method: "POST".to_string(),
+                url: url.clone(),
+                headers,
+                body: bytes,
+            })
+            .await?;
+        if !(200..300).contains(&response.status) {
+            bail!(
+                "POST {url} failed (HTTP {}): {}",
+                response.status,
+                failure_message(&response)
+            );
+        }
+        Ok(())
+    }
+
+    /// Creates an empty tree, a parentless commit over it, and points `tag` at
+    /// that commit. The release tag carries no harness source.
+    async fn github_retag_empty(&self, tag: &str, version: &str) -> Result<String> {
+        let repository = github_repo_path(&self.github_repo);
+        let tree = self
+            .github_json(
+                "POST",
+                &format!("/repos/{repository}/git/trees"),
+                Some(json!({"tree": []})),
+                "application/vnd.github+json",
+            )
+            .await?;
+        let tree_sha = tree
+            .get("sha")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("the empty tree has no identifier"))?;
+        let commit = self
+            .github_json(
+                "POST",
+                &format!("/repos/{repository}/git/commits"),
+                Some(json!({
+                    "message": format!("Devboard {version}"),
+                    "tree": tree_sha,
+                    "parents": [],
+                })),
+                "application/vnd.github+json",
+            )
+            .await?;
+        let commit_sha = commit
+            .get("sha")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("the release commit has no identifier"))?
+            .to_string();
+        let ref_path = format!(
+            "/repos/{repository}/git/refs/tags/{}",
+            encode_component(tag)
+        );
+        let _ = self
+            .github_request("DELETE", &ref_path, None, "application/vnd.github+json")
+            .await;
+        self.github_json(
+            "POST",
+            &format!("/repos/{repository}/git/refs"),
+            Some(json!({
+                "ref": format!("refs/tags/{tag}"),
+                "sha": commit_sha,
+            })),
+            "application/vnd.github+json",
+        )
+        .await?;
+        Ok(commit_sha)
+    }
+
+    /// Deletes one git ref on the GitHub repository.
+    async fn github_delete_ref(&self, reference: &str) -> Result<()> {
+        let path = format!(
+            "/repos/{}/git/refs/{}",
+            github_repo_path(&self.github_repo),
+            reference.trim_start_matches("refs/")
+        );
+        let response = self
+            .github_request("DELETE", &path, None, "application/vnd.github+json")
+            .await?;
+        if !(200..300).contains(&response.status) && response.status != 404 {
+            bail!(
+                "DELETE {}{} failed (HTTP {})",
+                self.github_base.trim_end_matches('/'),
+                path,
+                response.status
+            );
         }
         Ok(())
     }
@@ -1958,75 +2132,115 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
                 .await?
         };
 
-        (log)(&format!("pushing {tag} and main to {}", preflight.remote));
+        // The branch lands first so the canonical forge can prove the exact
+        // commit in CI; the tag is pushed only after that run concludes
+        // success. A single push of both refs made the tag visible before
+        // anything proved the commit it names.
+        (log)(&format!("pushing main to {}", preflight.remote));
         let pushed = git
-            .run(&[
-                "push",
-                &preflight.remote,
-                "refs/heads/main:refs/heads/main",
-                &format!("refs/tags/{tag}:refs/tags/{tag}"),
-            ])
+            .run(&["push", &preflight.remote, "refs/heads/main:refs/heads/main"])
             .await;
         if pushed.code != 0 {
-            // A forge can accept both refs and then lose the push's answer, so a
-            // nonzero exit is not evidence that nothing landed: the refs the forge
-            // carries decide, and a push they already carry never fails a release
-            // that shipped.
-            match push_landed(&api, &git, &tag, &commit).await {
-                Ok(true) => (log)(&format!(
-                    "{} carries {} and {tag}; the push exited nonzero after the refs moved",
+            // A forge can accept the push and then lose its answer, so a
+            // nonzero exit is not evidence that nothing landed: the remote's
+            // main decides, and a push it already carries never fails a
+            // release that shipped.
+            match landed_main_tip(&git, &preflight.remote, &published_head).await? {
+                Some(tip) if tip == commit => (log)(&format!(
+                    "{} carries {}; the push exited nonzero after the ref moved",
                     preflight.remote,
                     short_sha(&commit)
                 )),
-                Ok(false) => match landed_main_tip(&git, &preflight.remote, &published_head).await?
-                {
-                    Some(tip) => {
-                        // The range this attempt derived and tested is not the
-                        // range `main` now carries, so the attempt's tag is
-                        // withdrawn and its version bump dropped before anything
-                        // derives again: a tag whose release never appeared must
-                        // not advance the next derivation past a version that has
-                        // no artifacts, and a local-only bump commit would block
-                        // every later attempt. A tag an earlier run created is
-                        // left to the shipped-release rule instead.
-                        if existing_at_head {
-                            withdraw_unreleased_tag(&api, &git, &preflight, &tag, &log).await;
-                        } else {
-                            withdraw_refused_tag(&git, &preflight, &tag, &commit, &log).await?;
-                        }
-                        git.must(
-                            &["reset", "--keep", tip.as_str()],
-                            "could not integrate the landing",
-                        )
-                        .await?;
-                        if attempt >= RACE_INTEGRATION_ATTEMPTS {
-                            bail!(
-                                "could not push main and {tag} to {}: {}; {}/main moved during \
-                                 all {attempt} attempts",
-                                preflight.remote,
-                                failure_detail(&pushed),
-                                preflight.remote
-                            );
-                        }
-                        (log)(&format!(
-                            "integrating the landing at {} and deriving again (attempt {})",
-                            short_sha(&tip),
-                            attempt + 1
-                        ));
-                        continue;
+                Some(tip) => {
+                    // The range this attempt derived and tested is not the
+                    // range `main` now carries, so the attempt's tag is
+                    // withdrawn and its version bump dropped before anything
+                    // derives again: a tag whose release never appeared must
+                    // not advance the next derivation past a version that has
+                    // no artifacts, and a local-only bump commit would block
+                    // every later attempt. A tag an earlier run created is
+                    // left to the shipped-release rule instead.
+                    if existing_at_head {
+                        withdraw_unreleased_tag(&api, &git, &preflight, &tag, &log).await;
+                    } else {
+                        withdraw_refused_tag(&git, &preflight, &tag, &commit, &log).await?;
                     }
-                    None => bail!(
-                        "could not push main and {tag} to {}: {}",
-                        preflight.remote,
-                        failure_detail(&pushed)
-                    ),
-                },
-                Err(error) => bail!(
-                    "could not push main and {tag} to {}: {}; {} refs unreadable: {error:#}",
+                    git.must(
+                        &["reset", "--keep", tip.as_str()],
+                        "could not integrate the landing",
+                    )
+                    .await?;
+                    if attempt >= RACE_INTEGRATION_ATTEMPTS {
+                        bail!(
+                            "could not push main to {}: {}; {}/main moved during all {attempt} \
+                             attempts",
+                            preflight.remote,
+                            failure_detail(&pushed),
+                            preflight.remote
+                        );
+                    }
+                    (log)(&format!(
+                        "integrating the landing at {} and deriving again (attempt {})",
+                        short_sha(&tip),
+                        attempt + 1
+                    ));
+                    continue;
+                }
+                None => bail!(
+                    "could not push main to {}: {}",
                     preflight.remote,
-                    failure_detail(&pushed),
-                    preflight.remote
+                    failure_detail(&pushed)
                 ),
+            }
+        }
+        // The tag waits for the canonical CI run of the commit it names. A
+        // failing run leaves the range unreleased: the branch keeps the commit,
+        // the tag is dropped locally, and the next tick derives it again.
+        if !existing_at_head {
+            if let Err(error) =
+                wait_for_ci_success(&api, &clock, &sleeper, &args, &commit, &log).await
+            {
+                let _ = git.run(&["tag", "-d", &tag]).await;
+                return Err(error);
+            }
+        } else {
+            (log)(&format!(
+                "{tag} is already pushed; its CI gate ran when the tag was created"
+            ));
+        }
+        (log)(&format!("pushing {tag} to {}", preflight.remote));
+        let tag_pushed = git
+            .run(&[
+                "push",
+                &preflight.remote,
+                &format!("refs/tags/{tag}:refs/tags/{tag}"),
+            ])
+            .await;
+        if tag_pushed.code != 0 {
+            // A forge can accept the tag and lose the push's answer. The ref
+            // the remote actually carries decides, exactly as it does for the
+            // branch.
+            let landed = remote_tag_commit(&git, &preflight.remote, &tag)
+                .await?
+                .as_deref()
+                == Some(commit.as_str());
+            if landed {
+                (log)(&format!(
+                    "{} carries {tag}; the push exited nonzero after the refs moved",
+                    preflight.remote
+                ));
+            } else {
+                if !existing_at_head {
+                    // The branch already carries the commit, but the release
+                    // tag did not land. Dropping it locally lets the next tick
+                    // retag the same range instead of deriving past it.
+                    let _ = git.run(&["tag", "-d", &tag]).await;
+                }
+                bail!(
+                    "could not push {tag} to {}: {}",
+                    preflight.remote,
+                    failure_detail(&tag_pushed)
+                );
             }
         }
         break (version, tag, commit, existing_at_head);
@@ -2038,37 +2252,53 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     // version that has no artifacts at all.
     let created_tag = !existing_at_head;
     let shipped = async {
-        // The workflow lives on GitHub, so the mirror receives the tagged
-        // commit before the run can be selected or dispatched.
-        if preflight.remotes.iter().any(|remote| remote == "github") {
-            push_github_mirror(&git, &commit, &tag, &log).await?;
-        } else {
-            (log)("no github mirror remote; skipped");
+        // The canonical source reaches the GitHub-hosted builders through a
+        // temporary build ref only: no lasting GitHub ref may reach it, and
+        // only GitHub's runners can build the macOS targets.
+        if !preflight.remotes.iter().any(|remote| remote == "github") {
+            bail!("the GitHub remote is required to build the release artifacts");
         }
+        push_github_build_ref(&git, &commit, &tag, &log).await?;
 
         let workflow_run =
             dispatch_and_wait(&api, &clock, &sleeper, &args, &commit, &tag, &log).await?;
+        (log)(&format!(
+            "canonical build: {BUILD_WORKFLOW} run {workflow_run} built {tag} from the canonical \
+             Gitea commit {} at {}",
+            short_sha(&commit),
+            build_ref(&tag)
+        ));
 
         let verified =
             verify_github_assets(&api, &clock, &sleeper, &args, &tag, &version, &log).await?;
 
         write_gitea_release(&api, &git, &version, &tag, &commit, &verified, &log).await?;
 
-        if preflight.remotes.iter().any(|remote| remote == "github") {
-            let (sha, carries) = mirror_carries(&git, &commit).await;
-            if !carries {
-                bail!(
-                    "the GitHub mirror main ({}) does not name {}",
-                    if sha.is_empty() {
-                        "missing".to_string()
-                    } else {
-                        short_sha(&sha)
-                    },
-                    short_sha(&commit)
-                );
-            }
-            (log)(&format!("github/main carries {}", short_sha(&commit)));
+        // The public GitHub release carries the same manifest, so a host that
+        // cannot reach Gitea installs from GitHub alone.
+        let release = api
+            .github_release_by_tag(&tag)
+            .await?
+            .ok_or_else(|| anyhow!("the GitHub release {tag} disappeared before its manifest"))?;
+        let release_id = release
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| anyhow!("the GitHub release {tag} has no identifier"))?;
+        if find_asset(&release_assets(&release), MANIFEST_ASSET).is_none() {
+            api.github_upload_release_asset(release_id, MANIFEST_ASSET, verified.manifest.clone())
+                .await?;
+            (log)(&format!("uploaded {MANIFEST_ASSET} to the GitHub release"));
         }
+
+        // The release tag names an empty-tree commit: the built assets are all
+        // it points at, and the temporary build ref is deleted. GitHub's main
+        // is never advanced to the released commit.
+        let empty = api.github_retag_empty(&tag, &version).await?;
+        api.github_delete_ref(&build_ref(&tag)).await?;
+        (log)(&format!(
+            "GitHub tag {tag} names the empty release commit {}; the build ref is gone",
+            short_sha(&empty)
+        ));
 
         let instances = args
             .instances
@@ -2093,6 +2323,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     let (workflow_run, verified, source_refresh, dashboards) = match shipped {
         Ok(shipped) => shipped,
         Err(error) => {
+            let _ = api.github_delete_ref(&build_ref(&tag)).await;
             if created_tag {
                 withdraw_unreleased_tag(&api, &git, &preflight, &tag, &log).await;
             }
@@ -2812,7 +3043,7 @@ async fn dispatch_release_when_needed(
     tag: &str,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
 ) -> Result<DispatchAttempt> {
-    let runs = api.github_runs(commit).await?;
+    let runs = api.github_runs(BUILD_WORKFLOW, commit).await?;
     let matching: Vec<&WorkflowRun> = runs.iter().filter(|run| run.head_sha == commit).collect();
     let previous_ids: HashSet<u64> = matching.iter().map(|run| run.id).collect();
     if matching.iter().any(|run| !workflow_finished(run)) {
@@ -2830,16 +3061,17 @@ async fn dispatch_release_when_needed(
             previous_ids,
         });
     }
-    api.github_dispatch(RELEASE_WORKFLOW, &format!("refs/tags/{tag}"))
+    api.github_dispatch_at(BUILD_WORKFLOW, &build_ref(tag), Some(json!({ "tag": tag })))
         .await
         .with_context(|| {
             format!(
-                "could not dispatch {RELEASE_WORKFLOW} for {}",
+                "could not dispatch {BUILD_WORKFLOW} for {}",
                 short_sha(commit)
             )
         })?;
     (log)(&format!(
-        "dispatched {RELEASE_WORKFLOW} for {}",
+        "dispatched {BUILD_WORKFLOW} at {} for {}",
+        build_ref(tag),
         short_sha(commit)
     ));
     Ok(DispatchAttempt {
@@ -2857,7 +3089,7 @@ async fn follow_release_run(
     attempt: &DispatchAttempt,
     commit: &str,
 ) -> Result<Option<WorkflowRun>> {
-    let runs = api.github_runs(commit).await?;
+    let runs = api.github_runs(BUILD_WORKFLOW, commit).await?;
     let candidates: Vec<WorkflowRun> = if attempt.dispatched {
         runs.into_iter()
             .filter(|run| !attempt.previous_ids.contains(&run.id))
@@ -2975,6 +3207,103 @@ async fn dispatch_and_wait(
     Ok(workflow.id)
 }
 
+/// Waits for the target commit's `devboard-ci.yml` run to conclude success.
+///
+/// The tag is pushed only after the canonical forge proves the exact commit
+/// the tag names. A settled failure of any kind — `failure`, `cancelled`,
+/// `timed_out`, `startup_failure`, or any other non-success conclusion —
+/// refuses the release without pushing the tag. A commit with no run yet is
+/// waited for; after the documented bound the release is refused the same way.
+async fn wait_for_ci_success(
+    api: &Api,
+    clock: &Arc<dyn Clock>,
+    sleeper: &Arc<dyn Sleeper>,
+    args: &PublishArgs,
+    commit: &str,
+    log: &Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<u64> {
+    let bound = args.wait_timeout.as_secs();
+    (log)(&format!(
+        "waiting up to {bound}s for the {CI_WORKFLOW} run of {}",
+        short_sha(commit)
+    ));
+    let deadline = clock.now_millis() + args.wait_timeout.as_millis() as i64;
+    let mut last_error: Option<String> = None;
+    loop {
+        match api.gitea_ci_runs(commit).await {
+            Ok(runs) => {
+                if let Some(success) = runs
+                    .iter()
+                    .find(|run| run.conclusion.as_deref() == Some("success"))
+                {
+                    (log)(&format!(
+                        "CI run {} for {} concluded success",
+                        success.id,
+                        short_sha(commit)
+                    ));
+                    return Ok(success.id);
+                }
+                if !runs.iter().any(|run| !workflow_finished(run)) {
+                    if let Some(settled) = runs.iter().max_by_key(|run| run.id) {
+                        let conclusion = settled
+                            .conclusion
+                            .clone()
+                            .unwrap_or_else(|| settled.status.clone());
+                        let conclusion = if conclusion.is_empty() {
+                            "no conclusion".to_string()
+                        } else {
+                            conclusion
+                        };
+                        bail!(
+                            "the {CI_WORKFLOW} run {} for {} concluded {conclusion}; no tag was pushed",
+                            settled.id,
+                            short_sha(commit)
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                let text = format!("{error:#}");
+                if last_error.as_deref() != Some(text.as_str()) {
+                    (log)(&format!("the {CI_WORKFLOW} read failed: {text}"));
+                    last_error = Some(text);
+                }
+            }
+        }
+        if clock.now_millis() >= deadline {
+            if let Ok(runs) = api.gitea_ci_runs(commit).await {
+                if let Some(success) = runs
+                    .iter()
+                    .find(|run| run.conclusion.as_deref() == Some("success"))
+                {
+                    (log)(&format!(
+                        "CI run {} for {} concluded success",
+                        success.id,
+                        short_sha(commit)
+                    ));
+                    return Ok(success.id);
+                }
+                if let Some(settled) = runs.iter().find(|run| workflow_finished(run)) {
+                    let conclusion = settled
+                        .conclusion
+                        .clone()
+                        .unwrap_or_else(|| settled.status.clone());
+                    bail!(
+                        "the {CI_WORKFLOW} run {} for {} concluded {conclusion}; no tag was pushed",
+                        settled.id,
+                        short_sha(commit)
+                    );
+                }
+            }
+            bail!(
+                "no {CI_WORKFLOW} run for {} concluded success within {bound}s; no tag was pushed",
+                short_sha(commit)
+            );
+        }
+        sleeper.sleep(args.poll_interval).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GitHub assets
 
@@ -2988,6 +3317,14 @@ fn release_asset_url(asset: &Value) -> Option<String> {
     // repository's token cannot follow reliably.
     asset_field(asset, "url")
         .or_else(|| asset_field(asset, "browser_download_url"))
+        .map(str::to_string)
+}
+
+/// The address a consumer downloads an asset from: the public browser
+/// download URL, never the API URL that needs a token and an Accept header.
+fn public_asset_url(asset: &Value) -> Option<String> {
+    asset_field(asset, "browser_download_url")
+        .or_else(|| asset_field(asset, "url"))
         .map(str::to_string)
 }
 
@@ -3070,7 +3407,11 @@ async fn verify_github_assets_once(api: &Api, tag: &str, version: &str) -> Resul
     let mut names = Vec::new();
     for target in RELEASE_TARGETS {
         let name = format!("devboard-{target}.tar.xz");
-        let (url, digest, checksum) = verify_one_asset(api, &assets, &name).await?;
+        let (_, digest, checksum) = verify_one_asset(api, &assets, &name).await?;
+        let asset =
+            find_asset(&assets, &name).ok_or_else(|| anyhow!("the release is missing {name}"))?;
+        let url = public_asset_url(asset)
+            .ok_or_else(|| anyhow!("{name} has no public download address"))?;
         manifest_assets.push(json!({
             "target": target,
             "url": url,
@@ -3293,13 +3634,22 @@ async fn write_gitea_release(
 // ---------------------------------------------------------------------------
 // GitHub mirror
 
-async fn push_github_mirror(
+/// Pushes the canonical commit to the temporary GitHub build ref.
+///
+/// The ref exists only for the build: publish deletes it after the release tag
+/// is moved to an empty-tree commit, so no lasting GitHub ref reaches harness
+/// source.
+async fn push_github_build_ref(
     git: &Git<'_>,
     commit: &str,
     tag: &str,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
 ) -> Result<()> {
-    (log)("pushing the GitHub mirror");
+    let reference = build_ref(tag);
+    (log)(&format!(
+        "pushing {} to the GitHub build ref {reference}",
+        short_sha(commit)
+    ));
     let pushed = git
         .run(&[
             "-c",
@@ -3308,92 +3658,20 @@ async fn push_github_mirror(
             "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
             "push",
             "github",
-            "refs/heads/main:refs/heads/main",
-            "refs/tags/*:refs/tags/*",
+            &format!("{commit}:{reference}"),
         ])
         .await;
     if pushed.code != 0 {
-        let (sha, carries) = mirror_carries(git, commit).await;
-        if !carries {
-            bail!(
-                "could not push the GitHub mirror: {}",
-                first_line(if pushed.stderr.is_empty() {
-                    pushed.stdout.as_str()
-                } else {
-                    pushed.stderr.as_str()
-                })
-            );
-        }
-        (log)(&format!(
-            "the GitHub mirror moved to {} during the push and already carries main",
-            short_sha(&sha)
-        ));
-    }
-    let tag_ref = format!("refs/tags/{tag}:refs/tags/{tag}");
-    let tag_pushed = git
-        .run(&[
-            "-c",
-            "credential.helper=",
-            "-c",
-            "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
-            "push",
-            "github",
-            &tag_ref,
-        ])
-        .await;
-    if tag_pushed.code != 0 {
         bail!(
-            "could not push {tag} to the GitHub mirror: {}",
-            first_line(if tag_pushed.stderr.is_empty() {
-                tag_pushed.stdout.as_str()
-            } else {
-                tag_pushed.stderr.as_str()
-            })
+            "could not push the canonical source to {reference}: {}",
+            failure_detail(&pushed)
         );
     }
     Ok(())
 }
 
-async fn mirror_carries(git: &Git<'_>, commit: &str) -> (String, bool) {
-    let tip = git.run(&["ls-remote", "github", "refs/heads/main"]).await;
-    let sha = tip
-        .stdout
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string();
-    if tip.code != 0 || sha.is_empty() {
-        return (sha, false);
-    }
-    if sha == commit {
-        return (sha, true);
-    }
-    let carries = git.is_ancestor(commit, &sha).await;
-    (sha, carries)
-}
-
 // ---------------------------------------------------------------------------
 // Canonical remote push
-
-/// Whether the canonical remote carries a push that exited nonzero: its tag
-/// names the released commit and its `main` names that commit or a descendant
-/// of it.
-///
-/// A forge can accept both refs and then lose the push's answer, so a nonzero
-/// exit is not evidence that the push did not land; the refs the forge reads
-/// are. `publish` only ever runs on `main`, so the branch is not a parameter.
-async fn push_landed(api: &Api, git: &Git<'_>, tag: &str, commit: &str) -> Result<bool> {
-    if api.gitea_tag_commit(tag).await?.as_deref() != Some(commit) {
-        return Ok(false);
-    }
-    let Some(head) = api.gitea_branch_commit("main").await? else {
-        return Ok(false);
-    };
-    if head == commit {
-        return Ok(true);
-    }
-    Ok(git.is_ancestor(commit, &head).await)
-}
 
 // ---------------------------------------------------------------------------
 // Source refresh

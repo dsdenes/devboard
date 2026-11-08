@@ -214,6 +214,22 @@ struct GiteaData {
     head: String,
     next_id: u64,
     credential: GiteaCredential,
+    /// What the `devboard-ci.yml` reads answer for the checkout's HEAD.
+    ci: CiState,
+    ci_reads: usize,
+}
+
+/// How the Gitea CI stub answers the gate's reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CiState {
+    /// One settled success for the pushed commit.
+    Success,
+    /// An in-progress run for this many reads, then a settled success.
+    Wait(usize),
+    /// A settled run with this conclusion.
+    Settles(&'static str),
+    /// No run for the commit.
+    Absent,
 }
 
 /// How the stub answers the repository read the publish preflight makes.
@@ -235,7 +251,11 @@ struct GiteaFixture {
 }
 
 impl GiteaStub {
-    async fn start(seeded: BTreeMap<String, String>, published: Vec<String>) -> GiteaFixture {
+    async fn start(
+        repo_dir: PathBuf,
+        seeded: BTreeMap<String, String>,
+        published: Vec<String>,
+    ) -> GiteaFixture {
         let mut releases = BTreeMap::new();
         let mut next_id = 9;
         for tag in published {
@@ -254,11 +274,15 @@ impl GiteaStub {
             head: String::new(),
             next_id,
             credential: GiteaCredential::Writable,
+            ci: CiState::Success,
+            ci_reads: 0,
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
         let inner = state.clone();
         let slot = base_slot.clone();
-        let server = StubServer::start(move |request| gitea_route(&inner, &slot, request)).await;
+        let repo_dir = repo_dir.clone();
+        let server =
+            StubServer::start(move |request| gitea_route(&inner, &slot, &repo_dir, request)).await;
         *base_slot.lock().expect("base") = server.base.clone();
         GiteaFixture {
             stub: GiteaStub { state },
@@ -268,6 +292,11 @@ impl GiteaStub {
 
     fn set_credential(&self, credential: GiteaCredential) {
         self.state.lock().expect("gitea").credential = credential;
+    }
+
+    /// The CI answer the gate reads for the checkout's HEAD.
+    fn set_ci(&self, ci: CiState) {
+        self.state.lock().expect("gitea").ci = ci;
     }
 
     /// Records the refs a push delivered to the forge.
@@ -290,10 +319,59 @@ impl GiteaStub {
 fn gitea_route(
     state: &Arc<Mutex<GiteaData>>,
     base: &Arc<Mutex<String>>,
+    repo_dir: &Path,
     request: &RecordedRequest,
 ) -> StubResponse {
     let path = request.path.as_str();
     let repo = "/api/v1/repos/dsdenes/devboard";
+    if request.method == "GET" && path == format!("{repo}/actions/runs") {
+        let mut data = state.lock().expect("gitea");
+        data.ci_reads += 1;
+        let head = git_output(repo_dir, &["rev-parse", "HEAD"]);
+        let (status, conclusion) = match data.ci {
+            CiState::Success => ("completed", Some("success".to_string())),
+            CiState::Wait(after) if data.ci_reads <= after => ("in_progress", None),
+            CiState::Wait(_) => ("completed", Some("success".to_string())),
+            CiState::Settles(conclusion) => ("completed", Some(conclusion.to_string())),
+            CiState::Absent => ("completed", Some("success".to_string())),
+        };
+        let runs = if data.ci == CiState::Absent {
+            vec![json!({
+                "id": 900,
+                "path": "devboard-ci.yml@refs/heads/main",
+                "head_sha": "0".repeat(40),
+                "status": "completed",
+                "conclusion": "success",
+            })]
+        } else {
+            vec![
+                // A foreign workflow and a foreign commit prove the gate
+                // filters by both.
+                json!({
+                    "id": 901,
+                    "path": "another-workflow.yml@refs/heads/main",
+                    "head_sha": head,
+                    "status": "completed",
+                    "conclusion": "failure",
+                }),
+                json!({
+                    "id": 902,
+                    "path": "devboard-ci.yml@refs/heads/other",
+                    "head_sha": "f".repeat(40),
+                    "status": "completed",
+                    "conclusion": "failure",
+                }),
+                json!({
+                    "id": 777,
+                    "path": "devboard-ci.yml@refs/heads/main",
+                    "head_sha": head,
+                    "status": status,
+                    "conclusion": conclusion,
+                }),
+            ]
+        };
+        return json_response(json!({"workflow_runs": runs}));
+    }
     if request.method == "GET" && path == repo {
         let data = state.lock().expect("gitea");
         if data.credential == GiteaCredential::Invalid {
@@ -450,6 +528,12 @@ struct GithubData {
     reads: usize,
     /// Whether the GitHub release of the dispatched run exists.
     release_published: bool,
+    /// The commit the release tag ref names after publish retags it.
+    tag_commit: Option<String>,
+    /// Whether the temporary build ref was deleted.
+    build_ref_deleted: bool,
+    /// Every asset uploaded to the GitHub release by name.
+    uploaded: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -481,6 +565,9 @@ impl GithubStub {
             settle_after: None,
             reads: 0,
             release_published: true,
+            tag_commit: None,
+            build_ref_deleted: false,
+            uploaded: Vec::new(),
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
         let inner = state.clone();
@@ -531,6 +618,18 @@ impl GithubStub {
     fn release_exists(&self, exists: bool) {
         self.state.lock().expect("github").release_published = exists;
     }
+
+    fn tag_commit(&self) -> Option<String> {
+        self.state.lock().expect("github").tag_commit.clone()
+    }
+
+    fn build_ref_deleted(&self) -> bool {
+        self.state.lock().expect("github").build_ref_deleted
+    }
+
+    fn uploaded(&self) -> Vec<String> {
+        self.state.lock().expect("github").uploaded.clone()
+    }
 }
 
 fn github_route(
@@ -541,7 +640,7 @@ fn github_route(
 ) -> StubResponse {
     let path = request.path.as_str();
     if request.method == "GET"
-        && path == "/repos/dsdenes/devboard/actions/workflows/release.yml/runs"
+        && path == "/repos/dsdenes/devboard/actions/workflows/devboard-build.yml/runs"
     {
         let mut data = state.lock().expect("github");
         data.reads += 1;
@@ -580,7 +679,7 @@ fn github_route(
         };
     }
     if request.method == "POST"
-        && path == "/repos/dsdenes/devboard/actions/workflows/release.yml/dispatches"
+        && path == "/repos/dsdenes/devboard/actions/workflows/devboard-build.yml/dispatches"
     {
         let mut data = state.lock().expect("github");
         data.dispatch_attempts += 1;
@@ -597,6 +696,52 @@ fn github_route(
             headers: vec![],
             body: Vec::new(),
         };
+    }
+    if request.method == "POST" && path == "/repos/dsdenes/devboard/git/trees" {
+        return json_response(json!({"sha": "0".repeat(40)}));
+    }
+    if request.method == "POST" && path == "/repos/dsdenes/devboard/git/commits" {
+        return json_response(json!({"sha": "e".repeat(40)}));
+    }
+    if request.method == "DELETE" && path == "/repos/dsdenes/devboard/git/refs/tags/v1.1.0" {
+        return StubResponse {
+            status: 204,
+            headers: vec![],
+            body: Vec::new(),
+        };
+    }
+    if request.method == "POST" && path == "/repos/dsdenes/devboard/git/refs" {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        let reference = read_str(&body, "ref").to_string();
+        let sha = read_str(&body, "sha").to_string();
+        if reference == "refs/tags/v1.1.0" {
+            state.lock().expect("github").tag_commit = Some(sha.clone());
+        }
+        return json_response(json!({"ref": reference, "object": {"sha": sha}}));
+    }
+    if request.method == "DELETE"
+        && path == "/repos/dsdenes/devboard/git/refs/heads/devboard-build/v1.1.0"
+    {
+        state.lock().expect("github").build_ref_deleted = true;
+        return StubResponse {
+            status: 204,
+            headers: vec![],
+            body: Vec::new(),
+        };
+    }
+    if let Some(rest) = path.strip_prefix("/repos/dsdenes/devboard/releases/") {
+        if let Some(id_text) = rest.strip_suffix("/assets") {
+            let id: u64 = id_text.parse().unwrap_or(0);
+            let name = query_value(&request.query, "name").unwrap_or_default();
+            let mut data = state.lock().expect("github");
+            data.uploaded.push(name.clone());
+            data.assets.insert(name.clone(), request.body.clone());
+            return StubResponse {
+                status: 201,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: json!({"id": id, "name": name}).to_string().into_bytes(),
+            };
+        }
     }
     if let Some(rest) = path.strip_prefix("/repos/dsdenes/devboard/releases/tags/") {
         let tag = percent_decode(rest);
@@ -616,6 +761,7 @@ fn github_route(
             })
             .collect();
         return json_response(json!({
+            "id": 7,
             "tag_name": tag,
             "assets": assets,
         }));
@@ -1179,15 +1325,14 @@ async fn a_landing_that_pushes_during_the_suite_is_integrated_and_released() {
         "chore(release): v1.1.0"
     );
     // The tag was withdrawn from the failed attempt and recreated at the
-    // integrated tip, so both remotes name the released commit.
+    // integrated tip; the GitHub tag names the empty release commit and the
+    // build ref is gone.
     assert_eq!(
         git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
         report.commit
     );
-    assert_eq!(
-        git_output(&live.github, &["rev-parse", "v1.1.0^{commit}"]),
-        report.commit
-    );
+    assert_eq!(live.github_stub.tag_commit(), Some("e".repeat(40)));
+    assert!(live.github_stub.build_ref_deleted());
     assert_eq!(live.github_stub.dispatch_count(), 1);
     assert!(
         live.gitea_stub
@@ -1220,10 +1365,7 @@ async fn a_landing_that_never_settles_leaves_no_tag_behind() {
         .await
         .expect_err("a main that never settles stops the release");
     let message = format!("{error:#}");
-    assert!(
-        message.contains("could not push main and v1.1.0"),
-        "{message}"
-    );
+    assert!(message.contains("could not push main"), "{message}");
     assert!(message.contains("moved during all 3 attempts"), "{message}");
     assert_eq!(gate.runs.load(Ordering::SeqCst), 3);
     // No tag survives the failed attempts on either remote or in the checkout,
@@ -1384,7 +1526,7 @@ async fn release_suite_gate_prevents_tagging_and_dispatch() {
         .github_server
         .find(
             "POST",
-            "/repos/dsdenes/devboard/actions/workflows/release.yml/dispatches"
+            "/repos/dsdenes/devboard/actions/workflows/devboard-build.yml/dispatches"
         )
         .is_none());
     assert!(live
@@ -1424,7 +1566,7 @@ async fn live(label: &str, assets: BTreeMap<String, Vec<u8>>) -> Live {
 
     let mut refs = BTreeMap::new();
     refs.insert("v1.0.0".to_string(), base);
-    let gitea = GiteaStub::start(refs, Vec::new()).await;
+    let gitea = GiteaStub::start(seed.clone(), refs, Vec::new()).await;
     let github_fixture = GithubStub::start(seed.clone(), assets, Vec::new(), true).await;
     let state_dir = scratch.root.join("state");
     fs::create_dir_all(&state_dir).expect("a state directory");
@@ -1481,18 +1623,27 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
     let manifest = fs::read_to_string(live.seed.join(".devboard/Cargo.toml")).expect("manifest");
     assert!(manifest.contains("version = \"1.1.0\""), "{manifest}");
     assert_eq!(git_output(&live.origin, &["rev-parse", "main"]), commit);
-    assert_eq!(git_output(&live.github, &["rev-parse", "main"]), commit);
+    // GitHub's main is never advanced to the released commit, and the release
+    // tag names an empty-tree commit; only the temporary build ref carried the
+    // canonical source, and publish deleted it.
+    assert_ne!(git_output(&live.github, &["rev-parse", "main"]), commit);
+    assert_eq!(
+        live.github_stub.tag_commit(),
+        Some("e".repeat(40)),
+        "the release tag names the empty release commit"
+    );
+    assert!(live.github_stub.build_ref_deleted());
     assert_eq!(live.github_stub.dispatch_count(), 1);
     let dispatch = live
         .github_server
         .find(
             "POST",
-            "/repos/dsdenes/devboard/actions/workflows/release.yml/dispatches",
+            "/repos/dsdenes/devboard/actions/workflows/devboard-build.yml/dispatches",
         )
         .expect("a dispatch");
     assert_eq!(
         String::from_utf8_lossy(&dispatch.body),
-        "{\"ref\":\"refs/tags/v1.1.0\"}"
+        "{\"ref\":\"refs/heads/devboard-build/v1.1.0\",\"inputs\":{\"tag\":\"v1.1.0\"}}"
     );
 
     let expected_manifest = {
@@ -1513,6 +1664,13 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
         jsjson::stringify(&value)
     };
     assert_eq!(report.manifest, expected_manifest);
+    assert!(
+        live.github_stub
+            .uploaded()
+            .contains(&"devboard-manifest.json".to_string()),
+        "the public GitHub release carries the manifest: {:?}",
+        live.github_stub.uploaded()
+    );
     let stored = live
         .gitea_stub
         .release_bytes(tag, "devboard-manifest.json")
@@ -1601,6 +1759,127 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
     );
     assert!(second.source_refresh.written.is_empty());
     assert_eq!(second.source_refresh.applied.len(), 1);
+}
+
+type LogLines = Arc<Mutex<Vec<String>>>;
+type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// A publish log a test can read after the run.
+fn recording_log() -> (LogLines, LogSink) {
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = lines.clone();
+    let log: LogSink = Arc::new(move |line: &str| {
+        recorded.lock().expect("log").push(line.to_string());
+    });
+    (lines, log)
+}
+
+fn line_after(lines: &[String], needle: &str) -> usize {
+    lines
+        .iter()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("no line names {needle}: {lines:?}"))
+}
+
+#[tokio::test]
+async fn ci_gate_waits_for_the_target_success_before_the_tag() {
+    let live = live("ci-success", release_assets()).await;
+    let (lines, log) = recording_log();
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.log = Some(log);
+    let report = publish(args).await.expect("the release ships after CI");
+    let commit = report.commit.clone();
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        commit,
+        "the tag names the CI-proven commit"
+    );
+    let lines = lines.lock().expect("log").clone();
+    let ci = line_after(&lines, "CI run 777");
+    let push = line_after(&lines, "pushing v1.1.0 to origin");
+    assert!(ci < push, "CI success precedes the tag push: {lines:?}");
+    assert!(
+        lines[ci].contains("concluded success"),
+        "the CI line names its verdict: {lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn ci_gate_refuses_every_non_success_conclusion() {
+    for conclusion in ["failure", "cancelled", "timed_out", "startup_failure"] {
+        let live = live(&format!("ci-{conclusion}"), release_assets()).await;
+        live.gitea_stub.set_ci(CiState::Settles(conclusion));
+        let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+        args.wait_timeout = Duration::from_secs(2);
+        let error = publish(args)
+            .await
+            .expect_err("a non-success conclusion refuses the tag");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("devboard-ci.yml run 777") && message.contains(conclusion),
+            "{conclusion}: {message}"
+        );
+        assert!(
+            git_output(&live.seed, &["tag", "--list", "v1.1.0"])
+                .trim()
+                .is_empty(),
+            "{conclusion}: no local tag survives"
+        );
+        assert!(
+            git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+                .trim()
+                .is_empty(),
+            "{conclusion}: no tag reaches the forge"
+        );
+        assert_eq!(
+            git_output(&live.origin, &["log", "-1", "--format=%s"]),
+            "chore(release): v1.1.0",
+            "{conclusion}: the branch keeps the commit for the next tick"
+        );
+        assert_eq!(live.github_stub.dispatch_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn ci_gate_waits_for_an_in_progress_run() {
+    let live = live("ci-in-progress", release_assets()).await;
+    live.gitea_stub.set_ci(CiState::Wait(2));
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.poll_interval = Duration::from_millis(5);
+    let report = publish(args)
+        .await
+        .expect("the run settles and the tag lands");
+    assert!(report.published);
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        report.commit
+    );
+    let reads = live.gitea_stub.state.lock().expect("gitea").ci_reads;
+    assert!(reads > 2, "the gate read the run until it settled: {reads}");
+}
+
+#[tokio::test]
+async fn ci_gate_times_out_without_a_run() {
+    let live = live("ci-absent", release_assets()).await;
+    live.gitea_stub.set_ci(CiState::Absent);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_millis(60);
+    args.poll_interval = Duration::from_millis(10);
+    let error = publish(args)
+        .await
+        .expect_err("no run leaves the range unreleased");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("no devboard-ci.yml run") && message.contains("within"),
+        "{message}"
+    );
+    assert!(git_output(&live.seed, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
 }
 
 /// The tag an origin push carries, when the invocation is one.
@@ -1735,10 +2014,7 @@ async fn a_refused_push_names_the_refusal_not_the_progress_line() {
         .await
         .expect_err("a push the forge does not carry fails the release");
     let message = format!("{error:#}");
-    assert!(
-        message.contains("could not push main and v1.1.0"),
-        "{message}"
-    );
+    assert!(message.contains("could not push v1.1.0"), "{message}");
     assert!(
         message.contains("error: failed to push some refs"),
         "{message}"
@@ -2008,7 +2284,12 @@ async fn a_stale_checkout_rederives_from_the_forge_release() {
     let mut refs = BTreeMap::new();
     refs.insert("v1.0.0".to_string(), first);
     refs.insert("v1.1.0".to_string(), released);
-    let gitea = GiteaStub::start(refs, vec!["v1.0.0".to_string(), "v1.1.0".to_string()]).await;
+    let gitea = GiteaStub::start(
+        seed.clone(),
+        refs,
+        vec!["v1.0.0".to_string(), "v1.1.0".to_string()],
+    )
+    .await;
     let github = GithubStub::start(seed.clone(), release_assets(), Vec::new(), true).await;
     let mut args = test_args(&seed, &gitea.server, &github.server, None);
     args.wait_timeout = Duration::from_secs(5);

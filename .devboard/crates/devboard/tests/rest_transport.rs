@@ -110,6 +110,7 @@ struct Instance {
     port: u16,
     state: PathBuf,
     repo: PathBuf,
+    server: std::sync::Arc<Server>,
 }
 
 fn harness_root() -> PathBuf {
@@ -159,14 +160,16 @@ async fn start(label: &str) -> Instance {
     config.port = port;
     let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
     let server = Server::new(config, journal);
+    let served = std::sync::Arc::clone(&server);
     tokio::spawn(async move {
-        let _ = devboard::http::serve_on(listener, server).await;
+        let _ = devboard::http::serve_on(listener, served).await;
     });
     Instance {
         base: format!("http://127.0.0.1:{port}"),
         port,
         state,
         repo,
+        server,
     }
 }
 
@@ -200,6 +203,44 @@ async fn send(
     let headers = response.headers().clone();
     let body = response.bytes().await.expect("a body").to_vec();
     (status, headers, body)
+}
+
+async fn send_json(
+    base: &str,
+    method: Method,
+    path: &str,
+    body: Value,
+) -> (reqwest::StatusCode, HeaderMap, Vec<u8>) {
+    let response = client()
+        .request(method, format!("{base}{path}"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("a response");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.bytes().await.expect("a body").to_vec();
+    (status, headers, body)
+}
+
+/// The frames an answer carries, in order.
+fn frames(body: &[u8]) -> Vec<Value> {
+    serde_json::from_slice::<Value>(body)
+        .expect("a JSON envelope")
+        .get("frames")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("a frames array")
+}
+
+/// The frame types an answer carries, in order.
+fn frame_types(body: &[u8]) -> Vec<String> {
+    frames(body)
+        .iter()
+        .filter_map(|frame| frame.get("type").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
 }
 
 fn number(value: &Value) -> u64 {
@@ -715,6 +756,163 @@ async fn rest_route_inventory_matches_openapi() {
             assert!(!verbs.contains(&segment), "path {path} is verb-free");
         }
     }
+}
+
+/// Every GET answers only the frames of the command it names, even while a
+/// fixture keeps publishing `issuesState` and `issuesActivity` through the
+/// shared broadcast. A mutation whose answer travels through that same
+/// broadcast still returns its own frames.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn request_frames_are_only_the_named_command_s_frames() {
+    let instance = start("request-frames").await;
+    let app = std::sync::Arc::clone(&instance.server.app);
+    let broadcaster = tokio::spawn(async move {
+        for index in 0..500u64 {
+            app.broadcast(json!({"type": "issuesState", "issues": [], "index": index}));
+            app.broadcast(json!({
+                "type": "issuesActivity",
+                "runId": format!("foreign-{index}"),
+                "entries": [],
+            }));
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    });
+
+    for _ in 0..20 {
+        let (status, _, body) =
+            send(&instance.base, Method::GET, "/version", HeaderMap::new()).await;
+        assert_eq!(status.as_u16(), 200);
+        assert_eq!(frame_types(&body), vec!["versionState"]);
+
+        let (status, _, body) =
+            send(&instance.base, Method::GET, "/agents", HeaderMap::new()).await;
+        assert_eq!(status.as_u16(), 200);
+        assert_eq!(frame_types(&body), vec!["agentsState"]);
+
+        let (status, _, body) =
+            send(&instance.base, Method::GET, "/project", HeaderMap::new()).await;
+        assert_eq!(status.as_u16(), 200);
+        assert_eq!(frame_types(&body), vec!["project"]);
+
+        let (status, _, body) =
+            send(&instance.base, Method::GET, "/issues", HeaderMap::new()).await;
+        assert_eq!(status.as_u16(), 200);
+        let answered = frames(&body);
+        assert_eq!(
+            answered
+                .iter()
+                .filter(|frame| frame["type"] == "issuesState")
+                .count(),
+            1,
+            "one issuesState: {answered:?}"
+        );
+        let mut run_ids = BTreeSet::new();
+        for frame in &answered {
+            match frame["type"].as_str().expect("a frame type") {
+                "issuesState" => {}
+                "issuesActivity" => {
+                    let run_id = frame["runId"].as_str().expect("a run id").to_string();
+                    assert!(
+                        run_ids.insert(run_id.clone()),
+                        "one issuesActivity per runId: {run_id} repeated in {answered:?}"
+                    );
+                }
+                other => panic!("a foreign {other} frame reached /issues: {answered:?}"),
+            }
+        }
+    }
+
+    let (status, _, body) = send_json(&instance.base, Method::PUT, "/resources", json!({})).await;
+    assert_eq!(status.as_u16(), 200);
+    assert_eq!(
+        frame_types(&body),
+        vec!["resourcesState"],
+        "the mutation's own broadcast answer reaches its request"
+    );
+
+    let (status, _, body) = send(
+        &instance.base,
+        Method::DELETE,
+        "/agents/scout/runs",
+        HeaderMap::new(),
+    )
+    .await;
+    assert!(status.is_success(), "a Stop answers: {}", status.as_u16());
+    let stopped = frame_types(&body);
+    assert!(
+        stopped.iter().any(|kind| kind == "agentState"),
+        "a Stop answers the agent state it changed: {stopped:?}"
+    );
+    assert!(
+        stopped
+            .iter()
+            .all(|kind| kind == "agentState" || kind == "error"),
+        "a Stop carries no other command's frames: {stopped:?}"
+    );
+
+    broadcaster.abort();
+}
+
+/// Twenty `/version` reads and ten `/project` reads issued while broadcasts
+/// run all answer one ETag, and a matching `If-None-Match` answers 304 with an
+/// empty body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn broadcasts_leave_the_validator_stable() {
+    let instance = start("stable-validator").await;
+    let app = std::sync::Arc::clone(&instance.server.app);
+    let broadcaster = tokio::spawn(async move {
+        for index in 0..500u64 {
+            app.broadcast(json!({"type": "issuesState", "issues": [], "index": index}));
+            app.broadcast(json!({"type": "versionState", "running": "foreign"}));
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    });
+
+    let mut version_etag: Option<String> = None;
+    for _ in 0..20 {
+        let etag = one_stable_validator(&instance.base, "/version", &mut version_etag).await;
+        let (status, _, body) = send(
+            &instance.base,
+            Method::GET,
+            "/version",
+            headers_with(IF_NONE_MATCH, &etag),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 304, "a matching validator answers 304");
+        assert!(body.is_empty());
+    }
+    let mut project_etag: Option<String> = None;
+    for _ in 0..10 {
+        let etag = one_stable_validator(&instance.base, "/project", &mut project_etag).await;
+        let (status, _, body) = send(
+            &instance.base,
+            Method::GET,
+            "/project",
+            headers_with(IF_NONE_MATCH, &etag),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 304, "a matching validator answers 304");
+        assert!(body.is_empty());
+    }
+
+    broadcaster.abort();
+}
+
+/// Reads one path, proves its ETag matches the first one, and answers it.
+async fn one_stable_validator(base: &str, path: &str, first: &mut Option<String>) -> String {
+    let (status, headers, body) = send(base, Method::GET, path, HeaderMap::new()).await;
+    assert_eq!(status.as_u16(), 200);
+    let etag = headers
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("an ETag")
+        .to_string();
+    assert!(!body.is_empty());
+    match first {
+        Some(expected) => assert_eq!(&etag, expected, "one ETag for {path}"),
+        None => *first = Some(etag.clone()),
+    }
+    etag
 }
 
 #[tokio::test]
