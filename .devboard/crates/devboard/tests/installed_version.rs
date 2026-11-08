@@ -3,6 +3,10 @@
 
 use std::path::PathBuf;
 
+use devboard::app::App;
+use devboard::config::Config;
+use devboard::journal::Journal;
+
 fn fixture(label: &str) -> PathBuf {
     let host = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -124,6 +128,54 @@ async fn devboard_status_names_the_installed_manifest_directory() {
         status["harnessDirectory"].as_str().unwrap(),
         host.join(".devboard").to_string_lossy()
     );
+    let _ = std::fs::remove_dir_all(&host);
+}
+
+#[tokio::test]
+async fn a_version_state_read_answers_the_facts_the_process_resolved_at_startup() {
+    // Resolving these facts reads a manifest and, on a source checkout, spawns
+    // `git rev-parse` and `git tag --merged HEAD`. A `versionState` read is
+    // polled every second, so it answers what this process resolved when it
+    // started; only an install landing beside it moves that value.
+    let host = fixture("facts");
+    let state_dir = host.join(".devboard/.tmp");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: host.join("adrs"),
+        repo_dir: host.clone(),
+        goal_file: host.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "true".to_string(),
+        state_dir: state_dir.clone(),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let app = App::new(config, Journal::open(&state_dir, &host, 0));
+
+    let first = app.version_state();
+    assert_eq!(first["installed"], "1.2.3");
+
+    // An install rewrites the manifest beside the process. A read that resolved
+    // the manifest again would answer the new value, and pay the filesystem
+    // work on the request path.
+    std::fs::write(
+        host.join(".devboard/devboard.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"1.2.4\"}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        app.version_state()["installed"],
+        "1.2.3",
+        "a read answers the facts the process resolved at startup"
+    );
+
+    // The install the update check lands is recorded, so the frame names what a
+    // restart would load even when the replacement never starts.
+    app.note_installed_version("1.2.4");
+    assert_eq!(app.version_state()["installed"], "1.2.4");
+
     let _ = std::fs::remove_dir_all(&host);
 }
 

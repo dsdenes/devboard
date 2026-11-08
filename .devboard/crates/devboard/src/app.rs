@@ -377,6 +377,10 @@ pub struct App {
     /// The port this process serves on: the configured one, updated to the
     /// bound port when the listener resolves an ephemeral one.
     port: std::sync::atomic::AtomicU16,
+    /// The version facts this process resolved at startup, so a `versionState`
+    /// read answers without spawning git or reading a manifest. An install that
+    /// lands beside this process records its version here.
+    version_facts: Mutex<crate::version::VersionFacts>,
     /// The newest release the update check has seen.
     latest_version: Mutex<Option<String>>,
     /// A replacement that could not start; the process keeps serving.
@@ -456,6 +460,9 @@ impl App {
             .or_else(|| {
                 crate::version::read_harness_version(&crate::version::running_harness_dir())
             });
+        // Resolved once here, so a polled `versionState` read never spawns git
+        // or reads a manifest on the request path.
+        let version_facts = crate::version::VersionFacts::resolve(&config_repo_dir(&shared));
         let providers = crate::providers::ProviderService::new(
             config_state_dir(&shared),
             config_repo_dir(&shared),
@@ -475,6 +482,7 @@ impl App {
             instance,
             running_version,
             port: std::sync::atomic::AtomicU16::new(port),
+            version_facts: Mutex::new(version_facts),
             latest_version: Mutex::new(None),
             replacement_failure: Mutex::new(None),
             attempted_replacement: Mutex::new(None),
@@ -946,11 +954,14 @@ impl App {
             .lock()
             .ok()
             .and_then(|latest| latest.clone());
-        let mut state = crate::version::server_version(
-            &self.config().repo_dir,
-            self.running_version.clone(),
-            latest,
-        );
+        let mut state = {
+            let facts = self
+                .version_facts
+                .lock()
+                .map(|facts| facts.clone())
+                .unwrap_or_default();
+            crate::version::server_version_from(&facts, self.running_version.clone(), latest)
+        };
         if let Ok(failure) = self.replacement_failure.lock() {
             if let Some(error) = failure.clone() {
                 state.replacement = Some(crate::version::ReplacementFailure {
@@ -994,6 +1005,14 @@ impl App {
     pub fn note_latest_version(&self, version: &str) {
         if let Ok(mut latest) = self.latest_version.lock() {
             *latest = Some(version.to_string());
+        }
+    }
+
+    /// Records a version an install put beside this process, so a read names it
+    /// as what a restart would load before the replacement starts.
+    pub fn note_installed_version(&self, version: &str) {
+        if let Ok(mut facts) = self.version_facts.lock() {
+            facts.installed = Some(version.to_string());
         }
     }
 
@@ -1047,6 +1066,10 @@ impl App {
             }
             *attempted = Some(version.to_string());
         }
+        // The artifact is beside this process now, so it is what a restart
+        // would load even if the replacement never starts; a read answers from
+        // these facts, and the failure frame names both versions.
+        self.note_installed_version(version);
         self.shared.journal.write(
             "update",
             &format!(

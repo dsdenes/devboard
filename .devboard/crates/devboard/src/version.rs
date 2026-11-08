@@ -315,21 +315,56 @@ fn git(directory: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
-/// The version state for one dashboard process.
+/// The version facts a serving process resolved once, when it started.
+///
+/// Resolving them reads the harness manifest and, for a source checkout, spawns
+/// `git rev-parse` and `git tag --merged HEAD` behind a blocking poll loop. A
+/// `versionState` read is polled every second by every open page, so it must
+/// never pay that: the facts hold for the process's lifetime. Only a publish or
+/// an install moves them, and either one replaces the process.
+#[derive(Debug, Clone, Default)]
+pub struct VersionFacts {
+    /// The version a restart would load at the moment this process started.
+    pub installed: Option<String>,
+    /// Whether this process runs a source harness rather than an install.
+    pub source: bool,
+}
+
+impl VersionFacts {
+    /// Resolves the facts once for the repository and harness this process
+    /// serves.
+    pub fn resolve(repo_dir: &Path) -> Self {
+        Self {
+            installed: read_harness_version(&host_harness_dir(repo_dir)),
+            source: is_source_harness(&running_harness_dir()),
+        }
+    }
+}
+
+/// The version state for one dashboard process, from the facts it holds.
+pub fn server_version_from(
+    facts: &VersionFacts,
+    running: Option<String>,
+    latest: Option<String>,
+) -> ServerVersion {
+    ServerVersion {
+        stale: running.is_some() && facts.installed.is_some() && running != facts.installed,
+        running,
+        installed: facts.installed.clone(),
+        latest,
+        source: facts.source,
+        replacement: None,
+    }
+}
+
+/// The version state resolved now, for a reader that has no serving process to
+/// ask, like the MCP status call.
 pub fn server_version(
     repo_dir: &Path,
     running: Option<String>,
     latest: Option<String>,
 ) -> ServerVersion {
-    let installed = read_harness_version(&host_harness_dir(repo_dir));
-    ServerVersion {
-        stale: running.is_some() && installed.is_some() && running != installed,
-        running,
-        installed,
-        latest,
-        source: is_source_harness(&running_harness_dir()),
-        replacement: None,
-    }
+    server_version_from(&VersionFacts::resolve(repo_dir), running, latest)
 }
 
 #[cfg(test)]

@@ -666,9 +666,11 @@ journaled like any other failed check.
 
 `versionState` reports `running`, `installed`, `latest`, `stale`, and `source`. `installed` is the
 version a restart would load — the manifest beside the running binary on an installed host, the
-checkout's released source version on a source checkout. The status bar labels that value
-`installed` or `source` accordingly; the reload control appears only when a replacement could not
-start.
+checkout's released source version on a source checkout. The process resolves it once, when it
+starts, so a polled `getVersion` read answers without reading a manifest or spawning git; an
+install that lands beside the process records its version in that frame, which is what a failed
+replacement names. The status bar labels that value `installed` or `source` accordingly; the reload
+control appears only when a replacement could not start.
 
 ### Release suite
 
