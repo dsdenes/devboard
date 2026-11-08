@@ -4139,11 +4139,20 @@ fn pid_alive(pid: u32) -> bool {
 
 /// True when `dist` exists but is older than the newest source file.
 fn dist_is_stale(harness_root: &Path) -> Result<bool> {
+    // The committed embedded bundle is the build the release ships. A fresh
+    // checkout writes every file at once, so it is never stale; a client source
+    // edited after the checkout is newer than it and is rebuilt. `dist` is only
+    // the fallback when the embedded copy is missing.
+    let embedded = embedded_client_root(harness_root);
     let dist = harness_root.join("dist");
-    if !dist.is_dir() {
+    let reference = if embedded.is_dir() {
+        embedded
+    } else if dist.is_dir() {
+        dist
+    } else {
         return Ok(false);
-    }
-    Ok(newest_source_mtime(harness_root)? > newest_mtime(&dist))
+    };
+    Ok(newest_source_mtime(harness_root)? > newest_mtime(&reference))
 }
 
 /// Rebuilds the client bundle from the released sources and embeds the result
@@ -4180,6 +4189,43 @@ async fn rebuild_client(
     Ok(())
 }
 
+/// The `bun` executable this publish can start.
+///
+/// A dashboard launched by the desktop icon carries a login PATH that may not
+/// include a version-manager install of Bun. Resolve it through the given PATH
+/// first, then the common per-user locations, so a client rebuild does not fail
+/// with a bare "No such file or directory".
+fn bun_program(environment: &Environment) -> String {
+    fn on_path(path: &str) -> Option<String> {
+        for directory in path.split(':').filter(|directory| !directory.is_empty()) {
+            let candidate = Path::new(directory).join("bun");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+        None
+    }
+    if let Some(path) = environment.get("PATH") {
+        if let Some(found) = on_path(path) {
+            return found;
+        }
+    }
+    let mut candidates = Vec::new();
+    if let Some(home) = environment.get("HOME") {
+        candidates.push(format!("{home}/.bun/bin/bun"));
+        candidates.push(format!("{home}/.cargo/bin/bun"));
+        if let Ok(entries) = std::fs::read_dir(format!("{home}/.nvm/versions/node")) {
+            for entry in entries.flatten() {
+                candidates.push(entry.path().join("bin").join("bun").display().to_string());
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| Path::new(candidate).is_file())
+        .unwrap_or_else(|| "bun".to_string())
+}
+
 /// Runs one Bun command in the harness root and refuses a nonzero exit.
 async fn run_bun(
     args: &PublishArgs,
@@ -4189,7 +4235,7 @@ async fn run_bun(
 ) -> Result<()> {
     let outcome = runner
         .run(CommandInvocation {
-            program: "bun".to_string(),
+            program: bun_program(&args.environment),
             args: arguments
                 .iter()
                 .map(|argument| (*argument).to_string())
@@ -4555,6 +4601,31 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].harness, root.join(".devboard"));
         assert!(instances[0].state_dir.ends_with(".devboard/.tmp"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bun_resolves_through_the_path_or_a_user_install() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.test-tmp")
+            .join(format!("bun-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("path")).unwrap();
+        std::fs::create_dir_all(root.join("home/.bun/bin")).unwrap();
+        std::fs::write(root.join("path/bun"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(root.join("home/.bun/bin/bun"), b"#!/bin/sh\n").unwrap();
+        let mut environment = Environment::new();
+        environment.insert("PATH".to_string(), root.join("path").display().to_string());
+        assert_eq!(
+            bun_program(&environment),
+            root.join("path/bun").display().to_string()
+        );
+        environment.remove("PATH");
+        environment.insert("HOME".to_string(), root.join("home").display().to_string());
+        assert_eq!(
+            bun_program(&environment),
+            root.join("home/.bun/bin/bun").display().to_string()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
