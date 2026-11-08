@@ -397,3 +397,25 @@ test("a draft read that never answers still files one issue at the budget", asyn
 
   store.dispose();
 });
+
+test("a read whose connection was lost files no slow action", async () => {
+  jest.useFakeTimers();
+  // A replacement's page load reaches a listener with no server behind it: the
+  // request settles without an answer, so it measured no server work.
+  installHttpTransport(async () => {
+    throw new TypeError("Failed to fetch");
+  });
+
+  const breaches: string[] = [];
+  slowUiAction.install(breachSink(breaches));
+  const store = new ConnectionStore();
+  store.state = "open";
+
+  store.send({ type: "refreshAgent", id: "release-train" });
+  await settle();
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  expect(breaches).toEqual([]);
+  expect(store.lastError).toBe("Could not reach the server.");
+
+  store.dispose();
+});
