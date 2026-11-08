@@ -1076,6 +1076,14 @@ devboard worker watchdog --processes --dry-run --repo <root>   # print candidate
 devboard worker watchdog --processes --once --repo <root>      # kill under the two proofs
 ```
 
+A dashboard binds its port only once every startup step that can take time — the reaping pass,
+the running-version read, the governor install, and the app's own restore — has finished, and it
+serves immediately after the bind. The version marker and the guard record name a configured
+port before the bind; a dashboard started on an ephemeral port (`--port 0`, fixtures only)
+records the resolved port after it. A client that reaches the port while the dashboard starts
+therefore meets a refused connection it retries, never a listener that accepts a request and
+holds it until the startup completes.
+
 ## Flow Mode
 
 The activity bar carries five client-only modes, `Goal`, `Issues`, `Flow`, `Discover`, and

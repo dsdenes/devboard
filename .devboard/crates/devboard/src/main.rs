@@ -218,57 +218,25 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             }
         }
     };
-    let mut listener = None;
-    for _attempt in 0..50 {
-        match devboard::http::bind(&config.hostname, config.port).await {
-            Ok(bound) => {
-                listener = Some(bound);
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && _attempt < 49 => {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            Err(error) => return Err(error).context("binding the dashboard listener"),
-        }
-    }
-    let listener = listener.context("binding the dashboard listener")?;
-    if let Some(task) = readiness.take() {
-        task.abort();
-    }
-    // One orphan-reaping pass before this process serves. It never signals a
-    // live recorded child and journals the pass and every kill. It runs once
-    // the listener is bound, so a replacement holds the dashboard port as soon
-    // as the process it replaced exits; a client's request then waits in the
-    // backlog for the pass instead of failing on a closed port.
-    devboard::workers::watchdog::reap_on_startup(&config.state_dir, &config.repo_dir);
-    config.port = listener
-        .local_addr()
-        .map(|address| address.port())
-        .unwrap_or(config.port);
-    if let Some(guard) = &guard {
-        let bound = devboard::instances::GuardOwner {
-            port: config.port,
-            ..guard_owner.clone()
-        };
-        let _ = guard.record(&bound);
-    }
+    // Every step below runs before the listener is bound. A bound listener
+    // accepts a connection into the kernel backlog, and nothing answers it
+    // until this process serves, so a page load that arrives while the
+    // dashboard starts must meet a refused connection it retries — never a
+    // read that waits out the startup and breaches its budget.
+    //
+    // The running version is read here because in a source checkout the read
+    // spawns git.
     let running_version =
         devboard::version::read_harness_version(&devboard::version::running_harness_dir())
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-    let version_marker = serde_json::json!({
-        "running": running_version,
-        "pid": std::process::id(),
-        "port": config.port,
-    });
-    let marker_path = config.state_dir.join("version.json");
-    let _ = devboard::state::write_file_atomically_sync(
-        &marker_path,
-        &format!("{}\n", serde_json::to_string(&version_marker)?),
-    );
-    let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
+    // One orphan-reaping pass before this process serves. It never signals a
+    // live recorded child and journals the pass and every kill. The pass scans
+    // the process table, which can outlast a client's budget on a busy host.
+    devboard::workers::watchdog::reap_on_startup(&config.state_dir, &config.repo_dir);
     // The governor owns the transient slice before the first client connects,
     // so every child this process starts joins the bounded pool.
     devboard::resources::install_production(&config.state_dir);
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
     let server = Server::new(config.clone(), journal);
     server.app.start_resource_watcher();
     {
@@ -286,6 +254,51 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     }
     server.app.start_updater();
     server.app.start_complexity();
+    // The version marker and the guard record name the port this process
+    // serves on. A configured port is known before the listener is bound, so
+    // both are written before it; only an ephemeral port (`--port 0`, used by
+    // fixtures) needs the bind first. Nothing but the port resolution then
+    // sits between the bind and the serve.
+    let marker_path = config.state_dir.join("version.json");
+    let configured_port = config.port;
+    let record_bound_port = |port: u16| {
+        if let Some(guard) = &guard {
+            let bound = devboard::instances::GuardOwner {
+                port,
+                ..guard_owner.clone()
+            };
+            let _ = guard.record(&bound);
+        }
+        write_version_marker(&marker_path, &running_version, port);
+    };
+    if configured_port != 0 {
+        record_bound_port(configured_port);
+    }
+    let mut listener = None;
+    for _attempt in 0..50 {
+        match devboard::http::bind(&config.hostname, config.port).await {
+            Ok(bound) => {
+                listener = Some(bound);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && _attempt < 49 => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(error) => return Err(error).context("binding the dashboard listener"),
+        }
+    }
+    let listener = listener.context("binding the dashboard listener")?;
+    if let Some(task) = readiness.take() {
+        task.abort();
+    }
+    config.port = listener
+        .local_addr()
+        .map(|address| address.port())
+        .unwrap_or(config.port);
+    server.app.set_port(config.port);
+    if configured_port == 0 {
+        record_bound_port(config.port);
+    }
     println!(
         "ADR interface listening on http://{}:{}/",
         config.hostname, config.port
@@ -293,6 +306,20 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     devboard::http::serve_on(listener, server)
         .await
         .context("serving the dashboard")
+}
+
+/// Writes the marker naming the running version, this process, and the port it
+/// serves on.
+fn write_version_marker(path: &std::path::Path, running_version: &str, port: u16) {
+    let marker = serde_json::json!({
+        "running": running_version,
+        "pid": std::process::id(),
+        "port": port,
+    });
+    let Ok(text) = serde_json::to_string(&marker) else {
+        return;
+    };
+    let _ = devboard::state::write_file_atomically_sync(path, &format!("{text}\n"));
 }
 
 /// `devboard worker <family> --repo <dir> --state-dir <dir> ...`.

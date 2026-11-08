@@ -25,10 +25,14 @@ pub struct RelaunchSettings {
 }
 
 impl RelaunchSettings {
-    pub fn from_config(config: &crate::config::Config) -> Self {
+    /// The settings a running dashboard hands its replacement. The serving port
+    /// is the bound one: a dashboard started on an ephemeral port stores it
+    /// after the bind, and its replacement must bind the same port.
+    pub fn from_app(app: &crate::app::App) -> Self {
+        let config = app.config();
         Self {
             hostname: config.hostname.clone(),
-            port: config.port,
+            port: app.port(),
             adrs_dir: config.adrs_dir.clone(),
             repo_dir: config.repo_dir.clone(),
             goal_file: config.goal_file.clone(),

@@ -376,7 +376,7 @@ async fn replace(app: &Arc<App>, state_dir: &Path, request: &SourceRefreshReques
         ),
         None,
     );
-    let settings = crate::relaunch::RelaunchSettings::from_config(app.config());
+    let settings = crate::relaunch::RelaunchSettings::from_app(app);
     let ready_file = source_refresh_directory(state_dir).join(format!(
         "ready-{}-{}.json",
         std::process::id(),

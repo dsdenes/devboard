@@ -374,6 +374,9 @@ pub struct App {
     pub instance: String,
     /// The version this process loaded at startup.
     pub running_version: Option<String>,
+    /// The port this process serves on: the configured one, updated to the
+    /// bound port when the listener resolves an ephemeral one.
+    port: std::sync::atomic::AtomicU16,
     /// The newest release the update check has seen.
     latest_version: Mutex<Option<String>>,
     /// A replacement that could not start; the process keeps serving.
@@ -405,6 +408,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config, journal: Journal) -> Arc<Self> {
+        let port = config.port;
         let allowed_hostnames =
             crate::http::allowed_request_hostnames(&config.hostname, &config.allowed_hosts);
         let idempotency =
@@ -470,6 +474,7 @@ impl App {
             idempotency,
             instance,
             running_version,
+            port: std::sync::atomic::AtomicU16::new(port),
             latest_version: Mutex::new(None),
             replacement_failure: Mutex::new(None),
             attempted_replacement: Mutex::new(None),
@@ -553,6 +558,18 @@ impl App {
 
     pub fn config(&self) -> &Config {
         &self.shared.config
+    }
+
+    /// The port this process serves on. A configured port is known before the
+    /// listener is bound; an ephemeral one (`--port 0`) is resolved by the bind
+    /// and stored here, so a replacement never inherits the placeholder.
+    pub fn port(&self) -> u16 {
+        self.port.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Records the listener's port.
+    pub fn set_port(&self, port: u16) {
+        self.port.store(port, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Refreshes the lease every second while this dashboard lives.
@@ -1042,7 +1059,7 @@ impl App {
         let app = self.clone();
         let version = version.to_string();
         tokio::spawn(async move {
-            let settings = crate::relaunch::RelaunchSettings::from_config(app.config());
+            let settings = crate::relaunch::RelaunchSettings::from_app(&app);
             let ready_file = app
                 .config()
                 .state_dir
@@ -1232,7 +1249,7 @@ impl App {
     pub fn restart_confirmed(self: &Arc<Self>) -> Result<(), String> {
         let app = self.clone();
         tokio::spawn(async move {
-            let settings = crate::relaunch::RelaunchSettings::from_config(app.config());
+            let settings = crate::relaunch::RelaunchSettings::from_app(&app);
             let ready_file = app
                 .config()
                 .state_dir
