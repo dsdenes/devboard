@@ -1,8 +1,0 @@
-{
-  "type": "issuesDraftError",
-  "frame": {
-    "type": "issuesDraftError",
-    "path": ".devboard/goal-proposals/missing.md",
-    "message": "No draft at .devboard/goal-proposals/missing.md."
-  }
-}

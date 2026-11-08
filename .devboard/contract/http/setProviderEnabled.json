@@ -1,0 +1,10 @@
+{
+  "name": "setProviderEnabled",
+  "method": "PATCH",
+  "path": "/providers/{id}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

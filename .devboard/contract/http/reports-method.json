@@ -1,0 +1,10 @@
+{
+  "name": "reports-method",
+  "method": "GET",
+  "path": "/reports",
+  "status": 405,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

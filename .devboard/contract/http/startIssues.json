@@ -1,0 +1,10 @@
+{
+  "name": "startIssues",
+  "method": "POST",
+  "path": "/issues/workers",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

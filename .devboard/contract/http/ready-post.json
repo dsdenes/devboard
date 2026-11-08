@@ -2,16 +2,9 @@
   "name": "ready-post",
   "method": "POST",
   "path": "/ready",
-  "requestHeaders": {
-    "accept-encoding": "identity"
-  },
-  "requestBody": "",
   "status": 405,
-  "headers": {
-    "allow": "GET, HEAD",
-    "cache-control": "no-store",
-    "content-type": "application/problem+json",
-    "vary": "Accept-Encoding"
-  },
-  "body": "{\"type\":\"about:blank\",\"title\":\"Method Not Allowed\",\"status\":405,\"detail\":\"This path serves GET and HEAD only.\"}"
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
 }

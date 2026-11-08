@@ -1,0 +1,10 @@
+{
+  "name": "stopFlowImplementation",
+  "method": "DELETE",
+  "path": "/flows/implementations",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

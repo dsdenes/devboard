@@ -21,7 +21,7 @@ use crate::acp::{
     PermissionPolicy,
 };
 use crate::app::{App, Conn, ModeGate, StateSection};
-use crate::protocol::Command;
+use crate::command::Command;
 use crate::state::{ACTIVITY_MAX_BYTES, ACTIVITY_MAX_ENTRIES, ACTIVITY_TRIMMED_MARKER};
 
 /// The prompt a creation peer receives.
@@ -193,6 +193,7 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
             true
         }
         Command::GetSkills => {
+            replay(app, conn);
             send_skills_state(app, &Target::Conn(conn.clone())).await;
             true
         }

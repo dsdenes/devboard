@@ -1,0 +1,10 @@
+{
+  "name": "prepareSkills",
+  "method": "POST",
+  "path": "/skill-preparations",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

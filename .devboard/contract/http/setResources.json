@@ -1,0 +1,10 @@
+{
+  "name": "setResources",
+  "method": "PUT",
+  "path": "/resources",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

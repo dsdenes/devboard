@@ -1,0 +1,10 @@
+{
+  "name": "agent-runs-method",
+  "method": "POST",
+  "path": "/agent-runs",
+  "status": 405,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

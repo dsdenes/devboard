@@ -1,0 +1,10 @@
+{
+  "name": "feedback-gone",
+  "method": "GET",
+  "path": "/feedback",
+  "status": 404,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

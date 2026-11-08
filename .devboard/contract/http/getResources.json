@@ -1,0 +1,10 @@
+{
+  "name": "getResources",
+  "method": "GET",
+  "path": "/resources",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

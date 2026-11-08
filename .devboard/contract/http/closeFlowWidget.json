@@ -1,0 +1,10 @@
+{
+  "name": "closeFlowWidget",
+  "method": "DELETE",
+  "path": "/flows/widget-opens",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

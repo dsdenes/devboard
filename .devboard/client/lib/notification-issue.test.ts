@@ -158,7 +158,7 @@ describe("automatic notification filing", () => {
     expect(again).toEqual(first);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
-      input: "/feedback",
+      input: "/reports",
       body: { action: "REPORT", report: expect.stringContaining(AUTOMATIC_ISSUE_INSTRUCTION) },
     });
   });
@@ -315,7 +315,7 @@ describe("slow UI action filing", () => {
       url: "http://localhost:3001/dsdenes/devboard/issues/88",
     });
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.input).toBe("/feedback");
+    expect(calls[0]?.input).toBe("/reports");
     expect(calls[0]?.init?.headers).toEqual({
       "content-type": "application/json",
       "idempotency-key": key,

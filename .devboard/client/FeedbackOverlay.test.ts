@@ -65,7 +65,7 @@ test("Enter in the composer files the report instead of asking", async () => {
   await tick();
 
   expect(posted.length).toBe(1);
-  expect(posted[0]?.url).toContain("/feedback");
+  expect(posted[0]?.url).toContain("/reports");
   const body = JSON.parse(posted[0]?.body ?? "{}");
   expect(body.action).toBe("REPORT");
   expect(body.report).toBe("The status bar overlaps the toolbar.");

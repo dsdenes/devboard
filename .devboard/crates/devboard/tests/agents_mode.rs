@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use devboard::agents_mode::{ForgeFact, ForgeProjection, ForgeReader};
 use devboard::app::{App, Conn};
+use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
-use devboard::protocol::Command;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
 

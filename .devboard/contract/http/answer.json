@@ -1,0 +1,10 @@
+{
+  "name": "answer",
+  "method": "POST",
+  "path": "/answers",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

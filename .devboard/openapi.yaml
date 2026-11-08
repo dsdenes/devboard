@@ -1,0 +1,2796 @@
+openapi: "3.1.0"
+info:
+  title: "Devboard Dashboard API"
+  version: "1.0.0"
+  description: >-
+    The dashboard's resource-oriented HTTP API. The browser reads every resource
+    and performs every action over these root paths; the only WebSocket is a live
+    ACP run's own output endpoint. The API is loopback-only, presents no
+    credential, and refuses an unserved Host and a cross-origin request.
+  contact:
+    name: "Devboard maintainers"
+    url: "https://github.com/dsdenes/devboard"
+  x-api-id: "devboard.dashboard"
+  x-audience: "local operator of this dashboard"
+  x-access-model: "loopback-only; no credential; Host and Origin guards on every route"
+servers:
+  - url: "/"
+security: []
+tags:
+  - name: Workspace
+  - name: Issues
+  - name: Agents
+  - name: Goal
+  - name: Flow
+  - name: Discover
+  - name: Inquiries
+  - name: Providers
+  - name: Runs
+  - name: Operations
+paths:
+  /agents:
+    get:
+      operationId: "getAgents"
+      tags: ["Agents"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /agents/{id}:
+    get:
+      operationId: "getAgent"
+      tags: ["Agents"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /agents/{id}/prompt:
+    get:
+      operationId: "getAgentPrompt"
+      tags: ["Agents"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /agents/{id}/refreshes:
+    post:
+      operationId: "refreshAgent"
+      tags: ["Agents"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /agents/{id}/runs:
+    delete:
+      operationId: "stopAgent"
+      tags: ["Agents"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "startAgent"
+      tags: ["Agents"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /agents/{id}/settings:
+    put:
+      operationId: "setAgentSettings"
+      tags: ["Agents"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /agents/{id}/timer:
+    delete:
+      operationId: "disableAgentTimer"
+      tags: ["Agents"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /answers:
+    post:
+      operationId: "answer"
+      tags: ["Operations"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /complexity:
+    get:
+      operationId: "getComplexity"
+      tags: ["Operations"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /discoveries/agent-scans:
+    post:
+      operationId: "discoverAgent"
+      tags: ["Discover"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /discoveries/answers:
+    post:
+      operationId: "answerDiscover"
+      tags: ["Discover"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /discoveries/glossary-terms/{id}:
+    delete:
+      operationId: "rejectGlossaryTerm"
+      tags: ["Discover"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    put:
+      operationId: "confirmGlossaryTerm"
+      tags: ["Discover"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /discoveries/remote-selections:
+    delete:
+      operationId: "clearDiscoverRemote"
+      tags: ["Discover"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /discoveries/remotes:
+    patch:
+      operationId: "switchDiscoverRemote"
+      tags: ["Discover"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "discoverRemote"
+      tags: ["Discover"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /discoveries/remotes/{url}:
+    delete:
+      operationId: "removeDiscoverRemote"
+      tags: ["Discover"]
+      parameters:
+        - name: url
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /discoveries/scans:
+    delete:
+      operationId: "stopDiscover"
+      tags: ["Discover"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "discoverProject"
+      tags: ["Discover"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /discoveries/workspace:
+    get:
+      operationId: "getDiscover"
+      tags: ["Discover"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /flows:
+    get:
+      operationId: "getFlow"
+      tags: ["Flow"]
+      responses:
+        "200":
+          description: "The Flow workspace representation."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+    head:
+      operationId: "head /flows"
+      tags: ["Flow"]
+      responses:
+        "200":
+          description: "The Flow workspace headers."
+          headers:
+            ETag: {schema: {type: string}}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/answers:
+    post:
+      operationId: "flowAnswer"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/blockers/{id}:
+    delete:
+      operationId: "dismissFlowBlocker"
+      tags: ["Flow"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/conclusions:
+    post:
+      operationId: "sendFlowConclusion"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/conversations/messages:
+    post:
+      operationId: "sendFlowConversation"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/goals:
+    delete:
+      operationId: "cancelFlowGoal"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "createFlowGoal"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/implementations:
+    delete:
+      operationId: "stopFlowImplementation"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "startFlowImplementation"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/pull-request-merges:
+    post:
+      operationId: "mergeFlowPr"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/pull-request-retries:
+    post:
+      operationId: "retryFlowPr"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/pull-requests:
+    patch:
+      operationId: "markFlowPrReady"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/steering:
+    post:
+      operationId: "sendFlowSteering"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/widget-opens:
+    delete:
+      operationId: "closeFlowWidget"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "openFlowWidget"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/widget-refusals:
+    post:
+      operationId: "refuseFlowWidget"
+      tags: ["Flow"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /flows/widgets/{id}:
+    patch:
+      operationId: "acceptFlowWidget"
+      tags: ["Flow"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /goal:
+    get:
+      operationId: "getGoal"
+      tags: ["Goal"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /goal-creations:
+    post:
+      operationId: "createGoal"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /goal-drafts:
+    get:
+      operationId: "getGoalDrafts"
+      tags: ["Goal"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /goal-drafts/{path}:
+    delete:
+      operationId: "deleteGoalDraft"
+      tags: ["Goal"]
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    get:
+      operationId: "getGoalDraft"
+      tags: ["Goal"]
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /goal-drafts/{path}/answers:
+    post:
+      operationId: "answerGoalDraft"
+      tags: ["Goal"]
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /goal-drafts/{path}/runs:
+    delete:
+      operationId: "stopGoalDraft"
+      tags: ["Goal"]
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "startGoalDraft"
+      tags: ["Goal"]
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /goal-revisions:
+    post:
+      operationId: "reviseGoal"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /implementation-resets:
+    post:
+      operationId: "resetImplementation"
+      tags: ["Operations"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /inquiries/conversations:
+    post:
+      operationId: "ask"
+      tags: ["Inquiries"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /inquiries/conversations/{conversation_id}:
+    delete:
+      operationId: "closeAsk"
+      tags: ["Inquiries"]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /installed-skills:
+    get:
+      operationId: "getInstalledSkills"
+      tags: ["Operations"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /installed-skills/{name}:
+    patch:
+      operationId: "setInstalledSkillEnabled"
+      tags: ["Operations"]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /issues:
+    get:
+      operationId: "getIssues"
+      tags: ["Issues"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /issues/checks:
+    post:
+      operationId: "checkIssues"
+      tags: ["Issues"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /issues/runs/{run_id}:
+    get:
+      operationId: "getIssuesRun"
+      tags: ["Issues"]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /issues/runs/{run_id}/answers:
+    post:
+      operationId: "answerIssues"
+      tags: ["Issues"]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /issues/workers:
+    delete:
+      operationId: "stopIssues"
+      tags: ["Issues"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: "pauseIssues"
+      tags: ["Issues"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "startIssues"
+      tags: ["Issues"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    put:
+      operationId: "resumeIssues"
+      tags: ["Issues"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /issues/{number}:
+    delete:
+      operationId: "closeIssue"
+      tags: ["Issues"]
+      parameters:
+        - name: number
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /lifecycle-pauses:
+    delete:
+      operationId: "resumeLifecycle"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "pauseLifecycle"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /lifecycles:
+    delete:
+      operationId: "stopLifecycle"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: "startLifecycle"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /mcp-tools:
+    get:
+      operationId: "getMcpTools"
+      tags: ["Operations"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /project:
+    get:
+      operationId: "getProject"
+      tags: ["Operations"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /provider-refreshes:
+    post:
+      operationId: "refreshProviders"
+      tags: ["Providers"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /providers:
+    get:
+      operationId: "getProviders"
+      tags: ["Providers"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /providers/{id}:
+    delete:
+      operationId: "deleteProvider"
+      tags: ["Providers"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: "setProviderEnabled"
+      tags: ["Providers"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    put:
+      operationId: "saveProvider"
+      tags: ["Providers"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /records:
+    get:
+      operationId: "listRecords"
+      tags: ["Workspace"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /resources:
+    get:
+      operationId: "getResources"
+      tags: ["Operations"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+    put:
+      operationId: "setResources"
+      tags: ["Operations"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /runs:
+    post:
+      operationId: "startRun"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /server-restarts:
+    post:
+      operationId: "restartServer"
+      tags: ["Operations"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "202":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /skill-preparations:
+    post:
+      operationId: "prepareSkills"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /skills:
+    get:
+      operationId: "getSkills"
+      tags: ["Goal"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /skills/{name}:
+    delete:
+      operationId: "deleteSkill"
+      tags: ["Goal"]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /version:
+    get:
+      operationId: "getVersion"
+      tags: ["Operations"]
+      responses:
+        "200":
+          description: "The operation result."
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
+      x-cache: "no-cache; ETag validation"
+  /reports:
+    post:
+      operationId: "post /reports"
+      tags: ["Operations"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "201":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /ready:
+    get:
+      operationId: "get /ready"
+      tags: ["Operations"]
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ready"}
+          headers:
+            ETag: {schema: {type: string}}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    head:
+      operationId: "head /ready"
+      tags: ["Operations"]
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ready"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /goal-proposals:
+    post:
+      operationId: "post /goal-proposals"
+      tags: ["Goal"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "201":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /goal-proposals/{name}:
+    get:
+      operationId: "get /goal-proposals/{name}"
+      tags: ["Goal"]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GoalProposal"}
+          headers:
+            ETag: {schema: {type: string}}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    head:
+      operationId: "head /goal-proposals/{name}"
+      tags: ["Goal"]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GoalProposal"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /agent-runs:
+    get:
+      operationId: "get /agent-runs"
+      tags: ["Runs"]
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunCollection"}
+          headers:
+            ETag: {schema: {type: string}}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    head:
+      operationId: "head /agent-runs"
+      tags: ["Runs"]
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunCollection"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /agent-runs/{run_id}:
+    get:
+      operationId: "get /agent-runs/{run_id}"
+      tags: ["Runs"]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+          headers:
+            ETag: {schema: {type: string}}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+    head:
+      operationId: "head /agent-runs/{run_id}"
+      tags: ["Runs"]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /agent-runs/{run_id}/output:
+    get:
+      operationId: "get /agent-runs/{run_id}/output"
+      tags: ["Runs"]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+          headers:
+            ETag: {schema: {type: string}}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+components:
+  responses:
+    Problem:
+      description: "RFC 9457 Problem JSON."
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, detail]
+      properties:
+        type: {type: string}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+    OperationBody:
+      type: object
+      description: "The operation-specific payload; snake_case fields are accepted."
+      additionalProperties: true
+    Frames:
+      type: object
+      required: [frames]
+      properties:
+        frames:
+          type: array
+          items: {type: object, additionalProperties: true}
+        self: {type: string, format: uri}
+        next: {type: [string, "null"], format: uri}
+        prev: {type: [string, "null"], format: uri}
+    Ready:
+      type: object
+      required: [pid]
+      properties:
+        pid: {type: integer}
+    GoalProposal:
+      type: object
+      additionalProperties: true
+    Run:
+      type: object
+      required: [id, kind, label, lifecycle, live, output]
+      properties:
+        id: {type: string}
+        kind: {type: string}
+        label: {type: string}
+        lifecycle: {type: string}
+        live: {type: boolean}
+        updated_at: {type: [string, "null"]}
+        self: {type: string, format: uri}
+        output:
+          type: string
+          format: uri
+          description: "Absolute link to this run's output endpoint."
+    RunCollection:
+      type: object
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items: {$ref: "#/components/schemas/Run"}
+        self: {type: string, format: uri}

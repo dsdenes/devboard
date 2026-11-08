@@ -13,8 +13,6 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent_sessions::{self, ListSessionsOptions};
 use crate::forge::{
@@ -222,12 +220,8 @@ fn select_dashboard(context: &McpContext) -> Result<LiveDashboard, String> {
     Ok(found[0].clone())
 }
 
-fn command_json(command: &Value) -> String {
-    crate::jsjson::stringify(command)
-}
-
-/// Opens the dashboard's WebSocket, lets its connect-time replay settle, sends
-/// one command, and resolves the first reply that `accept` names or an error.
+/// Reaches the dashboard over its REST API only and resolves the first reply
+/// frame that `accept` names. No command socket is opened.
 async fn dashboard_command(
     dashboard: &LiveDashboard,
     command: Value,
@@ -235,121 +229,65 @@ async fn dashboard_command(
     timeout_ms: u64,
 ) -> Result<Value, String> {
     let port = dashboard.port;
-    let request = format!("ws://127.0.0.1:{port}/ws")
-        .into_client_request()
-        .map_err(|_| format!("the dashboard on port {port} refused the connection"))?;
     let commands: Vec<Value> = match command {
         Value::Array(entries) => entries,
         other => vec![other],
     };
-    let connect = tokio_tungstenite::connect_async(request);
-    let socket = tokio::time::timeout(Duration::from_millis(timeout_ms), connect)
-        .await
-        .map_err(|_| format!("the dashboard on port {port} did not answer in time"))?
-        .map_err(|_| format!("the dashboard on port {port} refused the connection"))?
-        .0;
-    let (mut sink, mut stream) = socket.split();
-    use futures_util::{SinkExt, StreamExt};
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    for entry in &commands {
-        sink.send(Message::Text(command_json(entry).into()))
-            .await
-            .map_err(|_| format!("the dashboard on port {port} refused the connection"))?;
-    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_gzip()
+        .build()
+        .map_err(|_| format!("the dashboard on port {port} could not be reached"))?;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    let mut accepted: Option<Value> = None;
-    loop {
+    for entry in commands {
+        let (method, path, body) = crate::rest::request_for_command(&entry)?;
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            let _ = sink.close().await;
             return Err(format!(
                 "the dashboard on port {port} did not answer in time"
             ));
         }
-        let read = tokio::time::timeout(remaining, stream.next()).await;
-        let frame = match read {
-            Err(_) => {
-                let _ = sink.close().await;
-                return Err(format!(
-                    "the dashboard on port {port} did not answer in time"
-                ));
-            }
-            Ok(None) => {
-                let _ = sink.close().await;
-                return Err(format!(
-                    "the dashboard on port {port} refused the connection"
-                ));
-            }
-            Ok(Some(Err(_))) => {
-                let _ = sink.close().await;
-                return Err(format!(
-                    "the dashboard on port {port} refused the connection"
-                ));
-            }
-            Ok(Some(Ok(frame))) => frame,
+        let request = client
+            .request(method, format!("http://127.0.0.1:{port}{path}"))
+            .timeout(remaining)
+            .header("accept", "application/json");
+        let request = if body.as_object().map(|object| object.is_empty()) == Some(true) {
+            request
+        } else {
+            request.json(&body)
         };
-        let text = match frame {
-            Message::Text(text) => text.as_str().to_string(),
-            Message::Binary(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Message::Close(_) => {
-                let _ = sink.close().await;
-                return Err(format!(
-                    "the dashboard on port {port} refused the connection"
-                ));
-            }
-            _ => continue,
-        };
-        let Ok(reply) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        let Some(record) = reply.as_object() else {
-            continue;
-        };
-        let Some(kind) = record.get("type").and_then(Value::as_str) else {
-            continue;
-        };
-        if kind == "error" {
-            let message = record
-                .get("message")
+        let response = request
+            .send()
+            .await
+            .map_err(|_| format!("the dashboard on port {port} refused the connection"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|_| format!("the dashboard on port {port} refused the connection"))?;
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|_| format!("the dashboard on port {port} answered an unreadable body"))?;
+        if !status.is_success() {
+            let detail = value
+                .get("detail")
                 .and_then(Value::as_str)
                 .unwrap_or("the dashboard refused the command");
-            let _ = sink.close().await;
-            return Err(message.to_string());
+            return Err(detail.to_string());
         }
-        if accepted.is_some() {
-            continue;
-        }
-        if accept(&reply) {
-            accepted = Some(reply);
-            // The dashboard can publish the new state and then refuse the
-            // command; give the refusal a moment to arrive before succeeding.
-            let grace = tokio::time::Instant::now() + Duration::from_millis(50);
-            while let Some(remaining) = grace.checked_duration_since(tokio::time::Instant::now()) {
-                match tokio::time::timeout(remaining, stream.next()).await {
-                    Ok(Some(Ok(Message::Text(text)))) => {
-                        if let Ok(Value::Object(record)) =
-                            serde_json::from_str::<Value>(text.as_str())
-                        {
-                            if record.get("type").and_then(Value::as_str) == Some("error") {
-                                let message = record
-                                    .get("message")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("the dashboard refused the command");
-                                let _ = sink.close().await;
-                                return Err(message.to_string());
-                            }
-                        }
-                    }
-                    Ok(Some(Ok(_))) => continue,
-                    Ok(Some(Err(_))) | Ok(None) => break,
-                    Err(_) => break,
+        if let Some(frames) = value.get("frames").and_then(Value::as_array) {
+            for frame in frames {
+                if accept(frame) {
+                    return Ok(frame.clone());
                 }
             }
-            let reply = accepted.take().unwrap_or(Value::Null);
-            let _ = sink.close().await;
-            return Ok(reply);
+        }
+        if accept(&value) {
+            return Ok(value);
         }
     }
+    Err(format!(
+        "the dashboard on port {port} did not answer in time"
+    ))
 }
 
 fn strip_type(reply: &Value) -> Value {

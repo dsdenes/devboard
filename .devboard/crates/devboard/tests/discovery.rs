@@ -289,47 +289,20 @@ fn a_started_dashboard_publishes_no_dashboard_credential() {
         .expect("the instance");
     assert_eq!(instance.repo_dir, dashboard.repo.to_string_lossy());
 
-    // A control surface reaches `/ws` without a credential.
+    // The REST control surface answers without a credential.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime");
     let frames: Vec<Value> = runtime.block_on(async {
-        use futures_util::SinkExt as _;
-        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-        let url = format!("ws://127.0.0.1:{}/ws", dashboard.port);
-        let request = url.into_client_request().expect("a request");
-        let (mut socket, _) = tokio_tungstenite::connect_async(request)
+        let response = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/version", dashboard.port))
+            .header("accept", "application/json")
+            .send()
             .await
-            .expect("the socket opens without a credential");
-        socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                json!({"type": "getVersion"}).to_string().into(),
-            ))
-            .await
-            .expect("a command");
-        use futures_util::StreamExt as _;
-        let mut frames = Vec::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let Some(Ok(message)) = tokio::time::timeout_at(deadline, socket.next())
-                .await
-                .ok()
-                .flatten()
-            else {
-                break;
-            };
-            if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
-                if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                    let done = value["type"] == "versionState";
-                    frames.push(value);
-                    if done {
-                        break;
-                    }
-                }
-            }
-        }
-        frames
+            .expect("the REST API answers without a credential");
+        let body: Value = response.json().await.expect("JSON");
+        body["frames"].as_array().cloned().unwrap_or_default()
     });
     assert!(
         frames.iter().any(|frame| frame["type"] == "versionState"),
@@ -379,35 +352,45 @@ fn sigterm_ends_the_child_and_removes_the_staging() {
         .build()
         .expect("a runtime");
     let run_id = runtime.block_on(async {
-        use futures_util::{SinkExt as _, StreamExt as _};
-        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-        let request = format!("ws://127.0.0.1:{}/ws", dashboard.port)
-            .into_client_request()
-            .expect("a request");
-        let (mut socket, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .expect("the socket");
-        socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                json!({"type": "discoverAgent", "agent": "discover-testing-strategy"})
-                    .to_string()
-                    .into(),
+        let client = reqwest::Client::new();
+        client
+            .post(format!(
+                "http://127.0.0.1:{}/discoveries/agent-scans",
+                dashboard.port
             ))
+            .header("accept", "application/json")
+            .json(&json!({"agent": "discover-testing-strategy"}))
+            .send()
             .await
-            .expect("a command");
+            .expect("the start request");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let next = tokio::time::timeout_at(deadline, socket.next()).await;
-            let Some(Ok(message)) = next.ok().flatten() else {
-                panic!("the discover run started");
-            };
-            if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
-                if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                    if value["type"] == "discoverStarted" {
-                        return value["runId"].as_str().expect("a run id").to_string();
+            let response = client
+                .get(format!(
+                    "http://127.0.0.1:{}/discoveries/workspace",
+                    dashboard.port
+                ))
+                .header("accept", "application/json")
+                .send()
+                .await
+                .expect("a workspace read");
+            let body: Value = response.json().await.expect("JSON");
+            if let Some(run_id) = body["frames"].as_array().and_then(|frames| {
+                frames.iter().find_map(|frame| {
+                    if frame["type"] == "discoverState" {
+                        frame["state"]["runId"].as_str().map(str::to_string)
+                    } else {
+                        None
                     }
-                }
+                })
+            }) {
+                return run_id;
             }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the discover run started"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     });
     let staging = dashboard.repo.join(".omp/discover/staging").join(&run_id);

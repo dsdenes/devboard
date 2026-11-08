@@ -1,0 +1,10 @@
+{
+  "name": "createGoal",
+  "method": "POST",
+  "path": "/goal-creations",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

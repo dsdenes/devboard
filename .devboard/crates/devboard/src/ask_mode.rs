@@ -25,8 +25,8 @@ use sha2::{Digest, Sha256};
 
 use crate::acp::{AcpActivity, PermissionPolicy};
 use crate::app::{App, Conn};
+use crate::command::Command;
 use crate::detached_run::{ActivityCallback, DetachedPeer, DetachedPeerOptions, TextCallback};
-use crate::protocol::Command;
 
 /// The longest conversation id a client may name.
 const MAX_CONVERSATION_ID: usize = 200;
@@ -848,10 +848,11 @@ impl AskMode {
             let Some(conversation) = state.conversations.get(id) else {
                 return;
             };
-            if conversation
-                .socket
-                .as_ref()
-                .is_some_and(|owner| owner.id() != socket.id())
+            if !socket.is_request()
+                && conversation
+                    .socket
+                    .as_ref()
+                    .is_some_and(|owner| owner.id() != socket.id())
             {
                 return;
             }

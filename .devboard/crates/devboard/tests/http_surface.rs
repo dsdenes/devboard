@@ -186,25 +186,25 @@ async fn ready_negotiates_gzip() {
 }
 
 #[tokio::test]
-async fn socket_guards_answer_method_host_and_origin() {
-    let instance = start("ws-guards").await;
+async fn the_retired_socket_path_answers_not_found() {
+    let instance = start("ws-gone").await;
     let url = format!("{}/ws", instance.base);
-
-    let (status, headers, _body) = send(Method::POST, &url, HeaderMap::new()).await;
-    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(
-        headers.get("allow").and_then(|value| value.to_str().ok()),
-        Some("GET")
-    );
-
-    let (status, _headers, _body) = send(Method::GET, &url, HeaderMap::new()).await;
-    assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
-
+    for method in [Method::GET, Method::POST] {
+        let (status, headers, body) = send(method, &url, HeaderMap::new()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            headers
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/problem+json")
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+        assert_eq!(parsed["status"], 404);
+    }
     let mut headers = HeaderMap::new();
     headers.insert(HOST, HeaderValue::from_static("evil.test"));
     let (status, _headers, _body) = send(Method::GET, &url, headers).await;
     assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
-
     let mut headers = HeaderMap::new();
     headers.insert(ORIGIN, HeaderValue::from_static("http://evil.test"));
     let (status, _headers, _body) = send(Method::GET, &url, headers).await;
@@ -279,14 +279,14 @@ async fn mutating_endpoints_enforce_method_and_configuration() {
     let instance = start("endpoints").await;
     let (status, _headers, _body) = send(
         Method::POST,
-        &format!("{}/feedback", instance.base),
+        &format!("{}/reports", instance.base),
         HeaderMap::new(),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::SERVICE_UNAVAILABLE,
-        "feedback without a Gitea target is disabled, never unauthorized"
+        "reporting without a Gitea target is disabled, never unauthorized"
     );
     let (status, _headers, body) = send(
         Method::POST,
@@ -304,7 +304,7 @@ async fn mutating_endpoints_enforce_method_and_configuration() {
 
     let (status, headers, _body) = send(
         Method::GET,
-        &format!("{}/feedback", instance.base),
+        &format!("{}/reports", instance.base),
         HeaderMap::new(),
     )
     .await;
@@ -316,7 +316,7 @@ async fn mutating_endpoints_enforce_method_and_configuration() {
 
     let (status, _headers, body) = send(
         Method::POST,
-        &format!("{}/feedback", instance.base),
+        &format!("{}/reports", instance.base),
         HeaderMap::new(),
     )
     .await;
@@ -370,65 +370,34 @@ async fn a_malformed_flow_id_is_refused_before_the_handler() {
 }
 
 #[tokio::test]
-async fn the_socket_accepts_a_recorded_frame() {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::Message;
-
-    let instance = start("socket").await;
-    let request = format!("{}/ws", instance.base.replace("http://", "ws://"))
-        .into_client_request()
-        .expect("a request");
-    let (mut socket, _response) = tokio_tungstenite::connect_async(request)
-        .await
-        .expect("an upgrade");
-    // The connection replays the provider state before any reply.
-    let first = loop {
-        match socket.next().await {
-            Some(Ok(Message::Text(text))) => break text.to_string(),
-            Some(Ok(_)) => continue,
-            other => panic!("no replay: {other:?}"),
-        }
-    };
-    let replay: serde_json::Value = serde_json::from_str(&first).expect("JSON");
-    assert_eq!(replay["type"], "providersState");
-
-    socket
-        .send(Message::Text(r#"{"type":"getProject"}"#.into()))
-        .await
-        .expect("a frame");
-    let frame = loop {
-        match socket.next().await {
-            Some(Ok(Message::Text(text))) => {
-                let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
-                if parsed["type"] == "project" {
-                    break text.to_string();
-                }
-            }
-            Some(Ok(_)) => continue,
-            other => panic!("no answer: {other:?}"),
-        }
-    };
-    let parsed: serde_json::Value = serde_json::from_str(&frame).expect("JSON");
-    assert_eq!(parsed["type"], "project");
-    let path = parsed["path"].as_str().expect("a path");
+async fn the_rest_api_answers_a_recorded_read() {
+    let instance = start("rest-read").await;
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/project", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+    let frames = parsed["frames"].as_array().expect("frames");
+    assert_eq!(frames[0]["type"], "project");
+    let path = frames[0]["path"].as_str().expect("a path");
     assert!(!Path::new(path).is_absolute() || path == instance.root.to_string_lossy());
 
-    socket
-        .send(Message::Text("not json".into()))
-        .await
-        .expect("a frame");
-    let frame = loop {
-        match socket.next().await {
-            Some(Ok(Message::Text(text))) => break text.to_string(),
-            Some(Ok(_)) => continue,
-            other => panic!("no answer: {other:?}"),
-        }
-    };
-    let parsed: serde_json::Value = serde_json::from_str(&frame).expect("JSON");
-    assert_eq!(parsed["type"], "error");
-    assert_eq!(parsed["message"], "Invalid WebSocket message.");
-    let _ = socket.close(None).await;
+    let (status, headers, body) = send(
+        Method::POST,
+        &format!("{}/project", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        headers.get("allow").and_then(|value| value.to_str().ok()),
+        Some("GET, HEAD")
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+    assert_eq!(parsed["status"], 405);
 }
 
 #[tokio::test]
@@ -513,7 +482,7 @@ async fn a_flow_id_is_echoed_on_endpoint_answers_and_never_on_a_static_asset() {
     headers.insert("x-flow-id", HeaderValue::from_static("flow-42"));
     headers.insert(HOST, HeaderValue::from_static("evil.test"));
     let (status, headers, _body) =
-        send(Method::GET, &format!("{}/ws", instance.base), headers).await;
+        send(Method::GET, &format!("{}/records", instance.base), headers).await;
     assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
     assert_eq!(
         headers
@@ -526,24 +495,28 @@ async fn a_flow_id_is_echoed_on_endpoint_answers_and_never_on_a_static_asset() {
 #[tokio::test]
 async fn mutating_endpoints_refuse_a_misdirected_host() {
     let instance = start("endpoint-host").await;
-    for (method, path) in [
-        (Method::POST, "/feedback"),
-        (Method::POST, "/goal-proposals"),
-        (Method::GET, "/goal-proposals/missing.md"),
+    for (method, path, expected) in [
+        (Method::POST, "/reports", StatusCode::MISDIRECTED_REQUEST),
+        (Method::POST, "/goal-proposals", StatusCode::FORBIDDEN),
+        (
+            Method::GET,
+            "/goal-proposals/missing.md",
+            StatusCode::FORBIDDEN,
+        ),
+        (Method::GET, "/records", StatusCode::MISDIRECTED_REQUEST),
     ] {
         let mut headers = HeaderMap::new();
         headers.insert(HOST, HeaderValue::from_static("evil.test"));
         let (status, _headers, body) =
             send(method, &format!("{}{path}", instance.base), headers).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(status, expected, "{path}");
         let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
-        assert_eq!(parsed["title"], "Forbidden");
+        assert!(parsed["title"].is_string());
         assert_eq!(
             parsed["detail"],
             "The request host is not served by this dashboard."
         );
     }
-    // The socket keeps its 421 for the same misdirected Host.
     let mut headers = HeaderMap::new();
     headers.insert(HOST, HeaderValue::from_static("evil.test"));
     let (status, _headers, _body) =
@@ -661,10 +634,6 @@ async fn the_readiness_probe_answers_without_a_credential_and_checks_the_pid() {
 
 #[tokio::test]
 async fn a_starting_frame_arrives_while_the_preflight_is_pending() {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::Message;
-
     let instance = start("start-frame").await;
     let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let release = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -686,93 +655,60 @@ async fn a_starting_frame_arrives_while_the_preflight_is_pending() {
     });
     devboard::agents_mode::set_spawn(&instance.server.app, |_argv, _environment| None);
 
-    let request = format!("{}/ws", instance.base.replace("http://", "ws://"))
-        .into_client_request()
-        .expect("a request");
-    let (mut socket, _response) = tokio_tungstenite::connect_async(request)
-        .await
-        .expect("an upgrade");
-    // The connect replay ends with the full agents frame; wait for it so the
-    // Start below is the only command in flight.
-    loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
-            .await
-            .expect("a replay")
-            .expect("a frame")
-            .expect("a frame");
-        let Message::Text(text) = frame else {
-            continue;
-        };
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
-        if parsed["type"] == "agentsState" {
-            break;
-        }
-    }
-    // Each repository family also replays its own snapshot after the agents
-    // frame. Consume the Dead Code one so the Start below is the next frame
-    // this socket sees for that agent.
-    loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
-            .await
-            .expect("a replayed agent snapshot")
-            .expect("a frame")
-            .expect("a frame");
-        let Message::Text(text) = frame else {
-            continue;
-        };
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
-        if parsed["type"] == "agentState" && parsed["agent"]["id"] == "dead-code" {
-            break;
-        }
-    }
-
+    let client = client();
     let started = std::time::Instant::now();
-    socket
-        .send(Message::Text(
-            r#"{"type":"startAgent","id":"dead-code"}"#.into(),
-        ))
+    let response = client
+        .post(format!("{}/agents/dead-code/runs", instance.base))
+        .header("accept", "application/json")
+        .send()
         .await
-        .expect("a frame");
-
-    let starting = loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_millis(1000), socket.next())
-            .await
-            .expect("the starting frame was withheld behind the preflight")
-            .expect("a frame")
-            .expect("a frame");
-        let Message::Text(text) = frame else {
-            continue;
-        };
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
-        if parsed["type"] == "agentState" && parsed["agent"]["id"] == "dead-code" {
-            break parsed["agent"].clone();
-        }
-    };
+        .expect("a response");
+    assert_eq!(response.status().as_u16(), 201);
+    let body: serde_json::Value = response.json().await.expect("JSON");
+    let starting = body["frames"]
+        .as_array()
+        .and_then(|frames| {
+            frames
+                .iter()
+                .find(|frame| frame["type"] == "agentState" && frame["agent"]["id"] == "dead-code")
+        })
+        .expect("a starting frame");
     assert!(started.elapsed() <= std::time::Duration::from_millis(1000));
-    assert_eq!(starting["lifecycle"], "starting");
+    assert_eq!(starting["agent"]["lifecycle"], "starting");
     assert!(
         !completed.load(std::sync::atomic::Ordering::SeqCst),
         "the starting frame was only written after the preflight finished"
     );
 
     release.notify_one();
-    let finished = loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let response = client
+            .get(format!("{}/agents/dead-code", instance.base))
+            .header("accept", "application/json")
+            .send()
             .await
-            .expect("the queued final snapshot was not delivered")
-            .expect("a frame")
-            .expect("a frame");
-        let Message::Text(text) = frame else {
-            continue;
-        };
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("JSON");
-        if parsed["type"] == "agentState" && parsed["agent"]["id"] == "dead-code" {
-            break parsed["agent"].clone();
+            .expect("a response");
+        let body: serde_json::Value = response.json().await.expect("JSON");
+        let lifecycle = body["frames"]
+            .as_array()
+            .and_then(|frames| {
+                frames.iter().find_map(|frame| {
+                    if frame["type"] == "agentState" && frame["agent"]["id"] == "dead-code" {
+                        frame["agent"]["lifecycle"].as_str()
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or("stopped");
+        if lifecycle != "starting" {
+            break;
         }
-    };
-    assert_ne!(
-        finished["lifecycle"], "starting",
-        "the final snapshot never replaced the starting preview"
-    );
-    let _ = socket.close(None).await;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the final snapshot never replaced the starting preview"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 }

@@ -1,0 +1,10 @@
+{
+  "name": "clearDiscoverRemote",
+  "method": "DELETE",
+  "path": "/discoveries/remote-selections",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -16,10 +16,10 @@ fn private_root(label: &str) -> PathBuf {
 
 fn contract_tools() -> Value {
     let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../contract/commands/getMcpTools.json");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../contract/fixtures/mcp-tools.json");
     let text = std::fs::read_to_string(path).expect("the recorded contract");
-    let corpus: Value = serde_json::from_str(&text).expect("contract JSON");
-    corpus["scenarios"][0]["frames"][0]["tools"].clone()
+    let fixture: Value = serde_json::from_str(&text).expect("contract JSON");
+    fixture["tools"].clone()
 }
 
 fn field_names(tool: &Value) -> Vec<&str> {

@@ -52,7 +52,7 @@ function contextSectionStart(text: string): number {
 }
 
 /**
- * Reads the proposal out of a draft. Both writers in `server/feedback.ts` and
+ * Reads the proposal out of a draft. Both writers in `server/reports.ts` and
  * `server/goal-proposal.ts` put the captured evidence after a marker of their
  * own below the operator's report; the proposal keeps the writer's own text —
  * including a report line that quotes the marker — and drops a leading H1,

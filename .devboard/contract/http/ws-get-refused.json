@@ -1,0 +1,10 @@
+{
+  "name": "ws-get-refused",
+  "method": "GET",
+  "path": "/ws",
+  "status": 404,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

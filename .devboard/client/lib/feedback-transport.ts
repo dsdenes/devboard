@@ -1,4 +1,4 @@
-import { FEEDBACK_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
+import { REPORTS_ENDPOINT, GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
 import { draftPathFromHref } from "../../lib/goal-proposals.ts";
 import { slowUiAction } from "./slow-ui-action";
 
@@ -50,7 +50,7 @@ function refusal(body: ReplyBody, status: number, fallback: string): string {
 export async function fileFeedback(
   payload: Record<string, unknown>,
 ): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
-  const reply = await post(FEEDBACK_ENDPOINT, payload);
+  const reply = await post(REPORTS_ENDPOINT, payload);
   if ("error" in reply) return { ok: false, error: reply.error };
   const href = reply.body?.links?.issue?.href;
   if (!reply.response.ok || typeof href !== "string") {

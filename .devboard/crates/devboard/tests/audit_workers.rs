@@ -1623,13 +1623,11 @@ fn the_real_harness_surface_carries_every_route_and_only_rust_sources() {
             .iter()
             .any(|entry| entry.path == path && entry.methods.iter().any(|item| item == method))
     };
-    assert!(route("/feedback", "POST"));
+    assert!(route("/reports", "POST"));
     assert!(route("/ready", "GET"));
     assert!(route("/ready", "HEAD"));
     assert!(route("/goal-proposals", "POST"));
-    assert!(input.routes.iter().any(|entry| entry.path == "/ws"
-        && entry.kind == "upgrade"
-        && entry.methods == vec!["GET".to_string()]));
+    assert!(!input.routes.iter().any(|entry| entry.path == "/ws"));
     assert!(input
         .routes
         .iter()

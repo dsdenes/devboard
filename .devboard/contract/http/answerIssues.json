@@ -1,0 +1,10 @@
+{
+  "name": "answerIssues",
+  "method": "POST",
+  "path": "/issues/runs/{run_id}/answers",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

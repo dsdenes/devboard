@@ -1,7 +1,0 @@
-{
-  "type": "flowError",
-  "frame": {
-    "type": "flowError",
-    "message": "No provider is configured. Open the Providers dialog (settings.providers) and add an OpenCode Go or OpenRouter API key."
-  }
-}

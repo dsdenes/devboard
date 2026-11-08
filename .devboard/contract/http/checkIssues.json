@@ -1,0 +1,10 @@
+{
+  "name": "checkIssues",
+  "method": "POST",
+  "path": "/issues/checks",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

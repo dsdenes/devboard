@@ -16,7 +16,7 @@ use futures_util::future::{BoxFuture, FutureExt, Shared};
 use serde_json::{json, Map, Value};
 
 use crate::app::Conn;
-use crate::protocol::Command;
+use crate::command::Command;
 
 /// An environment handed to one ACP peer.
 pub type Env = HashMap<String, Option<String>>;

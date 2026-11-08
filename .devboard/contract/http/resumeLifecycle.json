@@ -1,0 +1,10 @@
+{
+  "name": "resumeLifecycle",
+  "method": "DELETE",
+  "path": "/lifecycle-pauses",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

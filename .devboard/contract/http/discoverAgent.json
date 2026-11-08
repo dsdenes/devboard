@@ -1,0 +1,10 @@
+{
+  "name": "discoverAgent",
+  "method": "POST",
+  "path": "/discoveries/agent-scans",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

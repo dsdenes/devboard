@@ -1,0 +1,10 @@
+{
+  "name": "ws-post-refused",
+  "method": "POST",
+  "path": "/ws",
+  "status": 404,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

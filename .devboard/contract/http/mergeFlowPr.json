@@ -1,0 +1,10 @@
+{
+  "name": "mergeFlowPr",
+  "method": "POST",
+  "path": "/flows/pull-request-merges",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

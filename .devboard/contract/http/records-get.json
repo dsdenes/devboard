@@ -1,0 +1,10 @@
+{
+  "name": "records-get",
+  "method": "GET",
+  "path": "/records",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -1,0 +1,10 @@
+{
+  "name": "reviseGoal",
+  "method": "POST",
+  "path": "/goal-revisions",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

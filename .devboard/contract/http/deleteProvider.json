@@ -1,0 +1,10 @@
+{
+  "name": "deleteProvider",
+  "method": "DELETE",
+  "path": "/providers/{id}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

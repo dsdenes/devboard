@@ -18,7 +18,7 @@ use time::macros::format_description;
 use time::OffsetDateTime;
 
 use crate::app::{App, Conn};
-use crate::protocol::Command;
+use crate::command::Command;
 
 /// The directory every repository's issues records sit below.
 const ISSUES_DIRECTORY: &str = "issues";

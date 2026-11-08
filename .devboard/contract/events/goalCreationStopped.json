@@ -1,7 +1,0 @@
-{
-  "type": "goalCreationStopped",
-  "frame": {
-    "type": "goalCreationStopped",
-    "completed": false
-  }
-}

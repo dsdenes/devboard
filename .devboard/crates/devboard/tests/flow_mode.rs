@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboard::app::{App, Conn};
+use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
-use devboard::protocol::Command;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -824,55 +824,9 @@ async fn flow_goal_widgets_steering_and_conversation_round_trip() {
     assert_eq!(session_frames(&reconnect.seen, "flowSnapshot").len(), 1);
 }
 
-// ---------------------------------------------------------------------------
-// The socket-level contract for the refusal frames the corpus records.
-
-/// One connected websocket, the same way the corpus client reaches the server.
-async fn socket_frames_after(
-    socket: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    send: &str,
-) -> Vec<Value> {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
-    socket
-        .send(Message::Text(send.to_string().into()))
-        .await
-        .expect("the frame is sent");
-    let mut frames = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut quiet_since = Instant::now();
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        match tokio::time::timeout(Duration::from_millis(200), socket.next()).await {
-            Ok(Some(Ok(Message::Text(text)))) => {
-                if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                    frames.push(value);
-                }
-                quiet_since = Instant::now();
-            }
-            Ok(Some(Ok(_))) => {}
-            Ok(Some(Err(error))) => panic!("the socket failed: {error}"),
-            Ok(None) => break,
-            Err(_) => {
-                if quiet_since.elapsed() >= Duration::from_millis(200) {
-                    break;
-                }
-            }
-        }
-    }
-    frames
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_flow_refusal_frames_reach_a_fresh_socket() {
+async fn the_flow_refusal_frames_reach_a_fresh_page() {
     let _env = ENV_LOCK.lock().await;
-    use futures_util::StreamExt;
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     let scratch = Scratch::new("socket");
     let repo = scratch.path().join("repo");
@@ -904,48 +858,50 @@ async fn the_flow_refusal_frames_reach_a_fresh_socket() {
         let _ = devboard::http::serve_on(listener, running).await;
     });
 
-    let mut request = format!("ws://127.0.0.1:{port}/ws")
-        .into_client_request()
-        .expect("a URL");
-    request.headers_mut().insert(
-        "authorization",
-        axum::http::HeaderValue::from_str("Bearer contract-token").expect("a token"),
-    );
-    let (mut socket, _) = tokio_tungstenite::connect_async(request)
+    let client = reqwest::Client::new();
+    let invalid = client
+        .get(format!("http://127.0.0.1:{port}/not-a-contract-command"))
+        .header("accept", "application/json")
+        .send()
         .await
-        .expect("a websocket");
-    // A fresh dashboard replays only its own empty sections; let those settle.
-    let settle = Instant::now() + Duration::from_millis(400);
-    while Instant::now() < settle {
-        let _ = tokio::time::timeout(Duration::from_millis(100), socket.next()).await;
-    }
-
-    let invalid = socket_frames_after(&mut socket, "{\"type\":\"notAContractCommand\"}").await;
+        .expect("a response");
+    assert_eq!(invalid.status().as_u16(), 404);
     assert_eq!(
-        invalid,
-        vec![json!({"type": "error", "message": "Invalid WebSocket message."})]
+        invalid
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/problem+json")
     );
 
-    let stopped = socket_frames_after(&mut socket, "{\"type\":\"stopFlowImplementation\"}").await;
+    let stopped = client
+        .delete(format!("http://127.0.0.1:{port}/flows/implementations"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a response");
+    let stopped: Value = stopped.json().await.expect("JSON");
     assert_eq!(
-        stopped,
-        vec![json!({
+        stopped["frames"],
+        json!([{
             "type": "flowError",
             "message": "The Flow implementation is not running.",
-        })]
+        }])
     );
 
-    let opened = socket_frames_after(
-        &mut socket,
-        "{\"type\":\"openFlowWidget\",\"id\":\"missing\"}",
-    )
-    .await;
+    let opened = client
+        .post(format!("http://127.0.0.1:{port}/flows/widget-opens"))
+        .header("accept", "application/json")
+        .json(&json!({"id": "missing"}))
+        .send()
+        .await
+        .expect("a response");
+    let opened: Value = opened.json().await.expect("JSON");
     assert_eq!(
-        opened,
-        vec![json!({"type": "flowError", "message": "No Flow session exists."})]
+        opened["frames"],
+        json!([{"type": "flowError", "message": "No Flow session exists."}])
     );
 
-    let _ = socket.close(None).await;
     task.abort();
 }
 

@@ -1,0 +1,10 @@
+{
+  "name": "answerGoalDraft",
+  "method": "POST",
+  "path": "/goal-drafts/{path}/answers",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -1,0 +1,10 @@
+{
+  "name": "getDiscover",
+  "method": "GET",
+  "path": "/discoveries/workspace",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

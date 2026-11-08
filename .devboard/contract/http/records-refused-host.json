@@ -1,0 +1,10 @@
+{
+  "name": "records-refused-host",
+  "method": "GET",
+  "path": "/records",
+  "status": 421,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

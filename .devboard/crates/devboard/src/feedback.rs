@@ -144,7 +144,7 @@ pub struct GoalProposalSubmission {
     pub captured: CapturedFields,
 }
 
-/// The body keys `POST /feedback` accepts.
+/// The body keys `POST /reports` accepts.
 pub const FEEDBACK_BODY_KEYS: &[&str] = &[
     "action",
     "report",

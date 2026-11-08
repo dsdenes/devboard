@@ -1,0 +1,10 @@
+{
+  "name": "getProviders",
+  "method": "GET",
+  "path": "/providers",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

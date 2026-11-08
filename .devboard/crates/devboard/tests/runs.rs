@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use devboard::providers::{save_subscriptions, ProviderId, StoredSubscription};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use sha2::Digest;
 use tokio::net::TcpStream;
@@ -212,19 +212,108 @@ async fn wait_ready(base: &str) {
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-async fn socket(port: u16) -> Socket {
-    let request = format!("ws://127.0.0.1:{port}/ws")
+async fn run_socket(port: u16, id: &str, after: Option<u64>) -> Socket {
+    let query = after
+        .map(|cursor| format!("?after={cursor}"))
+        .unwrap_or_default();
+    let request = format!("ws://127.0.0.1:{port}/agent-runs/{id}/output{query}")
         .into_client_request()
         .expect("a socket URL");
-    let (socket, _) = connect_async(request).await.expect("a websocket");
+    let (socket, _) = connect_async(request).await.expect("a run socket");
     socket
 }
 
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::Text(frame.to_string().into()))
+/// One action over REST, returning the frames the operation produced.
+async fn rest(base: &str, frame: Value) -> Vec<Value> {
+    let (method, path, body) =
+        devboard::rest::request_for_command(&frame).expect("a REST operation");
+    let client = reqwest::Client::new();
+    let request = client
+        .request(method, format!("{base}{path}"))
+        .header("accept", "application/json");
+    let request = if body.as_object().map(|object| object.is_empty()) == Some(true) {
+        request
+    } else {
+        request.json(&body)
+    };
+    let response = request.send().await.expect("a response");
+    let body: Value = response.json().await.expect("JSON");
+    body["frames"].as_array().cloned().unwrap_or_default()
+}
+
+/// Asks for a replacement; the old process may stop before the answer ends.
+async fn restart(base: &str) {
+    let (method, path, _body) = devboard::rest::request_for_command(&json!({
+        "type": "restartServer"
+    }))
+    .expect("a REST operation");
+    let _ = reqwest::Client::new()
+        .request(method, format!("{base}{path}"))
+        .header("accept", "application/json")
+        .send()
+        .await;
+}
+
+/// Polls one GET resource until `done` accepts a frame.
+async fn poll_frames(
+    base: &str,
+    frame: Value,
+    done: impl Fn(&Value) -> bool,
+    timeout: Duration,
+    what: &str,
+) -> Vec<Value> {
+    let (method, path, body) =
+        devboard::rest::request_for_command(&frame).expect("a REST operation");
+    let deadline = tokio::time::Instant::now() + timeout;
+    let client = reqwest::Client::new();
+    loop {
+        let request = client
+            .request(method.clone(), format!("{base}{path}"))
+            .header("accept", "application/json");
+        let request = if body.as_object().map(|object| object.is_empty()) == Some(true) {
+            request
+        } else {
+            request.json(&body)
+        };
+        if let Ok(response) = request.send().await {
+            if let Ok(value) = response.json::<Value>().await {
+                let frames = value["frames"].as_array().cloned().unwrap_or_default();
+                if frames.iter().any(&done) {
+                    return frames;
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the resource answered before the deadline: {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The id of the one run whose representation carries `needle`.
+async fn run_id(base: &str, needle: &str) -> String {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{base}/agent-runs"))
+        .header("accept", "application/json")
+        .send()
         .await
-        .expect("a frame is sent");
+        .expect("a run list");
+    let body: Value = response.json().await.expect("JSON");
+    body["runs"]
+        .as_array()
+        .and_then(|runs| {
+            runs.iter().find_map(|run| {
+                let label = run["label"].as_str().unwrap_or("");
+                if label.contains(needle) {
+                    run["id"].as_str().map(str::to_string)
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| panic!("a run whose label contains {needle}: {body}"))
 }
 
 async fn frames_until(
@@ -396,46 +485,49 @@ async fn discover_runs_survive_a_replacement_and_stop() {
     let base = first.base();
     wait_ready(&base).await;
 
-    let mut socket_a = socket(port).await;
-    // Let the fresh dashboard's replay settle.
-    let settle = tokio::time::Instant::now() + Duration::from_millis(250);
-    while tokio::time::Instant::now() < settle {
-        let _ = tokio::time::timeout(Duration::from_millis(50), socket_a.next()).await;
-    }
-    send(&mut socket_a, json!({"type": "discoverProject"})).await;
-    let started = frames_until(
-        &mut socket_a,
-        |frame| frame["type"] == "discoverStarted",
+    rest(&base, json!({"type": "discoverProject"})).await;
+    let workspace = poll_frames(
+        &base,
+        json!({"type": "getDiscover"}),
+        |frame| frame["type"] == "discoverState" && frame["state"]["runId"].is_string(),
         Duration::from_secs(20),
+        "the discover run started",
     )
     .await;
-    let started = started
+    let discover_run = workspace
         .iter()
-        .find(|frame| frame["type"] == "discoverStarted")
-        .expect("a start frame")
-        .clone();
-    let run_id = started["runId"].as_str().expect("a run id").to_string();
-    let first_activity = frames_until(
-        &mut socket_a,
-        |frame| {
-            frame["type"] == "discoverActivity"
-                && frame["text"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("Reading the host for sheet"))
+        .find(|frame| frame["type"] == "discoverState")
+        .and_then(|frame| frame["state"]["runId"].as_str())
+        .map(str::to_string)
+        .expect("a run id");
+
+    wait_until(
+        || {
+            current_run_state(&scratch).is_some_and(|state| {
+                state["peer"].is_object() && state["peer"]["pid"].as_u64().is_some()
+            })
         },
-        Duration::from_secs(20),
+        Duration::from_secs(30),
+        "the discover owner recorded its peer",
     )
     .await;
-    assert!(!first_activity.is_empty());
-
     let owner = owner_pid(&scratch);
     let peer = peer_pid(&scratch);
     assert!(alive(owner), "the owner outlives its dashboard");
     assert!(alive(peer), "the peer outlives its dashboard");
+    wait_until(
+        || {
+            std::fs::read_to_string(run_directory(&scratch).join("activity.jsonl"))
+                .map(|text| text.contains("Reading the host for sheet"))
+                .unwrap_or(false)
+        },
+        Duration::from_secs(20),
+        "the first activity line reached the journal",
+    )
+    .await;
 
-    // Replace the dashboard through the launcher the restart command uses.
-    send(&mut socket_a, json!({"type": "restartServer"})).await;
-    drop(socket_a);
+    // Replace the dashboard through the documented REST restart resource.
+    restart(&base).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut first = first;
     loop {
@@ -450,70 +542,67 @@ async fn discover_runs_survive_a_replacement_and_stop() {
     }
     wait_ready(&base).await;
 
-    let mut socket_b = socket(port).await;
-    let replayed = frames_until(
-        &mut socket_b,
-        |frame| frame["type"] == "discoverQuestion",
+    let replayed = poll_frames(
+        &base,
+        json!({"type": "getDiscover"}),
+        |frame| {
+            frame["type"] == "discoverState"
+                && frame["state"]["runId"] == json!(discover_run)
+                && frame["state"]["active"] == json!(true)
+        },
         Duration::from_secs(30),
+        "the replacement re-attached to the discover run",
     )
     .await;
-    let starts: Vec<&Value> = by_type(&replayed, "discoverStarted");
-    assert!(
-        starts.iter().any(|frame| frame["runId"] == json!(run_id)),
-        "the replacement replays the same run: {replayed:?}"
-    );
-    let replayed_activity: Vec<&str> = by_type(&replayed, "discoverActivity")
-        .into_iter()
-        .filter_map(|frame| frame["text"].as_str())
-        .collect();
-    assert_eq!(
-        replayed_activity
-            .iter()
-            .filter(|text| text.contains("Reading the host for sheet"))
-            .count(),
-        1,
-        "one replayed activity line: {replayed:?}"
-    );
-    let replayed_states = by_type(&replayed, "discoverState");
-    assert!(
-        replayed_states.iter().any(|frame| {
-            frame["state"]["active"] == json!(true)
-                && frame["state"]["runId"] == json!(run_id)
-                && frame["state"]["activeAgent"] == json!("sheet")
-        }),
-        "the reconnected page sees the live run: {replayed:?}"
-    );
-    let question = by_type(&replayed, "discoverQuestion")
-        .first()
-        .copied()
-        .expect("a question")
-        .clone();
-    let question_id = question["id"].clone();
+    let state_frame = replayed
+        .iter()
+        .find(|frame| frame["type"] == "discoverState")
+        .expect("a state frame");
+    assert_eq!(state_frame["state"]["activeAgent"], json!("sheet"));
     assert_eq!(
         owner_pid(&scratch),
         owner,
         "the replacement adopts the owner"
     );
 
-    // The answer reaches the same run, and the operator's Stop ends it.
-    send(
-        &mut socket_b,
-        json!({"type": "answerDiscover", "id": question_id, "value": "yes"}),
-    )
-    .await;
-    send(&mut socket_b, json!({"type": "stopDiscover"})).await;
-    let stopped = frames_until(
-        &mut socket_b,
-        |frame| frame["type"] == "discoverStopped",
+    // The run's own socket replays its retained journal from the beginning.
+    let id = run_id(&base, &discover_run).await;
+    let mut socket = run_socket(port, &id, None).await;
+    let retained = frames_until(
+        &mut socket,
+        |frame| frame["type"] == "question",
         Duration::from_secs(30),
     )
     .await;
-    assert!(by_type(&stopped, "discoverStopped")
-        .iter()
-        .any(|frame| frame["completed"] == json!(false)));
+    let activity: Vec<&str> = by_type(&retained, "activity")
+        .into_iter()
+        .filter_map(|frame| frame["text"].as_str())
+        .collect();
+    assert_eq!(
+        activity
+            .iter()
+            .filter(|text| text.contains("Reading the host for sheet"))
+            .count(),
+        1,
+        "one retained activity line: {retained:?}"
+    );
+    let question = by_type(&retained, "question")
+        .first()
+        .copied()
+        .expect("a question")
+        .clone();
+    let question_id = question["question"]["id"].clone();
+    for frame in &retained {
+        assert_eq!(frame["run"], id, "only this run's frames");
+    }
 
-    // The stub logs the value it received, proving the answer reached the
-    // same run the replacement re-attached to.
+    // The answer reaches the same run, and the operator's Stop ends it.
+    rest(
+        &base,
+        json!({"type": "answerDiscover", "id": question_id, "value": "yes"}),
+    )
+    .await;
+    rest(&base, json!({"type": "stopDiscover"})).await;
     wait_until(
         || {
             std::fs::read_to_string(&log)
@@ -538,13 +627,25 @@ async fn discover_runs_survive_a_replacement_and_stop() {
     )
     .await;
 
-    let state = run_state(&scratch);
-    assert_eq!(state["status"], "stopped");
-    assert_eq!(state["runId"], Value::Null, "no live Discover run remains");
+    let stopped_state = run_state(&scratch);
+    assert_eq!(stopped_state["status"], "stopped");
+    let workspace: Value = reqwest::Client::new()
+        .get(format!("{base}/discoveries/workspace"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a workspace read")
+        .json()
+        .await
+        .expect("JSON");
+    if let Some(state) = workspace["frames"]
+        .as_array()
+        .and_then(|frames| frames.iter().find(|frame| frame["type"] == "discoverState"))
+    {
+        assert!(state["state"]["runId"].is_null(), "{workspace}");
+    }
     let directory = run_directory(&scratch);
     assert!(directory.join("activity.jsonl").is_file());
-    let activity = std::fs::read_to_string(directory.join("activity.jsonl")).expect("activity");
-    assert!(activity.contains("Reading the host for sheet"));
 
     // End the replacement dashboard itself.
     if let Some(lease) = devboard::detached_run::read_detached_lease(&state_path(&scratch), &repo) {
@@ -581,15 +682,11 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
         "question": "What does the issues indicator show?",
         "context": context(),
     });
-    let mut socket_a = socket(port).await;
-    let settle = tokio::time::Instant::now() + Duration::from_millis(250);
-    while tokio::time::Instant::now() < settle {
-        let _ = tokio::time::timeout(Duration::from_millis(50), socket_a.next()).await;
-    }
-    send(&mut socket_a, request.clone()).await;
-    // The ask holds its socket until the turn settles, so this page cannot
-    // report its first chunk yet. Wait for the owner to record its peer, which
-    // is the same state a replacement would find.
+    // The ask keeps its request open for the turn; the restart below runs on
+    // its own connection, exactly like the updater's control path.
+    let base_for_ask = base.clone();
+    let ask_request = request.clone();
+    let ask = tokio::spawn(async move { rest(&base_for_ask, ask_request).await });
     wait_until(
         || {
             current_run_state(&scratch)
@@ -600,14 +697,7 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
     )
     .await;
 
-    // The ask command holds its own socket while the turn runs, so the
-    // replacement is requested through a second page, exactly like the
-    // updater's own control connection.
-    let mut control = socket(port).await;
-    send(&mut control, json!({"type": "restartServer"})).await;
-    // Keep the control page connected until the old dashboard exits: its
-    // replay must be delivered before the queued restart can be read.
-    drop(socket_a);
+    restart(&base).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut first = first;
     loop {
@@ -620,26 +710,22 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    drop(control);
+    let _ = ask.await;
     wait_ready(&base).await;
-
     // The page asks again after reconnecting; the owner already has the turn.
-    let mut socket_b = socket(port).await;
-    send(&mut socket_b, request).await;
+    let _ = rest(&base, request.clone()).await;
+
+    // The replacement attaches to the same run and the run's socket replays
+    // its retained assistant text and terminal turn state.
+    let id = run_id(&base, "conversation-1").await;
+    let mut socket = run_socket(port, &id, None).await;
     let frames = frames_until(
-        &mut socket_b,
-        |frame| frame["type"] == "askDone",
+        &mut socket,
+        |frame| frame["type"] == "state" && frame["state"]["turnStatus"] == json!("succeeded"),
         Duration::from_secs(60),
     )
     .await;
-    let done = by_type(&frames, "askDone");
-    assert_eq!(done.len(), 1, "askDone exactly once: {frames:?}");
-    assert_eq!(done[0]["conversationId"], "conversation-1");
-    assert!(
-        by_type(&frames, "askError").is_empty(),
-        "the attached turn carries no error: {frames:?}"
-    );
-    let answer: String = by_type(&frames, "askChunk")
+    let answer: String = by_type(&frames, "text")
         .into_iter()
         .filter_map(|frame| frame["text"].as_str())
         .collect();
@@ -648,17 +734,38 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
         streamed(ANSWER_ONE),
         "the streamed answer arrives once"
     );
+    assert!(
+        by_type(&frames, "stderr").is_empty(),
+        "the attached turn carries no error: {frames:?}"
+    );
+    for frame in &frames {
+        assert_eq!(frame["run"], id, "only this run's frames");
+    }
 
-    let conversation = std::fs::read_to_string(
-        state
-            .join("ask")
-            .join(devboard::journal::journal_key(&repo))
-            .join(format!(
-                "{}.json",
-                &hex::encode(sha2::Sha256::digest(b"conversation-1"))[..32]
-            )),
+    let transcript_path = state
+        .join("ask")
+        .join(devboard::journal::journal_key(&repo))
+        .join(format!(
+            "{}.json",
+            &hex::encode(sha2::Sha256::digest(b"conversation-1"))[..32]
+        ));
+    wait_until(
+        || {
+            std::fs::read_to_string(&transcript_path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|value| {
+                    value["transcript"]
+                        .as_array()
+                        .map(|entries| entries.len() == 2)
+                })
+                .unwrap_or(false)
+        },
+        Duration::from_secs(20),
+        "the turn's answer reached the transcript",
     )
-    .expect("the transcript exists");
+    .await;
+    let conversation = std::fs::read_to_string(&transcript_path).expect("the transcript exists");
     let transcript: Value = serde_json::from_str(&conversation).expect("JSON");
     let entries = transcript["transcript"].as_array().expect("entries");
     assert_eq!(
@@ -696,8 +803,8 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
         );
         owner
     };
-    send(
-        &mut socket_b,
+    rest(
+        &base,
         json!({"type": "closeAsk", "conversationId": "conversation-1"}),
     )
     .await;

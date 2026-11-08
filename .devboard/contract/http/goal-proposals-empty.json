@@ -2,15 +2,9 @@
   "name": "goal-proposals-empty",
   "method": "POST",
   "path": "/goal-proposals",
-  "requestHeaders": {
-    "accept-encoding": "identity"
-  },
-  "requestBody": "",
   "status": 400,
-  "headers": {
-    "cache-control": "no-store",
-    "content-type": "application/problem+json",
-    "vary": "Accept-Encoding"
-  },
-  "body": "{\"type\":\"about:blank\",\"title\":\"Bad Request\",\"status\":400,\"detail\":\"The report is not valid JSON.\"}"
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
 }

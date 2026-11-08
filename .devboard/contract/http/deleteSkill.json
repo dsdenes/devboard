@@ -1,0 +1,10 @@
+{
+  "name": "deleteSkill",
+  "method": "DELETE",
+  "path": "/skills/{name}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

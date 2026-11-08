@@ -1,0 +1,10 @@
+{
+  "name": "stopGoalDraft",
+  "method": "DELETE",
+  "path": "/goal-drafts/{path}/runs",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

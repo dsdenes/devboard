@@ -1,0 +1,10 @@
+{
+  "name": "markFlowPrReady",
+  "method": "PATCH",
+  "path": "/flows/pull-requests",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

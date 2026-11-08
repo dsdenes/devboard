@@ -1,0 +1,10 @@
+{
+  "name": "stopIssues",
+  "method": "DELETE",
+  "path": "/issues/workers",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

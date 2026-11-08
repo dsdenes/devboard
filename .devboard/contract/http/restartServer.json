@@ -1,0 +1,10 @@
+{
+  "name": "restartServer",
+  "method": "POST",
+  "path": "/server-restarts",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

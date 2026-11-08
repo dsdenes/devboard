@@ -1,0 +1,10 @@
+{
+  "name": "rejectGlossaryTerm",
+  "method": "DELETE",
+  "path": "/discoveries/glossary-terms/{id}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

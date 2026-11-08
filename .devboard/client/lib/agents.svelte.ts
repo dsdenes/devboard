@@ -52,6 +52,11 @@ function settingsSignature(
  * changed snapshot, while controls only send commands carrying the agent id.
  */
 export class AgentsStore {
+  /** Reads the agents resource; the poll repeats it once a second. */
+  request(): void {
+    connection.send({ type: "getAgents" }, "refresh");
+  }
+
   snapshots = $state<Record<string, AgentSnapshot>>({});
   activity = $state<Record<string, string[]>>({});
   activityScan = $state<Record<string, string | null>>({});

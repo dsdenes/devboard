@@ -28,9 +28,9 @@ use crate::acp::{
     PermissionPolicy,
 };
 use crate::app::{App, Conn};
+use crate::command::Command;
 use crate::detached_run::{DetachedPeer, DetachedPeerOptions, DetachedRunOutcome};
 use crate::git::{run_git, GitResult};
-use crate::protocol::Command;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1887,7 +1887,8 @@ pub fn has_unmerged_session(app: &Arc<App>) -> bool {
 pub fn handles(command: &Command) -> bool {
     matches!(
         command,
-        Command::CreateFlowGoal
+        Command::GetFlow
+            | Command::CreateFlowGoal
             | Command::CancelFlowGoal
             | Command::StartFlowImplementation
             | Command::StopFlowImplementation
@@ -1916,6 +1917,10 @@ pub async fn handle(app: &Arc<App>, _conn: &Conn, command: &Command) -> bool {
     }
     mode.wait_restored().await;
     match command {
+        Command::GetFlow => {
+            replay(app, _conn);
+            return true;
+        }
         Command::CreateFlowGoal => mode.create_goal().await,
         Command::CancelFlowGoal => mode.cancel_goal(),
         Command::StartFlowImplementation => mode.start_implementation().await,
@@ -6151,12 +6156,11 @@ mod tests {
         ];
         for name in names {
             let frame = format!("{{\"type\":\"{name}\"}}");
-            let command = crate::protocol::parse_client_message(&frame)
+            let command = crate::command::command_from_json(&frame)
                 .unwrap_or_else(|| panic!("{name} parses"));
             assert!(handles(&command), "{name} belongs to Flow");
         }
-        let goal =
-            crate::protocol::parse_client_message("{\"type\":\"getGoal\"}").expect("getGoal");
+        let goal = crate::command::command_from_json("{\"type\":\"getGoal\"}").expect("getGoal");
         assert!(!handles(&goal));
     }
 

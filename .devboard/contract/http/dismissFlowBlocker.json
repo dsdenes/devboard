@@ -1,0 +1,10 @@
+{
+  "name": "dismissFlowBlocker",
+  "method": "DELETE",
+  "path": "/flows/blockers/{id}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -1,0 +1,10 @@
+{
+  "name": "reports-disabled",
+  "method": "POST",
+  "path": "/reports",
+  "status": 503,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

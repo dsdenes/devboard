@@ -1,0 +1,10 @@
+{
+  "name": "startLifecycle",
+  "method": "POST",
+  "path": "/lifecycles",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

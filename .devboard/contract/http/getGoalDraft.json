@@ -1,0 +1,10 @@
+{
+  "name": "getGoalDraft",
+  "method": "GET",
+  "path": "/goal-drafts/{path}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

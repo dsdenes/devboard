@@ -68,7 +68,7 @@ test("an error notification files itself once without a click and links to the i
   const view = render(NotificationRegion, { props: { feedbackenabled: true } });
   await tick();
 
-  expect(pending.map((request) => request.url)).toEqual(["/feedback"]);
+  expect(pending.map((request) => request.url)).toEqual(["/reports"]);
   expect(view.container.querySelector(".notification__file")).toBeNull();
   expect(view.container.querySelector(".notification__link")).toBeNull();
 
@@ -121,7 +121,7 @@ test("a warning keeps the manual File issue control and filing flow", async () =
   expect(button.disabled).toBe(false);
 
   await fireEvent.click(button);
-  expect(pending.map((request) => request.url)).toEqual(["/feedback"]);
+  expect(pending.map((request) => request.url)).toEqual(["/reports"]);
   pending[0]!.resolve(reply({ links: { issue: { href: issueHref } } }));
   await waitFor(() => {
     expect(view.container.querySelector(".notification__link")?.getAttribute("href")).toBe(issueHref);

@@ -1,0 +1,10 @@
+{
+  "name": "discoverRemote",
+  "method": "POST",
+  "path": "/discoveries/remotes",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

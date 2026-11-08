@@ -10,7 +10,18 @@
  * the loaded bundle itself sends, which stays a reported error.
  */
 
-/** The exact text `run_socket` answers a frame its protocol does not know with. */
+/**
+ * The documented REST refusal: a 404 Problem on an operation path this bundle
+ * knows means the server predates the bundle. The page reloads once.
+ */
+export function isStaleBundleProblem(
+  status: number,
+  operation: { method: string; path: string } | undefined,
+): boolean {
+  return status === 404 && operation !== undefined;
+}
+
+/** The retired command-socket refusal, kept for a bundle built before this one. */
 export const INVALID_FRAME_MESSAGE = "Invalid WebSocket message.";
 
 /** The tab-session key recording the one reload a tab spends on a stale bundle. */

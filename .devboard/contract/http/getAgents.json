@@ -1,0 +1,10 @@
+{
+  "name": "getAgents",
+  "method": "GET",
+  "path": "/agents",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

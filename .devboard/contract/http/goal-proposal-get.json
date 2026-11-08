@@ -1,0 +1,10 @@
+{
+  "name": "goal-proposal-get",
+  "method": "GET",
+  "path": "/goal-proposals/missing.md",
+  "status": 404,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

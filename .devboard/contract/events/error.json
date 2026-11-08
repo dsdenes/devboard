@@ -1,7 +1,0 @@
-{
-  "type": "error",
-  "frame": {
-    "type": "error",
-    "message": "Invalid WebSocket message."
-  }
-}

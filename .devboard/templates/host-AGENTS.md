@@ -137,7 +137,7 @@ install leaves the installed harness and the running server intact; the journal 
 failure and doctor reports it.
 
 Harness-owned issue reporting uses only the configured Gitea API. Without `DEVBOARD_GITEA_URL` the
-report controls are not rendered and `POST /feedback` answers HTTP 503 naming that variable; no
+report controls are not rendered and `POST /reports` answers HTTP 503 naming that variable; no
 GitHub request is made. Host-forge behavior for GitHub, GitLab, and Gitea origins is unchanged.
 
 ## The Release Train releases

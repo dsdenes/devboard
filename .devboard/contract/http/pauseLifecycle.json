@@ -1,0 +1,10 @@
+{
+  "name": "pauseLifecycle",
+  "method": "POST",
+  "path": "/lifecycle-pauses",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

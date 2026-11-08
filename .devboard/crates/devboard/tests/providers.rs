@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use devboard::app::{App, Conn};
+use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
-use devboard::protocol::Command;
 use devboard::providers::{
     load_subscriptions, save_subscriptions, ProviderId, ProviderOptions, ProviderService,
     SaveProviderInput, StoredSubscription, Transport, TransportError, TransportFuture,

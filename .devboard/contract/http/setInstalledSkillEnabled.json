@@ -1,0 +1,10 @@
+{
+  "name": "setInstalledSkillEnabled",
+  "method": "PATCH",
+  "path": "/installed-skills/{name}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

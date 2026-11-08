@@ -1,0 +1,10 @@
+{
+  "name": "startAgent",
+  "method": "POST",
+  "path": "/agents/{id}/runs",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

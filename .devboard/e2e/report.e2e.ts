@@ -18,7 +18,7 @@ test("the report overlay files an issue the UI links and the suite closes", asyn
 
   const filed = page.waitForResponse(
     (response) =>
-      response.request().method() === "POST" && response.url().endsWith("/feedback"),
+      response.request().method() === "POST" && response.url().endsWith("/reports"),
     { timeout: 60_000 },
   );
   await page.locator('[data-testid="activity-report"]').click();

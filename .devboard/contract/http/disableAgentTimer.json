@@ -1,0 +1,10 @@
+{
+  "name": "disableAgentTimer",
+  "method": "DELETE",
+  "path": "/agents/{id}/timer",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -1,0 +1,10 @@
+{
+  "name": "stopDiscover",
+  "method": "DELETE",
+  "path": "/discoveries/scans",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -1,0 +1,10 @@
+{
+  "name": "setAgentSettings",
+  "method": "PUT",
+  "path": "/agents/{id}/settings",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

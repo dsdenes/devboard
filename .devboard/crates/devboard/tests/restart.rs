@@ -10,9 +10,9 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use devboard::app::{App, Conn, ModeGate};
+use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
-use devboard::protocol::Command;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 

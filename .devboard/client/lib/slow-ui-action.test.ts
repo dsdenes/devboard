@@ -431,7 +431,7 @@ function restoreGlobals(): void {
 test("an operator POST is registered and completes only when its response arrives", () => {
   const sink = new FakeSink();
   const guard = guarded(sink);
-  const action = guard.dispatchHttp("POST /feedback");
+  const action = guard.dispatchHttp("POST /reports");
   expect(action).not.toBeNull();
 
   guard.observe({ type: "versionState", running: "1", installed: "1", latest: "1", stale: false });
@@ -441,25 +441,25 @@ test("an operator POST is registered and completes only when its response arrive
   jest.advanceTimersByTime(2_000);
   expect(sink.posts).toHaveLength(0);
 
-  guard.dispatchHttp("POST /feedback");
+  guard.dispatchHttp("POST /reports");
   jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
   expect(sink.posts).toHaveLength(1);
   expect(sink.notices[0]?.text).toBe(
-    "Slow UI action: POST /feedback exceeded the 1000 ms budget.",
+    "Slow UI action: POST /reports exceeded the 1000 ms budget.",
   );
   expect(sink.posts[0]?.report.split("\n")[0]).toBe(
-    "Slow UI action: POST /feedback exceeded the 1000 ms budget.",
+    "Slow UI action: POST /reports exceeded the 1000 ms budget.",
   );
-  expect(sink.posts[0]?.report).toContain("Command: POST /feedback");
+  expect(sink.posts[0]?.report).toContain("Command: POST /reports");
   expect(sink.posts[0]?.report).toContain("Subject: (none)");
 });
 
 test("one endpoint identity files once while another endpoint files its own issue", () => {
   const sink = new FakeSink();
   const guard = guarded(sink);
-  guard.dispatchHttp("POST /feedback");
+  guard.dispatchHttp("POST /reports");
   jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
-  guard.dispatchHttp("POST /feedback");
+  guard.dispatchHttp("POST /reports");
   jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
   expect(sink.posts).toHaveLength(1);
 
@@ -485,7 +485,7 @@ test("the two operator POST helpers register their endpoint actions", () => {
   }
 
   expect(sink.notices.map((notice) => notice.command)).toEqual([
-    "POST /feedback",
+    "POST /reports",
     "POST /goal-proposals",
   ]);
   expect(sink.posts).toHaveLength(2);

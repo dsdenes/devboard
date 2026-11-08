@@ -1,5 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
-import { FEEDBACK_ENDPOINT } from "../../lib/endpoints.ts";
+import { REPORTS_ENDPOINT } from "../../lib/endpoints.ts";
 import type { AppNotification, Severity } from "./notifications.svelte";
 
 /** The server's `report` bound; the title line and metadata must fit inside it. */
@@ -51,7 +51,7 @@ export interface NotificationContext {
   capturedAt: string;
 }
 
-/** The `/feedback` body a notification posts; the server contract is unchanged. */
+/** The `/reports` body a notification posts; the server contract is unchanged. */
 export interface NotificationIssueRequest {
   action: "REPORT";
   report: string;
@@ -133,7 +133,7 @@ export function notificationIssueRequest(
 }
 
 /**
- * Files one slow UI action through the existing `/feedback` endpoint. The
+ * Files one slow UI action through the existing `/reports` endpoint. The
  * report is already bounded and its first line becomes the issue title. The
  * keyed request lets the server's 24-hour replay cache guarantee one issue per
  * action identity across page sessions.
@@ -144,7 +144,7 @@ export async function fileSlowUiAction(
   fetchImpl: FetchLike = fetch,
 ): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
   try {
-    const response = await fetchImpl(FEEDBACK_ENDPOINT, {
+    const response = await fetchImpl(REPORTS_ENDPOINT, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -278,7 +278,7 @@ export class NotificationFiler {
     if (item.severity === "error") {
       headers["idempotency-key"] = notificationIdempotencyKey(item);
     }
-    const response = await fetchImpl(FEEDBACK_ENDPOINT, {
+    const response = await fetchImpl(REPORTS_ENDPOINT, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),

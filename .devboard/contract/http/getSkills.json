@@ -1,0 +1,10 @@
+{
+  "name": "getSkills",
+  "method": "GET",
+  "path": "/skills",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

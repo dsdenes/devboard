@@ -21,7 +21,7 @@ use time::macros::format_description;
 use time::OffsetDateTime;
 
 use crate::app::{App, Conn, Shared};
-use crate::protocol::Command;
+use crate::command::Command;
 
 /* ------------------------------------------------------------------------ */
 /* Shared vocabulary                                                         */

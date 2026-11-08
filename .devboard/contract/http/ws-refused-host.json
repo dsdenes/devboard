@@ -2,16 +2,9 @@
   "name": "ws-refused-host",
   "method": "GET",
   "path": "/ws",
-  "requestHeaders": {
-    "host": "evil.test",
-    "accept-encoding": "identity"
-  },
-  "requestBody": "",
   "status": 421,
-  "headers": {
-    "cache-control": "no-store",
-    "content-type": "application/problem+json",
-    "vary": "Accept-Encoding"
-  },
-  "body": "{\"type\":\"about:blank\",\"title\":\"Misdirected Request\",\"status\":421,\"detail\":\"The request host is not served by this dashboard.\"}"
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
 }

@@ -1,0 +1,484 @@
+{
+  "commands": {
+    "listRecords": {
+      "method": "GET",
+      "path": "/records",
+      "status": 200,
+      "creation": false
+    },
+    "getGoal": {
+      "method": "GET",
+      "path": "/goal",
+      "status": 200,
+      "creation": false
+    },
+    "getProject": {
+      "method": "GET",
+      "path": "/project",
+      "status": 200,
+      "creation": false
+    },
+    "getVersion": {
+      "method": "GET",
+      "path": "/version",
+      "status": 200,
+      "creation": false
+    },
+    "getMcpTools": {
+      "method": "GET",
+      "path": "/mcp-tools",
+      "status": 200,
+      "creation": false
+    },
+    "getInstalledSkills": {
+      "method": "GET",
+      "path": "/installed-skills",
+      "status": 200,
+      "creation": false
+    },
+    "getComplexity": {
+      "method": "GET",
+      "path": "/complexity",
+      "status": 200,
+      "creation": false
+    },
+    "getResources": {
+      "method": "GET",
+      "path": "/resources",
+      "status": 200,
+      "creation": false
+    },
+    "setResources": {
+      "method": "PUT",
+      "path": "/resources",
+      "status": 200,
+      "creation": false
+    },
+    "setInstalledSkillEnabled": {
+      "method": "PATCH",
+      "path": "/installed-skills/{name}",
+      "status": 200,
+      "creation": false
+    },
+    "getIssues": {
+      "method": "GET",
+      "path": "/issues",
+      "status": 200,
+      "creation": false
+    },
+    "getIssuesRun": {
+      "method": "GET",
+      "path": "/issues/runs/{run_id}",
+      "status": 200,
+      "creation": false
+    },
+    "startIssues": {
+      "method": "POST",
+      "path": "/issues/workers",
+      "status": 201,
+      "creation": true
+    },
+    "pauseIssues": {
+      "method": "PATCH",
+      "path": "/issues/workers",
+      "status": 200,
+      "creation": false
+    },
+    "resumeIssues": {
+      "method": "PUT",
+      "path": "/issues/workers",
+      "status": 200,
+      "creation": false
+    },
+    "stopIssues": {
+      "method": "DELETE",
+      "path": "/issues/workers",
+      "status": 200,
+      "creation": false
+    },
+    "checkIssues": {
+      "method": "POST",
+      "path": "/issues/checks",
+      "status": 202,
+      "creation": true
+    },
+    "answerIssues": {
+      "method": "POST",
+      "path": "/issues/runs/{run_id}/answers",
+      "status": 202,
+      "creation": true
+    },
+    "closeIssue": {
+      "method": "DELETE",
+      "path": "/issues/{number}",
+      "status": 200,
+      "creation": false
+    },
+    "getGoalDrafts": {
+      "method": "GET",
+      "path": "/goal-drafts",
+      "status": 200,
+      "creation": false
+    },
+    "getGoalDraft": {
+      "method": "GET",
+      "path": "/goal-drafts/{path}",
+      "status": 200,
+      "creation": false
+    },
+    "startGoalDraft": {
+      "method": "POST",
+      "path": "/goal-drafts/{path}/runs",
+      "status": 201,
+      "creation": true
+    },
+    "stopGoalDraft": {
+      "method": "DELETE",
+      "path": "/goal-drafts/{path}/runs",
+      "status": 200,
+      "creation": false
+    },
+    "deleteGoalDraft": {
+      "method": "DELETE",
+      "path": "/goal-drafts/{path}",
+      "status": 200,
+      "creation": false
+    },
+    "answerGoalDraft": {
+      "method": "POST",
+      "path": "/goal-drafts/{path}/answers",
+      "status": 202,
+      "creation": true
+    },
+    "getAgents": {
+      "method": "GET",
+      "path": "/agents",
+      "status": 200,
+      "creation": false
+    },
+    "getAgent": {
+      "method": "GET",
+      "path": "/agents/{id}",
+      "status": 200,
+      "creation": false
+    },
+    "refreshAgent": {
+      "method": "POST",
+      "path": "/agents/{id}/refreshes",
+      "status": 202,
+      "creation": true
+    },
+    "startAgent": {
+      "method": "POST",
+      "path": "/agents/{id}/runs",
+      "status": 201,
+      "creation": true
+    },
+    "stopAgent": {
+      "method": "DELETE",
+      "path": "/agents/{id}/runs",
+      "status": 200,
+      "creation": false
+    },
+    "setAgentSettings": {
+      "method": "PUT",
+      "path": "/agents/{id}/settings",
+      "status": 200,
+      "creation": false
+    },
+    "disableAgentTimer": {
+      "method": "DELETE",
+      "path": "/agents/{id}/timer",
+      "status": 200,
+      "creation": false
+    },
+    "getAgentPrompt": {
+      "method": "GET",
+      "path": "/agents/{id}/prompt",
+      "status": 200,
+      "creation": false
+    },
+    "restartServer": {
+      "method": "POST",
+      "path": "/server-restarts",
+      "status": 202,
+      "creation": true
+    },
+    "startRun": {
+      "method": "POST",
+      "path": "/runs",
+      "status": 201,
+      "creation": true
+    },
+    "startLifecycle": {
+      "method": "POST",
+      "path": "/lifecycles",
+      "status": 201,
+      "creation": true
+    },
+    "stopLifecycle": {
+      "method": "DELETE",
+      "path": "/lifecycles",
+      "status": 200,
+      "creation": false
+    },
+    "pauseLifecycle": {
+      "method": "POST",
+      "path": "/lifecycle-pauses",
+      "status": 202,
+      "creation": true
+    },
+    "resumeLifecycle": {
+      "method": "DELETE",
+      "path": "/lifecycle-pauses",
+      "status": 200,
+      "creation": false
+    },
+    "reviseGoal": {
+      "method": "POST",
+      "path": "/goal-revisions",
+      "status": 201,
+      "creation": true
+    },
+    "createGoal": {
+      "method": "POST",
+      "path": "/goal-creations",
+      "status": 201,
+      "creation": true
+    },
+    "prepareSkills": {
+      "method": "POST",
+      "path": "/skill-preparations",
+      "status": 201,
+      "creation": true
+    },
+    "getSkills": {
+      "method": "GET",
+      "path": "/skills",
+      "status": 200,
+      "creation": false
+    },
+    "deleteSkill": {
+      "method": "DELETE",
+      "path": "/skills/{name}",
+      "status": 200,
+      "creation": false
+    },
+    "resetImplementation": {
+      "method": "POST",
+      "path": "/implementation-resets",
+      "status": 201,
+      "creation": true
+    },
+    "createFlowGoal": {
+      "method": "POST",
+      "path": "/flows/goals",
+      "status": 201,
+      "creation": true
+    },
+    "cancelFlowGoal": {
+      "method": "DELETE",
+      "path": "/flows/goals",
+      "status": 200,
+      "creation": false
+    },
+    "startFlowImplementation": {
+      "method": "POST",
+      "path": "/flows/implementations",
+      "status": 201,
+      "creation": true
+    },
+    "stopFlowImplementation": {
+      "method": "DELETE",
+      "path": "/flows/implementations",
+      "status": 200,
+      "creation": false
+    },
+    "retryFlowPr": {
+      "method": "POST",
+      "path": "/flows/pull-request-retries",
+      "status": 202,
+      "creation": true
+    },
+    "markFlowPrReady": {
+      "method": "PATCH",
+      "path": "/flows/pull-requests",
+      "status": 200,
+      "creation": false
+    },
+    "mergeFlowPr": {
+      "method": "POST",
+      "path": "/flows/pull-request-merges",
+      "status": 202,
+      "creation": true
+    },
+    "sendFlowSteering": {
+      "method": "POST",
+      "path": "/flows/steering",
+      "status": 202,
+      "creation": true
+    },
+    "acceptFlowWidget": {
+      "method": "PATCH",
+      "path": "/flows/widgets/{id}",
+      "status": 200,
+      "creation": false
+    },
+    "refuseFlowWidget": {
+      "method": "POST",
+      "path": "/flows/widget-refusals",
+      "status": 202,
+      "creation": true
+    },
+    "openFlowWidget": {
+      "method": "POST",
+      "path": "/flows/widget-opens",
+      "status": 202,
+      "creation": true
+    },
+    "closeFlowWidget": {
+      "method": "DELETE",
+      "path": "/flows/widget-opens",
+      "status": 200,
+      "creation": false
+    },
+    "sendFlowConversation": {
+      "method": "POST",
+      "path": "/flows/conversations/messages",
+      "status": 202,
+      "creation": true
+    },
+    "sendFlowConclusion": {
+      "method": "POST",
+      "path": "/flows/conclusions",
+      "status": 202,
+      "creation": true
+    },
+    "dismissFlowBlocker": {
+      "method": "DELETE",
+      "path": "/flows/blockers/{id}",
+      "status": 200,
+      "creation": false
+    },
+    "flowAnswer": {
+      "method": "POST",
+      "path": "/flows/answers",
+      "status": 202,
+      "creation": true
+    },
+    "answer": {
+      "method": "POST",
+      "path": "/answers",
+      "status": 202,
+      "creation": true
+    },
+    "discoverProject": {
+      "method": "POST",
+      "path": "/discoveries/scans",
+      "status": 201,
+      "creation": true
+    },
+    "discoverAgent": {
+      "method": "POST",
+      "path": "/discoveries/agent-scans",
+      "status": 201,
+      "creation": true
+    },
+    "discoverRemote": {
+      "method": "POST",
+      "path": "/discoveries/remotes",
+      "status": 201,
+      "creation": true
+    },
+    "switchDiscoverRemote": {
+      "method": "PATCH",
+      "path": "/discoveries/remotes",
+      "status": 200,
+      "creation": false
+    },
+    "removeDiscoverRemote": {
+      "method": "DELETE",
+      "path": "/discoveries/remotes/{url}",
+      "status": 200,
+      "creation": false
+    },
+    "clearDiscoverRemote": {
+      "method": "DELETE",
+      "path": "/discoveries/remote-selections",
+      "status": 200,
+      "creation": false
+    },
+    "stopDiscover": {
+      "method": "DELETE",
+      "path": "/discoveries/scans",
+      "status": 200,
+      "creation": false
+    },
+    "answerDiscover": {
+      "method": "POST",
+      "path": "/discoveries/answers",
+      "status": 202,
+      "creation": true
+    },
+    "getDiscover": {
+      "method": "GET",
+      "path": "/discoveries/workspace",
+      "status": 200,
+      "creation": false
+    },
+    "confirmGlossaryTerm": {
+      "method": "PUT",
+      "path": "/discoveries/glossary-terms/{id}",
+      "status": 200,
+      "creation": false
+    },
+    "rejectGlossaryTerm": {
+      "method": "DELETE",
+      "path": "/discoveries/glossary-terms/{id}",
+      "status": 200,
+      "creation": false
+    },
+    "ask": {
+      "method": "POST",
+      "path": "/inquiries/conversations",
+      "status": 201,
+      "creation": true
+    },
+    "closeAsk": {
+      "method": "DELETE",
+      "path": "/inquiries/conversations/{conversation_id}",
+      "status": 200,
+      "creation": false
+    },
+    "getProviders": {
+      "method": "GET",
+      "path": "/providers",
+      "status": 200,
+      "creation": false
+    },
+    "saveProvider": {
+      "method": "PUT",
+      "path": "/providers/{id}",
+      "status": 200,
+      "creation": false
+    },
+    "deleteProvider": {
+      "method": "DELETE",
+      "path": "/providers/{id}",
+      "status": 200,
+      "creation": false
+    },
+    "setProviderEnabled": {
+      "method": "PATCH",
+      "path": "/providers/{id}",
+      "status": 200,
+      "creation": false
+    },
+    "refreshProviders": {
+      "method": "POST",
+      "path": "/provider-refreshes",
+      "status": 202,
+      "creation": true
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "refreshProviders",
+  "method": "POST",
+  "path": "/provider-refreshes",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

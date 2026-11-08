@@ -1,0 +1,10 @@
+{
+  "name": "getIssuesRun",
+  "method": "GET",
+  "path": "/issues/runs/{run_id}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

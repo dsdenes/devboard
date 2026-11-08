@@ -1,9 +1,0 @@
-{
-  "type": "discoverStopped",
-  "frame": {
-    "type": "discoverStopped",
-    "completed": false,
-    "agent": "sheet",
-    "mode": "all"
-  }
-}

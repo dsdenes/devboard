@@ -1,0 +1,10 @@
+{
+  "name": "records-refused-origin",
+  "method": "GET",
+  "path": "/records",
+  "status": 403,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -1,0 +1,10 @@
+{
+  "name": "records-method",
+  "method": "POST",
+  "path": "/records",
+  "status": 405,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -1,0 +1,10 @@
+{
+  "name": "resetImplementation",
+  "method": "POST",
+  "path": "/implementation-resets",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

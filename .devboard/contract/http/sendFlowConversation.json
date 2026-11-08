@@ -1,0 +1,10 @@
+{
+  "name": "sendFlowConversation",
+  "method": "POST",
+  "path": "/flows/conversations/messages",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

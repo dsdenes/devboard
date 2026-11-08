@@ -1,0 +1,10 @@
+{
+  "name": "flows-get",
+  "method": "GET",
+  "path": "/flows",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

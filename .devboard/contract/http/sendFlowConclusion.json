@@ -1,0 +1,10 @@
+{
+  "name": "sendFlowConclusion",
+  "method": "POST",
+  "path": "/flows/conclusions",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

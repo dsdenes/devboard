@@ -142,6 +142,11 @@ export class FlowStore {
     this.history = message.history;
   }
 
+  /** Reads the workspace snapshot; the poll repeats it once a second. */
+  request(): void {
+    connection.send({ type: "getFlow" }, "refresh");
+  }
+
   createGoal(): void {
     connection.send({ type: "createFlowGoal" });
   }

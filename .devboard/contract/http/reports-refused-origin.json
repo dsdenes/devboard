@@ -1,0 +1,10 @@
+{
+  "name": "reports-refused-origin",
+  "method": "POST",
+  "path": "/reports",
+  "status": 403,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

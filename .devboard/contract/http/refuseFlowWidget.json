@@ -1,0 +1,10 @@
+{
+  "name": "refuseFlowWidget",
+  "method": "POST",
+  "path": "/flows/widget-refusals",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

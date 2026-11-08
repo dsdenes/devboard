@@ -8,13 +8,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devboard::app::{App, Conn};
+use devboard::command::Command;
 use devboard::config::Config;
 use devboard::issues_mode::{
     CloseIssueRequest, Issue, IssuesBridge, IssuesCommand, IssuesHooks, IssuesOptions, PollResult,
     PreflightRequest, PreflightResult, StartOutcome, TrackerRead, TrackerReadRequest,
 };
 use devboard::journal::Journal;
-use devboard::protocol::Command;
 use serde_json::{json, Value};
 
 type Sink = Arc<Mutex<Vec<Value>>>;

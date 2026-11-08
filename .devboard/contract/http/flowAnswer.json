@@ -1,0 +1,10 @@
+{
+  "name": "flowAnswer",
+  "method": "POST",
+  "path": "/flows/answers",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

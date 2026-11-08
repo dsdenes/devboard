@@ -1,0 +1,10 @@
+{
+  "name": "answerDiscover",
+  "method": "POST",
+  "path": "/discoveries/answers",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

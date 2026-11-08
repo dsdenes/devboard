@@ -14,16 +14,19 @@ use axum::http::{HeaderMap, Method};
 use serde_json::{json, Value};
 use url::Url;
 
+use crate::command::Command;
 use crate::config::Config;
 use crate::http::{request_refusal, Replies};
 use crate::journal::Journal;
-use crate::protocol::Command;
 
 /// One connected client's handle.
 #[derive(Clone)]
 pub struct Conn {
     id: u64,
     outbox: crate::http::Outbox,
+    /// True for the ephemeral handle one HTTP request uses. It carries no
+    /// durable connection ownership across requests.
+    request: bool,
 }
 
 impl Conn {
@@ -32,11 +35,24 @@ impl Conn {
         Self {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
             outbox,
+            request: false,
         }
+    }
+
+    /// The handle one REST request answers through.
+    pub fn new_request(outbox: crate::http::Outbox) -> Self {
+        let mut conn = Self::new(outbox);
+        conn.request = true;
+        conn
     }
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Whether this handle belongs to one HTTP request, not a socket.
+    pub fn is_request(&self) -> bool {
+        self.request
     }
 
     /// Sends one event; a closed socket drops it.
@@ -325,6 +341,14 @@ fn config_repo_dir(shared: &Arc<Shared>) -> PathBuf {
     shared.config.repo_dir.clone()
 }
 
+/// One creation answer kept for an `Idempotency-Key`.
+#[derive(Debug, Clone)]
+pub struct CachedRest {
+    pub status: u16,
+    pub body: Value,
+    pub extra: Vec<(String, String)>,
+}
+
 /// The dashboard application.
 pub struct App {
     pub shared: Arc<Shared>,
@@ -356,6 +380,10 @@ pub struct App {
     restarting: std::sync::atomic::AtomicBool,
     /// ACP children the previous process recorded for its replacement to end.
     restored_children: Mutex<Vec<crate::detached_run::RecordedChild>>,
+    /// Creation answers replayed for one `Idempotency-Key`.
+    rest_cache: Mutex<HashMap<(String, String, String), CachedRest>>,
+    /// The retained output journal each live run's socket follows.
+    pub run_output: Arc<crate::runs::RunHub>,
 }
 
 impl App {
@@ -437,6 +465,8 @@ impl App {
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             restarting: std::sync::atomic::AtomicBool::new(false),
             restored_children: Mutex::new(Vec::new()),
+            rest_cache: Mutex::new(HashMap::new()),
+            run_output: Arc::new(crate::runs::RunHub::new()),
         });
         {
             let weak = Arc::downgrade(&app);
@@ -604,6 +634,100 @@ impl App {
         }
     }
 
+    /// Applies one command for an HTTP request and returns the frames it
+    /// wrote before the handler returned.
+    pub async fn dispatch_captured(&self, command: Command) -> Vec<Value> {
+        let (outbox, mut incoming) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let conn = Conn::new_request(outbox);
+        let id = conn.id();
+        // A mutation may answer through the shared broadcast; the request
+        // handle joins the clients for the duration of the handler so that
+        // answer reaches this request and no other page is involved.
+        self.register(conn.clone()).await;
+        let app = self.arc_self();
+        let mut task = tokio::spawn(async move {
+            if let Err(error) = app.dispatch(&conn, command).await {
+                conn.send(json!({"type": "error", "message": error}));
+            }
+        });
+        // A long action (a Start's preflight, a run's turn) answers its first
+        // frames before it finishes. The request returns those frames and the
+        // page polls the resource for the rest; the handler keeps running. A
+        // handler that has not answered yet gets the full window, so a busy
+        // dashboard cannot truncate its first refusal.
+        let hard = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut quiet: Option<tokio::time::Instant> = None;
+        let mut frames = Vec::new();
+        loop {
+            let limit = quiet.map(|quiet| quiet.min(hard)).unwrap_or(hard);
+            let remaining = limit.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            tokio::select! {
+                _ = &mut task => {
+                    while let Ok(text) = incoming.try_recv() {
+                        if let Ok(frame) = serde_json::from_str::<Value>(&text) {
+                            frames.push(frame);
+                        }
+                    }
+                    break;
+                }
+                received = incoming.recv() => {
+                    match received {
+                        Some(text) => {
+                            if let Ok(frame) = serde_json::from_str::<Value>(&text) {
+                                frames.push(frame);
+                            }
+                            quiet = Some(
+                                tokio::time::Instant::now()
+                                    + std::time::Duration::from_millis(250),
+                            );
+                        }
+                        None => break,
+                    }
+                }
+                _ = tokio::time::sleep(remaining) => break,
+            }
+        }
+        while let Ok(text) = incoming.try_recv() {
+            if let Ok(frame) = serde_json::from_str::<Value>(&text) {
+                frames.push(frame);
+            }
+        }
+        drop(incoming);
+        self.unregister(id).await;
+        self.complexity.unsubscribe(id);
+        frames
+    }
+
+    /// One creation answer already produced for this key.
+    pub fn rest_cached(&self, method: &Method, path: &str, key: &str) -> Option<CachedRest> {
+        self.rest_cache.lock().ok().and_then(|cache| {
+            cache
+                .get(&(
+                    method.as_str().to_string(),
+                    path.to_string(),
+                    key.to_string(),
+                ))
+                .cloned()
+        })
+    }
+
+    /// Remembers one creation answer under its idempotency key.
+    pub fn remember_rest(&self, method: &Method, path: &str, key: &str, answer: CachedRest) {
+        if let Ok(mut cache) = self.rest_cache.lock() {
+            cache.insert(
+                (
+                    method.as_str().to_string(),
+                    path.to_string(),
+                    key.to_string(),
+                ),
+                answer,
+            );
+        }
+    }
+
     async fn dispatch(&self, conn: &Conn, command: Command) -> Result<(), String> {
         if !command.is_read_only() && crate::goal_run::reset_is_active(&self.arc_self()) {
             conn.send(json!({
@@ -636,6 +760,9 @@ impl App {
                         }));
                     }
                 }
+                let app = self.arc_self();
+                crate::goal_authoring::replay(&app, conn);
+                crate::goal_run::replay(&app, conn);
                 Ok(())
             }
             Command::ListRecords => match crate::records::read_records(&self.config().adrs_dir) {
@@ -787,7 +914,13 @@ impl App {
                 });
             }
         }
-        state.to_json(self.feedback_enabled())
+        let mut value = state.to_json(self.feedback_enabled());
+        if self.restarting.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("restarting".to_string(), Value::Bool(true));
+            }
+        }
+        value
     }
 
     /// Starts the publish-only source-refresh watcher.
@@ -1088,9 +1221,9 @@ impl App {
         self.config().feedback.is_some()
     }
 
-    /// `POST /feedback`: refuses a method other than POST, then answers 503
+    /// `POST /reports`: refuses a method other than POST, then answers 503
     /// until harness reporting is configured.
-    pub async fn feedback(
+    pub async fn reports(
         &self,
         method: &Method,
         headers: &HeaderMap,
@@ -1113,7 +1246,7 @@ impl App {
             return crate::http::refusal_problem(
                 headers,
                 refusal,
-                "Cross-origin feedback is refused.",
+                "Cross-origin reports are refused.",
             );
         }
         let raw = match read_report(headers, body).await {
@@ -1169,7 +1302,7 @@ impl App {
                 Replies::json(headers, filed, 201, &[("Location", href.as_str())])
             }
             Err(error) => {
-                let detail = format!("POST /feedback: {}", error.journal_detail());
+                let detail = format!("POST /reports: {}", error.journal_detail());
                 if error.transient {
                     // The endpoint served and the forge answered nothing: an
                     // unreachable or slow upstream delays a report, so it is
@@ -1208,7 +1341,7 @@ impl App {
             return crate::http::refusal_problem(
                 headers,
                 refusal,
-                "Cross-origin feedback is refused.",
+                "Cross-origin reports are refused.",
             );
         }
         let raw = match read_report(headers, body).await {
@@ -1360,97 +1493,6 @@ pub fn project_label(repo_dir: &Path) -> String {
         Ok(relative) if !relative.as_os_str().is_empty() => relative.to_string_lossy().into_owned(),
         _ => root.to_string_lossy().into_owned(),
     }
-}
-
-/// Every dispatcher command this dashboard answers today. The corpus test
-/// fails when a corpus recording names a command this list lacks, and when a
-/// listed command has no recording.
-pub const IMPLEMENTED_COMMANDS: &[&str] = &[
-    "answerGoalDraft",
-    "ask",
-    "closeAsk",
-    "deleteProvider",
-    "getProviders",
-    "refreshProviders",
-    "saveProvider",
-    "prepareSkills",
-    "deleteSkill",
-    "createGoal",
-    "reviseGoal",
-    "setInstalledSkillEnabled",
-    "setProviderEnabled",
-    "deleteGoalDraft",
-    "disableAgentTimer",
-    "getAgent",
-    "getAgentPrompt",
-    "getAgents",
-    "createFlowGoal",
-    "cancelFlowGoal",
-    "startFlowImplementation",
-    "stopFlowImplementation",
-    "retryFlowPr",
-    "markFlowPrReady",
-    "mergeFlowPr",
-    "sendFlowSteering",
-    "acceptFlowWidget",
-    "refuseFlowWidget",
-    "openFlowWidget",
-    "closeFlowWidget",
-    "sendFlowConversation",
-    "sendFlowConclusion",
-    "dismissFlowBlocker",
-    "flowAnswer",
-    "answerDiscover",
-    "clearDiscoverRemote",
-    "confirmGlossaryTerm",
-    "discoverAgent",
-    "discoverProject",
-    "discoverRemote",
-    "getDiscover",
-    "rejectGlossaryTerm",
-    "removeDiscoverRemote",
-    "stopDiscover",
-    "switchDiscoverRemote",
-    "getGoal",
-    "getGoalDraft",
-    "getGoalDrafts",
-    "answerIssues",
-    "checkIssues",
-    "closeIssue",
-    "getInstalledSkills",
-    "getComplexity",
-    "getResources",
-    "setResources",
-    "getIssues",
-    "getIssuesRun",
-    "pauseIssues",
-    "resumeIssues",
-    "startIssues",
-    "stopIssues",
-    "getSkills",
-    "getMcpTools",
-    "getProject",
-    "getVersion",
-    "listRecords",
-    "refreshAgent",
-    "startLifecycle",
-    "stopLifecycle",
-    "pauseLifecycle",
-    "resumeLifecycle",
-    "startRun",
-    "answer",
-    "resetImplementation",
-    "restartServer",
-    "setAgentSettings",
-    "startAgent",
-    "stopAgent",
-    "startGoalDraft",
-    "stopGoalDraft",
-];
-
-/// Whether one command name is implemented.
-pub fn is_implemented(command: &str) -> bool {
-    IMPLEMENTED_COMMANDS.contains(&command)
 }
 
 /// Ends everything a stopping dashboard owns: Discover staging and its peer,

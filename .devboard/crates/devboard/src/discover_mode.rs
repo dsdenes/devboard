@@ -16,8 +16,8 @@ use time::OffsetDateTime;
 
 use crate::acp::{AcpId, AcpQuestion};
 use crate::app::{App, Conn, StateSection};
+use crate::command::Command;
 use crate::detached_run::{DetachedPeer, DetachedPeerOptions, DetachedRunOutcome};
-use crate::protocol::Command;
 
 /// One of the seven Discover agents, in sidebar order.
 #[derive(Clone, Copy, Debug)]
@@ -960,7 +960,7 @@ const DISCOVER_SHEET_SECTIONS: &[&str] = &[
     "delivery",
 ];
 
-const COMMAND_NAMES: &[&str] = &[
+const MANIFEST_COMMANDS: &[&str] = &[
     "install",
     "build",
     "test",
@@ -1207,7 +1207,7 @@ pub fn normalize_sheet(raw: &Value, freshness: &Value) -> Result<Value, String> 
         "commands".to_string(),
         Value::Object({
             let mut out = Map::new();
-            for name in COMMAND_NAMES {
+            for name in MANIFEST_COMMANDS {
                 out.insert(
                     name.to_string(),
                     leaf_field(
@@ -1219,7 +1219,7 @@ pub fn normalize_sheet(raw: &Value, freshness: &Value) -> Result<Value, String> 
                 );
             }
             let section = section_record(raw, "commands")?;
-            section_refuse_unknown(section, "commands", COMMAND_NAMES)?;
+            section_refuse_unknown(section, "commands", MANIFEST_COMMANDS)?;
             out
         }),
     );
@@ -7918,19 +7918,6 @@ fn push_state(app: &Arc<App>, mode: &Arc<Mode>) {
         .broadcast(json!({"type": "discoverState", "state": payload}));
 }
 
-fn send_state(app: &Arc<App>, conn: &Conn) {
-    let mode = mode_for(app);
-    let busy = busy_reason(app);
-    {
-        let mut state = lock(&mode.state);
-        refresh_snapshot(app, &mut state);
-    }
-    let state = lock(&mode.state);
-    let payload = discover_state_payload(app, &state, busy);
-    drop(state);
-    conn.send(json!({"type": "discoverState", "state": payload}));
-}
-
 fn notify_discover_failure(conn: Option<&Conn>, message: &str) {
     if let Some(conn) = conn {
         conn.send(json!({"type": "discoverError", "message": message}));
@@ -8247,8 +8234,15 @@ pub fn init(app: &Arc<App>) {
 
 /// Replays the frames a connecting client owes before its own replies.
 pub fn replay(app: &Arc<App>, conn: &Conn) {
-    let mode = mode_for(app);
+    replay_resource(app, conn);
     let repo_dir = app.config().repo_dir.clone();
+    prompts_replay(&repo_dir, conn);
+}
+
+/// The state and run frames a `GET /discoveries/workspace` answers, without
+/// the prompt catalog a socket connect also carries.
+pub fn replay_resource(app: &Arc<App>, conn: &Conn) {
+    let mode = mode_for(app);
     let notice = {
         let mut state = lock(&mode.state);
         refresh_snapshot(app, &mut state);
@@ -8258,13 +8252,8 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
         conn.send(json!({"type": "discoverError", "message": notice}));
     }
     let busy = busy_reason(app);
-    let (replayable, payload, read_error, started, activity, question) = {
+    let (payload, read_error, started, activity, question) = {
         let state = lock(&mode.state);
-        let replayable = state.artifacts.is_some()
-            || state.run.is_some()
-            || state.interrupted
-            || state.read_error.is_some()
-            || state.remote_available;
         let payload = discover_state_payload(app, &state, busy);
         let read_error = state.read_error.clone();
         let started = state.run.as_ref().map(|run| {
@@ -8297,24 +8286,21 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
                 })
             })
         });
-        (replayable, payload, read_error, started, activity, question)
+        (payload, read_error, started, activity, question)
     };
-    if replayable {
-        conn.send(json!({"type": "discoverState", "state": payload}));
-        if let Some(error) = read_error {
-            conn.send(json!({"type": "discoverError", "message": error}));
-        }
-        if let Some(started) = started {
-            conn.send(started);
-        }
-        for frame in activity {
-            conn.send(frame);
-        }
-        if let Some(question) = question {
-            conn.send(question);
-        }
+    conn.send(json!({"type": "discoverState", "state": payload}));
+    if let Some(error) = read_error {
+        conn.send(json!({"type": "discoverError", "message": error}));
     }
-    prompts_replay(&repo_dir, conn);
+    if let Some(started) = started {
+        conn.send(started);
+    }
+    for frame in activity {
+        conn.send(frame);
+    }
+    if let Some(question) = question {
+        conn.send(question);
+    }
 }
 // ----------------------------------------------------------- orchestration
 
@@ -9702,7 +9688,7 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
     let mode = mode_for(app);
     match command {
         Command::GetDiscover => {
-            send_state(app, conn);
+            replay_resource(app, conn);
             true
         }
         Command::DiscoverProject => {

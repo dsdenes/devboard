@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use devboard::app::{App, Conn};
+use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
-use devboard::protocol::Command;
 use devboard::providers::{save_subscriptions, ProviderId, StoredSubscription};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;

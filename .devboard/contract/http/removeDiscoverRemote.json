@@ -1,0 +1,10 @@
+{
+  "name": "removeDiscoverRemote",
+  "method": "DELETE",
+  "path": "/discoveries/remotes/{url}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

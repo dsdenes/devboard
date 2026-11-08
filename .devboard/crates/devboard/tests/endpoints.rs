@@ -290,7 +290,7 @@ async fn a_goal_proposal_refuses_an_unknown_field_and_invalid_json() {
 async fn a_report_files_one_issue_through_the_configured_gitea() {
     let fixture = start("feedback").await;
     let response = client()
-        .post(format!("{}/feedback", fixture.base))
+        .post(format!("{}/reports", fixture.base))
         .headers(bearer())
         .json(&json!({"report": "Fix the header", "route": "/"}))
         .send()
@@ -318,7 +318,7 @@ async fn a_report_files_one_issue_through_the_configured_gitea() {
 async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
     let fixture = start_failing("feedback-failure").await;
     let response = client()
-        .post(format!("{}/feedback", fixture.base))
+        .post(format!("{}/reports", fixture.base))
         .headers(bearer())
         .json(&json!({"report": "Fix the header", "route": "/"}))
         .send()
@@ -336,11 +336,11 @@ async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
         "the failed delivery is journaled: {text}"
     );
     assert!(
-        text.contains("POST /feedback: Issue creation failed: POST /repos/dsdenes/devboard/issues failed (HTTP 500): gitea is offline"),
+        text.contains("POST /reports: Issue creation failed: POST /repos/dsdenes/devboard/issues failed (HTTP 500): gitea is offline"),
         "the journal names the delivery's own diagnostic: {text}"
     );
     assert!(
-        !text.contains("POST /feedback: The issue could not be filed."),
+        !text.contains("POST /reports: The issue could not be filed."),
         "the journal never repeats the client-facing detail: {text}"
     );
     fixture.handle.abort();
@@ -352,7 +352,7 @@ async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error()
     let forge = format!("http://127.0.0.1:{}", closed_port().await);
     let fixture = start_against("feedback-unreachable", false, Some(&forge), 500).await;
     let response = client()
-        .post(format!("{}/feedback", fixture.base))
+        .post(format!("{}/reports", fixture.base))
         .headers(bearer())
         .json(&json!({"report": "Fix the header"}))
         .send()
@@ -370,7 +370,7 @@ async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error()
     );
     assert!(
         text.contains(
-            "feedback delivery delayed: POST /feedback: Issue creation failed: error sending request for url"
+            "feedback delivery delayed: POST /reports: Issue creation failed: error sending request for url"
         ),
         "the journal names the transport failure: {text}"
     );
@@ -397,7 +397,7 @@ async fn a_forge_that_never_answers_times_out_as_a_delayed_delivery() {
     );
     let fixture = start_against("feedback-silent", false, Some(&forge), 250).await;
     let response = client()
-        .post(format!("{}/feedback", fixture.base))
+        .post(format!("{}/reports", fixture.base))
         .headers(bearer())
         .json(&json!({"report": "Fix the header"}))
         .send()
@@ -528,14 +528,14 @@ async fn a_repeated_idempotency_key_files_one_issue() {
     let mut headers = bearer();
     headers.insert("idempotency-key", HeaderValue::from_static("retry-1"));
     let first = client()
-        .post(format!("{}/feedback", fixture.base))
+        .post(format!("{}/reports", fixture.base))
         .headers(headers.clone())
         .json(&json!({"report": "One report"}))
         .send()
         .await
         .expect("an answer");
     let second = client()
-        .post(format!("{}/feedback", fixture.base))
+        .post(format!("{}/reports", fixture.base))
         .headers(headers)
         .json(&json!({
             "report": "One report\n\nRaised at: 2026-11-04T20:42:38.858Z",
@@ -629,7 +629,7 @@ fn header(answer: &str, wanted: &str) -> String {
 async fn an_oversized_report_is_refused_before_parsing() {
     let fixture = start("oversized").await;
     let response = client()
-        .post(format!("{}/feedback", fixture.base))
+        .post(format!("{}/reports", fixture.base))
         .headers(bearer())
         .body("x".repeat(64_001))
         .send()
@@ -651,7 +651,7 @@ async fn an_oversized_report_is_refused_before_parsing() {
 #[tokio::test]
 async fn a_chunked_feedback_body_over_the_bound_answers_413() {
     let fixture = start("chunked-oversized").await;
-    let (status, answer) = chunked_post(&fixture, "/feedback", &report_body(64_002)).await;
+    let (status, answer) = chunked_post(&fixture, "/reports", &report_body(64_002)).await;
     assert_eq!(status, 413, "{answer}");
     assert_eq!(header(&answer, "content-type"), "application/problem+json");
     assert_eq!(
@@ -681,7 +681,7 @@ async fn a_chunked_goal_proposal_body_over_the_bound_answers_413() {
 async fn a_report_that_is_not_utf8_answers_400() {
     let fixture = start("not-utf8").await;
     let response = client()
-        .post(format!("{}/feedback", fixture.base))
+        .post(format!("{}/reports", fixture.base))
         .headers(bearer())
         .body(vec![0x7b, 0xff, 0xfe, 0x7d])
         .send()

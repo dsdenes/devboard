@@ -1,0 +1,10 @@
+{
+  "name": "resumeIssues",
+  "method": "PUT",
+  "path": "/issues/workers",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

@@ -1,24 +1,21 @@
-//! The HTTP surface: readiness, static SPA serving, the two mutating
-//! endpoints, and the WebSocket upgrade guards.
+//! The HTTP surface: readiness, static SPA serving, the REST API, and each
+//! live run's one output socket.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
-use axum::extract::ws::{Message, WebSocketUpgrade};
-use axum::extract::FromRequestParts;
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use url::Url;
 
-use crate::app::{App, Conn};
+use crate::app::App;
 use crate::config::Config;
 use crate::jsjson;
-use crate::protocol::parse_client_message;
 
 /// The header a client sends and the dashboard echoes.
 const FLOW_ID_HEADER: &str = "x-flow-id";
@@ -502,18 +499,12 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             ))
         }
     };
-    // A Host this listener does not serve is misdirected: the three request
-    // paths a browser opens directly never run against another site's name.
-    let guarded_path = matches!(uri.path(), "/ws" | "/feedback" | "/goal-proposals")
-        || uri.path().starts_with("/goal-proposals/");
-    if guarded_path {
-        if let Some(RequestRefusal::Host) =
-            request_refusal(&headers, &url, &server.allowed_hostnames)
+    // Every route answers a host this listener does not serve and a
+    // cross-origin browser request with Problem JSON before any handler runs.
+    if let Some(refusal) = request_refusal(&headers, &url, &server.allowed_hostnames) {
+        if refusal == RequestRefusal::Host
+            && (uri.path() == "/goal-proposals" || uri.path().starts_with("/goal-proposals/"))
         {
-            // The socket keeps 421; a mutation answers 403, naming the host.
-            if uri.path() == "/ws" {
-                return reply(refusal_answer(&headers, RequestRefusal::Host));
-            }
             return reply(Replies::problem(
                 &headers,
                 403,
@@ -521,15 +512,16 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
                 &[],
             ));
         }
+        return reply(refusal_answer(&headers, refusal));
     }
 
     match uri.path() {
-        "/feedback" => {
+        "/reports" => {
             let (_parts, body) = request.into_parts();
             return reply(
                 server
                     .app
-                    .feedback(&method, &headers, &url, flow_id.as_deref(), body)
+                    .reports(&method, &headers, &url, flow_id.as_deref(), body)
                     .await,
             );
         }
@@ -545,21 +537,43 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
                     .await,
             );
         }
-        "/ws" => {
-            if method != Method::GET {
-                return reply(Replies::problem(
-                    &headers,
-                    405,
-                    "This path serves GET only.",
-                    &[("Allow", "GET")],
-                ));
-            }
-            if let Some(refusal) = request_refusal(&headers, &url, &server.allowed_hostnames) {
-                return reply(refusal_answer(&headers, refusal));
-            }
-            return reply(upgrade(server.clone(), request, &headers, flow_id.as_deref()).await);
-        }
         _ => {}
+    }
+
+    if uri.path() == "/flows" {
+        if method != Method::GET && method != Method::HEAD {
+            return reply(Replies::problem(
+                &headers,
+                405,
+                "This path serves GET and HEAD only.",
+                &[("Allow", "GET, HEAD")],
+            ));
+        }
+        let frames = server
+            .app
+            .dispatch_captured(crate::command::Command::GetFlow)
+            .await;
+        return reply(crate::rest::representation(
+            &method,
+            &headers,
+            200,
+            crate::rest::envelope(frames),
+            &[],
+        ));
+    }
+
+    if uri.path() == "/agent-runs" || uri.path().starts_with("/agent-runs/") {
+        return reply(
+            crate::runs::handle(server.clone(), request, &headers, &url)
+                .await
+                .unwrap_or_else(|| {
+                    Replies::problem(&headers, 404, "The requested run was not found.", &[])
+                }),
+        );
+    }
+
+    if let Some(answer) = crate::rest::handle(&server.app, request).await {
+        return reply(answer);
     }
 
     if let Some(name) = uri.path().strip_prefix("/goal-proposals/") {
@@ -620,11 +634,7 @@ pub fn refusal_problem(
 }
 
 fn refusal_answer(headers: &HeaderMap, refusal: RequestRefusal) -> Response {
-    refusal_problem(
-        headers,
-        refusal,
-        "Cross-origin WebSocket upgrades are refused.",
-    )
+    refusal_problem(headers, refusal, "Cross-origin requests are refused.")
 }
 
 /// One written draft, served where `POST /goal-proposals` linked it.
@@ -825,93 +835,5 @@ fn percent_decode(raw: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The 426 for a request that could not be upgraded.
-async fn upgrade(
-    server: Arc<Server>,
-    request: Request,
-    headers: &HeaderMap,
-    flow_id: Option<&str>,
-) -> Response {
-    let (mut parts, _body) = request.into_parts();
-    let upgraded = WebSocketUpgrade::from_request_parts(&mut parts, &()).await;
-    let Ok(upgraded) = upgraded else {
-        return Replies::problem(
-            headers,
-            426,
-            "This path upgrades to a WebSocket.",
-            &[("Upgrade", "websocket")],
-        );
-    };
-    let mut answer = upgraded.on_upgrade(move |socket| run_socket(server, socket));
-    if let Some(flow_id) = flow_id {
-        if let Ok(value) = HeaderValue::from_str(flow_id) {
-            answer.headers_mut().insert(FLOW_ID_HEADER, value);
-        }
-    }
-    answer
-}
-
 /// One connected client's outbound queue.
 pub type Outbox = tokio::sync::mpsc::UnboundedSender<String>;
-
-async fn run_socket(server: Arc<Server>, socket: axum::extract::ws::WebSocket) {
-    use futures_util::{SinkExt, StreamExt};
-
-    let (out, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let conn = Conn::new(out);
-    server.app.register(conn.clone()).await;
-    // The writer is its own task. A frame crosses the socket as soon as the
-    // server produces it, even while this connection's command is still
-    // running — a Start publishes its starting snapshot before its preflight,
-    // and that snapshot is never withheld behind the preflight.
-    let (mut sink, mut stream) = socket.split();
-    let mut writer = tokio::spawn(async move {
-        while let Some(frame) = outgoing.recv().await {
-            if sink.send(Message::Text(frame.into())).await.is_err() {
-                break;
-            }
-        }
-        let _ = sink.close().await;
-    });
-    // The connect replay is produced before any command is read, so a reply
-    // never overtakes a replayed frame.
-    server.app.open(&conn).await;
-    loop {
-        match stream.next().await {
-            Some(Ok(Message::Text(text))) => match parse_client_message(&text) {
-                Some(command) => server.app.command(&conn, command).await,
-                None => {
-                    let mut event = serde_json::Map::new();
-                    event.insert("type".into(), "error".into());
-                    event.insert("message".into(), "Invalid WebSocket message.".into());
-                    conn.send(serde_json::Value::Object(event));
-                }
-            },
-            Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {}
-            Some(Ok(Message::Binary(_))) => {
-                let mut event = serde_json::Map::new();
-                event.insert("type".into(), "error".into());
-                event.insert("message".into(), "Invalid WebSocket message.".into());
-                conn.send(serde_json::Value::Object(event));
-            }
-            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-        }
-    }
-    server.app.unregister(conn.id()).await;
-    server.app.close(&conn).await;
-    // Dropping the last sender this surface holds ends the writer, which
-    // closes the socket after every queued frame is written. A mode may keep
-    // a clone for a later push; that clone must not pin this task forever, so
-    // a writer still waiting after the grace is stopped.
-    drop(conn);
-    if tokio::time::timeout(std::time::Duration::from_millis(250), &mut writer)
-        .await
-        .is_err()
-    {
-        writer.abort();
-    }
-}
-
-/// Unused import guard: axum's `IntoResponse` is part of the response type.
-#[allow(dead_code)]
-fn _assert_into_response<T: IntoResponse>(_value: T) {}

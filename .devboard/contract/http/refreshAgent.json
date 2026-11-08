@@ -1,0 +1,10 @@
+{
+  "name": "refreshAgent",
+  "method": "POST",
+  "path": "/agents/{id}/refreshes",
+  "status": 202,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

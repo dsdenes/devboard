@@ -1,0 +1,10 @@
+{
+  "name": "getMcpTools",
+  "method": "GET",
+  "path": "/mcp-tools",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

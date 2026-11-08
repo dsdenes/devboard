@@ -1,0 +1,10 @@
+{
+  "name": "stopLifecycle",
+  "method": "DELETE",
+  "path": "/lifecycles",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

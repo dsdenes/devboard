@@ -2,18 +2,9 @@
   "name": "goal-proposals-method",
   "method": "GET",
   "path": "/goal-proposals",
-  "requestHeaders": {
-    "accept-encoding": "identity"
-  },
-  "requestBody": "",
   "status": 405,
-  "headers": {
-    "allow": "POST",
-    "cache-control": "no-store",
-    "content-length": "108",
-    "content-type": "application/problem+json",
-    "date": "Tue, 03 Nov 2026 17:04:58 GMT",
-    "vary": "Accept-Encoding"
-  },
-  "body": "{\"type\":\"about:blank\",\"title\":\"Method Not Allowed\",\"status\":405,\"detail\":\"This endpoint accepts POST only.\"}"
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
 }

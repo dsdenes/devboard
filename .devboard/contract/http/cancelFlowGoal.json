@@ -1,0 +1,10 @@
+{
+  "name": "cancelFlowGoal",
+  "method": "DELETE",
+  "path": "/flows/goals",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

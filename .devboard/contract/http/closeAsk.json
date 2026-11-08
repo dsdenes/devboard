@@ -1,0 +1,10 @@
+{
+  "name": "closeAsk",
+  "method": "DELETE",
+  "path": "/inquiries/conversations/{conversation_id}",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

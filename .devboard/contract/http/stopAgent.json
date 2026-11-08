@@ -1,0 +1,10 @@
+{
+  "name": "stopAgent",
+  "method": "DELETE",
+  "path": "/agents/{id}/runs",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

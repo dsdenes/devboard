@@ -1562,8 +1562,8 @@ fn watcher_for(repo_dir: &Path, state_dir: &Path) -> Arc<Mutex<DraftWatcher>> {
 
 /// Applies one draft command. Returns `false` when the command belongs to
 /// another handler.
-pub fn handle(conn: &Conn, repo_dir: &Path, command: &crate::protocol::Command) -> bool {
-    use crate::protocol::Command;
+pub fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Command) -> bool {
+    use crate::command::Command;
     let handles = matches!(
         command,
         Command::GetGoalDrafts

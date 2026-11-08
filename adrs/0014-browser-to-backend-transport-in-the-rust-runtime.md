@@ -2,10 +2,11 @@
 schemaVersion: 0.2.0
 id: "0014"
 title: Browser-to-backend transport in the Rust runtime
-status: accepted
+status: superseded
 date: 2026-11-03
 deciders: ["@dsdenes"]
 supersedes: ["0003"]
+supersededBy: "0016"
 affects:
   - type: path
     pattern: .devboard/crates/devboard/src/http.rs

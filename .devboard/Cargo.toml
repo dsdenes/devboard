@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/devboard", "crates/devboard-contract", "shadow"]
+members = ["crates/devboard", "crates/devboard-contract"]
 
 [workspace.package]
 version = "1.42.3"

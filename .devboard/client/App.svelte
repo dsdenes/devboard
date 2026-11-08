@@ -34,6 +34,7 @@
   import { collectPendingQuestions, osNotifications } from "./lib/os-notifications.svelte";
   import { providers } from "./lib/providers.svelte";
   import { resources } from "./lib/resources.svelte";
+  import { runOutput } from "./lib/run-output.svelte";
   import { slowUiAction, type SlowUiActionContext } from "./lib/slow-ui-action";
   import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
   import { MINIMUM_VIEWPORT, viewport } from "./lib/viewport.svelte";
@@ -347,6 +348,14 @@
       issues.resetActiveOperations();
       mcpTools.request();
       providers.request();
+      flow.request();
+      issues.request();
+      agents.request();
+      discover.request();
+      goalDrafts.refreshDrafts();
+      complexity.requestComplexity();
+      resources.request();
+      devboardSkills.requestSkills();
     });
     connection.onMessage((message) => {
       const record = message as Record<string, unknown>;
@@ -377,11 +386,13 @@
     });
     connection.connect();
     connection.startPolling();
+    runOutput.start();
 
     return () => {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", handleKeydown, true);
       slowUiAction.reset();
+      runOutput.stop();
       connection.dispose();
     };
   });

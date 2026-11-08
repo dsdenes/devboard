@@ -1,0 +1,10 @@
+{
+  "name": "createFlowGoal",
+  "method": "POST",
+  "path": "/flows/goals",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

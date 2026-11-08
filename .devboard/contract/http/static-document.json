@@ -2,15 +2,9 @@
   "name": "static-document",
   "method": "GET",
   "path": "/",
-  "requestHeaders": {
-    "accept-encoding": "identity"
-  },
-  "requestBody": "",
   "status": 200,
-  "headers": {
-    "cache-control": "no-cache",
-    "content-type": "text/html;charset=utf-8",
-    "vary": "Accept-Encoding"
-  },
-  "body": "<!doctype html><title>Contract</title>\n"
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
 }

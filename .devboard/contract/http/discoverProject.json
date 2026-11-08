@@ -1,0 +1,10 @@
+{
+  "name": "discoverProject",
+  "method": "POST",
+  "path": "/discoveries/scans",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

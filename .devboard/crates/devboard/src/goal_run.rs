@@ -23,10 +23,10 @@ use crate::acp::{
     PermissionPolicy,
 };
 use crate::app::{App, Conn, ModeGate, StateSection};
+use crate::command::Command;
 use crate::forge::{
     self, Environment, Exec, ExecOptions, Forge, IssueQueryState, RequiredAccess, ResolveOptions,
 };
-use crate::protocol::Command;
 use crate::state::{ACTIVITY_MAX_BYTES, ACTIVITY_MAX_ENTRIES, ACTIVITY_TRIMMED_MARKER};
 
 const EPIC_PROMPT: &str = "/epic-next";

@@ -1,0 +1,10 @@
+{
+  "name": "reports-refused-host",
+  "method": "POST",
+  "path": "/reports",
+  "status": 421,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

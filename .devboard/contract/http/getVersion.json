@@ -1,0 +1,10 @@
+{
+  "name": "getVersion",
+  "method": "GET",
+  "path": "/version",
+  "status": 200,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}

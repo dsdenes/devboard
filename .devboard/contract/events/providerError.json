@@ -1,8 +1,0 @@
-{
-  "type": "providerError",
-  "frame": {
-    "type": "providerError",
-    "requestId": 1,
-    "message": "That subscription no longer exists."
-  }
-}

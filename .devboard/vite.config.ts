@@ -2,25 +2,30 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { MUTATION_ENDPOINTS } from "./lib/endpoints.ts";
+import { REST_OPERATIONS } from "./client/lib/rest-map.ts";
 
 /**
- * The Bun server owns every WebSocket frame and every mutating browser
- * endpoint, so a Vite dev page must reach them through the backend rather than
- * answering them itself. `/ws` would otherwise hang in CONNECTING behind
- * Vite's own socket, and the interface would never leave `Connecting`; a
- * missed `/feedback` or `/goal-proposals` would 404 the issue report. Both
- * endpoints come from the client's own constants, so a moved path cannot be
- * proxied under its old name.
+ * The backend owns every mutating browser endpoint, so a Vite dev page must
+ * reach them through the backend rather than answering them itself. A missed
+ * `/reports` or `/goal-proposals` would 404 the issue report. Both endpoints
+ * come from the client's own constants, so a moved path cannot be proxied
+ * under its old name. Reads are same-origin REST requests the dev server
+ * forwards under the same rule.
  */
 const backend = process.env.DEVBOARD_BACKEND ?? "http://127.0.0.1:8080";
 
 /** Forwarded without `changeOrigin`: the backend's Origin check compares the
  * browser's origin with the Host it receives, and both name the dev server. */
-const backendProxy = {
-  "/ws": { target: backend, ws: true },
-  "/api": { target: backend },
-  ...Object.fromEntries(MUTATION_ENDPOINTS.map((endpoint) => [endpoint, { target: backend }])),
-};
+const restRoots = new Set<string>([
+  "/agent-runs",
+  ...Object.values(REST_OPERATIONS).map((operation) => `/${operation.path.split("/")[1] ?? ""}`),
+]);
+const backendProxy = Object.fromEntries(
+  [...new Set([...MUTATION_ENDPOINTS, ...restRoots])].map((endpoint) => [
+    endpoint,
+    { target: backend },
+  ]),
+);
 
 /**
  * The harness writes generated state under `.tmp` (hundreds of thousands of
