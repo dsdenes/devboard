@@ -1634,6 +1634,30 @@ fn the_real_harness_surface_carries_every_route_and_only_rust_sources() {
         .any(|entry| entry.kind == "static-fallback"));
 }
 
+#[test]
+fn the_operator_suite_fixture_carries_an_auditable_api_surface() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("the repository root")
+        .to_path_buf();
+    let fixture = root.join(".devboard/e2e/fixtures/repo");
+    let input = api::read_audit_input(&fixture, &api::api_standards_config())
+        .expect("the operator suite's fixture repository is auditable");
+    let sources: Vec<&str> = input
+        .sources
+        .iter()
+        .map(|source| source.path.as_str())
+        .collect();
+    assert_eq!(sources, [".devboard/crates/devboard/src/lib.rs"]);
+    assert_eq!(input.routes.len(), 1, "{:?}", input.routes);
+    assert_eq!(input.routes[0].path, "/health");
+    assert_eq!(input.routes[0].methods, ["GET"]);
+    assert_eq!(input.routes[0].kind, "endpoint");
+    assert_eq!(input.skill.rules.len(), 2);
+}
+
 /* ------------------------------------------------------------------------ */
 /* The inherited startup state, for every audited family                     */
 /* ------------------------------------------------------------------------ */
