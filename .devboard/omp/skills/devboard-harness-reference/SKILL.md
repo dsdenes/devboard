@@ -4331,8 +4331,19 @@ Build the container from the `.devboard` context at the repository root:
 ```bash
 docker build -t devboard-adr-ui .devboard
 docker run --rm -d --name devboard-adr-ui -p 127.0.0.1:8080:8080 \
-  -v "$PWD:/repo" devboard-adr-ui
+  -v "$PWD:/repo" \
+  -v "$(command -v omp):/usr/local/bin/omp:ro" \
+  devboard-adr-ui
 ```
+
+The image ships `git` for every git-backed action it spawns by name and `ca-certificates` for TLS.
+The agent CLI is the operator's mount: the run above places the host's `omp` on the image's `PATH`,
+where the default `AGENT_COMMAND` (`omp acp`) resolves, and `-e AGENT_COMMAND=<command>` selects a
+different program. `serve` refuses to start, naming the program, when it cannot resolve an
+executable it could spawn, so a container never serves pages whose every Start and git-backed
+action would fail on a missing executable. The container runs as root while the mounted repository
+belongs to the invoking user, so the image's system git config trusts the mount; every
+git-backed action reads it as the same repository without a "dubious ownership" refusal.
 
 The container reads `/repo/adrs` and listens on port `8080`. The repository mount is writable because agent runs write their worktrees, goal documents, and Discover artifacts into `/repo`; the dashboard itself writes no document by hand. Docker publishes the port on the host's loopback interface only. The container process binds `0.0.0.0` because Docker forwards published traffic to the container interface; the local-only access boundary is enforced by the `127.0.0.1` host publish.
 

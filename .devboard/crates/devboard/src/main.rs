@@ -175,6 +175,12 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             config.repo_dir.display()
         );
     }
+    // The agent CLI is a startup prerequisite, not a first-Start discovery: a
+    // dashboard that cannot spawn its agent fails here, naming the program,
+    // before it serves a page whose every run would fail the same way.
+    if let Err(message) = config.agent_executable() {
+        anyhow::bail!(message);
+    }
     std::fs::create_dir_all(&config.state_dir).context("creating the state directory")?;
     // A confirmed replacement answers its own loopback readiness listener
     // until it binds the dashboard port this process still holds. The marker

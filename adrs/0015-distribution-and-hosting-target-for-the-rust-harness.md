@@ -44,6 +44,13 @@ Gitea as the forge where version control happens and the authority for release m
   and every 60 seconds.
 - The local container keeps the host-repository mount and the credential passthrough, and its image
   is built on a Rust base; no Bun image and no `bun run server/index.ts` entry point remains.
+- The image carries the runtime prerequisites it can package: `git`, which every git-backed action
+  spawns by name, and `ca-certificates` for TLS. The agent CLI is the operator's mount, named by
+  `AGENT_COMMAND`; `serve` refuses to start, naming the missing program, when it cannot resolve an
+  executable the image could spawn, so a container never serves pages whose every Start and
+  git-backed action would fail on a missing executable. The image runs as root while the documented
+  host-repository mount belongs to the invoking user, so its system git config trusts that mount;
+  without it every git-backed action fails with "dubious ownership" instead.
 - The installer writes the managed `.omp/skills/devboard-*` directories, commands, and extensions,
   the host `AGENTS.md`, and one `.gitignore` line; a rerun adds nothing, and `doctor` compares each
   managed skill with the released artifact.
@@ -57,3 +64,6 @@ Gitea as the forge where version control happens and the authority for release m
   release until the Gitea manifest and checksums are present and verified.
 - The container remains the local deployment target, and the binary serves the same HTTP surface
   and the same `/ready` contract the previous image did.
+- A container is started with the agent CLI mounted and named by `AGENT_COMMAND`; without it the
+  dashboard exits at startup with the program named, instead of serving a UI whose Start, flow
+  checkpoint, goal commit, commit gate, and publish would all fail on a missing executable.

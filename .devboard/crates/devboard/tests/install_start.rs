@@ -36,6 +36,10 @@ fn install(host: &Path, port: u16) -> Output {
         .args(["--port", &port.to_string()])
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env(
+            "AGENT_COMMAND",
+            format!("{} acp-stub", env!("CARGO_BIN_EXE_devboard")),
+        )
         .output()
         .expect("install runs")
 }
