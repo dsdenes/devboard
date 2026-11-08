@@ -359,11 +359,35 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
 /* Admission                                                                 */
 /* ------------------------------------------------------------------------ */
 
+/// One starter's share of the live slots that hold the cap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapGroup {
+    pub starter: String,
+    pub count: u32,
+}
+
+impl CapGroup {
+    /// The line fragment that names one group, e.g. `Watchdog 2`.
+    fn message(&self) -> String {
+        format!("{} {}", self.starter, self.count)
+    }
+}
+
 /// Why a start was deferred. Deferral is never a failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeferReason {
-    Cap { active: u32, cap: u32 },
-    Memory { available_mb: u64, reserve_mb: u64 },
+    Cap {
+        active: u32,
+        cap: u32,
+        /// The live slots grouped by the starter that created each one,
+        /// ordered by count descending, then starter ascending. The counts
+        /// sum to `active`; every count is positive.
+        groups: Vec<CapGroup>,
+    },
+    Memory {
+        available_mb: u64,
+        reserve_mb: u64,
+    },
 }
 
 impl DeferReason {
@@ -376,8 +400,19 @@ impl DeferReason {
 
     pub fn message(&self) -> String {
         match self {
-            Self::Cap { active, cap } => {
-                format!("{active} agent peer(s) already run at the cap of {cap}; the start is deferred")
+            Self::Cap {
+                active,
+                cap,
+                groups,
+            } => {
+                let groups = groups
+                    .iter()
+                    .map(CapGroup::message)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "{active} agent peer(s) already run at the cap of {cap} ({groups}); the start is deferred"
+                )
             }
             Self::Memory {
                 available_mb,
@@ -390,10 +425,21 @@ impl DeferReason {
 
     pub fn to_json(&self) -> Value {
         match self {
-            Self::Cap { active, cap } => json!({
+            Self::Cap {
+                active,
+                cap,
+                groups,
+            } => json!({
                 "reason": "capacity",
                 "active": active,
                 "cap": cap,
+                "groups": groups
+                    .iter()
+                    .map(|group| json!({
+                        "starter": group.starter,
+                        "count": group.count,
+                    }))
+                    .collect::<Vec<_>>(),
                 "message": self.message(),
             }),
             Self::Memory {
@@ -414,11 +460,17 @@ impl DeferReason {
 pub struct Slot {
     path: PathBuf,
     id: String,
+    starter: String,
 }
 
 impl Slot {
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// The surface that started the peer holding this slot.
+    pub fn starter(&self) -> &str {
+        &self.starter
     }
 }
 
@@ -433,8 +485,35 @@ impl std::fmt::Debug for Slot {
         formatter
             .debug_struct("Slot")
             .field("id", &self.id)
+            .field("starter", &self.starter)
             .finish()
     }
+}
+
+/// Groups live slot records by the starter that created each one. A slot an
+/// older harness wrote without a starter is counted as `unknown`, so the
+/// counts still sum to the live slot count.
+fn cap_groups(slots: &[Value]) -> Vec<CapGroup> {
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for slot in slots {
+        let starter = slot
+            .get("starter")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        *counts.entry(starter).or_default() += 1;
+    }
+    let mut groups: Vec<CapGroup> = counts
+        .into_iter()
+        .map(|(starter, count)| CapGroup { starter, count })
+        .collect();
+    groups.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.starter.cmp(&right.starter))
+    });
+    groups
 }
 
 /* ------------------------------------------------------------------------ */
@@ -732,7 +811,7 @@ impl Governor {
 
     /// Tries once to admit a start. A deferral leaves the caller's work
     /// queued; nothing is marked failed and nothing already running stops.
-    pub fn try_acquire(&self, kind: &str, label: &str) -> Result<Slot, DeferReason> {
+    pub fn try_acquire(&self, kind: &str, starter: &str, label: &str) -> Result<Slot, DeferReason> {
         self.refresh_settings();
         let settings = self.settings();
         // The count and the slot creation happen under one lock so two
@@ -743,6 +822,7 @@ impl Governor {
             return Err(DeferReason::Cap {
                 active: active.len() as u32,
                 cap: settings.max_agent_peers,
+                groups: cap_groups(&active),
             });
         }
         if let Some(available) = self.memory.available_mb() {
@@ -753,17 +833,19 @@ impl Governor {
                 });
             }
         }
-        self.create_slot(kind, label).ok_or(DeferReason::Cap {
-            active: active.len() as u32,
-            cap: settings.max_agent_peers,
-        })
+        self.create_slot(kind, starter, label)
+            .ok_or_else(|| DeferReason::Cap {
+                active: active.len() as u32,
+                cap: settings.max_agent_peers,
+                groups: cap_groups(&active),
+            })
     }
 
     /// Waits until one slot is free. This is how an in-process start (a goal
     /// lane, a run owner, the Release Train peer) defers without failing.
-    pub async fn wait_for_admission(&self, kind: &str, label: &str) -> Slot {
+    pub async fn wait_for_admission(&self, kind: &str, starter: &str, label: &str) -> Slot {
         loop {
-            match self.try_acquire(kind, label) {
+            match self.try_acquire(kind, starter, label) {
                 Ok(slot) => return slot,
                 Err(reason) => {
                     self.record_deferral(kind, label, &reason);
@@ -867,7 +949,7 @@ impl Governor {
         live
     }
 
-    fn create_slot(&self, kind: &str, label: &str) -> Option<Slot> {
+    fn create_slot(&self, kind: &str, starter: &str, label: &str) -> Option<Slot> {
         let id = uuid::Uuid::new_v4().to_string();
         let path = self.slots_directory().join(format!("{id}.json"));
         let pid = std::process::id();
@@ -876,11 +958,16 @@ impl Governor {
             "pid": pid,
             "pidStart": process_start_ticks(pid),
             "kind": kind,
+            "starter": starter,
             "label": label,
             "startedAt": iso_now(),
         });
         write_json_atomically(&path, &record).ok()?;
-        Some(Slot { path, id })
+        Some(Slot {
+            path,
+            id,
+            starter: starter.to_string(),
+        })
     }
 
     /* -------------------------------------------------------------------- */

@@ -132,6 +132,9 @@ pub struct AcpConnectionOptions {
     /// generated `mcp.json` registration.
     pub mcp_servers: Option<Vec<SessionMcpServer>>,
     pub permission_policy: PermissionPolicy,
+    /// The surface that starts this peer. It is recorded on the governor slot
+    /// so a cap deferral can name who holds the cap.
+    pub starter: String,
     /// A slot already admitted by the caller. When absent, the process-wide
     /// governor admits the peer before it spawns.
     pub permit: Option<Arc<crate::resources::Slot>>,
@@ -145,8 +148,15 @@ impl AcpConnectionOptions {
             env: None,
             mcp_servers: None,
             permission_policy: PermissionPolicy::default(),
+            starter: "Agent".to_string(),
             permit: None,
         }
+    }
+
+    /// Names the surface that starts this peer on its governor slot.
+    pub fn with_starter(mut self, starter: impl Into<String>) -> Self {
+        self.starter = starter.into();
+        self
     }
 
     /// Hands the connection an already admitted slot. The Issues worker
@@ -456,7 +466,11 @@ impl AcpConnection {
             None => match crate::resources::global() {
                 Some(governor) => {
                     let label = format!("{} ({})", options.command, options.cwd);
-                    Some(Arc::new(governor.wait_for_admission("peer", &label).await))
+                    Some(Arc::new(
+                        governor
+                            .wait_for_admission("peer", &options.starter, &label)
+                            .await,
+                    ))
                 }
                 None => None,
             },

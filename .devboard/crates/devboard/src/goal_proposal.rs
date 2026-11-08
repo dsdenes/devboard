@@ -182,6 +182,7 @@ async fn naming_turn_slug(report: &str, repo_dir: &Path, agent_command: &str) ->
         agent_command.trim().to_string(),
         repo_dir.display().to_string(),
     )
+    .with_starter("Goal proposal")
     .with_permission_policy(crate::acp::PermissionPolicy::ReadOnly);
     let text = tokio::time::timeout(
         std::time::Duration::from_millis(NAME_TURN_TIMEOUT_MS),

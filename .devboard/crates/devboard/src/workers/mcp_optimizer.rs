@@ -3694,6 +3694,7 @@ async fn run_synthesis_peer(run: SynthesisPeerRun) -> Result<String, PeerFailure
         run.command.clone(),
         run.repo_dir.to_string_lossy().into_owned(),
     )
+    .with_starter("MCP optimizer")
     .with_env(environment)
     .with_permission_policy(crate::acp::PermissionPolicy::Deny);
     let (connection, mut events) =

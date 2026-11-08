@@ -1486,6 +1486,7 @@ async fn connect_peer(
         app.config().agent_command.clone(),
         app.config().repo_dir.to_string_lossy().into_owned(),
     )
+    .with_starter("Goal authoring")
     .with_env(env)
     .with_permission_policy(PermissionPolicy::Allow);
     let (connection, events) = AcpConnection::connect(options)

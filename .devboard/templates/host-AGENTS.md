@@ -64,7 +64,7 @@ Never edit `.devboard/` for a host request. Never edit host files for a harness 
 
 `.devboard/` owns the browser interface and everything needed to build, test, and run it: the Rust
 workspace under `crates/`, the Svelte client, the tests and fixtures, the contract corpus under
-`contract/`, the cargo-dist configuration, `index.html`, the `Dockerfile`, and `README.md`. Run its
+`contract/`, the cargo-dist configuration, `index.html`, and the `Dockerfile`. Run its
 commands from `.devboard`: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D
 warnings`, `cargo run -p devboard -- serve`, and `bun run build` for the client bundle; build the
 container from the `.devboard` context. The interface is a harness tool, not the host product.
@@ -198,8 +198,10 @@ release workflow by hand: the Release Train owns both.
 Guardrails:
 
 - Never rebuild only a worktree or only the client and call the change done.
-- Never kill, spawn, or relaunch a dashboard server by hand; install, update, the reload control,
-  and the publish-driven source refresh are the only paths.
+- Never kill, spawn, or relaunch a dashboard server by hand: the MATE top-panel Devboard icon
+  (`desktop/devboard-launcher.py`) sweeps this host's stray dashboards and starts or restarts
+  exactly one; install, update, the reload control, and the publish-driven source refresh are the
+  only other paths.
 - Never copy the harness into a host or symlink a host path to this checkout; install owns the
   host prefix.
 - Stale output is the first suspect, not the last: when the UI behaves like an older revision,
@@ -220,10 +222,11 @@ hand-edit the installed `.omp/`.
 
 ## Skills
 
-The package ships six project-scoped skills, canonical under `.devboard/omp/skills/`:
+The package ships seven project-scoped skills, canonical under `.devboard/omp/skills/`:
 `devboard-ui-ux`, `devboard-restful-api-implementation`,
 `devboard-single-responsibility-principle`, `devboard-consistent-naming`,
-`devboard-architectural-layering`, and `devboard-gh-stack`. Every install, manual update, and
+`devboard-architectural-layering`, `devboard-gh-stack`, and `devboard-harness-reference`. Every
+install, manual update, and
 automatic update copies them as real files into `<host>/.omp/skills/<name>/`, where a plain `omp`
 session at the host root discovers them at project scope.
 

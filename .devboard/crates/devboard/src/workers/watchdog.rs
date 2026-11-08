@@ -364,7 +364,7 @@ pub fn pid_alive(pid: u32) -> bool {
 
 /// The instant a live process started, in epoch milliseconds, derived from
 /// `/proc/<pid>/stat` and the kernel's own uptime.
-fn process_started_at(pid: u32) -> Option<i64> {
+pub(crate) fn process_started_at(pid: u32) -> Option<i64> {
     if !cfg!(target_os = "linux") || pid == 0 {
         return None;
     }
@@ -1428,7 +1428,7 @@ pub fn is_verification_fixture(repo_dir: &str, env: &HashMap<String, String>) ->
 }
 
 /// The live watchdog verification seeds a scratch dashboard on purpose.
-const WATCHDOG_FIXTURE_ENV: &str = "DEVBOARD_WATCHDOG_FIXTURE";
+pub const WATCHDOG_FIXTURE_ENV: &str = "DEVBOARD_WATCHDOG_FIXTURE";
 
 /// `Number(value)` for an environment value, `None` for NaN.
 fn number(value: &str) -> Option<f64> {
@@ -1554,10 +1554,6 @@ pub fn instances_from_processes_including(
         else {
             continue;
         };
-        let key = format!("{}\u{0}{}", repo_dir, port as u32);
-        if !seen.insert(key) {
-            continue;
-        }
         let state_dir = serve
             .state_dir
             .map(PathBuf::from)
@@ -1573,6 +1569,12 @@ pub fn instances_from_processes_including(
             port
         };
         if port.fract() != 0.0 || port <= 0.0 {
+            continue;
+        }
+        // Two ephemeral starts carry `--port 0` on the command line; their
+        // markers name different bound ports, so the key uses the resolved one.
+        let key = format!("{}\u{0}{}", repo_dir, port as u32);
+        if !seen.insert(key) {
             continue;
         }
         let journal = journal_file(&state_dir, Path::new(&repo_dir));
@@ -4722,6 +4724,7 @@ impl AcpDedup {
             self.command.clone(),
             self.repo_dir.to_string_lossy().into_owned(),
         )
+        .with_starter("Watchdog")
         .with_env(environment)
         .with_mcp_servers(mcp_servers)
         .with_permission_policy(crate::acp::PermissionPolicy::Deny);
@@ -6134,6 +6137,23 @@ fn handoff_held(handoff: Option<i64>, grace_ms: i64, now: i64) -> bool {
     handoff.is_some_and(|at| now - at <= grace_ms)
 }
 
+/// Adds the owner and peer a draft run that is still running recorded. Such an
+/// owner outlives every dashboard, so it is protected whether or not a lease or
+/// handoff exists right now.
+fn add_running_draft_pids(state_dir: &Path, repo_dir: &Path, pids: &mut HashSet<u32>) {
+    for state in crate::goal_drafts::list_goal_draft_owner_states(state_dir, repo_dir) {
+        if state.run.status != crate::goal_drafts::GoalDraftStatus::Running {
+            continue;
+        }
+        for child in [state.owner.as_ref(), state.peer.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            pids.insert(child.pid);
+        }
+    }
+}
+
 /// Every pid a live detached run, goal-draft owner, or worker lock still
 /// holds.
 pub fn protected_pids(scopes: &[SupervisionScope]) -> HashSet<u32> {
@@ -6168,6 +6188,7 @@ pub fn protected_pids(scopes: &[SupervisionScope]) -> HashSet<u32> {
                 &mut pids,
             );
         }
+        add_running_draft_pids(&scope.state_dir, &scope.repo_dir, &mut pids);
         add_lock_pids(&scope.state_dir, LOCK_DEPTH, &mut pids);
         add_lock_pids(
             &scope.repo_dir.join(".devboard").join(".tmp"),
