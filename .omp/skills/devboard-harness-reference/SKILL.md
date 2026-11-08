@@ -3339,8 +3339,11 @@ then `target/debug/devboard`. When nothing resolves — no harness directory yie
 `PATH` carries no `devboard` — the probe writes exactly one stderr line naming `DEVBOARD_BIN`,
 `DEVBOARD_HARNESS_DIR`, `.devboard/bin/devboard`, `.devboard/target/release/devboard`, and
 `.devboard/target/debug/devboard`, and the build command `cd .devboard && cargo build`, then exits
-127 before any protocol byte. The same order, candidates, and one-line diagnostic belong to the
-UI/UX skill's `scripts/preflight.sh`, which names `DEVBOARD_BIN` in its line and exits 127. The
+127 before any protocol byte. The registered arguments carry no `${...}` placeholder syntax: the
+client expands `${NAME}` and `${NAME:-default}` inside an entry's `args` before it spawns, so the
+probe uses plain `$NAME` shell variables only. The same order, candidates, and one-line diagnostic
+belong to the UI/UX skill's `scripts/preflight.sh`, which names `DEVBOARD_BIN` in its line and
+exits 127. The
 harness serves the protocol itself as `devboard mcp`; `install.sh` copies the file to
 `<host>/.omp/mcp.json` and the launcher installs the same bytes on install and update.
 

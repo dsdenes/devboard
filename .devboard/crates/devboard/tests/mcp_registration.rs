@@ -224,6 +224,25 @@ fn the_real_registration_answers_initialize_and_tools_list_from_the_repo_root() 
 }
 
 #[test]
+fn the_registration_arguments_carry_no_client_placeholder_syntax_the_client_would_expand() {
+    // The client expands `${NAME}` and `${NAME:-default}` inside a registered
+    // argument before it spawns the process. A shell construct of that form is
+    // rewritten, not passed through: `b=${b:-$(command -v devboard)}` reached
+    // the harness as `b=$(command -v devboard)` and emptied the resolved path,
+    // which failed the server at spawn with no diagnostic. The probe therefore
+    // uses plain `$NAME` variables only.
+    let (command, args) = registration();
+    assert_eq!(command, "sh");
+    assert_eq!(args.first().map(String::as_str), Some("-c"));
+    for argument in &args {
+        assert!(
+            !argument.contains("${"),
+            "a registered argument carries a client placeholder: {argument}"
+        );
+    }
+}
+
+#[test]
 fn a_harness_directory_prefers_bin_then_release_then_debug() {
     let fixture = Fixture::new("candidates");
     let bin = fixture.stub(".devboard/bin/devboard", "bin");
