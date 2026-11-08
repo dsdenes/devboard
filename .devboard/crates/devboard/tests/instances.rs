@@ -239,6 +239,21 @@ fn version_bytes(state: &Path) -> Vec<u8> {
     std::fs::read(state.join("version.json")).unwrap_or_default()
 }
 
+/// Waits until the live dashboard has stopped writing its startup journal, so
+/// the refusal comparison has a quiet baseline.
+async fn quiet_journal(repo: &Path, state: &Path) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut last = journal_size(repo, state);
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let current = journal_size(repo, state);
+        if current == last || Instant::now() >= deadline {
+            return current;
+        }
+        last = current;
+    }
+}
+
 #[tokio::test]
 async fn a_second_start_for_the_same_host_dir_is_refused() {
     let scratch = Scratch::new("refused");
@@ -249,7 +264,7 @@ async fn a_second_start_for_the_same_host_dir_is_refused() {
     let port = wait_ready(&state).await;
     let pid = first.id();
     let before_version = version_bytes(&state);
-    let before_journal = journal_size(&repo, &state);
+    let before_journal = quiet_journal(&repo, &state).await;
 
     let started = Instant::now();
     let mut second = ProcessCommand::new(binary());
