@@ -14,6 +14,20 @@ interface Envelope {
 /** The one polling cadence every state view shares. */
 export const POLL_INTERVAL_MS = 1000;
 
+/**
+ * Connections a browser opens to one origin. Every request beyond it queues in
+ * dispatch order, so a page's own background reads can hold every slot in
+ * front of a read or action the operator waits on.
+ */
+const ORIGIN_CONNECTIONS = 6;
+
+/**
+ * Origin connections this page's background refresh may hold. The rest stay
+ * free for a foreground read: a provider read the server answers in 5 ms waited
+ * 842 ms behind a poll burst that had taken all six.
+ */
+const MAX_POLL_REQUESTS = ORIGIN_CONNECTIONS - 3;
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -96,6 +110,10 @@ export class ConnectionStore {
   private openHandlers: Array<() => void> = [];
   private polled = new Map<string, PolledResource>();
   private inFlight = new Set<string>();
+  /** Registered resources a refresh cycle has not started yet. */
+  private pollQueue: PolledResource[] = [];
+  /** Background refreshes this page currently holds a connection for. */
+  private pollRequests = 0;
   private etags = new Map<string, string>();
   /** First open registers first-paint reads; later opens are reconnects. */
   private hasOpened = false;
@@ -513,20 +531,40 @@ export class ConnectionStore {
     }
   }
 
-  /** One polling tick: every registered resource at most once. */
+  /**
+   * One polling tick: queues every registered resource once. The queue drains
+   * through `pumpPoll`, which keeps at most `MAX_POLL_REQUESTS` refreshes in
+   * flight so a foreground read always finds a free origin connection.
+   */
   private pollTick(): void {
     if (!documentVisible() || this.awaitingRestart) return;
     for (const resource of this.polled.values()) {
-      const operation = REST_OPERATIONS[resource.command.type];
-      if (operation !== undefined) {
-        void this.fetchResource(resource.command, operation, "refresh", null);
+      if (!this.pollQueue.some((queued) => queued.key === resource.key)) {
+        this.pollQueue.push(resource);
       }
+    }
+    this.pumpPoll();
+  }
+
+  /** Starts queued refreshes while a background connection is free. */
+  private pumpPoll(): void {
+    while (!this.disposed && this.pollRequests < MAX_POLL_REQUESTS) {
+      const resource = this.pollQueue.shift();
+      if (resource === undefined) return;
+      const operation = REST_OPERATIONS[resource.command.type];
+      if (operation === undefined) continue;
+      this.pollRequests += 1;
+      void this.fetchResource(resource.command, operation, "refresh", null).finally(() => {
+        this.pollRequests -= 1;
+        this.pumpPoll();
+      });
     }
   }
 
   dispose(): void {
     this.disposed = true;
     slowUiAction.reset();
+    this.pollQueue = [];
     if (this.retryTimer !== undefined) clearTimeout(this.retryTimer);
     if (this.pollTimer !== undefined) clearInterval(this.pollTimer);
     this.pollTimer = undefined;

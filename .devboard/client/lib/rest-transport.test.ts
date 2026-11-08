@@ -206,6 +206,115 @@ test("first_paint_reads_precede_surface_reads", async () => {
   store.dispose();
 });
 
+/** The seven aggregate reads a mounted page registers and refreshes. */
+const POLLED_COMMANDS = [
+  "getIssues",
+  "getAgents",
+  "getComplexity",
+  "getInstalledSkills",
+  "getMcpTools",
+  "getGoalDrafts",
+  "getResources",
+];
+const POLLED_PATHS = [
+  "/issues",
+  "/agents",
+  "/complexity",
+  "/installed-skills",
+  "/mcp-tools",
+  "/goal-drafts",
+  "/resources",
+];
+
+/**
+ * One origin's connections. A browser opens six and queues every request past
+ * them; a request starts when a slot frees and answers only when released.
+ */
+interface OriginPool {
+  started: string[];
+  inFlight(): number;
+  request(input: RequestInfo | URL): Promise<Response>;
+  releaseOne(): void;
+}
+
+function originPool(limit: number): OriginPool {
+  const started: string[] = [];
+  const waiting: Array<() => void> = [];
+  const open: Array<() => void> = [];
+  let connections = 0;
+  const admit = (): void => {
+    while (connections < limit && waiting.length > 0) {
+      const start = waiting.shift();
+      if (start === undefined) return;
+      connections += 1;
+      start();
+    }
+  };
+  return {
+    started,
+    inFlight: () => connections,
+    request: (input) => {
+      const { promise, resolve } = Promise.withResolvers<Response>();
+      waiting.push(() => {
+        started.push(String(input));
+        open.push(() => {
+          connections -= 1;
+          resolve(
+            new Response(JSON.stringify({ frames: [] }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+          admit();
+        });
+      });
+      admit();
+      return promise;
+    },
+    releaseOne: () => open.shift()?.(),
+  };
+}
+
+async function drainPool(pool: OriginPool): Promise<void> {
+  for (let round = 0; round < 200 && pool.inFlight() > 0; round += 1) {
+    pool.releaseOne();
+    await settle();
+  }
+  await settle();
+}
+
+test("a poll cycle never holds every origin connection", async () => {
+  // A browser queues every request past its six connections. A poll that
+  // dispatches its whole registry at once takes all six, so the read the
+  // operator waits on queues behind the page's own refreshes: the server
+  // answered /providers in 5 ms while the page waited 842 ms.
+  const pool = originPool(6);
+  installHttpTransport((input) => pool.request(input));
+
+  const store = new ConnectionStore();
+  store.state = "open";
+  for (const type of POLLED_COMMANDS) store.send({ type }, "refresh");
+  await settle();
+  await drainPool(pool);
+
+  const before = pool.started.length;
+  (store as unknown as { pollTick(): void }).pollTick();
+  await settle();
+  const refreshing = pool.started.length - before;
+  expect(refreshing).toBeGreaterThan(0);
+  expect(refreshing).toBeLessThan(6);
+
+  // The foreground read starts while the refreshes run instead of queueing.
+  store.send({ type: "getProviders" });
+  await settle();
+  expect(pool.started).toContain("/providers");
+
+  // Every queued refresh still runs as its slot frees.
+  await drainPool(pool);
+  expect(pool.started.slice(before)).toEqual(expect.arrayContaining(POLLED_PATHS));
+  store.dispose();
+});
+
 test("stale_bundle_reloads_once", async () => {
   let reloads = 0;
   setGlobal("sessionStorage", fakeStorage());

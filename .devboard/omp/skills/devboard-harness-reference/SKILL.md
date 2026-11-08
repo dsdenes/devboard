@@ -467,6 +467,13 @@ unanswered read is still reported. The guard is observational: it never changes 
 command ceiling, a server timeout, a retry schedule, a polling interval, the busy control, or the
 request lifecycle. It does not dismiss a busy state, clear a control's timer, or abort a request.
 
+A page refreshes every registered resource once a second, and that refresh keeps at most three of
+the browser's six origin connections in flight. A poll that dispatched its whole registry at once
+took all six, so the read the operator waited on queued behind the page's own refreshes: the
+server answered `GET /providers` in 5 ms while the page measured 842 ms. Three connections stay
+free for an operator action, a first-paint read, and the bundle's own requests, and the queue
+drains as each refresh answers, so a cycle still reads every registered resource.
+
 The `getVersion` 1000 ms poll, the `getMcpTools` 1000 ms poll, the goal-drafts 1000 ms
 refresh, poll, a polling surface's repeat request, and every send issued while the connection is
 restarting, awaiting a replacement, or reconnecting are excluded; a reconnect clears every
