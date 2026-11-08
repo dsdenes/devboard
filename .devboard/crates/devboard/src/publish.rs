@@ -1687,19 +1687,6 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         );
     }
 
-    preflight.published =
-        refresh_main(&args, runner.as_ref(), &preflight.remote, &log, &sleeper).await?;
-    // A client bundle older than the checkout is rebuilt from the released
-    // sources before anything is proven or tagged.
-    if dist_is_stale(&args.harness_root)? {
-        rebuild_client(&args, runner.as_ref(), &log).await?;
-    }
-    // The bundle, the staged manifest, and the tag are proven before anything
-    // is tagged, pushed, or written, and only after the checkout is current
-    // and its stale bundle rebuilt: proving first would refuse a checkout whose
-    // sources moved ahead of a bundle this very run is about to rebuild.
-    verify_release_bundle(&args.harness_root)?;
-
     let gitea = resolve_gitea_target(&args, runner.as_ref(), &preflight.remote).await?;
     let github_base = args
         .environment
@@ -1723,261 +1710,324 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     };
     let git = Git::new(runner.as_ref(), &args.repo_dir, &args.environment);
 
-    let published_head = preflight.published.clone();
+    // One attempt refreshes the checkout, proves the bundle, derives the
+    // version, tests it, and pushes it. A landing that publishes into `main`
+    // between the derivation and the push settles a range this attempt derived
+    // and tested at the older tip, so a refused push integrates that landing
+    // and derives again instead of failing a release nothing is wrong with.
+    let mut attempt: u32 = 0;
+    let (version, tag, commit, existing_at_head) = loop {
+        attempt += 1;
+        preflight.published =
+            refresh_main(&args, runner.as_ref(), &preflight.remote, &log, &sleeper).await?;
+        // A client bundle older than the checkout is rebuilt from the released
+        // sources before anything is proven or tagged.
+        if dist_is_stale(&args.harness_root)? {
+            rebuild_client(&args, runner.as_ref(), &log).await?;
+        }
+        // The bundle, the staged manifest, and the tag are proven before
+        // anything is tagged, pushed, or written, and only after the checkout
+        // is current and its stale bundle rebuilt: proving first would refuse a
+        // checkout whose sources moved ahead of a bundle this very run is about
+        // to rebuild.
+        verify_release_bundle(&args.harness_root)?;
 
-    // Refresh the release tags before deriving. A failed refresh is not fatal
-    // by itself: it is reported only when the newest release stays unreachable.
-    let refreshed = git
-        .run(&["fetch", "--quiet", "--tags", "--force", &preflight.remote])
-        .await;
-    let refresh_problem = (refreshed.code != 0).then(|| {
-        format!(
-            "could not refresh the release tags: {}",
-            first_line(if refreshed.stderr.is_empty() {
-                refreshed.stdout.as_str()
-            } else {
-                refreshed.stderr.as_str()
-            })
-        )
-    });
+        let published_head = preflight.published.clone();
 
-    let newest = highest_version(
-        api.gitea_published_versions()
-            .await?
-            .iter()
-            .map(String::as_str),
-    );
-
-    let mut derivation = derive_release_version(&git, &published_head).await?;
-    if let Some(newest) = newest.as_deref() {
-        let order = compare_versions(&derivation.version, newest)
-            .ok_or_else(|| anyhow!("cannot order {} against {newest}", derivation.version))?;
-        if order <= 0 {
-            derivation = rederive_from_published(
-                &git,
-                &api,
-                &published_head,
-                newest,
-                refresh_problem.as_deref(),
+        // Refresh the release tags before deriving. A failed refresh is not fatal
+        // by itself: it is reported only when the newest release stays unreachable.
+        let refreshed = git
+            .run(&["fetch", "--quiet", "--tags", "--force", &preflight.remote])
+            .await;
+        let refresh_problem = (refreshed.code != 0).then(|| {
+            format!(
+                "could not refresh the release tags: {}",
+                first_line(if refreshed.stderr.is_empty() {
+                    refreshed.stdout.as_str()
+                } else {
+                    refreshed.stderr.as_str()
+                })
             )
-            .await?;
+        });
+
+        let newest = highest_version(
+            api.gitea_published_versions()
+                .await?
+                .iter()
+                .map(String::as_str),
+        );
+
+        let mut derivation = derive_release_version(&git, &published_head).await?;
+        if let Some(newest) = newest.as_deref() {
+            let order = compare_versions(&derivation.version, newest)
+                .ok_or_else(|| anyhow!("cannot order {} against {newest}", derivation.version))?;
+            if order <= 0 {
+                derivation = rederive_from_published(
+                    &git,
+                    &api,
+                    &published_head,
+                    newest,
+                    refresh_problem.as_deref(),
+                )
+                .await?;
+            }
         }
-    }
 
-    let version = derivation.version.clone();
-    if !valid_version(&version) {
-        bail!("computed an invalid version: {version}");
-    }
-    let tag = format!("v{version}");
-
-    // A tag already naming this commit means the tag push and the release step
-    // of a previous run happened (or an external release named it). A rerun
-    // still verifies and completes the GitHub and Gitea halves; it never bumps
-    // the version, commits, or tags again.
-    let existing_at_head = git.tag_commit(&tag).await.as_deref() == Some(published_head.as_str());
-    if derivation.level.is_none() && !existing_at_head {
-        (log)(&format!(
-            "nothing to release; {tag} already covers {}",
-            short_sha(&published_head)
-        ));
-        return Ok(not_published(&version, &tag, &published_head));
-    }
-
-    let commit = if existing_at_head {
-        (log)(&format!(
-            "{tag} already names {}; verifying the existing release",
-            short_sha(&published_head)
-        ));
-        // The Gitea manifest is written only after the tag push and the GitHub
-        // assets, so a credential that cannot write must fail before the
-        // mirror push and the dispatch.
-        api.gitea_verify_write_credential().await?;
-        // Nothing is pushed or dispatched before the suite passes.
-        if let Some(suite_dir) = args.release_suite_dir.clone() {
-            run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
+        let version = derivation.version.clone();
+        if !valid_version(&version) {
+            bail!("computed an invalid version: {version}");
         }
-        published_head.clone()
-    } else {
-        // The tag must name this commit or contain it. A tag made for an
-        // unrelated commit is a refusal before anything is committed or pushed.
-        if let Some(bound) = git.tag_commit(&tag).await {
-            if bound == published_head {
-                (log)(&format!(
-                    "nothing to release; {tag} already names {}",
-                    short_sha(&published_head)
-                ));
-                return Ok(not_published(&version, &tag, &published_head));
+        let tag = format!("v{version}");
+
+        // A tag already naming this commit means the tag push and the release step
+        // of a previous run happened (or an external release named it). A rerun
+        // still verifies and completes the GitHub and Gitea halves; it never bumps
+        // the version, commits, or tags again.
+        let existing_at_head =
+            git.tag_commit(&tag).await.as_deref() == Some(published_head.as_str());
+        if derivation.level.is_none() && !existing_at_head {
+            (log)(&format!(
+                "nothing to release; {tag} already covers {}",
+                short_sha(&published_head)
+            ));
+            return Ok(not_published(&version, &tag, &published_head));
+        }
+
+        let commit = if existing_at_head {
+            (log)(&format!(
+                "{tag} already names {}; verifying the existing release",
+                short_sha(&published_head)
+            ));
+            // The Gitea manifest is written only after the tag push and the GitHub
+            // assets, so a credential that cannot write must fail before the
+            // mirror push and the dispatch.
+            api.gitea_verify_write_credential().await?;
+            // Nothing is pushed or dispatched before the suite passes.
+            if let Some(suite_dir) = args.release_suite_dir.clone() {
+                run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
             }
-            if git.is_ancestor(&published_head, &bound).await {
-                (log)(&format!(
-                    "nothing to release; {tag} already contains {}",
-                    short_sha(&published_head)
-                ));
-                return Ok(not_published(&version, &tag, &published_head));
-            }
-            if git.is_ancestor(&bound, &published_head).await {
-                (log)(&format!(
-                    "nothing to release; {tag} already covers {}",
-                    short_sha(&published_head)
-                ));
-                return Ok(not_published(&version, &tag, &published_head));
-            }
-            bail!(
+            published_head.clone()
+        } else {
+            // The tag must name this commit or contain it. A tag made for an
+            // unrelated commit is a refusal before anything is committed or pushed.
+            if let Some(bound) = git.tag_commit(&tag).await {
+                if bound == published_head {
+                    (log)(&format!(
+                        "nothing to release; {tag} already names {}",
+                        short_sha(&published_head)
+                    ));
+                    return Ok(not_published(&version, &tag, &published_head));
+                }
+                if git.is_ancestor(&published_head, &bound).await {
+                    (log)(&format!(
+                        "nothing to release; {tag} already contains {}",
+                        short_sha(&published_head)
+                    ));
+                    return Ok(not_published(&version, &tag, &published_head));
+                }
+                if git.is_ancestor(&bound, &published_head).await {
+                    (log)(&format!(
+                        "nothing to release; {tag} already covers {}",
+                        short_sha(&published_head)
+                    ));
+                    return Ok(not_published(&version, &tag, &published_head));
+                }
+                bail!(
                 "{tag} already names {}, which neither names nor contains {}; refusing to report a release for another commit",
                 short_sha(&bound),
                 short_sha(&published_head)
             );
-        }
-        if let Some(forge_commit) = api.gitea_tag_commit(&tag).await? {
-            if git
-                .commit_names_or_contains(&forge_commit, &published_head)
-                .await
-            {
-                (log)(&format!(
-                    "nothing to release; {tag} already names or contains {}",
-                    short_sha(&published_head)
-                ));
-                return Ok(not_published(&version, &tag, &published_head));
             }
-            bail!(
+            if let Some(forge_commit) = api.gitea_tag_commit(&tag).await? {
+                if git
+                    .commit_names_or_contains(&forge_commit, &published_head)
+                    .await
+                {
+                    (log)(&format!(
+                        "nothing to release; {tag} already names or contains {}",
+                        short_sha(&published_head)
+                    ));
+                    return Ok(not_published(&version, &tag, &published_head));
+                }
+                bail!(
                 "{tag} already names {}, which neither names nor contains {}; refusing to report a release for another commit",
                 short_sha(&forge_commit),
                 short_sha(&published_head)
             );
-        }
-
-        let violations = commit_violations(&derivation.commits);
-        if !violations.is_empty() {
-            for violation in &violations {
-                (log)(&format!(
-                    "commit-gate: {} {}\n  {}",
-                    violation.sha, violation.subject, violation.rule
-                ));
             }
-            bail!(
-                "the commits in {} are not Conventional Commits",
-                derivation.range
-            );
-        }
 
-        (log)(&format!("{tag} at {}", short_sha(&published_head)));
-
-        // The Gitea manifest is written only after the tag push and the GitHub
-        // assets, so a credential that cannot write must fail before the first
-        // irreversible step.
-        api.gitea_verify_write_credential().await?;
-
-        // Nothing is bumped, tagged, pushed, or dispatched before the suite
-        // passes.
-        if let Some(suite_dir) = args.release_suite_dir.clone() {
-            run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
-        }
-
-        let manifest_path = args.harness_root.join("Cargo.toml");
-        // An earlier attempt of this same version committed the bump and then
-        // withdrew its tag when the release did not ship, so main already
-        // carries the version: the retry tags the head it derived instead of
-        // committing an unchanged manifest.
-        if workspace_version(&manifest_path).as_deref() == Some(version.as_str()) {
-            (log)(&format!(
-                "{tag} reuses the version bump already committed on main"
-            ));
-        } else {
-            bump_workspace_version(&manifest_path, &version)?;
-            refresh_lockfile(git.runner, &args.environment, &args.harness_root).await?;
-            let manifest = relative_git_path(&args.repo_dir, &manifest_path);
-            let lock_path = args.harness_root.join("Cargo.lock");
-            let lock = relative_git_path(&args.repo_dir, &lock_path);
-            let commit_message = format!("chore(release): v{version}");
-            let mut commit_args: Vec<&str> = vec![
-                "-c",
-                "user.name=Devboard Release",
-                "-c",
-                "user.email=release@devboard.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "--only",
-                "-m",
-                &commit_message,
-                "--",
-                &manifest,
-            ];
-            if lock_path.exists() {
-                commit_args.push(&lock);
-            }
-            let committed = git.run(&commit_args).await;
-            if committed.code != 0 {
+            let violations = commit_violations(&derivation.commits);
+            if !violations.is_empty() {
+                for violation in &violations {
+                    (log)(&format!(
+                        "commit-gate: {} {}\n  {}",
+                        violation.sha, violation.subject, violation.rule
+                    ));
+                }
                 bail!(
-                    "could not commit the version bump: {}",
-                    first_line(if committed.stderr.is_empty() {
-                        committed.stdout.as_str()
+                    "the commits in {} are not Conventional Commits",
+                    derivation.range
+                );
+            }
+
+            (log)(&format!("{tag} at {}", short_sha(&published_head)));
+
+            // The Gitea manifest is written only after the tag push and the GitHub
+            // assets, so a credential that cannot write must fail before the first
+            // irreversible step.
+            api.gitea_verify_write_credential().await?;
+
+            // Nothing is bumped, tagged, pushed, or dispatched before the suite
+            // passes.
+            if let Some(suite_dir) = args.release_suite_dir.clone() {
+                run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
+            }
+
+            let manifest_path = args.harness_root.join("Cargo.toml");
+            // An earlier attempt of this same version committed the bump and then
+            // withdrew its tag when the release did not ship, so main already
+            // carries the version: the retry tags the head it derived instead of
+            // committing an unchanged manifest.
+            if workspace_version(&manifest_path).as_deref() == Some(version.as_str()) {
+                (log)(&format!(
+                    "{tag} reuses the version bump already committed on main"
+                ));
+            } else {
+                bump_workspace_version(&manifest_path, &version)?;
+                refresh_lockfile(git.runner, &args.environment, &args.harness_root).await?;
+                let manifest = relative_git_path(&args.repo_dir, &manifest_path);
+                let lock_path = args.harness_root.join("Cargo.lock");
+                let lock = relative_git_path(&args.repo_dir, &lock_path);
+                let commit_message = format!("chore(release): v{version}");
+                let mut commit_args: Vec<&str> = vec![
+                    "-c",
+                    "user.name=Devboard Release",
+                    "-c",
+                    "user.email=release@devboard.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--only",
+                    "-m",
+                    &commit_message,
+                    "--",
+                    &manifest,
+                ];
+                if lock_path.exists() {
+                    commit_args.push(&lock);
+                }
+                let committed = git.run(&commit_args).await;
+                if committed.code != 0 {
+                    bail!(
+                        "could not commit the version bump: {}",
+                        first_line(if committed.stderr.is_empty() {
+                            committed.stdout.as_str()
+                        } else {
+                            committed.stderr.as_str()
+                        })
+                    );
+                }
+            }
+            let tag_created = git
+                .run(&[
+                    "-c",
+                    "user.name=Devboard Release",
+                    "-c",
+                    "user.email=release@devboard.invalid",
+                    "tag",
+                    "-a",
+                    &tag,
+                    "-m",
+                    &format!("Devboard {version}"),
+                ])
+                .await;
+            if tag_created.code != 0 {
+                bail!(
+                    "could not create {tag}: {}",
+                    first_line(if tag_created.stderr.is_empty() {
+                        tag_created.stdout.as_str()
                     } else {
-                        committed.stderr.as_str()
+                        tag_created.stderr.as_str()
                     })
                 );
             }
-        }
-        let tag_created = git
+            git.must(&["rev-parse", "HEAD"], "could not read HEAD after the bump")
+                .await?
+        };
+
+        (log)(&format!("pushing {tag} and main to {}", preflight.remote));
+        let pushed = git
             .run(&[
-                "-c",
-                "user.name=Devboard Release",
-                "-c",
-                "user.email=release@devboard.invalid",
-                "tag",
-                "-a",
-                &tag,
-                "-m",
-                &format!("Devboard {version}"),
+                "push",
+                &preflight.remote,
+                "refs/heads/main:refs/heads/main",
+                &format!("refs/tags/{tag}:refs/tags/{tag}"),
             ])
             .await;
-        if tag_created.code != 0 {
-            bail!(
-                "could not create {tag}: {}",
-                first_line(if tag_created.stderr.is_empty() {
-                    tag_created.stdout.as_str()
-                } else {
-                    tag_created.stderr.as_str()
-                })
-            );
+        if pushed.code != 0 {
+            // A forge can accept both refs and then lose the push's answer, so a
+            // nonzero exit is not evidence that nothing landed: the refs the forge
+            // carries decide, and a push they already carry never fails a release
+            // that shipped.
+            match push_landed(&api, &git, &tag, &commit).await {
+                Ok(true) => (log)(&format!(
+                    "{} carries {} and {tag}; the push exited nonzero after the refs moved",
+                    preflight.remote,
+                    short_sha(&commit)
+                )),
+                Ok(false) => match landed_main_tip(&git, &preflight.remote, &published_head).await?
+                {
+                    Some(tip) => {
+                        // The range this attempt derived and tested is not the
+                        // range `main` now carries, so the attempt's tag is
+                        // withdrawn and its version bump dropped before anything
+                        // derives again: a tag whose release never appeared must
+                        // not advance the next derivation past a version that has
+                        // no artifacts, and a local-only bump commit would block
+                        // every later attempt. A tag an earlier run created is
+                        // left to the shipped-release rule instead.
+                        if existing_at_head {
+                            withdraw_unreleased_tag(&api, &git, &preflight, &tag, &log).await;
+                        } else {
+                            withdraw_refused_tag(&git, &preflight, &tag, &commit, &log).await?;
+                        }
+                        git.must(
+                            &["reset", "--keep", tip.as_str()],
+                            "could not integrate the landing",
+                        )
+                        .await?;
+                        if attempt >= RACE_INTEGRATION_ATTEMPTS {
+                            bail!(
+                                "could not push main and {tag} to {}: {}; {}/main moved during \
+                                 all {attempt} attempts",
+                                preflight.remote,
+                                failure_detail(&pushed),
+                                preflight.remote
+                            );
+                        }
+                        (log)(&format!(
+                            "integrating the landing at {} and deriving again (attempt {})",
+                            short_sha(&tip),
+                            attempt + 1
+                        ));
+                        continue;
+                    }
+                    None => bail!(
+                        "could not push main and {tag} to {}: {}",
+                        preflight.remote,
+                        failure_detail(&pushed)
+                    ),
+                },
+                Err(error) => bail!(
+                    "could not push main and {tag} to {}: {}; {} refs unreadable: {error:#}",
+                    preflight.remote,
+                    failure_detail(&pushed),
+                    preflight.remote
+                ),
+            }
         }
-        git.must(&["rev-parse", "HEAD"], "could not read HEAD after the bump")
-            .await?
+        break (version, tag, commit, existing_at_head);
     };
-
-    (log)(&format!("pushing {tag} and main to {}", preflight.remote));
-    let pushed = git
-        .run(&[
-            "push",
-            &preflight.remote,
-            "refs/heads/main:refs/heads/main",
-            &format!("refs/tags/{tag}:refs/tags/{tag}"),
-        ])
-        .await;
-    if pushed.code != 0 {
-        // A forge can accept both refs and then lose the push's answer, so a
-        // nonzero exit is not evidence that nothing landed: the refs the forge
-        // carries decide, and a push they already carry never fails a release
-        // that shipped.
-        match push_landed(&api, &git, &tag, &commit).await {
-            Ok(true) => (log)(&format!(
-                "{} carries {} and {tag}; the push exited nonzero after the refs moved",
-                preflight.remote,
-                short_sha(&commit)
-            )),
-            Ok(false) => bail!(
-                "could not push main and {tag} to {}: {}",
-                preflight.remote,
-                failure_detail(&pushed)
-            ),
-            Err(error) => bail!(
-                "could not push main and {tag} to {}: {}; {} refs unreadable: {error:#}",
-                preflight.remote,
-                failure_detail(&pushed),
-                preflight.remote
-            ),
-        }
-    }
 
     // A release that fails before its GitHub release exists must not leave its
     // tag behind: the gate derives the next version from the newest release
@@ -2192,6 +2242,15 @@ const MAIN_SETTLE_ATTEMPTS: u32 = 12;
 
 /// The pause between those reads.
 const MAIN_SETTLE_DELAY: Duration = Duration::from_secs(5);
+
+/// How many times one publish derives, tests, and pushes a release before it
+/// gives up on a `main` that keeps moving underneath it.
+///
+/// A landing that publishes between the derivation and the push settles a
+/// range the attempt derived and tested at the older tip, so the run integrates
+/// the landing and derives again rather than failing a release nothing is wrong
+/// with. Every retry re-runs the release suite, so the bound stays small.
+const RACE_INTEGRATION_ATTEMPTS: u32 = 3;
 
 /// Fetches the canonical `main` and fast-forwards without discarding work.
 async fn refresh_main(
@@ -2547,6 +2606,20 @@ async fn withdraw_unreleased_tag(
             return;
         }
     }
+    delete_tag(git, preflight, tag, log).await;
+    (log)(&format!("withdrew {tag}: the release did not ship"));
+}
+
+/// Deletes a tag from every remote and from the checkout.
+///
+/// A remote that does not carry the tag answers the deletion with a warning and
+/// a zero exit, so every remote is named without a read first.
+async fn delete_tag(
+    git: &Git<'_>,
+    preflight: &Preflight,
+    tag: &str,
+    log: &Arc<dyn Fn(&str) + Send + Sync>,
+) {
     for remote in &preflight.remotes {
         let deleted = git
             .run(&["push", remote.as_str(), &format!(":refs/tags/{tag}")])
@@ -2572,9 +2645,118 @@ async fn withdraw_unreleased_tag(
                 local.stderr.as_str()
             })
         ));
-        return;
     }
-    (log)(&format!("withdrew {tag}: the release did not ship"));
+}
+
+/// Reads the remote `main` after a refused push and returns its tip when a
+/// landing published past the base this attempt pushed from.
+///
+/// `None` means the remote `main` the attempt pushed from is unchanged, so the
+/// refusal is not a landing and the release fails with the push's own detail.
+async fn landed_main_tip(git: &Git<'_>, remote: &str, base: &str) -> Result<Option<String>> {
+    let fetched = git
+        .run(&[
+            "fetch",
+            "--prune",
+            remote,
+            &format!("+refs/heads/main:refs/remotes/{remote}/main"),
+        ])
+        .await;
+    if fetched.code != 0 {
+        bail!(
+            "could not fetch {remote}/main after the refused push: {}",
+            first_line(if fetched.stderr.is_empty() {
+                fetched.stdout.as_str()
+            } else {
+                fetched.stderr.as_str()
+            })
+        );
+    }
+    let tip = git
+        .must(
+            &["rev-parse", &format!("{remote}/main")],
+            &format!("could not read {remote}/main"),
+        )
+        .await?;
+    let tip = tip.trim().to_string();
+    if tip == base || git.is_ancestor(&tip, base).await {
+        return Ok(None);
+    }
+    if !git.is_ancestor(base, &tip).await {
+        bail!(
+            "{remote}/main moved to {} and no longer contains {}; integrate the checkout and rerun",
+            short_sha(&tip),
+            short_sha(base)
+        );
+    }
+    Ok(Some(tip))
+}
+
+/// Reads the commit a remote's tag names, peeled from the tag object.
+///
+/// `None` means the remote does not carry the tag at all. The remotes answer
+/// this, not the forge's API: a refused push can deliver the tag before the
+/// branch is rejected, and the next attempt's tag refresh would resurrect a
+/// local tag the remotes still carry.
+async fn remote_tag_commit(git: &Git<'_>, remote: &str, tag: &str) -> Result<Option<String>> {
+    let reference = format!("refs/tags/{tag}");
+    let peeled = format!("refs/tags/{tag}^{{}}");
+    let listed = git
+        .must(
+            &["ls-remote", "--tags", remote, &reference, &peeled],
+            &format!("could not read {tag} from {remote}"),
+        )
+        .await?;
+    let mut object = None;
+    let mut commit = None;
+    for line in listed.split('\n') {
+        let mut fields = line.split_whitespace();
+        let Some(sha) = fields.next() else { continue };
+        let Some(name) = fields.next() else { continue };
+        if name == peeled {
+            commit = Some(sha.to_string());
+        } else if name == reference {
+            object = Some(sha.to_string());
+        }
+    }
+    // An annotated tag peels to the commit its release names; a lightweight tag
+    // is already that commit.
+    Ok(commit.or(object))
+}
+
+/// Withdraws the tag a refused attempt pushed before the next attempt derives.
+///
+/// The tag was created by this attempt, so no release can name it: the dispatch
+/// runs only after the push that was refused. It is deleted from every remote
+/// that carries it and from the checkout, because the next attempt's tag
+/// refresh would otherwise resurrect it and the next derivation would skip the
+/// range it covers. A remote carrying the tag at another commit belongs to
+/// another release: it is never removed, and the release fails instead.
+async fn withdraw_refused_tag(
+    git: &Git<'_>,
+    preflight: &Preflight,
+    tag: &str,
+    commit: &str,
+    log: &Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<()> {
+    for remote in &preflight.remotes {
+        let Some(named) = remote_tag_commit(git, remote, tag).await? else {
+            continue;
+        };
+        if named != commit {
+            bail!(
+                "{} carries {tag} at {}, not this attempt's {}; refusing to release it",
+                remote,
+                short_sha(&named),
+                short_sha(commit)
+            );
+        }
+    }
+    delete_tag(git, preflight, tag, log).await;
+    (log)(&format!(
+        "withdrew {tag}: the push that would have shipped it was refused"
+    ));
+    Ok(())
 }
 
 fn relative_git_path(repo_dir: &Path, path: &Path) -> String {

@@ -893,6 +893,49 @@ impl ReleaseSuiteGate for StubSuiteGate {
     }
 }
 
+/// A suite gate a landing races: `origin/main` moves while the suite runs,
+/// after the attempt derived and tested its range.
+struct RacingSuiteGate {
+    /// The checkout whose commit the gate pushes to `origin/main`.
+    landing: PathBuf,
+    runs: AtomicUsize,
+    /// Commits a fresh landing before every push, so the race never settles.
+    every_run: bool,
+}
+
+impl ReleaseSuiteGate for RacingSuiteGate {
+    fn run<'a>(
+        &'a self,
+        options: ReleaseSuiteOptions,
+    ) -> BoxFuture<'a, anyhow::Result<ReleaseSuiteReport>> {
+        assert!(
+            options.dir.ends_with(".devboard"),
+            "the gate runs the harness workspace, got {}",
+            options.dir.display()
+        );
+        let run = self.runs.fetch_add(1, Ordering::SeqCst);
+        if self.every_run {
+            commit_file(
+                &self.landing,
+                "LANDING.md",
+                &format!("landing {}\n", run + 1),
+                &format!("fix: a landing during suite run {}", run + 1),
+            );
+        }
+        if run == 0 || self.every_run {
+            git_output(&self.landing, &["push", "-q", "origin", "main"]);
+        }
+        let report = ReleaseSuiteReport {
+            code: 0,
+            attempts: 1,
+            quarantined: Vec::new(),
+            structural: None,
+            error_line: None,
+        };
+        Box::pin(async move { Ok(report) })
+    }
+}
+
 fn test_args(
     repo: &Path,
     gitea: &StubServer,
@@ -1048,6 +1091,151 @@ async fn an_in_flight_landing_that_pushes_lets_the_release_run() {
         report.commit
     );
     assert!(sleeper.sleeps.load(Ordering::SeqCst) >= 1);
+}
+
+/// A second checkout of the fixture's remote, which the tests use to publish a
+/// landing while a release runs.
+fn landing_checkout(live: &Live) -> PathBuf {
+    let landing = live._scratch.root.join("landing");
+    git_output(
+        &live._scratch.root,
+        &[
+            "clone",
+            "-q",
+            live.origin.to_string_lossy().as_ref(),
+            landing.to_string_lossy().as_ref(),
+        ],
+    );
+    landing
+}
+
+#[tokio::test]
+async fn a_landing_that_pushes_during_the_suite_is_integrated_and_released() {
+    let live = live("landing-during-suite", release_assets()).await;
+    let landing = landing_checkout(&live);
+    commit_file(
+        &landing,
+        "LANDING.md",
+        "landing\n",
+        "fix: a landing during the suite",
+    );
+    let landing_commit = git_output(&landing, &["rev-parse", "HEAD"]);
+    let gate = Arc::new(RacingSuiteGate {
+        landing: landing.clone(),
+        runs: AtomicUsize::new(0),
+        every_run: false,
+    });
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.release_suite = Some(gate.clone());
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = lines.clone();
+    args.log = Some(Arc::new(move |line: &str| {
+        recorded.lock().expect("log").push(line.to_string());
+    }));
+
+    let report = publish(args)
+        .await
+        .expect("the landing is integrated and the release ships");
+
+    assert_eq!(
+        gate.runs.load(Ordering::SeqCst),
+        2,
+        "the suite runs again at the integrated tip"
+    );
+    assert!(report.published);
+    assert_eq!(report.tag, "v1.1.0");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        report.commit
+    );
+    assert_eq!(
+        git_output(&live.seed, &["rev-parse", "HEAD"]),
+        report.commit
+    );
+    // The released commit contains the landing, and the bump follows it.
+    git_output(
+        &live.origin,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &landing_commit,
+            &report.commit,
+        ],
+    );
+    assert_eq!(
+        git_output(&live.origin, &["show", "-s", "--format=%s", &report.commit]),
+        "chore(release): v1.1.0"
+    );
+    // The tag was withdrawn from the failed attempt and recreated at the
+    // integrated tip, so both remotes name the released commit.
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        report.commit
+    );
+    assert_eq!(
+        git_output(&live.github, &["rev-parse", "v1.1.0^{commit}"]),
+        report.commit
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 1);
+    assert!(
+        live.gitea_stub
+            .release_bytes("v1.1.0", "devboard-manifest.json")
+            .is_some(),
+        "the release continues past the integrated landing"
+    );
+    let lines = lines.lock().expect("log").clone();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("integrating the landing at")),
+        "{lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_landing_that_never_settles_leaves_no_tag_behind() {
+    let live = live("landing-churn", release_assets()).await;
+    let landing = landing_checkout(&live);
+    let gate = Arc::new(RacingSuiteGate {
+        landing: landing.clone(),
+        runs: AtomicUsize::new(0),
+        every_run: true,
+    });
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.release_suite = Some(gate.clone());
+
+    let error = publish(args)
+        .await
+        .expect_err("a main that never settles stops the release");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("could not push main and v1.1.0"),
+        "{message}"
+    );
+    assert!(message.contains("moved during all 3 attempts"), "{message}");
+    assert_eq!(gate.runs.load(Ordering::SeqCst), 3);
+    // No tag survives the failed attempts on either remote or in the checkout,
+    // and the checkout is back at the tip the landings published.
+    let landing_commit = git_output(&landing, &["rev-parse", "HEAD"]);
+    for remote in [&live.origin, &live.github] {
+        let tags = git_output(remote, &["tag", "--list", "v1.1.0"]);
+        assert!(tags.trim().is_empty(), "{remote:?}: {tags}");
+    }
+    let local_tags = git_output(&live.seed, &["tag", "--list", "v1.1.0"]);
+    assert!(local_tags.trim().is_empty(), "{local_tags}");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        landing_commit
+    );
+    assert_eq!(
+        git_output(&live.seed, &["rev-parse", "HEAD"]),
+        landing_commit
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 0);
+    assert!(live
+        .gitea_stub
+        .release_bytes("v1.1.0", "devboard-manifest.json")
+        .is_none());
 }
 
 #[tokio::test]
