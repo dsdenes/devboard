@@ -728,6 +728,18 @@ fn write_harness(directory: &Path) {
         "console.log(\"devboard\");\n",
     )
     .expect("an asset");
+    fs::create_dir_all(directory.join(".devboard/crates/devboard/assets/assets"))
+        .expect("the embedded client");
+    fs::copy(
+        directory.join(".devboard/dist/index.html"),
+        directory.join(".devboard/crates/devboard/assets/index.html"),
+    )
+    .expect("an embedded index");
+    fs::copy(
+        directory.join(".devboard/dist/assets/app.js"),
+        directory.join(".devboard/crates/devboard/assets/assets/app.js"),
+    )
+    .expect("an embedded asset");
 }
 
 fn origin_repository(root: &Path) -> (PathBuf, PathBuf) {
@@ -1737,10 +1749,13 @@ async fn a_refused_push_names_the_refusal_not_the_progress_line() {
     assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
-/// A record-and-delegate runner: `bun run build` writes the bundle itself, and
-/// every other command reaches the real process runner.
+/// A record-and-delegate runner: `bun run build` writes a bundle carrying
+/// `asset`, the embed step copies it where the binary reads it, and every other
+/// command reaches the real process runner.
 struct RebuildRunner {
+    asset: &'static str,
     builds: AtomicUsize,
+    embeds: AtomicUsize,
 }
 
 impl CommandRunner for RebuildRunner {
@@ -1750,27 +1765,46 @@ impl CommandRunner for RebuildRunner {
     ) -> Pin<Box<dyn Future<Output = CommandOutcome> + Send + 'a>> {
         Box::pin(async move {
             if invocation.program == "bun" {
-                self.builds.fetch_add(1, Ordering::SeqCst);
-                assert_eq!(
-                    invocation.args,
-                    vec!["run".to_string(), "build".to_string()]
-                );
-                std::thread::sleep(Duration::from_millis(10));
-                fs::create_dir_all(invocation.cwd.join("dist/assets")).expect("the bundle");
-                fs::write(
-                    invocation.cwd.join("dist/index.html"),
-                    "<!doctype html><script src=\"/assets/app.js\"></script>\n",
-                )
-                .expect("an index");
-                fs::write(
-                    invocation.cwd.join("dist/assets/app.js"),
-                    "console.log(\"built\");\n",
-                )
-                .expect("an asset");
-                return CommandOutcome {
-                    code: 0,
-                    stdout: String::new(),
-                    stderr: String::new(),
+                let arguments: Vec<&str> = invocation.args.iter().map(String::as_str).collect();
+                return match arguments.as_slice() {
+                    ["run", "build"] => {
+                        self.builds.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(10));
+                        fs::create_dir_all(invocation.cwd.join("dist/assets")).expect("the bundle");
+                        fs::write(
+                            invocation.cwd.join("dist/index.html"),
+                            "<!doctype html><script src=\"/assets/app.js\"></script>\n",
+                        )
+                        .expect("an index");
+                        fs::write(invocation.cwd.join("dist/assets/app.js"), self.asset)
+                            .expect("an asset");
+                        CommandOutcome {
+                            code: 0,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                        }
+                    }
+                    ["scripts/embed-client.mjs"] => {
+                        self.embeds.fetch_add(1, Ordering::SeqCst);
+                        let embedded = invocation.cwd.join("crates/devboard/assets");
+                        fs::create_dir_all(embedded.join("assets")).expect("the embed");
+                        fs::copy(
+                            invocation.cwd.join("dist/index.html"),
+                            embedded.join("index.html"),
+                        )
+                        .expect("an embedded index");
+                        fs::copy(
+                            invocation.cwd.join("dist/assets/app.js"),
+                            embedded.join("assets/app.js"),
+                        )
+                        .expect("an embedded asset");
+                        CommandOutcome {
+                            code: 0,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                        }
+                    }
+                    other => panic!("unexpected bun invocation {other:?}"),
                 };
             }
             ProcessRunner.run(invocation).await
@@ -1779,7 +1813,7 @@ impl CommandRunner for RebuildRunner {
 }
 
 #[tokio::test]
-async fn a_checkout_whose_sources_moved_rebuilds_the_bundle_before_proving_it() {
+async fn a_checkout_whose_sources_moved_rebuilds_and_embeds_before_proving_it() {
     let live = live("stale-bundle", release_assets()).await;
     // A source newer than the committed bundle, exactly what a refreshed
     // integration checkout leaves behind.
@@ -1788,8 +1822,12 @@ async fn a_checkout_whose_sources_moved_rebuilds_the_bundle_before_proving_it() 
     fs::create_dir_all(source.parent().expect("a parent")).expect("the client tree");
     fs::write(&source, "<p></p>\n").expect("a newer source");
 
+    // The rebuild reproduces the committed client byte for byte, so the embed
+    // step leaves `crates/devboard/assets` unchanged and the release proceeds.
     let runner = Arc::new(RebuildRunner {
+        asset: "console.log(\"devboard\");\n",
         builds: AtomicUsize::new(0),
+        embeds: AtomicUsize::new(0),
     });
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.runner = Some(runner.clone());
@@ -1799,12 +1837,80 @@ async fn a_checkout_whose_sources_moved_rebuilds_the_bundle_before_proving_it() 
 
     assert_eq!(report.version, "1.1.0");
     assert_eq!(runner.builds.load(Ordering::SeqCst), 1);
+    assert_eq!(runner.embeds.load(Ordering::SeqCst), 1);
     assert_eq!(
         fs::read_to_string(live.seed.join(".devboard/dist/assets/app.js"))
             .expect("the rebuilt asset"),
-        "console.log(\"built\");\n"
+        "console.log(\"devboard\");\n"
     );
+    let pending = git_output(
+        &live.seed,
+        &[
+            "status",
+            "--porcelain",
+            "--",
+            ".devboard/crates/devboard/assets",
+        ],
+    );
+    assert!(pending.is_empty(), "{pending}");
     assert_eq!(live.github_stub.dispatch_count(), 1);
+}
+
+#[tokio::test]
+async fn a_rebuild_the_commit_does_not_carry_fails_before_the_tag() {
+    let live = live("stale-rebuild", release_assets()).await;
+    std::thread::sleep(Duration::from_millis(10));
+    let source = live.seed.join(".devboard/client/Row.svelte");
+    fs::create_dir_all(source.parent().expect("a parent")).expect("the client tree");
+    fs::write(&source, "<p></p>\n").expect("a newer source");
+    let head = git_output(&live.seed, &["rev-parse", "HEAD"]);
+
+    // The rebuilt bundle no longer matches the copy the commit carries: the
+    // embed step writes the working tree, and a tag would still ship the
+    // previous bundle.
+    let runner = Arc::new(RebuildRunner {
+        asset: "console.log(\"built\");\n",
+        builds: AtomicUsize::new(0),
+        embeds: AtomicUsize::new(0),
+    });
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.runner = Some(runner.clone());
+    args.wait_timeout = Duration::from_secs(5);
+    let error = publish(args)
+        .await
+        .expect_err("a rebuild the commit does not carry fails the release");
+    let message = format!("{error:#}");
+    assert!(message.contains("crates/devboard/assets"), "{message}");
+    assert!(message.contains("not committed"), "{message}");
+    assert_eq!(runner.embeds.load(Ordering::SeqCst), 1);
+
+    // Nothing was bumped, tagged, pushed, or dispatched.
+    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), head);
+    let local = git_output(&live.seed, &["tag", "--list", "v1.1.0"]);
+    assert!(local.trim().is_empty(), "{local}");
+    assert_eq!(live.github_stub.dispatch_count(), 0);
+}
+
+#[tokio::test]
+async fn a_client_edit_that_was_never_embedded_fails_before_the_tag() {
+    let live = live("stale-embed", release_assets()).await;
+    // The bundle is fresh, but the copy the binary embeds still serves the
+    // client from before the edit.
+    std::thread::sleep(Duration::from_millis(10));
+    let asset = live
+        .seed
+        .join(".devboard/crates/devboard/assets/assets/app.js");
+    fs::write(&asset, "console.log(\"never embedded\");\n").expect("a stale embed");
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+
+    let error = publish(args)
+        .await
+        .expect_err("a stale embedded client fails the release");
+    let message = format!("{error:#}");
+    assert!(message.contains("crates/devboard/assets"), "{message}");
+    assert!(message.contains("differs from dist"), "{message}");
+    assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
 #[tokio::test]
@@ -2372,6 +2478,17 @@ fn bundle_root(label: &str) -> std::path::PathBuf {
     )
     .unwrap();
     std::fs::write(root.join("dist/assets/app.js"), "console.log(1);\n").unwrap();
+    std::fs::create_dir_all(root.join("crates/devboard/assets/assets")).unwrap();
+    std::fs::write(
+        root.join("crates/devboard/assets/index.html"),
+        "<!doctype html><script src=\"/assets/app.js\"></script>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("crates/devboard/assets/assets/app.js"),
+        "console.log(1);\n",
+    )
+    .unwrap();
     root
 }
 
@@ -2401,6 +2518,23 @@ fn the_bundle_preflight_refuses_every_damaged_input() {
     std::fs::write(
         root.join("dist/index.html"),
         "<!doctype html><script src=\"/assets/app.js\"></script>\n",
+    )
+    .unwrap();
+
+    // An embedded copy that no longer matches the built bundle.
+    std::fs::write(
+        root.join("crates/devboard/assets/assets/app.js"),
+        "console.log(2);\n",
+    )
+    .unwrap();
+    let error = verify_release_bundle(&root).expect_err("a stale embed is refused");
+    assert!(
+        error.to_string().contains("crates/devboard/assets"),
+        "{error}"
+    );
+    std::fs::write(
+        root.join("crates/devboard/assets/assets/app.js"),
+        "console.log(1);\n",
     )
     .unwrap();
 

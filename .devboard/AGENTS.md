@@ -124,6 +124,11 @@ cargo test --workspace
 bun run build && bun scripts/embed-client.mjs   # only when the client changed
 ```
 
+A client change lands together with the refreshed, committed `crates/devboard/assets`: the binary
+embeds that copy, the release workflow builds the tagged commit without re-embedding it, and both
+the CI check and `devboard publish` refuse a tree whose committed copy differs from the rebuilt
+bundle.
+
 Merge into `main` and push. A push releases nothing: `.github/workflows/release.yml` runs only on
 `workflow_dispatch`, which `devboard publish` performs. The Release Train background agent watches
 canonical `main` on its 10-minute default cadence, batches every non-merge commit since the newest

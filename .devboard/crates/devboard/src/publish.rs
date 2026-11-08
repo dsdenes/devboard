@@ -1731,6 +1731,9 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         // checkout whose sources moved ahead of a bundle this very run is about
         // to rebuild.
         verify_release_bundle(&args.harness_root)?;
+        // The tag names the released commit, not this working tree, so the copy
+        // the release ships must already be committed there.
+        verify_embedded_client_committed(&args, runner.as_ref()).await?;
 
         let published_head = preflight.published.clone();
 
@@ -3861,8 +3864,13 @@ fn dist_is_stale(harness_root: &Path) -> Result<bool> {
     Ok(newest_source_mtime(harness_root)? > newest_mtime(&dist))
 }
 
-/// Rebuilds the client bundle from the released sources. The bundle is build
-/// output, not a tracked file, so this leaves the tree clean.
+/// Rebuilds the client bundle from the released sources and embeds the result
+/// where the binary reads it.
+///
+/// `dist` is build output, but `crates/devboard/assets` is the copy the binary
+/// embeds at compile time and the release workflow builds from the tagged
+/// commit. A rebuild that changes it therefore leaves the tree dirty, and the
+/// bundle proof refuses a tag the working tree does not carry.
 async fn rebuild_client(
     args: &PublishArgs,
     runner: &dyn CommandRunner,
@@ -3876,10 +3884,34 @@ async fn rebuild_client(
         );
     }
     (log)("rebuilding the client bundle from the released sources");
+    run_bun(args, runner, &["run", "build"], "rebuild the client bundle").await?;
+    // The binary embeds `crates/devboard/assets`, never `dist`: the embed step
+    // is what puts this run's bundle where the release build reads it.
+    (log)("embedding the rebuilt client the binary serves");
+    run_bun(
+        args,
+        runner,
+        &["scripts/embed-client.mjs"],
+        "embed the rebuilt client",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Runs one Bun command in the harness root and refuses a nonzero exit.
+async fn run_bun(
+    args: &PublishArgs,
+    runner: &dyn CommandRunner,
+    arguments: &[&str],
+    what: &str,
+) -> Result<()> {
     let outcome = runner
         .run(CommandInvocation {
             program: "bun".to_string(),
-            args: vec!["run".to_string(), "build".to_string()],
+            args: arguments
+                .iter()
+                .map(|argument| (*argument).to_string())
+                .collect(),
             cwd: args.harness_root.clone(),
             env: args.environment.clone(),
             timeout: Duration::from_secs(900),
@@ -3887,7 +3919,7 @@ async fn rebuild_client(
         .await;
     if outcome.code != 0 {
         bail!(
-            "could not rebuild the client bundle: {}",
+            "could not {what}: {}",
             first_line(if outcome.stderr.is_empty() {
                 outcome.stdout.as_str()
             } else {
@@ -3902,9 +3934,11 @@ async fn rebuild_client(
 /// release. The publish calls this after it refreshes the checkout and rebuilds
 /// a stale bundle, so the proof reads the current sources.
 ///
-/// The client bundle must be newer than its sources, every `/assets/...`
-/// reference in `dist/index.html` must exist, and a staged manifest must carry
-/// a matching `devboard-manifest.json.sha256` whose version matches its tag.
+/// The client bundle must be newer than its sources, the copy at
+/// `crates/devboard/assets` the binary embeds must match it byte for byte,
+/// every `/assets/...` reference in `dist/index.html` must exist, and a staged
+/// manifest must carry a matching `devboard-manifest.json.sha256` whose version
+/// matches its tag.
 pub fn verify_release_bundle(harness_root: &Path) -> Result<()> {
     let dist = harness_root.join("dist");
     if !dist.is_dir() {
@@ -3922,6 +3956,7 @@ pub fn verify_release_bundle(harness_root: &Path) -> Result<()> {
         );
     }
     verify_index_assets(&dist)?;
+    verify_embedded_client(harness_root, &dist)?;
 
     let manifest = harness_root.join(MANIFEST_ASSET_NAME);
     let checksum = harness_root.join(MANIFEST_CHECKSUM_ASSET);
@@ -3957,6 +3992,70 @@ pub fn verify_release_bundle(harness_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The committed copy of the built client the binary embeds at compile time.
+///
+/// `scripts/embed-client.mjs` refreshes it from `dist`, so it is build output
+/// rather than source: the freshness walk skips it and the bundle proof
+/// compares it with the bundle the release serves.
+fn embedded_client_root(harness_root: &Path) -> PathBuf {
+    harness_root.join("crates/devboard/assets")
+}
+
+/// Refuses a release whose embedded client differs from the built bundle in
+/// one path, one file, or one byte.
+fn verify_embedded_client(harness_root: &Path, dist: &Path) -> Result<()> {
+    let embedded = embedded_client_root(harness_root);
+    if !embedded.is_dir() {
+        bail!(
+            "the embedded client is missing: {} does not exist; run `bun scripts/embed-client.mjs` before publishing",
+            embedded.display()
+        );
+    }
+    if dist_digest(dist)? != dist_digest(&embedded)? {
+        bail!(
+            "the embedded client differs from dist: {} is stale; run `bun scripts/embed-client.mjs` and commit the result before publishing",
+            embedded.display()
+        );
+    }
+    Ok(())
+}
+
+/// Refuses a release whose embedded client is not in the commit it tags.
+///
+/// The tag names a commit, and the release workflow builds that commit without
+/// running the embed step, so a rebuild this run performed lives only in the
+/// working tree: a pending change under `crates/devboard/assets` means the
+/// release would carry the previous bundle while this checkout already serves
+/// the new one.
+async fn verify_embedded_client_committed(
+    args: &PublishArgs,
+    runner: &dyn CommandRunner,
+) -> Result<()> {
+    let embedded = embedded_client_root(&args.harness_root);
+    let git = Git::new(runner, &args.harness_root, &args.environment);
+    let pending = git
+        .must(
+            &[
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--",
+                "crates/devboard/assets",
+            ],
+            "could not read uncommitted changes under crates/devboard/assets",
+        )
+        .await?;
+    let pending = pending.trim();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "the embedded client is not committed: {} differs from the commit the release would tag ({}), so the release would ship the previous bundle; run `bun scripts/embed-client.mjs`, commit the result, and rerun",
+        embedded.display(),
+        pending.lines().next().unwrap_or_default().trim()
+    )
+}
+
 /// The newest modification time below `directory`.
 fn newest_mtime(directory: &Path) -> std::time::SystemTime {
     let mut newest = std::time::SystemTime::UNIX_EPOCH;
@@ -3981,11 +4080,16 @@ fn newest_mtime(directory: &Path) -> std::time::SystemTime {
 
 /// The newest source file below the harness, ignoring build output and state.
 fn newest_source_mtime(harness_root: &Path) -> Result<std::time::SystemTime> {
-    fn visit(directory: &Path, newest: &mut std::time::SystemTime) -> Result<()> {
+    let embedded = embedded_client_root(harness_root);
+    fn visit(directory: &Path, embedded: &Path, newest: &mut std::time::SystemTime) -> Result<()> {
         let Ok(entries) = std::fs::read_dir(directory) else {
             return Ok(());
         };
         for entry in entries.flatten() {
+            let path = entry.path();
+            if path == embedded {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().into_owned();
             if matches!(
                 name.as_str(),
@@ -4008,9 +4112,8 @@ fn newest_source_mtime(harness_root: &Path) -> Result<std::time::SystemTime> {
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
-            let path = entry.path();
             if kind.is_dir() {
-                visit(&path, newest)?;
+                visit(&path, embedded, newest)?;
                 continue;
             }
             if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
@@ -4020,7 +4123,7 @@ fn newest_source_mtime(harness_root: &Path) -> Result<std::time::SystemTime> {
         Ok(())
     }
     let mut newest = std::time::SystemTime::UNIX_EPOCH;
-    visit(harness_root, &mut newest)?;
+    visit(harness_root, &embedded, &mut newest)?;
     Ok(newest)
 }
 
