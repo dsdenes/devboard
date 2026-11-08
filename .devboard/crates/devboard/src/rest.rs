@@ -529,6 +529,19 @@ pub static ROUTES: &[Route] = &[
     ),
     route!("getProviders", GET, "/providers", [], 200, false),
     route!(
+        "createProvider",
+        POST,
+        "/providers",
+        [
+            body_field!("request_id", "requestId"),
+            body_field!("provider", "provider"),
+            body_field!("label", "label"),
+            body_field!("key", "key"),
+        ],
+        201,
+        true
+    ),
+    route!(
         "saveProvider",
         PUT,
         "/providers/{id}",
@@ -1146,8 +1159,8 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn the_table_has_eighty_operations_and_no_socket() {
-        assert_eq!(ROUTES.len(), 80);
+    fn the_table_lists_every_served_operation_and_no_socket() {
+        assert_eq!(ROUTES.len(), 81);
         for route in ROUTES {
             assert!(route.path.starts_with('/'));
             assert!(!route.path.starts_with("/api"));
@@ -1168,6 +1181,33 @@ mod tests {
         assert_eq!(method, Method::POST);
         assert_eq!(path, "/inquiries/conversations");
         assert_eq!(body["conversationId"], "conversation-1");
+    }
+
+    #[test]
+    fn provider_create_and_update_map_to_the_collection_and_item() {
+        let (method, path, body) = request_for_command(&json!({
+            "type": "createProvider",
+            "requestId": 1,
+            "provider": "opencode-go",
+            "label": "main",
+            "key": "sk-test",
+        }))
+        .expect("a create request");
+        assert_eq!(method, Method::POST);
+        assert_eq!(path, "/providers");
+        assert_eq!(body["requestId"], 1);
+        assert_eq!(body["provider"], "opencode-go");
+
+        let (method, path, _) = request_for_command(&json!({
+            "type": "saveProvider",
+            "id": "subscription-1",
+            "requestId": 2,
+            "provider": "opencode-go",
+            "label": "main",
+        }))
+        .expect("an update request");
+        assert_eq!(method, Method::PUT);
+        assert_eq!(path, "/providers/subscription-1");
     }
 
     #[test]

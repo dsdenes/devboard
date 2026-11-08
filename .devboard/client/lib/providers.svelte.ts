@@ -157,7 +157,8 @@ export class ProviderStore {
     key?: string;
   }): number | null {
     this.saveResult = null;
-    return this.#change("save", (requestId) => ({ type: "saveProvider", requestId, ...input }));
+    const type = input.id === undefined ? "createProvider" : "saveProvider";
+    return this.#change("save", (requestId) => ({ type, requestId, ...input }));
   }
 
   remove(id: string): number | null {

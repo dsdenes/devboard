@@ -88,6 +88,7 @@ export const REST_OPERATIONS: Record<string, RestOperation> = {
   "ask": { method: "POST", path: "/inquiries/conversations", pathParams: [] },
   "closeAsk": { method: "DELETE", path: "/inquiries/conversations/{conversation_id}", pathParams: [["conversation_id", "conversationId"]] },
   "getProviders": { method: "GET", path: "/providers", pathParams: [] },
+  "createProvider": { method: "POST", path: "/providers", pathParams: [] },
   "saveProvider": { method: "PUT", path: "/providers/{id}", pathParams: [["id", "id"]] },
   "deleteProvider": { method: "DELETE", path: "/providers/{id}", pathParams: [["id", "id"]] },
   "setProviderEnabled": { method: "PATCH", path: "/providers/{id}", pathParams: [["id", "id"]] },

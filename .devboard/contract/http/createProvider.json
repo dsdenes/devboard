@@ -1,0 +1,10 @@
+{
+  "name": "createProvider",
+  "method": "POST",
+  "path": "/providers",
+  "status": 201,
+  "headers": {},
+  "requestHeaders": {},
+  "requestBody": "",
+  "body": ""
+}
