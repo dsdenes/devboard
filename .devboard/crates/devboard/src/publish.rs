@@ -733,15 +733,19 @@ impl<'a> Git<'a> {
     }
 
     async fn run(&self, args: &[&str]) -> CommandOutcome {
+        // One absolute root for both `-C` and the working directory: a relative
+        // root applied to both would be resolved twice, once per nested
+        // directory, and `publish --repo .` names the checkout root relatively.
+        let root = absolute_path(self.repo_dir);
         let mut argv = Vec::with_capacity(args.len() + 2);
         argv.push("-C".to_string());
-        argv.push(self.repo_dir.to_string_lossy().into_owned());
+        argv.push(root.to_string_lossy().into_owned());
         argv.extend(args.iter().map(|arg| (*arg).to_string()));
         self.runner
             .run(CommandInvocation {
                 program: "git".to_string(),
                 args: argv,
-                cwd: self.repo_dir.to_path_buf(),
+                cwd: root,
                 env: self.environment.clone(),
                 timeout: Duration::from_secs(600),
             })

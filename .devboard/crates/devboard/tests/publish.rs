@@ -948,6 +948,25 @@ impl ReleaseSuiteGate for RacingSuiteGate {
     }
 }
 
+/// One path named relative to another, without requiring either to be canonical.
+fn relative_to(path: &Path, base: &Path) -> PathBuf {
+    let path: Vec<_> = path.components().collect();
+    let base: Vec<_> = base.components().collect();
+    let shared = path
+        .iter()
+        .zip(&base)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in shared..base.len() {
+        relative.push("..");
+    }
+    for component in &path[shared..] {
+        relative.push(component.as_os_str());
+    }
+    relative
+}
+
 fn test_args(
     repo: &Path,
     gitea: &StubServer,
@@ -1282,6 +1301,22 @@ async fn uncommitted_work_that_blocks_the_fast_forward_is_refused() {
         format!("{error:#}").contains("uncommitted changes would block the fast-forward"),
         "{error:#}"
     );
+}
+
+#[tokio::test]
+async fn a_relative_checkout_root_publishes_from_its_own_directory() {
+    let live = live("relative-root", release_assets()).await;
+    let cwd = fs::canonicalize(std::env::current_dir().expect("a working directory"))
+        .expect("a real working directory");
+    let relative = relative_to(&live.seed, &cwd);
+
+    // `devboard publish --repo .` names the checkout root relatively; every git
+    // read must resolve it once, not once per directory it descends into.
+    let args = test_args(&relative, &live.gitea_server, &live.github_server, None);
+    let report = publish(args)
+        .await
+        .expect("a relative checkout root publishes");
+    assert_eq!(report.version, "1.1.0");
 }
 
 #[tokio::test]
