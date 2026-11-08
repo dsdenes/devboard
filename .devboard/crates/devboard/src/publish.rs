@@ -1477,12 +1477,19 @@ impl Api {
         Ok(())
     }
 
-    /// Creates a parentless commit over the empty tree and points `tag` at it.
-    /// The release tag carries no harness source.
+    /// Creates a parentless commit over the empty tree, points `tag` at it,
+    /// and publishes the release the ref move detached.
     ///
     /// GitHub refuses `POST /git/trees` with an empty `tree`, so the commit
-    /// names git's well-known empty-tree object directly.
-    async fn github_retag_empty(&self, tag: &str, version: &str) -> Result<String> {
+    /// names git's well-known empty-tree object directly. Deleting the
+    /// release's tag ref turns the release into a draft, so the release is
+    /// published again and read back by tag before publish reports.
+    async fn github_retag_empty(
+        &self,
+        tag: &str,
+        version: &str,
+        release_id: u64,
+    ) -> Result<String> {
         let repository = github_repo_path(&self.github_repo);
         let commit = self
             .github_json(
@@ -1518,6 +1525,24 @@ impl Api {
             "application/vnd.github+json",
         )
         .await?;
+        self.github_json(
+            "PATCH",
+            &format!("/repos/{repository}/releases/{release_id}"),
+            Some(json!({"draft": false})),
+            "application/vnd.github+json",
+        )
+        .await?;
+        let mut published = false;
+        for _ in 0..10 {
+            if self.github_release_by_tag(tag).await?.is_some() {
+                published = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        if !published {
+            bail!("the GitHub release {tag} is not published after the tag move");
+        }
         Ok(commit_sha)
     }
 
@@ -2302,7 +2327,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         // The release tag names an empty-tree commit: the built assets are all
         // it points at, and the temporary build ref is deleted. GitHub's main
         // is never advanced to the released commit.
-        let empty = api.github_retag_empty(&tag, &version).await?;
+        let empty = api.github_retag_empty(&tag, &version, release_id).await?;
         api.github_delete_ref(&build_ref(&tag)).await?;
         (log)(&format!(
             "GitHub tag {tag} names the empty release commit {}; the build ref is gone",

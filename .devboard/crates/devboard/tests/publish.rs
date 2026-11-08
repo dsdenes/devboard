@@ -729,6 +729,9 @@ fn github_route(
             body: Vec::new(),
         };
     }
+    if request.method == "PATCH" && path.starts_with("/repos/dsdenes/devboard/releases/") {
+        return json_response(json!({"id": 7, "draft": false, "tag_name": "v1.1.0"}));
+    }
     if let Some(rest) = path.strip_prefix("/repos/dsdenes/devboard/releases/") {
         if let Some(id_text) = rest.strip_suffix("/assets") {
             let id: u64 = id_text.parse().unwrap_or(0);
@@ -1359,6 +1362,12 @@ async fn a_landing_that_pushes_during_the_suite_is_integrated_and_released() {
     assert!(
         String::from_utf8_lossy(&commit_request.body).contains(EMPTY_TREE_SHA),
         "the release commit names git's empty tree"
+    );
+    assert!(
+        live.github_server
+            .find("PATCH", "/repos/dsdenes/devboard/releases/7")
+            .is_some(),
+        "the release is published again after the tag move"
     );
     assert_eq!(live.github_stub.dispatch_count(), 1);
     assert!(
