@@ -1113,6 +1113,70 @@ async fn a_single_responsibility_page_open_pushes_the_worker_refresh() {
     }
 }
 
+/// The page open that asks for one fresh read answers the projection the poll
+/// maintains. Reading the family's state tree on that request is what pushed
+/// the action past the 1000 ms budget under load, so the read must not read it
+/// at all: the projection survives the state directory disappearing, and only
+/// the poll replaces it.
+#[tokio::test]
+async fn a_refresh_answers_the_polled_projection_without_walking_the_state_tree() {
+    let root = scratch("refresh-projection");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let pid = stand_in_watchdog();
+    write_lock(&repo, &state, pid);
+    let directory = state.join("dead-code").join(repo_key(&repo));
+    let mut seeded = dead_code_state(&root, &repo, &state, pid);
+    seeded["issues"] = json!([{
+        "number": 1,
+        "title": "delete the unused helper",
+        "url": "https://example.test/owner/repo/issues/1",
+        "createdAt": "2026-01-01T00:00:00.000Z",
+        "state": "pending",
+        "category": "unreferenced-symbol",
+        "version": null,
+        "versionAttemptAt": null,
+        "versionError": null
+    }]);
+    write_json(&directory.join("state.json"), seeded);
+
+    // The poll is the one projection owner; it fills the cache this read answers.
+    devboard::agents_mode::poll_once(&app);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::RefreshAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let warmed = agent(&frames(&mut inbox), "dead-code")
+        .expect("a dead-code snapshot")
+        .clone();
+    assert_eq!(warmed["issues"][0]["title"], "delete the unused helper");
+
+    // With the worker state gone, a fresh walk would answer no row at all; the
+    // projection the poll already published answers them unchanged.
+    std::fs::remove_dir_all(&directory).expect("the state directory");
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::RefreshAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let answered_frames = frames(&mut inbox);
+    let answered = agent(&answered_frames, "dead-code").expect("the answering snapshot");
+    assert_eq!(
+        answered["issues"], warmed["issues"],
+        "the refresh walked the family's state tree instead of answering its projection"
+    );
+    kill_stand_in(pid);
+}
+
 #[tokio::test]
 async fn a_changed_open_issue_read_republishes_the_prompt_template() {
     let root = scratch("prompt-refresh");

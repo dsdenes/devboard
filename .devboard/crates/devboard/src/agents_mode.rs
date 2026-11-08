@@ -2223,8 +2223,10 @@ struct AgentsMode {
     adapters: Vec<Adapter>,
     signatures: Mutex<HashMap<&'static str, String>>,
     /// The last projected snapshot of each family. The poll replaces it when
-    /// the family changes, and a connect replay and `getAgents` answer from it
-    /// instead of rebuilding nine snapshots on the socket's critical path.
+    /// the family changes, and a connect replay, `getAgents`, and the page
+    /// open's `refreshAgent` answer from it instead of walking a family's state
+    /// on a read's critical path. `getAgent` still projects fresh: it is the
+    /// proof read a Start's published lock answers.
     cached: Mutex<HashMap<&'static str, Value>>,
     /// The cheap state signature each family's last snapshot was built from.
     /// The 250 ms poll rebuilds and serializes a family only after this
@@ -2778,10 +2780,23 @@ impl AgentsMode {
     }
 
     fn send_agent(&self, conn: &Conn, adapter: &Adapter) {
-        // A targeted read is a fresh projection; only the all-agents read
-        // answers from the poll's cache.
+        // A targeted read is a fresh projection. This is the proof read: a
+        // Start's worker proves itself by publishing its lock, and the answer
+        // must show it. The page-open read is `answer_refresh`, which never
+        // walks the state tree.
         let agent = adapter.snapshot();
         self.store_projection(adapter, &agent);
+        conn.send(json!({
+            "type": "agentState",
+            "agent": agent,
+        }));
+    }
+
+    /// Answers the projection the poll maintains. The refresh command's nudge
+    /// makes the worker re-read, and the poll publishes what it finds, so this
+    /// read never walks the family's state tree.
+    fn answer_refresh(&self, conn: &Conn, adapter: &Adapter) {
+        let agent = self.project(adapter);
         conn.send(json!({
             "type": "agentState",
             "agent": agent,
@@ -2874,7 +2889,7 @@ impl AgentsMode {
                     return true;
                 };
                 adapter.request_sync();
-                self.send_agent(conn, adapter);
+                self.answer_refresh(conn, adapter);
                 true
             }
             Command::StartAgent { id } => {
