@@ -1,9 +1,10 @@
 node_modules/
 dist/
+__pycache__/
 .worktree/
 .tmp/
 .env
-.devboard/.test-tmp/
+.devboard/.test-tmp*
 .reset-test-tmp/
 
 # ui-ux bootstrap scratch: Playwright browsers and build output stay uncommitted
@@ -37,7 +38,15 @@ dist/
 /.omp/skills/devboard-restful-api-implementation
 /.omp/skills/devboard-single-responsibility-principle
 /.omp/skills/devboard-ui-ux
-/.devboard
+# A self-install writes only the retired extensions directory and, on an
+# installed host, the version manifest under `.devboard`; the harness source
+# tree itself is repository content and stays visible to git. The MATE panel
+# installer and the desktop entry it generates beside the tracked launcher are
+# this host's tooling, so they stay out of the repository.
+/.devboard/extensions
+/.devboard/devboard.json
+/.devboard/desktop/devboard.desktop
+/.devboard/desktop/install-panel-icon.py
 /.omp/commands
 /.omp/extensions
 /.omp/mcp.json

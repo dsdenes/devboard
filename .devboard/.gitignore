@@ -4,3 +4,4 @@
 /.bench-work/
 /bench/.shadow-work/
 /.test-tmp/
+/crates/.test-tmp/

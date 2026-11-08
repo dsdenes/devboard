@@ -682,16 +682,25 @@ fn install_manifest(host: &Path) -> Result<()> {
     fs::write(&path, text).with_context(|| format!("install: writing {}", path.display()))
 }
 
-/// The host ignore lines the installed tree needs. `/.devboard` covers the
-/// installed payload; the `.omp` entries cover wrappers, extensions, and the
-/// MCP configuration. A rerun adds nothing.
-fn baseline_ignore_lines(names: &[String]) -> Vec<String> {
-    let mut lines = vec![
-        "/.devboard".to_string(),
-        "/.omp/commands".to_string(),
-        "/.omp/extensions".to_string(),
-        "/.omp/mcp.json".to_string(),
-    ];
+/// The host ignore lines the installed tree needs. `/.devboard` covers
+/// everything an install writes into a host prefix: the prompts and extensions
+/// payload, the binary under `bin`, the version manifest, and the `.tmp` state
+/// directory. A canonical source checkout is its own harness source, so it
+/// never ignores that prefix; it ignores only the payload subpaths an install
+/// creates there, and its prompts tree stays visible to git. The `.omp` entries
+/// cover wrappers, extensions, and the MCP configuration. A rerun adds nothing.
+fn baseline_ignore_lines(host: &Path, names: &[String]) -> Vec<String> {
+    let mut lines = if is_canonical_checkout(host) {
+        vec![
+            "/.devboard/extensions".to_string(),
+            "/.devboard/devboard.json".to_string(),
+        ]
+    } else {
+        vec!["/.devboard".to_string()]
+    };
+    lines.push("/.omp/commands".to_string());
+    lines.push("/.omp/extensions".to_string());
+    lines.push("/.omp/mcp.json".to_string());
     for name in names {
         lines.push(format!("/.omp/skills/{name}"));
     }
@@ -714,7 +723,7 @@ fn ensure_gitignore(host: &Path, names: &[String]) -> Result<Vec<String>> {
     };
     let lines: Vec<&[u8]> = existing.split(|byte| *byte == b'\n').collect();
     let mut added = Vec::new();
-    for entry in baseline_ignore_lines(names) {
+    for entry in baseline_ignore_lines(host, names) {
         if lines.contains(&entry.as_bytes()) {
             continue;
         }

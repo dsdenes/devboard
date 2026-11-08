@@ -240,10 +240,22 @@ if [ -d "$source_skills" ] && [ -d "$target_omp/skills" ]; then
 fi
 
 # The ignore lines cover the installed payload and wrappers, so a host's git
-# status stays free of them. The write is idempotent: a rerun adds nothing.
+# status stays free of them. `/.devboard` covers everything an install writes
+# into a host prefix: the prompts and extensions payload, the binary under
+# `bin`, the version manifest, and the `.tmp` state directory. A self-install
+# (this checkout installing itself) never ignores that prefix, because it is
+# the harness source tree; it ignores only the payload subpaths the install
+# creates there. The write is idempotent: a rerun adds nothing.
 ignore_path="$host/.gitignore"
+baseline=()
+if [ "$source_dir" = "$host/.devboard" ]; then
+  baseline+=("/.devboard/extensions" "/.devboard/devboard.json")
+else
+  baseline+=("/.devboard")
+fi
+baseline+=("/.omp/commands" "/.omp/extensions" "/.omp/mcp.json")
 missing=()
-for entry in "/.devboard" "/.omp/commands" "/.omp/extensions" "/.omp/mcp.json"; do
+for entry in "${baseline[@]}"; do
   if [ ! -f "$ignore_path" ] || ! grep -Fxq -- "$entry" "$ignore_path"; then
     missing+=("$entry")
   fi
