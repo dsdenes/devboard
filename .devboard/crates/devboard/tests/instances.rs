@@ -756,33 +756,55 @@ fn stat_fields(pid: u32) -> Option<(i64, i64)> {
 }
 
 fn record_child(state: &Path, pid: u32, repo: &Path) {
-    // `/proc/<pid>/cmdline` can read empty in the instant between fork and the
-    // child's own exec, so wait for the argv the reaper will compare.
-    let started = Instant::now();
-    let argv = loop {
-        match devboard::supervision::process_argv(pid) {
-            Some(argv) if !argv.is_empty() => break argv,
-            _ if started.elapsed() > Duration::from_secs(5) => {
-                panic!("the child's argv is readable")
-            }
-            _ => std::thread::sleep(Duration::from_millis(10)),
-        }
-    };
-    let (start_ticks, pgid) = stat_fields(pid).expect("the child's stat");
-    let record = json!({
-        "version": 1,
-        "pid": pid,
-        "argv": argv,
-        "cwd": repo.to_string_lossy(),
-        "ownerPid": 2_000_000_000u32,
-        "startedAt": devboard::workers::watchdog::now_iso(),
-        "startTicks": start_ticks,
-        "pgid": pgid,
-    });
+    // The reaper compares the record with the kernel's own argv and start
+    // tick. Write it and prove the same values read back before the sweep.
     let path = devboard::supervision::supervision_record_path(state, pid);
     std::fs::create_dir_all(path.parent().expect("a supervision directory"))
         .expect("the supervision directory");
-    std::fs::write(path, format!("{record}\n")).expect("a supervision record");
+    let started = Instant::now();
+    loop {
+        let Some(argv) = devboard::supervision::process_argv(pid) else {
+            panic!("the child's argv is readable");
+        };
+        let Some((start_ticks, pgid)) = stat_fields(pid) else {
+            panic!("the child's stat is readable");
+        };
+        let record = json!({
+            "version": 1,
+            "pid": pid,
+            "argv": argv,
+            "cwd": repo.to_string_lossy(),
+            "ownerPid": 2_000_000_000u32,
+            "startedAt": devboard::workers::watchdog::now_iso(),
+            "startTicks": start_ticks,
+            "pgid": pgid,
+        });
+        std::fs::write(&path, format!("{record}\n")).expect("a supervision record");
+        let matches = devboard::supervision::process_stat(pid)
+            .is_some_and(|stat| stat.start_ticks == start_ticks && stat.pgid == pgid)
+            && devboard::supervision::process_argv(pid).is_some_and(|live| {
+                live.join("\u{0}")
+                    == record["argv"]
+                        .as_array()
+                        .map(|entries| {
+                            entries
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect::<Vec<String>>()
+                        })
+                        .unwrap_or_default()
+                        .join("\u{0}")
+            });
+        if matches {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the supervision record matches the live child"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn sleep_child() -> Child {
