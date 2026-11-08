@@ -57,15 +57,11 @@
 
   onMount(() => {
     markDraftsPage(true);
-    const restore = (): void => {
-      const saved = goalDrafts.draftPath;
-      if (saved !== null && goalDrafts.draft === null) goalDrafts.openDraft(saved);
-    };
     goalDrafts.refreshDrafts();
-    restore();
+    goalDrafts.restoreDraft();
     const timer = setInterval(() => {
       goalDrafts.refreshDrafts();
-      restore();
+      goalDrafts.restoreDraft();
     }, 2000);
     return () => {
       clearInterval(timer);

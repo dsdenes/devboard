@@ -65,6 +65,8 @@ export class GoalDraftsStore {
   draftPath = $state<string | null>(readDraftPath());
   /** The detail response is only accepted for the path last requested. */
   private draftRequest: string | null = null;
+  /** The draft whose detail read has not answered yet, if one is. */
+  private draftReading: string | null = null;
   draftErrors = $state<Record<string, string>>({});
   /** The New goal popover's open state and its in-flight submission. */
   draftCreateOpen = $state(false);
@@ -119,13 +121,34 @@ export class GoalDraftsStore {
     this.draft = null;
     delete this.draftErrors[path];
     writeDraftPath(path);
-    if (connection.open) connection.send({ type: "getGoalDraft", path });
+    if (connection.open) {
+      this.draftReading = path;
+      connection.send({ type: "getGoalDraft", path });
+    }
+  }
+
+  /**
+   * Re-reads the stored draft after a reload. A draft whose read is still
+   * unanswered is not requested again: the dashboard's two-second restore
+   * otherwise stacked a read per tick behind a slow one, and the copies took
+   * the browser connections an operator action needed.
+   */
+  restoreDraft(): void {
+    const saved = this.draftPath;
+    if (saved === null || this.draft !== null || this.draftReading === saved) return;
+    this.openDraft(saved);
+  }
+
+  /** A reconnect retries a read the lost connection never answered. */
+  resetActiveOperations(): void {
+    this.draftReading = null;
   }
 
   clearDraft(): void {
     this.draftPath = null;
     this.draftRequest = null;
     this.draft = null;
+    this.draftReading = null;
     writeDraftPath(null);
   }
 
@@ -294,6 +317,7 @@ export class GoalDraftsStore {
     if (message.type === "issuesDraftDetail" && isObject(message.draft)) {
       const draft = message.draft as unknown as GoalDraftDetail;
       if (typeof draft.path !== "string" || typeof draft.text !== "string") return;
+      if (this.draftReading === draft.path) this.draftReading = null;
       // A detail for a superseded selection must not replace the open draft.
       if (this.draftRequest !== null && draft.path !== this.draftRequest) return;
       this.draft = draft;
@@ -304,6 +328,7 @@ export class GoalDraftsStore {
     }
     if (message.type === "issuesDraftError" && typeof message.message === "string") {
       const path = typeof message.path === "string" ? message.path : null;
+      if (path === null || path === this.draftReading) this.draftReading = null;
       // A stored path whose draft is gone opens the list instead of an error.
       if (
         path === this.draftPath &&

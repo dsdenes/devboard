@@ -65,6 +65,7 @@ export class RunOutputStore {
   private visibilityHandler: (() => void) | undefined;
   private handlers: Array<(frame: RunFrame) => void> = [];
   private polling = false;
+  private reading = false;
 
   onFrame(handler: (frame: RunFrame) => void): void {
     this.handlers.push(handler);
@@ -87,28 +88,37 @@ export class RunOutputStore {
 
   /** Reads the run collection and reconciles one socket per live run. */
   private async poll(): Promise<void> {
-    let body: unknown;
+    // One read at a time. A slow answer used to leave a fresh `/agent-runs`
+    // request every second, and those stacked reads took a browser connection
+    // from an operator action along with the page's polls.
+    if (this.reading) return;
+    this.reading = true;
     try {
-      const response = await fetch("/agent-runs", {
-        headers: { accept: "application/json" },
-        cache: "no-store",
-      });
-      if (!response.ok) return;
-      body = await response.json();
-    } catch {
-      return;
-    }
-    const runs = parseRuns(body);
-    this.runs = runs;
-    const live = new Map(runs.filter((run) => run.live).map((run) => [run.id, run] as const));
-    for (const [id, socket] of this.sockets) {
-      const run = live.get(id);
-      if (run === undefined) {
-        this.close(id, socket);
+      let body: unknown;
+      try {
+        const response = await fetch("/agent-runs", {
+          headers: { accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+        body = await response.json();
+      } catch {
+        return;
       }
-    }
-    for (const run of live.values()) {
-      if (!this.sockets.has(run.id)) this.open(run);
+      const runs = parseRuns(body);
+      this.runs = runs;
+      const live = new Map(runs.filter((run) => run.live).map((run) => [run.id, run] as const));
+      for (const [id, socket] of this.sockets) {
+        const run = live.get(id);
+        if (run === undefined) {
+          this.close(id, socket);
+        }
+      }
+      for (const run of live.values()) {
+        if (!this.sockets.has(run.id)) this.open(run);
+      }
+    } finally {
+      this.reading = false;
     }
   }
 

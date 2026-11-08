@@ -352,6 +352,7 @@
       issues.request();
       agents.request();
       discover.request();
+      goalDrafts.resetActiveOperations();
       goalDrafts.refreshDrafts();
       complexity.requestComplexity();
       resources.request();
