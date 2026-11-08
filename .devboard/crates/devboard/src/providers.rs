@@ -2089,10 +2089,7 @@ impl ProviderService {
         request_id: Option<&Value>,
         input: SaveProviderInput,
     ) {
-        if !request_id
-            .map(is_provider_request_id)
-            .unwrap_or(false)
-        {
+        if !request_id.map(is_provider_request_id).unwrap_or(false) {
             conn.send(provider_error_frame(None, PROVIDER_CHANGE_NEEDS_ID));
             return;
         }
