@@ -649,6 +649,15 @@ layout, and the last update failure; it exits nonzero and names the failing chec
 `AGENTS.md` differing from the template or a git-tracked payload file is reported as drift
 without failing the check.
 
+On a host that carries a harness of its own — a source checkout's `.devboard/Cargo.toml`, an
+installed `.devboard/bin/devboard`, or a built `target/release|debug/devboard` — doctor also runs
+the managed `mcpServers.devboard` registration once, with the host root as its working directory,
+a null stdin, and a ten-second deadline. A registration that exits nonzero, or outlives the
+deadline, fails the check with `.omp/mcp.json` and the probe's first stderr line, so an
+unresolvable registration can never pass. A plain installed payload carries only
+`.devboard/devboard.json` and reaches its harness through `PATH`; it proves nothing about the
+registration and is not probed.
+
 ### Updates
 
 Every installed dashboard reads the Gitea release manifest at startup and every 60 seconds,
@@ -755,7 +764,7 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 
 |Skill|Carries|
 |---|---|
-|`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.mjs`.|
+|`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.sh`.|
 |`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
 |`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs, with the five violation categories; the Single Responsibility worker's normative source.|
 |`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym.|
@@ -3315,8 +3324,23 @@ holding a proposal pending, and byte-identical session and journal directories.
 ## Devboard MCP server
 
 `.devboard/omp/mcp.json` declares `mcpServers.devboard` with `type: "stdio"`. Its command and
-arguments contain no absolute path: a small `sh -c` probe resolves the harness from
-`DEVBOARD_HARNESS_DIR` when set, else the checkout's `.devboard`, else the installed prefix. The
+arguments contain no absolute path: a small `sh -c` probe resolves the harness in this order, and
+the first candidate wins:
+
+1. `DEVBOARD_BIN`, when it names an executable.
+2. A harness directory named by `DEVBOARD_HARNESS_DIR`.
+3. The checkout's `.devboard`, located from the current directory's git top level, then the
+   explicit project root (the preflight's optional argument), then the current directory.
+4. The installed prefix `$PI_CODING_AGENT_DIR/..`.
+5. `devboard` on `PATH`.
+
+Inside a harness directory the candidates are `bin/devboard`, then `target/release/devboard`,
+then `target/debug/devboard`. When nothing resolves — no harness directory yields a candidate and
+`PATH` carries no `devboard` — the probe writes exactly one stderr line naming `DEVBOARD_BIN`,
+`DEVBOARD_HARNESS_DIR`, `.devboard/bin/devboard`, `.devboard/target/release/devboard`, and
+`.devboard/target/debug/devboard`, and the build command `cd .devboard && cargo build`, then exits
+127 before any protocol byte. The same order, candidates, and one-line diagnostic belong to the
+UI/UX skill's `scripts/preflight.sh`, which names `DEVBOARD_BIN` in its line and exits 127. The
 harness serves the protocol itself as `devboard mcp`; `install.sh` copies the file to
 `<host>/.omp/mcp.json` and the launcher installs the same bytes on install and update.
 

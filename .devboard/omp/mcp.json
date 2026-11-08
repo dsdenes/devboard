@@ -16,7 +16,7 @@
       "command": "sh",
       "args": [
         "-c",
-        "if command -v devboard >/dev/null 2>&1; then exec devboard mcp; fi; for c in \"${DEVBOARD_HARNESS_DIR:-}\" \"$PI_CODING_AGENT_DIR/..\" .devboard; do if [ -n \"$c\" ] && [ -x \"$c/bin/devboard\" ]; then exec \"$c/bin/devboard\" mcp; fi; done; exec devboard mcp"
+        "b=\n[ -n \"${DEVBOARD_BIN:-}\" ]&&[ -x \"$DEVBOARD_BIN\" ]&&[ ! -d \"$DEVBOARD_BIN\" ]&&b=$DEVBOARD_BIN\nif [ -z \"$b\" ];then\nfor h in \"${DEVBOARD_HARNESS_DIR:-}\" \"$(git rev-parse --show-toplevel 2>/dev/null)/.devboard\" \"$(pwd)/.devboard\" \"${PI_CODING_AGENT_DIR:+$PI_CODING_AGENT_DIR/..}\";do\nfor r in bin/devboard target/release/devboard target/debug/devboard;do\n[ -x \"$h/$r\" ]&&[ ! -d \"$h/$r\" ]&&{ b=$h/$r;break 2;}\ndone\ndone\nfi\nb=${b:-$(command -v devboard)}\n[ \"$b\" ]||{ echo \"devboard-mcp: no devboard; searched DEVBOARD_HARNESS_DIR, .devboard/bin/devboard, .devboard/target/release/devboard, .devboard/target/debug/devboard; build with 'cd .devboard && cargo build' or set DEVBOARD_BIN\" >&2;exit 127;}\nexec \"$b\" mcp\n"
       ]
     }
   }

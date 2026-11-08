@@ -878,6 +878,7 @@ pub fn doctor_with_env(
         }
     }
 
+    doctor_registration(&host, environment, &mut report);
     doctor_layout(&host, &mut report);
     doctor_git_root(&host, &mut report);
     doctor_omp(&mut report);
@@ -960,6 +961,146 @@ pub fn doctor_with_env(
     }
     report.failures = failures;
     Ok(report)
+}
+
+/// The bound the managed registration gets before doctor reports it stuck.
+const REGISTRATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs the host's managed `mcpServers.devboard` registration once, so a
+/// registration that resolves no harness fails doctor instead of passing.
+///
+/// The check applies to a host that carries a harness of its own: a source
+/// checkout's `.devboard/Cargo.toml`, an installed `.devboard/bin/devboard`, or
+/// a built `target/release|debug/devboard`. A plain installed payload carries
+/// only `devboard.json` and reaches its harness through `PATH`, so it proves
+/// nothing about the registration and is left alone.
+fn doctor_registration(
+    host: &Path,
+    environment: &std::collections::HashMap<String, String>,
+    report: &mut DoctorReport,
+) {
+    if !host_carries_harness(host) {
+        return;
+    }
+    let path = host.join(".omp/mcp.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    let Some(server) = config
+        .get("mcpServers")
+        .and_then(|servers| servers.get("devboard"))
+    else {
+        report
+            .failures
+            .push(".omp/mcp.json declares no mcpServers.devboard".to_string());
+        return;
+    };
+    let Some(command) = server.get("command").and_then(|value| value.as_str()) else {
+        report
+            .failures
+            .push(".omp/mcp.json mcpServers.devboard has no command".to_string());
+        return;
+    };
+    let args: Vec<String> = server
+        .get("args")
+        .and_then(|value| value.as_array())
+        .map(|args| {
+            args.iter()
+                .filter_map(|arg| arg.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    match run_registration(host, command, &args, environment) {
+        Ok(RegistrationOutcome::Ready) => {}
+        Ok(RegistrationOutcome::Failed(first)) => report.failures.push(format!(
+            ".omp/mcp.json mcpServers.devboard does not start a harness: {first}"
+        )),
+        Ok(RegistrationOutcome::Stuck) => report.failures.push(format!(
+            ".omp/mcp.json mcpServers.devboard did not answer within {} s",
+            REGISTRATION_DEADLINE.as_secs()
+        )),
+        Err(error) => report.failures.push(format!(
+            ".omp/mcp.json mcpServers.devboard could not run: {error}"
+        )),
+    }
+}
+
+/// True when the host owns a harness executable or a harness source tree.
+fn host_carries_harness(host: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let prefix = host.join(".devboard");
+    let executable = |relative: &str| -> bool {
+        let Ok(metadata) = fs::metadata(prefix.join(relative)) else {
+            return false;
+        };
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    };
+    prefix.join("Cargo.toml").is_file()
+        || executable("bin/devboard")
+        || executable("target/release/devboard")
+        || executable("target/debug/devboard")
+}
+
+/// What one registration run observed.
+enum RegistrationOutcome {
+    /// The registered command exited 0.
+    Ready,
+    /// The registered command exited nonzero; carries its first stderr line.
+    Failed(String),
+    /// The registered command outlived the doctor deadline.
+    Stuck,
+}
+
+/// Runs one registered command with the host as cwd, no stdin, and no stdout,
+/// and keeps its first stderr line.
+fn run_registration(
+    host: &Path,
+    command: &str,
+    args: &[String],
+    environment: &std::collections::HashMap<String, String>,
+) -> std::io::Result<RegistrationOutcome> {
+    let mut child = std::process::Command::new(command)
+        .args(args)
+        .current_dir(host)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .env_clear()
+        .envs(environment)
+        .spawn()?;
+    let deadline = std::time::Instant::now() + REGISTRATION_DEADLINE;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        use std::io::Read;
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    match status {
+        None => Ok(RegistrationOutcome::Stuck),
+        Some(status) if status.success() => Ok(RegistrationOutcome::Ready),
+        Some(_) => Ok(RegistrationOutcome::Failed(
+            stderr
+                .lines()
+                .next()
+                .unwrap_or("it printed no diagnostic")
+                .trim()
+                .to_string(),
+        )),
+    }
 }
 
 /// `.devboard` and `.omp` must be real directories, never symlinks into a

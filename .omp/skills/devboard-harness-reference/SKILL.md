@@ -10,8 +10,7 @@ metadata:
 Local browser interface for a repository's goal, Flow implementation, and Discover artifacts.
 It renders one full-viewport, dark-first administration workspace with an activity bar, a
 contextual sidebar, one workspace page per mode, resizable split panes, read-only document views, xterm
-terminals, a command palette, and a status bar. Every mode is a client-side view over the existing
-WebSocket contract; the server still owns all work and durable state.
+terminals, a command palette, and a status bar. Every mode is a client-side view over the REST API; the server still owns all work and durable state.
 
 ## Project-scoped skills
 
@@ -52,16 +51,16 @@ Every button in the interface is the one primitive in
 element; a bespoke control such as a sidebar row, a choice, a palette item, or a status item uses
 that primitive's `bare` form and keeps its own class and geometry. `IconButton` is the square icon
 form built from the same variant table, and `CommandButton` composes the primitive for a control
-that dispatches a WebSocket command; it renders no button of its own, and a control it wraps that
+that performs a dashboard action; it renders no button of its own, and a control it wraps that
 carries no content of its own shows the resting label it was given.
 
 - An activation paints a pressed fill immediately, from pointer-down until pointer-up and while
   `Enter` or `Space` activates the control, in both the dark and the light theme. The pressed rule
   reuses existing role tokens and adds no color token.
-- A control whose activation dispatches a WebSocket command replaces its visible label with the
+- A control whose activation performs a dashboard action replaces its visible label with the
   present participle of its own verb followed by `…` — `Start` → `Starting…`, `Save` → `Saving…`,
   `Check` → `Checking…`, `Discover project` → `Discovering…` — carries `aria-busy="true"`, and
-  takes no second frame from a pointer or the keyboard while it waits.
+  takes no second activation from a pointer or the keyboard while it waits.
 - Busy ends when the confirming server state arrives, and the control then renders the resting
   label from that state. No control flips a domain flag to fake immediacy.
 - The background-agent Start and Stop controls latch the agent's accepted-frame count, so any
@@ -94,7 +93,7 @@ Lucide icon above a visible 10px uppercase label (`Goal`, `Issues`, `Flow`, `Dis
 `Devboard`), an accessible name that also names the shortcut, `aria-selected`, and `aria-controls`
 naming its workspace panel. The labels never collapse to icon-only and never overflow the tab at
 the 1024×720 boundary. A fresh profile starts on Goal. Clicking a tab or pressing Alt+1, Alt+2,
-Alt+3, Alt+4, or Alt+5 changes only which mounted view is shown; it never sends a WebSocket frame.
+Alt+3, Alt+4, or Alt+5 changes only which mounted view is shown; it never issues a request.
 
 The sidebar has no header: it starts with the active mode's navigation, because the rail already
 names the mode and the status bar names the project.
@@ -438,7 +437,7 @@ scrollback, and expose their full buffer to assistive technology.
 Server errors and notices appear in the notification region (`data-testid="notifications"`) with
 severity, the subsystem or the exact agent label that raised them, text, and dismissal. Each card
 closes itself after five seconds; every entry stays in the history opened from the status bar.
-An error card files one UI issue by itself through `/feedback`, with no operator click: the issue
+An error card files one UI issue by itself through `/reports`, with no operator click: the issue
 carries the notification's text, severity, source, raise time, the card context, and the fixed
 instruction `Investigate this error and fix it if it is needed.`, and the card links to it as
 `Open issue`. The filing is keyed by the notification's severity, source, and text, so a repeat in
@@ -455,25 +454,36 @@ card, every other failure in the notice stack above the page.
 
 ### Background latency guard
 
-Every operator-initiated WebSocket command and every operator-initiated `POST /feedback` or
+Every operator-initiated REST action and every operator-initiated `POST /reports` or
 `POST /goal-proposals` runs under a background 1000 ms latency budget, and so do the six
-first-paint reads a socket open sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
-`getVersion`, `getProviders`). An action is complete when its first answer arrives — the frame
-that answers it, or the response to the request that carried it, whatever its status. A frame for
-another action or a broadcast does not complete it. A request that never answers keeps its budget
-and still files, so a lost or refused connection, a problem document, and a 304 file nothing while
-an unanswered read is still reported. The guard is observational: it never changes the 10-second
+first-paint reads a page load sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
+`getVersion`, `getProviders`). Those six are dispatched before every mode read on the same open,
+so they hold the page's first six browser connections and a slow mode read never queues one of
+them behind it. An action is complete when its first answer arrives — the frame that answers it,
+or the response to the request that carried it, whatever its status. A frame for another action
+or a broadcast does not complete it. A request that never answers keeps its budget and still
+files, so a lost or refused connection, a problem document, and a 304 file nothing while an
+unanswered read is still reported. The guard is observational: it never changes the 10-second
 command ceiling, a server timeout, a retry schedule, a polling interval, the busy control, or the
 request lifecycle. It does not dismiss a busy state, clear a control's timer, or abort a request.
 
-The `getVersion` 3-second poll, the `getMcpTools` 5-second poll, the goal-drafts 2-second
-refresh, a polling surface's repeat request, and every send issued while the socket is
+A page refreshes every registered resource once a second, and that refresh keeps at most three of
+the browser's six origin connections in flight. A poll that dispatched its whole registry at once
+took all six, so the read the operator waited on queued behind the page's own refreshes: the
+server answered `GET /providers` in 5 ms while the page measured 842 ms. Three connections stay
+free for an operator action, a first-paint read, and the bundle's own requests, and the queue
+drains as each refresh answers, so a cycle still reads every registered resource. The run's
+output poll keeps one `GET /agent-runs` read in flight, so a slow answer never stacks another
+background request beside the refreshes.
+
+The `getVersion` 1000 ms poll, the `getMcpTools` 1000 ms poll, the goal-drafts 1000 ms
+refresh, poll, a polling surface's repeat request, and every send issued while the connection is
 restarting, awaiting a replacement, or reconnecting are excluded; a reconnect clears every
 pending action without filing. A send a surface repeats on a timer is a refresh, not an operator
 action.
 
 At 1000 ms unanswered the guard raises one notice-severity card naming the action and the budget
-and files one issue through the existing `/feedback` path. A confirming frame at 999 ms files
+and files one issue through the existing `/reports` path. A confirming response at 999 ms files
 nothing; no frame at 1000 ms files exactly one issue; a frame at 1001 ms neither cancels nor
 duplicates that filing. The report's first line is
 `Slow UI action: <label> exceeded the 1000 ms budget.`, which becomes the issue title under the
@@ -488,9 +498,12 @@ systematically. Add a regression test that fails on the slow path. Do not remove
 this detector.`
 
 The report stays inside the server's 8000-unit bound. The action identity is
-`<command or endpoint>|<subject>|<route>`, where the subject is the command's identifying field
-(`id`, `run_id`, `path`, `name`, or `url`) and empty when it has none; elapsed time and timestamp
-are not part of it. Two breaches of one identity in a page session post once and show one card,
+`<command or endpoint>|<subject>|<route>`, where the subject is the field that confirms the
+command — `path` for a goal-draft command, `id` for an agent command, `runId` for a run read — so
+the frame that answers the action is the one whose subject equals the action's. A command with no
+declared confirming field reads the first present of `id`, `run_id`, `path`, `name`, or `url`, and
+none makes the subject empty; elapsed time and timestamp are not part of it. Two breaches of one
+identity in a page session post once and show one card,
 while a different identity gets its own card and POST. Every filing sends an `idempotency-key`
 derived from the identity, so a reload or a second page uses the same key and the server's
 24-hour replay cache returns the issue already filed instead of creating a duplicate. Until the
@@ -517,7 +530,7 @@ the browser, and a denied or blocked site leaves the dashboard usable with its o
 unchanged. No service worker, push subscription, server endpoint, or external notifier is
 involved, so with no page open nothing is raised.
 
-The 26px status bar is two groups. The left group states the WebSocket connection, the
+The 26px status bar is two groups. The left group states the server connection, the
 project's own name (the last path segment, with a folder mark and the full path in its tooltip),
 and the Providers control: the selected provider with its lowest remaining percentage, or
 `No provider`, whose tooltip names the provider's model and which opens the Providers dialog.
@@ -545,7 +558,7 @@ a browser; the corpus tests cover the protocol and HTTP behavior the page depend
 
 ### Developing the client
 
-The dashboard binary serves the embedded client and owns the WebSocket, so no dev server runs
+The dashboard binary serves the embedded client and owns the REST API, so no dev server runs
 during normal use. For client work with Vite HMR, start the server first, then Vite in another
 shell:
 
@@ -555,18 +568,19 @@ cargo run -p devboard -- serve   # backend, http://127.0.0.1:8080 by default
 bun run dev                      # client with HMR, http://127.0.0.1:5173 by default
 ```
 
-Vite proxies `/ws`, `/api`, `/feedback`, and `/goal-proposals` to `DEVBOARD_BACKEND` (default
+Vite proxies the REST roots (`/records`, `/goal`, `/issues`, `/agents`, `/flows`,
+`/discoveries`, `/inquiries`, `/providers`, `/resources`, `/skills`, `/versions`, `/reports`,
+`/goal-proposals`, and `/agent-runs`) to `DEVBOARD_BACKEND` (default
 `http://127.0.0.1:8080`). Set it to the server's address when the backend runs elsewhere, for
-example `DEVBOARD_BACKEND=http://127.0.0.1:9000 bun run dev`. Without the `/ws` proxy the
-interface loads but its status bar stays on `Connecting`: Vite answers the `/ws` upgrade itself
-and the backend never sees the socket. Without the `/feedback` and `/goal-proposals` entries the
-dev page answers its own 404, so `File issue` reports `The server refused the report (404)` and
-goal drafting fails the same way. Both entries come from `lib/endpoints.ts`, which the client and
-the server read too, so the three cannot disagree about a path.
+example `DEVBOARD_BACKEND=http://127.0.0.1:9000 bun run dev`. The mutating entries come from
+`lib/endpoints.ts` and the read roots from `client/lib/rest-map.ts`, which the client and the
+server read too, so the three cannot disagree about a path. A dev page whose proxy misses a root
+logs the REST refusal and reloads once, exactly like a stale bundle.
 
-The backend serves its page and its `/ws` upgrade without a credential. Open
+The backend serves its page and every REST route without a credential. Open
 `http://127.0.0.1:8080/` once in the same browser profile before loading the dev page; the Vite
-proxy forwards the socket and the page connects directly.
+proxy forwards every request and the page connects directly. The one WebSocket, a live run's
+`/agent-runs/<id>/output`, is forwarded by the same root entry.
 
 The dev server ignores the generated trees (`.tmp`, `.test-tmp`, `dist`, `coverage`). A busy
 checkout writes hundreds of thousands of files under `.tmp`; watching them reloads the page for
@@ -574,15 +588,15 @@ every agent write and eventually exhausts the dev server's heap.
 
 ## Stack
 
-- Backend: one Rust binary (Tokio and Axum) serving the embedded client and one WebSocket at
-  `/ws`. Each run spawns one `omp acp` subprocess over stdio; no Node, Bun, or npm is needed at
-  runtime.
+- Backend: one Rust binary (Tokio and Axum) serving the embedded client, the REST API at root
+  paths, and one output socket per live ACP run. Each run spawns one `omp acp` subprocess over
+  stdio; no Node, Bun, or npm is needed at runtime.
 - Client: Svelte 5 built with Vite, with shadcn-svelte components and its Tailwind CSS 4 setup,
   Bits UI dialogs, tooltips, and popovers, PaneForge split panes, TanStack Table data grids,
   xterm.js, and Lucide icons. All workers and assets are bundled locally; the
-  page makes no network request beyond its WebSocket.
+  page makes no network request beyond its REST polling and a live run's output socket.
 - Density: 13 px body text with 12 px tables and monospace paths, code, diffs, terminals, and IDs.
-- Records: read from `adrs/` through adrkit on every `listRecords` command and after every run, so
+- Records: read from `adrs/` through adrkit on every `GET /records` poll and after every run, so
   files added, removed, or resolved while the server runs appear without a restart. Only records
   adrkit accepts are listed. Each record carries the first paragraph of its `Decision` section as
   a short summary.
@@ -629,23 +643,20 @@ dashboard for that host; without `--port` it installs only and prints the `devbo
 command. `devboard update [host] [--port N]` installs the newest release without a browser click
 and leaves one dashboard serving.
 
-One dashboard serves each host directory. A second `devboard serve` for a host directory that a
-live dashboard already serves exits nonzero and names that dashboard's pid, port, and repository;
-the guard is one OS lock under `<host>/.devboard/.tmp`, so a killed dashboard never blocks the
-next start, and a confirmed replacement (a start carrying
-`DEVBOARD_REPLACEMENT_READY_FILE`) waits for the old process to exit and then takes over.
-`devboard instances status --repo-dir <dir> --json` lists the live dashboards of one host
-directory, and `devboard instances sweep --repo-dir <dir> [--state-dir <dir>]` keeps the newest
-one that answers `/ready`, stops every other dashboard of that host directory after a bounded
-probe grace, and runs the orphan reaper for it. The MATE top-panel Devboard icon
-(`desktop/devboard-launcher.py`) runs that sweep before it starts or restarts exactly one
-dashboard.
-
 `devboard doctor [host]` compares every managed file byte-for-byte, checks release access, the
 installed version and staleness, the running dashboard's pid and port, the `.devboard` and `.omp`
 layout, and the last update failure; it exits nonzero and names the failing check, while an
 `AGENTS.md` differing from the template or a git-tracked payload file is reported as drift
 without failing the check.
+
+On a host that carries a harness of its own — a source checkout's `.devboard/Cargo.toml`, an
+installed `.devboard/bin/devboard`, or a built `target/release|debug/devboard` — doctor also runs
+the managed `mcpServers.devboard` registration once, with the host root as its working directory,
+a null stdin, and a ten-second deadline. A registration that exits nonzero, or outlives the
+deadline, fails the check with `.omp/mcp.json` and the probe's first stderr line, so an
+unresolvable registration can never pass. A plain installed payload carries only
+`.devboard/devboard.json` and reaches its harness through `PATH`; it proves nothing about the
+registration and is not probed.
 
 ### Updates
 
@@ -664,9 +675,11 @@ journaled like any other failed check.
 
 `versionState` reports `running`, `installed`, `latest`, `stale`, and `source`. `installed` is the
 version a restart would load — the manifest beside the running binary on an installed host, the
-checkout's released source version on a source checkout. The status bar labels that value
-`installed` or `source` accordingly; the reload control appears only when a replacement could not
-start.
+checkout's released source version on a source checkout. The process resolves it once, when it
+starts, so a polled `getVersion` read answers without reading a manifest or spawning git; an
+install that lands beside the process records its version in that frame, which is what a failed
+replacement names. The status bar labels that value `installed` or `source` accordingly; the reload
+control appears only when a replacement could not start.
 
 ### Release suite
 
@@ -751,7 +764,7 @@ installed on every install and update into `<host>/.omp/skills/<name>/` as real 
 
 |Skill|Carries|
 |---|---|
-|`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.mjs`.|
+|`devboard-ui-ux`|The gate-first UI/UX workflow: preflight, user journeys, significance, A2UI wireframes, OpenUI and Storybook, DESIGN.md/DTCG, and browser validation, with its four references and `scripts/preflight.sh`.|
 |`devboard-restful-api-implementation`|Zalando's RESTful API Guidelines as directives plus `references/zalando-rest-rules.md`; the API Standards worker's normative source.|
 |`devboard-single-responsibility-principle`|The single-responsibility policy for deciding where behavior belongs, with the five violation categories; the Single Responsibility worker's normative source.|
 |`devboard-consistent-naming`|The consistent-naming policy: one concept, one name, one meaning within a bounded context, naming as a property of the conceptual model, and a published UbiLang glossary as the authoritative vocabulary whose conflicts are reported rather than renamed into a synonym.|
@@ -820,13 +833,15 @@ durable state file under `<stateDir>/state/` carries no key material.
 Usage is read from `https://opencode.ai/zen/go/v1/usage` (`rolling`, `weekly`, and `monthly`
 percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `limit`).
 `DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
-URLs for tests and offline verification. On-demand reads fetch a key's usage at most once per
-60 seconds unless the operator forces a refresh; while at least one dashboard is connected, the
-dashboard's own background task refreshes a stale report and pushes a fresh `providersState` every
-60 seconds, so the dialog's usage never stays stale. With no client connected the periodic refresh
-makes no provider call, and the next client's `getProviders` refreshes first. Selection never waits
-on this endpoint: a peer start resolves its provider from the cached report and the background
-task is the only path that replaces it, so a slow or unreachable usage endpoint delays no Start.
+URLs for tests and offline verification. A key's usage is fetched at most once per 60 seconds
+unless the operator forces a refresh. A `getProviders` read answers the cached report
+and never waits for the usage endpoint; when it finds cached usage older than 60 seconds it wakes
+the dashboard's own background task. That task refreshes a stale report and pushes a fresh
+`providersState` every 60 seconds while at least one dashboard is connected, so the dialog's
+usage never stays stale. With no client connected the periodic refresh makes no provider call; a
+read that finds a stale report wakes it on demand. Selection never waits on this endpoint: a peer
+start resolves its provider from the cached report and the background task is the only path that
+replaces it, so a slow or unreachable usage endpoint delays no Start.
 
 A detached worker outlives the credential list it was started with, so every agent it starts
 resolves the provider again instead of inheriting the worker's original key. The issue worker
@@ -1072,12 +1087,20 @@ devboard worker watchdog --processes --dry-run --repo <root>   # print candidate
 devboard worker watchdog --processes --once --repo <root>      # kill under the two proofs
 ```
 
+A dashboard binds its port only once every startup step that can take time — the reaping pass,
+the running-version read, the governor install, and the app's own restore — has finished, and it
+serves immediately after the bind. The version marker and the guard record name a configured
+port before the bind; a dashboard started on an ephemeral port (`--port 0`, fixtures only)
+records the resolved port after it. A client that reaches the port while the dashboard starts
+therefore meets a refused connection it retries, never a listener that accepts a request and
+holds it until the startup completes.
+
 ## Flow Mode
 
 The activity bar carries five client-only modes, `Goal`, `Issues`, `Flow`, `Discover`, and
 `Devboard` (`data-testid="mode-goal"`, `data-testid="mode-flow"`,
 `data-testid="mode-discover"`, and `data-testid="mode-devboard"`). Switching is a view change
-only: it sends no WebSocket frame and starts, stops, pauses, or resumes no work in any mode. The
+only: it sends no action request and starts, stops, pauses, or resumes no work in any mode. The
 palette lists `view.mode.devboard` with `Alt+5`, and `devboard.tab.tools` opens the mode's one
 page. Goal Mode is the goal, ADR, epic,
 lifecycle, and skills interface described above. Flow Mode is one implementation session that the
@@ -1099,20 +1122,22 @@ refused while a Flow session exists whose worktree or pull request is not merged
 
 ### Commands and events
 
-Flow Mode uses one WebSocket at `/ws`. The client sends `createFlowGoal`,
-`cancelFlowGoal`, `startFlowImplementation`, `stopFlowImplementation`, `retryFlowPr`,
-`markFlowPrReady`, `mergeFlowPr`, `sendFlowSteering`, `acceptFlowWidget`,
-`refuseFlowWidget`, `openFlowWidget`, `closeFlowWidget`, `sendFlowConversation`,
-`sendFlowConclusion`, `dismissFlowBlocker`, and `flowAnswer` (with `target` naming the goal,
-implementation, or conversation question). The server broadcasts `flowSnapshot`,
-`flowGoalStarted`, `flowGoalStopped`, `flowImplementationStarted`, `flowStopped`, `flowActivity`,
-`flowQuestion`, `flowFiles`, `flowWidgets`, `flowSteering`, `flowDecisions`, `flowCheckpoints`,
-`flowVerification`, `flowBlockers`, `flowPr`, `flowNotice`, `flowError`,
-`flowConversationStarted`, `flowConversationActivity`, `flowConversationQuestion`,
-`flowConversationMessage`, and `flowConversationStopped`. A connecting client with a Flow session
-receives one `flowSnapshot` holding the whole state followed by every section event, so a reload
-never loses a widget, checkpoint, verification result, blocker, steering note, decision board, or
-pull-request state; a server with no Flow work sends nothing and the view starts empty.
+Flow Mode uses REST at `/flows`. The page polls the workspace and posts its actions:
+`POST /flows/goals`, `DELETE /flows/goals`, `POST /flows/implementations`,
+`DELETE /flows/implementations`, `POST /flows/pull-request-retries`, `PATCH /flows/pull-requests`,
+`POST /flows/pull-request-merges`, `POST /flows/steering`, `PATCH /flows/widgets/{id}`,
+`POST /flows/widget-refusals`, `POST /flows/widget-opens`, `DELETE /flows/widget-opens`,
+`POST /flows/conversations/messages`, `POST /flows/conclusions`, `DELETE /flows/blockers/{id}`, and
+`POST /flows/answers` (with `target` naming the goal, implementation, or conversation question).
+The workspace representation carries `flowSnapshot`, `flowGoalStarted`, `flowGoalStopped`,
+`flowImplementationStarted`, `flowStopped`, `flowActivity`, `flowQuestion`, `flowFiles`,
+`flowWidgets`, `flowSteering`, `flowDecisions`, `flowCheckpoints`, `flowVerification`,
+`flowBlockers`, `flowPr`, `flowNotice`, `flowError`, `flowConversationStarted`,
+`flowConversationActivity`, `flowConversationQuestion`, `flowConversationMessage`, and
+`flowConversationStopped`. A page load with a Flow session receives one `flowSnapshot` holding the
+whole state, so a reload never loses a widget, checkpoint, verification result, blocker, steering
+note, decision board, or pull-request state; a server with no Flow work answers an empty
+representation and the view starts empty.
 
 Flow's four agent commands are `/flow-goal <session-dir>`, `/flow-implement <session-dir>`,
 `/flow-change <session-dir>`, and `/flow-widget <session-dir> <widget-id>`. The server spawns each
@@ -1288,7 +1313,7 @@ existing host project and is produced by seven independently triggerable discove
 Conventions**, **Architecture & Boundaries**, and **Glossary Agent**. Each agent is one ACP turn
 with its own prompt file, its own slash command, its own staging directory, and its own slice of
 the published artifacts. Switching
-to Discover, opening a card, and switching its pages send no WebSocket frame and start, stop,
+to Discover, opening a card, and switching its pages send no action request and start, stop,
 reset, or clear nothing; all four views stay mounted, so native details, scroll state, and focus
 survive. Discover events render only in this view and never touch Goal Mode's activity, question,
 or error state.
@@ -1476,17 +1501,18 @@ clears the pending question, removes its staging, marks that agent failed, broad
 `discoverStopped { completed: false, agent, mode }`, and leaves every published artifact
 byte-identical; it spawns no replacement peer.
 
-Discover uses the same WebSocket at `/ws`. The client sends `discoverAgent` (with `agent`),
-`discoverProject` (Run all), `stopDiscover`, `answerDiscover` (with `id` and `value`), and
-`getDiscover`. The protocol also accepts `confirmGlossaryTerm` (with `context` and `id`) and
-`rejectGlossaryTerm` (with `context`, `id`, and a non-empty `reason`) for tooling, but the
-Glossary page does not use them. An unknown agent value, a non-string agent, or a
+Discover uses REST at `/discoveries`. The page polls `GET /discoveries/workspace` and posts its
+actions: `POST /discoveries/agent-scans` (with `agent`), `POST /discoveries/scans` (Run all),
+`DELETE /discoveries/scans`, `POST /discoveries/answers` (with `id` and `value`),
+`POST /discoveries/remotes`, `PATCH /discoveries/remotes`, `DELETE /discoveries/remotes/{url}`, and
+`DELETE /discoveries/remote-selections`. The API also accepts `PUT` and `DELETE` on
+`/discoveries/glossary-terms/{id}` (with `context`, and a non-empty `reason` for a rejection) for
+tooling, but the Glossary page does not use them. An unknown agent value, a non-string agent, or a
 start while another discovery run is active is refused with one `discoverError`, changes no
-artifact, and spawns no peer. `getDiscover` asks for the current snapshot and is answered with
-`discoverState`. The server broadcasts `discoverState`, `discoverStarted`, `discoverActivity`,
-`discoverQuestion`, `discoverStopped`, `discoverError`, and the prompt frame
-`discoverPromptState`; it never sends `activity`, `question`,
-`error`, `runStarted`, or `runStopped` for Discover. `discoverState` keeps the active and interrupt
+artifact, and spawns no peer. The workspace representation carries `discoverState`,
+`discoverStarted`, `discoverActivity`, `discoverQuestion`, `discoverStopped`, `discoverError`, and
+the prompt frame `discoverPromptState`; it never carries `activity`, `question`, `error`,
+`runStarted`, or `runStopped` for Discover. `discoverState` keeps the active and interrupt
 flags, staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
 repository links for installed packages, the VS Code handoff for each Overview path reference
 (`overviewLinks`, keyed by the displayed text), `contribution` (the published contribution
@@ -2430,19 +2456,23 @@ reports the refusal only when the fifth consecutive attempt is refused too. A Gi
 
 ### Transport
 
-Browser-to-backend state and controls use the WebSocket from
-`adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
-`refreshAgent`, `startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's
-`disableAgentTimer`; each carries `id`. The prompt surface adds `getAgentPrompt`, carrying `id`.
-The server answers `agentsState` (all agents), `agentState` (one), and `agentPromptState` (one
-agent's prompt section), streams each activity-panel agent's activity as `agentActivity` with its
-agent id, and refuses an unknown id with an error naming it before spawning anything.
-Each socket has its own writer, so a frame is written as soon as the server produces it: a
-`starting` snapshot reaches the client while the Start preflight is still pending, and a
-connection's replay is not withheld until the whole replay has been built. The 250 ms poll
-fingerprints each family's durable state and rebuilds and serializes a snapshot only after the
-fingerprint changes; an idle dashboard rebroadcasts nothing. A `getAgents` read is answered from
-the same current snapshots and does not wait for a provider or a worker.
+Browser-to-backend state and controls use the REST API. The page polls `GET /agents` and
+`GET /agents/{id}` and performs `POST /agents/{id}/refreshes`, `POST /agents/{id}/runs`,
+`DELETE /agents/{id}/runs`, `PUT /agents/{id}/settings`, `DELETE /agents/{id}/timer`, and
+`GET /agents/{id}/prompt`. The workspace representation carries `agentsState` (all agents),
+`agentState` (one), and `agentPromptState` (one agent's prompt section), streams each
+activity-panel agent's activity as `agentActivity` with its agent id, and refuses an unknown id
+with an error naming it before spawning anything.
+A Start answers its `starting` snapshot before the preflight, and the 1000 ms poll fingerprints
+each family's durable state and serializes a snapshot only after the fingerprint changes; an idle
+dashboard rebroadcasts nothing. A `GET /agents` read is answered from the same current snapshots
+and does not wait for a provider or a worker.
+A REST reply carries only the frames the command's own task wrote. A request handle joins the
+client map so a mutation can answer through a broadcast, but its fan-out is attributed to that
+task: a worker's activity line or the poll's republished snapshot reaches every durable page and
+never the request in flight, so it neither joins a reply nor extends the 250 ms window the reply
+waits behind. A long action therefore answers its first frames inside the 1000 ms budget and the
+page reads the rest from its poll.
 `scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
 `GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.
@@ -2566,16 +2596,16 @@ rule id, its level, its chapter, the skill's directive verbatim, and both skill 
 chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
-currently `POST /feedback`, `/ready` for `GET` and `HEAD` with a `405` and `Allow: GET,
-HEAD` for every other method, `POST /goal-proposals`, the `/ws` upgrade
-with its refusal and method handling, and the static-file fallback, together with any route added
-later. The audit input carries every Rust module under
+the 80 `METHOD /path` operations in `contract/command-map.json`, `POST /reports`, `/ready` for
+`GET` and `HEAD` with a `405` and `Allow: GET, HEAD` for every other method,
+`POST /goal-proposals`, `GET /agent-runs/{id}/output`, and the static-file fallback, together with
+any route added later. The audit input carries every Rust module under
 `<REPO_DIR>/.devboard/crates/devboard/src` that names axum's request types or dispatches on the
 request path — `http.rs` and `app.rs` today — with tests, fixtures, `target`, and `node_modules`
 excluded. The route inventory is read from the dispatcher's `match uri.path()` arms and its
 `uri.path().strip_prefix(...)` routes, and an arm that forwards to a handler takes its methods
 from that handler, so a route added to the dispatcher appears in the next cycle with no engine
-change. The WebSocket messages carried after an upgrade, the MCP tool contract, and the static
+change. The per-run output socket frames, the MCP tool contract, and the static
 asset contents are not audited.
 
 A finding is filed only when the HTTP surface violates a MUST- or SHOULD-level rule. MAY-level
@@ -3294,8 +3324,23 @@ holding a proposal pending, and byte-identical session and journal directories.
 ## Devboard MCP server
 
 `.devboard/omp/mcp.json` declares `mcpServers.devboard` with `type: "stdio"`. Its command and
-arguments contain no absolute path: a small `sh -c` probe resolves the harness from
-`DEVBOARD_HARNESS_DIR` when set, else the checkout's `.devboard`, else the installed prefix. The
+arguments contain no absolute path: a small `sh -c` probe resolves the harness in this order, and
+the first candidate wins:
+
+1. `DEVBOARD_BIN`, when it names an executable.
+2. A harness directory named by `DEVBOARD_HARNESS_DIR`.
+3. The checkout's `.devboard`, located from the current directory's git top level, then the
+   explicit project root (the preflight's optional argument), then the current directory.
+4. The installed prefix `$PI_CODING_AGENT_DIR/..`.
+5. `devboard` on `PATH`.
+
+Inside a harness directory the candidates are `bin/devboard`, then `target/release/devboard`,
+then `target/debug/devboard`. When nothing resolves — no harness directory yields a candidate and
+`PATH` carries no `devboard` — the probe writes exactly one stderr line naming `DEVBOARD_BIN`,
+`DEVBOARD_HARNESS_DIR`, `.devboard/bin/devboard`, `.devboard/target/release/devboard`, and
+`.devboard/target/debug/devboard`, and the build command `cd .devboard && cargo build`, then exits
+127 before any protocol byte. The same order, candidates, and one-line diagnostic belong to the
+UI/UX skill's `scripts/preflight.sh`, which names `DEVBOARD_BIN` in its line and exits 127. The
 harness serves the protocol itself as `devboard mcp`; `install.sh` copies the file to
 `<host>/.omp/mcp.json` and the launcher installs the same bytes on install and update.
 
@@ -3643,9 +3688,14 @@ files. Each run's activity is persisted before the dashboard can read it, bounde
 1,000 entries or 1 MiB with the trimmed marker, and is never merged with another run's activity.
 On connect, the bridge replays `issuesState` and then one `issuesActivity` with `replay: true` for
 every running agent, so a dashboard connecting mid-flight sees every agent and all its output. The
-state document version is 2; the parser still accepts version 1, loading it with empty `agents`,
-`cooldowns` populated from its `goalCooldowns`, and its queue, labels, ledger, and runs intact. A
-damaged state file is renamed aside and never prevents the mode from opening.
+replay reaches the page that asked and no other page; a `GET /issues` read replays the same
+activity to its own page, which is how a page heals a log whose delta a hidden or failed poll
+missed. An operator action's answer, a Start included, carries the state document alone: one run's
+activity reaches 1 MiB, so replaying every running agent's log inside an action's answer made one
+Start's response 32 MB on a dashboard with sixteen running agents. The state document version is
+2; the parser still accepts version 1, loading it with empty `agents`, `cooldowns` populated from
+its `goalCooldowns`, and its queue, labels, ledger, and runs intact. A damaged state file is
+renamed aside and never prevents the mode from opening.
 
 The worker records the harness version it loaded, its pid, and its argv; a mismatched dashboard
 shows a notice and never kills the worker, and the state records each ACP child's pid, argv, and
@@ -3849,12 +3899,16 @@ runs, only its own row shows the disabled start control, whose title is
 `This draft is being elaborated.`; every other draft stays startable. Each peer's activity streams
 only into its own run's `issues-draft-activity`, its `ask` question renders only for that
 draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
-pending question is refused without reaching any peer. Stop closes only the selected draft's peer,
-records `stopped`, keeps that draft, and leaves every other elaboration running. A successful or
+pending question is refused without reaching any peer. An answer's reply carries that draft's run
+state once its owner records the answer — normally within the owner's 200 ms tick — so the page
+clears the question from the reply instead of waiting for its next list poll; when the owner has not
+recorded it within 700 ms the reply carries no state and the page's poll reports it. Stop closes
+only the selected draft's peer, records `stopped`, keeps that draft, and leaves every other
+elaboration running. A successful or
 failed run closes only its own peer before recording `succeeded` or `failed`; a failed peer keeps
 its draft, shows its error there, and accepts a retry as a new peer. A successful completion
 removes its draft from the list when the agent deleted the file, without clearing another draft's
-state. Browser reload and WebSocket reconnect replay every draft's own run state, activity, and
+state. Browser reload and reconnect replay every draft's own run state, activity, and
 pending question.
 
 The peers are not held by the server process. One detached owner process per draft carries each
@@ -4076,7 +4130,7 @@ click or one double-click files at most one issue.
 click opens a report panel anchored beside it, without filing anything yet. The panel shows the
 selected element's selector path; the report text is free-form. `File issue`, or `Enter` in the
 composer (`Shift+Enter` inserts a newline), posts the report and the captured context to
-`POST /feedback`, the server files the issue through the configured Gitea API, and the panel
+`POST /reports`, the server files the issue through the configured Gitea API, and the panel
 closes back into report selection mode so another element can be picked without leaving and
 re-entering the mode. A successful filing shows a `Report filed.` toast with an `Open issue` link
 to the created issue. `Esc`, the control again, or `Cancel` leaves the mode, a failed report stays
@@ -4086,7 +4140,7 @@ dismissed or replaced.
 
 The panel also answers questions. `Ask` sends the typed question and the captured element
 context — route, URL, selector, viewport, visible text, DOM excerpt, and capture time — over the
-existing WebSocket to a background ACP agent started from `AGENT_COMMAND`. The agent runs in the
+existing REST API to a background ACP agent started from `AGENT_COMMAND`. The agent runs in the
 host repository root, and its answer streams into a compact transcript in the same panel as plain
 text, with preserved line breaks and no Markdown interpretation. Every prompt tells it the
 conversation is `read-only`: never edit files, run mutating commands, file issues, commit, or
@@ -4104,7 +4158,7 @@ buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A fai
 agent, a prompt the agent never answered inside its deadline, or a rejected prompt shows the error
 in the panel, keeps the question and earlier answers, and accepts the next question: the failed
 turn's question returns to the composer, so `File issue`, `Ask`, and `Goal` are enabled again and
-one `Ask` click re-asks it. `Ask` never calls `POST /feedback` and creates no issue.
+one `Ask` click re-asks it. `Ask` never calls `POST /reports` and creates no issue.
 
 Filing or proposing from a panel that has answered questions carries the visible Ask conversation
 into the issue or draft as a `## Ask conversation` block between the request and
@@ -4123,16 +4177,12 @@ carrying the draft's absolute URI, plus a `Location` header naming that same URI
 replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
-The file name is chosen by one bounded naming turn: an ACP peer starts with
-`AGENT_COMMAND --no-skills` in `REPO_DIR`, receives the operator report marked as data with a
-read-only instruction, and must answer with only a lowercase kebab-case slug, at most six
-hyphen-separated words, `[a-z0-9-]`, and at most 64 characters. A naming turn reads no skill, so
-the flag also keeps OMP's background description compression from logging a warning the watchdog
-files. A start failure, an exited peer, a question, a 15-second timeout, or an unusable answer
-falls back to the report's first non-empty line, lowercased, with every run of
-non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
-hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
-exclusive create, so the first draft is never overwritten. The body opens with
+The file name is derived from the report inside the request: the first non-empty line,
+lowercased, with every run of non-alphanumeric characters replaced by `-`, leading and trailing `-`
+removed, and at most six hyphen-separated words, falling back to `ui-goal`; an existing name earns
+`-2`, `-3`, … through an exclusive create, so the first draft is never overwritten. The request
+starts no peer and waits for no model turn, so the `Goal` click answers within the UI's one-second
+budget even when `AGENT_COMMAND` is slow, failing, or unconfigured. The body opens with
 `# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
 `## Captured UI context` block an issue report carries. It carries no notice line or other prose
@@ -4141,7 +4191,7 @@ stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <repository-relative path>` toast as plain text with no link; a failed write keeps
 the panel open with the server's error and leaves no draft. The drafts are ignored by git.
 
-Both `POST /feedback` and `POST /goal-proposals` accept an `Idempotency-Key` header. The
+Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header. The
 server retains each key's result under `<STATE_DIR>/idempotency/` for 24 hours, so a retry with the
 same key answers with the first issue or draft instead of creating a second resource, while a
 failed attempt is never retained. A key is 1–255 characters with no control characters; an empty
@@ -4149,9 +4199,8 @@ or oversized key is refused with `400`.
 
 Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
 dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
-on that request's response — including the `101` a `/ws` upgrade answers with, which carries it on
-the upgrade's own headers because the upgrade assembles that response itself — forwards it on the
-outbound Gitea issue request `POST /feedback` makes, and records it as the scope of the
+on that request's response headers — forwards it on the
+outbound Gitea issue request `POST /reports` makes, and records it as the scope of the
 journal record a failed mutating request writes. A value is 1–200 printable ASCII
 characters with no spaces or control characters;
 surrounding whitespace is trimmed, and an empty, oversized, or non-printable value is refused with
@@ -4187,7 +4236,7 @@ without a model in the loop.
 Every request carries an `action` of `REPORT`, `REMOVE`, or `REDESIGN`; an absent `action` means
 `REPORT`, the only action that requires report text, and any other value — including a lower-case
 spelling — is refused with HTTP 400 before the Gitea request. Both endpoints are strict about their
-body: `POST /feedback` accepts `action`, `report`, `turns`, `route`, `url`, `selector`,
+body: `POST /reports` accepts `action`, `report`, `turns`, `route`, `url`, `selector`,
 `dom_excerpt`, `visible_text`, `viewport`, and `captured_at`, `POST /goal-proposals` accepts the
 same set without `action`, and any other top-level key is refused with HTTP 400 naming the first
 unknown key before any Gitea request or draft write. A present `captured_at` must be an RFC 3339
@@ -4211,11 +4260,11 @@ disabled-reporting `503`, which therefore answers a `POST` only.
 
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
 `title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
-`POST /feedback` answers `201` with `title` and the `links.issue.href` hypertext control carrying
+`POST /reports` answers `201` with `title` and the `links.issue.href` hypertext control carrying
 the filed issue's absolute URL, plus a `Location` header naming that same URL; no top-level `url`
 property remains. An idempotent replay answers the same `201` body and the same `Location`.
 
-`POST /feedback`, `POST /goal-proposals`, the `/ws` upgrade, `/ready`, and the goal-draft
+`POST /reports`, `POST /goal-proposals`, `/agent-runs/{id}/output`, `/ready`, and the goal-draft
 documents require no credential. The dashboard requires no credential on any bind address or Host
 name, sends no cookie, and answers no `401` from its own gate. A listener exposed to a network is
 guarded only by `DEVBOARD_ALLOWED_HOSTS` and the same-origin checks: a Host outside the allowlist
@@ -4223,7 +4272,7 @@ is refused, and a browser request whose Origin does not match the request's own 
 Provider API keys and forge credentials are unrelated to this surface.
 
 An unexpected exception in either mutating endpoint answers `500` with the fixed Problem JSON
-detail "An internal error occurred.": `POST /feedback` and
+detail "An internal error occurred.": `POST /reports` and
 `POST /goal-proposals` share that one fixed detail, record the exception text as a
 `server-error` journal record prefixed with the endpoint, and never return the text to the
 client.
@@ -4252,455 +4301,55 @@ docker run --rm -d --name devboard-adr-ui -p 127.0.0.1:8080:8080 \
 
 The container reads `/repo/adrs` and listens on port `8080`. The repository mount is writable because agent runs write their worktrees, goal documents, and Discover artifacts into `/repo`; the dashboard itself writes no document by hand. Docker publishes the port on the host's loopback interface only. The container process binds `0.0.0.0` because Docker forwards published traffic to the container interface; the local-only access boundary is enforced by the `127.0.0.1` host publish.
 
-## WebSocket contract
+## REST transport
 
-The client sends:
+The browser and the dashboard exchange every read, every action, and every workspace update over
+a resource-oriented HTTP API served at the root. `.devboard/openapi.yaml` is the authoritative
+OpenAPI 3.1 document; `contract/command-map.json` maps every one of the 80 retired command names
+to the `METHOD /path` that replaced it.
 
-```json
-{ "type": "listRecords" }
-{ "type": "getGoal" }
-{ "type": "getProject" }
-{ "type": "getVersion" }
-{ "type": "getMcpTools" }
-{ "type": "getIssues" }
-{ "type": "getIssuesRun", "runId": "2026-10-27T10-00-00-000Z" }
-{ "type": "startIssues" }
-{ "type": "pauseIssues" }
-{ "type": "resumeIssues" }
-{ "type": "stopIssues" }
-{ "type": "checkIssues" }
-{ "type": "answerIssues", "id": 7, "value": "all", "runId": "2026-10-27T10-00-02-000Z" }
-{ "type": "closeIssue", "number": 240 }
-{ "type": "getGoalDrafts" }
-{ "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
-{ "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
-{ "type": "stopGoalDraft", "path": ".devboard/goal-proposals/example.md" }
-{ "type": "deleteGoalDraft", "path": ".devboard/goal-proposals/example.md" }
-{ "type": "answerGoalDraft", "path": ".devboard/goal-proposals/example.md", "id": 4, "value": "The whole goal" }
+- A GET answers its representation as `{"frames": [...]}`. The client polls each state view's own
+  resource at 1000 ms while the document is visible, issues at most one in-flight request per
+  resource, pauses while the document is hidden, and resumes on `visibilitychange`.
+- Every resource GET supports `ETag` and answers `304` with no body for a matching
+  `If-None-Match`, negotiates gzip through `Accept-Encoding`, and answers `HEAD` with the same
+  headers and no body. A wrong method answers `405` with `Allow`.
+- A creation answers `201` with `Location` and honors `Idempotency-Key`. Every 4xx and 5xx is
+  `application/problem+json` carrying `type`, `title`, `status`, and `detail`.
+- A collection that can exceed 200 entries (`GET /records`) accepts `cursor` and `limit` and
+  answers a page object with `self`, `next`, and `prev`.
+- `POST /reports` replaces the retired `POST /reports` and keeps its submission fields, its
+  `201` plus `Location` to the filed issue, its `Idempotency-Key` behavior, and its `503` without
+  `DEVBOARD_GITEA_URL`. `/reports` answers `404 Problem JSON`.
+- `POST /goal-proposals` and `/ready` keep their request, response, and header contracts.
+- The API is loopback-only and presents no credential. A Host this listener does not serve
+  answers `421` (or `403` on the mutating reporting endpoints), and a cross-origin request
+  answers `403`; both are Problem JSON on every route.
+- A 404 Problem on any path in `openapi.yaml` is the documented stale-bundle refusal: a page
+  built against an older revision reloads once. A second refusal is reported and starts no
+  reload loop.
 
-{ "type": "getAgents" }
-{ "type": "getAgent", "id": "scout" }
-{ "type": "refreshAgent", "id": "scout" }
-{ "type": "startAgent", "id": "scout" }
-{ "type": "stopAgent", "id": "scout" }
-{ "type": "setAgentSettings", "id": "scout", "minutes": 1, "maxPerHour": 10, "maxPending": 5 }
-{ "type": "disableAgentTimer", "id": "watchdog" }
-{ "type": "restartServer" }
-{ "type": "restartServer", "whenIdle": true }
-{ "type": "startRun" }
-{ "type": "startRun", "file": "0002-example.md" }
-{ "type": "startLifecycle" }
-{ "type": "pauseLifecycle" }
-{ "type": "resumeLifecycle" }
-{ "type": "reviseGoal", "request": "Tighten the goal" }
-{ "type": "reviseGoal" }
-{ "type": "createGoal" }
-{ "type": "prepareSkills" }
-{ "type": "getSkills" }
-{ "type": "deleteSkill", "name": "test-strategy" }
-{ "type": "resetImplementation" }
-{ "type": "answer", "id": 1, "value": "Gamma" }
-{ "type": "ask", "conversationId": "…", "question": "What does this label mean?", "context": { … } }
-{ "type": "closeAsk", "conversationId": "…" }
-{ "type": "getProviders" }
-{ "type": "saveProvider", "requestId": 7, "id": "…", "provider": "opencode-go",
-  "label": "Work", "key": "…" }
-{ "type": "deleteProvider", "requestId": 8, "id": "…" }
-{ "type": "setProviderEnabled", "requestId": 9, "id": "…", "enabled": false }
-{ "type": "refreshProviders" }
-```
+### Per-run output sockets
 
-- `getGoal` reads the goal document from disk and answers with its complete contents; an
-  absent document answers with empty text, which shows `Create goal` and keeps the lifecycle
-  start disabled.
-- `getMcpTools` answers `mcpTools` with `tools`, the exact `tools/list` payload, and
-  `invocations`, a map from tool name to how many `tools/call` requests named it for this
-  repository. A tool that was never called is absent from the map and the page renders zero.
-- `getProject` answers with the page heading label. `path` is `REPO_DIR` relative to the user's
-  home directory when the repository lies inside it, and the absolute path otherwise.
-- `getVersion` answers with `versionState`: `running` is the harness package version the
-  backend loaded, `installed` is the version its prefix holds now, `latest` is the newest
-  release an update check has seen, and `stale` is true only when `running` and `installed` are
-  readable and differ. A dashboard that serves the canonical source checkout reads neither side
-  from the checked-in manifest: it reports the newest release tag reachable from its `HEAD`, the
-  same version a release created for that history, so an unpacked checkout never claims `0.1.0`
-  and an unreleased commit on top never changes the number. A client that connects,
-  and the page every few seconds, asks for it; a stale answer makes the reload control appear
-  with both versions in its title.
-- `getProviders` answers with `providersState`: every subscription with its masked key, status,
-  quota windows, remaining fraction, last check time, and error; the current `selection` (or
-  `null`), the refusal reason, and the fixed rule `rotates at 1% remaining`. `saveProvider`
-  validates a new or changed key first: HTTP 401/403 answers `providerError` and changes nothing,
-  while an unreachable endpoint or 5xx saves the subscription with status `unknown`. Editing a
-  label without a key never revalidates. `deleteProvider` and `setProviderEnabled` persist the
-  store without touching a running peer. `refreshProviders` bypasses the 60-second usage cache.
-  Every save, delete, and enable carries a `requestId` the server echoes in a `providerChanged`
-  acknowledgement sent before the mutation broadcasts a fresh `providersState`; a refusal answers
-  `providerError` with the same `requestId`, and a change with no id is refused, so a client can
-  always tell its own answer apart. A `providersState` never confirms a change: it also answers
-  `getProviders`, `refreshProviders`, another client's mutation, and the periodic refresh. While
-  at least one client is connected, the server forces a refresh and broadcasts a fresh
-  `providersState` every 60 seconds; an idle server makes no provider call.
-- `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
-  lifecycle, enabled, paused, repository, poll times, queue entries from the dashboard's forge read
-  with `labels` (and `handled: false`, `runId: null`, `agentRunId: null` because no worker state
-  supplies a row), run summaries, the running `agents` (run id, issue number, startedAt, question,
-  ACP child), the per-issue `cooldowns` map, errors, and the harness version the worker loaded. A missing state and no live lock answer `present: false`, `attached: false`, and
-  `lifecycle: "stopped"`. A live worker from another harness version adds a non-blocking `notice`
-  naming both versions. A connect also replays one `issuesActivity` with `replay: true` for every
-  running agent; `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The
-  client never polls: state and activity arrive as events, so switching modes and reconnecting
-  send no frame.
-- `answerIssues` carries `{ runId, id, value }`; the answer reaches only the agent with that run
-  id, and a missing or unknown run id is refused with an `error` that reaches no peer.
-- `closeIssue` carries `{ number }` and closes that issue on the checkout's GitHub origin as
-  `not planned` with a write-capable account. It answers `issuesClosed` with `{ number, ok }` and,
-  on failure, the reason in `message`; a missing number answers `error`. A running agent is not
-  interrupted, and the queue drops the issue on the worker's next poll.
-- `getGoalDrafts` answers `issuesDrafts` with the sorted list of `{ path, name, heading }` and
-  `runs`, the full per-path run snapshot (live runs plus finished runs whose draft still exists).
-  `getGoalDraft` answers `issuesDraftDetail` with the draft's exact bytes, or `issuesDraftError`
-  carrying `path` when the path is refused or missing. `startGoalDraft` starts one peer for its
-  `path` and broadcasts that run's `issuesDraftState` and the list; starting a path that is
-  already running is refused with `This draft is being elaborated.` and starts no peer.
-  `stopGoalDraft` and `answerGoalDraft` carry the draft `path`; stop closes only that peer and
-  records `stopped`, and an answer reaches only that path's pending question. Each run's activity
-  is sent as its own `issuesDraftState` snapshot while its peer runs. `deleteGoalDraft` carries the
-  draft `path`, removes the draft file and its recorded run, and broadcasts the shorter list to
-  every client; a path whose elaboration is live or still closing is refused with `error` and
-  `This draft is being elaborated. Stop the elaboration and delete it again.`, and a missing or
-  refused path answers `error` with the refusal.
+The dashboard's only WebSocket belongs to one live ACP run:
 
-  lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
-  next attempt, errors, and the harness version the worker loaded. A missing state and no live
-  lock answer `present: false`, `attached: false`, and `lifecycle: "stopped"`. A live worker from
-  another harness version adds a non-blocking `notice` naming both versions. A connect also
-  replays the active run's whole activity as one `issuesActivity` with `replay: true`;
-  `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The client never
-  polls: state and activity arrive as events, so switching modes and reconnecting send no frame.
-- `getAgents` answers `agentsState` with both shared snapshots, and `getAgent` answers
-  `agentState` with one; a connect replays `agentsState` and Auto Scout's newest scan as
-  `agentActivity` before any reply to the client's own commands. Every command carries `id`;
-  an unknown id is refused with an error naming it and spawns nothing. `refreshAgent` is the
-  page-open read: it asks the shared dashboard reader for one fresh forge read when the
-  60-second interval allows and answers `agentState`; an attached Auto Scout worker is also
-  asked for its own read, shared across clients inside five seconds. A stopped worker is left
-  stopped, takes no lock, and receives no command, while the dashboard read still refreshes
-  its table. `startAgent` runs the
-  agent's preflight and spawns or attaches; `stopAgent` writes one stop command and persists
-  `enabled: false`; `setAgentSettings` accepts `{ minutes, maxPerHour, maxPending }`, requires
-  `minutes` from 1 through 1440 and each limit empty or 1–100, and writes `settings.json` once;
-  `disableAgentTimer` runs the legacy `systemctl --user disable --now` only for the Watchdog
-  descriptor. A changed snapshot is pushed to every connected dashboard within the bridge poll,
-  so a lifecycle, cadence, limit, issue row, or state change appears without a reload. There is no
-  `approveScout`, `draftScoutGoal`, or `rejectScout`.
-- `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
-  stops the listener, starts the installed harness package, and exits. It is refused with an
-  `error` when no launcher is configured or while a restart is already in progress. A client
-  that clicked the reload control waits for the replacement to answer and reloads the page even
-  if the acknowledgement was lost when the old process exited. With `"whenIdle": true`, a
-  dashboard with active work answers `upgradePending` instead and restarts itself as soon as
-  that work ends; an idle dashboard restarts immediately.
-- `getGoal` is the only goal-document read; no client command writes `GOAL.md` or a Flow
-  document. The creation and revision agents and the Flow goal interview write their own files.
-- `startRun` without `file` starts the sequence with the lowest-numbered pending record.
-- `startRun` with `file` starts that record first only when it is pending; the sequence then
-  continues with the lowest-numbered remaining pending records.
-- Every accepted start resolves one record at a time until no pending record remains or a run
-  ends without resolving its record. A still-pending or removed active record ends the
-  sequence.
-- A manual start is accepted while a lifecycle run is active. When the lifecycle is advancing,
-  the server first pauses it at its interrupted stage and then starts the sequence; a start that
-  cannot run leaves the lifecycle advancing. While the lifecycle is paused, the manual sequence
-  runs beside the suspended lifecycle lanes, which keep their tabs, activity, and questions.
-  Resolving the record the lifecycle itself has in progress is refused. When the sequence ends
-  the lanes stay paused, with their tabs intact, until the lifecycle is resumed. `runStarted` events for a manual record carry `"manual": true`, and a client that
-  connects during the sequence receives that conversation.
-- A start is refused with an `error` event while another manual sequence is running (including
-  between records), while a goal revision, goal creation, or skills preparation is active, when
-  no record is pending, or when the named record is not pending.
-- `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
-- `ask` sends one question and the captured element context for a conversation id. The first turn
-  starts one ACP peer from `AGENT_COMMAND` in `REPO_DIR`; a follow-up reuses that peer and session,
-  and a replacement peer receives the earlier turns. Only the asking socket receives the
-  conversation's `askChunk`, `askDone`, and `askError` events, each carrying its conversation id.
-  A question must be 1–4000 trimmed characters with a present, bounded context, one turn runs at a
-  time per conversation, and events for a closed conversation are dropped. `closeAsk` closes the
-  conversation and kills its peer; closing the socket closes every conversation it owned. See
-  Report, remove, or redesign a UI element.
-- `reviseGoal` starts a guided goal revision with one ACP peer. The dashboard sends no guidance; a `request` from tooling is optional free-form guidance passed to the agent, and without it the agent establishes the direction through its interview questions. The agent writes the goal document itself. Activity and questions use the existing `activity` and `question` events, and `answer` replies to a revision question exactly as it does to a run question. It is accepted while the lifecycle is paused, where the suspended lanes keep their tabs.
-- A revision is refused with an `error` event while the lifecycle is advancing, a run or run
-  sequence is active, a manual ADR sequence is active, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.
-- `createGoal` starts the guided goal creation with one ACP peer whose prompt is exactly
-  `/goal-outcome`, the installed skill command that reads the harness prompt and interviews the
-  developer. The server accepts it in every state: it replaces a goal document that already has
-  content, and it preempts an in-flight creation or revision and stops an advancing ADR run,
-  manual ADR sequence, or lifecycle before the new peer starts. It reads
-  `<REPO_DIR>/GOAL.md` before and after the peer, while `getGoal` keeps using `GOAL_FILE`. It is accepted while a lifecycle run is paused, where the suspended lanes keep
-  their tabs, and it stops a manual sequence running beside those lanes. Activity and
-  questions use the existing `activity` and `question` events, and `answer` replies to a creation question
-  exactly as it does to a revision question; a second answer for the same question id is refused
-  with an `error`. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` again: text that
-  contains at least one non-whitespace character completes the creation, while an absent, empty,
-  or whitespace-only document is a failure that sends an `error` followed by a failed
-  `goalCreationStopped`.
-- A creation is refused with an `error` event, without spawning a peer, only when
-  `<REPO_DIR>/GOAL.md` exists but cannot be read. Otherwise a `createGoal` request always wins:
-  the server cancels the active creation or revision, reports it stopped with `completed: false`,
-  stops an advancing run or lifecycle and reports the idle `goal` stage, then starts the new peer.
-  While a creation is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and `reviseGoal`
-  are each refused with an `error`, and no agent is spawned; a second `createGoal` restarts the
-  creation instead. The creation runs in the server, so closing the browser does not stop it, and
-  a client that connects during it receives `goalCreationStarted`, the recorded activity, and the
-  pending question before its own command replies.
-- `prepareSkills` starts one ACP peer whose prompt is exactly `/prepare-skills`, the installed
-  command that reads `.devboard/prompts/prepare-skills.md`. The server accepts it only while
-  `<REPO_DIR>/GOAL.md` contains at least one non-whitespace character and no run, run sequence,
-  lifecycle run (paused or advancing), goal creation, goal revision, or other preparation is
-  active; otherwise it answers with an `error` and spawns no peer. The server snapshots
-  `<REPO_DIR>/.omp/skills/`, deletes every skill carrying `metadata.devboard-managed: "true"`,
-  and broadcasts `skillsPreparationStarted`. Activity and questions use the existing `activity`
-  and `question` events, and `answer` replies to a preparation question like any other. When the
-  peer exits, the server validates the managed set, compares every installed skill for
-  incompatible directives, and checks that no unmanaged skill changed; success broadcasts
-  `skillsPreparationStopped` with `completed: true`, the skill list, and an empty contradiction
-  list, while any failure broadcasts an `error`, restores the snapshot, and broadcasts the same
-  event with `completed: false`. `getSkills` answers with the current managed set read from disk
-  and sends `skillsState`; the client issues it on every connection, so the panel is rebuilt after
-  a reload or restart instead of starting a run. While preparation is active, `startRun`,
-  `startLifecycle`, `resumeLifecycle`, `reviseGoal`, `createGoal`, and a second
-  `prepareSkills` are each refused with an `error` and spawn no peer. `deleteSkill` (with `name`)
-  removes exactly one installed managed skill of the prepare family from `<REPO_DIR>/.omp/skills/`,
-  is accepted only while that directory is installed and no run, lifecycle, goal creation,
-  revision, or preparation is active, and answers by broadcasting a fresh `skillsState`; it
-  refuses an unmanaged skill, a Discover-family skill, and a name that is not in the managed set.
-- `resetImplementation` deletes and commits the implementation as described above. The configured
-  state directory is not implementation: when `STATE_DIR` resolves inside `REPO_DIR`, its bytes
-  survive untouched, its path is added to `.git/info/exclude`, and `git rm --cached` removes it
-  from the staged tree, so the commit carries no path under it and `git status --porcelain` stays
-  empty. A `STATE_DIR` equal to `REPO_DIR` is refused with an `error` before anything is deleted or
-  stopped. The server
-  broadcasts `implementationResetStarted` when it accepts the command, performs the reset
-  itself, and broadcasts `implementationResetStopped` with `completed: true` and the 40-hex
-  `commit` only after `git push origin main` succeeds; a failed push includes the local commit
-  with `completed: false`, and a failure before or during the commit omits `commit`. Every
-  failure is preceded by one `error` carrying git's stderr where git failed. Every git invocation
-  the reset runs is bounded by `gitTimeoutMs` (60 seconds by default); an invocation past that
-  deadline is killed, reports `error` with `git <verb> timed out after <ms>ms`, and settles the
-  reset with `completed: false`, so a stalled push never keeps the reset guard active. While a reset
-  runs, `startRun`, `startLifecycle`, `pauseLifecycle`, `resumeLifecycle`,
-  `reviseGoal`, `createGoal`, `prepareSkills`, `answer`, and a second `resetImplementation`
-  are each refused with an `error`; `listRecords`, `getGoal`, `getProject`, `getIssues`, `getIssuesRun`,
-  and `getSkills` still answer. A client that connects during a reset receives `implementationResetStarted` before its own
-  command replies. On success the server follows the stopped event, in order, with
-  `lifecycleState` at `goal` with pass `1`, `work: null`, and `paused: false`, `records` with
-  an empty list and `next: null`, and `goal` with the unchanged text (empty when the document
-  is absent).
-- `startLifecycle` starts the backend-owned parallel pipeline. It is refused with an `error`
-  while a run, a run sequence, a manual ADR sequence, a goal revision, a goal creation, or
-  another lifecycle run is active; when the goal document is absent, unreadable, or contains only
-  whitespace; when `<REPO_DIR>/.omp/skills/` cannot be read; and when no managed skill is
-  installed there. A refused start spawns no agent and reports no `lifecycleState`. An accepted
-  start reports `lifecycleState` at `epic` with `work: null`, the pass already held, and
-  `paused: false` before its first tracker query and before any agent starts. While the lifecycle
-  run is active, `startLifecycle` is also refused. A tracker read is bounded by
-  `trackerTimeoutMs` (30 seconds by default); a read past that deadline kills every tracker
-  child, reports an `error` naming the deadline, and returns the run to the idle `goal` stage, so
-  the next Start is accepted instead of waiting on the unfinished one. An answer that arrives
-  after a stop or reset is ignored and changes no lane or stage. `startRun` is accepted and
-  pauses every lane as described above, and the lifecycle resumes when the manual sequence ends.
-  `reviseGoal` is refused only while the lifecycle is advancing.
-- `stopLifecycle` ends an active run for real. It closes every live lane peer, aborts an
-  in-flight tracker read so the start unwinds at once, reports the idle
-  `lifecycleState` at `goal` with `work: null`, `paused: false`, and the pass already reached,
-  and publishes a lane snapshot with every stopped lane `failed` and `runningLanes: 0`. It
-  leaves nothing suspended. It is refused with an `error` when no lifecycle run is active. A
-  stopped run's loop finishes unwinding before a later `startLifecycle` is accepted, so the two
-  runs never publish concurrently.
-- The accepted run reads every open epic and starts one implementation lane per epic at once,
-  with no fixed cap. Each lane sends `/implement-next-epic <ref>` to its own ACP peer; a lane
-  never selects a different epic. If no epic is open, the run sends one `/epic-next` peer.
-  Generation is zero-or-more: it may file several pairwise-independent epics in one pass, and
-  every epic it files starts its own lane immediately. Closing an epic increments `pass`, marks
-  that lane `closed`, and requests a generation pass immediately, even while other lanes keep
-  implementing; a request during an active pass coalesces into at most one follow-up, and two
-  generation peers never run at once.
-- A lane that ends with its epic still open is marked `retrying` and its lane sends an `error`;
-  it is retried after a five-second backoff and immediately when `main` advances. A lane whose
-  peer prints a line beginning `DEVBOARD-BLOCKED:` is `parked`; it is retried only when `main`
-  advances. Neither state ever creates a second concurrent lane for the same epic, and neither
-  stops the other lanes. With no lane active, a generation pass that files
-  nothing, and only parked epics remaining, the run sends an `error` naming every parked epic,
-  reports the idle `goal` stage, and leaves those epics open; a new run clears the parked set.
-- When no epic remains, a generation pass files nothing, and no ADR is still pending, the
-  lifecycle resolves each pending record in ascending file-name order and then reports
-  `finished`. A pass that leaves the same pending record set as the previous one without an epic
-  sends an `error` and stops. Every stop before `finished` reports the idle `goal` stage with
-  `work: null`, `paused: false`, and the pass reached. A tracker or record read failure also
-  stops the run. A forge can expose a peer's tracker write a moment after the peer exits, so the
-  server re-reads the tracker for a bounded settle window per lane before trusting an answer that
-  still shows the pre-peer state; pause holds the loop between reads, and an exhausted window
-  accepts the last answer.
-- `pauseLifecycle` suspends every running lane with `SIGSTOP`, marks each lane `paused`, and holds
-  the scheduler before the next peer start or stage transition. It reports `lifecycleState` with
-  the interrupted `stage`, `pass`, and `work` and `paused: true`, then a lane snapshot with
-  `runningLanes: 0`; a pause during the first lookup reports `epic` with `work: null`. No tracker
-  result use, stage transition, retry, or new ACP peer happens until a resume. Pending lane
-  questions stay in their tabs, and `answer` is accepted and buffered for the suspended child.
-  Selecting a manual ADR start while the lifecycle advances pauses every lane the same way and
-  resumes it once the sequence ends. An explicit pause command stays suspended until
-  `resumeLifecycle`; the interface's single lifecycle button offers only start and stop, not
-  pause.
-- `resumeLifecycle` reports the same `stage`, `pass`, and `work` with `paused: false`, continues
-  every suspended lane with `SIGCONT`, and releases the held loop. It is refused while a goal
-  revision or a manual ADR sequence is active, leaving the lifecycle paused until that peer ends.
-  Pause and resume are each refused with an `error` when no lifecycle run is active, when pausing
-  an already-paused run, and when resuming a run that is not paused. The paused flag is part of
-  the durable state, so a run paused before a restart stays paused and spawns no peer until
-  `resumeLifecycle`; it is discarded when the run ends.
-- Each lifecycle lane is one `omp acp` process. `runStarted`, `activity`, `question`, and
-  `runStopped` for a lane carry its `lane` id; lanes also report their epic or record identity,
-  attempt number, status, recorded activity, and pending question in `laneState`. Untagged
-  `runStarted`, `activity`, `question`, and `runStopped` events remain the foreground run,
-  revision, creation, and skills preparation. Lifecycle state is durable: the lifecycle, its
-  pass, every lane tab with its activity and question, and the epic bookkeeping are written to
-  the harness state directory keyed by `REPO_DIR` and restored when the backend starts. A client
-  that connects while no run is active receives the idle `goal` state when the retained pass is
-  above 1.
-
-The server answers with events:
-
-```json
-{ "type": "lifecycleState", "stage": "epic", "pass": 1, "work": null, "paused": false }
-{ "type": "lifecycleState", "stage": "adr", "pass": 1, "work": { "kind": "adr", "id": "0002-example.md" }, "paused": false }
-{ "type": "lifecycleState", "stage": "implementation", "pass": 1, "work": { "kind": "epic", "id": "42", "url": "https://github.com/owner/repo/issues/42" }, "paused": false }
-{ "type": "lifecycleState", "stage": "implementation", "pass": 1, "work": { "kind": "epic", "id": "42", "url": "https://github.com/owner/repo/issues/42" }, "paused": true }
-{ "type": "lifecycleState", "stage": "epic", "pass": 2, "work": null, "paused": false }
-{ "type": "lifecycleState", "stage": "goal", "pass": 2, "work": null, "paused": false }
-{ "type": "laneState", "openEpics": 3, "runningLanes": 3, "lanes": [ { "id": "lane-2", "kind": "implementation", "epic": { "number": 42, "title": "Add export", "url": "https://github.com/owner/repo/issues/42" }, "record": null, "attempt": 1, "status": "running", "activity": [ "Working on epic 42" ], "question": null }, { "id": "lane-3", "kind": "adr", "epic": null, "record": { "file": "0002-example.md", "title": "Choose a runtime" }, "attempt": 1, "status": "paused", "activity": [ "Inspecting 0002-example.md" ], "question": { "id": 1, "message": "Choose an answer", "options": [] } } ] }
-{ "type": "runStarted", "lane": "lane-2", "kind": "implementation", "attempt": 1, "file": "", "title": "Add export", "action": "implementing" }
-{ "type": "activity", "lane": "lane-2", "text": "Working on epic 42" }
-{ "type": "question", "lane": "lane-2", "id": 1, "message": "Choose an answer", "options": [] }
-{ "type": "runStopped", "lane": "lane-2", "file": "", "title": "Add export", "resolved": true, "status": "closed" }
-{ "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false, "summary": "Use the simplest runtime." } ], "next": null }
-{ "type": "project", "path": "projects/devboard" }
-{ "type": "versionState", "running": "0.1.200", "installed": "0.1.201", "latest": "0.1.201", "stale": true }
-{ "type": "serverRestarting" }
-{ "type": "upgradePending" }
-{ "type": "goal", "text": "# Goal\n\nThe complete goal text." }
-{ "type": "goalRevisionStarted" }
-{ "type": "goalRevisionStopped", "completed": true, "text": "# Revised goal\n\nThe agent rewrote this." }
-{ "type": "goalRevisionStopped", "completed": false }
-{ "type": "goalCreationStarted" }
-{ "type": "goalCreationStopped", "completed": true, "text": "# Created goal\n\nThe agent wrote this." }
-{ "type": "goalCreationStopped", "completed": false }
-{ "type": "skillsPreparationStarted" }
-{ "type": "skillsPreparationStopped", "completed": true, "skills": [ { "name": "dependency-direction", "description": "Choose dependency direction." } ], "contradictions": [] }
-{ "type": "skillsPreparationStopped", "completed": false }
-{ "type": "skillsState", "skills": [], "contradictions": [] }
-{ "type": "implementationResetStarted" }
-{ "type": "implementationResetStopped", "completed": true, "commit": "0123456789abcdef0123456789abcdef01234567" }
-{ "type": "implementationResetStopped", "completed": false, "commit": "0123456789abcdef0123456789abcdef01234567" }
-{ "type": "implementationResetStopped", "completed": false }
-{ "type": "runStarted", "file": "0001-example.md", "title": "Example", "action": "resolving" }
-{ "type": "runStarted", "file": "", "title": "Improve watch mode", "action": "implementing" }
-{ "type": "runStarted", "file": "", "title": "Epic generation", "action": "generating" }
-{ "type": "runStarted", "file": "0002-example.md", "title": "Manual example", "action": "resolving", "manual": true }
-{ "type": "activity", "text": "Inspecting 0001-example.md" }
-{ "type": "activity", "text": " and its status line", "append": true }
-{
-  "type": "question",
-  "id": 1,
-  "message": "Choose an answer",
-  "options": [
-    { "label": "Alpha", "description": "Alpha leads to the first outcome.", "recommended": true },
-    { "label": "Beta", "description": "Beta leads to the second outcome.", "recommended": false }
-  ]
-}
-{ "type": "runStopped", "file": "0001-example.md", "title": "Example", "resolved": true, "status": "Accepted" }
-{ "type": "error", "message": "No pending ADRs to start." }
-```
-
-- A `records` event carries every record in file-name order. `summary` is the first paragraph
-  of the record's `Decision` section, shortened at a word boundary; it is empty when the record
-  has no such section. `next` names the lowest-numbered pending record, or null.
-- `runStarted` carries `action`: `resolving` for an ADR peer, `implementing` when the lifecycle
-  peer implements an epic, and `generating` when it creates one. The client labels the run from
-  it, so an implementation is never described as a resolution.
-- `activity` events carry one line of the agent's output. An event with `"append": true`
-  continues the previous line: the client appends `text` to it instead of starting a new one.
-  Streamed ACP text updates are deltas of one assistant message (identified by its
-  `messageId`) and are joined this way, so the developer reads whole messages rather than
-  chunks; a different message id, a change from thought to reply, a tool call, or a plan
-  starts a new line. The server stores the joined lines, so a client that connects during a
-  run receives each line once, without the `append` flag. Text updates that carry no message
-  id are complete lines and always start a new one. The interface renders the last line as the
-  current action and lists earlier lines under a collapsed history.
-- A manual record `runStarted` carries `"manual": true`; a lifecycle stage's event omits the
-  field. The flag lets the client keep its start controls disabled for the manual sequence while
-  a paused lifecycle remains resumable. A client that connects during a manual sequence receives
-  that `runStarted`, the recorded activity, and the pending question, ahead of the suspended
-  lifecycle conversation.
-- A `question` event carries one option per choice. Each option has a `label`, an optional
-  `description` stating the consequence of choosing it, and `recommended`, true for the answer
-  the agent suggests. When the peer's schema marks none, the server marks the first option as
-  recommended, so a choice list never lacks a suggestion. `answer` names the selected label as
-  `value`.
-- A record's title and status come from its YAML frontmatter `title` and `status` fields.
-- A record is pending exactly when its status is `draft` or `proposed`; every other status is
-  resolved.
-- Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
-- `lifecycleState` reports `stage` (`goal`, `epic`, `adr`, `implementation`, or `finished`),
-  the `pass` number, `work` (`null`, an ADR filename, or an epic issue number), and `paused`.
-  An epic `work` also carries the issue's `url` from the tracker when the origin reported one,
-  which the page renders as a link. A `lifecycleState` is sent when a lifecycle run is accepted,
-  on every transition and pause change, and to
-  each client that connects or reconnects before any other event, ahead of that client's own
-  command replies: while a lifecycle run is active, the current state; when no run is active
-  and a state has been reported, the last reported state, including `finished` with its final
-  pass or the idle `goal` state of an aborted run with the pass it reached. An accepted run
-  is reported at `epic` with `work: null` before the origin-tracker query, and an open epic
-  follows as a transition to `implementation`. A client that connects while paused receives
-  `paused: true`, followed by the lane snapshot with every lane's recorded activity and pending
-  question. Stage `goal` is the idle state before a lifecycle run starts and after one
-  stops before `finished`; a backend on which no lifecycle run has ever started sends no
-  `lifecycleState` on connection. The retained state is durable, so a replacement process
-  replays the same `lifecycleState`, lanes, activity, questions, and pass.
-- `goalRevisionStarted` marks the beginning of a revision. `goalRevisionStopped` marks its end: `completed` is `true` only when the peer ended without error and the goal file could be read, in which case `text` carries the complete file contents. A failed revision has `completed: false`, omits `text`, and is accompanied by an `error` event.
-- A revision emits no `runStarted` or `runStopped` events of its own and does not read or write `adrs/`. When it ends while a lifecycle run is paused, the suspended lane tabs stay as they were; the server does not replay them because they were never removed.
-- `goalCreationStarted` marks the beginning of a guided goal creation. `goalCreationStopped`
-  marks its end: `completed` is `true` only when the peer ended without error and
-  `<REPO_DIR>/GOAL.md` could be read with at least one non-whitespace character, in which case
-  `text` carries the complete file contents. A failed creation has `completed: false`, omits
-  `text`, and is accompanied by an `error` event; that includes a peer that ends with an absent,
-  empty, or whitespace-only goal document. A creation emits no `runStarted` or `runStopped`
-  events and does not read or write `adrs/`. When it ends while a lifecycle run is paused, the
-  suspended lane tabs stay as they were. A client that connects or reconnects during a creation
-  receives `goalCreationStarted`, every recorded `activity` line, and the pending `question` if
-  one exists, before any other event beyond the lifecycle state and lane snapshot.
-- A client that connects or reconnects during a revision receives `goalRevisionStarted`, every `activity` line recorded so far, and the pending `question` if one exists, before any other event beyond the lifecycle state and lane snapshot.
-- `skillsPreparationStarted` marks the beginning of a skills preparation, and
-  `skillsPreparationStopped` marks its end. Success is `completed: true` with `skills` (each
-  entry carries `name` and `description`, and nothing else) and `contradictions: []`; failure is
-  `completed: false` without either field, and follows an `error`. A run that ends with no
-  managed skill is a failure, like every other validation failure. A failed run restores
-  `<REPO_DIR>/.omp/skills/` to its pre-run bytes, so the panel and the disk still show the
-  previous managed set. Preparation emits no `runStarted`, `runStopped`, or `records` events and
-  does not read or write `adrs/`. `skillsState` reports the managed skills read from disk and
-  the current contradiction list; `getSkills` requests it, and a client that connects or
-  reconnects during preparation first receives `skillsPreparationStarted`, every recorded
-  `activity` line, and the pending `question` if one exists. The panel lists managed skills only
-  and shows a contradiction list only when the review found one; the review itself covers every
-  skill directory, managed or not.
-- The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file. No browser command writes a goal, Flow, or skill document.
-- Skills preparation writes only under `<REPO_DIR>/.omp/skills/` and only through its ACP peer;
-  the server deletes managed skill directories before the run and restores the snapshot after a
-  failure. `runStopped` reports whether the active record is now resolved; a `records` event
-  follows each `runStopped` before the next `runStarted`. One foreground agent — a run, manual
-  sequence, goal revision, goal creation, or skills preparation — works at a time, in server
-  memory, beside any number of lifecycle lanes. A paused lifecycle's suspended lanes coexist
-  with a manual sequence or revision, and resume waits until that peer ends. Stopping the server terminates its child
-  process and the loop.
+- `GET /agent-runs` lists the runs the dashboard can see. Every run representation carries an
+  absolute hypermedia `output` link naming that run (`ws://<host>/agent-runs/<id>/output`).
+- `GET /agent-runs/{id}` reports the same lifecycle the run's socket reports, at the next poll.
+- A socket replays the run's retained journal from a cursor and then follows it live. Without a
+  cursor it replays every retained entry in order; with `after=<cursor>` it replays exactly the
+  entries after that cursor; a cursor older than the retained window yields one `reset` marker
+  naming the retained window start and then the retained entries. Reconnecting with the last
+  cursor delivers no duplicate and no gap.
+- Every frame carries the run's `run` identity, and every output entry carries a monotonically
+  increasing `cursor`. The only frame kinds are that run's `state`, `question`, `activity`,
+  assistant `text`, `stderr`, and terminal `status`. No frame carries version, replacement,
+  project, providers, resources, skills, records, issues, drafts, flow or discover workspace
+  state, goal state, another agent's state, or another run's output. A stopped run holds no open
+  socket.
+- The MCP server, the desktop launcher, and `devboard bench` use the same REST API. The launcher
+  restarts a dashboard with one `POST /server-restarts`; the benchmark measures a REST read and
+  names the method and path.
 
 ## Tests
 
@@ -4709,8 +4358,7 @@ cd .devboard
 cargo fmt --check --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo test -p devboard-contract          # the whole contract corpus
-cargo run -p devboard-shadow -- --report ../shadow-report.json --window 60 --iterations 1
+cargo test -p devboard-contract          # the whole HTTP contract corpus
 bun install --frozen-lockfile
 bun run build
 bun run check
@@ -4734,12 +4382,7 @@ harness itself:
 
 - **Rust workspace tests** cover the dashboard, every worker family, the MCP server, install and
   update, the release train, and the CLI.
-- **Contract corpus tests** replay every recorded command, event, and HTTP case against the Rust
-  dashboard.
-- **Shadow comparisons** replay every read and every mutating command against its recorded corpus
-  answer, state tree, and repository tree. The current soak is
-  `cargo run -p devboard-shadow -- --report ../shadow-report.json --window 60 --iterations 1`,
-  which needs no TypeScript baseline.
+- **Contract corpus tests** replay every recorded HTTP case against the Rust dashboard.
 - **Client unit tests** (`bun test`) cover the Svelte client, and `bun run build` plus
   `bun run check` cover its bundle and typecheck.
 - **CLI and HTTP smoke checks** exercise `devboard install`, `devboard update`, `devboard doctor`,
