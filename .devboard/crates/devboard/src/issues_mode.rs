@@ -3321,21 +3321,14 @@ impl IssuesBridge {
         Value::Object(map)
     }
 
-    /// Replays the state and every running agent's whole activity.
-    pub fn replay(&self, target: Option<&Conn>) {
+    /// Replays the state and every running agent's whole activity to one page.
+    ///
+    /// The replay reaches its target alone. Pushing a second copy of every
+    /// running agent's whole activity at every other page is pure traffic:
+    /// each of those pages reads it on its own next read.
+    pub fn replay(&self, conn: &Conn) {
         let snapshot = self.snapshot();
-        let mut frame = Map::new();
-        frame.insert("type".into(), Value::String("issuesState".into()));
-        if let Value::Object(snapshot_object) = snapshot.clone() {
-            for (key, value) in snapshot_object {
-                frame.insert(key, value);
-            }
-        }
-        let frame = Value::Object(frame);
-        match target {
-            None => (self.send)(frame, None),
-            Some(conn) => conn.send(frame),
-        }
+        conn.send(Self::typed_snapshot(snapshot.clone()));
         for run_id in self.active_run_ids(&snapshot) {
             let activity = self.read_activity(&run_id);
             {
@@ -3344,14 +3337,31 @@ impl IssuesBridge {
                     .last_activities
                     .insert(run_id.clone(), activity.clone());
             }
-            let event = self.activity_frame(&run_id, true, Self::entries(&activity));
-            if let Some(conn) = target {
-                conn.send(event.clone());
-                (self.send)(event, Some(conn.id()));
-            } else {
-                (self.send)(event, None);
+            conn.send(self.activity_frame(&run_id, true, Self::entries(&activity)));
+        }
+    }
+
+    /// Answers one action with the state alone.
+    ///
+    /// The worker's whole activity is replayed with a read or a connect
+    /// ([`Self::replay`]), where it heals a page that missed a delta. An
+    /// action's answer only confirms the change it made: one run's activity
+    /// reaches 1 MiB, so replaying every running agent's log here made a
+    /// Start's answer 32 MB on a dashboard with sixteen running agents.
+    pub fn reply(&self, conn: &Conn) {
+        conn.send(Self::typed_snapshot(self.snapshot()));
+    }
+
+    /// One snapshot with the frame type the page reads it by.
+    fn typed_snapshot(snapshot: Value) -> Value {
+        let mut frame = Map::new();
+        frame.insert("type".into(), Value::String("issuesState".into()));
+        if let Value::Object(snapshot_object) = snapshot {
+            for (key, value) in snapshot_object {
+                frame.insert(key, value);
             }
         }
+        Value::Object(frame)
     }
 
     /// Recomputes the state and publishes a changed snapshot and activity.
@@ -3368,14 +3378,7 @@ impl IssuesBridge {
             }
         };
         if changed {
-            let mut frame = Map::new();
-            frame.insert("type".into(), Value::String("issuesState".into()));
-            if let Value::Object(snapshot_object) = snapshot.clone() {
-                for (key, value) in snapshot_object {
-                    frame.insert(key, value);
-                }
-            }
-            (self.send)(Value::Object(frame), None);
+            (self.send)(Self::typed_snapshot(snapshot.clone()), None);
         }
         let run_ids = self.active_run_ids(&snapshot);
         let active: HashSet<&String> = run_ids.iter().collect();
@@ -3471,7 +3474,10 @@ impl IssuesBridge {
                 .filter(|owner| !stopping.contains(&owner.pid))
                 .collect();
             if !live.is_empty() {
-                self.refresh();
+                // The Start's own answer carries this state, and the page's
+                // next poll publishes it to every other page. Refreshing here
+                // re-read every running agent's whole activity inside an
+                // operator action that must answer within a second.
                 return StartOutcome::Started { attached: true };
             }
             let pids: Vec<u32> = owners.iter().map(|owner| owner.pid).collect();
@@ -4166,7 +4172,7 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
     let Some(bridge) = bridge_for(app) else {
         return;
     };
-    bridge.replay(Some(conn));
+    bridge.replay(conn);
     // A fresh view reads the tracker immediately; the sync timer alone would
     // leave the first thirty seconds showing a stopped worker's list.
     let bridge = Arc::clone(&bridge);
@@ -4184,7 +4190,7 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
     match command {
         Command::GetIssues => {
             if let Some(bridge) = bridge_for(app) {
-                bridge.replay(Some(conn));
+                bridge.replay(conn);
             }
             true
         }
@@ -4205,7 +4211,11 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
             };
             match bridge.start().await {
                 StartOutcome::Refused { message } => issues_error(conn, message),
-                StartOutcome::Started { .. } => bridge.replay(Some(conn)),
+                // The answer is the state the Start changed, never the whole
+                // activity a page's own read replays: one run's activity
+                // reaches 1 MiB, so the action's answer waited on megabytes
+                // the page never needed to render this change.
+                StartOutcome::Started { .. } => bridge.reply(conn),
             }
             true
         }

@@ -280,13 +280,9 @@ async fn an_unstarted_checkout_publishes_the_stopped_state_frame() {
         devboard::jsjson::stringify(&expected)
     );
 
-    bridge.replay(None);
-    let frame = sink
-        .lock()
-        .expect("sink")
-        .first()
-        .cloned()
-        .expect("a frame");
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    bridge.replay(&Conn::new(outbox));
+    let frame = next_frame(&mut inbox).await;
     assert_eq!(frame["type"], "issuesState");
     assert_eq!(frame["present"], false);
 }
@@ -1075,4 +1071,126 @@ async fn a_drain_stopped_family_is_adopted_by_the_newest_version() {
         "the drained family is resumed"
     );
     assert_eq!(spawns.load(Ordering::SeqCst), 1);
+}
+
+fn running_agent(run_id: &str, issue: u64) -> Value {
+    json!({
+        "runId": run_id,
+        "issueNumber": issue,
+        "startedAt": devboard::journal::now_iso8601(),
+        "question": null,
+        "acp": null,
+    })
+}
+
+fn attached_worker(pid: &u32, state: &Path) -> Value {
+    json!({
+        "pid": pid,
+        "startedAt": devboard::journal::now_iso8601(),
+        "stateDir": state.display().to_string(),
+        "harnessVersion": null,
+        "argv": [],
+    })
+}
+
+fn write_run_activity(repo: &Path, state: &Path, run_id: &str, entries: &[&str]) {
+    let directory = state
+        .join("issues")
+        .join(repo_key(repo))
+        .join("runs")
+        .join(run_id);
+    std::fs::create_dir_all(&directory).expect("a run directory");
+    std::fs::write(
+        directory.join("activity.json"),
+        serde_json::to_string(&entries).expect("activity JSON"),
+    )
+    .expect("an activity file");
+}
+
+/// A Start answers the state it changed and never the whole activity.
+///
+/// One run's activity reaches 1 MiB. Replaying every running agent's log in
+/// the answer an operator Start waits for made one answer 32 MB on a dashboard
+/// with sixteen running agents, and the page parses that whole body before it
+/// reads the state frame the action was waiting for.
+#[tokio::test]
+async fn a_start_answers_the_state_and_never_the_activity() {
+    let (repo, state) = scratch("start-answer");
+    let owner = spawn_owner(&repo, &state);
+    let mut document = state_document(
+        &repo,
+        "running",
+        json!([running_agent("run-1", 7), running_agent("run-2", 8)]),
+    );
+    document["worker"] = attached_worker(&owner.pid, &state);
+    write_state(&repo, &state, &document);
+    write_run_activity(&repo, &state, "run-1", &["one", "two"]);
+    write_run_activity(&repo, &state, "run-2", &["three"]);
+
+    let config = app_config(&repo, &state);
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
+    let app = App::new(config, journal);
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new(outbox);
+
+    app.command(&conn, Command::StartIssues).await;
+    let frame = next_frame(&mut inbox).await;
+    assert_eq!(frame["type"], "issuesState");
+    assert_eq!(frame["lifecycle"], "running");
+    assert_eq!(frame["agents"].as_array().map(Vec::len), Some(2));
+    let extra = inbox.try_recv();
+    assert!(
+        extra.is_err(),
+        "a Start answers the state alone, not the activity: {extra:?}"
+    );
+    drop(owner);
+}
+
+/// A read replays each running agent's activity to the page that asked, and
+/// to no other page.
+///
+/// The replay is what heals a page whose delta a hidden or failed poll missed,
+/// so it stays on the read. Pushing a second copy of every run's log at every
+/// other page only spent the same megabytes again.
+#[tokio::test]
+async fn a_replay_reaches_its_own_page_alone() {
+    let (repo, state) = scratch("replay-target");
+    let owner = spawn_owner(&repo, &state);
+    let mut document = state_document(&repo, "running", json!([running_agent("run-1", 7)]));
+    document["worker"] = attached_worker(&owner.pid, &state);
+    write_state(&repo, &state, &document);
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    ));
+    write_run_activity(&repo, &state, "run-1", &["one", "two"]);
+
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new(outbox);
+    bridge.replay(&conn);
+
+    let state_frame = next_frame(&mut inbox).await;
+    assert_eq!(state_frame["type"], "issuesState");
+    let activity = next_frame(&mut inbox).await;
+    assert_eq!(activity["type"], "issuesActivity");
+    assert_eq!(activity["runId"], "run-1");
+    assert_eq!(activity["replay"], true);
+    assert_eq!(activity["entries"].as_array().map(Vec::len), Some(2));
+    let extra = inbox.try_recv();
+    assert!(extra.is_err(), "one replay answers one read: {extra:?}");
+    let broadcast = sink.lock().expect("sink");
+    assert!(
+        broadcast.is_empty(),
+        "a replay never spends another page's traffic: {broadcast:?}"
+    );
+    drop(owner);
 }

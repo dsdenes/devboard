@@ -3662,9 +3662,14 @@ files. Each run's activity is persisted before the dashboard can read it, bounde
 1,000 entries or 1 MiB with the trimmed marker, and is never merged with another run's activity.
 On connect, the bridge replays `issuesState` and then one `issuesActivity` with `replay: true` for
 every running agent, so a dashboard connecting mid-flight sees every agent and all its output. The
-state document version is 2; the parser still accepts version 1, loading it with empty `agents`,
-`cooldowns` populated from its `goalCooldowns`, and its queue, labels, ledger, and runs intact. A
-damaged state file is renamed aside and never prevents the mode from opening.
+replay reaches the page that asked and no other page; a `GET /issues` read replays the same
+activity to its own page, which is how a page heals a log whose delta a hidden or failed poll
+missed. An operator action's answer, a Start included, carries the state document alone: one run's
+activity reaches 1 MiB, so replaying every running agent's log inside an action's answer made one
+Start's response 32 MB on a dashboard with sixteen running agents. The state document version is
+2; the parser still accepts version 1, loading it with empty `agents`, `cooldowns` populated from
+its `goalCooldowns`, and its queue, labels, ledger, and runs intact. A damaged state file is
+renamed aside and never prevents the mode from opening.
 
 The worker records the harness version it loaded, its pid, and its argv; a mismatched dashboard
 shows a notice and never kills the worker, and the state records each ACP child's pid, argv, and
