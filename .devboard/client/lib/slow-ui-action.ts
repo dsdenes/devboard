@@ -177,6 +177,7 @@ const RESPONSE_TYPES: Record<string, string[]> = {
   ask: ["askError"],
   closeAsk: ["error"],
   getProviders: ["providersState"],
+  createProvider: ["providersState", "providerError"],
   saveProvider: ["providersState", "providerError"],
   deleteProvider: ["providersState", "providerError"],
   setProviderEnabled: ["providersState", "providerError"],

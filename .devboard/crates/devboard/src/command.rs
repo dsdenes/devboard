@@ -188,6 +188,12 @@ pub enum Command {
         conversation_id: Option<Value>,
     },
     GetProviders,
+    CreateProvider {
+        request_id: Option<Value>,
+        provider: Option<Value>,
+        label: Option<Value>,
+        key: Option<Value>,
+    },
     SaveProvider {
         request_id: Option<Value>,
         id: Option<Value>,
@@ -288,6 +294,7 @@ impl Command {
             Self::Ask { .. } => "ask",
             Self::CloseAsk { .. } => "closeAsk",
             Self::GetProviders => "getProviders",
+            Self::CreateProvider { .. } => "createProvider",
             Self::SaveProvider { .. } => "saveProvider",
             Self::DeleteProvider { .. } => "deleteProvider",
             Self::SetProviderEnabled { .. } => "setProviderEnabled",
@@ -495,6 +502,12 @@ pub fn command_from_json(text: &str) -> Option<Command> {
             conversation_id: field("conversationId"),
         },
         "getProviders" => Command::GetProviders,
+        "createProvider" => Command::CreateProvider {
+            request_id: field("requestId"),
+            provider: field("provider"),
+            label: field("label"),
+            key: field("key"),
+        },
         "saveProvider" => Command::SaveProvider {
             request_id: field("requestId"),
             id: field("id"),

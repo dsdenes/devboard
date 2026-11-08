@@ -156,6 +156,63 @@ test("no_command_frames", async () => {
   store.dispose();
 });
 
+test("provider creates post to the collection and edits put to the item", async () => {
+  const calls: Array<{ method: string; url: string; body: unknown }> = [];
+  installHttpTransport(async (input, init) => {
+    calls.push({
+      method: init?.method ?? "GET",
+      url: String(input),
+      body: init?.body === undefined ? null : JSON.parse(String(init.body)),
+    });
+    return new Response(JSON.stringify({ frames: [] }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  const store = new ConnectionStore();
+  expect(
+    store.send(
+      {
+        type: "createProvider",
+        requestId: 1,
+        provider: "opencode-go",
+        label: "main",
+        key: "sk-test",
+      },
+      "operator",
+    ),
+  ).toBe(true);
+  await settle();
+  expect(
+    store.send(
+      {
+        type: "saveProvider",
+        id: "subscription-1",
+        requestId: 2,
+        provider: "opencode-go",
+        label: "main",
+      },
+      "operator",
+    ),
+  ).toBe(true);
+  await settle();
+
+  expect(calls).toEqual([
+    {
+      method: "POST",
+      url: "/providers",
+      body: { requestId: 1, provider: "opencode-go", label: "main", key: "sk-test" },
+    },
+    {
+      method: "PUT",
+      url: "/providers/subscription-1",
+      body: { requestId: 2, provider: "opencode-go", label: "main" },
+    },
+  ]);
+  store.dispose();
+});
+
 test("first_paint_reads_precede_surface_reads", async () => {
   // A browser opens six connections to one origin and queues the rest. The
   // six first-paint reads must take those six, because a read that queues

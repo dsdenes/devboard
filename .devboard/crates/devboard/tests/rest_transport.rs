@@ -355,6 +355,36 @@ fn assert_problem(status: reqwest::StatusCode, headers: &HeaderMap, body: &[u8],
 }
 
 #[tokio::test]
+async fn provider_creation_posts_to_the_collection() {
+    let instance = start("provider-create").await;
+    let response = client()
+        .post(format!("{}/providers", instance.base))
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "requestId": 1,
+                "provider": "unknown",
+                "label": "main",
+                "key": "sk-test",
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .expect("a response");
+    assert_eq!(response.status().as_u16(), 201);
+    assert!(
+        response.headers().get(reqwest::header::LOCATION).is_some(),
+        "a creation names the collection"
+    );
+    let body: Value = response.json().await.expect("a JSON body");
+    let frames = body["frames"].as_array().expect("frames");
+    assert_eq!(frames[0]["type"], "providerError");
+    assert_eq!(frames[0]["requestId"], 1);
+    assert_eq!(frames[0]["message"], "Choose OpenCode Go or OpenRouter.");
+}
+
+#[tokio::test]
 async fn retired_command_frames_change_no_state() {
     let instance = start("retired").await;
     let state_path = devboard::state::state_file(&instance.state, &instance.repo);

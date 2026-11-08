@@ -92,7 +92,7 @@ test("a stale state frame neither confirms a save nor clears its wait", () => {
   if (requestId === null) throw new Error("the save was not sent");
   expect(socket.sent).toContain(
     JSON.stringify({
-      type: "saveProvider",
+      type: "createProvider",
       requestId,
       provider: "openrouter",
       label: "Work",
@@ -116,6 +116,26 @@ test("a stale state frame neither confirms a save nor clears its wait", () => {
 
   // The same acknowledgement never settles a second time.
   expect(store.handleEvent({ type: "providerChanged", requestId })).toBe(false);
+});
+
+test("an edited provider updates its own resource", () => {
+  const { store, socket } = connected();
+
+  const requestId = store.save({
+    id: "subscription-1",
+    provider: "openrouter",
+    label: "Work",
+  });
+  if (requestId === null) throw new Error("the save was not sent");
+  expect(socket.sent).toContain(
+    JSON.stringify({
+      type: "saveProvider",
+      requestId,
+      id: "subscription-1",
+      provider: "openrouter",
+      label: "Work",
+    }),
+  );
 });
 
 test("a refused save keeps its own error and never announces success", () => {

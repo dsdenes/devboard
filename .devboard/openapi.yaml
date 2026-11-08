@@ -2095,6 +2095,34 @@ paths:
           headers:
             ETag: {schema: {type: string}}
       x-cache: "no-cache; ETag validation"
+    post:
+      operationId: "createProvider"
+      tags: ["Providers"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "201":
+          description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
   /providers/{id}:
     delete:
       operationId: "deleteProvider"

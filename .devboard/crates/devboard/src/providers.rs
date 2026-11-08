@@ -2001,6 +2001,21 @@ impl ProviderService {
                 self.push_state(conn);
                 true
             }
+            Command::CreateProvider {
+                request_id,
+                provider,
+                label,
+                key,
+            } => {
+                let input = SaveProviderInput {
+                    id: None,
+                    provider: provider.clone(),
+                    label: label.clone(),
+                    key: key.clone(),
+                };
+                self.save_command(conn, request_id.as_ref(), input).await;
+                true
+            }
             Command::SaveProvider {
                 request_id,
                 id,
@@ -2008,22 +2023,13 @@ impl ProviderService {
                 label,
                 key,
             } => {
-                if !request_id
-                    .as_ref()
-                    .map(is_provider_request_id)
-                    .unwrap_or(false)
-                {
-                    conn.send(provider_error_frame(None, PROVIDER_CHANGE_NEEDS_ID));
-                    return true;
-                }
                 let input = SaveProviderInput {
                     id: id.as_ref().and_then(Value::as_str).map(str::to_string),
                     provider: provider.clone(),
                     label: label.clone(),
                     key: key.clone(),
                 };
-                let result = self.save(input).await;
-                self.settle(conn, request_id.as_ref(), result).await;
+                self.save_command(conn, request_id.as_ref(), input).await;
                 true
             }
             Command::DeleteProvider { request_id, id } => {
@@ -2074,6 +2080,24 @@ impl ProviderService {
             }
             _ => false,
         }
+    }
+
+    /// Applies one save or create under the request id both commands carry.
+    async fn save_command(
+        &self,
+        conn: &Conn,
+        request_id: Option<&Value>,
+        input: SaveProviderInput,
+    ) {
+        if !request_id
+            .map(is_provider_request_id)
+            .unwrap_or(false)
+        {
+            conn.send(provider_error_frame(None, PROVIDER_CHANGE_NEEDS_ID));
+            return;
+        }
+        let result = self.save(input).await;
+        self.settle(conn, request_id, result).await;
     }
 
     async fn settle(&self, conn: &Conn, request_id: Option<&Value>, result: SaveProviderResult) {

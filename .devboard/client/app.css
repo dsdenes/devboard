@@ -7,11 +7,17 @@
  * of gigabytes of recursive `verify-install-*` copies, so scanning it grows the
  * build heap without bound and the client build never finishes. None of these
  * trees is a client source.
+ *
+ * `crates/devboard/assets` is the client build itself, copied there by
+ * `scripts/embed-client.mjs`. Scanning it feeds the previous bundle's classes
+ * back into the next build, so every build and embed changes the CSS and its
+ * content hash: the committed copy the release ships can never match a rebuild.
  */
 @source not "../.tmp";
 @source not "../.test-tmp";
 @source not "../target";
 @source not "../dist";
+@source not "../crates/devboard/assets";
 @source not "../contract/.work";
 @source not "../contract/.test-work";
 

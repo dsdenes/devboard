@@ -23,11 +23,28 @@
     if (connection.open) resources.request();
   });
 
-  // Each new frame reseeds the form from the effective values, so a save made
-  // by another client lands here without a reload.
+  /** The effective values the inputs were last seeded from. */
+  let seeded: ResourceSettings | null = null;
+
+  /** True when a frame repeats the budget the inputs were seeded from. */
+  function sameBudget(left: ResourceSettings, right: ResourceSettings): boolean {
+    return (
+      left.maxAgentPeers === right.maxAgentPeers &&
+      left.memoryHighMb === right.memoryHighMb &&
+      left.memoryMaxMb === right.memoryMaxMb &&
+      left.memoryReserveMb === right.memoryReserveMb
+    );
+  }
+
+  // A changed budget reseeds the form, so a save made by another client lands
+  // here without a reload. The page polls `/resources` once a second and every
+  // poll carries a fresh live section; reseeding on a repeated budget would
+  // erase an edit in progress, so only a different budget touches the inputs.
   $effect(() => {
     const current = resources.state;
     if (current === null) return;
+    if (seeded !== null && sameBudget(seeded, current.effective)) return;
+    seeded = current.effective;
     maxAgentsText = String(current.effective.maxAgentPeers);
     memoryHighText = String(current.effective.memoryHighMb);
     memoryMaxText = String(current.effective.memoryMaxMb);

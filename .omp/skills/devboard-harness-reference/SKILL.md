@@ -665,8 +665,9 @@ Every installed dashboard reads the public GitHub release manifest —
 `/releases/latest/download/devboard-manifest.json` — at startup and every 60 seconds, downloads the
 artifact for its platform, verifies the manifest's SHA-256, installs it beside the running binary,
 and replaces the process without an operator click. It reads the Gitea manifest instead when
-`DEVBOARD_GITEA_URL` names a Gitea instance, so a private or Gitea-only deployment still updates. Every connected page receives
-the replacement event, waits for the new process, and reloads once. An unreachable, invalid, or
+`DEVBOARD_GITEA_URL` names a Gitea instance, so a private or Gitea-only deployment still updates.
+Every connected page receives the replacement event, waits for the new process, and reloads
+once. An unreachable, invalid, or
 mismatched manifest leaves the running process serving and is journaled once per attempt. The
 `DEVBOARD_UPDATE_INTERVAL_MS` and `DEVBOARD_UPDATE_BACKOFF_MAX_MS` variables tune the cadence and
 the backoff ceiling; `DEVBOARD_GITEA_URL` names an optional Gitea instance and `GITEA_TOKEN` its
@@ -3343,8 +3344,11 @@ then `target/debug/devboard`. When nothing resolves — no harness directory yie
 `PATH` carries no `devboard` — the probe writes exactly one stderr line naming `DEVBOARD_BIN`,
 `DEVBOARD_HARNESS_DIR`, `.devboard/bin/devboard`, `.devboard/target/release/devboard`, and
 `.devboard/target/debug/devboard`, and the build command `cd .devboard && cargo build`, then exits
-127 before any protocol byte. The same order, candidates, and one-line diagnostic belong to the
-UI/UX skill's `scripts/preflight.sh`, which names `DEVBOARD_BIN` in its line and exits 127. The
+127 before any protocol byte. The registered arguments carry no `${...}` placeholder syntax: the
+client expands `${NAME}` and `${NAME:-default}` inside an entry's `args` before it spawns, so the
+probe uses plain `$NAME` shell variables only. The same order, candidates, and one-line diagnostic
+belong to the UI/UX skill's `scripts/preflight.sh`, which names `DEVBOARD_BIN` in its line and
+exits 127. The
 harness serves the protocol itself as `devboard mcp`; `install.sh` copies the file to
 `<host>/.omp/mcp.json` and the launcher installs the same bytes on install and update.
 
