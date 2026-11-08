@@ -1,5 +1,5 @@
-//! The proposed-goal naming turn: one bounded ACP ask, its normalized slug,
-//! and the deterministic fallback on every failure.
+//! The proposed-goal draft name: derived from the report inside the request,
+//! with no agent turn between the click and the answer.
 
 use std::path::PathBuf;
 
@@ -29,56 +29,62 @@ fn drafts(directory: &PathBuf) -> Vec<String> {
     names
 }
 
-fn stub(extra: &str) -> String {
-    format!("{} acp-stub {extra}", env!("CARGO_BIN_EXE_devboard"))
-}
-
 #[tokio::test]
-async fn the_naming_turn_supplies_the_normalized_slug() {
+async fn the_report_names_the_draft() {
     let directory = root("used");
     let repo = directory.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     let proposal = devboard::goal_proposal::write_goal_proposal(
         &submission("Calm the settings header\n\nMake the header calm."),
         &repo,
-        &stub("--goal-slug=My-Chosen-Slug"),
-        None,
         None,
     )
     .await
     .expect("the draft is written");
     let href = proposal["links"]["draft"]["href"].as_str().unwrap();
-    assert!(href.ends_with("/my-chosen-slug.md"), "{href}");
+    assert!(href.ends_with("/calm-the-settings-header.md"), "{href}");
     assert_eq!(
         drafts(&repo.join(".devboard/goal-proposals")),
-        vec!["my-chosen-slug.md".to_string()]
+        vec!["calm-the-settings-header.md".to_string()]
     );
     let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[tokio::test]
-async fn an_exit_or_a_question_falls_back_to_the_deterministic_slug() {
-    for (label, command) in [
-        ("exit", "false".to_string()),
-        ("question", stub("--questions=1")),
-    ] {
-        let directory = root(label);
-        let repo = directory.join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
+async fn a_second_report_with_the_same_first_line_earns_the_next_name() {
+    let directory = root("taken");
+    let repo = directory.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for _ in 0..2 {
         devboard::goal_proposal::write_goal_proposal(
             &submission("Calm the settings header\n\nMake the header calm."),
             &repo,
-            &command,
-            None,
             None,
         )
         .await
         .expect("the draft is written");
-        assert_eq!(
-            drafts(&repo.join(".devboard/goal-proposals")),
-            vec!["calm-the-settings-header.md".to_string()],
-            "{label}"
-        );
-        let _ = std::fs::remove_dir_all(&directory);
     }
+    assert_eq!(
+        drafts(&repo.join(".devboard/goal-proposals")),
+        vec![
+            "calm-the-settings-header-2.md".to_string(),
+            "calm-the-settings-header.md".to_string(),
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[tokio::test]
+async fn a_report_with_no_usable_line_falls_back_to_the_default_name() {
+    let directory = root("fallback");
+    let repo = directory.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    devboard::goal_proposal::write_goal_proposal(&submission("!!!"), &repo, None)
+        .await
+        .expect("the draft is written");
+    assert_eq!(
+        drafts(&repo.join(".devboard/goal-proposals")),
+        vec!["ui-goal.md".to_string()]
+    );
+    let _ = std::fs::remove_dir_all(&directory);
 }

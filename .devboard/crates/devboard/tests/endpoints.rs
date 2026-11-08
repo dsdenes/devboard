@@ -1,9 +1,11 @@
 //! The mutating endpoints: report filing against a stub Gitea, draft writing,
 //! and the idempotent replay of one keyed request.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -53,16 +55,18 @@ async fn start_failing(label: &str) -> Fixture {
 }
 
 async fn start_with(label: &str, failing: bool) -> Fixture {
-    start_against(label, failing, None, 5000).await
+    start_against(label, failing, None, 5000, "true").await
 }
 
 /// One fixture whose dashboard sends reports to `forge` instead of the stub,
-/// with `timeout_ms` as the delivery deadline.
+/// with `timeout_ms` as the delivery deadline and `agent_command` as the
+/// configured agent command.
 async fn start_against(
     label: &str,
     failing: bool,
     forge: Option<&str>,
     timeout_ms: u64,
+    agent_command: &str,
 ) -> Fixture {
     let root = fixture_root(label);
     let repo = root.join("repo");
@@ -106,7 +110,7 @@ async fn start_against(
         repo_dir: repo.clone(),
         goal_file: repo.join("GOAL.md"),
         static_dir: Some(root.join("static")),
-        agent_command: "true".to_string(),
+        agent_command: agent_command.to_string(),
         state_dir: root.join("state"),
         allowed_hosts: Vec::new(),
         feedback: Some(FeedbackConfig {
@@ -258,6 +262,72 @@ async fn a_goal_proposal_writes_one_draft_and_answers_201() {
     fixture.stub.abort();
 }
 
+/// The `Goal` click answers from the request's own work. A configured agent
+/// that starts slowly must never delay the draft: the request writes it under
+/// the deterministic name and spawns no peer.
+#[tokio::test]
+async fn a_goal_proposal_never_waits_for_a_naming_agent() {
+    let scratch = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("proposal-agent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("a scratch root");
+    let marker = scratch.join("agent-started");
+    let script = scratch.join("slow-agent.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             printf started > '{}'\n\
+             sleep 3\n",
+            marker.display()
+        ),
+    )
+    .expect("a slow agent");
+    let mut permissions = std::fs::metadata(&script)
+        .expect("the slow agent")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).expect("an executable slow agent");
+
+    let fixture = start_against(
+        "proposal-agent",
+        false,
+        None,
+        5000,
+        script.to_str().expect("a slow agent path"),
+    )
+    .await;
+    let started = Instant::now();
+    let response = client()
+        .post(format!("{}/goal-proposals", fixture.base))
+        .headers(bearer())
+        .json(&json!({"report": "Make the header calm"}))
+        .send()
+        .await
+        .expect("an answer");
+    let elapsed = started.elapsed();
+    assert_eq!(response.status(), 201);
+    assert!(
+        elapsed < Duration::from_millis(1000),
+        "the proposal answered in {elapsed:?}, over the 1000 ms budget"
+    );
+    assert!(
+        !marker.exists(),
+        "a proposal request spawned the configured agent"
+    );
+    assert!(
+        fixture
+            .repo
+            .join(".devboard/goal-proposals/make-the-header-calm.md")
+            .is_file(),
+        "the draft carries the deterministic name"
+    );
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
 #[tokio::test]
 async fn a_goal_proposal_refuses_an_unknown_field_and_invalid_json() {
     let fixture = start("proposal-refusals").await;
@@ -350,7 +420,7 @@ async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
 #[tokio::test]
 async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error() {
     let forge = format!("http://127.0.0.1:{}", closed_port().await);
-    let fixture = start_against("feedback-unreachable", false, Some(&forge), 500).await;
+    let fixture = start_against("feedback-unreachable", false, Some(&forge), 500, "true").await;
     let response = client()
         .post(format!("{}/reports", fixture.base))
         .headers(bearer())
@@ -395,7 +465,7 @@ async fn a_forge_that_never_answers_times_out_as_a_delayed_delivery() {
         "http://127.0.0.1:{}",
         silent.local_addr().expect("an address").port()
     );
-    let fixture = start_against("feedback-silent", false, Some(&forge), 250).await;
+    let fixture = start_against("feedback-silent", false, Some(&forge), 250, "true").await;
     let response = client()
         .post(format!("{}/reports", fixture.base))
         .headers(bearer())

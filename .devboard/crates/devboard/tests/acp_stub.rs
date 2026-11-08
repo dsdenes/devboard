@@ -1304,39 +1304,6 @@ async fn flow_widget_asks_and_the_conversation_stays_read_only() {
 }
 
 #[tokio::test]
-async fn goal_slug_answers_the_naming_turn() {
-    let scratch = Scratch::new("goal-slug");
-    let probe = scratch.path().join("probe.txt");
-    let outcome = run_turn(
-        &scratch,
-        &[
-            "--goal-slug=my-chosen-slug".to_string(),
-            format!("--permission-probe={}", probe.display()),
-        ],
-        PermissionPolicy::Allow,
-        "Name this goal draft.\nReply with only the slug: lowercase ASCII.",
-    )
-    .await;
-    assert!(outcome.result.is_ok(), "turn failed: {:?}", outcome.result);
-    assert_eq!(
-        activity_texts(&outcome.events),
-        vec![
-            "Considering the report.".to_string(),
-            "my-chosen-slug".to_string(),
-        ]
-    );
-    assert_eq!(
-        std::fs::read_to_string(&probe).unwrap_or_default(),
-        "granted\n"
-    );
-    assert!(outcome.log.contains("permission selected allow"));
-    assert!(outcome
-        .log
-        .lines()
-        .any(|line| line == "goal-slug Name this goal draft."));
-}
-
-#[tokio::test]
 async fn goal_draft_writes_the_spec_and_removes_the_draft() {
     let scratch = Scratch::new("goal-draft");
     let draft = scratch.write("draft-goal.md", "# Draft\n\nReport body.\n");

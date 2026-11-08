@@ -4116,16 +4116,12 @@ carrying the draft's absolute URI, plus a `Location` header naming that same URI
 replay answers the same `201` body and the same `Location`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
-The file name is chosen by one bounded naming turn: an ACP peer starts with
-`AGENT_COMMAND --no-skills` in `REPO_DIR`, receives the operator report marked as data with a
-read-only instruction, and must answer with only a lowercase kebab-case slug, at most six
-hyphen-separated words, `[a-z0-9-]`, and at most 64 characters. A naming turn reads no skill, so
-the flag also keeps OMP's background description compression from logging a warning the watchdog
-files. A start failure, an exited peer, a question, a 15-second timeout, or an unusable answer
-falls back to the report's first non-empty line, lowercased, with every run of
-non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
-hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
-exclusive create, so the first draft is never overwritten. The body opens with
+The file name is derived from the report inside the request: the first non-empty line,
+lowercased, with every run of non-alphanumeric characters replaced by `-`, leading and trailing `-`
+removed, and at most six hyphen-separated words, falling back to `ui-goal`; an existing name earns
+`-2`, `-3`, … through an exclusive create, so the first draft is never overwritten. The request
+starts no peer and waits for no model turn, so the `Goal` click answers within the UI's one-second
+budget even when `AGENT_COMMAND` is slow, failing, or unconfigured. The body opens with
 `# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
 `## Captured UI context` block an issue report carries. It carries no notice line or other prose

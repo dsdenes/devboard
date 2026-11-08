@@ -1405,19 +1405,12 @@ impl App {
             Err(error) => return Replies::problem(headers, error.status, &error.message, &[]),
         };
         let repo_dir = self.config().repo_dir.clone();
-        let agent_command = self.config().agent_command.clone();
         let origin = url.origin().ascii_serialization();
         let outcome = self
             .idempotency
             .run("goal-proposal", key.as_deref(), || async {
-                crate::goal_proposal::write_goal_proposal(
-                    &submission,
-                    &repo_dir,
-                    &agent_command,
-                    None,
-                    Some(&origin),
-                )
-                .await
+                crate::goal_proposal::write_goal_proposal(&submission, &repo_dir, Some(&origin))
+                    .await
             })
             .await;
         match outcome {

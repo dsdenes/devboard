@@ -73,59 +73,6 @@ pub fn goal_proposal_name(report: &str) -> String {
     cut.trim_end_matches('-').to_string()
 }
 
-/// Validates one naming agent's answer, or `None` when no line qualifies.
-pub fn normalize_goal_slug(value: &str) -> Option<String> {
-    let mut slug: Option<String> = None;
-    for line in value.split('\n') {
-        let entry = line.trim();
-        if entry.is_empty() || entry.starts_with("```") {
-            continue;
-        }
-        let mut candidate = entry.to_string();
-        for prefix in ["- ", "* "] {
-            if let Some(rest) = candidate.strip_prefix(prefix) {
-                candidate = rest.to_string();
-            }
-        }
-        candidate = candidate
-            .trim_start_matches(['`', '\'', '"', '*', '_', '~'])
-            .trim_end_matches(['`', '\'', '"', '*', '_', '~', '.', ',', ';', ':', '!', '?'])
-            .to_string();
-        let lowered = candidate.to_lowercase();
-        if lowered.starts_with("slug:") || lowered.starts_with("slug=") {
-            candidate = lowered
-                .split_once([':', '='])
-                .map(|(_, rest)| rest.trim().to_string())
-                .unwrap_or_default();
-        }
-        candidate = candidate.trim().to_lowercase();
-        if !is_slug(&candidate) {
-            continue;
-        }
-        if js_len(&candidate) > MAX_SLUG_LENGTH {
-            continue;
-        }
-        if candidate.split('-').count() > MAX_NAME_WORDS {
-            continue;
-        }
-        slug = Some(candidate);
-    }
-    slug
-}
-
-/// Whether a value is a complete lowercase kebab-case slug.
-fn is_slug(value: &str) -> bool {
-    if value.is_empty() {
-        return false;
-    }
-    value.split('-').all(|word| {
-        !word.is_empty()
-            && word
-                .chars()
-                .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
-    })
-}
-
 /// The draft body: proposed goal, operator text, conversation, context.
 pub fn goal_proposal_body(submission: &GoalProposalSubmission) -> String {
     let ask_turns = conversation_section(&submission.turns);
@@ -160,94 +107,22 @@ pub fn goal_proposal_body(submission: &GoalProposalSubmission) -> String {
     lines.join("\n")
 }
 
-/// How long the one naming turn may take.
-const NAME_TURN_TIMEOUT_MS: u64 = 30_000;
-/// How much of the report the naming turn reads.
-const NAME_TURN_REPORT_MAX: usize = 4_000;
-
-/// Asks one bounded, read-only ACP naming turn for a slug.
-///
-/// The turn gets the report and a single instruction; a timeout, an exit, a
-/// question, or an answer with no usable slug all return `None`, so the caller
-/// uses the deterministic first-line slug.
-async fn naming_turn_slug(report: &str, repo_dir: &Path, agent_command: &str) -> Option<String> {
-    if agent_command.trim().is_empty() {
-        return None;
-    }
-    let excerpt = crate::feedback::js_truncate(report, NAME_TURN_REPORT_MAX);
-    let prompt = format!(
-        "Suggest a lowercase kebab-case slug of at most six words for the goal report below. Reply with only the slug.\n\n{excerpt}"
-    );
-    let options = crate::acp::AcpConnectionOptions::new(
-        agent_command.trim().to_string(),
-        repo_dir.display().to_string(),
-    )
-    .with_starter("Goal proposal")
-    .with_permission_policy(crate::acp::PermissionPolicy::ReadOnly);
-    let text = tokio::time::timeout(
-        std::time::Duration::from_millis(NAME_TURN_TIMEOUT_MS),
-        async move {
-            let (peer, mut events) = crate::acp::AcpConnection::connect(options).await.ok()?;
-            let peer = std::sync::Arc::new(peer);
-            let run_peer = std::sync::Arc::clone(&peer);
-            let run_prompt = prompt.clone();
-            let mut run = tokio::spawn(async move { run_peer.run(&run_prompt).await });
-            let mut text = String::new();
-            loop {
-                tokio::select! {
-                    event = events.recv() => match event {
-                        Some(crate::acp::AcpEvent::Text(chunk)) => text.push_str(&chunk),
-                        Some(crate::acp::AcpEvent::Question(_)) => {
-                            run.abort();
-                            peer.close();
-                            return None;
-                        }
-                        Some(_) => {}
-                        None => break,
-                    },
-                    outcome = &mut run => {
-                        let _ = outcome;
-                        // The reply can settle after its text frames were
-                        // queued; drain what arrived so the slug is not lost.
-                        while let Ok(event) = events.try_recv() {
-                            if let crate::acp::AcpEvent::Text(chunk) = event {
-                                text.push_str(&chunk);
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-            peer.close();
-            Some(text)
-        },
-    )
-    .await
-    .ok()
-    .flatten()?;
-    normalize_goal_slug(&text)
-}
-
 /// Writes one draft under `<repo_dir>/.devboard/goal-proposals/`.
+///
+/// The request writes the draft from its own work: the name is derived from the
+/// report, so no peer starts and no agent turn sits between the click and the
+/// `201`. A naming turn used to run here and made the response wait for an ACP
+/// spawn plus a model round trip.
 pub async fn write_goal_proposal(
     submission: &GoalProposalSubmission,
     repo_dir: &Path,
-    agent_command: &str,
-    suggested_name: Option<String>,
     origin: Option<&str>,
 ) -> Result<Value, RequestError> {
     let directory = repo_dir.join(GOAL_PROPOSALS_DIRECTORY);
     std::fs::create_dir_all(&directory).map_err(|error| {
         RequestError::internal(format!("could not write the goal proposal: {error}"))
     })?;
-    let suggested = match suggested_name {
-        Some(name) => Some(name),
-        None => naming_turn_slug(&submission.report, repo_dir, agent_command).await,
-    };
-    let name = suggested
-        .as_deref()
-        .and_then(normalize_goal_slug)
-        .unwrap_or_else(|| goal_proposal_name(&submission.report));
+    let name = goal_proposal_name(&submission.report);
     let body = goal_proposal_body(submission);
     let filename = create_exclusive(&directory, &name, &body)
         .await
@@ -362,8 +237,8 @@ mod tests {
         );
         assert_eq!(goal_proposal_name(""), "ui-goal");
         assert_eq!(
-            normalize_goal_slug("Here:\n`calm-header`\n"),
-            Some("calm-header".into())
+            goal_proposal_name("one two three four five six seven"),
+            "one-two-three-four-five-six"
         );
     }
 

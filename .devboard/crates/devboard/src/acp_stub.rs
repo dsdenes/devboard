@@ -420,15 +420,6 @@ impl Stub {
             return self.run_prompt_chat(text.as_deref().unwrap_or(""));
         }
 
-        if let Some(slug) = self.arguments.argument("goal-slug") {
-            if text
-                .as_deref()
-                .is_some_and(|text| text.contains("Reply with only the slug"))
-            {
-                return self.run_goal_slug(slug, first_line);
-            }
-        }
-
         if self.arguments.contains("ask")
             && text
                 .as_deref()
@@ -701,26 +692,6 @@ impl Stub {
                 },
             },
         }));
-        Ok(())
-    }
-
-    /// The read-only naming turn: one thought, then the slug verbatim.
-    fn run_goal_slug(&self, slug: &str, first_line: &str) -> std::result::Result<(), String> {
-        self.log(&format!("goal-slug {first_line}"));
-        self.probe_permission();
-        self.write_frame(json!({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "sessionId": SESSION_ID,
-                "update": {
-                    "sessionUpdate": "agent_thought_chunk",
-                    "content": { "type": "text", "text": "Considering the report." },
-                    "messageId": "goal-slug-thought",
-                },
-            },
-        }));
-        self.stream(slug);
         Ok(())
     }
 
