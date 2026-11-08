@@ -712,3 +712,75 @@ async fn a_starting_frame_arrives_while_the_preflight_is_pending() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 }
+
+/// A Start's answer belongs to the command, never to whatever else the
+/// dashboard is broadcasting. The request connection used to receive every
+/// broadcast, so another family's live activity line — the agent poll ticks
+/// every 250 ms and sends several frames per tick — reset the quiet window the
+/// reply waits behind and held the answer until the slow preflight finished.
+/// The preview must answer inside the client's one-second budget while that
+/// preflight is still pending.
+#[tokio::test]
+async fn a_start_answer_is_not_withheld_behind_unrelated_frames() {
+    let instance = start("start-traffic").await;
+    devboard::agents_mode::set_preflight(
+        &instance.server.app,
+        "single-responsibility",
+        std::sync::Arc::new(|_request| {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                Ok("owner/repository".to_string())
+            })
+        }),
+    );
+    devboard::agents_mode::set_agent_environment(&instance.server.app, || {
+        Box::pin(async { Ok(std::collections::HashMap::new()) })
+    });
+    devboard::agents_mode::set_spawn(&instance.server.app, |_argv, _environment| None);
+    // One frame every 100 ms, well inside the 250 ms answer window: a live
+    // worker's activity delta and the poll's changed snapshot both arrive this
+    // way, addressed to every registered connection.
+    let app = std::sync::Arc::clone(&instance.server.app);
+    let traffic = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            app.shared.send_all(
+                serde_json::json!({
+                    "type": "issuesActivity",
+                    "runId": "run-1",
+                    "entries": [{"text": "a line", "append": true}],
+                }),
+                None,
+            );
+        }
+    });
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(750),
+        client()
+            .post(format!(
+                "{}/agents/single-responsibility/runs",
+                instance.base
+            ))
+            .header("accept", "application/json")
+            .send(),
+    )
+    .await
+    .expect("the Start answered inside the client's one-second budget")
+    .expect("a response");
+    traffic.abort();
+    assert_eq!(response.status().as_u16(), 201);
+    let body: serde_json::Value = response.json().await.expect("JSON");
+    let frames = body["frames"].as_array().expect("a frame list");
+    assert!(
+        frames.iter().all(|frame| frame["type"] != "issuesActivity"),
+        "another worker's activity belongs to no request and never joins a reply"
+    );
+    frames
+        .iter()
+        .find(|frame| {
+            frame["type"] == "agentState"
+                && frame["agent"]["id"] == "single-responsibility"
+                && frame["agent"]["lifecycle"] == "starting"
+        })
+        .expect("the preview answered the Start");
+}

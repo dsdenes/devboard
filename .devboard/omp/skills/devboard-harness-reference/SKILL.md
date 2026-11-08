@@ -2445,6 +2445,12 @@ A Start answers its `starting` snapshot before the preflight, and the 1000 ms po
 each family's durable state and serializes a snapshot only after the fingerprint changes; an idle
 dashboard rebroadcasts nothing. A `GET /agents` read is answered from the same current snapshots
 and does not wait for a provider or a worker.
+A REST reply carries only the frames the command's own task wrote. A request handle joins the
+client map so a mutation can answer through a broadcast, but its fan-out is attributed to that
+task: a worker's activity line or the poll's republished snapshot reaches every durable page and
+never the request in flight, so it neither joins a reply nor extends the 250 ms window the reply
+waits behind. A long action therefore answers its first frames inside the 1000 ms budget and the
+page reads the rest from its poll.
 `scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
 `GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.

@@ -19,6 +19,14 @@ use crate::config::Config;
 use crate::http::{request_refusal, Replies};
 use crate::journal::Journal;
 
+tokio::task_local! {
+    /// The request handle whose command this task is running. A fan-out frame
+    /// reaches a request handle only from the command that produced it, so a
+    /// live worker's activity never enters another action's reply and never
+    /// holds that reply's answer window open.
+    static REQUEST_ORIGIN: u64;
+}
+
 /// One connected client's handle.
 #[derive(Clone)]
 pub struct Conn {
@@ -122,14 +130,30 @@ impl Shared {
     pub fn broadcast(&self, event: Value) {
         self.persist(&event);
         let payload = crate::jsjson::stringify(&event);
-        if let Ok(clients) = self.clients.lock() {
-            for conn in clients.values() {
-                let _ = conn.outbox.send(payload.clone());
-            }
-        }
+        self.fan_out(&payload, None);
         if let Ok(hooks) = self.broadcast_hooks.lock() {
             for hook in hooks.iter() {
                 hook();
+            }
+        }
+    }
+
+    /// Delivers one payload to every client the fan-out belongs to: a durable
+    /// client always, a request handle only while the command running in that
+    /// handle's own task is the one broadcasting. Unrelated traffic — a live
+    /// worker's activity lines, the poll republishing a changed snapshot —
+    /// belongs to no request, so it never reaches a reply in flight.
+    fn fan_out(&self, payload: &str, except: Option<u64>) {
+        let origin = REQUEST_ORIGIN.try_with(|id| *id).ok();
+        if let Ok(clients) = self.clients.lock() {
+            for conn in clients.values() {
+                if Some(conn.id()) == except {
+                    continue;
+                }
+                if conn.is_request() && Some(conn.id()) != origin {
+                    continue;
+                }
+                let _ = conn.outbox.send(payload.to_string());
             }
         }
     }
@@ -144,14 +168,7 @@ impl Shared {
     /// Sends one event to every client except `except`.
     pub fn send_all(&self, event: Value, except: Option<u64>) {
         let payload = crate::jsjson::stringify(&event);
-        if let Ok(clients) = self.clients.lock() {
-            for conn in clients.values() {
-                if Some(conn.id()) == except {
-                    continue;
-                }
-                let _ = conn.outbox.send(payload.clone());
-            }
-        }
+        self.fan_out(&payload, except);
     }
 
     /// Whether at least one client is connected.
@@ -650,16 +667,18 @@ impl App {
         let (outbox, mut incoming) = tokio::sync::mpsc::unbounded_channel::<String>();
         let conn = Conn::new_request(outbox);
         let id = conn.id();
-        // A mutation may answer through the shared broadcast; the request
-        // handle joins the clients for the duration of the handler so that
-        // answer reaches this request and no other page is involved.
+        // The request handle joins the clients for the duration of the
+        // handler, so a mutation that answers through the shared broadcast
+        // still reaches it and `has_clients` sees the page that asked. The
+        // fan-out itself is attributed to the task below: only the command
+        // running in this request's own task can answer it.
         self.register(conn.clone()).await;
         let app = self.arc_self();
-        let mut task = tokio::spawn(async move {
+        let mut task = tokio::spawn(REQUEST_ORIGIN.scope(id, async move {
             if let Err(error) = app.dispatch(&conn, command).await {
                 conn.send(json!({"type": "error", "message": error}));
             }
-        });
+        }));
         // A long action (a Start's preflight, a run's turn) answers its first
         // frames before it finishes. The request returns those frames and the
         // page polls the resource for the rest; the handler keeps running. A
