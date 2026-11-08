@@ -2796,17 +2796,17 @@ impl AgentsMode {
     }
 
     fn replay_agents(&self, conn: &Conn) {
-        self.replay_agents_inner(conn, true);
+        self.replay_agents_inner(conn, true, true);
     }
 
-    /// `getAgents` answers from the cached projections. The timer read belongs
-    /// to the connect replay, where the first snapshot must carry the gate; a
-    /// read never waits on it.
+    /// `getAgents` answers from the cached projections. The timer read and the
+    /// per-family activity replay belong to the connect replay; a read is one
+    /// `agentsState` frame and completes without waiting for them.
     fn answer_get_agents(&self, conn: &Conn) {
-        self.replay_agents_inner(conn, false);
+        self.replay_agents_inner(conn, false, false);
     }
 
-    fn replay_agents_inner(&self, conn: &Conn, refresh_timer: bool) {
+    fn replay_agents_inner(&self, conn: &Conn, refresh_timer: bool, replay_activity: bool) {
         if let Ok(mut settle) = self.settle_until.lock() {
             *settle = now_millis() + 1_000;
         }
@@ -2828,6 +2828,9 @@ impl AgentsMode {
             for (adapter, snapshot) in self.adapters.iter().zip(snapshots.iter()) {
                 signatures.insert(adapter.id(), crate::jsjson::stringify(snapshot));
             }
+        }
+        if !replay_activity {
+            return;
         }
         for (adapter, snapshot) in self.adapters.iter().zip(snapshots) {
             adapter.replay(conn, &self.shared, snapshot);
