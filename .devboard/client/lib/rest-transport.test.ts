@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { SlowUiActionSink } from "./slow-ui-action";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 
@@ -7,6 +8,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // import would load them first and capture the wrong document.
 const { ConnectionStore } = await import("./connection.svelte");
 const { isStaleBundleProblem, reloadOnceForStaleBundle } = await import("./stale-bundle");
+const { SLOW_UI_ACTION_BUDGET_MS, slowUiAction } = await import("./slow-ui-action");
 
 /** Resolves the promise chain `send` starts without waiting on a real timer. */
 async function settle(): Promise<void> {
@@ -58,6 +60,8 @@ beforeEach(() => {
   restore();
 });
 afterEach(() => {
+  slowUiAction.uninstall();
+  jest.useRealTimers();
   restore();
 });
 
@@ -201,5 +205,145 @@ test("stale_bundle_reloads_once", async () => {
   expect(reloadOnceForStaleBundle(storage, () => (direct += 1))).toBe(true);
   expect(reloadOnceForStaleBundle(storage, () => (direct += 1))).toBe(false);
   expect(direct).toBe(1);
+  store.dispose();
+});
+
+const DRAFT_PATH = ".devboard/goal-proposals/example.md";
+const DRAFT_URL = "/goal-drafts/.devboard%2Fgoal-proposals%2Fexample.md";
+
+/** The slow-action sink: it records the breach a page would have filed. */
+function breachSink(breaches: string[]): SlowUiActionSink {
+  return {
+    reportingEnabled: () => false,
+    captureContext: () => ({
+      route: "/",
+      url: "http://test.invalid/",
+      selector: "#issues-draft",
+      domExcerpt: '<button data-testid="issues-draft"></button>',
+      visibleText: "example.md",
+      viewport: "800x600 @1x",
+      capturedAt: "2026-11-08T08:07:19.675Z",
+    }),
+    show: (notice) => {
+      breaches.push(notice.text);
+      return breaches.length;
+    },
+    update: () => undefined,
+    file: async () => ({ ok: false as const, error: "reporting is off" }),
+  };
+}
+
+/** The HTTP transport with the DOM globals a page read touches. */
+function installHttpTransport(
+  handler: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+): void {
+  setGlobal("fetch", handler);
+  setGlobal(
+    "WebSocket",
+    class Untracked {
+      constructor() {
+        throw new Error("no command socket may be constructed");
+      }
+    },
+  );
+  setGlobal("window", {
+    setInterval: () => 1,
+    clearInterval: () => undefined,
+    setTimeout: () => 1,
+    clearTimeout: () => undefined,
+  });
+  setGlobal("document", fakeDocument("visible"));
+  setGlobal("location", { protocol: "http:", host: "test.invalid", reload: () => undefined });
+}
+
+test("a repeated operator read asks for the draft instead of a validator", async () => {
+  jest.useFakeTimers();
+  const validators: Array<string | null> = [];
+  // The server answers a matching If-None-Match with 304 and no body, exactly
+  // as `representation` does.
+  installHttpTransport(async (_input, init) => {
+    const validator = new Headers(init?.headers).get("if-none-match");
+    validators.push(validator);
+    if (validator === '"v1"') return new Response(null, { status: 304, headers: { etag: '"v1"' } });
+    return new Response(
+      JSON.stringify({
+        frames: [
+          { type: "issuesDraftDetail", draft: { path: DRAFT_PATH, name: "example.md", text: "text" } },
+        ],
+      }),
+      { status: 200, headers: { "content-type": "application/json", etag: '"v1"' } },
+    );
+  });
+
+  const breaches: string[] = [];
+  slowUiAction.install(breachSink(breaches));
+  const store = new ConnectionStore();
+  store.state = "open";
+  const frames: string[] = [];
+  store.onMessage((message) => {
+    frames.push(String(message.type));
+  });
+
+  // `openDraft` drops the text before it reads the draft again, so the second
+  // read is a request for the representation and never a revalidation.
+  store.send({ type: "getGoalDraft", path: DRAFT_PATH });
+  await settle();
+  store.send({ type: "getGoalDraft", path: DRAFT_PATH });
+  await settle();
+
+  expect(validators).toEqual([null, null]);
+  expect(frames).toEqual(["issuesDraftDetail", "issuesDraftDetail"]);
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  expect(breaches).toEqual([]);
+
+  store.dispose();
+});
+
+test("a read answered with a problem completes without filing it as slow", async () => {
+  jest.useFakeTimers();
+  installHttpTransport(async () =>
+    new Response(
+      JSON.stringify({
+        type: "about:blank",
+        title: "Conflict",
+        status: 409,
+        detail: "The draft is being elaborated.",
+      }),
+      { status: 409, headers: { "content-type": "application/problem+json" } },
+    ),
+  );
+
+  const breaches: string[] = [];
+  slowUiAction.install(breachSink(breaches));
+  const store = new ConnectionStore();
+  store.state = "open";
+
+  store.send({ type: "getGoalDraft", path: DRAFT_PATH });
+  await settle();
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  expect(breaches).toEqual([]);
+  expect(store.lastError).toBe("The draft is being elaborated.");
+
+  store.dispose();
+});
+
+test("a draft read that never answers still files one issue at the budget", async () => {
+  jest.useFakeTimers();
+  installHttpTransport(() => new Promise<Response>(() => undefined));
+
+  const breaches: string[] = [];
+  slowUiAction.install(breachSink(breaches));
+  const store = new ConnectionStore();
+  store.state = "open";
+
+  store.send({ type: "getGoalDraft", path: DRAFT_PATH });
+  await settle();
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS - 1);
+  expect(breaches).toEqual([]);
+  jest.advanceTimersByTime(1);
+  expect(breaches).toEqual([
+    `Slow UI action: getGoalDraft ${DRAFT_PATH} exceeded the ${SLOW_UI_ACTION_BUDGET_MS} ms budget.`,
+  ]);
+
   store.dispose();
 });

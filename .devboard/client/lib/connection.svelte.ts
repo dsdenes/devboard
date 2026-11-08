@@ -1,5 +1,5 @@
 import { notifications } from "./notifications.svelte";
-import { slowUiAction, type SlowUiActionOrigin } from "./slow-ui-action";
+import { slowUiAction, type SlowUiActionOrigin, type SlowUiActionTicket } from "./slow-ui-action";
 import { isStaleBundleProblem, reloadOnceForStaleBundle } from "./stale-bundle";
 import { REST_OPERATIONS, type RestOperation } from "./rest-map";
 import type { VersionState } from "./types";
@@ -145,13 +145,13 @@ export class ConnectionStore {
         return true;
       }
       this.lastError = null;
-      slowUiAction.dispatch(command, resolved);
+      const action = slowUiAction.dispatch(command, resolved);
       const envelope = command as Envelope;
       if (operation.method === "GET") {
         this.register(envelope);
-        void this.fetchResource(envelope, operation);
+        void this.fetchResource(envelope, operation, resolved, action);
       } else {
-        void this.perform(envelope, operation);
+        void this.perform(envelope, operation, action);
       }
       return true;
     }
@@ -253,15 +253,32 @@ export class ConnectionStore {
     this.polled.set(key, { command, key });
   }
 
-  /** Reads one resource once, conditional on the ETag last seen. */
-  private async fetchResource(command: Envelope, operation: RestOperation): Promise<void> {
+  /**
+   * Reads one resource once. A refresh or a reconnect revalidates state the
+   * page still holds, conditional on the ETag last seen and deduped against a
+   * read already in flight. An operator or first-paint read asks for the
+   * representation itself — the surface may have dropped what it held — so it
+   * carries no validator and is never dropped. Either way the action's own
+   * response is its answer, so the ticket completes when that response lands.
+   */
+  private async fetchResource(
+    command: Envelope,
+    operation: RestOperation,
+    origin: SlowUiActionOrigin,
+    action: SlowUiActionTicket | null,
+  ): Promise<void> {
     const key = `${command.type}:${resourcePath(command, operation)}`;
-    if (this.inFlight.has(key)) return;
-    this.inFlight.add(key);
+    const revalidate = origin === "refresh" || origin === "reconnect";
+    if (revalidate) {
+      if (this.inFlight.has(key)) return;
+      this.inFlight.add(key);
+    }
     try {
       const headers: Record<string, string> = { accept: "application/json" };
-      const etag = this.etags.get(key);
-      if (etag !== undefined) headers["if-none-match"] = etag;
+      if (revalidate) {
+        const etag = this.etags.get(key);
+        if (etag !== undefined) headers["if-none-match"] = etag;
+      }
       const response = await fetch(resourcePath(command, operation), {
         method: "GET",
         headers,
@@ -271,12 +288,17 @@ export class ConnectionStore {
     } catch {
       this.lost();
     } finally {
-      this.inFlight.delete(key);
+      if (revalidate) this.inFlight.delete(key);
+      action?.complete();
     }
   }
 
   /** Performs one mutating REST operation. */
-  private async perform(command: Envelope, operation: RestOperation): Promise<void> {
+  private async perform(
+    command: Envelope,
+    operation: RestOperation,
+    action: SlowUiActionTicket | null,
+  ): Promise<void> {
     try {
       const body = requestBody(command, operation);
       const response = await fetch(resourcePath(command, operation), {
@@ -290,6 +312,8 @@ export class ConnectionStore {
       await this.answer(response, operation, operation.path);
     } catch {
       this.lost();
+    } finally {
+      action?.complete();
     }
   }
 
@@ -493,7 +517,7 @@ export class ConnectionStore {
     for (const resource of this.polled.values()) {
       const operation = REST_OPERATIONS[resource.command.type];
       if (operation !== undefined) {
-        void this.fetchResource(resource.command, operation);
+        void this.fetchResource(resource.command, operation, "refresh", null);
       }
     }
   }

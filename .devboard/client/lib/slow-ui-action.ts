@@ -3,10 +3,11 @@ import type { NotificationIssueState } from "./types";
 
 /**
  * The background latency guard: one operator action is measured from its
- * dispatch to the first frame that answers it. An action unanswered at
- * `SLOW_UI_ACTION_BUDGET_MS` files one issue through the existing reporting
- * path, so the slowness is fixed rather than masked. The guard never touches
- * the control's own ceiling, a timer, a request, or a polling interval.
+ * dispatch to its first answer — the frame that answers it, or the action's
+ * own HTTP response. An action unanswered at `SLOW_UI_ACTION_BUDGET_MS` files
+ * one issue through the existing reporting path, so the slowness is fixed
+ * rather than masked. The guard never touches the control's own ceiling, a
+ * timer, a request, or a polling interval.
  */
 
 /** The fixed background budget. It never replaces the command ceiling. */
@@ -33,7 +34,7 @@ export interface SlowUiActionContext {
   capturedAt: string;
 }
 
-/** Completes one HTTP action when its response arrives. */
+/** Completes one action when its own answer arrives, whatever the status. */
 export interface SlowUiActionTicket {
   complete(): void;
 }
@@ -318,13 +319,17 @@ export class SlowUiActionGuard {
     this.#filings.clear();
   }
 
-  /** Registers one dispatch unless its origin is a refresh or a reconnect. */
-  dispatch(command: unknown, origin: SlowUiActionOrigin): void {
-    if (this.#sink === null) return;
-    if (origin !== "operator" && origin !== "initial") return;
-    if (typeof command !== "object" || command === null || Array.isArray(command)) return;
+  /**
+   * Registers one dispatch unless its origin is a refresh or a reconnect.
+   * Returns the ticket its caller completes when the action's own HTTP
+   * response arrives, and null when nothing is tracked.
+   */
+  dispatch(command: unknown, origin: SlowUiActionOrigin): SlowUiActionTicket | null {
+    if (this.#sink === null) return null;
+    if (origin !== "operator" && origin !== "initial") return null;
+    if (typeof command !== "object" || command === null || Array.isArray(command)) return null;
     const record = command as Record<string, unknown>;
-    if (typeof record.type !== "string") return;
+    if (typeof record.type !== "string") return null;
     const context = this.#sink.captureContext();
     const subject = actionSubject(record);
     const identity = actionIdentity(record.type, subject, context.route);
@@ -341,6 +346,7 @@ export class SlowUiActionGuard {
     };
     action.timer = setTimeout(() => this.#breach(action), this.#budgetMs);
     this.#pending.add(action);
+    return { complete: () => this.#finish(action) };
   }
 
   /**
