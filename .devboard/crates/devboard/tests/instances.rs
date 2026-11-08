@@ -644,7 +644,18 @@ fn hung_dashboard(scratch: &Scratch, repo: &Path, state: &Path, port: u16) -> Ch
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().expect("a log")))
         .stderr(Stdio::from(log));
-    command.spawn().expect("the hung fixture starts")
+    // A concurrent fork in this process can briefly hold the freshly written
+    // script open, which makes the first exec fail with ETXTBSY; retry it.
+    for _ in 0..20 {
+        match command.spawn() {
+            Ok(child) => return child,
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("the hung fixture starts: {error}"),
+        }
+    }
+    panic!("the hung fixture starts after the exec retry");
 }
 
 fn wait_discovered(repo: &Path, state: &Path, pid: u32) {
