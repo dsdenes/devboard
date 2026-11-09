@@ -2915,9 +2915,40 @@ async fn run_release_agent(
     if stopped {
         (input.activity)("stopped during the release run; verifying what it shipped");
     }
-    let target = input.request.target.clone();
-    let version = input.request.version.clone();
     let result = read_result(&input.run_dir);
+    // A peer's publish may prove a version other than the range this run was
+    // handed when main moved past the failed version's tag. Its report names
+    // the release it published, so verify that release, exactly as the native
+    // publish path does; verifying the handed version instead would fail after
+    // a successful release and repeat that failure on every tick.
+    let published = result.as_ref().and_then(|value| {
+        if value.get("ok").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        let sha = value
+            .get("sha")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|sha| !sha.is_empty())?;
+        let version = value
+            .get("version")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|version| !version.is_empty())?;
+        Some((sha.to_string(), version.to_string()))
+    });
+    let (target, version) = match published {
+        Some((sha, version)) => {
+            if version != input.request.version {
+                (input.activity)(&format!(
+                    "publish released v{version} instead of the requested v{}; verifying the published release",
+                    input.request.version
+                ));
+            }
+            (sha, version)
+        }
+        None => (input.request.target.clone(), input.request.version.clone()),
+    };
     let verified = verify(ReleaseVerificationOptions {
         repo_dir: input.repo_dir.clone(),
         target,

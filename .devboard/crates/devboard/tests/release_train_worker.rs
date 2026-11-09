@@ -1556,6 +1556,100 @@ async fn a_peer_reported_failure_records_its_report_without_the_withdrawn_tag_ph
     assert_eq!(result, ReleaseRunResult::failed(report));
 }
 
+/// A retry whose tag was superseded publishes the newer range at the
+/// integration tip. The peer's report names the release it actually published,
+/// so verification must read that release; reading the handed version fails
+/// after a successful release and repeats the failure on every tick.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_that_publishes_a_superseded_version_is_verified_at_that_version() {
+    let root = scratch_root("agent-published-version");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).expect("a repo");
+    let run_dir = root.join("run");
+    std::fs::create_dir_all(&run_dir).expect("a run directory");
+    let published_sha = "b".repeat(40);
+    std::fs::write(
+        run_dir.join("result.json"),
+        json!({
+            "ok": true,
+            "version": "1.1.0",
+            "url": "https://forge.test/releases/tag/v1.1.0",
+            "sha": published_sha,
+        })
+        .to_string(),
+    )
+    .expect("the result document");
+    let activity: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let input = ReleaseRunInput {
+        request: ReleaseTrainRequest {
+            format: 1,
+            run_id: "run-1".to_string(),
+            range: "v1.0.0..abc".to_string(),
+            target: "a".repeat(40),
+            version: "1.0.0".to_string(),
+            previous: Some("v1.0.0".to_string()),
+            commits: Vec::new(),
+            release_commits: Vec::new(),
+        },
+        activity: {
+            let activity = activity.clone();
+            Arc::new(move |line: &str| activity.lock().unwrap().push(line.to_string()))
+        },
+        stopping: Arc::new(|| false),
+        run_dir: run_dir.clone(),
+        repo_dir: repo.clone(),
+        state_dir: root.join("state"),
+        agent_command: format!("{} acp-stub", env!("CARGO_BIN_EXE_devboard")),
+        timeouts: ReleaseRunTimeouts::default(),
+        register_peer: Arc::new(|_peer| {}),
+    };
+    let verified: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let verify: VerifyFn = {
+        let verified = verified.clone();
+        Arc::new(move |options| {
+            verified
+                .lock()
+                .unwrap()
+                .push((options.target.clone(), options.version.clone()));
+            Box::pin(async move {
+                ReleaseVerification::Ok {
+                    version: options.version.clone(),
+                    url: format!("https://forge.test/releases/tag/v{}", options.version),
+                }
+            })
+        })
+    };
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify,
+        std::collections::HashMap::new(),
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(60), run(input))
+        .await
+        .expect("the stub agent ends the run");
+    assert_eq!(
+        result,
+        ReleaseRunResult::Ok {
+            version: "1.1.0".to_string(),
+            url: "https://forge.test/releases/tag/v1.1.0".to_string(),
+        }
+    );
+    assert_eq!(
+        verified.lock().unwrap().clone(),
+        vec![(published_sha, "1.1.0".to_string())],
+        "verification reads the release the peer published, never the handed version"
+    );
+    assert!(
+        activity
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line
+                == "publish released v1.1.0 instead of the requested v1.0.0; verifying the published release"),
+        "{:?}",
+        activity.lock().unwrap()
+    );
+}
+
 #[tokio::test]
 async fn release_history_reads_the_request_of_a_legacy_run() {
     let workspace = workspace("history");
