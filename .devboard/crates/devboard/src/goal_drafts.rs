@@ -1047,10 +1047,12 @@ impl DraftWatcher {
         self.conns.push(conn.clone());
     }
 
-    fn send_all(&self, event: Value) {
-        for conn in &self.conns {
-            conn.send(event.clone());
-        }
+    /// Replays one event to every handle a socket still backs. A handle whose
+    /// receiver is gone is forgotten here, so the replay list holds only what
+    /// can answer and its cost never grows with the requests a page made.
+    fn send_all(&mut self, event: Value) {
+        let payload = crate::jsjson::stringify(&event);
+        self.conns.retain(|conn| conn.send_payload(payload.clone()));
     }
 
     fn snapshot(&self, path: &str) -> GoalDraftRun {
@@ -1077,19 +1079,24 @@ impl DraftWatcher {
         runs
     }
 
-    fn emit_state(&self, path: &str) {
+    fn emit_state(&mut self, path: &str) {
         self.send_all(json!({
             "type": "issuesDraftState",
             "draft": self.snapshot(path).to_json(),
         }));
     }
 
-    fn publish_drafts(&self) {
+    /// The `issuesDrafts` frame the list publishes.
+    fn drafts_frame(&self) -> Value {
         let drafts: Vec<Value> = list_goal_drafts(&self.repo_dir)
             .iter()
             .map(GoalDraftSummary::to_json)
             .collect();
-        self.send_all(json!({"type": "issuesDrafts", "drafts": drafts}));
+        json!({"type": "issuesDrafts", "drafts": drafts})
+    }
+
+    fn publish_drafts(&mut self) {
+        self.send_all(self.drafts_frame());
     }
 
     /// Writes one run's state. The owner identity is never invented here: only
@@ -1439,7 +1446,9 @@ impl DraftWatcher {
     }
 
     fn start(&mut self, relative_path: Option<&Value>) -> StartOutcome {
-        self.refresh();
+        // A start reads this one draft and its own durable run, never every
+        // run's state: the polling thread owns supervision, and a full refresh
+        // here put that scan on the operator's click.
         let draft = match read_goal_draft(&self.repo_dir, relative_path) {
             Ok(draft) => draft,
             Err(error) => {
@@ -1456,6 +1465,8 @@ impl DraftWatcher {
             .runs
             .get(&path)
             .is_some_and(|run| run.status == GoalDraftStatus::Running)
+            || read_goal_draft_owner_state(&self.state_dir, &self.repo_dir, &path)
+                .is_some_and(|state| state.run.status == GoalDraftStatus::Running)
         {
             return StartOutcome::Refused {
                 message: "This draft is being elaborated.".to_string(),
@@ -1493,7 +1504,7 @@ impl DraftWatcher {
         };
         self.emit_state(&path);
         self.publish_drafts();
-        StartOutcome::Started
+        StartOutcome::Started(run)
     }
 
     fn stop(&mut self, path: &str) -> bool {
@@ -1582,8 +1593,12 @@ impl DraftWatcher {
 }
 
 enum StartOutcome {
-    Started,
-    Refused { message: String, stopped: bool },
+    /// The run the request started, so its own handle can answer with it.
+    Started(GoalDraftRun),
+    Refused {
+        message: String,
+        stopped: bool,
+    },
 }
 
 fn owner_argv(executable: &Path, repo_dir: &Path, state_dir: &Path, path: &str) -> Vec<String> {
@@ -1642,6 +1657,24 @@ static WATCHERS: Mutex<Vec<Arc<Mutex<DraftWatcher>>>> = Mutex::new(Vec::new());
 
 fn watch_lock(watcher: &Mutex<DraftWatcher>) -> std::sync::MutexGuard<'_, DraftWatcher> {
     watcher.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// The live handles the watcher replays every frame to. A request's handle
+/// must never join that list: it is gone when its request ends, and a list
+/// that only grows makes every later frame cost more.
+#[doc(hidden)]
+pub fn watcher_subscriber_count(repo_dir: &Path, state_dir: &Path) -> usize {
+    let repo_dir = absolute(repo_dir);
+    let state_dir = absolute(state_dir);
+    let watchers = WATCHERS.lock().unwrap_or_else(|poison| poison.into_inner());
+    watchers
+        .iter()
+        .find(|watcher| {
+            let guard = watch_lock(watcher);
+            guard.repo_dir == repo_dir && guard.state_dir == state_dir
+        })
+        .map(|watcher| watch_lock(watcher).conns.len())
+        .unwrap_or(0)
 }
 
 /// The watcher for one repository under this process's state directory.
@@ -1723,7 +1756,11 @@ async fn answer(
     let shared = watcher_for(repo_dir, state_dir);
     {
         let mut watcher = watch_lock(&shared);
-        watcher.subscribe(conn);
+        // A request's handle dies with the request, so it never joins the
+        // watcher's replay list; its reply is this function's own.
+        if !conn.is_request() {
+            watcher.subscribe(conn);
+        }
         if !watcher.answer(path_text, id_value, value_text) {
             send_draft_error(
                 conn,
@@ -1739,6 +1776,12 @@ async fn answer(
     wait_for_applied_answer(state_dir, repo_dir, path_text).await;
     let mut watcher = watch_lock(&shared);
     watcher.refresh();
+    if conn.is_request() {
+        conn.send(json!({
+            "type": "issuesDraftState",
+            "draft": watcher.snapshot(path_text).to_json(),
+        }));
+    }
     true
 }
 
@@ -1758,6 +1801,18 @@ pub async fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Comm
     if !handles {
         return false;
     }
+    // A draft read is one file under the drafts directory. It needs no
+    // watcher, no lease, and no lock, so it answers while another draft
+    // command supervises a run: a read never waits behind the supervisor.
+    if let Command::GetGoalDraft { path } = command {
+        match read_goal_draft(repo_dir, path.as_ref()) {
+            Ok(draft) => conn.send(json!({"type": "issuesDraftDetail", "draft": draft.to_json()})),
+            Err(error) => {
+                send_draft_error(conn, path.as_ref().and_then(Value::as_str), &error.message)
+            }
+        }
+        return true;
+    }
     let state_dir = crate::supervision::default_supervision_state_directory();
     if let Command::AnswerGoalDraft { path, id, value } = command {
         return answer(
@@ -1770,13 +1825,18 @@ pub async fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Comm
         )
         .await;
     }
-    let shared = watcher_for(repo_dir, &state_dir);
-    let mut watcher = watch_lock(&shared);
-    watcher.subscribe(conn);
+    let watcher = watcher_for(repo_dir, &state_dir);
+    let mut watcher = watch_lock(&watcher);
+    // A request's handle dies with the request, so it never joins the
+    // watcher's replay list; its own frame is sent to it directly.
+    if !conn.is_request() {
+        watcher.subscribe(conn);
+    }
 
     match command {
         Command::GetGoalDrafts => {
-            watcher.refresh();
+            // The poll thread owns supervision and publishing; a read only
+            // projects what the watcher last published.
             let drafts: Vec<Value> = list_goal_drafts(&watcher.repo_dir)
                 .iter()
                 .map(GoalDraftSummary::to_json)
@@ -1788,14 +1848,12 @@ pub async fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Comm
                 .collect();
             conn.send(json!({"type": "issuesDrafts", "drafts": drafts, "runs": runs}));
         }
-        Command::GetGoalDraft { path } => match read_goal_draft(&watcher.repo_dir, path.as_ref()) {
-            Ok(draft) => conn.send(json!({"type": "issuesDraftDetail", "draft": draft.to_json()})),
-            Err(error) => {
-                send_draft_error(conn, path.as_ref().and_then(Value::as_str), &error.message)
-            }
-        },
         Command::StartGoalDraft { path } => match watcher.start(path.as_ref()) {
-            StartOutcome::Started => {}
+            StartOutcome::Started(run) => {
+                if conn.is_request() {
+                    conn.send(json!({"type": "issuesDraftState", "draft": run.to_json()}));
+                }
+            }
             StartOutcome::Refused { message, stopped } => {
                 if !stopped {
                     send_draft_error(conn, path.as_ref().and_then(Value::as_str), &message);
@@ -1816,8 +1874,17 @@ pub async fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Comm
                 conn.send(json!({"type": "error", "message": "Deleting a draft needs its path."}));
                 return true;
             };
-            if let Err(error) = watcher.delete(Some(&Value::String(path.to_string()))) {
-                conn.send(json!({"type": "error", "message": error.message}));
+            match watcher.delete(Some(&Value::String(path.to_string()))) {
+                Ok(_) => {
+                    // A request handle never joins the replay list, so the
+                    // republished list is sent to it directly.
+                    if conn.is_request() {
+                        conn.send(watcher.drafts_frame());
+                    }
+                }
+                Err(error) => {
+                    conn.send(json!({"type": "error", "message": error.message}));
+                }
             }
         }
         _ => return false,

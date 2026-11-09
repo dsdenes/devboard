@@ -3903,8 +3903,11 @@ transcript and still-pending question. The detail refreshes when the page opens,
 panel writes a draft through `POST /goal-proposals`, after an elaboration finishes or stops,
 and when a listed draft disappears. The page polls the list every two seconds while it is mounted,
 so an external deletion is visible without a reload, and the report panel's write broadcast
-reaches an open page immediately. A browser reload restores the Draft goals page and the selected
-path; when the file no longer exists, the page opens the list.
+reaches an open page immediately. That poll is the whole read path: a detail read is one file
+under the drafts directory and answers on its own request handle, and a request handle never joins
+the list a publish replays to, so polling, opening, and starting drafts for hours leaves a start's
+own cost flat. A browser reload restores the Draft goals page and the selected path; when the file
+no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is

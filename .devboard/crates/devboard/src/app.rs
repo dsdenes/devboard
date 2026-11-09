@@ -67,6 +67,13 @@ impl Conn {
     pub fn send(&self, event: Value) {
         let _ = self.outbox.send(crate::jsjson::stringify(&event));
     }
+
+    /// Sends one already-serialized payload, reporting whether its socket
+    /// still accepts frames. A fan-out uses it to forget the handles whose
+    /// receiver is gone instead of feeding them every later frame.
+    pub fn send_payload(&self, payload: String) -> bool {
+        self.outbox.send(payload).is_ok()
+    }
 }
 
 /// One durable state section. A flow writes its own key and restores it; the

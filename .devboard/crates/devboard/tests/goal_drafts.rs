@@ -643,6 +643,107 @@ async fn a_missing_draft_refuses_a_start() {
     assert!(!devboard::goal_drafts::goal_draft_state_directory(&state_dir(), &repo).exists());
 }
 
+/// A draft read is one file: it answers on the request's own handle and never
+/// joins the watcher's replay list, so reads never accumulate there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_draft_read_answers_its_request_without_joining_the_watcher() {
+    let _serial = serial().await;
+    let repo = repo_root("read-request");
+    let path = write_draft(&repo, "read.md", "# Read\n\nBody.\n");
+    let app = app(&repo);
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new_request(outbox);
+
+    app.command(
+        &conn,
+        Command::GetGoalDraft {
+            path: Some(json!(path)),
+        },
+    )
+    .await;
+    let detail = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDraftDetail",
+        5000,
+    )
+    .await;
+    assert_eq!(detail["draft"]["path"], json!(path));
+    assert_eq!(
+        devboard::goal_drafts::watcher_subscriber_count(&repo, &state_dir()),
+        0,
+        "the read's request handle is gone; it never joined the replay list"
+    );
+}
+
+/// A start reads its own draft and run, forks one owner, and answers the
+/// request that asked for it. Its handle never joins the watcher's replay
+/// list, so a page that polls and starts for hours keeps the click cost flat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_draft_start_answers_its_request_without_joining_the_watcher() {
+    let _serial = serial().await;
+    let repo = repo_root("start-request");
+    let path = write_draft(&repo, "start.md", "# Start\n\nSTUB-HANG\n");
+    let app = app(&repo);
+    let (live, mut live_inbox) = connected(&app).await;
+    app.command(&live, Command::GetGoalDrafts).await;
+    frame_matching(
+        &mut live_inbox,
+        |frame| frame["type"] == "issuesDrafts",
+        5000,
+    )
+    .await;
+    assert_eq!(
+        devboard::goal_drafts::watcher_subscriber_count(&repo, &state_dir()),
+        1
+    );
+    // The page polled the list and opened the draft before it clicked Start;
+    // those request handles are gone and must leave nothing behind.
+    for _ in 0..8 {
+        app.dispatch_captured(Command::GetGoalDrafts).await;
+        app.dispatch_captured(Command::GetGoalDraft {
+            path: Some(json!(path.clone())),
+        })
+        .await;
+    }
+    assert_eq!(
+        devboard::goal_drafts::watcher_subscriber_count(&repo, &state_dir()),
+        1,
+        "a page's requests never accumulate on the replay list"
+    );
+
+    let frames = app
+        .dispatch_captured(Command::StartGoalDraft {
+            path: Some(json!(path.clone())),
+        })
+        .await;
+    let running = frames
+        .iter()
+        .find(|frame| frame["type"] == "issuesDraftState")
+        .expect("the start answered its request");
+    assert_eq!(running["draft"]["path"], json!(path));
+    assert_eq!(running["draft"]["status"], json!("running"));
+    assert_eq!(
+        devboard::goal_drafts::watcher_subscriber_count(&repo, &state_dir()),
+        1,
+        "the start's request handle is gone; only the page's stays"
+    );
+
+    app.command(
+        &live,
+        Command::StopGoalDraft {
+            path: Some(json!(path)),
+        },
+    )
+    .await;
+    let stopped = frame_matching(
+        &mut live_inbox,
+        |frame| frame["type"] == "issuesDraftState" && frame["draft"]["status"] == "stopped",
+        15000,
+    )
+    .await;
+    assert!(stopped["draft"]["finishedAt"].is_string());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_running_draft_refuses_deletion_and_deletes_once_stopped() {
     let _serial = serial().await;
