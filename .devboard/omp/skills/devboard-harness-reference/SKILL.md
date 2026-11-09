@@ -457,11 +457,12 @@ card, every other failure in the notice stack above the page.
 Every operator-initiated REST action and every operator-initiated `POST /reports` or
 `POST /goal-proposals` runs under a background 1000 ms latency budget, and so do the six
 first-paint reads a page load sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
-`getVersion`, `getProviders`). Those six are dispatched before every mode read on the same open,
-so they hold the page's first six browser connections and a slow mode read never queues one of
-them behind it. Every mode read the open replays behind them is queued rather than issued, so a
-read a page dispatches itself as it mounts — the Resources tab's own `getResources` — takes the
-first freed connection instead of the back of the replay. An action is complete when its first
+`getVersion`, `getProviders`). Those six are the page's first requests: nothing else is issued
+before them, not the mode reads an open replays and not a read a surface dispatches as it mounts
+while the page is still connecting. They hold the page's first six browser connections, so a slow
+mode read never queues one of them behind it. Every mode read — the open's replay and a page's own
+mount-time read alike — is queued rather than issued, so it takes the first freed connection
+instead of the back of the replay. An action is complete when its first
 answer arrives — the frame that answers it, or the response to the request that carried it,
 whatever its status. A frame for another action or a broadcast does not complete it. A request
 that never answers keeps its budget and still files, so a lost or refused connection, a problem

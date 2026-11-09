@@ -641,10 +641,13 @@ export class ConnectionStore {
    * and never before the six first-paint reads have answered: until then the
    * browser's six connections belong to them, and a read the page dispatches
    * at mount — the Resources tab's own budget read — must not wait behind the
-   * whole replay.
+   * whole replay. Nothing starts before the connection is open either: a
+   * surface subscribes as it mounts, ahead of `connect`, and a read issued
+   * there would take a first-paint slot — a live /goal-drafts read measured
+   * 4469 ms while /records needs 2 ms.
    */
   private pump(): void {
-    if (!this.replayReady) return;
+    if (!this.open || !this.replayReady) return;
     while (!this.disposed && this.backgroundReads < MAX_BACKGROUND_READS) {
       const next = this.queue.shift();
       if (next === undefined) return;

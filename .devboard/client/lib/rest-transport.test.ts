@@ -93,6 +93,7 @@ test("polling_pauses_when_hidden", async () => {
   setGlobal("location", { protocol: "http:", host: "test.invalid", reload: () => undefined });
 
   const store = new ConnectionStore();
+  store.state = "open";
   store.send({ type: "getVersion" }, "initial");
   await settle();
   const afterFirst = requests.length;
@@ -148,6 +149,7 @@ test("no_command_frames", async () => {
   );
   setGlobal("document", fakeDocument("visible"));
   const store = new ConnectionStore();
+  store.state = "open";
   expect(store.send({ type: "getVersion" }, "initial")).toBe(true);
   await settle();
   expect(requests[0]).toBe("/version");
@@ -260,6 +262,40 @@ test("first_paint_reads_precede_surface_reads", async () => {
     "/providers",
     "/issues",
     "/agents",
+  ]);
+  store.dispose();
+});
+
+test("a read dispatched before the open waits for the six first-paint reads", async () => {
+  // A surface subscribes as it mounts, before `connect` dispatches the six
+  // first-paint reads. A browser opens six connections per origin, so a read
+  // dispatched there holds a first-paint slot: on one live load /issues took
+  // 970 ms and /goal-drafts 4469 ms while /records answers in 2 ms, and the
+  // records read breached its 1000 ms first-paint budget behind them.
+  const issued: string[] = [];
+  installHttpTransport(async (input) => {
+    issued.push(String(input));
+    return new Response(JSON.stringify({ frames: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  const store = new ConnectionStore();
+  store.send({ type: "getIssues" }, "refresh");
+  await settle();
+  expect(issued).toEqual([]);
+
+  store.connect();
+  await settle();
+  expect(issued).toEqual([
+    "/records",
+    "/goal",
+    "/skills",
+    "/project",
+    "/version",
+    "/providers",
+    "/issues",
   ]);
   store.dispose();
 });
@@ -504,6 +540,7 @@ test("stale_bundle_reloads_once", async () => {
   );
 
   const store = new ConnectionStore();
+  store.state = "open";
   expect(isStaleBundleProblem(404, { method: "GET", path: "/version" })).toBe(true);
   expect(isStaleBundleProblem(404, undefined)).toBe(false);
   expect(isStaleBundleProblem(500, { method: "GET", path: "/version" })).toBe(false);
