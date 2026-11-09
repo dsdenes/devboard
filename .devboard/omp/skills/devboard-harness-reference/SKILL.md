@@ -3059,7 +3059,10 @@ that refusal as an empty open set: when a turn recorded no read and no decision,
 names the recorded failure — `the deduplication agent failed: <tool>: <refusal>` — and a turn that
 read the open set but had no decision recorded for a candidate names the same failure in that
 candidate's `reason`. A refused credential therefore reports its HTTP status and message instead
-of reading as a repository with no open issue.
+of reading as a repository with no open issue. The Gitea client resolves a refused token to the
+repository's public view before the turn records any failure, so a token Gitea accepts for the
+repository but refuses at the `/user` account probe still reads the open set; only a repository
+that needs the credential answers 401 again, and only that refusal is recorded.
 
 A completed turn whose only recorded failure names a timed-out read met a slow forge, and one that
 names a `5xx` answer, a reset connection, or no answer at all met an unavailable one; neither is a
@@ -3471,7 +3474,9 @@ from those headers and parses only the matching file, so one read does not cost 
   credential probe or forge command that outlives its deadline (60 seconds by default) fails the
   call with a retryable timeout message instead of leaving it pending. A Gitea read that presents a
   credential the forge refuses with HTTP 401 is retried once without it, so a long-running worker
-  whose launcher's token was since rotated away still reads a public repository; a repository that
+  whose launcher's token was since rotated away still reads a public repository; the same fallback
+  covers a token Gitea accepts for the repository view but refuses at the account probe `/user`,
+  because neither answer proves the repository unreadable. A repository that
   needs the credential answers 401 again and the refusal is reported, and a write is never retried
   without it. Only a resolved credential is remembered, so a forge that could not answer is probed
   again by the next call instead of failing this client for its lifetime.

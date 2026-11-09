@@ -3484,14 +3484,14 @@ async fn resolve_gitea_inner(
     // still answers without it, so the read resolves to the public view and a
     // write still needs a credential the forge accepts.
     let mut refused: Option<GiteaError> = None;
-    let repository = match gitea_repository(&target, &transport, &call_options).await {
+    let anonymous = GiteaTarget {
+        base_url: target.base_url.clone(),
+        project: target.project.clone(),
+        token: None,
+    };
+    let mut repository = match gitea_repository(&target, &transport, &call_options).await {
         Ok(repository) => repository,
         Err(error) if !token.is_empty() && error.status == Some(401) => {
-            let anonymous = GiteaTarget {
-                base_url: target.base_url.clone(),
-                project: target.project.clone(),
-                token: None,
-            };
             let repository = match gitea_repository(&anonymous, &transport, &call_options).await {
                 Ok(repository)
                     if gitea_permission(repository.permissions()) != Permission::None =>
@@ -3506,15 +3506,43 @@ async fn resolve_gitea_inner(
         }
         Err(error) => return Err(error),
     };
+    // The account probe is the credential check after the repository view, and
+    // a refusal there is no more a verdict than a refused repository probe:
+    // Gitea answers HTTP 401 at `/user` for a token it no longer accepts and
+    // for every token while its token store cannot answer. A public repository
+    // still answers without it, so the read resolves to the public view and a
+    // write still needs a credential the forge accepts.
+    let mut login = String::new();
+    if !token.is_empty() {
+        match gitea_user(&target, &transport, &call_options).await {
+            Ok(account) => login = account,
+            Err(error) if error.status == Some(401) => {
+                match gitea_repository(&anonymous, &transport, &call_options).await {
+                    Ok(view) if gitea_permission(view.permissions()) != Permission::None => {
+                        repository = view;
+                        refused = Some(error);
+                        token = "";
+                    }
+                    _ => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
     let permission = gitea_permission(repository.permissions());
     if token.is_empty() {
         if permission == Permission::None {
-            return Ok(AuthOutcome::Failure(AuthFailure {
-                error: format!(
+            let error = match &refused {
+                Some(refusal) => format!(
+                    "the Gitea credential was refused for {} on {base_url}: {}; the repository is not public",
+                    options.project, refusal.message
+                ),
+                None => format!(
                     "no Gitea credential is configured for {} on {base_url}, and the repository is not public",
                     options.project
                 ),
-            }));
+            };
+            return Ok(AuthOutcome::Failure(AuthFailure { error }));
         }
         if required == RequiredAccess::Write {
             let error = match &refused {
@@ -3542,7 +3570,6 @@ async fn resolve_gitea_inner(
             can_write: false,
         }));
     }
-    let login = gitea_user(&target, &transport, &call_options).await?;
     if login.is_empty() {
         return Ok(AuthOutcome::Failure(AuthFailure {
             error: format!("the Gitea token returned no account for {base_url}"),

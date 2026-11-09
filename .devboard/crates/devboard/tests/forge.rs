@@ -989,6 +989,80 @@ async fn a_refused_credential_resolves_a_public_repository_anonymously() {
     );
 }
 
+#[tokio::test]
+async fn a_refused_account_probe_resolves_a_public_repository_anonymously() {
+    let server = StubServer::start(|request| match request.path.as_str() {
+        // The repository view answers the credential and the public view
+        // alike, while the same credential is refused at the account probe:
+        // what a token sees while Gitea's access-token store cannot answer.
+        "/api/v1/repos/owner/name" => json_response(json!({
+            "permissions": {"pull": true, "push": false, "admin": false},
+        })),
+        "/api/v1/user" => {
+            text_response(401, r#"{"message":"invalid username, password or token"}"#)
+        }
+        _ => text_response(500, "unexpected"),
+    })
+    .await;
+    let exec = default_exec();
+    let mut options = ResolveOptions::new(
+        Forge::Gitea,
+        "localhost",
+        "owner/name",
+        temp_dir("auth-refused-account"),
+    );
+    options.env = environment(&[("GITEA_TOKEN", "secret")]);
+    options.base_url = Some(server.base.clone());
+    options.gitea_transport = Some(default_transport(5_000));
+
+    // The account refusal is no proof the repository is unreadable, so the read
+    // resolves to the public view instead of failing as a Watchdog
+    // deduplication turn's `issues_list` did.
+    let auth = resolve_forge_auth(&exec, &options)
+        .await
+        .into_result()
+        .expect("the public view resolves");
+    assert_eq!(auth.login, "anonymous");
+    assert_eq!(auth.token, None);
+    assert_eq!(auth.source, "public repository");
+    assert_eq!(auth.permission, Permission::Pull);
+    assert!(!auth.can_write);
+    let probes: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/api/v1/repos/owner/name")
+        .collect();
+    assert_eq!(probes.len(), 2, "one credential read, one anonymous read");
+    assert_eq!(
+        probes[0].headers.get("authorization").map(String::as_str),
+        Some("token secret")
+    );
+    assert!(!probes[1].headers.contains_key("authorization"));
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.path == "/api/v1/user")
+            .count(),
+        1,
+        "the refused account is probed once, never with the refused credential again"
+    );
+
+    // A write has no anonymous form: the account refusal is named.
+    options.required = RequiredAccess::Write;
+    let refused = resolve_forge_auth(&exec, &options)
+        .await
+        .into_result()
+        .expect_err("write refusal");
+    assert_eq!(
+        refused.error,
+        format!(
+            "the Gitea credential was refused for owner/name on {}: GET /user failed (HTTP 401): invalid username, password or token; writing needs a token the forge accepts",
+            server.base
+        )
+    );
+}
+
 #[test]
 fn auth_environment_pins_the_selected_identity() {
     let base = environment(&[
@@ -2246,6 +2320,68 @@ async fn a_refused_credential_never_blocks_a_public_read_and_never_retries_a_wri
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_refused_account_probe_never_blocks_a_public_list() {
+    let server =
+        StubServer::start(
+            |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                    "permissions": {"pull": true, "push": false, "admin": false},
+                })),
+                // The token the repository view accepted is refused when the
+                // client asks who it belongs to. The read must still answer, as
+                // a Watchdog deduplication turn lists this repository.
+                ("GET", "/api/v1/user") => {
+                    text_response(401, r#"{"message":"invalid username, password or token"}"#)
+                }
+                ("GET", "/api/v1/repos/owner/name/issues") => {
+                    if request.query.contains("page=1") {
+                        json_response(json!([issue_value(7, "Seven", "open")]))
+                    } else {
+                        json_response(json!([]))
+                    }
+                }
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let repo = git_repo(
+        "issues-client-refused-account",
+        "git@localhost:owner/name.git",
+    );
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[
+            ("DEVBOARD_GITEA_URL", server.base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]),
+        transport: Some(default_transport(5_000)),
+        exec: None,
+        run: None,
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+
+    let open = client
+        .list(IssueQueryState::Open, None)
+        .await
+        .expect("the public read answers");
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].number, 7);
+    let list_requests: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path.ends_with("/issues"))
+        .filter(|request| request.query.contains("page=1"))
+        .collect();
+    assert_eq!(
+        list_requests.len(),
+        1,
+        "one anonymous read, no refused retry"
+    );
+    assert!(!list_requests[0].headers.contains_key("authorization"));
 }
 
 #[tokio::test]
