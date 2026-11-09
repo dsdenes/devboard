@@ -3785,6 +3785,10 @@ a.issues-agent-row__issue:focus-visible {
   min-height: 0;
 }
 
+.issues-agent-focus__scroll > .issues-agent-focus__output {
+  flex: 1 1 auto;
+}
+
 .issues-agent-focus__scroll > .panel > .panel__body {
   display: flex;
   flex-direction: column;

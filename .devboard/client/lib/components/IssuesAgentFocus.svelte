@@ -6,6 +6,7 @@
   import type { WorkspaceTab } from "../layout.svelte";
   import AgentActivityBar from "./AgentActivityBar.svelte";
   import Button from "./ui/button.svelte";
+  import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesQuestion from "./IssuesQuestion.svelte";
 
   interface Props {
@@ -90,17 +91,20 @@
           <p class="muted">Loading the run from history…</p>
         </div>
       </div>
-    {:else if agent?.question}
-      <section class="panel issues-activity-panel">
+    {:else}
+      <section class="panel issues-activity-panel issues-agent-focus__output">
         <div class="panel__header">
-          <h2 class="panel__title">Question</h2>
+          <h2 class="panel__title">Output</h2>
         </div>
         <div class="panel__body stack-sm">
-          <IssuesQuestion
-            runId={runId}
-            question={agent.question}
-            testid="issues-agent-focus-question"
-          />
+          <IssuesAgentLog lines={lines} testid="issues-agent-focus-activity" {runId} />
+          {#if agent?.question}
+            <IssuesQuestion
+              runId={runId}
+              question={agent.question}
+              testid="issues-agent-focus-question"
+            />
+          {/if}
         </div>
       </section>
     {/if}
