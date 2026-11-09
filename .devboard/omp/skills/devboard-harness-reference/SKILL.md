@@ -3274,7 +3274,7 @@ identical families and prompt bytes.
 ### Synthesis and validation
 
 Each selected family gets exactly one ACP synthesis call, at most four at a time, with a
-120-second timeout. The peer is `AGENT_COMMAND` (default `omp acp`) built from every enabled
+240-second timeout. The peer is `AGENT_COMMAND` (default `omp acp`) built from every enabled
 OpenCode Go subscription, led by the dashboard's published selection when it still names an enabled
 key and otherwise by the operator's list order, pinned to
 `opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The MCP
@@ -3285,9 +3285,15 @@ a 401 or "unauthorized" quoted inside assistant text never rotates. The prompt s
 `## Manifesto`, carries the family summary, every fragment with its count, at most five excerpts,
 the MCP catalog as name/title pairs plus every `covers` entry, every open MCP optimizer issue as
 number/title/URL, the configured allowlist, `maxIssuesPerCycle`, the rolling-hour room, the family
-tag, and the exact body sections; it stays under 24 KiB. A cycle whose synthesis calls all fail
-records the failure and files nothing. A failed call among successful ones is recorded for its
-family and does not discard what the other calls filed.
+tag, and the exact body sections; it stays under 24 KiB, and its first rule states that the turn
+runs no repository read, search, list, or command. A peer that runs out of its own wall-clock
+budget is slow model latency, not a refusal: its family is recorded as `deferred` with rule
+`timeout`, stays unmarked in the ledger, and the next cadence reconsiders it. A cycle whose
+synthesis calls all timed out records `action: deferred` with its reason and exits zero, so no
+error notification is raised for a slow peer. Every other all-failed cycle records the failure and
+files nothing. Within a cycle that also has successful calls, a timed-out call is recorded as
+`deferred` for its family and any other failed call is recorded as failed; neither discards what
+the other calls filed.
 
 The agent reads the open MCP optimizer issues through the MCP read tools and files at most one
 proposal itself through the MCP `issue_create` tool, or records why it filed nothing through
@@ -3342,8 +3348,9 @@ discarded on load, the report states `ledgerReset: true`, and deduplication reli
 selected keys with scores, omitted count, each synthesis call's model and duration, each recorded
 outcome with its rule or skip reason, filed URLs, duplicate skips with both the matched and the
 created URL, dropped count, and `pending: 0`.
-The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`, `failed`),
-`reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`, and `cycles`.
+The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`,
+`deferred`, `failed`), `reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`,
+and `cycles`.
 
 A cycle edits no prompt, wrapper, source, session file, or journal record, and writes only
 `<STATE_DIR>/coach/` plus the generated provider agent directory the synthesizer peer needs. The
