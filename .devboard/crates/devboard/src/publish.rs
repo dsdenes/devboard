@@ -53,6 +53,11 @@ pub const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(1_800);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// The interval between lock attempts.
 pub const DEFAULT_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// How often one idempotent Gitea read is attempted while the forge answers a
+/// transient refusal, such as a busy database.
+const GITEA_READ_ATTEMPTS: usize = 6;
+/// The delay between those attempts.
+const GITEA_READ_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// The six targets `.devboard/dist-workspace.toml` asks cargo-dist to build.
 pub const RELEASE_TARGETS: [&str; 6] = [
     "aarch64-apple-darwin",
@@ -946,10 +951,17 @@ fn failure_detail(outcome: &CommandOutcome) -> String {
 
 struct Api {
     transport: Arc<dyn HttpTransport>,
+    sleeper: Arc<dyn Sleeper>,
     gitea: GiteaTarget,
     github_base: String,
     github_repo: String,
     github_token: Option<String>,
+}
+
+/// A refusal the same read may succeed at: a rate limit or a server-side
+/// failure. Gitea answers a busy database as HTTP 500 "database is locked".
+fn transient_status(status: u16) -> bool {
+    status == 429 || (500..600).contains(&status)
 }
 
 impl Api {
@@ -989,6 +1001,10 @@ impl Api {
         headers
     }
 
+    /// One Gitea call. A GET is idempotent, so a transient refusal — a busy
+    /// database, a rate limit, or another server-side failure — is retried
+    /// before the caller sees it. A write is sent once, because a retry could
+    /// create the same release or asset twice.
     async fn gitea_request(
         &self,
         method: &str,
@@ -997,20 +1013,42 @@ impl Api {
     ) -> Result<HttpResponse> {
         let url = gitea::api_url(&self.gitea, path);
         let mut headers = self.gitea_headers("application/json");
-        let bytes = match body {
-            Some(value) => {
-                headers.push(("Content-Type".to_string(), "application/json".to_string()));
-                jsjson::stringify(&value).into_bytes()
-            }
-            None => Vec::new(),
+        if body.is_some() {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let attempts = if method == "GET" {
+            GITEA_READ_ATTEMPTS
+        } else {
+            1
         };
-        self.send(HttpRequest {
-            method: method.to_string(),
-            url,
-            headers,
-            body: bytes,
-        })
-        .await
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            if attempt > 1 {
+                self.sleeper.sleep(GITEA_READ_RETRY_DELAY).await;
+            }
+            let request = HttpRequest {
+                method: method.to_string(),
+                url: url.clone(),
+                headers: headers.clone(),
+                body: body
+                    .as_ref()
+                    .map(|value| jsjson::stringify(value).into_bytes())
+                    .unwrap_or_default(),
+            };
+            match self.send(request).await {
+                Ok(response) => {
+                    if attempt == attempts || !transient_status(response.status) {
+                        return Ok(response);
+                    }
+                }
+                Err(error) => {
+                    if attempt == attempts {
+                        return Err(error);
+                    }
+                }
+            }
+        }
     }
 
     async fn gitea_upload(
@@ -1926,6 +1964,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     let github_token = crate::release::github_api_token(&args.environment).await;
     let api = Api {
         transport,
+        sleeper: sleeper.clone(),
         gitea,
         github_base,
         github_repo,
@@ -3077,7 +3116,7 @@ impl std::error::Error for GithubDispatchError {}
 fn transient_dispatch(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<GithubDispatchError>()
-        .map(|error| error.status == 429 || (500..600).contains(&error.status))
+        .map(|error| transient_status(error.status))
         .unwrap_or(false)
 }
 
@@ -4653,6 +4692,7 @@ mod tests {
     fn release_asset_uploads_use_the_uploads_host() {
         let api = Api {
             transport: Arc::new(ReqwestTransport::new()),
+            sleeper: Arc::new(TokioSleeper),
             gitea: GiteaTarget {
                 base_url: "http://gitea.test".to_string(),
                 project: "dsdenes/devboard".to_string(),
@@ -4668,6 +4708,104 @@ mod tests {
             ..api
         };
         assert_eq!(local.github_upload_base(), "http://127.0.0.1:9");
+    }
+
+    struct ScriptedTransport {
+        statuses: std::sync::Mutex<Vec<u16>>,
+        requests: std::sync::Mutex<Vec<HttpRequest>>,
+    }
+
+    impl HttpTransport for ScriptedTransport {
+        fn send<'a>(&'a self, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, String>> {
+            Box::pin(async move {
+                self.requests.lock().unwrap().push(request);
+                let status = self.statuses.lock().unwrap().remove(0);
+                Ok(HttpResponse {
+                    status,
+                    body: b"[]".to_vec(),
+                })
+            })
+        }
+    }
+
+    struct RecordingSleeper {
+        waits: std::sync::Mutex<Vec<Duration>>,
+    }
+
+    impl RecordingSleeper {
+        fn new() -> Self {
+            Self {
+                waits: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Sleeper for RecordingSleeper {
+        fn sleep<'a>(&'a self, duration: Duration) -> BoxFuture<'a, ()> {
+            Box::pin(async move {
+                self.waits.lock().unwrap().push(duration);
+            })
+        }
+    }
+
+    fn test_api(transport: Arc<dyn HttpTransport>, sleeper: Arc<dyn Sleeper>) -> Api {
+        Api {
+            transport,
+            sleeper,
+            gitea: GiteaTarget {
+                base_url: "http://gitea.test".to_string(),
+                project: "dsdenes/devboard".to_string(),
+                token: None,
+            },
+            github_base: "https://api.github.com".to_string(),
+            github_repo: "dsdenes/devboard".to_string(),
+            github_token: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_busy_gitea_database_retries_the_read() {
+        let transport = Arc::new(ScriptedTransport {
+            statuses: std::sync::Mutex::new(vec![500, 200]),
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let api = test_api(transport.clone(), sleeper.clone());
+        let document = api
+            .gitea_json(
+                "GET",
+                "/repos/dsdenes/devboard/releases?limit=50&page=1",
+                None,
+            )
+            .await
+            .expect("the retried read answers");
+        assert_eq!(document, json!([]));
+        assert_eq!(transport.requests.lock().unwrap().len(), 2);
+        assert_eq!(
+            sleeper.waits.lock().unwrap().as_slice(),
+            [GITEA_READ_RETRY_DELAY]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_gitea_write_is_never_retried() {
+        let transport = Arc::new(ScriptedTransport {
+            statuses: std::sync::Mutex::new(vec![500, 200]),
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let api = test_api(transport.clone(), sleeper.clone());
+        let error = api
+            .gitea_json(
+                "POST",
+                "/repos/dsdenes/devboard/releases",
+                Some(json!({ "tag_name": "v1.2.3" })),
+            )
+            .await
+            .expect_err("the refused write fails");
+        assert!(error.to_string().contains("HTTP 500"), "{error}");
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+        assert!(sleeper.waits.lock().unwrap().is_empty());
     }
 
     #[test]
