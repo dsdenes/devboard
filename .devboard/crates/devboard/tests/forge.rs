@@ -2641,6 +2641,36 @@ fn an_unparsable_origin_names_the_remote() {
 }
 
 #[test]
+fn a_directory_below_the_checkout_root_names_the_origin_as_the_reason() {
+    let repo = git_repo("below-root", "ssh://git@localhost:2223/owner/name.git");
+    let nested = repo.join("nested");
+    std::fs::create_dir_all(&nested).expect("a nested directory");
+    let env = environment(&[]);
+
+    // Only the repository root names its origin; a directory inside it must
+    // not inherit that remote, and the refusal must say the top level is why.
+    assert!(origin_forge_with(&nested, &env).is_none());
+    let problem = origin_problem(&nested, &env).expect("a problem");
+    assert!(
+        problem.contains("is not the checkout root"),
+        "the top level is the reason: {problem}"
+    );
+
+    let source = TrackerSource::resolve(&nested, &env);
+    let operation = source.operation(OPEN_ISSUES_READ);
+    assert!(
+        operation.contains("origin does not name a supported forge"),
+        "{operation}"
+    );
+    assert!(
+        operation.contains("is not the checkout root"),
+        "{operation}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
 fn a_tracker_source_names_the_forge_and_operation() {
     let repo = git_repo("gitea-source", "ssh://git@localhost:2223/owner/name.git");
     let env = environment(&[]);

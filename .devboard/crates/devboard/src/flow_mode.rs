@@ -6299,6 +6299,12 @@ mod tests {
             classify_origin("https://gitlab.com/group/sub/repo.git", &environment).expect("gitlab");
         assert_eq!(gitlab.forge, "gitlab");
         assert_eq!(gitlab.project, "group/sub/repo");
+        // This checkout's Gitea origin is a Gitea target, never a GitHub one.
+        let gitea = classify_origin("ssh://git@localhost:2223/owner/name.git", &environment)
+            .expect("gitea");
+        assert_eq!(gitea.forge, "gitea");
+        assert_eq!(gitea.host, "localhost");
+        assert_eq!(gitea.project, "owner/name");
         assert!(classify_origin("/home/me/repo", &environment).is_none());
     }
 }
