@@ -1497,6 +1497,56 @@ fn a_turn_whose_forge_refused_the_read_names_the_refusal() {
 }
 
 #[test]
+fn a_turn_whose_forge_read_timed_out_defers_the_candidates() {
+    let root = production_root("dedup-slow-read");
+    let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);
+    std::fs::create_dir_all(&state_dir).expect("a watchdog state");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let events = vec![event(now, 1, "slow forge read", "server-error", &instance)];
+    let timeout = "GET /repos/acme/fixture/issues?state=open&type=issues&limit=50&page=1 failed: \
+                   the request timed out after 30000 ms"
+        .to_string();
+    let deps = CycleDeps {
+        discover: Arc::new(move |_root: &Path| vec![instance.clone()]),
+        collect: Arc::new(
+            move |_root: &Path, _i: &[Instance], _w: Window| Collection {
+                events: events.clone(),
+                malformed: 0,
+                unattributed: 0,
+            },
+        ),
+        gh: Arc::new(|_argv: &[String], _stdin: &str| GhOutcome::default()),
+        delivery: Some(Arc::new(RecordingDelivery::new())),
+        dedup: Some(Arc::new(RefusedDedup {
+            read: false,
+            tool: "issues_list",
+            error: timeout.clone(),
+        })),
+    };
+    let mut options = CycleOptions::new(root.clone());
+    options.state_dir = Some(state_dir.clone());
+    options.now_ms = now;
+    let result = run_cycle(&options, &deps).expect("the cycle");
+
+    let reason =
+        format!("the forge read is slow: issues_list: {timeout}; 1 candidate(s) stay pending");
+    assert_eq!(result.report.action(), "deferred");
+    assert_eq!(result.report.reason(), Some(reason.as_str()));
+    assert_eq!(result.exit_code, 0);
+    assert!(result.report.issues().is_empty());
+    assert_eq!(load_ledger(&state_dir).pending_filing.len(), 1);
+    assert_eq!(
+        result.report.value["deduplication"]["decisions"][0]["decision"],
+        json!("deferred")
+    );
+    assert_eq!(
+        result.report.value["deduplication"]["decisions"][0]["reason"],
+        json!(format!("issues_list: {timeout}"))
+    );
+}
+
+#[test]
 fn a_turn_that_read_the_open_set_still_names_the_refused_decision() {
     let root = production_root("dedup-refused-decision");
     let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);

@@ -5480,6 +5480,8 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
     let mut decisions: Vec<Value> = Vec::new();
     let mut open_issues_read = 0_i64;
     let mut unique_candidates: Vec<String> = Vec::new();
+    let mut deferral: Option<String> = None;
+    let mut deferrals = 0_usize;
     let mut gate_blocked = false;
     let mut report_issues: Vec<Value> = Vec::new();
     if !candidates.is_empty() {
@@ -5568,6 +5570,18 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
             let errors = read_dedup_errors(&dedup_run_dir);
             let tool_failure = errors.last().cloned();
             open_issues_read = reads.last().copied().unwrap_or(0);
+            // A read that ran out of time is a slow forge, not a refused one.
+            // Reporting it as a failure raises an error notification that files
+            // a board issue and returns as more load for the same forge, so the
+            // cycle defers the candidates it never decided: they stay pending
+            // and the next cadence reads again. A turn that stopped still fails,
+            // because a stopped turn is not evidence of a slow forge.
+            if stopped.is_none() {
+                deferral = tool_failure
+                    .as_deref()
+                    .filter(|error| crate::forge::is_forge_read_latency(error))
+                    .map(|error| format!("the forge read is slow: {error}"));
+            }
             // A turn that stops after recording a decision keeps it: those
             // records are what the turn decided, so only a turn that recorded
             // nothing at all fails the gate. A recorded tool failure names the
@@ -5576,10 +5590,12 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                 Some(reason) if records.is_empty() => {
                     Some(format!("the deduplication agent failed: {reason}"))
                 }
-                None if reads.is_empty() && records.is_empty() => Some(match &tool_failure {
-                    Some(error) => format!("the deduplication agent failed: {error}"),
-                    None => "the deduplication turn read no open issue".to_string(),
-                }),
+                None if reads.is_empty() && records.is_empty() && deferral.is_none() => {
+                    Some(match &tool_failure {
+                        Some(error) => format!("the deduplication agent failed: {error}"),
+                        None => "the deduplication turn read no open issue".to_string(),
+                    })
+                }
                 _ => None,
             };
             if let Some(reason) = gate_reason {
@@ -5605,6 +5621,9 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                         records.len()
                     ));
                 }
+                if let Some(reason) = &deferral {
+                    log(&format!("deduplication deferred: {reason}"));
+                }
                 let mut by_fingerprint: HashMap<String, DedupRecord> = HashMap::new();
                 for record in records {
                     by_fingerprint.insert(record.fingerprint.clone(), record);
@@ -5620,16 +5639,20 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                             .unwrap_or_else(|| {
                                 "the deduplication turn recorded no decision".to_string()
                             });
-                        if stopped.is_none() && filing_room > 0 && failure.is_none() {
+                        let deferred = stopped.is_none() && deferral.is_some();
+                        if stopped.is_none() && !deferred && filing_room > 0 && failure.is_none() {
                             failure = Some(reason.clone());
                         }
                         mark_pending(&mut ledger, fingerprint);
                         decisions.push(json!({
                             "fingerprint": fingerprint,
                             "category": entry.category,
-                            "decision": "failed",
+                            "decision": if deferred { "deferred" } else { "failed" },
                             "reason": reason,
                         }));
+                        if deferred {
+                            deferrals += 1;
+                        }
                         continue;
                     };
                     if record.action == "filed" {
@@ -5695,11 +5718,12 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
                         .count()
                 };
                 log(&format!(
-                    "deduplication: {} candidate(s), {} unique, {} duplicate, {} failed",
+                    "deduplication: {} candidate(s), {} unique, {} duplicate, {} failed, {} deferred",
                     candidates.len(),
                     unique_candidates.len(),
                     count_of("duplicate"),
-                    count_of("failed")
+                    count_of("failed"),
+                    count_of("deferred")
                 ));
             }
         }
@@ -5786,6 +5810,11 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
         ("filed", format!("filed {} issue(s)", report_issues.len()))
     } else if commented > 0 {
         ("commented", format!("commented on {commented} issue(s)"))
+    } else if let Some(detail) = deferral.filter(|_| deferrals > 0) {
+        (
+            "deferred",
+            format!("{detail}; {deferrals} candidate(s) stay pending"),
+        )
     } else if caps_active && !ledger.pending_filing.is_empty() {
         (
             "capped",

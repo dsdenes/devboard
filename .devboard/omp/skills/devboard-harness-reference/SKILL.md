@@ -3055,6 +3055,14 @@ read the open set but had no decision recorded for a candidate names the same fa
 candidate's `reason`. A refused credential therefore reports its HTTP status and message instead
 of reading as a repository with no open issue.
 
+A completed turn whose only recorded failure names a timed-out read met a slow forge, not a
+refused one. The cycle defers instead of failing: every candidate the turn never decided stays
+pending with a `deferred` decision naming the slow read, `report.json` carries `action: deferred`
+with that reason, and the cycle files no issue and exits zero. A stalled forge is therefore never
+handed an error notification, a filed board issue, or an immediate walk of the pages that stalled.
+The next cadence sends the same candidates again, and a refusal the forge actually answered still
+fails the gate as above.
+
 Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
 that issue is closed, the next cycle that observes the same evidence sends the candidate to the
 agent again, and it is filed when the agent judges it unique. Candidates the agent marks
@@ -3075,10 +3083,10 @@ rewritten answer.
 
 `report.json` carries a `deduplication` section with the number of candidates requested, the
 number of open issues the agent read, every candidate's disposition (`unique`, `duplicate` with
-`issue` and/or `representative`, or `failed` with `reason`), and the candidates suppressed because
-their matched issue is still open. The existing `action`, `reason`, `findings`, `issues`, and
-`pending` fields keep their meaning, and `/api/watchdog`, the Watchdog page, and the footer
-indicator are unchanged.
+`issue` and/or `representative`, `deferred` with `reason` for a slow read, or `failed` with
+`reason`), and the candidates suppressed because their matched issue is still open. The existing
+`action`, `reason`, `findings`, `issues`, and `pending` fields keep their meaning, and
+`/api/watchdog`, the Watchdog page, and the footer indicator are unchanged.
 
 ### State-directory cleanup
 
