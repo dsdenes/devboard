@@ -348,6 +348,121 @@ async fn a_fresh_tracker_read_publishes_the_open_queue() {
     assert_eq!(last["type"], "issuesState");
 }
 
+/// A tracker read that answers one open issue and counts its calls.
+fn counted_tracker() -> (TrackerRead, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let tracker: TrackerRead = Arc::new(move |_request: TrackerReadRequest| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            PollResult::Issues {
+                issues: vec![Issue {
+                    number: 7,
+                    title: "Seventh".into(),
+                    url: "https://example.test/7".into(),
+                    created_at: "2026-01-03T00:00:00.000Z".into(),
+                    labels: vec!["processing".into()],
+                    body: None,
+                }],
+                etag: Some("etag-7".into()),
+            }
+        })
+    });
+    (tracker, calls)
+}
+
+#[tokio::test]
+async fn no_page_and_no_socket_makes_no_tracker_call() {
+    let (repo, state) = scratch("no-demand");
+    let (tracker, calls) = counted_tracker();
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    settings.has_clients = Arc::new(|| false);
+    settings.hooks.tracker_read = tracker;
+    let bridge = IssuesBridge::new(settings);
+
+    bridge.sync_now().await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["queue"], json!([]));
+    assert_eq!(snapshot["sync"]["lastSyncAt"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_page_read_without_a_socket_reads_the_tracker_and_fills_the_queue() {
+    let (repo, state) = scratch("page-demand");
+    write_state(&repo, &state, &state_document(&repo, "idle", json!([])));
+    let (tracker, calls) = counted_tracker();
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    settings.has_clients = Arc::new(|| false);
+    settings.hooks.tracker_read = tracker;
+    let bridge = IssuesBridge::new(settings);
+
+    let (outbox, _inbox) = tokio::sync::mpsc::unbounded_channel();
+    bridge.replay(&Conn::new(outbox));
+    bridge.sync_now().await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["queue"][0]["number"], json!(7));
+    assert_eq!(snapshot["queue"][0]["title"], "Seventh");
+    assert_eq!(snapshot["sync"]["error"], Value::Null);
+    assert!(snapshot["sync"]["lastSyncAt"].is_string());
+}
+
+#[tokio::test]
+async fn a_page_read_cannot_outpace_the_sync_interval() {
+    let (repo, state) = scratch("page-throttle");
+    write_state(&repo, &state, &state_document(&repo, "idle", json!([])));
+    let (tracker, calls) = counted_tracker();
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    settings.has_clients = Arc::new(|| false);
+    settings.hooks.tracker_read = tracker;
+    let bridge = IssuesBridge::new(settings);
+
+    for _ in 0..2 {
+        let (outbox, _inbox) = tokio::sync::mpsc::unbounded_channel();
+        bridge.replay(&Conn::new(outbox));
+        bridge.sync_now().await;
+    }
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bridge.snapshot()["queue"][0]["number"], json!(7));
+}
+
 #[tokio::test]
 async fn start_spawns_once_then_attaches_and_writes_every_control() {
     let (repo, state) = scratch("start");

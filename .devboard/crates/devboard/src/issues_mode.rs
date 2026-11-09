@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -48,6 +48,9 @@ const TRACKER_SYNC_INTERVAL_MS: u64 = 30_000;
 const TRACKER_TIMEOUT_MS: u64 = 20_000;
 /// The dashboard's own snapshot cadence.
 const DASHBOARD_POLL_MS: u64 = 250;
+/// A page polls one resource every 1000 ms while the document is visible, so
+/// one sync interval plus this window still names a page that is reading.
+const CLIENT_POLL_MS: i64 = 1_000;
 /// Default wall-clock bound for the whole start preflight.
 const ISSUES_PREFLIGHT_TIMEOUT_MS: u64 = 20_000;
 
@@ -79,6 +82,11 @@ fn iso(dt: OffsetDateTime) -> String {
         format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
     dt.format(&format)
         .unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_string())
+}
+
+/// The current instant as epoch milliseconds.
+fn now_millis() -> i64 {
+    epoch_millis(OffsetDateTime::now_utc())
 }
 
 fn iso_now() -> String {
@@ -2722,6 +2730,13 @@ pub struct IssuesBridge {
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
     poll_ms: u64,
     preflight_timeout_ms: u64,
+    /// Epoch millis at which a page last read the Issues resource. The REST
+    /// transport keeps no persistent command socket, so a page's polls are
+    /// what make it a watching client.
+    demand_at: AtomicI64,
+    /// Epoch millis at which this dashboard last started a tracker read, so a
+    /// page polling once a second cannot outpace the sync interval.
+    read_at: AtomicI64,
     on_open_issues: Arc<dyn Fn(Vec<Issue>) + Send + Sync>,
     tracker: TrackerSync,
     repository_cache: Arc<Mutex<Option<(Option<String>, std::time::Instant)>>>,
@@ -2806,6 +2821,8 @@ impl IssuesBridge {
             has_clients: options.has_clients,
             poll_ms: options.poll_ms.max(50),
             preflight_timeout_ms: options.preflight_timeout_ms.max(1),
+            demand_at: AtomicI64::new(0),
+            read_at: AtomicI64::new(0),
             on_open_issues: options.on_open_issues,
             tracker,
             repository_cache: cache,
@@ -3327,6 +3344,7 @@ impl IssuesBridge {
     /// running agent's whole activity at every other page is pure traffic:
     /// each of those pages reads it on its own next read.
     pub fn replay(&self, conn: &Conn) {
+        self.demand_at.store(now_millis(), Ordering::Relaxed);
         let snapshot = self.snapshot();
         conn.send(Self::typed_snapshot(snapshot.clone()));
         for run_id in self.active_run_ids(&snapshot) {
@@ -3759,8 +3777,40 @@ impl IssuesBridge {
     /* Tracker sync and background loops                                   */
     /* ------------------------------------------------------------------ */
 
+    /// Whether a page or socket client is watching the Issues surfaces.
+    ///
+    /// The REST transport opens no persistent command socket, so a page
+    /// counts as watching while its own read of this resource is recent: it
+    /// polls once a second, and one sync interval plus one poll covers a page
+    /// that is still there. With neither a socket client nor a recent read the
+    /// dashboard makes no tracker call.
+    fn watching(&self) -> bool {
+        if (self.has_clients)() {
+            return true;
+        }
+        let last = self.demand_at.load(Ordering::Relaxed);
+        last > 0 && now_millis().saturating_sub(last) <= self.demand_window_ms()
+    }
+
+    fn demand_window_ms(&self) -> i64 {
+        (self.tracker.interval_ms as i64).saturating_add(CLIENT_POLL_MS)
+    }
+
+    /// Reads the tracker for a page that just asked for this resource.
+    pub fn request_sync(self: &Arc<Self>) {
+        let bridge = Arc::clone(self);
+        tokio::spawn(async move { bridge.sync_now().await });
+    }
+
     pub async fn sync_now(self: &Arc<Self>) {
-        if !(self.has_clients)() {
+        if !self.watching() {
+            return;
+        }
+        // A page polls its resource once a second; the tracker is read once
+        // per interval no matter how often a read arrives.
+        let now = now_millis();
+        let previous = self.read_at.swap(now, Ordering::Relaxed);
+        if previous > 0 && now.saturating_sub(previous) < self.tracker.interval_ms as i64 {
             return;
         }
         let result = self.tracker.sync().await;
@@ -4175,10 +4225,7 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
     bridge.replay(conn);
     // A fresh view reads the tracker immediately; the sync timer alone would
     // leave the first thirty seconds showing a stopped worker's list.
-    let bridge = Arc::clone(&bridge);
-    tokio::spawn(async move {
-        bridge.sync_now().await;
-    });
+    bridge.request_sync();
 }
 
 fn issues_error(conn: &Conn, message: impl Into<String>) {
@@ -4191,6 +4238,7 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
         Command::GetIssues => {
             if let Some(bridge) = bridge_for(app) {
                 bridge.replay(conn);
+                bridge.request_sync();
             }
             true
         }

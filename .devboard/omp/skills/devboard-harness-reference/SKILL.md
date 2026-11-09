@@ -3549,9 +3549,12 @@ leaves the ledger, so a reopened one is eligible again. A poll with no unhandled
 no peer and publishes `idle`.
 
 The Open issues list and every row's state come from one forge read: the dashboard's own read of
-the origin's open issues. While at least one client is connected it re-reads every 30 seconds
-(`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`) and immediately on connect, and publishes the result in the
-snapshot's `sync` field. That read is the only source of a row: no worker state file, stopped
+the origin's open issues. While a page is reading this resource, or a socket client is connected,
+it re-reads every 30 seconds (`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`) and immediately on the first
+read, and publishes the result in the snapshot's `sync` field. A page's own poll is what makes it
+a reading client: the REST transport keeps no command socket, so a read within one sync interval
+plus one page poll is the demand, and the reads a page sends once a second share one tracker read
+per interval. That read is the only source of a row: no worker state file, stopped
 worker's memory, or ledger entry adds, removes, or re-states one. The `processing` label is the
 one forge state that marks a run in progress: a running worker ensures the label exists, adds it
 to the issue before its peer starts, and removes it when the run finishes, fails, is abandoned, or
@@ -3563,12 +3566,12 @@ publishes its error in `sync.error`.
 A running issue that no longer appears in the dashboard's read is stopped: the dashboard sends one
 `abandon` command for that issue, and the worker records its run `stopped` with no handled entry
 and no cooldown. A live worker's own poll never changes the page's rows or counts, even when it
-lists a different set; only the dashboard's own fresh read does. With no connected client the
-dashboard makes no tracker call, and the worker's own poll still ends a run the moment it sees the
-issue leave the open list. Every running worker also reconciles the `processing` label against the
-repository's live claims: an open issue that carries the label with no live claim is repaired on
-the next poll, which covers a killed worker, a restarted dashboard, and an upgrade that leaves an
-older worker's state behind.
+lists a different set; only the dashboard's own fresh read does. With no page reading this
+resource and no socket client the dashboard makes no tracker call, and the worker's own poll
+still ends a run the moment it sees the issue leave the open list. Every running worker also
+reconciles the `processing` label against the repository's live claims: an open issue that
+carries the label with no live claim is repaired on the next poll, which covers a killed worker,
+a restarted dashboard, and an upgrade that leaves an older worker's state behind.
 
 A goal issue is the record of one goal, so its run settles only on a proven close: while the
 issue is open it never finishes `succeeded` or `stopped`. A poll that drops an open goal issue
