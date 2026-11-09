@@ -588,6 +588,21 @@ pub static ROUTES: &[Route] = &[
     ),
 ];
 
+/// Whether one first path segment belongs to the REST surface.
+///
+/// A path under such a root is an operation request, never a file: the static
+/// surface must not answer one as a missing document.
+pub fn serves_root(segment: &str) -> bool {
+    ROUTES.iter().any(|route| {
+        route
+            .path
+            .trim_start_matches('/')
+            .split('/')
+            .next()
+            .is_some_and(|root| root == segment)
+    })
+}
+
 /// The methods one path serves, in the order the table lists them.
 pub fn methods_for_path(path: &str) -> Vec<&'static str> {
     let mut methods = Vec::new();

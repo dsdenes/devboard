@@ -881,7 +881,7 @@ pub fn doctor_with_env(
     doctor_registration(&host, environment, &mut report);
     doctor_layout(&host, &mut report);
     doctor_git_root(&host, &mut report);
-    doctor_omp(&mut report);
+    doctor_omp(environment, &mut report);
     let release = doctor_release(environment, &mut report);
     doctor_version(
         &host,
@@ -1169,13 +1169,23 @@ fn doctor_git_root(host: &Path, report: &mut DoctorReport) {
 }
 
 /// The `omp` CLI the installed commands need: a version and a readable usage
-/// summary.
-fn doctor_omp(report: &mut DoctorReport) {
+/// summary, resolved through the environment doctor was handed.
+fn doctor_omp(environment: &std::collections::HashMap<String, String>, report: &mut DoctorReport) {
+    let Some(omp) = crate::forge::find_on_path("omp", environment) else {
+        report
+            .failures
+            .push("omp --version: omp is not on PATH".to_string());
+        return;
+    };
     for (label, args) in [
         ("omp --version", vec!["--version"]),
         ("omp usage", vec!["usage"]),
     ] {
-        let output = std::process::Command::new("omp").args(&args).output();
+        let output = std::process::Command::new(&omp)
+            .args(&args)
+            .env_clear()
+            .envs(environment)
+            .output();
         match output {
             Ok(output) if output.status.success() => {}
             Ok(output) => {

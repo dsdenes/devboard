@@ -1091,7 +1091,15 @@ fn message_from_body(body: &str) -> String {
         return "no response body".to_string();
     };
     if let Ok(parsed) = serde_json::from_str::<Value>(first) {
-        if let Some(message) = parsed.get("message").and_then(Value::as_str) {
+        // A Gitea internal failure answers `{"message":"","url":...}`, and an
+        // empty message would leave the diagnostic ending at its colon with no
+        // fault named. Such a body falls through to the bare first line, which
+        // still names what the forge answered.
+        if let Some(message) = parsed
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.trim().is_empty())
+        {
             return message.to_string();
         }
     }
@@ -2401,6 +2409,22 @@ pub fn is_forge_read_latency(message: &str) -> bool {
     message.contains("did not finish within") || message.contains("timed out")
 }
 
+/// True when a read met a forge that could not answer it, rather than one that
+/// answered a refusal.
+///
+/// An overloaded Gitea answers HTTP 500 with an empty message, a reset or
+/// refused connection answers nothing, and both describe a forge that is
+/// temporarily unable to serve a read: the same request answers differently once
+/// the forge clears. A periodic read keeps its last rows and reads again on its
+/// normal cadence instead of raising an error notification that files a board
+/// issue and returns as more load for the same forge. A 4xx is the forge's
+/// verdict about the request or the credential, so it still fails the read.
+pub fn is_forge_read_outage(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    !message.contains(" failed (http 4")
+        && classify_forge_read_failure(&message) == ForgeReadFailureKind::Transient
+}
+
 /// One agent's consecutive transient failures. A success resets the schedule.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ForgeReadRetry {
@@ -3594,14 +3618,14 @@ async fn resolve_gitea_inner(
     // still answers without it, so the read resolves to the public view and a
     // write still needs a credential the forge accepts.
     let mut refused: Option<GiteaError> = None;
-    let repository = match gitea_repository(&target, &transport, &call_options).await {
+    let anonymous = GiteaTarget {
+        base_url: target.base_url.clone(),
+        project: target.project.clone(),
+        token: None,
+    };
+    let mut repository = match gitea_repository(&target, &transport, &call_options).await {
         Ok(repository) => repository,
         Err(error) if !token.is_empty() && error.status == Some(401) => {
-            let anonymous = GiteaTarget {
-                base_url: target.base_url.clone(),
-                project: target.project.clone(),
-                token: None,
-            };
             let repository = match gitea_repository(&anonymous, &transport, &call_options).await {
                 Ok(repository)
                     if gitea_permission(repository.permissions()) != Permission::None =>
@@ -3616,15 +3640,43 @@ async fn resolve_gitea_inner(
         }
         Err(error) => return Err(error),
     };
+    // The account probe is the credential check after the repository view, and
+    // a refusal there is no more a verdict than a refused repository probe:
+    // Gitea answers HTTP 401 at `/user` for a token it no longer accepts and
+    // for every token while its token store cannot answer. A public repository
+    // still answers without it, so the read resolves to the public view and a
+    // write still needs a credential the forge accepts.
+    let mut login = String::new();
+    if !token.is_empty() {
+        match gitea_user(&target, &transport, &call_options).await {
+            Ok(account) => login = account,
+            Err(error) if error.status == Some(401) => {
+                match gitea_repository(&anonymous, &transport, &call_options).await {
+                    Ok(view) if gitea_permission(view.permissions()) != Permission::None => {
+                        repository = view;
+                        refused = Some(error);
+                        token = "";
+                    }
+                    _ => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
     let permission = gitea_permission(repository.permissions());
     if token.is_empty() {
         if permission == Permission::None {
-            return Ok(AuthOutcome::Failure(AuthFailure {
-                error: format!(
+            let error = match &refused {
+                Some(refusal) => format!(
+                    "the Gitea credential was refused for {} on {base_url}: {}; the repository is not public",
+                    options.project, refusal.message
+                ),
+                None => format!(
                     "no Gitea credential is configured for {} on {base_url}, and the repository is not public",
                     options.project
                 ),
-            }));
+            };
+            return Ok(AuthOutcome::Failure(AuthFailure { error }));
         }
         if required == RequiredAccess::Write {
             let error = match &refused {
@@ -3652,7 +3704,6 @@ async fn resolve_gitea_inner(
             can_write: false,
         }));
     }
-    let login = gitea_user(&target, &transport, &call_options).await?;
     if login.is_empty() {
         return Ok(AuthOutcome::Failure(AuthFailure {
             error: format!("the Gitea token returned no account for {base_url}"),

@@ -5570,17 +5570,24 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
             let errors = read_dedup_errors(&dedup_run_dir);
             let tool_failure = errors.last().cloned();
             open_issues_read = reads.last().copied().unwrap_or(0);
-            // A read that ran out of time is a slow forge, not a refused one.
-            // Reporting it as a failure raises an error notification that files
-            // a board issue and returns as more load for the same forge, so the
-            // cycle defers the candidates it never decided: they stay pending
-            // and the next cadence reads again. A turn that stopped still fails,
-            // because a stopped turn is not evidence of a slow forge.
+            // A read that ran out of time is a slow forge, and one answered with
+            // a 5xx or no connection at all is an unavailable one: neither is a
+            // refused read. Reporting either as a failure raises an error
+            // notification that files a board issue and returns as more load for
+            // the same forge, so the cycle defers the candidates it never
+            // decided: they stay pending and the next cadence reads again. A turn
+            // that stopped still fails, because a stopped turn is not evidence of
+            // an unavailable forge.
             if stopped.is_none() {
-                deferral = tool_failure
-                    .as_deref()
-                    .filter(|error| crate::forge::is_forge_read_latency(error))
-                    .map(|error| format!("the forge read is slow: {error}"));
+                deferral = tool_failure.as_deref().and_then(|error| {
+                    if crate::forge::is_forge_read_latency(error) {
+                        Some(format!("the forge read is slow: {error}"))
+                    } else if crate::forge::is_forge_read_outage(error) {
+                        Some(format!("the forge is unavailable: {error}"))
+                    } else {
+                        None
+                    }
+                });
             }
             // A turn that stops after recording a decision keeps it: those
             // records are what the turn decided, so only a turn that recorded

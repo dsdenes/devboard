@@ -3059,15 +3059,20 @@ that refusal as an empty open set: when a turn recorded no read and no decision,
 names the recorded failure — `the deduplication agent failed: <tool>: <refusal>` — and a turn that
 read the open set but had no decision recorded for a candidate names the same failure in that
 candidate's `reason`. A refused credential therefore reports its HTTP status and message instead
-of reading as a repository with no open issue.
+of reading as a repository with no open issue. The Gitea client resolves a refused token to the
+repository's public view before the turn records any failure, so a token Gitea accepts for the
+repository but refuses at the `/user` account probe still reads the open set; only a repository
+that needs the credential answers 401 again, and only that refusal is recorded.
 
-A completed turn whose only recorded failure names a timed-out read met a slow forge, not a
-refused one. The cycle defers instead of failing: every candidate the turn never decided stays
-pending with a `deferred` decision naming the slow read, `report.json` carries `action: deferred`
-with that reason, and the cycle files no issue and exits zero. A stalled forge is therefore never
-handed an error notification, a filed board issue, or an immediate walk of the pages that stalled.
-The next cadence sends the same candidates again, and a refusal the forge actually answered still
-fails the gate as above.
+A completed turn whose only recorded failure names a timed-out read met a slow forge, and one that
+names a `5xx` answer, a reset connection, or no answer at all met an unavailable one; neither is a
+refused read. The cycle defers in both cases instead of failing: every candidate the turn never
+decided stays pending with a `deferred` decision naming the read that failed, `report.json` carries
+`action: deferred` with that reason (`the forge read is slow: <error>` or
+`the forge is unavailable: <error>`), and the cycle files no issue and exits zero. A stalled or
+unavailable forge is therefore never handed an error notification, a filed board issue, or an
+immediate walk of the pages that failed. The next cadence sends the same candidates again, and a
+refusal the forge actually answered — a `4xx` status — still fails the gate as above.
 
 Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
 that issue is closed, the next cycle that observes the same evidence sends the candidate to the
@@ -3089,9 +3094,9 @@ rewritten answer.
 
 `report.json` carries a `deduplication` section with the number of candidates requested, the
 number of open issues the agent read, every candidate's disposition (`unique`, `duplicate` with
-`issue` and/or `representative`, `deferred` with `reason` for a slow read, or `failed` with
-`reason`), and the candidates suppressed because their matched issue is still open. The existing
-`action`, `reason`, `findings`, `issues`, and `pending` fields keep their meaning, and
+`issue` and/or `representative`, `deferred` with `reason` for a slow or unavailable read, or
+`failed` with `reason`), and the candidates suppressed because their matched issue is still open.
+The existing `action`, `reason`, `findings`, `issues`, and `pending` fields keep their meaning, and
 `/api/watchdog`, the Watchdog page, and the footer indicator are unchanged.
 
 ### State-directory cleanup
@@ -3269,7 +3274,7 @@ identical families and prompt bytes.
 ### Synthesis and validation
 
 Each selected family gets exactly one ACP synthesis call, at most four at a time, with a
-120-second timeout. The peer is `AGENT_COMMAND` (default `omp acp`) built from every enabled
+240-second timeout. The peer is `AGENT_COMMAND` (default `omp acp`) built from every enabled
 OpenCode Go subscription, led by the dashboard's published selection when it still names an enabled
 key and otherwise by the operator's list order, pinned to
 `opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The MCP
@@ -3280,9 +3285,15 @@ a 401 or "unauthorized" quoted inside assistant text never rotates. The prompt s
 `## Manifesto`, carries the family summary, every fragment with its count, at most five excerpts,
 the MCP catalog as name/title pairs plus every `covers` entry, every open MCP optimizer issue as
 number/title/URL, the configured allowlist, `maxIssuesPerCycle`, the rolling-hour room, the family
-tag, and the exact body sections; it stays under 24 KiB. A cycle whose synthesis calls all fail
-records the failure and files nothing. A failed call among successful ones is recorded for its
-family and does not discard what the other calls filed.
+tag, and the exact body sections; it stays under 24 KiB, and its first rule states that the turn
+runs no repository read, search, list, or command. A peer that runs out of its own wall-clock
+budget is slow model latency, not a refusal: its family is recorded as `deferred` with rule
+`timeout`, stays unmarked in the ledger, and the next cadence reconsiders it. A cycle whose
+synthesis calls all timed out records `action: deferred` with its reason and exits zero, so no
+error notification is raised for a slow peer. Every other all-failed cycle records the failure and
+files nothing. Within a cycle that also has successful calls, a timed-out call is recorded as
+`deferred` for its family and any other failed call is recorded as failed; neither discards what
+the other calls filed.
 
 The agent reads the open MCP optimizer issues through the MCP read tools and files at most one
 proposal itself through the MCP `issue_create` tool, or records why it filed nothing through
@@ -3337,8 +3348,9 @@ discarded on load, the report states `ledgerReset: true`, and deduplication reli
 selected keys with scores, omitted count, each synthesis call's model and duration, each recorded
 outcome with its rule or skip reason, filed URLs, duplicate skips with both the matched and the
 created URL, dropped count, and `pending: 0`.
-The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`, `failed`),
-`reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`, and `cycles`.
+The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`,
+`deferred`, `failed`), `reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`,
+and `cycles`.
 
 A cycle edits no prompt, wrapper, source, session file, or journal record, and writes only
 `<STATE_DIR>/coach/` plus the generated provider agent directory the synthesizer peer needs. The
@@ -3469,7 +3481,9 @@ from those headers and parses only the matching file, so one read does not cost 
   credential probe or forge command that outlives its deadline (60 seconds by default) fails the
   call with a retryable timeout message instead of leaving it pending. A Gitea read that presents a
   credential the forge refuses with HTTP 401 is retried once without it, so a long-running worker
-  whose launcher's token was since rotated away still reads a public repository; a repository that
+  whose launcher's token was since rotated away still reads a public repository; the same fallback
+  covers a token Gitea accepts for the repository view but refuses at the account probe `/user`,
+  because neither answer proves the repository unreadable. A repository that
   needs the credential answers 401 again and the refusal is reported, and a write is never retried
   without it. Only a resolved credential is remembered, so a forge that could not answer is probed
   again by the next call instead of failing this client for its lifetime.
@@ -4391,6 +4405,11 @@ to the `METHOD /path` that replaced it.
 - A 404 Problem on any path in `openapi.yaml` is the documented stale-bundle refusal: a page
   built against an older revision reloads once. A second refusal is reported and starts no
   reload loop.
+- A path under a root the REST surface owns, or under `flows`, `agent-runs`, `goal-proposals`,
+  `ready`, or `reports`, that matches no route answers `404` Problem JSON naming the request —
+  `This server serves no GET /issues/runs/.` — never the static file refusal, so a page that
+  sends a path this server does not serve reads which request was refused. Any other missing
+  path answers `The requested file was not found.`
 
 ### Per-run output sockets
 

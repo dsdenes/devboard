@@ -3063,7 +3063,11 @@ pub fn read_status(directory: &Path) -> Status {
 // ---------------------------------------------------------------------------
 // Synthesis
 
-pub const SYNTHESIS_TIMEOUT_MS: u64 = 120_000;
+/// One synthesis call's wall-clock bound. A peer reads the family's evidence,
+/// the injected open issues, and the catalog above its prompt, then answers
+/// with one tool call; a model turn under load regularly ran past 120 seconds,
+/// so the bound matches the Watchdog dedup peer's 240 seconds.
+pub const SYNTHESIS_TIMEOUT_MS: u64 = 240_000;
 pub const SYNTHESIS_CONCURRENCY: usize = 4;
 pub const SYNTHESIS_PROMPT_MAX_BYTES: usize = 24 * 1024;
 /// Verification seam: a JSON file that answers every synthesis call.
@@ -3079,6 +3083,10 @@ pub struct SynthesisResult {
     pub duration_ms: u64,
     pub text: Option<String>,
     pub reason: Option<String>,
+    /// The peer ran out of its own wall-clock budget. A timed-out turn is model
+    /// latency, not a refusal, so the coordinator defers its family instead of
+    /// failing the cycle.
+    pub timed_out: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3138,6 +3146,9 @@ fn prompt_text(sections: &PromptSections) -> String {
         sections.limits.clone(),
         String::new(),
         "Rules:".to_string(),
+        "- Everything this call needs is above. Do not read, search, list, or run anything in the".to_string(),
+        "  repository: the only tool calls this turn makes are the open-issue reads and exactly one".to_string(),
+        "  `issue_create` or `mcp_optimizer_proposal_skip`.".to_string(),
         "- Read the open issues with `issues_list` and `issue_get`. A proposal duplicates an open".to_string(),
         "  issue when that issue carries this family's tag or the same title. A duplicate files and".to_string(),
         "  comments on nothing.".to_string(),
@@ -3650,6 +3661,7 @@ pub fn open_code_peers(
 struct PeerFailure {
     message: String,
     credential: bool,
+    timed_out: bool,
 }
 
 fn credential_rejection(text: &str) -> bool {
@@ -3703,6 +3715,7 @@ async fn run_synthesis_peer(run: SynthesisPeerRun) -> Result<String, PeerFailure
             .map_err(|error| PeerFailure {
                 message: error.to_string(),
                 credential: credential_rejection(&error.to_string()),
+                timed_out: false,
             })?;
     let prompt = run.prompt.clone();
     let future = connection.run(&prompt);
@@ -3733,6 +3746,7 @@ async fn run_synthesis_peer(run: SynthesisPeerRun) -> Result<String, PeerFailure
                                 message
                             },
                             credential,
+                            timed_out: false,
                         })
                     }
                 };
@@ -3753,6 +3767,7 @@ async fn run_synthesis_peer(run: SynthesisPeerRun) -> Result<String, PeerFailure
                         return Err(PeerFailure {
                             message: "the synthesizer peer asked a question; refusing".to_string(),
                             credential: false,
+                            timed_out: false,
                         });
                     }
                     Some(_) => {}
@@ -3764,6 +3779,7 @@ async fn run_synthesis_peer(run: SynthesisPeerRun) -> Result<String, PeerFailure
                 return Err(PeerFailure {
                     message: format!("the synthesizer peer timed out after {}ms", run.timeout_ms),
                     credential: false,
+                    timed_out: true,
                 });
             }
         }
@@ -3801,6 +3817,7 @@ pub async fn synthesize_family(options: SynthesizeOptions) -> SynthesisResult {
                 model: "stub".to_string(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 reason: None,
+                timed_out: false,
             },
             Err(error) => SynthesisResult {
                 ok: false,
@@ -3808,6 +3825,7 @@ pub async fn synthesize_family(options: SynthesizeOptions) -> SynthesisResult {
                 model: "stub".to_string(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 reason: Some(format!("{error:#}")),
+                timed_out: false,
             },
         };
     }
@@ -3820,6 +3838,7 @@ pub async fn synthesize_family(options: SynthesizeOptions) -> SynthesisResult {
                 duration_ms: 0,
                 text: None,
                 reason: Some(reason),
+                timed_out: false,
             }
         }
     };
@@ -3848,6 +3867,7 @@ pub async fn synthesize_family(options: SynthesizeOptions) -> SynthesisResult {
                     model: peers[0].model.clone(),
                     duration_ms: started.elapsed().as_millis() as u64,
                     reason: None,
+                    timed_out: false,
                 }
             }
             Err(failure) => {
@@ -3858,12 +3878,14 @@ pub async fn synthesize_family(options: SynthesizeOptions) -> SynthesisResult {
                         duration_ms: started.elapsed().as_millis() as u64,
                         text: None,
                         reason: Some(failure.message),
+                        timed_out: failure.timed_out,
                     };
                 }
                 last = Some(failure);
             }
         }
     }
+    let timed_out = last.as_ref().is_some_and(|failure| failure.timed_out);
     SynthesisResult {
         ok: false,
         model: peers
@@ -3876,6 +3898,7 @@ pub async fn synthesize_family(options: SynthesizeOptions) -> SynthesisResult {
             last.map(|failure| failure.message)
                 .unwrap_or_else(|| "the synthesizer peer returned no answer".to_string()),
         ),
+        timed_out,
     }
 }
 
@@ -4815,6 +4838,7 @@ fn finish_cycle(
     report_path: &Path,
     family_count: usize,
     capped_reason: Option<String>,
+    deferred_reason: Option<String>,
     failure: Option<String>,
 ) -> anyhow::Result<CycleResult> {
     report.pending = 0;
@@ -4830,6 +4854,11 @@ fn finish_cycle(
     } else if let Some(capped) = capped_reason {
         report.action = "capped".to_string();
         report.reason = Some(capped);
+    } else if let Some(deferred) = deferred_reason {
+        // A peer that ran out of time is slow model latency, not a refusal:
+        // the cycle defers and the next cadence sends the same families.
+        report.action = "deferred".to_string();
+        report.reason = Some(deferred);
     } else {
         report.action = "none".to_string();
         report.reason = Some("no family filed a proposal".to_string());
@@ -4980,6 +5009,7 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
             &report_path,
             selection.families.len(),
             None,
+            None,
             Some(failure),
         );
     }
@@ -5020,6 +5050,7 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
                                         duration_ms: 0,
                                         text: None,
                                         reason: Some(error_line(&error)),
+                                        timed_out: false,
                                     }
                                 }
                             };
@@ -5030,6 +5061,7 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
                                     duration_ms: 0,
                                     text: Some(text),
                                     reason: None,
+                                    timed_out: false,
                                 },
                                 Err(error) => SynthesisResult {
                                     ok: false,
@@ -5037,6 +5069,7 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
                                     duration_ms: 0,
                                     text: None,
                                     reason: Some(error_line(&error)),
+                                    timed_out: false,
                                 },
                             };
                         }
@@ -5131,7 +5164,15 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
         let failed: Vec<&(Family, SynthesisPaths, SynthesisResult)> =
             calls.iter().filter(|(_, _, result)| !result.ok).collect();
         if !failed.is_empty() {
-            for (family, _, _) in &failed {
+            // A peer that ran out of its own wall-clock budget is slow model
+            // latency, not a refusal: its family is deferred and reconsidered
+            // on the next cadence, exactly as a slow forge read defers a
+            // Watchdog candidate. Only a refusal marks the family failed.
+            let (timed_out, refused): (Vec<_>, Vec<_>) = failed
+                .iter()
+                .copied()
+                .partition(|(_, _, result)| result.timed_out);
+            for (family, _, _) in &refused {
                 mark_family(
                     &mut ledger,
                     &family.key,
@@ -5143,12 +5184,50 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
                     },
                 );
             }
+            for (family, _, result) in &timed_out {
+                report.validations.push(Validation {
+                    family: family.key.clone(),
+                    outcome: "deferred".to_string(),
+                    rule: Some("timeout".to_string()),
+                    reason: result.reason.clone(),
+                });
+                mark_family(
+                    &mut ledger,
+                    &family.key,
+                    FamilyAction::None,
+                    &MarkOptions {
+                        at: now,
+                        issue_url: None,
+                        title: None,
+                    },
+                );
+            }
+            if refused.is_empty() {
+                let reason = timed_out
+                    .first()
+                    .and_then(|(_, _, result)| result.reason.clone())
+                    .unwrap_or_else(|| "the synthesis turn ran out of time".to_string());
+                return finish_cycle(
+                    &mut report,
+                    &ledger,
+                    &directory,
+                    &run_dir,
+                    &report_path,
+                    selection.families.len(),
+                    None,
+                    Some(format!(
+                        "synthesis deferred for {} family/families: {reason}",
+                        timed_out.len()
+                    )),
+                    None,
+                );
+            }
             if failed.len() == calls.len() {
                 let keys: Vec<String> = failed
                     .iter()
                     .map(|(family, _, _)| family.key.clone())
                     .collect();
-                let reason = failed
+                let reason = refused
                     .first()
                     .and_then(|(_, _, result)| result.reason.clone())
                     .unwrap_or_else(|| "no diagnostic".to_string());
@@ -5159,6 +5238,7 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
                     &run_dir,
                     &report_path,
                     selection.families.len(),
+                    None,
                     None,
                     Some(format!(
                         "synthesis failed for {}: {reason}",
@@ -5304,6 +5384,7 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
         &report_path,
         selection.families.len(),
         capped_reason,
+        None,
         None,
     )
 }

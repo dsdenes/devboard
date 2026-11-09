@@ -181,8 +181,13 @@ impl Drop for Fixture {
 
 /// The doctor environment a fixture proves itself against: only the tools a
 /// probe needs, so no inherited forge address or PATH `devboard` decides.
-fn clean_environment() -> HashMap<String, String> {
-    HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())])
+fn clean_environment(fixture: &Fixture) -> HashMap<String, String> {
+    let tools = fixture.mkdir("tools");
+    fixture.stub("tools/omp", "omp");
+    HashMap::from([(
+        "PATH".to_string(),
+        format!("{}:/usr/bin:/bin", tools.display()),
+    )])
 }
 
 fn stub_stdout(output: &Output) -> String {
@@ -495,7 +500,7 @@ fn doctor_fails_a_harness_host_whose_registration_resolves_nothing() {
     );
     cli_install::install(Some(fixture.path()), false).expect("the fixture host installs");
 
-    let report = cli_install::doctor_with_env(Some(fixture.path()), &clean_environment())
+    let report = cli_install::doctor_with_env(Some(fixture.path()), &clean_environment(&fixture))
         .expect("doctor runs");
     assert!(!report.ok(), "{:?}", report.drift);
     let failures = report.failures.join("\n");
@@ -518,7 +523,7 @@ fn doctor_passes_a_host_that_carries_no_harness_of_its_own() {
         "the installed payload records its version"
     );
 
-    let report = cli_install::doctor_with_env(Some(fixture.path()), &clean_environment())
+    let report = cli_install::doctor_with_env(Some(fixture.path()), &clean_environment(&fixture))
         .expect("doctor runs");
     assert!(report.ok(), "{:?}", report.failures);
 }

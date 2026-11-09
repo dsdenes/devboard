@@ -275,6 +275,46 @@ async fn static_serving_refuses_control_characters_and_normalizes_paths() {
 }
 
 #[tokio::test]
+async fn an_unserved_operation_path_names_the_request_it_refuses() {
+    let instance = start("rest-unserved").await;
+    for path in ["/issues/runs/", "/flows/unknown", "/agents//prompt"] {
+        let (status, headers, body) = send(
+            Method::GET,
+            &format!("{}{path}", instance.base),
+            HeaderMap::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(
+            headers
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/problem+json"),
+            "{path}"
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+        assert_eq!(
+            parsed["detail"],
+            format!("This server serves no GET {path}."),
+            "{path}"
+        );
+    }
+
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/missing.txt", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+    assert_eq!(
+        parsed["detail"], "The requested file was not found.",
+        "a static miss keeps its own detail"
+    );
+}
+
+#[tokio::test]
 async fn mutating_endpoints_enforce_method_and_configuration() {
     let instance = start("endpoints").await;
     let (status, _headers, _body) = send(

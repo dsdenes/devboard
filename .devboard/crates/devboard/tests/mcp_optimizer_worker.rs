@@ -154,6 +154,7 @@ fn stub_synthesis(calls: Arc<Mutex<Vec<(String, String)>>>) -> mcp::Synthesize {
                         duration_ms: 1,
                         text: Some(String::new()),
                         reason: None,
+                        timed_out: false,
                     };
                 }
                 let record = json!({
@@ -178,6 +179,7 @@ fn stub_synthesis(calls: Arc<Mutex<Vec<(String, String)>>>) -> mcp::Synthesize {
                     duration_ms: 1,
                     text: Some(String::new()),
                     reason: None,
+                    timed_out: false,
                 }
             })
         },
@@ -630,6 +632,7 @@ async fn a_failed_synthesis_cycle_records_every_family_and_exits_nonzero() {
                     duration_ms: 3,
                     text: None,
                     reason: Some(format!("peer failed for {}", family.key)),
+                    timed_out: false,
                 }
             })
         },
@@ -666,6 +669,77 @@ async fn a_failed_synthesis_cycle_records_every_family_and_exits_nonzero() {
     )
     .expect("the latest report");
     assert_eq!(latest.get("action").and_then(Value::as_str), Some("failed"));
+}
+
+#[tokio::test]
+async fn a_timed_out_synthesis_cycle_defers_without_failing() {
+    let fixture = Fixture::new("timeout");
+    seed_evidence(&fixture);
+    let delivery = memory_delivery(Vec::new());
+    let synthesize: mcp::Synthesize = Arc::new(
+        |_family: Family, _prompt: String, _paths: SynthesisPaths| -> SynthesisFuture {
+            Box::pin(async move {
+                SynthesisResult {
+                    ok: false,
+                    model: "stub".to_string(),
+                    duration_ms: 240_000,
+                    text: None,
+                    reason: Some("the synthesizer peer timed out after 240000ms".to_string()),
+                    timed_out: true,
+                }
+            })
+        },
+    );
+    let mut options = CycleOptions::new(&fixture.repo_dir, &fixture.state_dir);
+    options.now = Some(now());
+    options.delivery = Some(delivery);
+    options.synthesize = Some(synthesize);
+    options.settings = Some(Settings {
+        interval_minutes: 60,
+        max_per_hour: Some(10),
+        max_pending: Some(20),
+        max_issues_per_cycle: 20,
+        allowlist: Vec::new(),
+    });
+    let result = run_cycle(options).await.expect("the cycle");
+    assert_eq!(
+        result.report.action, "deferred",
+        "{:?}",
+        result.report.reason
+    );
+    assert_eq!(result.exit_code, 0);
+    assert!(result
+        .report
+        .reason
+        .as_deref()
+        .unwrap_or_default()
+        .starts_with("synthesis deferred for"));
+    assert!(result.report.issues.is_empty());
+    let deferred: Vec<&mcp::Validation> = result
+        .report
+        .validations
+        .iter()
+        .filter(|entry| entry.outcome == "deferred")
+        .collect();
+    assert_eq!(deferred.len(), result.report.selected.len());
+    assert!(deferred
+        .iter()
+        .all(|entry| entry.rule.as_deref() == Some("timeout")));
+    let ledger = load_ledger(&fixture.directory()).ledger;
+    for summary in &result.report.selected {
+        assert_eq!(
+            ledger.entry(&summary.key).expect("the entry").last_action,
+            FamilyAction::None
+        );
+    }
+    let latest: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture.directory().join("latest.json")).expect("latest.json"),
+    )
+    .expect("the latest report");
+    assert_eq!(
+        latest.get("action").and_then(Value::as_str),
+        Some("deferred")
+    );
 }
 
 #[tokio::test]
