@@ -19,13 +19,17 @@ use devboard::resources::{
 /// carries the process id because the user manager is host-wide: a release
 /// suite, an operator's workspace run, and a second checkout running the same
 /// suite would otherwise stop and rewrite one another's slice mid-test.
+///
+/// The name carries no dash on purpose. systemd derives a parent slice from
+/// each dash-separated name component, so the old dashed name nested this
+/// slice under `devboard.slice` and charged every allocator against the live
+/// budget's `memory.high`. A live slice at or above that mark throttles the
+/// allocation for tens of seconds, past every test deadline, and the failure
+/// moves between tests as the live budget changes. A dash-free name keeps this
+/// slice a sibling of the production slice at the manager root.
 fn test_slice() -> &'static str {
-    static NAME: LazyLock<String> = LazyLock::new(|| {
-        format!(
-            "devboard-resource-governor-test-{}.slice",
-            std::process::id()
-        )
-    });
+    static NAME: LazyLock<String> =
+        LazyLock::new(|| format!("devboardtest{}.slice", std::process::id()));
     &NAME
 }
 
@@ -123,7 +127,37 @@ fn sized_governor(
         test_slice(),
     );
     governor.save(settings).expect("the test settings validate");
+    if slice {
+        let path = slice_cgroup_path_for(test_slice()).expect("the test slice cgroup");
+        assert!(
+            !path.to_string_lossy().contains("/devboard.slice/"),
+            "the test slice must be a sibling of the live slice, not nested: {}",
+            path.display()
+        );
+    }
     governor
+}
+
+/// Makes the test slice end a limit overrun instead of swapping it out. The
+/// production slice inherits `memory.swap.max=0` from the dashboard; a private
+/// slice at the manager root inherits the manager's swap instead, so a 512 MB
+/// allocator would be swapped rather than killed and the kill tests would
+/// prove nothing.
+fn forbid_swap(name: &str) {
+    let status = Command::new("systemctl")
+        .args([
+            "--user",
+            "set-property",
+            "--runtime",
+            name,
+            "MemorySwapMax=0",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("systemctl set-property runs");
+    assert!(status.success(), "the test slice must forbid swap");
 }
 
 /// Serializes every test in this process that changes its transient slice.
@@ -848,22 +882,16 @@ fn slice_memory_max_kills_inside_and_spares_session() {
         return;
     }
     let directory = scratch("slice-kill");
-    let memory = FakeMemory::new(64_000, 60_000, 16);
-    let governor = Governor::attached(
+    let governor = sized_governor(
         &directory,
-        GovernorOptions {
-            memory: Arc::clone(&memory) as Arc<dyn MemoryReader>,
-            env: BTreeMap::new(),
-            slice: true,
-        },
+        FakeMemory::new(64_000, 60_000, 16),
+        slice_budget(),
+        true,
     );
-    assert!(
-        governor.slice_info().present,
-        "the production slice must exist"
-    );
-    // The root budget is whatever the dashboard runs with; the test's own
-    // scope carries the 128 MB limit, so this never rewrites a live budget.
-    // Drain any kill from an earlier run before this allocator starts.
+    assert!(governor.slice_info().present, "the test slice must exist");
+    // The allocator's scope carries the 128 MB limit and joins the private
+    // test slice, so no live dashboard budget is charged. Drain any kill from
+    // an earlier run before this allocator starts.
     let _ = governor.collect_kills();
 
     let mut canary = spawn_session_canary(120.0);
@@ -876,13 +904,12 @@ fn slice_memory_max_kills_inside_and_spares_session() {
     let mut allocator = spawn_allocator(&governor, slice_budget());
     let allocator_pid = allocator.id();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !cgroup(allocator_pid).contains("devboard.slice") && std::time::Instant::now() < deadline
-    {
+    while !cgroup(allocator_pid).contains(test_slice()) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
     }
     assert!(
-        cgroup(allocator_pid).contains("devboard.slice"),
-        "the allocator is inside the slice: {}",
+        cgroup(allocator_pid).contains(test_slice()),
+        "the allocator is inside the test slice: {}",
         cgroup(allocator_pid)
     );
     let status = wait_exit(&mut allocator, 20);
@@ -924,14 +951,7 @@ fn dashboard_survives_slice_kill() {
     }
     let directory = scratch("slice-dashboard");
     let memory = FakeMemory::new(64_000, 60_000, 16);
-    let governor = Governor::attached(
-        &directory,
-        GovernorOptions {
-            memory: Arc::clone(&memory) as Arc<dyn MemoryReader>,
-            env: BTreeMap::new(),
-            slice: true,
-        },
-    );
+    let governor = sized_governor(&directory, Arc::clone(&memory), slice_budget(), true);
     let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     {
         let recorded = Arc::clone(&recorded);
@@ -942,12 +962,10 @@ fn dashboard_survives_slice_kill() {
                 .push((kind.to_string(), text.to_string()));
         }));
     }
-    if !current_in_slice() {
-        assert!(
-            !cgroup(std::process::id()).contains("devboard.slice"),
-            "the control plane stays outside the slice"
-        );
-    }
+    assert!(
+        !cgroup(std::process::id()).contains(test_slice()),
+        "the control plane stays outside the test slice"
+    );
     let _ = governor.collect_kills();
     let mut allocator = spawn_allocator(&governor, slice_budget());
     assert!(
@@ -961,13 +979,10 @@ fn dashboard_survives_slice_kill() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(!kills.is_empty(), "the governor records the kill");
-    if !current_in_slice() {
-        assert!(
-            cgroup(std::process::id()).is_empty()
-                || !cgroup(std::process::id()).contains("devboard.slice"),
-            "the dashboard process survives outside the slice"
-        );
-    }
+    assert!(
+        !cgroup(std::process::id()).contains(test_slice()),
+        "the dashboard process survives outside the test slice"
+    );
     let journaled = recorded.lock().unwrap().clone();
     assert!(
         journaled
@@ -1256,6 +1271,10 @@ fn desktop_session_survives_a_slice_that_reaches_its_maximum() {
         },
         true,
     );
+    // The slice's own `MemoryMax` must end the allocator. The private slice
+    // sits at the manager root and would otherwise inherit the manager's swap
+    // and page the overrun out instead of killing it.
+    forbid_swap(test_slice());
     let info = governor.slice_info();
     assert!(info.present, "the test slice exists");
     assert_eq!(info.memory_max_mb, 128);
