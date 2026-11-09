@@ -217,6 +217,10 @@ struct GiteaData {
     /// What the `devboard-ci.yml` reads answer for the checkout's HEAD.
     ci: CiState,
     ci_reads: usize,
+    /// How many restarts the gate asked the forge for.
+    rerun_count: usize,
+    /// The CI reads answered since the last restart.
+    reads_since_rerun: usize,
 }
 
 /// How the Gitea CI stub answers the gate's reads.
@@ -226,8 +230,12 @@ enum CiState {
     Success,
     /// An in-progress run for this many reads, then a settled success.
     Wait(usize),
-    /// A settled run with this conclusion.
-    Settles(&'static str),
+    /// A settled failure, then a restart that succeeds.
+    RerunRecovers,
+    /// A settled failure, then a restart that settles with this conclusion.
+    RerunFails(&'static str),
+    /// A settled run with this conclusion whose restart the forge refuses.
+    RerunRefused(&'static str),
     /// No run for the commit.
     Absent,
 }
@@ -276,6 +284,8 @@ impl GiteaStub {
             credential: GiteaCredential::Writable,
             ci: CiState::Success,
             ci_reads: 0,
+            rerun_count: 0,
+            reads_since_rerun: 0,
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
         let inner = state.clone();
@@ -297,6 +307,11 @@ impl GiteaStub {
     /// The CI answer the gate reads for the checkout's HEAD.
     fn set_ci(&self, ci: CiState) {
         self.state.lock().expect("gitea").ci = ci;
+    }
+
+    /// How many restarts the gate asked the forge for.
+    fn rerun_count(&self) -> usize {
+        self.state.lock().expect("gitea").rerun_count
     }
 
     /// Records the refs a push delivered to the forge.
@@ -327,12 +342,27 @@ fn gitea_route(
     if request.method == "GET" && path == format!("{repo}/actions/runs") {
         let mut data = state.lock().expect("gitea");
         data.ci_reads += 1;
+        if data.rerun_count > 0 {
+            data.reads_since_rerun += 1;
+        }
         let head = git_output(repo_dir, &["rev-parse", "HEAD"]);
+        // A restart answers the same commit with its own run, so the gate
+        // follows a run id the settled failure did not name.
+        let restarted = data.rerun_count > 0;
+        let id = if restarted { 778 } else { 777 };
         let (status, conclusion) = match data.ci {
             CiState::Success => ("completed", Some("success".to_string())),
             CiState::Wait(after) if data.ci_reads <= after => ("in_progress", None),
             CiState::Wait(_) => ("completed", Some("success".to_string())),
-            CiState::Settles(conclusion) => ("completed", Some(conclusion.to_string())),
+            CiState::RerunRecovers if !restarted => ("completed", Some("failure".to_string())),
+            CiState::RerunRecovers if data.reads_since_rerun == 1 => ("in_progress", None),
+            CiState::RerunRecovers => ("completed", Some("success".to_string())),
+            CiState::RerunFails(conclusion) | CiState::RerunRefused(conclusion) if !restarted => {
+                ("completed", Some(conclusion.to_string()))
+            }
+            CiState::RerunFails(_) if data.reads_since_rerun == 1 => ("in_progress", None),
+            CiState::RerunFails(conclusion) => ("completed", Some(conclusion.to_string())),
+            CiState::RerunRefused(conclusion) => ("completed", Some(conclusion.to_string())),
             CiState::Absent => ("completed", Some("success".to_string())),
         };
         let runs = if data.ci == CiState::Absent {
@@ -362,7 +392,7 @@ fn gitea_route(
                     "conclusion": "failure",
                 }),
                 json!({
-                    "id": 777,
+                    "id": id,
                     "path": "devboard-ci.yml@refs/heads/main",
                     "head_sha": head,
                     "status": status,
@@ -371,6 +401,32 @@ fn gitea_route(
             ]
         };
         return json_response(json!({"workflow_runs": runs}));
+    }
+    if request.method == "POST" && path == format!("{repo}/actions/runs/777/rerun") {
+        let mut data = state.lock().expect("gitea");
+        if let CiState::RerunRefused(conclusion) = data.ci {
+            return StubResponse {
+                status: 403,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: format!(
+                    r#"{{"message":"the run concluded {conclusion} and cannot be re-run"}}"#
+                )
+                .into_bytes(),
+            };
+        }
+        data.rerun_count += 1;
+        data.reads_since_rerun = 0;
+        return StubResponse {
+            status: 201,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: json!({
+                "id": 778,
+                "path": "devboard-ci.yml@refs/heads/main",
+                "status": "queued",
+            })
+            .to_string()
+            .into_bytes(),
+        };
     }
     if request.method == "GET" && path == repo {
         let data = state.lock().expect("gitea");
@@ -1879,7 +1935,7 @@ async fn ci_gate_waits_for_the_target_success_before_the_tag() {
 async fn ci_gate_refuses_every_non_success_conclusion() {
     for conclusion in ["failure", "cancelled", "timed_out", "startup_failure"] {
         let live = live(&format!("ci-{conclusion}"), release_assets()).await;
-        live.gitea_stub.set_ci(CiState::Settles(conclusion));
+        live.gitea_stub.set_ci(CiState::RerunFails(conclusion));
         let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
         args.wait_timeout = Duration::from_secs(2);
         let error = publish(args)
@@ -1887,8 +1943,15 @@ async fn ci_gate_refuses_every_non_success_conclusion() {
             .expect_err("a non-success conclusion refuses the tag");
         let message = format!("{error:#}");
         assert!(
-            message.contains("devboard-ci.yml run 777") && message.contains(conclusion),
+            message.contains("devboard-ci.yml run 778")
+                && message.contains(conclusion)
+                && message.contains("after one re-run"),
             "{conclusion}: {message}"
+        );
+        assert_eq!(
+            live.gitea_stub.rerun_count(),
+            1,
+            "{conclusion}: the settled run is restarted once"
         );
         assert!(
             git_output(&live.seed, &["tag", "--list", "v1.1.0"])
@@ -1909,6 +1972,66 @@ async fn ci_gate_refuses_every_non_success_conclusion() {
         );
         assert_eq!(live.github_stub.dispatch_count(), 0);
     }
+}
+
+#[tokio::test]
+async fn ci_gate_re_runs_a_settled_failure_once() {
+    let live = live("ci-rerun-recovers", release_assets()).await;
+    let (lines, log) = recording_log();
+    live.gitea_stub.set_ci(CiState::RerunRecovers);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.log = Some(log);
+    let report = publish(args)
+        .await
+        .expect("the restarted run proves the commit and the tag lands");
+    assert_eq!(
+        live.gitea_stub.rerun_count(),
+        1,
+        "one restart proves the commit"
+    );
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        report.commit,
+        "the tag names the CI-proven commit"
+    );
+    let lines = lines.lock().expect("log").clone();
+    let restart = line_after(&lines, "re-running the devboard-ci.yml run 777");
+    let success = line_after(&lines, "CI run 778");
+    assert!(
+        restart < success && lines[restart].contains("concluded failure"),
+        "the restart precedes the success it earned: {lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn ci_gate_refuses_a_restart_the_forge_will_not_run() {
+    let live = live("ci-rerun-refused", release_assets()).await;
+    live.gitea_stub.set_ci(CiState::RerunRefused("failure"));
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(2);
+    let error = publish(args)
+        .await
+        .expect_err("a refused restart leaves the range unreleased");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("devboard-ci.yml run 777")
+            && message.contains("concluded failure")
+            && message.contains("its re-run was refused")
+            && message.contains("HTTP 403"),
+        "{message}"
+    );
+    assert!(
+        live.gitea_server
+            .find(
+                "POST",
+                "/api/v1/repos/dsdenes/devboard/actions/runs/777/rerun"
+            )
+            .is_some(),
+        "the gate asked the forge to restart the run"
+    );
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
 }
 
 #[tokio::test]

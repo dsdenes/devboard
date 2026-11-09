@@ -174,8 +174,11 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   commit and GitHub's `main` never reaches the released commit.
 - **CI gate.** `devboard publish` pushes the branch first, reads the target commit's
   `devboard-ci.yml` run on Gitea, and pushes the tag only after that run concludes `success`. A
-  settled failure or a run still absent after the bounded wait leaves the range unreleased,
-  records the run id and conclusion, and retries on the next tick.
+  settled failure restarts that same run once through the forge, because the commit is already on
+  the branch and no later push produces a second run; the restarted attempt gets the same bound. A
+  refused restart, a restart that settles without success, or a run still absent after the bounded
+  wait leaves the range unreleased, records the run id and conclusion, and retries on the next
+  tick.
 - **Retry.** A failing workflow conclusion, a missing GitHub release artifact, a missing Gitea
   manifest, or a rejected derived version records the failure with its detail, ships nothing, and
   leaves the range unreleased. The next due tick starts a new run without operator action. When

@@ -1323,6 +1323,30 @@ impl Api {
         Ok(runs)
     }
 
+    /// Restarts one settled `devboard-ci.yml` run on the canonical forge.
+    ///
+    /// The run names a commit the branch already carries, so no later push
+    /// produces a second run for it: without this restart one failure would
+    /// refuse every later attempt of the same range. The forge answers a
+    /// restart with the run it restarted (HTTP 201); any other status is a
+    /// refusal the caller records beside the run's verdict.
+    async fn gitea_ci_rerun(&self, run_id: u64) -> Result<()> {
+        let path = format!(
+            "{}/actions/runs/{run_id}/rerun",
+            gitea::repo_path(&self.gitea)
+        );
+        let response = self.gitea_request("POST", &path, None).await?;
+        if !(200..300).contains(&response.status) {
+            bail!(
+                "{} POST failed (HTTP {}): {}",
+                gitea::api_url(&self.gitea, &path),
+                response.status,
+                failure_message(&response)
+            );
+        }
+        Ok(())
+    }
+
     async fn gitea_published_versions(&self) -> Result<Vec<String>> {
         let mut versions = Vec::new();
         let mut seen = HashSet::new();
@@ -3299,9 +3323,14 @@ async fn dispatch_and_wait(
 ///
 /// The tag is pushed only after the canonical forge proves the exact commit
 /// the tag names. A settled failure of any kind — `failure`, `cancelled`,
-/// `timed_out`, `startup_failure`, or any other non-success conclusion —
-/// refuses the release without pushing the tag. A commit with no run yet is
-/// waited for; after the documented bound the release is refused the same way.
+/// `timed_out`, `startup_failure`, or any other non-success conclusion — is
+/// re-run once through the forge first: the commit is already on the branch,
+/// so no later push can produce a second run, and without the restart a
+/// single failure of an unchanged commit would refuse every later attempt of
+/// the same range forever. The re-run gets the same bound; a refusal, or a
+/// re-run that settles without success, refuses the release without pushing
+/// the tag. A commit with no run yet is waited for; after the documented
+/// bound the release is refused the same way.
 async fn wait_for_ci_success(
     api: &Api,
     clock: &Arc<dyn Clock>,
@@ -3315,8 +3344,13 @@ async fn wait_for_ci_success(
         "waiting up to {bound}s for the {CI_WORKFLOW} run of {}",
         short_sha(commit)
     ));
-    let deadline = clock.now_millis() + args.wait_timeout.as_millis() as i64;
+    let mut deadline = clock.now_millis() + args.wait_timeout.as_millis() as i64;
     let mut last_error: Option<String> = None;
+    // The run already restarted in this call, and whether its fresh attempt
+    // has been visible since. The snapshot that still describes the settled
+    // run right after the restart is never the re-run's verdict.
+    let mut rerun: Option<u64> = None;
+    let mut rerun_live = false;
     loop {
         match api.gitea_ci_runs(commit).await {
             Ok(runs) => {
@@ -3331,22 +3365,36 @@ async fn wait_for_ci_success(
                     ));
                     return Ok(success.id);
                 }
-                if !runs.iter().any(|run| !workflow_finished(run)) {
-                    if let Some(settled) = runs.iter().max_by_key(|run| run.id) {
-                        let conclusion = settled
-                            .conclusion
-                            .clone()
-                            .unwrap_or_else(|| settled.status.clone());
-                        let conclusion = if conclusion.is_empty() {
-                            "no conclusion".to_string()
-                        } else {
-                            conclusion
-                        };
-                        bail!(
-                            "the {CI_WORKFLOW} run {} for {} concluded {conclusion}; no tag was pushed",
+                if runs.iter().any(|run| !workflow_finished(run)) {
+                    if rerun.is_some() {
+                        rerun_live = true;
+                    }
+                } else if let Some(settled) = runs.iter().max_by_key(|run| run.id) {
+                    let conclusion = ci_conclusion(settled);
+                    match rerun {
+                        None => match api.gitea_ci_rerun(settled.id).await {
+                            Ok(()) => {
+                                (log)(&format!(
+                                    "re-running the {CI_WORKFLOW} run {} for {} once after it concluded {conclusion}",
+                                    settled.id,
+                                    short_sha(commit)
+                                ));
+                                rerun = Some(settled.id);
+                                deadline =
+                                    clock.now_millis() + args.wait_timeout.as_millis() as i64;
+                            }
+                            Err(error) => bail!(
+                                "the {CI_WORKFLOW} run {} for {} concluded {conclusion}; its re-run was refused: {error:#}; no tag was pushed",
+                                settled.id,
+                                short_sha(commit)
+                            ),
+                        },
+                        Some(_) if !rerun_live => {}
+                        Some(_) => bail!(
+                            "the {CI_WORKFLOW} run {} for {} concluded {conclusion} after one re-run; no tag was pushed",
                             settled.id,
                             short_sha(commit)
-                        );
+                        ),
                     }
                 }
             }
@@ -3372,10 +3420,7 @@ async fn wait_for_ci_success(
                     return Ok(success.id);
                 }
                 if let Some(settled) = runs.iter().find(|run| workflow_finished(run)) {
-                    let conclusion = settled
-                        .conclusion
-                        .clone()
-                        .unwrap_or_else(|| settled.status.clone());
+                    let conclusion = ci_conclusion(settled);
                     bail!(
                         "the {CI_WORKFLOW} run {} for {} concluded {conclusion}; no tag was pushed",
                         settled.id,
@@ -3389,6 +3434,16 @@ async fn wait_for_ci_success(
             );
         }
         sleeper.sleep(args.poll_interval).await;
+    }
+}
+
+/// The verdict one settled run reports: its conclusion, else its status.
+fn ci_conclusion(run: &WorkflowRun) -> String {
+    let conclusion = run.conclusion.clone().unwrap_or_else(|| run.status.clone());
+    if conclusion.is_empty() {
+        "no conclusion".to_string()
+    } else {
+        conclusion
     }
 }
 
