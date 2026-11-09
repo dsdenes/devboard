@@ -371,9 +371,21 @@ export class ConnectionStore {
     }
     const etag = response.headers.get("etag");
     if (etag !== null) this.etags.set(key, etag);
+    let payload: string;
+    try {
+      payload = await response.text();
+    } catch {
+      // A body cut short is a server that stopped serving mid-answer — a
+      // replacement handing over the port, or an exit — so it takes the same
+      // path as a request that never answered. The next poll reads the state
+      // again; reporting an unreadable body would turn a reconnect into an
+      // error the page cannot act on.
+      this.lost();
+      return;
+    }
     let body: unknown;
     try {
-      body = await response.json();
+      body = JSON.parse(payload);
     } catch {
       this.report("The server answered an unreadable body.");
       return;

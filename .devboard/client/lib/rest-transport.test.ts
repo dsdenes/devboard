@@ -8,6 +8,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // import would load them first and capture the wrong document.
 const { ConnectionStore } = await import("./connection.svelte");
 const { isStaleBundleProblem, reloadOnceForStaleBundle } = await import("./stale-bundle");
+const { notifications } = await import("./notifications.svelte");
 const { SLOW_UI_ACTION_BUDGET_MS, slowUiAction } = await import("./slow-ui-action");
 
 /** Resolves the promise chain `send` starts without waiting on a real timer. */
@@ -561,6 +562,39 @@ test("a draft read that never answers still files one issue at the budget", asyn
     `Slow UI action: getGoalDraft ${DRAFT_PATH} exceeded the ${SLOW_UI_ACTION_BUDGET_MS} ms budget.`,
   ]);
 
+  store.dispose();
+});
+
+test("a body cut mid-answer is a lost connection, not an unreadable body", async () => {
+  // A server that exits or hands its port over while a response streams leaves
+  // the answer short. That is the reconnect the page already handles, so it
+  // raises no error notification and files nothing.
+  installHttpTransport(async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"frames":['));
+        controller.error(new TypeError("The connection closed."));
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  notifications.clear();
+
+  const store = new ConnectionStore();
+  store.state = "open";
+  const frames: string[] = [];
+  store.onMessage((message) => frames.push(String(message.type)));
+
+  store.send({ type: "getVersion" }, "initial");
+  await settle();
+  expect(frames).toEqual([]);
+  expect(store.lastError).toBe("Could not reach the server.");
+  expect(notifications.items.map((item) => item.severity)).toEqual(["warning"]);
+
+  notifications.clear();
   store.dispose();
 });
 
