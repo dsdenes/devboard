@@ -222,11 +222,14 @@ impl ComplexitySnapshots {
         self.snapshots().into_iter().next_back()
     }
 
-    /// The page payload: every recorded date plus the newest full snapshot.
+    /// The page payload: every recorded date plus the newest detail. It reads
+    /// the recorded snapshots under their lock and copies only the fields the
+    /// page renders, so a poll never clones each snapshot's function rows.
     pub fn frame(&self) -> ComplexityFrame {
-        let snapshots = self.snapshots();
-        let latest = snapshots.last().cloned();
-        ComplexityFrame::build(&snapshots, latest)
+        let Ok(snapshots) = self.snapshots.lock() else {
+            return ComplexityFrame::build(&[], None);
+        };
+        ComplexityFrame::build(&snapshots, snapshots.last())
     }
 
     /// The `complexityState` frame's `state` object.

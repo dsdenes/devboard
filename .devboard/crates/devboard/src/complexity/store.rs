@@ -205,18 +205,30 @@ pub struct SnapshotSummary {
     pub project: ProjectMeasure,
 }
 
+/// The newest snapshot as the page renders it: its date, project figures, and
+/// per-file rows. The per-function rows stay in the stored snapshot; no page
+/// reads them, and shipping them made every poll serialize about a megabyte.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestDetail {
+    pub date: String,
+    pub recorded_at: String,
+    pub project: ProjectMeasure,
+    pub files: Vec<FileMeasure>,
+}
+
 /// The frame the server pushes: every recorded date, plus the newest detail.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComplexityFrame {
     pub snapshots: Vec<SnapshotSummary>,
-    pub latest: Option<ComplexitySnapshot>,
+    pub latest: Option<LatestDetail>,
 }
 
 impl ComplexityFrame {
     /// The page payload for a history ending at `latest`.
     pub fn build(
         snapshots: &[ComplexitySnapshot],
-        latest: Option<ComplexitySnapshot>,
+        latest: Option<&ComplexitySnapshot>,
     ) -> ComplexityFrame {
         ComplexityFrame {
             snapshots: snapshots
@@ -227,7 +239,12 @@ impl ComplexityFrame {
                     project: snapshot.project.clone(),
                 })
                 .collect(),
-            latest,
+            latest: latest.map(|snapshot| LatestDetail {
+                date: snapshot.date.clone(),
+                recorded_at: snapshot.recorded_at.clone(),
+                project: snapshot.project.clone(),
+                files: snapshot.files.clone(),
+            }),
         }
     }
 
@@ -247,7 +264,7 @@ impl ComplexityFrame {
             "latest".to_string(),
             self.latest
                 .as_ref()
-                .and_then(|snapshot| serde_json::to_value(snapshot).ok())
+                .and_then(|detail| serde_json::to_value(detail).ok())
                 .unwrap_or(Value::Null),
         );
         Value::Object(object)

@@ -9,8 +9,8 @@ use std::time::Duration;
 use devboard::complexity::{
     analyze_complexity, build_complexity_snapshot, complexity_clock_from_env, complexity_directory,
     measure_source, parse_snapshot, read_snapshots, snapshot_file, utc_date, write_snapshot,
-    ComplexityOptions, ComplexitySnapshot, ComplexitySnapshots, FileMeasure, Language,
-    ProjectMeasure,
+    ComplexityOptions, ComplexitySnapshot, ComplexitySnapshots, FileMeasure, FunctionMeasure,
+    FunctionRow, Language, ProjectMeasure,
 };
 use serde_json::json;
 use time::macros::datetime;
@@ -831,6 +831,62 @@ async fn the_frame_lists_every_date_and_carries_the_newest_detail() {
     assert_eq!(
         event["state"]["snapshots"].as_array().map(Vec::len),
         Some(2)
+    );
+}
+
+/// The polled `complexityState` frame carries no per-function row: the page
+/// reads only the newest snapshot's project figures and per-file rows, and the
+/// function rows were 97% of a ~1 MB frame rebuilt on every one-second poll.
+/// This test fails on the base frame, which serializes the whole snapshot.
+#[tokio::test]
+async fn the_state_frame_omits_the_function_rows_a_page_never_reads() {
+    let root = scratch("state-frame");
+    let state_dir = root.join("state");
+    let repo_dir = root.join("checkout");
+    let directory = complexity_directory(&state_dir, &repo_dir);
+    let mut stored = summary("2026-11-01", 10);
+    stored.functions = (0..4_000)
+        .map(|index| FunctionRow {
+            path: format!(".devboard/crates/app/src/file-{index}.rs"),
+            measure: FunctionMeasure {
+                name: format!("function_{index}"),
+                line: index + 1,
+                lines: 3,
+                cyclomatic: 2,
+                nesting: 0,
+                parameters: 1,
+            },
+        })
+        .collect();
+    write_snapshot(&directory, &stored)
+        .await
+        .expect("a stored snapshot");
+
+    let controller = controller(
+        &state_dir,
+        &repo_dir,
+        Arc::new(Mutex::new(datetime!(2026 - 11 - 01 12:00:00 UTC))),
+        |now| Ok(summary(&utc_date(now), 10)),
+        None,
+        None,
+    );
+    let event = controller.state_event();
+    let latest = &event["state"]["latest"];
+    assert!(
+        latest.get("functions").is_none(),
+        "the state frame ships per-function rows no page reads"
+    );
+    assert_eq!(latest["date"], "2026-11-01");
+    assert_eq!(latest["files"].as_array().map(Vec::len), Some(1));
+    assert_eq!(latest["project"]["loc"], 10);
+
+    let frame_bytes = serde_json::to_string(&event).expect("the event").len();
+    let stored_bytes = serde_json::to_string(&stored)
+        .expect("the stored snapshot")
+        .len();
+    assert!(
+        frame_bytes * 4 < stored_bytes,
+        "the state frame ({frame_bytes} bytes) still carries the stored snapshot's bulk ({stored_bytes} bytes)"
     );
 }
 

@@ -26,5 +26,5 @@ pub use snapshots::{
 };
 pub use store::{
     complexity_directory, complexity_root, parse_snapshot, read_snapshots, snapshot_file,
-    write_snapshot, ComplexityFrame, SnapshotSummary,
+    write_snapshot, ComplexityFrame, LatestDetail, SnapshotSummary,
 };
