@@ -853,16 +853,22 @@ resolves the provider again instead of inheriting the worker's original key. The
 resolves once per issue run, Auto Scout once per scan, and Design once per cycle; a run that
 started before a key was added keeps its key, and the next run uses the current selection. Every
 refresh also writes `<stateDir>/providers/selection.json` with the selected provider, subscription
-id, label, model, and headroom; the file carries no key material. The MCP optimizer finalizer
-cannot probe usage, so it reads that snapshot and leads with the dashboard's selected
-subscription, then falls back to the operator's list order when no snapshot exists.
+id, label, model, and headroom; the file carries no key material. A worker's own resolution has no
+usage cache, so an equal-headroom tie follows that snapshot and the run starts on the subscription
+the dashboard chose; without a snapshot it falls back to the operator's list order. The MCP
+optimizer finalizer cannot probe usage at all, so it reads the snapshot and leads with the
+dashboard's selected subscription, then falls back to the operator's list order when no snapshot
+exists.
 
 Remaining is `1 - percent/100` for each Go window and `limit_remaining / limit` for OpenRouter,
 or unlimited when the account has no limit. A subscription is eligible only when every gating
 window is strictly above **1% remaining**; that is the rule the dialog states. Eligible
-OpenCode Go subscriptions rank by their lowest remaining window, and ties keep the operator's
-list order. A key whose usage check failed or timed out stays eligible with unknown headroom and
-ranks below every key with known headroom. When no Go subscription is eligible, the peer starts
+OpenCode Go subscriptions rank by their lowest remaining window; a tie first follows the
+subscription named in the dashboard's `selection.json`, then the operator's list order. A detached
+worker has no usage cache of its own, so without that preference every Go key ties at unknown
+headroom and the first stored key would serve the run regardless of what the dashboard chose. A
+key whose usage check failed or timed out stays eligible with unknown headroom and ranks below
+every key with known headroom. When no Go subscription is eligible, the peer starts
 on the OpenRouter fallback model; when neither provider has an eligible subscription, no process
 starts and the UI and event stream report the reason. With no subscription configured at all,
 every peer start is refused with an error pointing at the Providers dialog, so a peer never

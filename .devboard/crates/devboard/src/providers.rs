@@ -725,8 +725,12 @@ pub struct RankedSubscription {
     /// The lowest remaining fraction, or null when the headroom is unknown.
     pub headroom: Option<f64>,
     pub eligible: bool,
-    /// Position in the operator's list; the tie-breaker.
+    /// Position in the operator's list; the last tie-breaker.
     pub index: usize,
+    /// Whether the dashboard's published selection names this subscription.
+    /// A fresh worker has no cached usage, so every headroom is unknown; the
+    /// published decision is the only evidence that distinguishes the keys.
+    pub preferred: bool,
 }
 
 // Selected carries the full subscription and usage records the caller
@@ -775,6 +779,7 @@ pub fn rank_subscriptions(
                 headroom: report.and_then(|report| report.remaining_fraction),
                 eligible: subscription.enabled && is_eligible(report),
                 index,
+                preferred: false,
             }
         })
         .collect()
@@ -782,19 +787,28 @@ pub fn rank_subscriptions(
 
 fn compare_ranked(left: &RankedSubscription, right: &RankedSubscription) -> std::cmp::Ordering {
     match (left.headroom, right.headroom) {
-        (None, None) => left.index.cmp(&right.index),
+        (None, None) => tie_break(left, right),
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (Some(_), None) => std::cmp::Ordering::Less,
         (Some(left_value), Some(right_value)) => {
             if right_value != left_value {
-                right_value
+                return right_value
                     .partial_cmp(&left_value)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                left.index.cmp(&right.index)
+                    .unwrap_or(std::cmp::Ordering::Equal);
             }
+            tie_break(left, right)
         }
     }
+}
+
+/// The published selection wins a tie, then the operator's list order. A
+/// worker that has just loaded its credentials knows no headroom, so without
+/// this every Go key ties and the first stored key is always chosen.
+fn tie_break(left: &RankedSubscription, right: &RankedSubscription) -> std::cmp::Ordering {
+    right
+        .preferred
+        .cmp(&left.preferred)
+        .then_with(|| left.index.cmp(&right.index))
 }
 
 fn best(candidates: &[RankedSubscription]) -> Option<RankedSubscription> {
@@ -843,14 +857,41 @@ pub fn decide_provider(ranked: &[RankedSubscription], configured: bool) -> Provi
         };
     }
 
-    let go_candidates: Vec<RankedSubscription> = ranked
-        .iter()
-        .filter(|candidate| candidate.subscription.provider == ProviderId::OpenCodeGo)
-        .cloned()
-        .collect();
     let open_router_candidates: Vec<RankedSubscription> = ranked
         .iter()
         .filter(|candidate| candidate.subscription.provider == ProviderId::OpenRouter)
+        .cloned()
+        .collect();
+
+    // A process that has not read usage (a detached worker resolving its own
+    // environment) knows no headroom at all, so the published selection is the
+    // only evidence. Follow it across providers as well as within one, or an
+    // exhausted Go key would win the list order over the OpenRouter key the
+    // dashboard had already rotated to.
+    if !ranked.iter().any(|candidate| candidate.headroom.is_some()) {
+        if let Some(preferred) = ranked
+            .iter()
+            .find(|candidate| candidate.preferred && candidate.eligible)
+        {
+            let fallback = if preferred.subscription.provider == ProviderId::OpenCodeGo {
+                best_enabled(&open_router_candidates)
+            } else {
+                None
+            };
+            return ProviderDecision::Selected {
+                subscription: preferred.subscription.clone(),
+                usage: preferred.usage.clone(),
+                fallback: fallback
+                    .as_ref()
+                    .map(|candidate| candidate.subscription.clone()),
+                fallback_usage: fallback.and_then(|candidate| candidate.usage),
+            };
+        }
+    }
+
+    let go_candidates: Vec<RankedSubscription> = ranked
+        .iter()
+        .filter(|candidate| candidate.subscription.provider == ProviderId::OpenCodeGo)
         .cloned()
         .collect();
     let open_router = best(&open_router_candidates);
@@ -1630,8 +1671,16 @@ impl ProviderService {
     }
 
     fn ranked(&self) -> Vec<RankedSubscription> {
+        let snapshot = read_selection_snapshot(&self.state_dir);
         let inner = lock(&self.inner);
-        rank_subscriptions(&inner.subscriptions, &inner.usage)
+        let mut ranked = rank_subscriptions(&inner.subscriptions, &inner.usage);
+        if let Some(snapshot) = snapshot {
+            for candidate in &mut ranked {
+                candidate.preferred = candidate.subscription.provider == snapshot.provider
+                    && candidate.subscription.id == snapshot.subscription_id;
+            }
+        }
+        ranked
     }
 
     /// Publishes the dashboard's decision so detached workers can follow it
@@ -1915,7 +1964,9 @@ impl ProviderService {
     /// the cached report, and a stale report is refreshed by
     /// [`ProviderService::background_refresh`] on its own tick. A key whose
     /// cached report is missing is treated as unknown headroom, exactly as a
-    /// failed check is.
+    /// failed check is. The dashboard's published selection breaks that tie,
+    /// so a worker resolving its own environment follows the same key the
+    /// dashboard chose instead of the first key in the credential file.
     pub async fn select(&self) -> Result<PeerBinding, ProviderUnavailable> {
         let ranked = self.ranked();
         let decision = decide_provider(&ranked, !ranked.is_empty());

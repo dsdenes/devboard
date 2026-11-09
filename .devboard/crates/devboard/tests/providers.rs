@@ -10,9 +10,9 @@ use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
 use devboard::providers::{
-    load_subscriptions, save_subscriptions, ProviderId, ProviderOptions, ProviderService,
-    SaveProviderInput, StoredSubscription, Transport, TransportError, TransportFuture,
-    UsageResponse, UsageStatus, PROVIDER_CHANGE_NEEDS_ID,
+    load_subscriptions, save_subscriptions, worker_peer_environment, write_selection_snapshot,
+    ProviderId, ProviderOptions, ProviderService, SaveProviderInput, StoredSubscription, Transport,
+    TransportError, TransportFuture, UsageResponse, UsageStatus, PROVIDER_CHANGE_NEEDS_ID,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -911,5 +911,169 @@ async fn a_fresh_connection_receives_no_unsolicited_provider_state() {
     assert!(
         providers.is_empty(),
         "an unsolicited provider frame arrived before the first period: {providers:?}"
+    );
+}
+
+/// A worker resolving its own environment has no cached usage, so every Go
+/// key reports unknown headroom. It must follow the dashboard's published
+/// selection instead of the first key in the credential file: the first key
+/// may be an exhausted subscription whose 429 the peer cannot recover from.
+#[tokio::test]
+async fn a_worker_follows_the_published_selection_when_usage_is_unknown() {
+    let root = fixture_root("worker-selection");
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[
+            subscription("go-first", ProviderId::OpenCodeGo, "go-key-first"),
+            subscription("go-preferred", ProviderId::OpenCodeGo, "go-key-preferred"),
+        ],
+    )
+    .expect("credentials");
+    write_selection_snapshot(
+        &state,
+        ProviderId::OpenCodeGo,
+        "go-preferred",
+        "Go #4",
+        "opencode-go/deepseek-v4.1-flash",
+        Some(0.56),
+        "2026-11-09T09:56:49.003Z",
+    )
+    .expect("selection");
+
+    let environment = worker_peer_environment(
+        &state,
+        &root.join("repo"),
+        HashMap::new(),
+        ProviderOptions::default(),
+    )
+    .await
+    .expect("a selection");
+    assert_eq!(
+        environment
+            .get("OPENCODE_API_KEY")
+            .and_then(|value| value.as_deref()),
+        Some("go-key-preferred")
+    );
+    let directory = environment
+        .get("PI_CODING_AGENT_DIR")
+        .and_then(|value| value.as_deref())
+        .expect("an agent directory");
+    assert!(
+        directory.ends_with("opencode-go-go-preferred"),
+        "{directory}"
+    );
+}
+
+/// Preference only breaks a tie. Real cached usage still rotates away from a
+/// subscription that has run out, even when a stale published selection
+/// still names it.
+#[tokio::test]
+async fn known_usage_outranks_a_stale_published_selection() {
+    let root = fixture_root("stale-selection");
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[
+            subscription("go-empty", ProviderId::OpenCodeGo, "go-key-empty"),
+            subscription("go-headroom", ProviderId::OpenCodeGo, "go-key-headroom"),
+        ],
+    )
+    .expect("credentials");
+
+    let transport: Transport = Arc::new(|request| -> TransportFuture {
+        let monthly = if request.key == "go-key-empty" {
+            100
+        } else {
+            44
+        };
+        Box::pin(async move {
+            let body = json!({
+                "usage": {
+                    "rolling": {"percent": 0, "resetsAt": "2030-01-01T00:00:00Z"},
+                    "weekly": {"percent": 0, "resetsAt": "2030-01-07T00:00:00Z"},
+                    "monthly": {"percent": monthly, "resetsAt": "2030-02-01T00:00:00Z"}
+                }
+            })
+            .to_string();
+            Ok(UsageResponse { status: 200, body })
+        })
+    });
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(transport),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    let service = ProviderService::with_options(&state, root.join("repo"), options);
+    service.refresh(true).await;
+
+    write_selection_snapshot(
+        &state,
+        ProviderId::OpenCodeGo,
+        "go-empty",
+        "Go empty",
+        "opencode-go/deepseek-v4.1-flash",
+        Some(0.0),
+        "2026-11-09T09:56:49.003Z",
+    )
+    .expect("stale selection");
+    let environment = service.select_environment().await.expect("a selection");
+    assert_eq!(
+        environment
+            .get("OPENCODE_API_KEY")
+            .and_then(|value| value.as_deref()),
+        Some("go-key-headroom")
+    );
+}
+
+/// The snapshot decides the provider too when the worker has no usage: after
+/// the dashboard rotates from an exhausted Go key to OpenRouter, the next
+/// issue run must use OpenRouter instead of the first Go key in the list.
+#[tokio::test]
+async fn a_worker_follows_a_published_openrouter_selection() {
+    let root = fixture_root("worker-openrouter-selection");
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[
+            subscription("go-first", ProviderId::OpenCodeGo, "go-key-first"),
+            subscription("or-only", ProviderId::OpenRouter, "or-key-only"),
+        ],
+    )
+    .expect("credentials");
+    write_selection_snapshot(
+        &state,
+        ProviderId::OpenRouter,
+        "or-only",
+        "OpenRouter",
+        "openrouter/deepseek/deepseek-v4.1-flash-1017",
+        Some(0.79),
+        "2026-11-09T09:56:49.003Z",
+    )
+    .expect("selection");
+
+    let environment = worker_peer_environment(
+        &state,
+        &root.join("repo"),
+        HashMap::new(),
+        ProviderOptions::default(),
+    )
+    .await
+    .expect("a selection");
+    assert_eq!(
+        environment
+            .get("OPENROUTER_API_KEY")
+            .and_then(|value| value.as_deref()),
+        Some("or-key-only")
+    );
+    assert_eq!(
+        environment
+            .get("OPENCODE_API_KEY")
+            .and_then(|value| value.as_deref()),
+        None
     );
 }
