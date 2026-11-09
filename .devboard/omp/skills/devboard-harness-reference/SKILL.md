@@ -2597,7 +2597,9 @@ title with its category.
 System renders `design-activity`, both streamed as `agentActivity`. Watchdog renders its retained
 cycle history (`watchdog-cycles`, `watchdog-cycle`,
 `watchdog-cycle-at/-window/-action/-findings/-reason`, `watchdog-cycles-empty`), capped at the
-newest 100 run directories.
+newest 100 run directories. Each `runs/<cycle>/` records a bounded `cycle.json` beside its report,
+and the panel reads that summary: a report carries the whole cycle evidence, which can reach tens
+of megabytes, while a cycle row needs six fields.
 
 ### API Standards
 
@@ -3205,11 +3207,11 @@ command one detached worker per repository state directory.
 
 MCP optimizer's files live under `<STATE_DIR>/coach/`: `worker.json` (published lifecycle),
 `settings.json`, `control/`, `state.json` (the ledger), `lock`,
-`runs/<cycle>/report.json|report.md`, `latest.json`, and `projection.json` (the dashboard's last
-forge projection, rendered by the page). The directory keeps its historical `coach/` name: an
-upgrade can leave a worker of the previous harness version live on the same lock, control
-channel, and ledger, so moving the state would strand that worker and start a second one beside
-it. The synthesizer also needs the generated per-peer directory under
+`runs/<cycle>/report.json|report.md|cycle.json`, `latest.json`, and `projection.json` (the
+dashboard's last forge projection, rendered by the page). The directory keeps its historical
+`coach/` name: an upgrade can leave a worker of the previous harness version live on the same
+lock, control channel, and ledger, so moving the state would strand that worker and start a
+second one beside it. The synthesizer also needs the generated per-peer directory under
 `<STATE_DIR>/providers/agents/`, written with the same shared helpers every peer uses. Start reaches
 `starting` before the worker exists and `running` once its state is readable; Stop reaches
 `stopping` and then `stopped` after the running cycle ends and before any further cycle starts. A

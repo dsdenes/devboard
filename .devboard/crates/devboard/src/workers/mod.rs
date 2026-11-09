@@ -7,6 +7,7 @@
 pub mod api_standards;
 pub mod builds;
 pub mod consistent_naming;
+pub mod cycle;
 pub mod dead_code;
 pub mod design;
 pub mod goal_draft;

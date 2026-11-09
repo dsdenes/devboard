@@ -5880,6 +5880,9 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
     let mut text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "null".to_string());
     text.push('\n');
     std::fs::write(&report_path, &text)?;
+    // The report carries the whole cycle evidence; the summary is what a
+    // projection reads, so it is recorded with the report it describes.
+    let _ = crate::workers::cycle::record(&run_dir, &value);
     std::fs::write(latest_path(&state_dir), &text)?;
     let report = Report { value };
     std::fs::write(run_dir.join("report.md"), render_markdown(&report))?;

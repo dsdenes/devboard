@@ -6441,13 +6441,26 @@ fn read_cycles(
     }
     let mut cycles = Vec::new();
     for name in names {
-        if let Some(report) = read_json(&directory.join("runs").join(&name).join("report.json")) {
+        // A run records a bounded summary beside its report, which carries the
+        // whole cycle evidence; a projection is a Start's answer frame, so it
+        // reads the summary and never re-parses that evidence.
+        if let Some(report) = crate::workers::cycle::read_run(&directory.join("runs").join(&name)) {
             if let Some(cycle) = cycle_from_report(&report, resolve) {
                 cycles.push(cycle);
             }
         }
     }
     cycles
+}
+
+/// The document describing a family's latest cycle. The newest run's summary
+/// is the same cycle `latest.json` copies, read without parsing the report that
+/// carries the whole cycle evidence; `latest.json` answers only when the family
+/// kept no run for it.
+fn latest_cycle_document(directory: &Path) -> Value {
+    crate::workers::cycle::latest_run(directory)
+        .or_else(|| read_json(&directory.join("latest.json")))
+        .unwrap_or(Value::Null)
 }
 
 fn watchdog_status(
@@ -6461,7 +6474,7 @@ fn watchdog_status(
     Vec<Value>,
     Vec<Value>,
 ) {
-    let latest = read_json(&directory.join("latest.json")).unwrap_or(Value::Null);
+    let latest = latest_cycle_document(directory);
     let latest_object = latest.as_object();
     let cycle = latest_object
         .and_then(|object| object.get("cycle"))
@@ -7702,7 +7715,7 @@ fn mcp_status(
     Vec<Value>,
     Vec<Value>,
 ) {
-    let latest = read_json(&directory.join("latest.json")).unwrap_or(Value::Null);
+    let latest = latest_cycle_document(directory);
     let object = latest.as_object();
     let cycle = object
         .and_then(|object| object.get("cycle"))
@@ -9547,5 +9560,162 @@ mod state_tree_walks {
             "every worker version's issues belong to the projection"
         );
         assert_eq!(family.forge_urls().len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod cycle_projections {
+    //! A Start's answer frame is the family's projection, so the cycle-history
+    //! read behind it decides the action's latency. A run report carries the
+    //! whole cycle evidence — tens of megabytes on a populated host — so the
+    //! projection reads the bounded summary recorded beside it, once per run.
+    //! The pre-change path parsed every retained report on every projection.
+
+    use super::*;
+
+    fn fixture_root(label: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("cycle-projections-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo")).expect("a fixture repo");
+        std::fs::create_dir_all(root.join("state")).expect("a fixture state");
+        root
+    }
+
+    fn stamp(index: usize) -> String {
+        format!("2026-11-09T10-1{index}-00-000Z")
+    }
+
+    fn report_document(index: usize) -> Value {
+        json!({
+            "cycle": format!("2026-11-09T10:1{index}:00.000Z"),
+            "window": {
+                "start": format!("2026-11-09T10:0{index}:00.000Z"),
+                "end": format!("2026-11-09T10:1{index}:00.000Z"),
+            },
+            "action": "none",
+            "findings": Value::Array(Vec::new()),
+            "issues": [{"url": format!("http://forge.invalid/issues/{}", index + 1)}],
+            "reason": "no finding in the window",
+            // The evidence a cycle writes and a projection never reads.
+            "cleanup": {
+                "entries": vec![json!({"path": "/fixture/build", "bytes": 1}); 20_000],
+            },
+        })
+    }
+
+    /// One watchdog family whose state tree retains `runs` cycle reports.
+    fn family_with_runs(label: &str, runs: usize) -> (WatchdogFamily, PathBuf) {
+        let root = fixture_root(label);
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        let runs_directory = watchdog_directory(&repo_dir).join("runs");
+        for index in 0..runs {
+            let directory = runs_directory.join(stamp(index));
+            std::fs::create_dir_all(&directory).expect("a run directory");
+            std::fs::write(
+                directory.join("report.json"),
+                report_document(index).to_string(),
+            )
+            .expect("a run report");
+        }
+        let spawn: SpawnFn =
+            Arc::new(|_argv: &[String], _environment: HashMap<String, String>| None);
+        let family = WatchdogFamily::new(
+            &repo_dir,
+            &state_dir,
+            &HashMap::new(),
+            None,
+            Arc::new(Mutex::new(spawn)),
+            Arc::new(Mutex::new(None)),
+            None,
+            Arc::new(|| 0),
+        );
+        (family, runs_directory)
+    }
+
+    #[test]
+    fn a_projection_reads_each_run_report_once() {
+        let (family, runs_directory) = family_with_runs("once", 3);
+
+        crate::workers::cycle::REPORT_PARSES.with(|parses| parses.set(0));
+        let first = family.snapshot();
+        let parsed = crate::workers::cycle::REPORT_PARSES.with(|parses| parses.get());
+        assert_eq!(
+            parsed, 3,
+            "the first projection reads each run report once, not {parsed} times"
+        );
+        let cycles = first["detail"]["cycles"]
+            .as_array()
+            .expect("a cycle history");
+        assert_eq!(cycles.len(), 3);
+        assert_eq!(cycles[0]["at"], json!("2026-11-09T10:12:00.000Z"));
+        assert_eq!(cycles[2]["at"], json!("2026-11-09T10:10:00.000Z"));
+        assert_eq!(
+            cycles[0]["issues"],
+            json!(["http://forge.invalid/issues/3"])
+        );
+        assert_eq!(
+            first["cadence"]["lastRunAt"],
+            json!("2026-11-09T10:12:00.000Z")
+        );
+        for index in 0..3 {
+            assert!(runs_directory
+                .join(stamp(index))
+                .join(crate::workers::cycle::SUMMARY_FILE)
+                .exists());
+        }
+
+        crate::workers::cycle::REPORT_PARSES.with(|parses| parses.set(0));
+        let second = family.snapshot();
+        let parsed = crate::workers::cycle::REPORT_PARSES.with(|parses| parses.get());
+        assert_eq!(
+            parsed, 0,
+            "a projection re-parsed {parsed} run reports that already record a summary"
+        );
+        assert_eq!(second["detail"], first["detail"]);
+    }
+}
+
+#[cfg(test)]
+mod cycle_summary_rows {
+    //! The summary a run records must answer the identical cycle row its full
+    //! report does: a bounded read is only a fix while it is the same read.
+
+    use super::*;
+
+    #[test]
+    fn a_summary_answers_the_same_cycle_row_as_its_report() {
+        let report = json!({
+            "cycle": "2026-11-09T10:10:00.000Z",
+            "window": {
+                "start": "2026-11-09T10:00:00.000Z",
+                "end": "2026-11-09T10:10:00.000Z",
+            },
+            "action": "filed",
+            "findings": [
+                {"fingerprint": "a", "line": "the first finding"},
+                {"line": "a finding without a fingerprint"},
+                {"fingerprint": "a", "line": "the first finding again"},
+            ],
+            "issues": [
+                {"url": "http://forge.invalid/issues/1", "title": "one"},
+                {"url": "http://forge.invalid/issues/1"},
+                {"title": "an issue row without a url"},
+            ],
+            "reason": "filed 1 issue(s)",
+            "cleanup": {"entries": [{"path": "/fixture/build"}]},
+        });
+        let resolve = |fingerprint: &str| {
+            (fingerprint == "a").then(|| "http://forge.invalid/issues/1".to_string())
+        };
+        let bounded = crate::workers::cycle::summary(&report).expect("a summary");
+        let full_row = cycle_from_report(&report, &resolve).expect("the report's row");
+        let bounded_row = cycle_from_report(&bounded, &resolve).expect("the summary's row");
+        assert_eq!(bounded_row, full_row);
+        assert_eq!(full_row["findings"], json!(3));
+        assert_eq!(full_row["issues"], json!(["http://forge.invalid/issues/1"]));
     }
 }
