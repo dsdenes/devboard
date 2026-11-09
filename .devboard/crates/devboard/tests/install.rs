@@ -74,8 +74,10 @@ fn local_release(host: &Path) -> PathBuf {
 }
 
 /// Doctor with the inherited forge configuration removed: a fixture proves
-/// its own checks, never the developer's network.
+/// its own checks, never the developer's network or installed tools.
 fn doctor(host: &Path) -> anyhow::Result<devboard::cli_install::DoctorReport> {
+    use std::os::unix::fs::PermissionsExt;
+
     let mut environment: HashMap<String, String> = std::env::vars().collect();
     for key in [
         "DEVBOARD_GITEA_URL",
@@ -89,6 +91,18 @@ fn doctor(host: &Path) -> anyhow::Result<devboard::cli_install::DoctorReport> {
     environment.insert(
         "DEVBOARD_RELEASE_URL".to_string(),
         local_release(host).display().to_string(),
+    );
+    let tools = host.join(".test-bin");
+    fs::create_dir_all(&tools).unwrap();
+    let omp = tools.join("omp");
+    fs::write(&omp, b"#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = fs::metadata(&omp).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&omp, permissions).unwrap();
+    let inherited = environment.get("PATH").cloned().unwrap_or_default();
+    environment.insert(
+        "PATH".to_string(),
+        format!("{}:{inherited}", tools.display()),
     );
     devboard::cli_install::doctor_with_env(Some(host), &environment)
 }
