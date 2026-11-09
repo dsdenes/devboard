@@ -491,6 +491,34 @@ fn a_read_that_ran_out_of_time_is_latency_rather_than_a_fault() {
     assert!(!is_forge_read_latency("bad credentials"));
 }
 
+/// A read the forge could not answer — a `5xx`, a reset connection, or nothing
+/// at all — is an unavailable forge, not a refused read. The cycle defers on it
+/// instead of raising the error notification that files a board issue, while a
+/// `4xx` refusal the forge actually answered still fails.
+#[test]
+fn a_read_the_forge_could_not_answer_is_an_outage_rather_than_a_refusal() {
+    assert!(is_forge_read_outage(
+        "GET /repos/owner/name/issues?state=open&type=issues&limit=50&page=1 failed (HTTP 500): \
+         {\"message\":\"\",\"url\":\"http://gitea.test/api/swagger\"}"
+    ));
+    assert!(is_forge_read_outage(
+        "GET /repos/owner/name/issues failed: the request timed out after 30000 ms"
+    ));
+    assert!(is_forge_read_outage(
+        "GET /repos/owner/name/issues failed: error sending request for url \
+         (http://gitea.test/api/v1/x)"
+    ));
+    assert!(!is_forge_read_outage(
+        "GET /repos/owner/name/issues failed (HTTP 401): invalid username, password or token"
+    ));
+    assert!(!is_forge_read_outage(
+        "GET /repos/owner/name/issues/404 failed (HTTP 404): not found"
+    ));
+    assert!(!is_forge_read_outage(
+        "GET /repos/owner/name/issues failed (HTTP 429): Too Many Requests"
+    ));
+}
+
 #[tokio::test]
 async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
     let server = StubServer::start(|request| {
@@ -552,6 +580,10 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
             ("PATCH", "/api/v1/repos/owner/name/pulls/9") => json_response(json!({})),
             ("POST", "/api/v1/repos/owner/name/pulls/9/merge") => json_response(json!({})),
             ("GET", "/api/v1/repos/owner/name/bad") => text_response(200, "not json"),
+            ("GET", "/api/v1/repos/owner/name/outage") => text_response(
+                500,
+                r#"{"message":"","url":"http://gitea.test/api/swagger"}"#,
+            ),
             _ => text_response(500, "unexpected"),
         }
     })
@@ -759,6 +791,24 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
     assert_eq!(
         bad.message,
         "GET /repos/owner/name/bad returned invalid JSON: not json"
+    );
+
+    // A Gitea internal failure answers `{"message":"",...}`: the diagnostic must
+    // not end at its colon with the fault unnamed.
+    let outage = gitea_json(
+        &target,
+        "/repos/owner/name/outage",
+        None,
+        &transport,
+        &options,
+    )
+    .await
+    .expect_err("a forge failure");
+    assert_eq!(outage.status, Some(500));
+    assert_eq!(
+        outage.message,
+        "GET /repos/owner/name/outage failed (HTTP 500): \
+         {\"message\":\"\",\"url\":\"http://gitea.test/api/swagger\"}"
     );
 }
 

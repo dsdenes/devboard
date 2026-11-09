@@ -957,7 +957,15 @@ fn message_from_body(body: &str) -> String {
         return "no response body".to_string();
     };
     if let Ok(parsed) = serde_json::from_str::<Value>(first) {
-        if let Some(message) = parsed.get("message").and_then(Value::as_str) {
+        // A Gitea internal failure answers `{"message":"","url":...}`, and an
+        // empty message would leave the diagnostic ending at its colon with no
+        // fault named. Such a body falls through to the bare first line, which
+        // still names what the forge answered.
+        if let Some(message) = parsed
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.trim().is_empty())
+        {
             return message.to_string();
         }
     }
@@ -2265,6 +2273,22 @@ pub fn classify_forge_read_failure(message: &str) -> ForgeReadFailureKind {
 pub fn is_forge_read_latency(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("did not finish within") || message.contains("timed out")
+}
+
+/// True when a read met a forge that could not answer it, rather than one that
+/// answered a refusal.
+///
+/// An overloaded Gitea answers HTTP 500 with an empty message, a reset or
+/// refused connection answers nothing, and both describe a forge that is
+/// temporarily unable to serve a read: the same request answers differently once
+/// the forge clears. A periodic read keeps its last rows and reads again on its
+/// normal cadence instead of raising an error notification that files a board
+/// issue and returns as more load for the same forge. A 4xx is the forge's
+/// verdict about the request or the credential, so it still fails the read.
+pub fn is_forge_read_outage(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    !message.contains(" failed (http 4")
+        && classify_forge_read_failure(&message) == ForgeReadFailureKind::Transient
 }
 
 /// One agent's consecutive transient failures. A success resets the schedule.

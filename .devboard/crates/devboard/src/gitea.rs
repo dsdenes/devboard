@@ -102,7 +102,15 @@ fn message_from_body(body: &str) -> String {
         return "no response body".to_string();
     };
     if let Ok(parsed) = serde_json::from_str::<Value>(first) {
-        if let Some(message) = parsed.get("message").and_then(Value::as_str) {
+        // A Gitea internal failure answers `{"message":"","url":...}`, and an
+        // empty message would leave the diagnostic ending at its colon with no
+        // fault named. Such a body falls through to the bare first line, which
+        // still names what the forge answered.
+        if let Some(message) = parsed
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.trim().is_empty())
+        {
             return message.to_string();
         }
     }
