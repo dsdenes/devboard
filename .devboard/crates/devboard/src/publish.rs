@@ -1180,33 +1180,48 @@ impl Api {
                 failure_message(&response)
             );
         }
-        Ok(response.json()?.get("object").cloned())
+        // A forge answers one ref either as a bare object or as an array of
+        // refs, one entry per matching name (Gitea/Forgejo 28 serves the
+        // array). Read the entry that names this ref in both shapes.
+        let document: Value = response.json()?;
+        let expected = format!("refs/{kind}/{name}");
+        let entry = match &document {
+            Value::Array(entries) => entries
+                .iter()
+                .find(|entry| entry.get("ref").and_then(Value::as_str) == Some(expected.as_str()))
+                .or_else(|| entries.first()),
+            _ => Some(&document),
+        };
+        Ok(entry.and_then(|entry| entry.get("object")).cloned())
     }
 
     async fn gitea_tag_commit(&self, tag: &str) -> Result<Option<String>> {
-        let Some(object) = self.gitea_ref_object("tags", tag).await? else {
+        let Some(mut object) = self.gitea_ref_object("tags", tag).await? else {
             return Ok(None);
         };
-        let sha = object.get("sha").and_then(Value::as_str).unwrap_or("");
-        if sha.is_empty() {
-            return Ok(None);
+        // An annotated tag names a tag object that names the commit; peel
+        // every tag object in the chain and stop at the commit it names.
+        for _ in 0..4 {
+            let sha = object.get("sha").and_then(Value::as_str).unwrap_or("");
+            if sha.is_empty() {
+                return Ok(None);
+            }
+            let kind = object.get("type").and_then(Value::as_str).unwrap_or("");
+            if kind != "tag" {
+                return Ok(Some(sha.to_string()));
+            }
+            let path = format!(
+                "{}/git/tags/{}",
+                gitea::repo_path(&self.gitea),
+                encode_component(sha)
+            );
+            let annotated = self.gitea_json("GET", &path, None).await?;
+            let Some(next) = annotated.get("object") else {
+                return Ok(None);
+            };
+            object = next.clone();
         }
-        let kind = object.get("type").and_then(Value::as_str).unwrap_or("");
-        if kind != "tag" {
-            return Ok(Some(sha.to_string()));
-        }
-        let path = format!(
-            "{}/git/tags/{}",
-            gitea::repo_path(&self.gitea),
-            encode_component(sha)
-        );
-        let annotated = self.gitea_json("GET", &path, None).await?;
-        let commit = annotated
-            .get("object")
-            .and_then(|value| value.get("sha"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        Ok((!commit.is_empty()).then(|| commit.to_string()))
+        Ok(None)
     }
 
     /// The commit the forge's branch names, or `None` when the branch is

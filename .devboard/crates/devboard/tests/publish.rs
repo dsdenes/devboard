@@ -483,12 +483,25 @@ fn gitea_route(
     if let Some(rest) = path.strip_prefix(&format!("{repo}/git/refs/tags/")) {
         let tag = percent_decode(rest);
         let data = state.lock().expect("gitea");
-        let Some(sha) = data.refs.get(&tag) else {
+        let Some(_sha) = data.refs.get(&tag) else {
+            return not_found();
+        };
+        // A Gitea/Forgejo release answers one tag ref as a one-element array,
+        // and an annotated tag names a tag object rather than its commit.
+        return json_response(Value::Array(vec![json!({
+            "ref": format!("refs/tags/{tag}"),
+            "object": {"sha": tag_object_sha(&tag), "type": "tag"},
+        })]));
+    }
+    if let Some(sha) = path.strip_prefix(&format!("{repo}/git/tags/")) {
+        let data = state.lock().expect("gitea");
+        let Some((tag, commit)) = data.refs.iter().find(|(tag, _)| tag_object_sha(tag) == sha)
+        else {
             return not_found();
         };
         return json_response(json!({
-            "ref": format!("refs/tags/{tag}"),
-            "object": {"sha": sha, "type": "commit"},
+            "tag": format!("v{tag}"),
+            "object": {"sha": commit, "type": "commit"},
         }));
     }
     if let Some(rest) = path.strip_prefix("/gitea-assets/") {
@@ -916,6 +929,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())
+}
+
+/// A stable fake tag-object id for one tag name, so the stub can answer the
+/// annotated-tag route the forge serves.
+fn tag_object_sha(tag: &str) -> String {
+    sha256_hex(tag.as_bytes())[..40].to_string()
 }
 
 fn asset_bytes(name: &str) -> Vec<u8> {
