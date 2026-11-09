@@ -5374,24 +5374,7 @@ impl RepoFamily {
         if remote.forge == "gitea" {
             let (target, _) = gitea_preflight_target(remote, &self.environment)?;
             let transport = crate::forge::default_transport(budget.remaining_ms());
-            let target_ref = &target;
-            let transport_ref = &transport;
-            let labels = {
-                let call = crate::forge::GiteaCallOptions {
-                    flow_id: None,
-                    timeout_ms: Some(budget.request_ms()),
-                };
-                budget
-                    .run(
-                        &format!("reading the labels of {}", remote.project),
-                        async move {
-                            crate::forge::gitea_labels(target_ref, transport_ref, &call)
-                                .await
-                                .map_err(|error| error.message)
-                        },
-                    )
-                    .await?
-            };
+            let labels = gitea_labels_within(budget, &target, &transport).await?;
             if labels.iter().any(|entry| entry.name == label) {
                 return Ok(());
             }
@@ -5401,13 +5384,13 @@ impl RepoFamily {
                     timeout_ms: Some(budget.request_ms()),
                 };
                 budget
-                    .run(&format!("creating the \"{label}\" label"), async move {
+                    .run(&format!("creating the \"{label}\" label"), async {
                         crate::forge::gitea_create_label(
-                            target_ref,
+                            &target,
                             label,
                             color,
                             description,
-                            transport_ref,
+                            &transport,
                             &call,
                         )
                         .await
@@ -5419,22 +5402,7 @@ impl RepoFamily {
             if created.is_ok() {
                 return Ok(());
             }
-            let after = {
-                let call = crate::forge::GiteaCallOptions {
-                    flow_id: None,
-                    timeout_ms: Some(budget.request_ms()),
-                };
-                budget
-                    .run(
-                        &format!("re-reading the labels of {}", remote.project),
-                        async move {
-                            crate::forge::gitea_labels(target_ref, transport_ref, &call)
-                                .await
-                                .map_err(|error| error.message)
-                        },
-                    )
-                    .await?
-            };
+            let after = gitea_labels_within(budget, &target, &transport).await?;
             if after.iter().any(|entry| entry.name == label) {
                 return Ok(());
             }
@@ -6004,21 +5972,21 @@ fn gitea_preflight_target(
     Ok((target, base_url))
 }
 
-/// Why one preflight could not read the repository. A permanent refusal names
-/// the missing fact; a stall, a refused credential, or a 5xx answer is a
-/// transient fault the next Start retries, so it is never reported as a
-/// missing prerequisite.
+/// Why one preflight could not read the forge fact `subject` names — the
+/// repository, or its labels. A permanent refusal names the missing fact; a
+/// stall, a refused credential, or a 5xx answer is a transient fault the next
+/// Start retries, so it is never reported as a missing prerequisite.
 fn gitea_read_failure(
-    project: &str,
+    subject: &str,
     kind: crate::forge::ForgeReadFailureKind,
     reason: &str,
 ) -> String {
     match kind {
-        crate::forge::ForgeReadFailureKind::Permanent => format!(
-            "missing prerequisite: the Gitea repository {project} could not be read: {reason}"
-        ),
+        crate::forge::ForgeReadFailureKind::Permanent => {
+            format!("missing prerequisite: {subject} could not be read: {reason}")
+        }
         _ => format!(
-            "the Gitea repository {project} could not be read before Start's deadline: {reason}; press Start to retry."
+            "{subject} could not be read before Start's deadline: {reason}; press Start to retry."
         ),
     }
 }
@@ -6032,6 +6000,7 @@ async fn gitea_repository_within(
     target: &crate::forge::GiteaTarget,
     transport: &crate::forge::Transport,
 ) -> Result<Value, String> {
+    let subject = format!("the Gitea repository {}", target.project);
     let mut retry = crate::forge::ForgeReadRetry::new();
     loop {
         let call = crate::forge::GiteaCallOptions {
@@ -6052,10 +6021,50 @@ async fn gitea_repository_within(
         };
         let kind = crate::forge::classify_forge_read_failure(&reason);
         let Some(delay) = retry.record(kind) else {
-            return Err(gitea_read_failure(&target.project, kind, &reason));
+            return Err(gitea_read_failure(&subject, kind, &reason));
         };
         if budget.remaining_ms() <= delay + PREFLIGHT_RETRY_WINDOW_MS {
-            return Err(gitea_read_failure(&target.project, kind, &reason));
+            return Err(gitea_read_failure(&subject, kind, &reason));
+        }
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+}
+
+/// Reads the repository's labels through the shared Gitea client under the
+/// same policy as [`gitea_repository_within`]: a fast transient refusal spends
+/// the shared retry schedule while the preflight's deadline lasts, and a
+/// stalled request reports the request it was making instead of the step's
+/// generic deadline. The label step has no separate policy: a slow forge must
+/// not turn a label read into a raw transport error on the Start card.
+async fn gitea_labels_within(
+    budget: PreflightBudget,
+    target: &crate::forge::GiteaTarget,
+    transport: &crate::forge::Transport,
+) -> Result<Vec<crate::forge::GiteaLabel>, String> {
+    let subject = format!("the labels of {}", target.project);
+    let mut retry = crate::forge::ForgeReadRetry::new();
+    loop {
+        let call = crate::forge::GiteaCallOptions {
+            flow_id: None,
+            timeout_ms: Some(budget.request_ms()),
+        };
+        let attempt = budget
+            .run("reading the Gitea labels", async {
+                crate::forge::gitea_labels(target, transport, &call)
+                    .await
+                    .map_err(|error| error.message)
+            })
+            .await;
+        let reason = match attempt {
+            Ok(labels) => return Ok(labels),
+            Err(reason) => reason,
+        };
+        let kind = crate::forge::classify_forge_read_failure(&reason);
+        let Some(delay) = retry.record(kind) else {
+            return Err(gitea_read_failure(&subject, kind, &reason));
+        };
+        if budget.remaining_ms() <= delay + PREFLIGHT_RETRY_WINDOW_MS {
+            return Err(gitea_read_failure(&subject, kind, &reason));
         }
         tokio::time::sleep(Duration::from_millis(delay)).await;
     }
@@ -9370,6 +9379,63 @@ mod gitea_preflight_tests {
         assert!(
             error.starts_with(
                 "missing prerequisite: the Gitea repository acme/fixture could not be read: GET /repos/acme/fixture failed (HTTP 404): not found"
+            ),
+            "{error}"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_fast_label_refusal_is_retried_inside_the_budget() {
+        let (transport, calls, urls) = transport(vec![
+            Ok(json_response(
+                503,
+                &json!({"message": "service unavailable"}),
+            )),
+            Ok(json_response(200, &json!([{"id": 7, "name": "dead-code"}]))),
+            Ok(json_response(200, &json!([]))),
+        ]);
+        let labels = gitea_labels_within(PreflightBudget::new(5_000), &target(), &transport)
+            .await
+            .expect("the second attempt reads the labels");
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].name, "dead-code");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(
+            urls.lock().expect("urls").as_slice(),
+            [
+                "http://forge.test/api/v1/repos/acme/fixture/labels?limit=50&page=1",
+                "http://forge.test/api/v1/repos/acme/fixture/labels?limit=50&page=1",
+                "http://forge.test/api/v1/repos/acme/fixture/labels?limit=50&page=2",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_label_read_answers_the_bounded_refusal() {
+        let (transport, _, _) = transport(vec![Err(HttpError::Timeout)]);
+        let error = gitea_labels_within(PreflightBudget::new(400), &target(), &transport)
+            .await
+            .expect_err("a stalled label read refuses");
+        assert!(
+            error.starts_with("the labels of acme/fixture could not be read before Start's deadline: GET /repos/acme/fixture/labels?limit=50&page=1 failed: the request timed out after "),
+            "{error}"
+        );
+        assert!(error.ends_with("; press Start to retry."), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_label_list_stays_a_missing_prerequisite() {
+        let (transport, calls, _) = transport(vec![Ok(json_response(
+            404,
+            &json!({"message": "not found"}),
+        ))]);
+        let error = gitea_labels_within(PreflightBudget::new(5_000), &target(), &transport)
+            .await
+            .expect_err("a missing label list refuses");
+        assert!(
+            error.starts_with(
+                "missing prerequisite: the labels of acme/fixture could not be read: GET /repos/acme/fixture/labels?limit=50&page=1 failed (HTTP 404): not found"
             ),
             "{error}"
         );

@@ -2464,11 +2464,13 @@ scheduled attempt.
 A Start preflight's Gitea read is the one exception inside an operation. It runs through the
 shared Gitea client and spends this same 1, 2, 4, and 8 second schedule while the preflight's
 20-second deadline lasts, so a fast transient refusal — a locked access-token table's `HTTP 401`,
-a `5xx`, or a reset connection — earns another attempt instead of refusing Start. A read that
-stalls reports the request it was making, for example
-`GET /repos/<owner>/<name> failed: the request timed out after 19750 ms`, and Start answers a
-bounded refusal that says the repository could not be read before Start's deadline; only a
-permanent answer is reported as a missing prerequisite.
+a `5xx`, or a reset connection — earns another attempt instead of refusing Start. The repository
+read and the label read share that policy, so a label read that stalls never reports a bare
+transport error on the Start card. A read that stalls reports the request it was making, for
+example `GET /repos/<owner>/<name>/labels?limit=50&page=1 failed: the request timed out after
+17175 ms`, and Start answers a bounded refusal that names the stalled read — the repository, or
+the labels — as unreadable before Start's deadline; only a permanent answer is reported as a
+missing prerequisite.
 
 A Gitea `HTTP 401` carrying `invalid username, password or token` is the one refusal that is
 retried. Gitea answers that exact body when its own token store could not be read — a locked or
