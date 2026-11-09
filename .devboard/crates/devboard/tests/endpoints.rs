@@ -18,7 +18,7 @@ use devboard::journal::Journal;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::{json, Value};
 
-type StubState = (Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>, bool);
+type StubState = (Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>, Option<StatusCode>);
 
 const TOKEN: &str = "contract-token";
 
@@ -46,16 +46,21 @@ fn fixture_root(label: &str) -> PathBuf {
 }
 
 async fn start(label: &str) -> Fixture {
-    start_with(label, false).await
+    start_with(label, None).await
 }
 
 /// One fixture whose stub Gitea answers `500` instead of filing an issue.
 async fn start_failing(label: &str) -> Fixture {
-    start_with(label, true).await
+    start_with(label, Some(StatusCode::INTERNAL_SERVER_ERROR)).await
 }
 
-async fn start_with(label: &str, failing: bool) -> Fixture {
-    start_against(label, failing, None, 5000, "true").await
+/// One fixture whose stub Gitea rejects the dashboard's credential.
+async fn start_rejecting(label: &str) -> Fixture {
+    start_with(label, Some(StatusCode::UNAUTHORIZED)).await
+}
+
+async fn start_with(label: &str, failure: Option<StatusCode>) -> Fixture {
+    start_against(label, failure, None, 5000, "true").await
 }
 
 /// One fixture whose dashboard sends reports to `forge` instead of the stub,
@@ -63,7 +68,7 @@ async fn start_with(label: &str, failing: bool) -> Fixture {
 /// configured agent command.
 async fn start_against(
     label: &str,
-    failing: bool,
+    failure: Option<StatusCode>,
     forge: Option<&str>,
     timeout_ms: u64,
     agent_command: &str,
@@ -72,7 +77,7 @@ async fn start_against(
     let repo = root.join("repo");
     let calls: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicUsize::new(0));
-    let stub_state = (calls.clone(), count.clone(), failing);
+    let stub_state = (calls.clone(), count.clone(), failure);
     let stub_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("a stub listener");
@@ -82,13 +87,17 @@ async fn start_against(
             .route(
                 "/api/v1/repos/dsdenes/devboard/issues",
                 post(
-                    |State((calls, count, failing)): State<StubState>,
+                    |State((calls, count, failure)): State<StubState>,
                      Json(body): Json<Value>| async move {
                         count.fetch_add(1, Ordering::SeqCst);
                         calls.lock().expect("calls").push(body.clone());
-                        if failing {
-                            return (StatusCode::INTERNAL_SERVER_ERROR, "gitea is offline")
-                                .into_response();
+                        if let Some(status) = failure {
+                            let message = if status == StatusCode::UNAUTHORIZED {
+                                "invalid username, password or token"
+                            } else {
+                                "gitea is offline"
+                            };
+                            return (status, message).into_response();
                         }
                         let number = count.load(Ordering::SeqCst);
                         Json(json!({
@@ -293,7 +302,7 @@ async fn a_goal_proposal_never_waits_for_a_naming_agent() {
 
     let fixture = start_against(
         "proposal-agent",
-        false,
+        None,
         None,
         5000,
         script.to_str().expect("a slow agent path"),
@@ -418,9 +427,50 @@ async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
 }
 
 #[tokio::test]
+async fn a_rejected_credential_is_a_configuration_failure_not_a_server_error() {
+    let fixture = start_rejecting("feedback-rejected").await;
+    let response = client()
+        .post(format!("{}/reports", fixture.base))
+        .headers(bearer())
+        .json(&json!({"report": "Fix the header"}))
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 503);
+    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(
+        body["detail"],
+        "Harness reporting is unavailable: the forge rejected the reporting credential. Refresh \
+         GITEA_TOKEN (or DEVBOARD_GITEA_TOKEN) and restart the dashboard."
+    );
+    assert_eq!(fixture.count.load(Ordering::SeqCst), 1);
+
+    let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
+    let text = std::fs::read_to_string(&journal).expect("the journal");
+    assert!(
+        text.contains("\"kind\":\"activity\""),
+        "a rejected credential is a configuration failure: {text}"
+    );
+    assert!(
+        text.contains(
+            "feedback delivery rejected: POST /reports: Issue creation failed: \
+             POST /repos/dsdenes/devboard/issues failed (HTTP 401): \
+             invalid username, password or token"
+        ),
+        "the journal names the forge's own rejection: {text}"
+    );
+    assert!(
+        !text.contains("\"kind\":\"server-error\""),
+        "the endpoint served, so its rejection is no server error: {text}"
+    );
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+#[tokio::test]
 async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error() {
     let forge = format!("http://127.0.0.1:{}", closed_port().await);
-    let fixture = start_against("feedback-unreachable", false, Some(&forge), 500, "true").await;
+    let fixture = start_against("feedback-unreachable", None, Some(&forge), 500, "true").await;
     let response = client()
         .post(format!("{}/reports", fixture.base))
         .headers(bearer())
@@ -465,7 +515,7 @@ async fn a_forge_that_never_answers_times_out_as_a_delayed_delivery() {
         "http://127.0.0.1:{}",
         silent.local_addr().expect("an address").port()
     );
-    let fixture = start_against("feedback-silent", false, Some(&forge), 250, "true").await;
+    let fixture = start_against("feedback-silent", None, Some(&forge), 250, "true").await;
     let response = client()
         .post(format!("{}/reports", fixture.base))
         .headers(bearer())

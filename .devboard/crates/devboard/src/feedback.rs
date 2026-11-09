@@ -41,6 +41,9 @@ pub struct RequestError {
     /// True when the forge answered nothing at all, so the failure is a
     /// delayed delivery rather than an error this server produced.
     pub transient: bool,
+    /// True when the forge rejected the dashboard's configured credential, so
+    /// reporting is misconfigured rather than this server failing.
+    pub rejected_credential: bool,
 }
 
 impl RequestError {
@@ -50,6 +53,7 @@ impl RequestError {
             message: message.into(),
             diagnostic: None,
             transient: false,
+            rejected_credential: false,
         }
     }
 
@@ -61,6 +65,7 @@ impl RequestError {
             message: message.into(),
             diagnostic: None,
             transient: false,
+            rejected_credential: false,
         }
     }
 
@@ -72,6 +77,7 @@ impl RequestError {
             message: error.message,
             diagnostic: Some(error.diagnostic),
             transient: error.transient,
+            rejected_credential: error.rejected_credential,
         }
     }
 
@@ -627,8 +633,19 @@ pub fn feedback_body(submission: &FeedbackSubmission) -> String {
 /// The fixed Problem detail a failed delivery answers.
 const DELIVERY_ERROR_DETAIL: &str = "The issue could not be filed.";
 
-/// A delivery failure: the API refused the request, answered nothing, or ran
-/// past its deadline.
+/// The fixed Problem detail a rejected credential answers.
+///
+/// The forge answered and refused the dashboard's own credential, so reporting
+/// stays unavailable until the operator refreshes it: the same configuration
+/// failure a missing `DEVBOARD_GITEA_URL` is, and never a server error the
+/// watchdog files a defect for. The two keys are the ones `FeedbackConfig`
+/// resolves, in its order.
+pub const REJECTED_CREDENTIAL_DETAIL: &str = "Harness reporting is unavailable: the forge \
+     rejected the reporting credential. Refresh GITEA_TOKEN (or DEVBOARD_GITEA_TOKEN) and restart \
+     the dashboard.";
+
+/// A delivery failure: the API refused the request, answered nothing, ran past
+/// its deadline, or rejected the credential the dashboard was started with.
 #[derive(Debug, Clone)]
 pub struct DeliveryError {
     pub status: u16,
@@ -637,6 +654,10 @@ pub struct DeliveryError {
     /// True when the forge answered nothing at all — an unreachable or slow
     /// upstream, never a failure this server produced.
     pub transient: bool,
+    /// True when the forge answered with an authentication failure: the
+    /// dashboard's configured credential is refused, so no retry of this
+    /// request can succeed and the operator owns the fix.
+    pub rejected_credential: bool,
 }
 
 /// Files one report and returns the created issue document.
@@ -692,13 +713,29 @@ fn delivery_error(error: crate::gitea::GiteaError, timeout_ms: u64) -> DeliveryE
         Some(crate::gitea::TransportFailure::Timeout) => {
             timed_out(timeout_ms, Some(&error.message))
         }
-        transport => DeliveryError {
-            status: 502,
-            message: DELIVERY_ERROR_DETAIL.to_string(),
-            diagnostic: format!("Issue creation failed: {}", first_line(&error.message)),
-            transient: transport.is_some_and(crate::gitea::TransportFailure::answered_nothing),
-        },
+        transport => {
+            let rejected_credential = credential_rejected(error.status);
+            DeliveryError {
+                status: if rejected_credential { 503 } else { 502 },
+                message: if rejected_credential {
+                    REJECTED_CREDENTIAL_DETAIL.to_string()
+                } else {
+                    DELIVERY_ERROR_DETAIL.to_string()
+                },
+                diagnostic: format!("Issue creation failed: {}", first_line(&error.message)),
+                transient: transport.is_some_and(crate::gitea::TransportFailure::answered_nothing),
+                rejected_credential,
+            }
+        }
     }
+}
+
+/// True for the forge answers that refuse the dashboard's own credential: an
+/// unauthenticated request and one the credential is not authorized for. Both
+/// name a host credential the operator refreshes, never a fault the server can
+/// retry away.
+fn credential_rejected(status: Option<u16>) -> bool {
+    matches!(status, Some(401) | Some(403))
 }
 
 /// One missed delivery deadline: the client reads the bound, the journal also
@@ -714,5 +751,6 @@ fn timed_out(timeout_ms: u64, cause: Option<&str>) -> DeliveryError {
         message: detail,
         diagnostic,
         transient: true,
+        rejected_credential: false,
     }
 }

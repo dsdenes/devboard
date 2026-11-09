@@ -1408,6 +1408,16 @@ impl App {
                         &format!("feedback delivery delayed: {detail}"),
                         flow_id,
                     );
+                } else if error.rejected_credential {
+                    // The forge answered and refused the dashboard's own
+                    // credential: reporting is misconfigured until the operator
+                    // refreshes it, so this is a configuration failure the
+                    // client names and never a server error the watchdog files.
+                    self.shared.journal.write(
+                        "activity",
+                        &format!("feedback delivery rejected: {detail}"),
+                        flow_id,
+                    );
                 } else if error.status == 502 || error.status == 504 {
                     self.shared.journal.write("server-error", &detail, flow_id);
                 }
