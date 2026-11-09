@@ -1150,7 +1150,29 @@ async fn the_dispatch_refuses_with_the_typescript_wording() {
         .await;
     assert_eq!(
         next_frame(&mut receiver).await,
-        json!({"type": "error", "message": "No such issues run."})
+        json!({
+            "type": "issuesRunMissing",
+            "runId": null,
+            "message": "No such issues run.",
+        })
+    );
+
+    // The answer echoes the id it names: a page correlates the refusal with
+    // the read it issued, so a stale history entry never reads as a slow one.
+    app.command(
+        &conn,
+        Command::GetIssuesRun {
+            run_id: Some(json!("run-abc")),
+        },
+    )
+    .await;
+    assert_eq!(
+        next_frame(&mut receiver).await,
+        json!({
+            "type": "issuesRunMissing",
+            "runId": "run-abc",
+            "message": "No such issues run.",
+        })
     );
 
     app.command(&conn, Command::GetIssues).await;

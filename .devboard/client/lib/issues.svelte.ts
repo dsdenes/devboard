@@ -362,7 +362,10 @@ export class IssuesStore {
       }
       return;
     }
-    if (message.type === "error" && message.message === "No such issues run.") {
+    if (message.type === "issuesRunMissing") {
+      // A run whose history is gone answers its own frame: the focus page
+      // renders that as unavailable, and the generic server error channel
+      // never raises a notification for a pruned or restored history entry.
       this.runError = "No such issues run.";
       return;
     }

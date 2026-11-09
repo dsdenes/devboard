@@ -113,7 +113,7 @@ const RESPONSE_TYPES: Record<string, string[]> = {
   getComplexity: ["complexityState"],
   setInstalledSkillEnabled: ["installedSkills", "error"],
   getIssues: ["issuesState"],
-  getIssuesRun: ["issuesRun", "error"],
+  getIssuesRun: ["issuesRun", "issuesRunMissing", "error"],
   startIssues: ["issuesState", "error"],
   pauseIssues: ["issuesState", "error"],
   resumeIssues: ["issuesState", "error"],

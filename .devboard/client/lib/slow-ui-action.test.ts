@@ -230,6 +230,30 @@ test("a draft answer completes on the state frame that answers it", () => {
   expect(sink.posts).toHaveLength(0);
 });
 
+test("a missing run completes the history read it answers", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  guard.dispatch({ type: "getIssuesRun", runId: "run-gone" }, "operator");
+
+  guard.observe({ type: "issuesRunMissing", runId: "run-gone", message: "No such issues run." });
+  jest.advanceTimersByTime(2000);
+
+  expect(sink.notices).toHaveLength(0);
+  expect(sink.posts).toHaveLength(0);
+});
+
+test("a missing run for another history entry leaves the read pending", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  guard.dispatch({ type: "getIssuesRun", runId: "run-gone" }, "operator");
+
+  guard.observe({ type: "issuesRunMissing", runId: "run-other", message: "No such issues run." });
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+
+  expect(sink.notices).toHaveLength(1);
+  expect(sink.notices[0]?.subject).toBe("run-gone");
+});
+
 test("a draft answer stays pending until its own draft answers it", () => {
   const sink = new FakeSink();
   const guard = guarded(sink);

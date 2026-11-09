@@ -4427,11 +4427,19 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
         }
         Command::GetIssuesRun { run_id } => {
             let missing = Value::Null;
-            let detail =
-                bridge_for(app).and_then(|bridge| bridge.run(run_id.as_ref().unwrap_or(&missing)));
+            let requested = run_id.as_ref().unwrap_or(&missing);
+            let detail = bridge_for(app).and_then(|bridge| bridge.run(requested));
             match detail {
                 Some(run) => conn.send(json!({"type": "issuesRun", "run": run})),
-                None => issues_error(conn, "No such issues run."),
+                // A pruned or restored history entry is a normal answer for a
+                // read, so it carries its own frame: the generic error channel
+                // turns every frame into a Server error notification, and the
+                // focus page already renders this run as unavailable.
+                None => conn.send(json!({
+                    "type": "issuesRunMissing",
+                    "runId": requested,
+                    "message": "No such issues run.",
+                })),
             }
             true
         }
