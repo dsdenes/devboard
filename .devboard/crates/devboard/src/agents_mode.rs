@@ -5034,7 +5034,9 @@ impl RepoFamily {
                 let mut mutable = self.mutable.lock().expect("family state");
                 mutable.starting = false;
                 mutable.starting_since = None;
-                mutable.start_error = Some(message.clone());
+                let (start_error, notice) = start_refusal_fields(message.clone());
+                mutable.start_error = start_error;
+                mutable.notice = notice;
                 AgentResult::failure(message)
             }
         }
@@ -5988,6 +5990,24 @@ fn gitea_read_failure(
         _ => format!(
             "{subject} could not be read before Start's deadline: {reason}; press Start to retry."
         ),
+    }
+}
+
+/// The `start_error` and `notice` fields one Start preflight refusal publishes.
+///
+/// A refusal that names a step which ran out of time is latency: the request
+/// was still in flight against a forge that is slow, not broken, and the next
+/// Start runs the same preflight again. Publishing it as the family's error
+/// raises an error notification, and the page files a board issue for that
+/// notification — more load for the forge already behind. It stays on the card
+/// as the family's notice instead, so the operator still reads why Start
+/// spawned nothing. Every other refusal names a fault the operator must fix
+/// and keeps `start_error`.
+fn start_refusal_fields(message: String) -> (Option<String>, Option<String>) {
+    if crate::forge::is_forge_read_latency(&message) {
+        (None, Some(message))
+    } else {
+        (Some(message), None)
     }
 }
 
@@ -7220,7 +7240,9 @@ impl WatchdogFamily {
         if let Err(message) = result {
             self.end_start();
             if let Ok(mut mutable) = self.mutable.lock() {
-                mutable.start_error = Some(message.clone());
+                let (start_error, notice) = start_refusal_fields(message.clone());
+                mutable.start_error = start_error;
+                mutable.notice = notice;
             }
             return AgentResult::failure(message);
         }
@@ -8230,7 +8252,9 @@ impl McpFamily {
             let mut mutable = self.mutable.lock().expect("mcp state");
             mutable.starting = false;
             mutable.starting_since = None;
-            mutable.start_error = Some(message.clone());
+            let (start_error, notice) = start_refusal_fields(message.clone());
+            mutable.start_error = start_error;
+            mutable.notice = notice;
             return AgentResult::failure(message);
         }
         let argv = harness_argv(

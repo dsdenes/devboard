@@ -1026,6 +1026,70 @@ async fn a_hanging_start_preflight_refuses_within_the_bound() {
 }
 
 #[tokio::test]
+async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_alarm() {
+    let root = scratch("start-forge-latency");
+    let app = app_at(&root);
+    let reason = "the Gitea repository acme/fixture could not be read before Start's deadline: \
+                  GET /repos/acme/fixture failed: the request timed out after 19745 ms; \
+                  press Start to retry.";
+    for family in ["scout", "watchdog", "mcp-optimizer"] {
+        let latency = reason.to_string();
+        let preflight: devboard::agents_mode::PreflightCallback = Arc::new(move |_request| {
+            let latency = latency.clone();
+            Box::pin(async move { Err(latency) })
+        });
+        devboard::agents_mode::set_preflight(&app, family, preflight);
+        let (conn, mut inbox) = connection_for(&app).await;
+        devboard::agents_mode::handle(
+            &app,
+            &conn,
+            &Command::StartAgent {
+                id: Some(json!(family)),
+            },
+        )
+        .await;
+        let all = frames(&mut inbox);
+        let snapshot = agent(&all, family).expect("a family snapshot");
+        // A read that ran out of time against a forge that is slow, not broken:
+        // the card states why Start spawned nothing, and no error notification
+        // files a board issue against the same forge.
+        assert_eq!(snapshot["notice"], json!(reason), "{family}");
+        assert_eq!(snapshot["error"], Value::Null, "{family}");
+        assert_ne!(snapshot["lifecycle"], json!("starting"), "{family}");
+        let refusal = find(&all, "error");
+        assert_eq!(
+            refusal.first().expect("a refusal")["message"],
+            json!(reason),
+            "{family}"
+        );
+
+        // A refusal that names a fault the operator must fix keeps startError,
+        // so the page still raises its alert.
+        let fault = "missing prerequisite: the Gitea token cannot write to acme/fixture on \
+                     http://forge.test";
+        let refusal = fault.to_string();
+        let preflight: devboard::agents_mode::PreflightCallback = Arc::new(move |_request| {
+            let refusal = refusal.clone();
+            Box::pin(async move { Err(refusal) })
+        });
+        devboard::agents_mode::set_preflight(&app, family, preflight);
+        let (conn, mut inbox) = connection_for(&app).await;
+        devboard::agents_mode::handle(
+            &app,
+            &conn,
+            &Command::StartAgent {
+                id: Some(json!(family)),
+            },
+        )
+        .await;
+        let all = frames(&mut inbox);
+        let snapshot = agent(&all, family).expect("a family snapshot");
+        assert_eq!(snapshot["error"], json!(fault), "{family}");
+        assert_eq!(snapshot["notice"], Value::Null, "{family}");
+    }
+}
+
+#[tokio::test]
 async fn a_shared_preflight_budget_bounds_every_step_and_names_the_slow_one() {
     use devboard::agents_mode::PreflightBudget;
     use std::time::{Duration, Instant};

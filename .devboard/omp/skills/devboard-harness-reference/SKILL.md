@@ -2470,7 +2470,14 @@ transport error on the Start card. A read that stalls reports the request it was
 example `GET /repos/<owner>/<name>/labels?limit=50&page=1 failed: the request timed out after
 17175 ms`, and Start answers a bounded refusal that names the stalled read — the repository, or
 the labels — as unreadable before Start's deadline; only a permanent answer is reported as a
-missing prerequisite.
+missing prerequisite. A refusal that names a step which ran out of time is latency, not a fault:
+the request was still in flight against a forge that is slow, not broken, and the next Start runs
+the same preflight again. It is published as the family's `notice`, so the card states why Start
+spawned nothing, and never as its `startError` — an error notification files a board issue, which
+returns as more load for the forge already behind. That rule covers every family whose Start
+preflight reads the forge: Auto Scout and the other repo families, Watchdog, and MCP optimizer. A
+refusal that names a missing prerequisite, a refused credential, or a rejected answer keeps
+`startError` and renders `agent-error`.
 
 A Gitea `HTTP 401` carrying `invalid username, password or token` is the one refusal that is
 retried. Gitea answers that exact body when its own token store could not be read — a locked or
@@ -4090,7 +4097,9 @@ probe that does not settle is killed at the deadline, Start answers a bounded re
 and the cleared task lets the next Start run the preflight again and spawn the worker. A Gitea
 origin is read through the shared Gitea client instead: the preflight asks
 `/api/v1/repos/<owner>/<name>` for the token's permissions, reports the request and its bound when
-the read stalls, and retries a fast transient refusal within the same deadline.
+the read stalls, and retries a fast transient refusal within the same deadline. A stalled read is
+latency: it stays on the card as Auto Scout's notice, not its error, so the page raises no error
+notification and files no board issue against the forge already behind.
 
 Auto Scout's persisted settings live at
 `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
