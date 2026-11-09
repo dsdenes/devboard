@@ -1032,7 +1032,19 @@ async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_ala
     let reason = "the Gitea repository acme/fixture could not be read before Start's deadline: \
                   GET /repos/acme/fixture failed: the request timed out after 19745 ms; \
                   press Start to retry.";
-    for family in ["scout", "watchdog", "mcp-optimizer"] {
+    // Every family whose Start preflight reads the forge: the shared repo
+    // families — Design System among them, the family whose stalled repository
+    // read raised the report — then Watchdog and MCP optimizer.
+    for family in [
+        "scout",
+        "design",
+        "dead-code",
+        "api-standards",
+        "single-responsibility",
+        "consistent-naming",
+        "watchdog",
+        "mcp-optimizer",
+    ] {
         let latency = reason.to_string();
         let preflight: devboard::agents_mode::PreflightCallback = Arc::new(move |_request| {
             let latency = latency.clone();
