@@ -84,6 +84,15 @@ impl Forge {
         }
     }
 
+    /// The forge's name as a sentence names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::GitHub => "GitHub",
+            Self::GitLab => "GitLab",
+            Self::Gitea => "Gitea",
+        }
+    }
+
     fn parse(value: &str) -> Option<Self> {
         match value {
             "github" => Some(Self::GitHub),
@@ -450,6 +459,114 @@ pub fn origin_forge_with(root: &Path, environment: &Environment) -> Option<Forge
     parse_forge_remote(&remote, environment)
 }
 
+/// Why the checkout's origin names no supported forge, or `None` when it does.
+///
+/// The sentence names the concrete reason — no checkout, a directory below the
+/// top level, no `origin` remote, or a remote that is not a forge repository —
+/// so a refusal can say why no forge operation ran.
+pub fn origin_problem(root: &Path, environment: &Environment) -> Option<String> {
+    // The diagnosis depends only on the checkout, not on the harness layout: a
+    // throwaway repository without `.devboard/` still has (or lacks) an
+    // `origin`, and the reason a forge path refused must be the origin.
+    let absolute = lexical_absolute(root);
+    if !absolute.exists() {
+        return Some(format!("{} does not exist", path_text(&absolute)));
+    }
+    let Some(top) = top_level(&absolute) else {
+        return Some(format!("{} is not a git checkout", path_text(&absolute)));
+    };
+    let top_path = lexical_absolute(Path::new(&top));
+    if top_path != absolute {
+        return Some(format!(
+            "{} is not the checkout root ({} is)",
+            path_text(&absolute),
+            path_text(&top_path)
+        ));
+    }
+    let Some(remote) = origin_remote_url(&absolute) else {
+        return Some(format!("{} has no `origin` remote", path_text(&absolute)));
+    };
+    parse_forge_remote(&remote, environment).is_none().then(|| {
+        format!("the `origin` remote `{remote}` does not name a supported forge repository")
+    })
+}
+
+/// The forge, repository, and failure wording one tracker operation reports.
+///
+/// Every tracker read and write resolves its origin to this value first: a
+/// resolved origin names the forge and repository the operation ran against,
+/// and an unresolved one refuses with the origin as the reason, so nothing is
+/// attempted against a forge the checkout never named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackerSource {
+    /// The forge and repository the origin names.
+    pub remote: Option<ForgeRemote>,
+    /// Why the origin names no supported forge, when `remote` is `None`.
+    pub problem: Option<String>,
+}
+
+impl TrackerSource {
+    pub fn resolve(root: &Path, environment: &Environment) -> Self {
+        match origin_forge_with(root, environment) {
+            Some(remote) => Self {
+                remote: Some(remote),
+                problem: None,
+            },
+            None => Self {
+                remote: None,
+                problem: origin_problem(root, environment),
+            },
+        }
+    }
+
+    /// The operation, named with its forge and repository, or the refusal that
+    /// names the origin as the reason nothing ran.
+    pub fn operation(&self, action: &str) -> String {
+        match &self.remote {
+            Some(remote) => format!("{} {action} for {}", remote.forge.label(), remote.project),
+            None => format!(
+                "the {action} was not attempted: the checkout's origin does not name a \
+                 supported forge ({})",
+                self.problem.as_deref().unwrap_or("the origin is unknown")
+            ),
+        }
+    }
+
+    /// The operation plus the cause that failed it.
+    pub fn failure(&self, action: &str, cause: &str) -> String {
+        match &self.remote {
+            Some(_) => format!("{} failed: {cause}", self.operation(action)),
+            None => self.operation(action),
+        }
+    }
+
+    /// The operation plus the deadline that expired with no earlier cause.
+    pub fn deadline(&self, action: &str, timeout_ms: u64) -> String {
+        format!(
+            "{}: the tracker did not answer within {timeout_ms} ms",
+            self.operation(action)
+        )
+    }
+
+    /// One poll's error answer, named with the forge and operation that
+    /// produced it. A successful or unchanged read passes through as-is.
+    pub fn poll_result(&self, action: &str, result: PollResult) -> PollResult {
+        match result {
+            PollResult::Error { detail } => PollResult::Error {
+                detail: self.failure(action, &detail),
+            },
+            PollResult::Unsupported { detail } => PollResult::Unsupported {
+                detail: self.failure(action, &detail),
+            },
+            PollResult::RateLimited { until, detail } => PollResult::RateLimited {
+                until,
+                detail: self.failure(action, &detail),
+            },
+            other => other,
+        }
+    }
+}
+
 /// The repository path the checkout's origin names, or `None`.
 pub fn origin_repository(root: &Path) -> Option<String> {
     origin_repository_with(root, &process_environment())
@@ -609,6 +726,23 @@ fn transport_failure(method: &str, path: &str, timeout_ms: u64, error: &HttpErro
     format!("{method} {path} failed: {detail}")
 }
 
+/// One transport error with its source chain. The top-level reqwest message
+/// names the URL but not why the connection failed, so a refused connection
+/// would otherwise read as a bare "error sending request".
+fn describe_transport_error(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !text.is_empty() && !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = std::error::Error::source(cause);
+    }
+    message
+}
+
 pub type HttpFuture = Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send>>;
 /// The injected-transport seam, the Rust form of the TypeScript `FetchLike`.
 pub type Transport = Arc<dyn Fn(HttpRequest) -> HttpFuture + Send + Sync>;
@@ -639,7 +773,7 @@ pub fn default_transport(default_timeout_ms: u64) -> Transport {
                 if error.is_timeout() {
                     HttpError::Timeout
                 } else {
-                    HttpError::Unreachable(error.to_string())
+                    HttpError::Unreachable(describe_transport_error(&error))
                 }
             })?;
             let status = response.status().as_u16();
@@ -656,7 +790,7 @@ pub fn default_transport(default_timeout_ms: u64) -> Transport {
             let body = response
                 .bytes()
                 .await
-                .map_err(|error| HttpError::Unreachable(error.to_string()))?;
+                .map_err(|error| HttpError::Unreachable(describe_transport_error(&error)))?;
             Ok(HttpResponse {
                 status,
                 headers,
@@ -5325,6 +5459,13 @@ pub const GITLAB_TRACKER_UNSUPPORTED: &str =
 /// Default wall-clock bound for one tracker read, including the `gh` child.
 pub const TRACKER_TIMEOUT_MS: u64 = 20_000;
 
+/// The operation name an Issues-panel error reports for a tracker poll.
+pub const OPEN_ISSUES_READ: &str = "open-issue read";
+/// The operation name an Issues-panel error reports for one issue's state.
+pub const ISSUE_STATE_READ: &str = "issue-state read";
+/// The operation name an Issues-panel error reports for the processing label.
+pub const PROCESSING_WRITE: &str = "processing-label write";
+
 const TRACKER_QUERY: &str =
     ".[] | select(.pull_request == null) | {number, title, body, url: .html_url, createdAt: .created_at, labels: [.labels[].name]}";
 
@@ -5378,7 +5519,7 @@ pub enum ProcessingWriteResult {
 /// Everything one tracker read or write needs.
 #[derive(Clone)]
 pub struct TrackerOptions {
-    /// The origin forge; defaults to GitHub for callers without one.
+    /// The origin forge the caller resolved; never a fallback.
     pub forge: Forge,
     pub repository: String,
     pub etag: Option<String>,

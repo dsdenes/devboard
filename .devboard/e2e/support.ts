@@ -165,6 +165,31 @@ export function repository(): string {
   return process.env.DEVBOARD_SUITE_REPOSITORY?.trim() || "dsdenes/devboard";
 }
 
+/** The recorder directory the fixture puts ahead of `PATH`. */
+export const forgeRecorderDir = path.join(scratchRoot, "bin");
+export const ghRecorderLog = path.join(scratchRoot, "forge-gh.log");
+export const glabRecorderLog = path.join(scratchRoot, "forge-glab.log");
+
+/** Every recorded `gh`/`glab` invocation, oldest first. */
+export function forgeRecorderLines(): string[] {
+  const lines: string[] = [];
+  for (const log of [ghRecorderLog, glabRecorderLog]) {
+    if (!existsSync(log)) continue;
+    lines.push(
+      ...readFileSync(log, "utf8")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== ""),
+    );
+  }
+  return lines;
+}
+
+/** The recorder lines that are a forge operation, not a release-artifact read. */
+export function forgeRecorderForgeLines(): string[] {
+  return forgeRecorderLines().filter((line) => !line.startsWith("auth token"));
+}
+
 export async function waitFor<T>(
   label: string,
   produce: () => T | Promise<T>,

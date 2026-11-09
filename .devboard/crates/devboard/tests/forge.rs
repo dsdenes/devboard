@@ -2384,3 +2384,145 @@ async fn a_non_release_tag_and_an_unlanded_commit_never_settle_an_issue() {
     );
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+// ---------------------------------------------------------------------------
+// The origin as the tracker source
+
+#[test]
+fn an_origin_that_names_no_forge_explains_itself() {
+    let root = temp_dir("no-origin-checkout");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["init", "-q"])
+        .status()
+        .expect("git init");
+    assert!(status.success());
+    let env = environment(&[]);
+
+    assert!(origin_forge_with(&root, &env).is_none());
+    let problem = origin_problem(&root, &env).expect("a problem");
+    assert!(
+        problem.contains("has no `origin` remote"),
+        "the origin is the reason: {problem}"
+    );
+
+    let source = TrackerSource::resolve(&root, &env);
+    assert!(source.remote.is_none());
+    let operation = source.operation(OPEN_ISSUES_READ);
+    assert!(
+        operation.contains("the checkout's origin does not name a supported forge"),
+        "{operation}"
+    );
+    assert!(operation.contains("has no `origin` remote"), "{operation}");
+
+    let refused = source.poll_result(
+        OPEN_ISSUES_READ,
+        PollResult::Error {
+            detail: "connection refused".to_string(),
+        },
+    );
+    match refused {
+        PollResult::Error { detail } => {
+            assert_eq!(
+                detail, operation,
+                "an unresolved origin names the origin, not a forge read"
+            );
+        }
+        other => panic!("expected an error, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_unparsable_origin_names_the_remote() {
+    let repo = git_repo("unparsable-origin", "file:///srv/git/owner/name.git");
+    let env = environment(&[]);
+
+    assert!(origin_forge_with(&repo, &env).is_none());
+    let problem = origin_problem(&repo, &env).expect("a problem");
+    assert!(
+        problem.contains("does not name a supported forge repository"),
+        "{problem}"
+    );
+    assert!(
+        problem.contains("file:///srv/git/owner/name.git"),
+        "{problem}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn a_tracker_source_names_the_forge_and_operation() {
+    let repo = git_repo("gitea-source", "ssh://git@localhost:2223/owner/name.git");
+    let env = environment(&[]);
+    let source = TrackerSource::resolve(&repo, &env);
+    assert_eq!(
+        source.operation(OPEN_ISSUES_READ),
+        "Gitea open-issue read for owner/name"
+    );
+    assert_eq!(
+        source.failure(OPEN_ISSUES_READ, "the connection was refused"),
+        "Gitea open-issue read for owner/name failed: the connection was refused"
+    );
+    assert_eq!(
+        source.deadline(OPEN_ISSUES_READ, 20_000),
+        "Gitea open-issue read for owner/name: the tracker did not answer within 20000 ms"
+    );
+
+    let named = source.poll_result(
+        OPEN_ISSUES_READ,
+        PollResult::Error {
+            detail: "the connection was refused".to_string(),
+        },
+    );
+    assert_eq!(
+        named,
+        PollResult::Error {
+            detail: "Gitea open-issue read for owner/name failed: the connection was refused"
+                .to_string(),
+        }
+    );
+    let unchanged = PollResult::NotModified { etag: None };
+    assert_eq!(
+        source.poll_result(OPEN_ISSUES_READ, unchanged.clone()),
+        unchanged
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[tokio::test]
+async fn a_refused_gitea_connection_names_the_cause() {
+    // A loopback port that was just released refuses the connection, so the
+    // transport's own cause chain decides the sentence.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a free port");
+    let port = listener.local_addr().expect("an address").port();
+    drop(listener);
+    let options = TrackerOptions {
+        forge: Forge::Gitea,
+        repository: "owner/name".to_string(),
+        etag: None,
+        run: None,
+        environment: environment(&[("GITEA_TOKEN", "secret")]),
+        timeout_ms: Some(2_000),
+        base_url: Some(format!("http://127.0.0.1:{port}")),
+        transport: Some(default_transport(2_000)),
+    };
+
+    match poll_open_issues(&options).await {
+        PollResult::Error { detail } => {
+            assert!(
+                detail.contains("/api/v1/repos/owner/name/issues"),
+                "the request is named: {detail}"
+            );
+            assert!(
+                detail.to_lowercase().contains("connection refused"),
+                "the cause is named: {detail}"
+            );
+        }
+        other => panic!("expected an error, got {other:?}"),
+    }
+}

@@ -142,7 +142,14 @@ Harness-owned issue reporting uses only the configured Gitea API. Without `DEVBO
 report controls are not rendered and `POST /reports` answers HTTP 503 naming that variable; no
 GitHub request is made. A report the forge rejects for its credential answers HTTP 503 naming the
 credential and is journaled as activity, never as a server error, because the operator owns that
-fix. Host-forge behavior for GitHub, GitLab, and Gitea origins is unchanged.
+fix. Host-forge behavior for GitHub and GitLab origins is unchanged.
+
+Every tracker read and credential selection resolves the forge from the checkout's `origin`:
+`github.com` is GitHub, a GitLab host is GitLab, `DEVBOARD_FORGE` pins a self-hosted instance,
+and every other host — this Gitea origin included — is Gitea, so no `gh` or `glab` process starts
+for a Gitea origin. An origin that names no supported forge refuses every forge path with the
+origin as the reason and starts no forge CLI and no forge HTTP request. The Issues panel reports
+each tracker failure with its forge, its operation, and the concrete cause.
 
 ## The Release Train releases
 

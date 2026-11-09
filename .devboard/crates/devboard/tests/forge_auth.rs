@@ -907,3 +907,102 @@ async fn the_binary_exits_with_the_check_verdict_and_prints_no_token() {
     assert!(!refusal.contains("binary-secret"));
     assert!(write.stdout.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// A Gitea origin never probes a forge CLI
+
+/// An `Exec` seam that records every command it is asked to run and fails, so
+/// a probe chain shows itself and cannot answer from a real credential store.
+fn recording_unavailable_exec() -> (Exec, Arc<Mutex<Vec<String>>>) {
+    let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = calls.clone();
+    let exec: Exec = Arc::new(move |command: String, args: Vec<String>, _| {
+        seen.lock()
+            .expect("calls")
+            .push(format!("{command} {}", args.join(" ")));
+        Box::pin(async move {
+            ExecResult {
+                stdout: String::new(),
+                stderr: format!("{command}: unavailable"),
+                code: 1,
+                killed: false,
+            }
+        })
+    });
+    (exec, calls)
+}
+
+#[tokio::test]
+async fn an_inferred_gitea_host_starts_no_forge_cli() {
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+    let repo = git_repo("inferred-gitea", Some("https://gitea.test/owner/name.git"));
+    let environment = forge::environment(&[
+        ("GITEA_TOKEN", "inferred-secret"),
+        ("DEVBOARD_GITEA_URL", server.base.as_str()),
+    ]);
+    let (exec, calls) = recording_unavailable_exec();
+    let context = Context {
+        exec,
+        transport: forge::default_transport(5_000),
+        environment,
+    };
+
+    let parsed = parsed_of(
+        &["check", "--required", "write", "--json"],
+        &repo,
+        &context.environment,
+    );
+    assert!(parsed.host_inferred);
+    let outcome = forge_auth::execute(&parsed, &context).await;
+    assert_eq!(outcome.exit_code, 0, "{}", outcome.stderr);
+    let document = json_of(&outcome);
+    assert_eq!(document["forge"], json!("gitea"));
+    assert_eq!(document["canWrite"], json!(true));
+    let recorded = calls.lock().expect("calls").clone();
+    assert!(
+        recorded.is_empty(),
+        "a Gitea origin starts no gh or glab probe: {recorded:?}"
+    );
+    assert_no_token(&outcome, "inferred-secret");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_puts_the_gitea_token_in_the_child_environment_without_a_forge_cli() {
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+    let repo = git_repo("exec-gitea", Some("https://gitea.test/owner/name.git"));
+    let environment = forge::environment(&[
+        ("GITEA_TOKEN", "exec-secret"),
+        ("DEVBOARD_GITEA_URL", server.base.as_str()),
+        ("PATH", "/usr/bin:/bin"),
+    ]);
+    let (exec, calls) = recording_unavailable_exec();
+    let context = Context {
+        exec,
+        transport: forge::default_transport(5_000),
+        environment,
+    };
+
+    let parsed = parsed_of(
+        &[
+            "exec",
+            "--required",
+            "write",
+            "--quiet",
+            "--",
+            "/bin/sh",
+            "-c",
+            "test -n \"$GITEA_TOKEN\"",
+        ],
+        &repo,
+        &context.environment,
+    );
+    let outcome = forge_auth::execute(&parsed, &context).await;
+    assert_eq!(outcome.exit_code, 0, "{}", outcome.stderr);
+    assert!(
+        calls.lock().expect("calls").is_empty(),
+        "the child ran without a forge CLI probe"
+    );
+}

@@ -103,6 +103,20 @@ async function prepareFixture(): Promise<Prepared> {
   const binDir = path.join(scratchRoot, "bin");
   writeFileSync(path.join(binDir, "omp"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   writeFileSync(path.join(binDir, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  // A forge CLI on this fixture's Gitea origin is a defect. Record every
+  // invocation and refuse it, so a stray `gh`/`glab` both proves itself and
+  // cannot answer from the operator's credential.
+  for (const [name, log] of [
+    ["gh", path.join(scratchRoot, "forge-gh.log")],
+    ["glab", path.join(scratchRoot, "forge-glab.log")],
+  ] as const) {
+    writeFileSync(log, "");
+    writeFileSync(
+      path.join(binDir, name),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexit 1\n`,
+      { mode: 0o755 },
+    );
+  }
 
   await git(repoDir, ["init", "-q"]);
   await git(repoDir, ["add", "-A"]);
