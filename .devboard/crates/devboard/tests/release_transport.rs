@@ -335,3 +335,50 @@ async fn a_private_release_still_reports_a_refused_credential() {
     assert!(error.contains("HTTP 401"), "{error}");
     handle.join().unwrap();
 }
+
+/// A Gitea stub that answers the release listing with an empty body, as a
+/// forge does while it deploys or truncates the response.
+fn empty_release_body_stub() -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0u8; 4096];
+        let read = stream.read(&mut buffer).unwrap();
+        assert!(read > 0, "the stub reads one release listing request");
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            )
+            .unwrap();
+    });
+    (base, handle)
+}
+
+/// An empty body is a body the forge could not deliver, so the message names
+/// the URL and the update check journals activity rather than an update error.
+#[tokio::test]
+async fn an_empty_release_body_is_a_transient_failure() {
+    let (base, handle) = empty_release_body_stub();
+    let source = devboard::release::ManifestSource {
+        base_url: base,
+        repository: "dsdenes/devboard".to_string(),
+        token: None,
+        timeout_ms: 5_000,
+        local_dir: None,
+        forge: devboard::release::ReleaseForge::Gitea,
+        download_base: String::new(),
+    };
+    let error = devboard::release::latest_manifest(&source)
+        .await
+        .expect_err("an empty body is no release manifest");
+    assert!(
+        error.contains("releases/latest returned an empty body"),
+        "{error}"
+    );
+    assert!(
+        devboard::updates::is_transient_update_failure(&error),
+        "{error}"
+    );
+    handle.join().unwrap();
+}

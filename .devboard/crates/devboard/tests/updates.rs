@@ -28,12 +28,21 @@ fn gitea_url_alone_resolves_a_release_source() {
 }
 
 #[test]
-fn only_an_unreachable_or_rate_limited_check_is_transient() {
+fn only_a_transport_failure_is_transient() {
     assert!(devboard::updates::is_transient_update_failure(
         "error sending request for url (http://localhost:3001/api/v1/repos/dsdenes/devboard/releases/latest)"
     ));
     assert!(devboard::updates::is_transient_update_failure(
         "GET http://localhost:3001/api/v1/repos/x/releases/latest failed (HTTP 429): slow down"
+    ));
+    assert!(devboard::updates::is_transient_update_failure(
+        "GET http://localhost:3001/api/v1/repos/x/releases/latest returned an empty body"
+    ));
+    assert!(devboard::updates::is_transient_update_failure(
+        "GET https://github.com/x/y/releases/latest/download/devboard-manifest.json returned a body that is not JSON: EOF while parsing a value at line 1 column 0"
+    ));
+    assert!(devboard::updates::is_transient_update_failure(
+        "cannot read the body of GET http://localhost:3001/api/v1/repos/x/releases/latest: error decoding response body"
     ));
     assert!(!devboard::updates::is_transient_update_failure(
         "the release manifest is invalid"

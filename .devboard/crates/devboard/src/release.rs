@@ -243,6 +243,25 @@ async fn get_release_response(
     send_release_request(client, url, accept, None).await
 }
 
+/// Reads one successful release response as a JSON document.
+///
+/// A body the forge could not deliver is a transport failure, not a malformed
+/// release: the response arrived empty, could not be read, or is not JSON, so
+/// the message names the URL and `updates::is_transient_update_failure`
+/// classifies it, and the next check retries it. A body that parses but is not
+/// a release manifest stays a real error at the caller.
+async fn release_json(response: reqwest::Response, url: &str) -> Result<Value, String> {
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("cannot read the body of GET {url}: {error}"))?;
+    if text.trim().is_empty() {
+        return Err(format!("GET {url} returned an empty body"));
+    }
+    serde_json::from_str(&text)
+        .map_err(|error| format!("GET {url} returned a body that is not JSON: {error}"))
+}
+
 /// Reads the newest release's manifest from Gitea or GitHub, or from a local
 /// release directory when `DEVBOARD_RELEASE_URL` names one.
 pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
@@ -268,8 +287,8 @@ async fn latest_gitea_manifest(source: &ManifestSource) -> Result<ReleaseInfo, S
     let response =
         get_release_response(&client, &url, "application/json", source.token.as_deref()).await?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
         return Err(format!(
             "GET {} failed (HTTP {}): {}",
             url,
@@ -277,7 +296,7 @@ async fn latest_gitea_manifest(source: &ManifestSource) -> Result<ReleaseInfo, S
             text.lines().next().unwrap_or("no response body")
         ));
     }
-    let document: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let document = release_json(response, &url).await?;
     let tag = document
         .get("tag_name")
         .and_then(Value::as_str)
@@ -304,7 +323,7 @@ async fn latest_gitea_manifest(source: &ManifestSource) -> Result<ReleaseInfo, S
             response.status().as_u16()
         ));
     }
-    let manifest: Value = response.json().await.map_err(|error| error.to_string())?;
+    let manifest = release_json(response, manifest_url).await?;
     let mut release = ReleaseInfo::from_manifest(&manifest)
         .ok_or_else(|| "the release manifest is invalid".to_string())?;
     if release.tag.is_empty() {
@@ -338,7 +357,7 @@ async fn latest_github_manifest(source: &ManifestSource) -> Result<ReleaseInfo, 
     if !status.is_success() {
         return Err(format!("GET {url} failed (HTTP {})", status.as_u16()));
     }
-    let manifest: Value = response.json().await.map_err(|error| error.to_string())?;
+    let manifest = release_json(response, &url).await?;
     ReleaseInfo::from_manifest(&manifest)
         .ok_or_else(|| "the public release manifest is invalid".to_string())
 }
