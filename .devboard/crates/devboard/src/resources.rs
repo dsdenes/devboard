@@ -592,6 +592,9 @@ pub struct Governor {
     slice_name: String,
     slice: Mutex<SliceInfo>,
     slice_cgroup: Mutex<Option<PathBuf>>,
+    /// The budget the live slice was last proved to carry. A save that repeats
+    /// it has nothing to write, so it costs the user manager no round trip.
+    applied: Mutex<Option<Settings>>,
     slice_wrap: AtomicBool,
     last_oom_kills: AtomicU64,
     deferral_stamp: Mutex<BTreeMap<String, u64>>,
@@ -660,6 +663,7 @@ impl Governor {
             slice_name: slice_name.to_string(),
             slice: Mutex::new(SliceInfo::default()),
             slice_cgroup: Mutex::new(None),
+            applied: Mutex::new(None),
             slice_wrap: AtomicBool::new(options.slice),
             last_oom_kills: AtomicU64::new(0),
             deferral_stamp: Mutex::new(BTreeMap::new()),
@@ -746,6 +750,10 @@ impl Governor {
     }
 
     /// Persists the operator's values and applies them to the live slice.
+    ///
+    /// A budget whose marks the live slice already carries costs the user
+    /// manager no round trip: the peer cap and the reserve reach admission, so
+    /// only a changed memory mark rewrites the slice.
     pub fn save(&self, settings: Settings) -> Result<Settings, String> {
         settings.validate_for(self.memory.total_mb())?;
         let saved = SavedSettings::from_settings(&settings);
@@ -760,10 +768,32 @@ impl Governor {
         if let Ok(mut current) = self.settings_stamp.lock() {
             *current = file_stamp(&settings_path(&self.state_dir));
         }
-        if self.slice_enabled && self.slice_owned {
+        if self.slice_enabled && self.slice_owned && !self.slice_carries(settings) {
             self.apply_slice();
         }
         Ok(settings)
+    }
+
+    /// True when the live slice still carries the marks this budget sets: the
+    /// high and max marks it was last proved to hold, on a control group that
+    /// is still there. The peer cap and the reserve are admission inputs the
+    /// slice never sees, so changing only them needs no round trip.
+    fn slice_carries(&self, settings: Settings) -> bool {
+        let applied = self.applied.lock().map(|applied| *applied).unwrap_or(None);
+        let Some(applied) = applied else {
+            return false;
+        };
+        if applied.memory_high_mb != settings.memory_high_mb
+            || applied.memory_max_mb != settings.memory_max_mb
+        {
+            return false;
+        }
+        self.slice_cgroup
+            .lock()
+            .ok()
+            .and_then(|path| path.clone())
+            .map(|path| path.is_dir())
+            .unwrap_or(false)
     }
 
     /// Applies one `setResources` update and persists the result.
@@ -1011,9 +1041,9 @@ impl Governor {
         }
         let settings = self.settings();
         let marker = slice_owner_marker(&self.state_dir);
-        let info = apply_slice_properties_owned(&self.slice_name, settings, Some(&marker));
-        if info.present {
-            if let Some(path) = slice_cgroup_path_for(&self.slice_name) {
+        let applied = apply_slice_properties_owned(&self.slice_name, settings, Some(&marker));
+        if applied.info.present {
+            if let Some(path) = applied.path.clone() {
                 if let Ok(mut current) = self.slice_cgroup.lock() {
                     *current = Some(path);
                 }
@@ -1021,10 +1051,13 @@ impl Governor {
         } else {
             self.slice_wrap.store(false, Ordering::SeqCst);
         }
-        if let Ok(mut current) = self.slice.lock() {
-            *current = info.clone();
+        if let Ok(mut current) = self.applied.lock() {
+            *current = (applied.wrote && applied.info.present).then_some(settings);
         }
-        info
+        if let Ok(mut current) = self.slice.lock() {
+            *current = applied.info.clone();
+        }
+        applied.info
     }
 
     /// True when a spawned child must be wrapped in a transient scope to join
@@ -1344,98 +1377,140 @@ fn slice_owner_marker(state_dir: &Path) -> String {
     format!("devboard owner {}", state_dir.display())
 }
 
-/// The description systemd reports for one slice, when the slice exists.
+/// One `systemctl` read of the facts an apply needs: the slice's control group
+/// and its description. `None` means the unit is absent or systemd answered
+/// nothing, so the caller has to start it first.
+///
+/// systemd chooses the order the properties print in, so each line is matched
+/// by name rather than by position.
 #[cfg(target_os = "linux")]
-fn slice_description(name: &str) -> Option<String> {
-    run_output(
+fn slice_facts(name: &str) -> Option<(PathBuf, String)> {
+    let text = run_output(
         "systemctl",
         &[
             "--user",
             "show",
             leaf_slice_name(name),
             "-p",
+            "ControlGroup",
+            "-p",
             "Description",
-            "--value",
         ],
-    )
+    )?;
+    let mut control = "";
+    let mut description = "";
+    for line in text.lines() {
+        match line.split_once('=') {
+            Some(("ControlGroup", value)) => control = value.trim(),
+            Some(("Description", value)) => description = value.trim(),
+            _ => {}
+        }
+    }
+    if control.is_empty() {
+        return None;
+    }
+    let path = Path::new("/sys/fs/cgroup").join(control.trim_start_matches('/'));
+    path.is_dir().then(|| (path, description.to_string()))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn slice_description(_name: &str) -> Option<String> {
-    None
+/// What one slice apply found, wrote, and can report.
+#[derive(Default)]
+struct AppliedSlice {
+    info: SliceInfo,
+    /// The control group the apply resolved, so no second `show` is needed.
+    path: Option<PathBuf>,
+    /// True when this process wrote the properties. False leaves the budget
+    /// unrecorded, so a later save tries again.
+    wrote: bool,
 }
 
 /// Creates the named slice if needed and sets its memory limits. Returns the
 /// live facts; `present: false` means this host cannot enforce a slice.
 #[cfg(target_os = "linux")]
 pub fn apply_slice_properties_for(name: &str, settings: Settings) -> SliceInfo {
-    apply_slice_properties_owned(name, settings, None)
+    apply_slice_properties_owned(name, settings, None).info
 }
 
 /// Like [`apply_slice_properties_for`], but refuses to rewrite a slice another
 /// dashboard already owns. A workspace test's ephemeral dashboard, a second
 /// dashboard, and a CLI all see the live description and only join it.
+///
+/// A warm slice costs one `systemctl show` and one `set-property`: every
+/// property this slice owns travels in a single transaction, because each
+/// separate call is another wait in the user manager's queue and the caller is
+/// an operator waiting for the save.
 #[cfg(target_os = "linux")]
-fn apply_slice_properties_owned(name: &str, settings: Settings, marker: Option<&str>) -> SliceInfo {
-    if let Some(marker) = marker {
-        if let Some(path) = slice_cgroup_path_for(name) {
-            if let Some(existing) = slice_description(name) {
-                // Only another dashboard's explicit marker blocks this one; a
-                // system-generated description is a slice still to be claimed.
-                if existing.starts_with("devboard owner ") && existing != marker {
-                    return slice_info_from_cgroup(Some(&path));
-                }
-            }
+fn apply_slice_properties_owned(
+    name: &str,
+    settings: Settings,
+    marker: Option<&str>,
+) -> AppliedSlice {
+    let mut facts = slice_facts(name);
+    if let (Some(marker), Some((path, description))) = (marker, facts.as_ref()) {
+        // Only another dashboard's explicit marker blocks this one; a
+        // system-generated description is a slice still to be claimed.
+        if description.starts_with("devboard owner ") && description != marker {
+            return AppliedSlice {
+                info: slice_info_from_cgroup(Some(path)),
+                path: Some(path.clone()),
+                wrote: false,
+            };
         }
     }
-    if !ensure_slice_unit(name) {
-        return SliceInfo::default();
+    if facts.is_none() {
+        if !ensure_slice_unit(name) {
+            return AppliedSlice::default();
+        }
+        facts = slice_facts(name);
     }
-    let Some(path) = slice_cgroup_path_for(name) else {
-        return SliceInfo::default();
+    let Some((path, description)) = facts else {
+        return AppliedSlice::default();
     };
     let leaf = leaf_slice_name(name);
-    if let Some(marker) = marker {
-        let _ = Command::new("systemctl")
-            .args([
-                "--user",
-                "set-property",
-                "--runtime",
-                leaf,
-                &format!("Description={marker}"),
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
     let high = format!("MemoryHigh={}", settings.memory_high_mb.saturating_mul(MIB));
     let max = format!("MemoryMax={}", settings.memory_max_mb.saturating_mul(MIB));
-    let set = Command::new("systemctl")
-        .args(["--user", "set-property", "--runtime", leaf, &high, &max])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if !set.map(|status| status.success()).unwrap_or(false) {
-        return SliceInfo::default();
-    }
     // The hard limit bounds RAM. Unlimited swap would let a runaway agent
-    // grow past it and pressure the session instead. An older systemd that
-    // cannot set the swap bound still gets the RAM bound above.
-    let _ = Command::new("systemctl")
-        .args([
-            "--user",
-            "set-property",
-            "--runtime",
-            leaf,
-            "MemorySwapMax=0",
-        ])
+    // grow past it and pressure the session instead.
+    let mut properties = vec![high, max, "MemorySwapMax=0".to_string()];
+    if let Some(marker) = marker {
+        // A slice already named for this dashboard is left as it is; the
+        // description is a claim, not a value a save has to rewrite.
+        if description != marker {
+            properties.push(format!("Description={marker}"));
+        }
+    }
+    let mut wrote = set_slice_properties(leaf, &properties);
+    if !wrote {
+        // An older systemd that cannot set the swap bound still gets the RAM
+        // bound: the second transaction drops that one property.
+        properties.retain(|property| !property.starts_with("MemorySwapMax="));
+        wrote = set_slice_properties(leaf, &properties);
+    }
+    if !wrote {
+        return AppliedSlice::default();
+    }
+    AppliedSlice {
+        info: slice_info_from_cgroup(Some(&path)),
+        path: Some(path),
+        wrote: true,
+    }
+}
+
+/// Runs one `set-property` transaction on a slice. Every property travels in
+/// the same call, because each separate call is another wait in the user
+/// manager's queue.
+#[cfg(target_os = "linux")]
+fn set_slice_properties(leaf: &str, properties: &[String]) -> bool {
+    let mut command = Command::new("systemctl");
+    command.args(["--user", "set-property", "--runtime", leaf]);
+    command.args(properties);
+    command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
-    slice_info_from_cgroup(Some(&path))
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// No cgroup on this platform; the cap and admission control still apply.
@@ -1449,8 +1524,8 @@ fn apply_slice_properties_owned(
     _name: &str,
     _settings: Settings,
     _marker: Option<&str>,
-) -> SliceInfo {
-    SliceInfo::default()
+) -> AppliedSlice {
+    AppliedSlice::default()
 }
 
 /// Applies the budget to the production slice.
